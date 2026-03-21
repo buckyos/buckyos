@@ -71,13 +71,10 @@ impl CliRuntimeEnv {
             .map_err(|err| {
                 AgentToolError::ExecFailed(format!("resolve current dir failed: {err}"))
             })?;
-        let agent_env_root = first_path_env(
-            &["OPENDAN_AGENT_ENV", "AGENT_ENV", "AGENT_ROOT"],
-            &current_dir,
-        );
+        let agent_env_root = first_path_env(&["OPENDAN_AGENT_ENV"], &current_dir);
         let has_agent_env = agent_env_root.is_some();
         let agent_env_root = agent_env_root.unwrap_or_else(|| current_dir.clone());
-        let step_idx = first_string_env(&["OPENDAN_STEP_IDX", "STEP_IDX"])
+        let step_idx = first_string_env(&["OPENDAN_STEP_IDX"])
             .and_then(|raw| raw.parse::<u32>().ok())
             .unwrap_or(0);
 
@@ -86,16 +83,16 @@ impl CliRuntimeEnv {
             has_agent_env,
             current_dir,
             call_ctx: SessionRuntimeContext {
-                trace_id: first_string_env(&["OPENDAN_TRACE_ID", "TRACE_ID"])
+                trace_id: first_string_env(&["OPENDAN_TRACE_ID"])
                     .unwrap_or_else(|| DEFAULT_TRACE_ID.to_string()),
-                agent_name: first_string_env(&["OPENDAN_AGENT_ID", "AGENT_ID"])
+                agent_name: first_string_env(&["OPENDAN_AGENT_ID"])
                     .unwrap_or_else(|| DEFAULT_AGENT_NAME.to_string()),
-                behavior: first_string_env(&["OPENDAN_BEHAVIOR", "BEHAVIOR"])
+                behavior: first_string_env(&["OPENDAN_BEHAVIOR"])
                     .unwrap_or_else(|| DEFAULT_BEHAVIOR.to_string()),
                 step_idx,
-                wakeup_id: first_string_env(&["OPENDAN_WAKEUP_ID", "WAKEUP_ID"])
+                wakeup_id: first_string_env(&["OPENDAN_WAKEUP_ID"])
                     .unwrap_or_else(|| DEFAULT_WAKEUP_ID.to_string()),
-                session_id: first_string_env(&["OPENDAN_SESSION_ID", "SESSION_ID"])
+                session_id: first_string_env(&["OPENDAN_SESSION_ID"])
                     .unwrap_or_else(|| DEFAULT_SESSION_ID.to_string()),
             },
         })

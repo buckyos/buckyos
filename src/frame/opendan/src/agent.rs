@@ -1367,13 +1367,9 @@ impl AIAgent {
         let mut dedup = HashSet::<String>::new();
         for owner_token in owner_tokens {
             for box_name in MSG_CENTER_EVENT_BOX_PATTERN_NAMES {
-                for pattern in [
-                    format!("/msg_center/{owner_token}/box/{box_name}/**"),
-                    format!("/msg_center/{owner_token}/{box_name}/**"),
-                ] {
-                    if dedup.insert(pattern.clone()) {
-                        out.push(pattern);
-                    }
+                let pattern = format!("/msg_center/{owner_token}/box/{box_name}/**");
+                if dedup.insert(pattern.clone()) {
+                    out.push(pattern);
                 }
             }
         }
@@ -1383,9 +1379,9 @@ impl AIAgent {
     fn msg_center_event_name_to_box_kind(raw_name: &str) -> Option<BoxKind> {
         let normalized = raw_name.trim().to_ascii_lowercase().replace('-', "_");
         match normalized.as_str() {
-            "in" | "inbox" => Some(BoxKind::Inbox),
-            "group_in" | "group_inbox" => Some(BoxKind::GroupInbox),
-            "request" | "request_box" => Some(BoxKind::RequestBox),
+            "inbox" => Some(BoxKind::Inbox),
+            "group_inbox" => Some(BoxKind::GroupInbox),
+            "request_box" => Some(BoxKind::RequestBox),
             _ => None,
         }
     }
@@ -1456,11 +1452,11 @@ impl AIAgent {
         }
 
         if let Some(index) = parts.iter().position(|segment| *segment == "box") {
-            if let Some(box_name) = parts.get(index + 1) {
-                return Self::msg_center_event_name_to_box_kind(box_name);
-            }
+            return parts
+                .get(index + 1)
+                .and_then(|box_name| Self::msg_center_event_name_to_box_kind(box_name));
         }
-        Self::msg_center_event_name_to_box_kind(parts[2])
+        None
     }
 
     fn append_all_msg_center_boxes_updated(target: &mut Vec<BoxKind>) {
@@ -3590,10 +3586,7 @@ fn compact_text_for_log(value: &str, max_chars: usize) -> String {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    ::agent_tool::now_ms()
 }
 
 struct SimpleTokenizer;

@@ -275,16 +275,7 @@ fn default_mcp_timeout_ms() -> u64 {
 }
 
 pub fn normalize_tool_name(name: &str) -> String {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    trimmed
-        .rsplit_once('.')
-        .map(|(_, suffix)| suffix.trim())
-        .filter(|suffix| !suffix.is_empty())
-        .unwrap_or(trimmed)
-        .to_string()
+    name.trim().to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1678,7 +1669,7 @@ impl AgentToolManager {
         }
         if normalized_name != original_name {
             warn!(
-                "tool name normalized for provider compatibility: original={} normalized={}",
+                "tool name normalized by trimming: original={} normalized={}",
                 original_name, normalized_name
             );
         }
@@ -2096,8 +2087,8 @@ mod tests {
     }
 
     #[test]
-    fn normalize_tool_name_keeps_suffix() {
-        assert_eq!(normalize_tool_name("workshop.exec_bash"), "exec_bash");
+    fn normalize_tool_name_only_trims_whitespace() {
+        assert_eq!(normalize_tool_name(" workshop.exec_bash "), "workshop.exec_bash");
         assert_eq!(normalize_tool_name("todo_manage"), "todo_manage");
         assert_eq!(normalize_tool_name(""), "");
     }
@@ -2120,16 +2111,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manager_normalizes_name_and_routes_bash_calls() {
+    async fn manager_keeps_registered_tool_name_and_routes_bash_calls() {
         let mgr = AgentToolManager::new();
         mgr.register_tool(EchoTool {
-            name: "workshop.read_file".to_string(),
+            name: "read_file".to_string(),
             usage: Some("read_file path=<path>".to_string()),
         })
         .expect("register tool");
 
         assert!(mgr.has_tool("read_file"));
-        assert!(!mgr.has_tool("workshop.read_file"));
 
         let result = mgr
             .call_tool_from_bash_line(&test_call_ctx(), "read_file path=\"a.txt\" range=\"1:2\"")

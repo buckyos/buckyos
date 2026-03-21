@@ -15,7 +15,6 @@ use super::local_workspace::{
     LocalWorkspaceManager, LocalWorkspaceManagerConfig, LocalWorkspaceSnapshot,
     SessionWorkspaceBinding, WorkshopIndex, WorkshopWorkspaceRecord, WorkspaceOwner,
 };
-use super::todo::{TodoTool, TodoToolConfig};
 use crate::agent_bash::ExecBashTool as BuiltinExecBashTool;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
@@ -23,14 +22,13 @@ use crate::agent_tool::{
     BindWorkspaceTool as SharedBindWorkspaceTool, CreateWorkspaceTool as SharedCreateWorkspaceTool,
     EditFileTool as SharedEditFileTool, FileToolConfig, MCPToolConfig, ManagedWorkspaceToolBackend,
     ReadFileTool as SharedReadFileTool, SessionWorkspaceBindingView, WorkspaceRecordView,
-    WorkspaceRuntimeBackend, WriteFileTool as SharedWriteFileTool, TOOL_BIND_WORKSPACE,
-    TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_TODO_MANAGE,
-    TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
+    TodoTool, TodoToolConfig, WorkspaceRuntimeBackend, WriteFileTool as SharedWriteFileTool,
+    TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE,
+    TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
 };
 use crate::buildin_tool::WorkshopWriteAudit as BuiltinWorkshopWriteAudit;
-use crate::runtime_utils::{
-    normalize_root_path, resolve_path_under_root as resolve_path_in_agent_env, u64_to_usize_arg,
-};
+use crate::agent_tool::{normalize_root_path, u64_to_usize_arg};
+use ::agent_tool::resolve_path_under_root as resolve_path_in_agent_env;
 use crate::worklog::WorklogToolConfig;
 
 const DEFAULT_BASH_PATH: &str = "/bin/bash";
@@ -325,7 +323,6 @@ impl AgentWorkshop {
                                 &self.cfg,
                                 tool,
                                 session_store.clone(),
-                                tool_mgr.clone(),
                                 task_mgr.clone(),
                             )?,
                         )?;
@@ -859,6 +856,9 @@ mod tests {
     use crate::test_utils::MockTaskMgrHandler;
     use buckyos_api::{value_to_object_map, AiToolCall, TaskManagerClient, TaskStatus};
     use std::collections::HashMap;
+    use std::fs as std_fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::process::Command;
@@ -964,11 +964,54 @@ mod tests {
         parse_cli_json_line(line)
     }
 
+    fn ensure_test_agent_tool_bin() {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .expect("resolve current exe dir");
+        let agent_tool_path = exe_dir.join("agent_tool");
+        let script = r#"#!/bin/sh
+cmd="$(basename "$0")"
+if [ "$cmd" = "agent_tool" ]; then
+  cmd="$1"
+  shift
+fi
+case "$cmd" in
+  read_file)
+    path=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        path=*) path="${1#path=}" ;;
+        *) if [ -z "$path" ]; then path="$1"; fi ;;
+      esac
+      shift
+    done
+    line="$(sed -n '1p' "$path" 2>/dev/null)"
+    printf '{"status":"success","tool":"read_file","detail":{"content":"%s"}}\n' "$line"
+    ;;
+  *)
+    printf '{"status":"error","tool":"%s"}\n' "$cmd"
+    exit 1
+    ;;
+esac
+"#;
+        std_fs::write(&agent_tool_path, script).expect("write fake agent_tool");
+        #[cfg(unix)]
+        {
+            let mut perms = std_fs::metadata(&agent_tool_path)
+                .expect("stat fake agent_tool")
+                .permissions();
+            perms.set_mode(0o755);
+            std_fs::set_permissions(&agent_tool_path, perms).expect("chmod fake agent_tool");
+        }
+    }
+
     #[tokio::test]
     async fn exec_bash_tool_runs_linux_command() {
         if !tmux_ready().await {
             return;
         }
+        ensure_test_agent_tool_bin();
         let root = unique_agent_env_root("exec-bash");
         let session_id = "session-tmux-linux";
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
@@ -1005,6 +1048,7 @@ mod tests {
         if !tmux_ready().await {
             return;
         }
+        ensure_test_agent_tool_bin();
 
         let root = unique_agent_env_root("exec-bash-pending-task");
         let session_id = "session-exec-bash-pending";
@@ -1061,6 +1105,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_bash_tool_can_forward_line_to_registered_tool() {
+        ensure_test_agent_tool_bin();
         let root = unique_agent_env_root("exec-bash-forward-tool");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await
@@ -1112,6 +1157,7 @@ mod tests {
         if !tmux_ready().await {
             return;
         }
+        ensure_test_agent_tool_bin();
         let root = unique_agent_env_root("exec-bash-pane-cwd");
         let session_id = "session-tmux-pane-cwd";
         fs::create_dir_all(root.join("subdir"))
@@ -1174,6 +1220,7 @@ mod tests {
         if !tmux_ready().await {
             return;
         }
+        ensure_test_agent_tool_bin();
         let root = unique_agent_env_root("exec-bash-cd-pane-pwd");
         let session_id = "session-tmux-cd-pane-pwd";
         fs::create_dir_all(root.join("subdir"))
@@ -1685,7 +1732,7 @@ mod tests {
             json!({
                 "enabled_tools": [
                     {
-                        "name": "mcp.weather",
+                        "name": "weather",
                         "kind": "mcp",
                         "enabled": true,
                         "params": {

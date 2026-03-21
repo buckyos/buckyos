@@ -27,8 +27,6 @@ use tokio::time::{sleep, Duration};
 use opendan::agent::{AIAgent, AIAgentDeps};
 use opendan::agent_config::AIAgentConfig;
 use opendan::ai_runtime::{AiRuntime, AiRuntimeConfig, OpenDanRuntimeKrpcHandler};
-use opendan::runtime_utils::find_string_pointer;
-
 struct OpenDanHttpServer {
     rpc_handler: buckyos_api::OpenDanServerHandler<OpenDanRuntimeKrpcHandler>,
 }
@@ -84,12 +82,7 @@ impl HttpServer for OpenDanHttpServer {
 const OPENDAN_AGENT_ID_ENV: [&str; 1] = ["OPENDAN_AGENT_ID"];
 const OPENDAN_AGENT_ENV_ENV: [&str; 1] = ["OPENDAN_AGENT_ENV"];
 const OPENDAN_AGENT_BIN_ENV: [&str; 1] = ["OPENDAN_AGENT_BIN"];
-const OPENDAN_AGENT_OWNER_ENV: [&str; 4] = [
-    "OPENDAN_AGENT_OWNER",
-    "AGENT_OWNER",
-    "OWNER_USER_ID",
-    "APP_OWNER_ID",
-];
+const OPENDAN_AGENT_OWNER_ENV: [&str; 1] = ["OPENDAN_AGENT_OWNER"];
 const OPENDAN_SERVICE_PORT_ENV: [&str; 1] = ["OPENDAN_SERVICE_PORT"];
 const OPENDAN_SESSION_WORKER_THREADS_ENV: &str = "OPENDAN_SESSION_WORKER_THREADS";
 const OPENDAN_STARTUP_DEP_READY_WAIT_SECS: u64 = 10;
@@ -112,7 +105,9 @@ struct AgentInstanceDoc {
 struct AgentAppSpec {
     key: String,
     json: Json,
+    #[allow(dead_code)]
     app_doc: AppDoc,
+    #[allow(dead_code)]
     install_config: ServiceInstallConfig,
     user_id: Option<String>,
 }
@@ -444,45 +439,21 @@ async fn load_agent_app_spec(agent_id: &str, owner: Option<&str>) -> Result<Opti
     Ok(None)
 }
 
-fn resolve_optional_path(
-    cli_value: Option<&PathBuf>,
-    env_keys: &[&str],
-    spec: Option<&AgentAppSpec>,
-    spec_pointers: &[&str],
-    doc: Option<&AgentInstanceDoc>,
-    doc_pointers: &[&str],
-) -> Option<PathBuf> {
+fn resolve_optional_path(cli_value: Option<&PathBuf>, env_keys: &[&str]) -> Option<PathBuf> {
     cli_value
         .cloned()
         .or_else(|| get_first_env_var(env_keys).map(PathBuf::from))
-        .or_else(|| {
-            spec.and_then(|spec| find_string_pointer(&spec.json, spec_pointers).map(PathBuf::from))
-        })
-        .or_else(|| {
-            doc.and_then(|doc| find_string_pointer(&doc.json, doc_pointers).map(PathBuf::from))
-        })
 }
 
 fn resolve_agent_env_root(
     startup: &StartupArgs,
-    spec: Option<&AgentAppSpec>,
-    doc: Option<&AgentInstanceDoc>,
+    _spec: Option<&AgentAppSpec>,
+    _doc: Option<&AgentInstanceDoc>,
     agent_id: &str,
 ) -> PathBuf {
-    let direct = resolve_optional_path(
-        startup.agent_env.as_ref(),
-        &OPENDAN_AGENT_ENV_ENV,
-        spec,
-        &["/install_config/custom_config/agent_env_root"],
-        doc,
-        &["/agent_env_root"],
-    );
+    let direct = resolve_optional_path(startup.agent_env.as_ref(), &OPENDAN_AGENT_ENV_ENV);
     if direct.is_some() {
         return direct.unwrap();
-    }
-
-    if let Some(path) = spec.and_then(resolve_agent_env_root_from_spec_mounts) {
-        return path;
     }
 
     get_buckyos_root_dir().join("agents").join(agent_id)
@@ -490,89 +461,10 @@ fn resolve_agent_env_root(
 
 fn resolve_agent_package_root(
     startup: &StartupArgs,
-    spec: Option<&AgentAppSpec>,
-    doc: Option<&AgentInstanceDoc>,
+    _spec: Option<&AgentAppSpec>,
+    _doc: Option<&AgentInstanceDoc>,
 ) -> Option<PathBuf> {
-    let direct = resolve_optional_path(
-        startup.agent_bin.as_ref(),
-        &OPENDAN_AGENT_BIN_ENV,
-        spec,
-        &["/install_config/custom_config/agent_package_root"],
-        doc,
-        &["/agent_package_root"],
-    );
-    if direct.is_some() {
-        return direct;
-    }
-
-    if let Some(pkg_name) = spec.and_then(resolve_agent_pkg_name_from_spec) {
-        return Some(resolve_package_root_candidates(&pkg_name));
-    }
-
-    let pkg_name = doc.and_then(|doc| {
-        find_string_pointer(&doc.json, &["/package/pkg_name"])
-            .map(pkg_unique_name)
-            .map(str::to_string)
-    })?;
-
-    Some(resolve_package_root_candidates(&pkg_name))
-}
-
-fn pkg_unique_name(pkg_id_or_name: &str) -> &str {
-    pkg_id_or_name
-        .split('#')
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(pkg_id_or_name)
-}
-
-fn resolve_agent_env_root_from_spec_mounts(spec: &AgentAppSpec) -> Option<PathBuf> {
-    for key in ["root", "agent_root", "agent_env", "workspace"] {
-        if let Some(path) = spec.install_config.data_mount_point.get(key) {
-            let path = path.trim();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
-        }
-    }
-
-    None
-}
-
-fn resolve_agent_pkg_name_from_spec(spec: &AgentAppSpec) -> Option<String> {
-    if let Some(agent_pkg) = spec.app_doc.pkg_list.agent.as_ref() {
-        return Some(pkg_unique_name(agent_pkg.pkg_id.as_str()).to_string());
-    }
-
-    let app_name = spec.app_doc.name.trim();
-    if !app_name.is_empty() {
-        return Some(app_name.to_string());
-    }
-
-    None
-}
-
-fn resolve_package_root_candidates(pkg_name: &str) -> PathBuf {
-    let installed = get_buckyos_root_dir().join("bin").join(pkg_name);
-    if installed.exists() {
-        return installed;
-    }
-
-    let Some(current_dir) = std::env::current_dir().ok() else {
-        return installed;
-    };
-    for candidate in [
-        current_dir.join("src/rootfs/bin").join(pkg_name),
-        current_dir.join("../rootfs/bin").join(pkg_name),
-        current_dir.join("rootfs/bin").join(pkg_name),
-    ] {
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-
-    installed
+    resolve_optional_path(startup.agent_bin.as_ref(), &OPENDAN_AGENT_BIN_ENV)
 }
 
 fn resolve_agent_did(doc: Option<&AgentInstanceDoc>) -> Option<String> {

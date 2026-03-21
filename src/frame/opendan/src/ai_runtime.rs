@@ -27,7 +27,7 @@ use crate::agent_tool::{
     ManagedExternalWorkspaceBackend, ToolSpec, TOOL_CREATE_SUB_AGENT,
 };
 use crate::behavior::SessionRuntimeContext;
-use crate::runtime_utils::{normalize_abs_path, now_ms};
+use crate::agent_tool::{normalize_abs_path, now_ms};
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_SUB_AGENTS_DIR: &str = "sub-agents";

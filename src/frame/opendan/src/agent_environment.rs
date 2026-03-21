@@ -20,9 +20,11 @@ use buckyos_api::msg_queue::Message;
 
 use crate::agent::{AIAgent, InputQueueKind};
 use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
-use crate::agent_tool::{AgentToolError, AgentToolManager};
-use crate::workspace::{
+use crate::agent_tool::{
     get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
+    AgentToolError, AgentToolManager,
+};
+use crate::workspace::{
     AgentWorkshop, AgentWorkshopConfig, LocalWorkspaceManager, WorkshopIndex, WorkspaceType,
 };
 use crate::workspace_path::{
@@ -102,15 +104,6 @@ impl AgentEnvironment {
     ) -> Result<(), AgentToolError> {
         self.workshop
             .register_tools_with_task_mgr(tool_mgr, session_store, Some(task_mgr))
-    }
-
-    // Backward compatibility for old call sites.
-    pub fn register_basic_workshop_tools(
-        &self,
-        tool_mgr: &AgentToolManager,
-        session_store: Arc<AgentSessionMgr>,
-    ) -> Result<(), AgentToolError> {
-        self.register_workshop_tools(tool_mgr, session_store)
     }
 
     pub fn build_prompt_template_context(
@@ -1457,7 +1450,8 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::{TodoTool, TodoToolConfig, WorkshopWorkspaceRecord};
+    use crate::agent_tool::{TodoTool, TodoToolConfig};
+    use crate::workspace::WorkshopWorkspaceRecord;
     use serde_json::json;
     use tempfile::tempdir;
 

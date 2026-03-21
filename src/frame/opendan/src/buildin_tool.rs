@@ -10,11 +10,10 @@ pub use ::agent_tool::{
 };
 
 use crate::agent_tool::{
-    optional_string_arg, read_bool_from_map as shared_read_bool_from_map,
-    read_u64_from_map as shared_read_u64_from_map, require_string_arg,
+    optional_string_arg, optional_u64_arg, read_bool_from_map as shared_read_bool_from_map,
+    read_u64_from_map as shared_read_u64_from_map, require_string_arg, resolve_path_from_root,
 };
 use crate::agent_tool::{AgentToolError, SessionRuntimeContext};
-use crate::runtime_utils::{optional_u64_arg, resolve_path_from_root};
 use crate::worklog::{WorklogService, WorklogToolConfig};
 
 pub const TOOL_EXEC_BASH: &str = "exec";
@@ -58,7 +57,7 @@ impl FileWriteAuditBackend for WorkshopWriteAudit {
             .execute_action(
                 ctx,
                 json!({
-                    "action": "append",
+                    "action": "append_worklog",
                     "type": "ActionRecord",
                     "status": "success",
                     "agent_id": ctx.agent_name,

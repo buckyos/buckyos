@@ -687,11 +687,9 @@ fn normalize_output_mode(mode: &str) -> String {
     let normalized = mode.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "" | "auto" => "auto".to_string(),
-        "behavior_llm_result" | "behavior_result" => "behavior_llm_result".to_string(),
-        "route_result" | "route" | "route_v1" => "route_result".to_string(),
-        "behavior_llm_no_action_result" | "behavior_llm_bash_result" | "behavior_llm_no_action" => {
-            "behavior_llm_no_action_result".to_string()
-        }
+        "behavior_llm_result" => "behavior_llm_result".to_string(),
+        "route_result" => "route_result".to_string(),
+        "behavior_llm_no_action_result" => "behavior_llm_no_action_result".to_string(),
         _ => "auto".to_string(),
     }
 }

@@ -58,7 +58,7 @@ struct EchoTool;
 impl AgentTool for EchoTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "tool.echo".to_string(),
+            name: "echo".to_string(),
             description: "echo".to_string(),
             args_schema: json!({"type":"object"}),
             output_schema: json!({"type":"object"}),
@@ -81,11 +81,9 @@ impl AgentTool for EchoTool {
         _ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<AgentToolResult, crate::agent_tool::AgentToolError> {
-        println!("[TEST][TOOL] tool.echo called with args: {}", args);
-        Ok(
-            AgentToolResult::from_details(json!({"tool": "tool.echo", "ok": true, "args": args}))
-                .with_result("ok"),
-        )
+        println!("[TEST][TOOL] echo called with args: {}", args);
+        Ok(AgentToolResult::from_details(json!({"tool": "echo", "ok": true, "args": args}))
+            .with_result("ok"))
     }
 }
 
@@ -138,7 +136,7 @@ async fn run_step_with_tool_followup() {
                 Some(AiResponseSummary {
                     text: None,
                     tool_calls: vec![AiToolCall {
-                        name: "tool.echo".to_string(),
+                        name: "echo".to_string(),
                         args: value_to_object_map(json!({"msg": "hi"})),
                         call_id: "call-1".to_string(),
                     }],
@@ -202,7 +200,7 @@ async fn run_step_with_tool_followup() {
     let tool_mgr = Arc::new(AgentToolManager::new());
     tool_mgr
         .register_tool(EchoTool)
-        .expect("register tool.echo should succeed");
+        .expect("register echo should succeed");
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
@@ -210,7 +208,7 @@ process_rule: test_rule
 tools:
   mode: allow_list
   names:
-    - tool.echo
+    - echo
 "#,
     )
     .await;
@@ -227,7 +225,7 @@ tools:
         memory: None,
         policy: Arc::new(MockPolicy {
             tools: behavior_cfg.tools.filter_tool_specs(&[ToolSpec {
-                name: "tool.echo".to_string(),
+                name: "echo".to_string(),
                 description: "echo".to_string(),
                 args_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),

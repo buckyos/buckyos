@@ -20,8 +20,7 @@ use crate::agent_tool::AgentMemory;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::worklog::{
-    render_worklog_prompt_line, WorklogListOptions, WorklogRecord, WorklogRecordType,
-    WorklogService, WorklogToolConfig,
+    WorklogListOptions, WorklogRecord, WorklogRecordType, WorklogService, WorklogToolConfig,
 };
 use crate::workspace::agent_skill::{
     load_skill_from_root, merge_skill_records_from_dir, AgentSkillRecord,
@@ -37,7 +36,7 @@ use super::sanitize::{sanitize_json_compact, sanitize_text};
 use super::types::BehaviorExecInput;
 use super::Tokenizer;
 
-const SESSION_MSG_RECORD_FILES: [&str; 2] = ["msg_record.jsonl", "message_record.jsonl"];
+const SESSION_MSG_RECORD_FILE: &str = "msg_record.jsonl";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -813,12 +812,10 @@ async fn resolve_session_msg_record_path(
     }
 
     if let Some(path) = non_empty_path(session_root_dir) {
-        for file_name in SESSION_MSG_RECORD_FILES {
-            push_unique_pathbuf(
-                &mut canonical_candidates,
-                path.join(session_id).join(file_name),
-            );
-        }
+        push_unique_pathbuf(
+            &mut canonical_candidates,
+            path.join(session_id).join(SESSION_MSG_RECORD_FILE),
+        );
     }
 
     if session_id.contains('/') || session_id.contains('\\') {
@@ -831,9 +828,10 @@ async fn resolve_session_msg_record_path(
         {
             push_unique_pathbuf(&mut canonical_candidates, session_path);
         } else {
-            for file_name in SESSION_MSG_RECORD_FILES {
-                push_unique_pathbuf(&mut canonical_candidates, session_path.join(file_name));
-            }
+            push_unique_pathbuf(
+                &mut canonical_candidates,
+                session_path.join(SESSION_MSG_RECORD_FILE),
+            );
         }
     }
 
@@ -1356,17 +1354,7 @@ fn render_db_worklog_top_level_line(record: &WorklogRecord) -> Option<String> {
             nested
         ));
     }
-    let legacy = render_worklog_prompt_line(record);
-    let legacy = legacy.trim();
-    if legacy.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "- {} {}",
-            format_history_time(record.timestamp),
-            legacy
-        ))
-    }
+    None
 }
 
 fn render_db_worklog_timeline_records(
@@ -1554,7 +1542,6 @@ struct RuntimeWorklogRecord {
     step_index: Option<u32>,
     payload: Json,
     summary: Option<String>,
-    prompt_digest: Option<String>,
     error_reason: Option<String>,
 }
 
@@ -1645,59 +1632,6 @@ fn render_nested_runtime_worklog_line(record: &RuntimeWorklogRecord) -> Option<S
     None
 }
 
-fn render_runtime_worklog_legacy_line(record: &RuntimeWorklogRecord) -> Option<String> {
-    let digest = record
-        .prompt_digest
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| sanitize_worklog_digest(value, 200))
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            record
-                .summary
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| sanitize_worklog_digest(value, 200))
-                .filter(|value| !value.is_empty())
-        })
-        .or_else(|| {
-            let payload = sanitize_json_compact(&record.payload);
-            let compact = sanitize_worklog_digest(payload.as_str(), 200);
-            if compact.is_empty() {
-                None
-            } else {
-                Some(compact)
-            }
-        });
-
-    let line = if let Some(digest) = digest {
-        format!(
-            "{} status={} {}",
-            record.record_type.trim(),
-            record.status.trim(),
-            digest
-        )
-    } else {
-        format!(
-            "{} status={}",
-            record.record_type.trim(),
-            record.status.trim()
-        )
-    };
-    let line = line.trim();
-    if line.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "- {} {}",
-            format_history_time(record.timestamp),
-            line
-        ))
-    }
-}
-
 fn render_runtime_worklog_top_level_line(record: &RuntimeWorklogRecord) -> Option<String> {
     if let Some(nested) = render_nested_runtime_worklog_line(record) {
         return Some(format!(
@@ -1706,7 +1640,7 @@ fn render_runtime_worklog_top_level_line(record: &RuntimeWorklogRecord) -> Optio
             nested
         ));
     }
-    render_runtime_worklog_legacy_line(record)
+    None
 }
 
 fn parse_timestamp_millis_text(value: &str) -> Option<u64> {
@@ -1842,14 +1776,6 @@ fn parse_runtime_worklog_record(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let prompt_digest = item
-        .get("prompt_view")
-        .and_then(Json::as_object)
-        .and_then(|view| view.get("digest"))
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
     let error_reason = item
         .get("error")
         .and_then(Json::as_object)
@@ -1867,7 +1793,6 @@ fn parse_runtime_worklog_record(
         step_index,
         payload,
         summary,
-        prompt_digest,
         error_reason,
     }
 }

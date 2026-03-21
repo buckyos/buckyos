@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs as std_fs;
 #[cfg(unix)]
-use std::os::unix::fs::{self as unix_fs, PermissionsExt};
+use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -17,9 +17,8 @@ use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolManager, AgentToolResult,
-    ToolSpec, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION,
-    TOOL_READ_FILE, TOOL_WRITE_FILE,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, ToolSpec, TOOL_BIND_WORKSPACE,
+    TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION, TOOL_READ_FILE, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -114,7 +113,6 @@ pub struct ExecBashTool {
     cfg: AgentWorkshopConfig,
     policy: ExecBashPolicy,
     session_store: Arc<AgentSessionMgr>,
-    tool_mgr: AgentToolManager,
     task_mgr: Option<Arc<TaskManagerClient>>,
 }
 
@@ -123,23 +121,21 @@ impl ExecBashTool {
         cfg: &AgentWorkshopConfig,
         tool_cfg: &WorkshopToolConfig,
         session_store: Arc<AgentSessionMgr>,
-        tool_mgr: AgentToolManager,
+        _tool_mgr: AgentToolManager,
     ) -> Result<Self, AgentToolError> {
-        Self::from_tool_config_with_task_mgr(cfg, tool_cfg, session_store, tool_mgr, None)
+        Self::from_tool_config_with_task_mgr(cfg, tool_cfg, session_store, None)
     }
 
     pub fn from_tool_config_with_task_mgr(
         cfg: &AgentWorkshopConfig,
         tool_cfg: &WorkshopToolConfig,
         session_store: Arc<AgentSessionMgr>,
-        tool_mgr: AgentToolManager,
         task_mgr: Option<Arc<TaskManagerClient>>,
     ) -> Result<Self, AgentToolError> {
         Ok(Self {
             cfg: cfg.clone(),
             policy: ExecBashPolicy::from_tool_config(cfg, tool_cfg)?,
             session_store,
-            tool_mgr,
             task_mgr,
         })
     }
@@ -147,10 +143,10 @@ impl ExecBashTool {
     async fn prepare_session_tool_env(
         &self,
         session_id: &str,
-    ) -> Result<Option<PreparedSessionToolEnv>, AgentToolError> {
-        let Some(agent_tool_path) = resolve_agent_tool_path() else {
-            return Ok(None);
-        };
+    ) -> Result<PreparedSessionToolEnv, AgentToolError> {
+        let agent_tool_path = resolve_agent_tool_path().ok_or_else(|| {
+            AgentToolError::ExecFailed("resolve agent_tool binary failed".to_string())
+        })?;
 
         let tool_dir = self
             .cfg
@@ -161,10 +157,10 @@ impl ExecBashTool {
         let tool_names = self.resolve_session_cli_tool_names(session_id).await;
         sync_session_tool_links(&tool_dir, &agent_tool_path, &tool_names)?;
 
-        Ok(Some(PreparedSessionToolEnv {
+        Ok(PreparedSessionToolEnv {
             tool_dir,
             agent_tool_path,
-        }))
+        })
     }
 
     async fn resolve_session_cli_tool_names(&self, session_id: &str) -> Vec<String> {
@@ -234,13 +230,12 @@ impl AgentTool for ExecBashTool {
         }
 
         let session_tool_env = self.prepare_session_tool_env(&session_id).await?;
-        let allow_legacy_builtin_fallback = session_tool_env.is_none();
         let env_vars = parse_exec_env_args(&args, self.policy.allow_env)?;
         let env_vars = build_exec_env_vars(
             ctx,
             &self.cfg.agent_env_root,
             &env_vars,
-            session_tool_env.as_ref(),
+            Some(&session_tool_env),
         );
         let run_result = self
             .run_command_lines(
@@ -250,7 +245,6 @@ impl AgentTool for ExecBashTool {
                 &pwd,
                 timeout_ms,
                 &env_vars,
-                allow_legacy_builtin_fallback,
             )
             .await?;
         match run_result {
@@ -437,32 +431,6 @@ enum ExecBashTmuxRunState {
     Pending(ExecBashTmuxPendingRun),
 }
 
-struct ExecBashToolLineRunResult {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    exit_code: i32,
-    line_result: Json,
-}
-
-#[derive(Clone, Debug)]
-struct ToolPromptRender {
-    append_json_details: bool,
-    append_rendered_prompt: bool,
-    extra_stdout_text: Option<String>,
-    summary_override: Option<String>,
-}
-
-impl Default for ToolPromptRender {
-    fn default() -> Self {
-        Self {
-            append_json_details: true,
-            append_rendered_prompt: true,
-            extra_stdout_text: None,
-            summary_override: None,
-        }
-    }
-}
-
 impl ExecBashTool {
     async fn run_command_lines(
         &self,
@@ -472,7 +440,6 @@ impl ExecBashTool {
         pwd: &Path,
         timeout_ms: u64,
         env_vars: &[(String, String)],
-        allow_legacy_builtin_fallback: bool,
     ) -> Result<ExecBashRunOutcome, AgentToolError> {
         let mut state =
             ExecBashAggregateState::new(self.resolve_tmux_pane_cwd(session_id, pwd).await);
@@ -483,29 +450,6 @@ impl ExecBashTool {
                 .resolve_tmux_pane_cwd(session_id, state.current_pwd.as_path())
                 .await;
             let command_name = AgentToolManager::parse_bash_command_name(&line.text);
-
-            if allow_legacy_builtin_fallback {
-                if let Some(tool_run) = self
-                    .run_registered_tool_line(
-                        ctx,
-                        &line.text,
-                        line.line_no,
-                        state.current_pwd.as_path(),
-                    )
-                    .await?
-                {
-                    state.used_tool = true;
-                    state.stdout.extend_from_slice(&tool_run.stdout);
-                    state.stderr.extend_from_slice(&tool_run.stderr);
-                    state.line_results.push(tool_run.line_result);
-                    if tool_run.exit_code != 0 {
-                        return Ok(ExecBashRunOutcome::Completed(
-                            self.build_completed_result(state, tool_run.exit_code),
-                        ));
-                    }
-                    continue;
-                }
-            }
 
             match self
                 .run_tmux_bash(
@@ -551,7 +495,6 @@ impl ExecBashTool {
                             index,
                             state,
                             pending_run,
-                            allow_legacy_builtin_fallback,
                         )
                         .await?;
                     return Ok(ExecBashRunOutcome::Pending(pending_result));
@@ -581,95 +524,6 @@ impl ExecBashTool {
             line_results: state.line_results,
         }
     }
-
-    async fn run_registered_tool_line(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
-        line_no: usize,
-        pane_pwd: &Path,
-    ) -> Result<Option<ExecBashToolLineRunResult>, AgentToolError> {
-        let Some(tool_name) = self.tool_mgr.resolve_bash_registered_tool_name(line) else {
-            return Ok(None);
-        };
-        if tool_name == TOOL_EXEC_BASH {
-            return Ok(None);
-        }
-
-        let result = self
-            .tool_mgr
-            .call_tool_from_bash_line_with_cwd(ctx, line, Some(pane_pwd))
-            .await;
-        match result {
-            Ok(Some(result)) => {
-                let prompt_render = build_tool_prompt_render(line, tool_name.as_str(), &result);
-                let mut stdout = Vec::<u8>::new();
-                if prompt_render.append_json_details {
-                    let json_line = serde_json::to_string(&result.details)
-                        .unwrap_or_else(|_| "{\"ok\":false}".to_string());
-                    stdout.extend_from_slice(json_line.as_bytes());
-                    stdout.push(b'\n');
-                }
-                if let Some(extra_text) = prompt_render.extra_stdout_text {
-                    if !extra_text.trim().is_empty() {
-                        stdout.extend_from_slice(extra_text.as_bytes());
-                        stdout.push(b'\n');
-                    }
-                }
-                if prompt_render.append_rendered_prompt {
-                    let rendered = result.render_prompt();
-                    if !rendered.trim().is_empty() {
-                        stdout.extend_from_slice(rendered.as_bytes());
-                        stdout.push(b'\n');
-                    }
-                }
-                let mut line_result = json!({
-                    "line": line_no,
-                    "mode": "tool",
-                    "command": line,
-                    "command_name": AgentToolManager::parse_bash_command_name(line).unwrap_or_default(),
-                    "tool_name": tool_name,
-                    "cwd": pane_pwd.to_string_lossy().to_string(),
-                    "ok": true,
-                });
-                if let Some(summary) = prompt_render.summary_override {
-                    if let Some(map) = line_result.as_object_mut() {
-                        map.insert("prompt_summary".to_string(), Json::String(summary));
-                    }
-                }
-                Ok(Some(ExecBashToolLineRunResult {
-                    stdout,
-                    stderr: Vec::new(),
-                    exit_code: 0,
-                    line_result,
-                }))
-            }
-            Ok(None) => Ok(None),
-            Err(err) => {
-                let err_text = err.to_string();
-                let mut stderr = err_text.as_bytes().to_vec();
-                if !err_text.ends_with('\n') {
-                    stderr.push(b'\n');
-                }
-                Ok(Some(ExecBashToolLineRunResult {
-                    stdout: Vec::new(),
-                    stderr,
-                    exit_code: 1,
-                    line_result: json!({
-                        "line": line_no,
-                        "mode": "tool",
-                        "command": line,
-                        "command_name": AgentToolManager::parse_bash_command_name(line).unwrap_or_default(),
-                        "tool_name": tool_name,
-                        "cwd": pane_pwd.to_string_lossy().to_string(),
-                        "ok": false,
-                        "error": err_text,
-                    }),
-                }))
-            }
-        }
-    }
-
     async fn apply_tmux_run_result(
         &self,
         state: &mut ExecBashAggregateState,
@@ -896,7 +750,6 @@ impl ExecBashTool {
         current_index: usize,
         mut state: ExecBashAggregateState,
         pending_run: ExecBashTmuxPendingRun,
-        allow_legacy_builtin_fallback: bool,
     ) -> Result<ExecBashPendingResult, AgentToolError> {
         let Some(task_mgr) = self.task_mgr.clone() else {
             let _ = interrupt_tmux_target(&pending_run.handle.tmux_target).await;
@@ -1006,7 +859,6 @@ impl ExecBashTool {
                     current_index,
                     state,
                     pending_run,
-                    allow_legacy_builtin_fallback,
                 )
                 .await;
         });
@@ -1035,7 +887,6 @@ impl ExecBashTool {
         current_index: usize,
         mut state: ExecBashAggregateState,
         pending_run: ExecBashTmuxPendingRun,
-        allow_legacy_builtin_fallback: bool,
     ) {
         let final_result = self
             .resume_pending_command_lines(
@@ -1046,7 +897,6 @@ impl ExecBashTool {
                 current_index,
                 &mut state,
                 pending_run,
-                allow_legacy_builtin_fallback,
             )
             .await;
 
@@ -1130,7 +980,6 @@ impl ExecBashTool {
         current_index: usize,
         state: &mut ExecBashAggregateState,
         pending_run: ExecBashTmuxPendingRun,
-        allow_legacy_builtin_fallback: bool,
     ) -> Result<ExecBashRunResult, AgentToolError> {
         let current_line = command_lines
             .get(current_index)
@@ -1169,27 +1018,6 @@ impl ExecBashTool {
             state.current_pwd = self
                 .resolve_tmux_pane_cwd(session_id, state.current_pwd.as_path())
                 .await;
-            if allow_legacy_builtin_fallback {
-                if let Some(tool_run) = self
-                    .run_registered_tool_line(
-                        ctx,
-                        &line.text,
-                        line.line_no,
-                        state.current_pwd.as_path(),
-                    )
-                    .await?
-                {
-                    state.used_tool = true;
-                    state.stdout.extend_from_slice(&tool_run.stdout);
-                    state.stderr.extend_from_slice(&tool_run.stderr);
-                    state.line_results.push(tool_run.line_result);
-                    if tool_run.exit_code != 0 {
-                        return Ok(self.build_completed_result(state.clone(), tool_run.exit_code));
-                    }
-                    continue;
-                }
-            }
-
             let bash_result = match self
                 .run_tmux_bash(
                     ctx,
@@ -1337,25 +1165,23 @@ fn build_exec_env_vars(
     }
 
     let agent_env = agent_env_root.to_string_lossy().to_string();
-    merged.insert("OPENDAN_AGENT_ENV".to_string(), agent_env.clone());
-    merged.insert("AGENT_ENV".to_string(), agent_env);
+    merged.insert("OPENDAN_AGENT_ENV".to_string(), agent_env);
     merged.insert("OPENDAN_AGENT_ID".to_string(), ctx.agent_name.clone());
-    merged.insert("AGENT_ID".to_string(), ctx.agent_name.clone());
     merged.insert("OPENDAN_BEHAVIOR".to_string(), ctx.behavior.clone());
-    merged.insert("BEHAVIOR".to_string(), ctx.behavior.clone());
     merged.insert("OPENDAN_STEP_IDX".to_string(), ctx.step_idx.to_string());
-    merged.insert("STEP_IDX".to_string(), ctx.step_idx.to_string());
     merged.insert("OPENDAN_WAKEUP_ID".to_string(), ctx.wakeup_id.clone());
-    merged.insert("WAKEUP_ID".to_string(), ctx.wakeup_id.clone());
     merged.insert("OPENDAN_SESSION_ID".to_string(), ctx.session_id.clone());
-    merged.insert("SESSION_ID".to_string(), ctx.session_id.clone());
     merged.insert("OPENDAN_TRACE_ID".to_string(), ctx.trace_id.clone());
-    merged.insert("TRACE_ID".to_string(), ctx.trace_id.clone());
 
     merged.into_iter().collect()
 }
 
 fn resolve_agent_tool_path() -> Option<PathBuf> {
+    if let Some(candidate) = std::env::var_os("CARGO_BIN_EXE_agent_tool").map(PathBuf::from) {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
     if let Some(root) = std::env::var_os("BUCKYOS_ROOT") {
         let candidate = PathBuf::from(root)
             .join("bin")
@@ -1373,41 +1199,10 @@ fn resolve_agent_tool_path() -> Option<PathBuf> {
     if preferred.exists() {
         return Some(preferred);
     }
-    let legacy = current_dir.join("agent-tools");
-    if legacy.exists() {
-        return Some(legacy);
-    }
     if let Some(parent_dir) = current_dir.parent() {
         let parent_preferred = parent_dir.join(EXEC_BASH_AGENT_TOOL_BIN);
         if parent_preferred.exists() {
             return Some(parent_preferred);
-        }
-        let parent_legacy = parent_dir.join("agent-tools");
-        if parent_legacy.exists() {
-            return Some(parent_legacy);
-        }
-    }
-    if let Ok(entries) = std_fs::read_dir(&current_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            #[cfg(unix)]
-            let is_executable = std_fs::metadata(&path)
-                .map(|meta| meta.permissions().mode() & 0o111 != 0)
-                .unwrap_or(false);
-            #[cfg(not(unix))]
-            let is_executable = path.is_file();
-            if (file_name == EXEC_BASH_AGENT_TOOL_BIN
-                || file_name.starts_with(&format!("{EXEC_BASH_AGENT_TOOL_BIN}-"))
-                || file_name == "agent-tools"
-                || file_name.starts_with("agent-tools-"))
-                && path.is_file()
-                && is_executable
-            {
-                return Some(path);
-            }
         }
     }
     None
@@ -2007,212 +1802,8 @@ async fn interrupt_tmux_target(target: &str) -> Result<(), AgentToolError> {
     )))
 }
 
-fn extract_single_tool_prompt_summary(run_result: &ExecBashRunResult) -> Option<String> {
-    if run_result.engine != "tool" || run_result.line_results.len() != 1 {
-        return None;
-    }
-    run_result
-        .line_results
-        .first()
-        .and_then(|item| item.get("prompt_summary"))
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-}
-
-fn build_tool_prompt_render(
-    line: &str,
-    tool_name: &str,
-    result: &AgentToolResult,
-) -> ToolPromptRender {
-    if tool_name == "read_file" {
-        let ok = result
-            .details
-            .get("ok")
-            .and_then(Json::as_bool)
-            .unwrap_or(false);
-        let mut render = ToolPromptRender {
-            append_json_details: false,
-            append_rendered_prompt: false,
-            extra_stdout_text: None,
-            summary_override: None,
-        };
-
-        if ok {
-            let summary = result
-                .result
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "ok".to_string());
-            render.summary_override = Some(summary);
-            render.extra_stdout_text = result
-                .details
-                .get("content")
-                .and_then(Json::as_str)
-                .map(str::trim_end)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string());
-        } else {
-            render.summary_override = Some(
-                todo_first_error_message(&result.details)
-                    .map(|message| format!("failed: {message}"))
-                    .unwrap_or_else(|| "failed".to_string()),
-            );
-        }
-        return render;
-    }
-
-    if tool_name == "create_workspace" {
-        let ok = result
-            .details
-            .get("ok")
-            .and_then(Json::as_bool)
-            .unwrap_or(false);
-        let mut render = ToolPromptRender {
-            append_json_details: false,
-            ..ToolPromptRender::default()
-        };
-        if ok {
-            render.append_rendered_prompt = false;
-            render.summary_override = result
-                .result
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string());
-        }
-        return render;
-    }
-
-    if tool_name != "todo" {
-        return ToolPromptRender::default();
-    }
-
-    let subcommand = tokenize_bash_command_line(line)
-        .ok()
-        .and_then(|tokens| tokens.get(1).cloned())
-        .map(|value| value.trim().to_ascii_lowercase())
-        .unwrap_or_default();
-    let action = result
-        .details
-        .get("action")
-        .and_then(Json::as_str)
-        .unwrap_or_default();
-    let ok = result
-        .details
-        .get("ok")
-        .and_then(Json::as_bool)
-        .unwrap_or(false);
-
-    let mut render = ToolPromptRender {
-        append_json_details: false,
-        ..ToolPromptRender::default()
-    };
-
-    if !ok {
-        render.append_rendered_prompt = false;
-        render.summary_override = todo_first_error_message(&result.details)
-            .map(|message| format!("failed: {message}"))
-            .or_else(|| Some("failed".to_string()));
-        return render;
-    }
-
-    if action == "apply_delta" {
-        render.append_rendered_prompt = false;
-    }
-
-    match subcommand.as_str() {
-        "clear" => {
-            let cleared_count = result
-                .details
-                .get("cleared_count")
-                .and_then(Json::as_u64)
-                .unwrap_or(0);
-            render.append_rendered_prompt = false;
-            render.summary_override = Some(format!(
-                "cleared {} todo item{}",
-                cleared_count,
-                if cleared_count == 1 { "" } else { "s" }
-            ));
-        }
-        "add" => {
-            render.append_rendered_prompt = false;
-            let created = result
-                .details
-                .get("created_items")
-                .and_then(Json::as_array)
-                .and_then(|items| items.first());
-            if let Some(item) = created {
-                let todo_code = item.get("todo_code").and_then(Json::as_str).unwrap_or("-");
-                render.summary_override = Some(format!("added todo {}", todo_code));
-            } else {
-                render.summary_override = Some("added todo item".to_string());
-            }
-        }
-        "ls" | "list" => {
-            let total = result
-                .details
-                .get("total")
-                .and_then(Json::as_u64)
-                .unwrap_or(0);
-            render.append_rendered_prompt = false;
-            render.summary_override = Some(format!(
-                "listed {} todo item{}",
-                total,
-                if total == 1 { "" } else { "s" }
-            ));
-            render.extra_stdout_text = result
-                .details
-                .get("text")
-                .and_then(Json::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string());
-        }
-        "next" => {
-            render.append_rendered_prompt = false;
-            render.summary_override = Some(render_todo_next_summary(&result.details));
-        }
-        _ => {}
-    }
-
-    render
-}
-
-fn todo_first_error_message(details: &Json) -> Option<String> {
-    details
-        .get("errors")
-        .and_then(Json::as_array)
-        .and_then(|errors| errors.first())
-        .and_then(Json::as_object)
-        .and_then(|error| error.get("message"))
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-}
-
-fn render_todo_next_summary(details: &Json) -> String {
-    let item = details.get("item").and_then(Json::as_object);
-    let Some(item) = item else {
-        return "no ready todo".to_string();
-    };
-    let todo_code = item
-        .get("todo_code")
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("-");
-    let title = item
-        .get("title")
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("-");
-    format!("next todo {}: {}", todo_code, title)
+fn extract_single_tool_prompt_summary(_run_result: &ExecBashRunResult) -> Option<String> {
+    None
 }
 
 fn tail_lines_limited(text: &str, max_lines: usize) -> String {

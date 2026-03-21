@@ -14,13 +14,11 @@ use serde_json::{json, Value as Json};
 use tokio::task;
 
 use crate::agent_tool::{
-    optional_trimmed_string_arg as optional_string, require_string_arg as require_string,
-    AgentTool, AgentToolError, AgentToolResult, ToolSpec,
+    now_ms, optional_trimmed_string_arg as optional_string, optional_u64_arg as optional_u64,
+    require_string_arg as require_string, u64_to_usize_arg as u64_to_usize, AgentTool,
+    AgentToolError, AgentToolResult, ToolSpec,
 };
 use crate::behavior::SessionRuntimeContext;
-use crate::runtime_utils::{
-    now_ms, optional_u64_arg as optional_u64, u64_to_usize_arg as u64_to_usize,
-};
 
 const DEFAULT_LIST_LIMIT: usize = 64;
 const DEFAULT_MAX_LIST_LIMIT: usize = 256;
@@ -298,15 +296,13 @@ impl WorklogService {
     ) -> Result<Json, AgentToolError> {
         let action = require_string(&args, "action")?;
         match action.as_str() {
-            "append_worklog" | "append" => self.call_append_worklog(ctx, args).await,
+            "append_worklog" => self.call_append_worklog(ctx, args).await,
             "append_step_summary" => self.call_append_step_summary(ctx, args).await,
             "mark_step_committed" => self.call_mark_step_committed(args).await,
-            "list_worklog" | "list" => self.call_list_worklog(args).await,
-            "get_worklog" | "get" => self.call_get_worklog(args).await,
+            "list_worklog" => self.call_list_worklog(args).await,
+            "get_worklog" => self.call_get_worklog(args).await,
             "list_step" => self.call_list_step(args).await,
-            "build_prompt_worklog" | "render_for_prompt" => {
-                self.call_build_prompt_worklog(args).await
-            }
+            "build_prompt_worklog" => self.call_build_prompt_worklog(args).await,
             _ => Err(AgentToolError::InvalidArgs(format!(
                 "unsupported action `{action}`, expected append_worklog/append_step_summary/mark_step_committed/list_worklog/get_worklog/list_step/build_prompt_worklog"
             ))),
@@ -353,8 +349,7 @@ impl WorklogService {
     async fn call_mark_step_committed(&self, args: Json) -> Result<Json, AgentToolError> {
         let step_id = require_string(&args, "step_id")?;
         let step_id_for_db = step_id.clone();
-        let session_id = optional_string(&args, "owner_session_id")?
-            .or_else(|| optional_string(&args, "session_id").ok().flatten());
+        let session_id = optional_string(&args, "owner_session_id")?;
         let workspace_id = optional_string(&args, "workspace_id")?;
         let updated = self
             .run_db("worklog mark step committed", move |conn| {
@@ -396,9 +391,7 @@ impl WorklogService {
     }
 
     async fn call_get_worklog(&self, args: Json) -> Result<Json, AgentToolError> {
-        let id = optional_string(&args, "id")?
-            .or_else(|| optional_string(&args, "log_id").ok().flatten())
-            .ok_or_else(|| AgentToolError::InvalidArgs("missing `id` or `log_id`".to_string()))?;
+        let id = require_string(&args, "id")?;
         let id_for_db = id.clone();
         let got = self
             .run_db("worklog get", move |conn| get_record(conn, &id_for_db))
@@ -418,8 +411,7 @@ impl WorklogService {
     async fn call_list_step(&self, args: Json) -> Result<Json, AgentToolError> {
         let step_id = require_string(&args, "step_id")?;
         let step_id_for_db = step_id.clone();
-        let session_id = optional_string(&args, "owner_session_id")?
-            .or_else(|| optional_string(&args, "session_id").ok().flatten());
+        let session_id = optional_string(&args, "owner_session_id")?;
         let workspace_id = optional_string(&args, "workspace_id")?;
         let listed = self
             .run_db("worklog list step", move |conn| {
@@ -926,18 +918,15 @@ struct ListFilters {
 
 impl ListFilters {
     fn parse(args: &Json, default_limit: usize, max_limit: usize) -> Result<Self, AgentToolError> {
-        let owner_session_id = optional_string(args, "owner_session_id")?
-            .or_else(|| optional_string(args, "session_id").ok().flatten());
+        let owner_session_id = optional_string(args, "owner_session_id")?;
         let workspace_id = optional_string(args, "workspace_id")?;
         let step_id = optional_string(args, "step_id")?;
         let record_type = optional_string(args, "type")?
-            .or_else(|| optional_string(args, "log_type").ok().flatten())
             .map(|v| normalize_record_type(&v))
             .transpose()?;
         let status = optional_string(args, "status")?.map(|v| normalize_status(&v));
-        let impact_level = optional_string(args, "impact_level")?
-            .or_else(|| optional_string(args, "impact").ok().flatten())
-            .map(|v| normalize_impact_level(&v));
+        let impact_level =
+            optional_string(args, "impact_level")?.map(|v| normalize_impact_level(&v));
         let tag = optional_string(args, "tag")?;
         let keyword = optional_string(args, "keyword")?;
 
@@ -1024,8 +1013,7 @@ struct PromptBuildInput {
 
 impl PromptBuildInput {
     fn parse(args: &Json) -> Result<Self, AgentToolError> {
-        let owner_session_id = optional_string(args, "owner_session_id")?
-            .or_else(|| optional_string(args, "session_id").ok().flatten());
+        let owner_session_id = optional_string(args, "owner_session_id")?;
         let workspace_id = optional_string(args, "workspace_id")?;
         let todo_id = optional_string(args, "todo_id")?;
         let token_budget = optional_u64(args, "token_budget")?
