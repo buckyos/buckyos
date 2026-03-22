@@ -427,10 +427,6 @@ def build_deb(
     work_root = TMP_INSTALL_DIR / "distbuild"
     deb_dir = work_root / deb_arch
 
-    # Keep scripts in sync with bucky_project.yaml before building.
-    if (not dry_run) and (not bool(os.environ.get("BUCKYOS_PKG_NO_SYNC_SCRIPTS"))):
-        sync_deb_scripts(project_yaml_path, DEB_TEMPLATE_DIR / "DEBIAN", manifest_path=manifest_path)
-
     if deb_dir.exists() and not dry_run:
         shutil.rmtree(deb_dir, ignore_errors=True)
 
@@ -438,6 +434,10 @@ def build_deb(
         print(f"[dry-run] copy template: {DEB_TEMPLATE_DIR} -> {deb_dir}")
     else:
         shutil.copytree(DEB_TEMPLATE_DIR, deb_dir, dirs_exist_ok=True)
+
+    # Keep copied maintainer scripts in sync with bucky_project.yaml without mutating repo files.
+    if (not dry_run) and (not bool(os.environ.get("BUCKYOS_PKG_NO_SYNC_SCRIPTS"))):
+        sync_deb_scripts(project_yaml_path, deb_dir / "DEBIAN", manifest_path=manifest_path)
 
     if not dry_run:
         _adjust_control_file(deb_dir, version, deb_arch)
