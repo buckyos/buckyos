@@ -19,7 +19,7 @@ use crate::agent_bash::ExecBashTool as BuiltinExecBashTool;
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{normalize_root_path, u64_to_usize_arg};
 use crate::agent_tool::{
-    read_string_from_map, read_u64_from_map, AgentToolError, AgentToolManager,
+    read_bool_from_map, read_string_from_map, read_u64_from_map, AgentToolError, AgentToolManager,
     BindWorkspaceTool as SharedBindWorkspaceTool, CreateWorkspaceTool as SharedCreateWorkspaceTool,
     EditFileTool as SharedEditFileTool, FileToolConfig, MCPToolConfig, ManagedWorkspaceToolBackend,
     ReadFileTool as SharedReadFileTool, SessionWorkspaceBindingView, TodoTool, TodoToolConfig,
@@ -27,7 +27,9 @@ use crate::agent_tool::{
     TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE,
     TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
 };
-use crate::buildin_tool::WorkshopWriteAudit as BuiltinWorkshopWriteAudit;
+use crate::buildin_tool::{
+    parse_workspace_relative_roots, WorkshopWriteAudit as BuiltinWorkshopWriteAudit,
+};
 use crate::worklog::WorklogToolConfig;
 use ::agent_tool::resolve_path_under_root as resolve_path_in_agent_env;
 
@@ -328,24 +330,21 @@ impl AgentWorkshop {
                         )?;
                     }
                     TOOL_EDIT_FILE => {
-                        let _ = tool;
                         tool_mgr.register_tool(SharedEditFileTool::new(
-                            FileToolConfig::new(self.cfg.agent_env_root.clone()),
+                            self.build_file_tool_config(tool)?,
                             Arc::new(write_audit.clone()),
                         ))?;
                     }
                     TOOL_WRITE_FILE => {
-                        let _ = tool;
                         tool_mgr.register_tool(SharedWriteFileTool::new(
-                            FileToolConfig::new(self.cfg.agent_env_root.clone()),
+                            self.build_file_tool_config(tool)?,
                             Arc::new(write_audit.clone()),
                         ))?;
                     }
                     TOOL_READ_FILE => {
-                        let _ = tool;
-                        tool_mgr.register_tool(SharedReadFileTool::new(FileToolConfig::new(
-                            self.cfg.agent_env_root.clone(),
-                        )))?;
+                        tool_mgr.register_tool(SharedReadFileTool::new(
+                            self.build_file_tool_config(tool)?,
+                        ))?;
                     }
                     TOOL_TODO_MANAGE => {
                         let policy = TodoToolPolicy::from_tool_config(&self.cfg, tool)?;
@@ -420,6 +419,51 @@ impl AgentWorkshop {
             &self.cfg.agent_env_root,
             DEFAULT_WORKLOG_DB_REL_PATH,
         )?))
+    }
+
+    fn build_file_tool_config(
+        &self,
+        tool_cfg: &WorkshopToolConfig,
+    ) -> Result<FileToolConfig, AgentToolError> {
+        let params = tool_cfg.params.as_object().ok_or_else(|| {
+            AgentToolError::InvalidArgs(format!(
+                "tool `{}` params must be a json object",
+                tool_cfg.name
+            ))
+        })?;
+        let allowed_read_roots = parse_workspace_relative_roots(
+            params.get("allowed_read_roots"),
+            &self.cfg.agent_env_root,
+        )?
+        .unwrap_or_else(|| vec![self.cfg.agent_env_root.clone()]);
+        let allowed_write_roots = parse_workspace_relative_roots(
+            params.get("allowed_write_roots"),
+            &self.cfg.agent_env_root,
+        )?
+        .unwrap_or_else(|| vec![self.cfg.agent_env_root.clone()]);
+        let allow_create = read_bool_from_map(params, "allow_create")?.unwrap_or(true);
+        let max_write_bytes = read_u64_from_map(params, "max_write_bytes")?
+            .map(|value| u64_to_usize_arg(value, "max_write_bytes"))
+            .transpose()?
+            .unwrap_or(self.cfg.default_max_file_write_bytes);
+        let max_diff_lines = read_u64_from_map(params, "max_diff_lines")?
+            .map(|value| u64_to_usize_arg(value, "max_diff_lines"))
+            .transpose()?
+            .unwrap_or(self.cfg.default_max_diff_lines);
+        if max_write_bytes == 0 || max_diff_lines == 0 {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "tool `{}` has invalid file policy bounds",
+                tool_cfg.name
+            )));
+        }
+        Ok(FileToolConfig {
+            root_dir: self.cfg.agent_env_root.clone(),
+            allowed_read_roots,
+            allowed_write_roots,
+            allow_create,
+            max_write_bytes,
+            max_diff_lines,
+        })
     }
 }
 
@@ -810,7 +854,7 @@ fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), AgentTool
 mod tests {
     use super::*;
     use crate::agent_session::AgentSessionMgr;
-    use crate::agent_tool::{AgentToolResult, DoAction, DoActions};
+    use crate::agent_tool::{AgentToolResult, AgentToolStatus, DoAction, DoActions};
     use crate::behavior::SessionRuntimeContext;
     use crate::test_utils::MockTaskMgrHandler;
     use buckyos_api::{value_to_object_map, AiToolCall, TaskManagerClient, TaskStatus};
@@ -938,15 +982,34 @@ fi
 case "$cmd" in
   read_file)
     path=""
+    range=""
     while [ $# -gt 0 ]; do
       case "$1" in
         path=*) path="${1#path=}" ;;
-        *) if [ -z "$path" ]; then path="$1"; fi ;;
+        range=*) range="${1#range=}" ;;
+        *)
+          if [ -z "$path" ]; then
+            path="$1"
+          elif [ -z "$range" ]; then
+            range="$1"
+          fi
+          ;;
       esac
       shift
     done
-    line="$(sed -n '1p' "$path" 2>/dev/null)"
-    printf '{"status":"success","tool":"read_file","detail":{"content":"%s"}}\n' "$line"
+    content=""
+    case "$range" in
+      [0-9]*:[0-9]*)
+        start="${range%%:*}"
+        end="${range##*:}"
+        content="$(sed -n "${start},${end}p" "$path" 2>/dev/null)"
+        ;;
+      *)
+        content="$(sed -n '1p' "$path" 2>/dev/null)"
+        ;;
+    esac
+    json_content="$(printf '%s' "$content" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+    printf '{"status":"success","summary":"read mock content","tool":"read_file","detail":{"ok":true,"tool":"read_file","content":%s}}\n' "$json_content"
     ;;
   *)
     printf '{"status":"error","tool":"%s"}\n' "$cmd"
@@ -993,10 +1056,11 @@ esac
         .await
         .expect("exec bash should succeed");
 
-        assert_eq!(result["ok"], true);
+        assert_eq!(result.status, AgentToolStatus::Success);
+        assert_eq!(result.return_code, Some(0));
+        assert_eq!(result.stdout.as_deref(), Some("hello-linux"));
+        assert_eq!(result.output.as_deref(), Some("hello-linux"));
         assert_eq!(result["exit_code"], 0);
-        assert_eq!(result["stdout"], "hello-linux");
-        assert_eq!(result["details"], "hello-linux");
         assert_eq!(result["engine"], "tmux");
 
         let _ = fs::remove_dir_all(root).await;
@@ -1097,16 +1161,11 @@ esac
         .await
         .expect("exec should run via cli");
 
-        assert_eq!(result["ok"], true);
-        assert_eq!(result["exit_code"], 0);
-        assert_eq!(result["engine"], "tmux");
-        assert_eq!(result["line_results"][0]["mode"], "bash");
-
-        let stdout = result["stdout"].as_str().unwrap_or_default();
-        let payload = parse_cli_json_line(stdout);
-        assert_eq!(payload["status"], "success");
-        assert_eq!(payload["tool"], TOOL_READ_FILE);
-        assert_eq!(payload["detail"]["content"], "L1");
+        assert_eq!(result.status, AgentToolStatus::Success);
+        assert_eq!(result.return_code, Some(0));
+        assert_eq!(result.cmd_name.as_deref(), Some(TOOL_READ_FILE));
+        assert_eq!(result["tool"], TOOL_READ_FILE);
+        assert_eq!(result["content"], "L1");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1159,9 +1218,9 @@ esac
         .await
         .expect("exec should succeed");
 
-        assert_eq!(result["ok"], true);
+        assert_eq!(result.status, AgentToolStatus::Success);
         assert_eq!(result["engine"], "tmux");
-        let stdout = result["stdout"].as_str().unwrap_or_default();
+        let stdout = result.output.as_deref().unwrap_or_default();
         let pane_lines = stdout
             .lines()
             .filter(|line| line.trim() == "pane-line")
@@ -1222,7 +1281,7 @@ esac
         .await
         .expect("exec should succeed");
 
-        assert_eq!(result["ok"], true);
+        assert_eq!(result.status, AgentToolStatus::Success);
         assert_eq!(result["engine"], "tmux");
         assert_eq!(result["line_results"][0]["mode"], "bash");
         assert_eq!(result["line_results"][1]["mode"], "bash");
@@ -1232,7 +1291,7 @@ esac
             .unwrap_or_default()
             .ends_with("/subdir"));
 
-        let stdout = result["stdout"].as_str().unwrap_or_default();
+        let stdout = result.output.as_deref().unwrap_or_default();
         let payload = parse_cli_json_line(stdout);
         assert_eq!(payload["tool"], TOOL_READ_FILE);
         assert_eq!(payload["detail"]["content"], "cd-pane-line");
@@ -1307,7 +1366,8 @@ esac
                 .expect("call action should run"),
             };
             assert_eq!(
-                result["ok"], true,
+                result.status,
+                AgentToolStatus::Success,
                 "action #{idx} should succeed: {}",
                 result
             );
@@ -1315,15 +1375,14 @@ esac
         }
 
         let first_bash = &results[1];
-        assert_eq!(first_bash["engine"], "tmux");
-        let first_payload = parse_cli_json_line(first_bash["stdout"].as_str().unwrap_or_default());
-        assert_eq!(first_payload["detail"]["content"], "L1");
+        assert_eq!(first_bash.cmd_name.as_deref(), Some(TOOL_READ_FILE));
+        assert_eq!(first_bash["tool"], TOOL_READ_FILE);
+        assert_eq!(first_bash["content"], "L1");
 
         let second_bash = &results[3];
-        assert_eq!(second_bash["engine"], "tmux");
-        let second_payload =
-            parse_cli_json_line(second_bash["stdout"].as_str().unwrap_or_default());
-        assert_eq!(second_payload["detail"]["content"], "L1\nL2-updated");
+        assert_eq!(second_bash.cmd_name.as_deref(), Some(TOOL_READ_FILE));
+        assert_eq!(second_bash["tool"], TOOL_READ_FILE);
+        assert_eq!(second_bash["content"], "L1\nL2-updated");
 
         let final_call = &results[4];
         assert_eq!(final_call["content"], "L1\nL2-updated");

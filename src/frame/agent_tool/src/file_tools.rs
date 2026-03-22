@@ -20,13 +20,79 @@ const CMD_PARAM_PREVIEW_KEEP_CHARS: usize = 32;
 #[derive(Clone, Debug)]
 pub struct FileToolConfig {
     pub root_dir: PathBuf,
+    pub allowed_read_roots: Vec<PathBuf>,
+    pub allowed_write_roots: Vec<PathBuf>,
+    pub allow_create: bool,
+    pub max_write_bytes: usize,
+    pub max_diff_lines: usize,
 }
 
 impl FileToolConfig {
     pub fn new(root_dir: impl Into<PathBuf>) -> Self {
+        let root_dir = root_dir.into();
         Self {
-            root_dir: root_dir.into(),
+            allowed_read_roots: vec![root_dir.clone()],
+            allowed_write_roots: vec![root_dir.clone()],
+            allow_create: true,
+            max_write_bytes: usize::MAX,
+            max_diff_lines: usize::MAX,
+            root_dir,
         }
+    }
+
+    fn ensure_read_path_allowed(
+        &self,
+        abs_path: &Path,
+        raw_path: &str,
+    ) -> Result<(), AgentToolError> {
+        if self.allowed_read_roots.is_empty() {
+            return Ok(());
+        }
+        if is_path_under_any(abs_path, &self.allowed_read_roots) {
+            return Ok(());
+        }
+        Err(AgentToolError::InvalidArgs(format!(
+            "read path not allowed by policy: {raw_path}"
+        )))
+    }
+
+    fn ensure_write_path_allowed(
+        &self,
+        abs_path: &Path,
+        raw_path: &str,
+    ) -> Result<(), AgentToolError> {
+        if self.allowed_write_roots.is_empty() {
+            return Ok(());
+        }
+        if is_path_under_any(abs_path, &self.allowed_write_roots) {
+            return Ok(());
+        }
+        Err(AgentToolError::InvalidArgs(format!(
+            "write path not allowed by policy: {raw_path}"
+        )))
+    }
+
+    fn ensure_create_allowed(&self, raw_path: &str) -> Result<(), AgentToolError> {
+        if self.allow_create {
+            return Ok(());
+        }
+        Err(AgentToolError::InvalidArgs(format!(
+            "creating new file is not allowed by policy: {raw_path}"
+        )))
+    }
+
+    fn ensure_write_size_allowed(
+        &self,
+        raw_path: &str,
+        bytes: usize,
+    ) -> Result<(), AgentToolError> {
+        if bytes <= self.max_write_bytes {
+            return Ok(());
+        }
+        Err(AgentToolError::InvalidArgs(format!(
+            "write exceeds policy size limit for `{raw_path}`: {bytes} > {} bytes",
+            self.max_write_bytes
+        )))
     }
 }
 
@@ -123,6 +189,7 @@ impl AgentTool for EditFileTool {
     ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string_arg(&args, "path")?;
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
+        self.cfg.ensure_write_path_allowed(&abs_path, &file_path)?;
 
         let exists = fs::metadata(&abs_path).await.is_ok();
         let original_content = if exists {
@@ -164,6 +231,11 @@ impl AgentTool for EditFileTool {
         let changed = original_content != updated_content;
         let created = changed && !exists;
         if changed {
+            if created {
+                self.cfg.ensure_create_allowed(&file_path)?;
+            }
+            self.cfg
+                .ensure_write_size_allowed(&file_path, updated_content.len())?;
             if let Some(parent) = abs_path.parent() {
                 fs::create_dir_all(parent).await.map_err(|err| {
                     AgentToolError::ExecFailed(format!("create parent dir failed: {err}"))
@@ -174,8 +246,12 @@ impl AgentTool for EditFileTool {
                 .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
         }
 
-        let (diff, diff_truncated) =
-            build_simple_diff(&file_path, &original_content, &updated_content);
+        let (diff, diff_truncated) = build_simple_diff(
+            &file_path,
+            &original_content,
+            &updated_content,
+            self.cfg.max_diff_lines,
+        );
         if changed {
             if let Err(err) = self
                 .write_audit
@@ -296,6 +372,7 @@ impl AgentTool for WriteFileTool {
         let file_path = require_string_arg(&args, "path")?;
         let content = require_string_arg(&args, "content")?;
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
+        self.cfg.ensure_write_path_allowed(&abs_path, &file_path)?;
 
         let mode = parse_write_mode(&args)?;
         let exists = fs::metadata(&abs_path).await.is_ok();
@@ -325,6 +402,11 @@ impl AgentTool for WriteFileTool {
         } else {
             content.clone()
         };
+        if !exists {
+            self.cfg.ensure_create_allowed(&file_path)?;
+        }
+        self.cfg
+            .ensure_write_size_allowed(&file_path, updated_content.len())?;
 
         if let Some(parent) = abs_path.parent() {
             fs::create_dir_all(parent).await.map_err(|err| {
@@ -336,8 +418,12 @@ impl AgentTool for WriteFileTool {
             .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
 
         let changed = original_content != updated_content;
-        let (diff, diff_truncated) =
-            build_simple_diff(&file_path, &original_content, &updated_content);
+        let (diff, diff_truncated) = build_simple_diff(
+            &file_path,
+            &original_content,
+            &updated_content,
+            self.cfg.max_diff_lines,
+        );
         if let Err(err) = self
             .write_audit
             .record_file_write(
@@ -447,6 +533,7 @@ impl AgentTool for ReadFileTool {
     ) -> Result<AgentToolResult, AgentToolError> {
         let file_path = require_string_arg(&args, "path")?;
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
+        self.cfg.ensure_read_path_allowed(&abs_path, &file_path)?;
 
         let full_content = read_text_file_lossy(&abs_path).await?;
         let first_chunk = optional_string_arg(&args, "first_chunk")?;
@@ -1015,7 +1102,12 @@ fn build_read_file_cmd_line(path: &str, range: Option<&Json>, first_chunk: Optio
     cmd
 }
 
-fn build_simple_diff(display_path: &str, before: &str, after: &str) -> (String, bool) {
+fn build_simple_diff(
+    display_path: &str,
+    before: &str,
+    after: &str,
+    max_diff_lines: usize,
+) -> (String, bool) {
     let before_lines = before.lines().collect::<Vec<_>>();
     let after_lines = after.lines().collect::<Vec<_>>();
     let mut body = Vec::new();
@@ -1043,7 +1135,16 @@ fn build_simple_diff(display_path: &str, before: &str, after: &str) -> (String, 
         after_lines.len()
     ));
     diff.extend(body);
+    if max_diff_lines != usize::MAX && diff.len() > max_diff_lines {
+        diff.truncate(max_diff_lines);
+        diff.push("... [diff truncated]".to_string());
+        return (diff.join("\n"), true);
+    }
     (diff.join("\n"), false)
+}
+
+fn is_path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path.starts_with(root))
 }
 
 #[cfg(test)]

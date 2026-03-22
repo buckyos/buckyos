@@ -1370,9 +1370,13 @@ impl AIAgent {
         let mut dedup = HashSet::<String>::new();
         for owner_token in owner_tokens {
             for box_name in MSG_CENTER_EVENT_BOX_PATTERN_NAMES {
-                let pattern = format!("/msg_center/{owner_token}/box/{box_name}/**");
-                if dedup.insert(pattern.clone()) {
-                    out.push(pattern);
+                for pattern in [
+                    format!("/msg_center/{owner_token}/box/{box_name}/**"),
+                    format!("/msg_center/{owner_token}/{box_name}/**"),
+                ] {
+                    if dedup.insert(pattern.clone()) {
+                        out.push(pattern);
+                    }
                 }
             }
         }
@@ -1382,9 +1386,9 @@ impl AIAgent {
     fn msg_center_event_name_to_box_kind(raw_name: &str) -> Option<BoxKind> {
         let normalized = raw_name.trim().to_ascii_lowercase().replace('-', "_");
         match normalized.as_str() {
-            "inbox" => Some(BoxKind::Inbox),
-            "group_inbox" => Some(BoxKind::GroupInbox),
-            "request_box" => Some(BoxKind::RequestBox),
+            "in" | "inbox" => Some(BoxKind::Inbox),
+            "group_in" | "group_inbox" => Some(BoxKind::GroupInbox),
+            "request" | "request_box" => Some(BoxKind::RequestBox),
             _ => None,
         }
     }
@@ -1459,7 +1463,9 @@ impl AIAgent {
                 .get(index + 1)
                 .and_then(|box_name| Self::msg_center_event_name_to_box_kind(box_name));
         }
-        None
+        parts
+            .get(2)
+            .and_then(|box_name| Self::msg_center_event_name_to_box_kind(box_name))
     }
 
     fn append_all_msg_center_boxes_updated(target: &mut Vec<BoxKind>) {

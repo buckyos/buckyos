@@ -1098,20 +1098,29 @@ fn build_bind_workspace_tool(env: &CliRuntimeEnv) -> Result<BindWorkspaceTool, A
     })))
 }
 
+fn build_cli_file_tool_config(env: &CliRuntimeEnv) -> FileToolConfig {
+    let mut cfg = FileToolConfig::new(env.current_dir.clone());
+    if !env.has_agent_env {
+        cfg.allowed_read_roots.clear();
+        cfg.allowed_write_roots.clear();
+    }
+    cfg
+}
+
 fn build_read_file_tool(env: &CliRuntimeEnv) -> ReadFileTool {
-    ReadFileTool::new(FileToolConfig::new(env.current_dir.clone()))
+    ReadFileTool::new(build_cli_file_tool_config(env))
 }
 
 fn build_write_file_tool(env: &CliRuntimeEnv) -> WriteFileTool {
     WriteFileTool::new(
-        FileToolConfig::new(env.current_dir.clone()),
+        build_cli_file_tool_config(env),
         Arc::new(NoopFileWriteAudit),
     )
 }
 
 fn build_edit_file_tool(env: &CliRuntimeEnv) -> EditFileTool {
     EditFileTool::new(
-        FileToolConfig::new(env.current_dir.clone()),
+        build_cli_file_tool_config(env),
         Arc::new(NoopFileWriteAudit),
     )
 }

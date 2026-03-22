@@ -310,11 +310,118 @@ fn parse_shell_commands(root: &Element) -> Vec<String> {
 }
 
 fn split_shell_command_lines(raw: &str) -> Vec<String> {
-    raw.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect()
+    let mut commands = Vec::new();
+    let mut current = Vec::new();
+    let mut heredoc = None;
+
+    for raw_line in raw.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if let Some(state) = heredoc.as_ref() {
+            let normalized = normalize_heredoc_line(line, state);
+            if normalized.trim() == state.delimiter {
+                current.push(state.delimiter.clone());
+                commands.push(current.join("\n"));
+                current.clear();
+                heredoc = None;
+            } else {
+                current.push(normalized);
+            }
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        current.push(trimmed.to_string());
+        if let Some(state) = parse_heredoc_state(line) {
+            heredoc = Some(state);
+        } else {
+            commands.push(current.join("\n"));
+            current.clear();
+        }
+    }
+
+    if !current.is_empty() {
+        commands.push(current.join("\n"));
+    }
+
+    commands
+}
+
+#[derive(Clone, Debug)]
+struct HeredocState {
+    delimiter: String,
+    strip_tabs: bool,
+    indent_prefix: String,
+}
+
+fn parse_heredoc_state(line: &str) -> Option<HeredocState> {
+    let trimmed = line.trim();
+    for (idx, _) in trimmed.match_indices("<<") {
+        let mut rest = &trimmed[idx + 2..];
+        if rest.starts_with('<') {
+            continue;
+        }
+
+        let strip_tabs = rest.starts_with('-');
+        if strip_tabs {
+            rest = &rest[1..];
+        }
+
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            continue;
+        }
+
+        let delimiter = parse_heredoc_delimiter(rest)?;
+        return Some(HeredocState {
+            delimiter,
+            strip_tabs,
+            indent_prefix: leading_whitespace_prefix(line).to_string(),
+        });
+    }
+    None
+}
+
+fn parse_heredoc_delimiter(raw: &str) -> Option<String> {
+    let mut chars = raw.chars();
+    let first = chars.next()?;
+    if first == '\'' || first == '"' {
+        let end = raw[1..].find(first)?;
+        let delimiter = &raw[1..1 + end];
+        if delimiter.is_empty() {
+            return None;
+        }
+        return Some(delimiter.to_string());
+    }
+
+    let delimiter = raw.split_whitespace().next()?.trim();
+    if delimiter.is_empty() {
+        None
+    } else {
+        Some(delimiter.to_string())
+    }
+}
+
+fn leading_whitespace_prefix(line: &str) -> &str {
+    let indent_len = line.find(|ch: char| !ch.is_whitespace()).unwrap_or(line.len());
+    &line[..indent_len]
+}
+
+fn normalize_heredoc_line(line: &str, state: &HeredocState) -> String {
+    let mut normalized = if line.starts_with(state.indent_prefix.as_str()) {
+        &line[state.indent_prefix.len()..]
+    } else {
+        line
+    };
+
+    if state.strip_tabs {
+        normalized = normalized.trim_start_matches('\t');
+    }
+
+    normalized.to_string()
 }
 
 fn parse_set_memory(root: &Element) -> Result<HashMap<String, String>, String> {
@@ -652,5 +759,71 @@ end"#;
             }
             other => panic!("expected structured call action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn behavior_result_accepts_shell_commands_with_heredoc_payload() {
+        let raw = r#"<response>
+  <thinking>Need to perform a minimal self-check command since claiming completion; will run a small python validation to ensure key files/strings exist, then record result note.</thinking>
+  <reply>Running a quick self-check to validate required files/keywords exist and documenting the result for traceability.</reply>
+  <shell_commands>
+<![CDATA[
+        cd /opt/buckyos/data/home/devtest/.local/share/jarvis/workspaces/ws-19d12b01a2b-1352f
+        python - <<'PY'
+from pathlib import Path
+req = ["index.html","script.js","style.css"]
+for f in req:
+    assert Path(f).exists(), f"missing {f}"
+data = Path("script.js").read_text(encoding="utf-8")
+for key in ["canConnect","generateBoard","renderBoard","restartBtn"]:
+    assert key in data, f"missing {key}"
+print("self-check ok")
+PY
+]]>
+  </shell_commands>
+  <actions mode="all">
+    <command>todo note T001 "Self-check: basic file/keyword validation passed (python asserts for index.html/script.js/style.css, canConnect/generateBoard/renderBoard/restartBtn)." --kind=result</command>
+  </actions>
+</response>"#;
+
+        let parsed = BehaviorLLMResult::from_xml_str(raw).expect("heredoc shell_commands xml");
+        assert_eq!(parsed.shell_commands.len(), 2);
+        assert_eq!(
+            parsed.shell_commands[0],
+            "cd /opt/buckyos/data/home/devtest/.local/share/jarvis/workspaces/ws-19d12b01a2b-1352f"
+        );
+        assert_eq!(
+            parsed.shell_commands[1],
+            r#"python - <<'PY'
+from pathlib import Path
+req = ["index.html","script.js","style.css"]
+for f in req:
+    assert Path(f).exists(), f"missing {f}"
+data = Path("script.js").read_text(encoding="utf-8")
+for key in ["canConnect","generateBoard","renderBoard","restartBtn"]:
+    assert key in data, f"missing {key}"
+print("self-check ok")
+PY"#
+        );
+        assert_eq!(parsed.actions.mode, "all");
+        assert_eq!(parsed.actions.cmds.len(), 1);
+        match &parsed.actions.cmds[0] {
+            DoAction::Exec(cmd) => assert!(cmd.contains("todo note T001")),
+            other => panic!("expected exec action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn behavior_result_accepts_shell_commands_with_heredoc_variants() {
+        let raw = "<response>\r\n  <shell_commands><![CDATA[\r\n\tpython - <<-'PY'\r\n\tprint('line-1')\r\n\t\r\n\tprint('line-2')\r\n\tPY\r\n\techo done\r\n  ]]></shell_commands>\r\n</response>";
+
+        let parsed =
+            BehaviorLLMResult::from_xml_str(raw).expect("heredoc variants should parse");
+        assert_eq!(parsed.shell_commands.len(), 2);
+        assert_eq!(
+            parsed.shell_commands[0],
+            "python - <<-'PY'\nprint('line-1')\n\nprint('line-2')\nPY"
+        );
+        assert_eq!(parsed.shell_commands[1], "echo done");
     }
 }
