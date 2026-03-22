@@ -536,18 +536,42 @@ def _extract_versions_from_text(version_text: str) -> tuple[str, str]:
     return short_version, full_version
 
 
+def _extract_versions_from_binary_strings(candidate: Path) -> tuple[str, str]:
+    completed = subprocess.run(
+        ["strings", "-a", str(candidate)],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    strings_text = completed.stdout.strip()
+    if completed.returncode != 0:
+        err = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(f"strings failed with exit code {completed.returncode}: {err}")
+    if not strings_text:
+        raise RuntimeError("strings produced no output")
+    return _extract_versions_from_text(strings_text)
+
+
 def _version_from_node_daemon(target: TargetScript) -> tuple[str, str]:
     errors: list[str] = []
     for candidate in _node_daemon_candidates(target.build_root, target):
         if not candidate.exists():
             continue
-        completed = subprocess.run(
-            [str(candidate), "--version"],
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        try:
+            completed = subprocess.run(
+                [str(candidate), "--version"],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            try:
+                return _extract_versions_from_binary_strings(candidate)
+            except RuntimeError as strings_exc:
+                errors.append(f"{candidate}: exec failed ({exc}); strings fallback failed: {strings_exc}")
+                continue
         version_text = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part).strip()
         if completed.returncode != 0:
             errors.append(f"{candidate}: exited with {completed.returncode}: {version_text}")
