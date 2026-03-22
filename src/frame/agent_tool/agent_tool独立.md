@@ -33,7 +33,7 @@ OpenDAN需要保留的工具：
 相关单元测试，能移过来的也移过来
 
 
-## 独立后OpenDAN Runtime的结果
+## AgentTool独立后OpenDAN Runtime的结果
 
 - runtime里的tool_calls和action都变得固定，不再需要扩展
 - 所有的skills + tools的扩展都通过bash的实质扩展实现

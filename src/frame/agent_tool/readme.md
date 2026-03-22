@@ -67,6 +67,12 @@ AgentTool CLI 可执行文件启动
 
 借 AgentTool 实体化的机会，统一设计工具调用返回结果的协议。
 
+协议文档已单独整理，见：
+
+- [agent_tool_result_protocol.md](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/agent_tool_result_protocol.md)
+
+本节只保留设计动机。具体字段定义、兼容规则、`output/detail` 分工、`exec_bash` 的判定规则都以单独文档为准。
+
 ### 动机
 
 当前 Bash 环境下只能依赖 stdout / stderr 获取结果，格式不统一。自有的 AgentTool CLI 化后，我们可以要求所有自有工具遵循统一的返回协议，带来两个关键好处：
@@ -86,24 +92,13 @@ AgentTool CLI 可执行文件启动
 
 **用户授权本质上就是一种"非同步完成"的工具调用——和长时间 build 命令在结构上完全同构。** Agent 不需要知道它在等什么，只需要知道"这个操作还没完成，我先去做别的"。
 
-### 协议定义
+### 当前协议要点
 
-```jsonc
-{
-  "status": "success" | "error" | "pending",
-
-  // pending 时的字段
-  "pending_reason": "long_running" | "user_approval" | "external_callback",
-  "task_id": "xxx",                          // pending 时必有，用于后续 poll
-  "summary": "等待用户授权: 删除 /data/cache/*",  // 人类可读的状态摘要
-  "estimated_wait": "user_action",           // 或 "~120s"
-  "check_after": 5,                          // 建议多少秒后 poll
-
-  // success / error 时的字段
-  "detail": { ... },                         // 结构化的结果数据
-  "summary": "已删除 32 个文件"               // 人类可读的结果摘要
-}
-```
+- 顶层协议对象统一为 `AgentToolResult`
+- `output` 是 bash 主输出
+- `detail` 是内置工具结构化数据
+- `pending_reason` 当前统一使用 `long_running | user_approval | wait_for_install`
+- 历史值 `external_callback` 仅作为兼容别名继续接受
 
 ### Agent 决策流程
 
@@ -112,7 +107,7 @@ AgentTool CLI 可执行文件启动
 3. 看 `pending_reason` 决定行为策略：
    - `user_approval` → 催也没用，优先去做其他独立任务
    - `long_running` → 按 `check_after` 周期 poll
-   - `external_callback` → 等待外部系统回调
+   - `wait_for_install` → 等待外部流程完成
 4. 在后续 loop 中调用 `check_task <task_id>` 获取最终结果
 
 ### 状态可流转

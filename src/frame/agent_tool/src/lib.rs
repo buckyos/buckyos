@@ -180,6 +180,8 @@ impl<'de> Deserialize<'de> for ActionCall {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum DoAction {
+    //One line bash command
+    //TODO: 确保是一行
     Exec(String),
     Call(ActionCall),
 }
@@ -217,7 +219,84 @@ pub struct DoActionResults {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pwd: Option<String>,
-    pub details: HashMap<String, Json>,
+    pub details: HashMap<String, ActionExecutionRecord>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ActionExecutionSkipped {
+    pub count: usize,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ActionExecutionMeta {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Json>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ActionExecutionRecord {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub action: ActionExecutionMeta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<AgentToolResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<ActionExecutionSkipped>,
+}
+
+impl ActionExecutionRecord {
+    pub fn new(action: ActionExecutionMeta) -> Self {
+        Self {
+            action,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
+        let tool = tool.into();
+        self.tool = (!tool.trim().is_empty()).then_some(tool);
+        self
+    }
+
+    pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
+        let prompt = prompt.into();
+        self.prompt = (!prompt.trim().is_empty()).then_some(prompt);
+        self
+    }
+
+    pub fn with_result(mut self, result: AgentToolResult) -> Self {
+        self.ok = true;
+        self.result = Some(result);
+        self
+    }
+
+    pub fn with_error(mut self, error: impl Into<String>) -> Self {
+        let error = error.into();
+        self.ok = false;
+        self.error = (!error.trim().is_empty()).then_some(error);
+        self
+    }
+
+    pub fn with_skipped(mut self, count: usize, reason: impl Into<String>) -> Self {
+        self.skipped = Some(ActionExecutionSkipped {
+            count,
+            reason: reason.into(),
+        });
+        self
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -280,13 +359,54 @@ pub fn normalize_tool_name(name: &str) -> String {
     name.trim().to_string()
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentToolStatus {
+    #[default]
+    Success,
+    Error,
+    Pending,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentToolPendingReason {
+    LongRunning,
+    UserApproval,
+    #[serde(alias = "external_callback")]
+    WaitForInstall,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentToolResult {
-    pub cmd_line: String,
-    pub result: Option<String>,
-    pub stdout: Option<String>,
-    pub stderr: Option<String>,
+    #[serde(default)]
+    pub status: AgentToolStatus,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(rename = "detail", default = "default_json_object")]
     pub details: Json,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd_args: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_reason: Option<AgentToolPendingReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_after: Option<u64>,
+    #[serde(skip)]
+    pub cmd_line: String,
+    #[serde(skip)]
+    pub stdout: Option<String>,
+    #[serde(skip)]
+    pub stderr: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -302,7 +422,8 @@ pub enum CliStatus {
 pub enum CliPendingReason {
     LongRunning,
     UserApproval,
-    ExternalCallback,
+    #[serde(alias = "external_callback")]
+    WaitForInstall,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -376,13 +497,58 @@ fn truncate_prompt_stream_lines(content: &str, max_lines: usize) -> String {
 
 impl AgentToolResult {
     pub fn from_details(details: Json) -> Self {
+        let status = details
+            .get("status")
+            .and_then(Json::as_str)
+            .and_then(parse_agent_tool_status);
+        let summary = details
+            .get("summary")
+            .and_then(Json::as_str)
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let return_code = details
+            .get("return_code")
+            .or_else(|| details.get("exit_code"))
+            .and_then(Json::as_i64)
+            .and_then(|value| i32::try_from(value).ok());
+        let output = details
+            .get("output")
+            .and_then(Json::as_str)
+            .map(|value| value.to_string());
+        let task_id = details
+            .get("task_id")
+            .and_then(Json::as_str)
+            .map(|value| value.to_string());
+        let partial_output = details
+            .get("partial_output")
+            .and_then(Json::as_str)
+            .map(|value| value.to_string());
+        let pending_reason = details
+            .get("pending_reason")
+            .and_then(Json::as_str)
+            .and_then(parse_agent_tool_pending_reason);
+        let check_after = details.get("check_after").and_then(Json::as_u64);
         Self {
+            status: status.unwrap_or(AgentToolStatus::Success),
+            summary,
+            output,
             cmd_line: String::new(),
-            result: None,
             stdout: None,
             stderr: None,
             details,
+            return_code,
+            cmd_name: None,
+            cmd_args: None,
+            task_id,
+            partial_output,
+            pending_reason,
+            check_after,
         }
+    }
+
+    pub fn with_status(mut self, status: AgentToolStatus) -> Self {
+        self.status = status;
+        self
     }
 
     pub fn with_cmd_line(mut self, cmd_line: impl Into<String>) -> Self {
@@ -391,7 +557,53 @@ impl AgentToolResult {
     }
 
     pub fn with_result(mut self, result: impl Into<String>) -> Self {
-        self.result = Some(result.into());
+        self.summary = result.into();
+        self
+    }
+
+    pub fn with_output(mut self, output: impl Into<String>) -> Self {
+        let output = output.into();
+        self.output = (!output.trim().is_empty()).then_some(output);
+        self
+    }
+
+    pub fn with_return_code(mut self, return_code: i32) -> Self {
+        self.return_code = Some(return_code);
+        self
+    }
+
+    pub fn with_command_metadata(
+        mut self,
+        cmd_name: impl Into<String>,
+        cmd_args: impl Into<String>,
+    ) -> Self {
+        let cmd_name = cmd_name.into();
+        let cmd_args = cmd_args.into();
+        self.cmd_name = (!cmd_name.trim().is_empty()).then_some(cmd_name);
+        self.cmd_args = (!cmd_args.trim().is_empty()).then_some(cmd_args);
+        self
+    }
+
+    pub fn with_command_metadata_from_line(mut self, cmd_line: &str) -> Self {
+        if self.cmd_name.is_some() || self.cmd_args.is_some() {
+            return self;
+        }
+
+        let tokens = tokenize_bash_command_line(cmd_line)
+            .ok()
+            .filter(|items| !items.is_empty())
+            .unwrap_or_else(|| {
+                cmd_line
+                    .split_whitespace()
+                    .map(|item| item.to_string())
+                    .collect()
+            });
+        if let Some(first) = tokens.first() {
+            self.cmd_name = Some(first.clone());
+            if tokens.len() > 1 {
+                self.cmd_args = Some(tokens[1..].join(" "));
+            }
+        }
         self
     }
 
@@ -407,17 +619,10 @@ impl AgentToolResult {
 
     pub fn render_prompt(&self) -> String {
         let mut lines = Vec::<String>::new();
-        let ok = self
-            .details
-            .get("ok")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let ok = self.status != AgentToolStatus::Error;
         let summary = match (
             self.cmd_line.trim().is_empty(),
-            self.result
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty()),
+            Some(self.summary.trim()).filter(|value| !value.is_empty()),
         ) {
             (false, Some(result)) => format!("{} => {}", self.cmd_line.trim(), result),
             (false, None) => self.cmd_line.trim().to_string(),
@@ -426,7 +631,16 @@ impl AgentToolResult {
         };
         lines.push(summary);
 
-        if let Some(stdout) = self
+        if let Some(output) = self
+            .output
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            lines.push("```output".to_string());
+            lines.push(truncate_prompt_stream_lines(output, PROMPT_STDIO_MAX_LINES));
+            lines.push("```".to_string());
+        } else if let Some(stdout) = self
             .stdout
             .as_deref()
             .map(str::trim)
@@ -469,38 +683,26 @@ impl std::fmt::Display for AgentToolResult {
 impl CliResultEnvelope {
     pub fn from_tool_result(tool_name: &str, result: AgentToolResult) -> Self {
         let detail = result.details.clone();
-        let status = if detail.get("status").and_then(Json::as_str) == Some("pending") {
-            CliStatus::Pending
-        } else {
-            CliStatus::Success
-        };
         Self {
-            status,
-            summary: result
-                .result
-                .clone()
-                .unwrap_or_else(|| "completed".to_string()),
+            status: result.status.into(),
+            summary: if result.summary.trim().is_empty() {
+                "completed".to_string()
+            } else {
+                result.summary.clone()
+            },
             tool: Some(tool_name.to_string()),
             cmd_line: (!result.cmd_line.trim().is_empty()).then_some(result.cmd_line),
             detail,
             stdout: result.stdout,
             stderr: result.stderr,
-            pending_reason: result
-                .details
-                .get("pending_reason")
-                .and_then(Json::as_str)
-                .and_then(parse_cli_pending_reason),
-            task_id: result
-                .details
-                .get("task_id")
-                .and_then(Json::as_str)
-                .map(|value| value.to_string()),
+            pending_reason: result.pending_reason.map(Into::into),
+            task_id: result.task_id,
             estimated_wait: result
                 .details
                 .get("estimated_wait")
                 .and_then(Json::as_str)
                 .map(|value| value.to_string()),
-            check_after: result.details.get("check_after").and_then(Json::as_u64),
+            check_after: result.check_after,
         }
     }
 
@@ -539,10 +741,73 @@ impl CliResultEnvelope {
             check_after: None,
         }
     }
+
+    pub fn into_tool_result(self) -> AgentToolResult {
+        let Self {
+            status,
+            summary,
+            tool,
+            cmd_line,
+            detail,
+            stdout,
+            stderr,
+            pending_reason,
+            task_id,
+            estimated_wait,
+            check_after,
+        } = self;
+        let mut detail = detail;
+        if let Some(map) = detail.as_object_mut() {
+            if let Some(tool) = tool.as_ref() {
+                map.entry("tool".to_string())
+                    .or_insert_with(|| Json::String(tool.clone()));
+            }
+            if let Some(cmd_line) = cmd_line.as_ref() {
+                map.entry("cmd_line".to_string())
+                    .or_insert_with(|| Json::String(cmd_line.clone()));
+            }
+            if let Some(estimated_wait) = estimated_wait.as_ref() {
+                map.entry("estimated_wait".to_string())
+                    .or_insert_with(|| Json::String(estimated_wait.clone()));
+            }
+        }
+
+        let mut result = AgentToolResult::from_details(detail)
+            .with_status(status.into())
+            .with_result(summary);
+        result.cmd_line = cmd_line.unwrap_or_default();
+        result.output = result.output.or_else(|| {
+            stdout
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+                .or_else(|| {
+                    stderr
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string())
+                })
+        });
+        result.stdout = stdout.clone();
+        result.stderr = stderr.clone();
+        result.task_id = task_id;
+        result.check_after = check_after;
+        result.partial_output = result.partial_output.or_else(|| {
+            stdout
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+        });
+        result.pending_reason = pending_reason.map(Into::into);
+        result
+    }
 }
 
 pub fn render_cli_output(payload: &CliResultEnvelope, exit_code: i32) -> CliRunOutput {
-    let stdout = serde_json::to_string(payload).unwrap_or_else(|_| {
+    let stdout = serde_json::to_string(&payload.clone().into_tool_result()).unwrap_or_else(|_| {
         "{\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
             .to_string()
     });
@@ -572,12 +837,61 @@ pub fn cli_error_kind(err: &AgentToolError) -> &'static str {
     }
 }
 
-fn parse_cli_pending_reason(raw: &str) -> Option<CliPendingReason> {
+fn parse_agent_tool_status(raw: &str) -> Option<AgentToolStatus> {
     match raw.trim() {
-        "long_running" => Some(CliPendingReason::LongRunning),
-        "user_approval" => Some(CliPendingReason::UserApproval),
-        "external_callback" => Some(CliPendingReason::ExternalCallback),
+        "success" => Some(AgentToolStatus::Success),
+        "error" => Some(AgentToolStatus::Error),
+        "pending" => Some(AgentToolStatus::Pending),
         _ => None,
+    }
+}
+
+fn parse_agent_tool_pending_reason(raw: &str) -> Option<AgentToolPendingReason> {
+    match raw.trim() {
+        "long_running" => Some(AgentToolPendingReason::LongRunning),
+        "user_approval" => Some(AgentToolPendingReason::UserApproval),
+        "wait_for_install" | "external_callback" => Some(AgentToolPendingReason::WaitForInstall),
+        _ => None,
+    }
+}
+
+impl From<AgentToolStatus> for CliStatus {
+    fn from(value: AgentToolStatus) -> Self {
+        match value {
+            AgentToolStatus::Success => CliStatus::Success,
+            AgentToolStatus::Error => CliStatus::Error,
+            AgentToolStatus::Pending => CliStatus::Pending,
+        }
+    }
+}
+
+impl From<CliStatus> for AgentToolStatus {
+    fn from(value: CliStatus) -> Self {
+        match value {
+            CliStatus::Success => AgentToolStatus::Success,
+            CliStatus::Error => AgentToolStatus::Error,
+            CliStatus::Pending => AgentToolStatus::Pending,
+        }
+    }
+}
+
+impl From<AgentToolPendingReason> for CliPendingReason {
+    fn from(value: AgentToolPendingReason) -> Self {
+        match value {
+            AgentToolPendingReason::LongRunning => CliPendingReason::LongRunning,
+            AgentToolPendingReason::UserApproval => CliPendingReason::UserApproval,
+            AgentToolPendingReason::WaitForInstall => CliPendingReason::WaitForInstall,
+        }
+    }
+}
+
+impl From<CliPendingReason> for AgentToolPendingReason {
+    fn from(value: CliPendingReason) -> Self {
+        match value {
+            CliPendingReason::LongRunning => AgentToolPendingReason::LongRunning,
+            CliPendingReason::UserApproval => AgentToolPendingReason::UserApproval,
+            CliPendingReason::WaitForInstall => AgentToolPendingReason::WaitForInstall,
+        }
     }
 }
 

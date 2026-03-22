@@ -28,7 +28,6 @@ use crate::buildin_tool::{
 use crate::workspace::workshop::{AgentWorkshopConfig, WorkshopToolConfig};
 
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 32 * 1024;
-const EXEC_BASH_SUCCESS_DETAIL_LINES: usize = 16;
 const EXEC_BASH_TMUX_POLL_MS: u64 = 120;
 const EXEC_BASH_CAPTURE_SCROLLBACK_LINES: &str = "-6000";
 const EXEC_BASH_TMUX_SESSION_PREFIX: &str = "od_";
@@ -243,64 +242,26 @@ impl AgentTool for ExecBashTool {
         match run_result {
             ExecBashRunOutcome::Completed(run_result) => {
                 self.persist_session_pwd(&session_id, &run_result.pwd).await;
-                let pwd = run_result.pwd.clone();
-                let (stdout, stdout_truncated) = truncate_bytes(
-                    &run_result.stdout,
+                if let Some(parsed) = decode_exec_bash_json_result(&run_result, &command) {
+                    return Ok(parsed);
+                }
+                Ok(build_default_exec_bash_result(
+                    &run_result,
+                    &command,
+                    &session_id,
                     self.cfg.max_output_bytes.max(DEFAULT_MAX_OUTPUT_BYTES),
-                );
-                let (stderr, stderr_truncated) = truncate_bytes(
-                    &run_result.stderr,
-                    self.cfg.max_output_bytes.max(DEFAULT_MAX_OUTPUT_BYTES),
-                );
-                let ok = run_result.exit_code == 0;
-                let details = if ok {
-                    tail_lines_limited(&stdout, EXEC_BASH_SUCCESS_DETAIL_LINES)
-                } else {
-                    stderr.clone()
-                };
-
-                let details_json = json!({
-                    "status": if ok { "success" } else { "error" },
-                    "ok": ok,
-                    "exit_code": run_result.exit_code,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "details": details,
-                    "stdout_truncated": stdout_truncated,
-                    "stderr_truncated": stderr_truncated,
-                    "duration_ms": run_result.duration_ms,
-                    "command": command,
-                    "cwd": pwd.to_string_lossy().to_string(),
-                    "pwd": pwd.to_string_lossy().to_string(),
-                    "session_id": session_id,
-                    "tmux_session": run_result.tmux_session,
-                    "engine": run_result.engine,
-                    "line_results": run_result.line_results,
-                });
-                let summary = if ok {
-                    extract_single_tool_prompt_summary(&run_result)
-                        .unwrap_or_else(|| format!("OK (exit=0, {}ms)", run_result.duration_ms))
-                } else {
-                    format!("FAILED (exit={})", run_result.exit_code)
-                };
-                let stdout_prompt = (!stdout.trim().is_empty()).then_some(stdout.clone());
-                let stderr_prompt = (!stderr.trim().is_empty()).then_some(stderr.clone());
-                Ok(AgentToolResult::from_details(details_json)
-                    .with_cmd_line(command)
-                    .with_result(summary)
-                    .with_stdout(stdout_prompt)
-                    .with_stderr(stderr_prompt))
+                ))
             }
             ExecBashRunOutcome::Pending(pending_result) => {
                 self.persist_session_pwd(&session_id, &pending_result.pwd)
                     .await;
                 let pwd = pending_result.pwd.clone();
-                let details_json = json!({
+                let stdout_prompt = (!pending_result.partial_output.trim().is_empty())
+                    .then_some(pending_result.partial_output.clone());
+                Ok(AgentToolResult::from_details(json!({
                     "status": "pending",
-                    "ok": true,
-                    "pending_reason": "long_running",
                     "task_id": pending_result.task_id,
-                    "partial_output": pending_result.partial_output,
+                    "pending_reason": "long_running",
                     "duration_ms": pending_result.duration_ms,
                     "command": command,
                     "cwd": pwd.to_string_lossy().to_string(),
@@ -310,16 +271,16 @@ impl AgentTool for ExecBashTool {
                     "engine": pending_result.engine,
                     "line_results": pending_result.line_results,
                     "check_after": EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS,
-                });
-                let stdout_prompt = (!pending_result.partial_output.trim().is_empty())
-                    .then_some(pending_result.partial_output.clone());
-                Ok(AgentToolResult::from_details(details_json)
-                    .with_cmd_line(command)
-                    .with_result(format!(
-                        "PENDING (long_running, check_after={}s)",
-                        EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS
-                    ))
-                    .with_stdout(stdout_prompt))
+                }))
+                .with_status(::agent_tool::AgentToolStatus::Pending)
+                .with_cmd_line(&command)
+                .with_result(format!(
+                    "PENDING (long_running, check_after={}s)",
+                    EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS
+                ))
+                .with_return_code(0)
+                .with_command_metadata_from_line(&command)
+                .with_stdout(stdout_prompt))
             }
         }
     }
@@ -329,6 +290,7 @@ struct ExecBashRunResult {
     exit_code: i32,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    mixed_output: String,
     duration_ms: u64,
     pwd: PathBuf,
     tmux_session: String,
@@ -346,6 +308,7 @@ struct ExecCommandLine {
 struct ExecBashAggregateState {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    mixed_output: String,
     duration_ms: u64,
     tmux_session: String,
     used_tmux: bool,
@@ -359,6 +322,7 @@ impl ExecBashAggregateState {
         Self {
             stdout: Vec::new(),
             stderr: Vec::new(),
+            mixed_output: String::new(),
             duration_ms: 0,
             tmux_session: String::new(),
             used_tmux: false,
@@ -409,6 +373,7 @@ struct ExecBashTmuxRunResult {
     exit_code: i32,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    mixed_output: String,
     duration_ms: u64,
     tmux_session: String,
 }
@@ -510,6 +475,7 @@ impl ExecBashTool {
             exit_code,
             stdout: state.stdout,
             stderr: state.stderr,
+            mixed_output: state.mixed_output,
             duration_ms: state.duration_ms,
             pwd: state.current_pwd,
             tmux_session: state.tmux_session,
@@ -530,6 +496,7 @@ impl ExecBashTool {
         state.duration_ms = state.duration_ms.saturating_add(run_result.duration_ms);
         state.stdout.extend_from_slice(&run_result.stdout);
         state.stderr.extend_from_slice(&run_result.stderr);
+        append_text_block(&mut state.mixed_output, run_result.mixed_output.as_str());
         state.current_pwd = self
             .resolve_tmux_pane_cwd(session_id, state.current_pwd.as_path())
             .await;
@@ -685,7 +652,12 @@ impl ExecBashTool {
             ))
         })?;
 
-        clear_tmux_history(&tmux_target).await?;
+        if let Err(err) = clear_tmux_history(&tmux_target).await {
+            warn!(
+                "tmux clear-history failed before exec: session={} target={} err={}",
+                session_id, tmux_target, err
+            );
+        }
 
         let invoke = format!(
             ". {}",
@@ -720,10 +692,11 @@ impl ExecBashTool {
             }
             None => {
                 let pane = capture_tmux_pane_output(&handle.tmux_target).await?;
+                let partial_output = extract_tmux_run_output(pane.as_str(), handle.run_id.as_str());
                 Ok(ExecBashTmuxRunState::Pending(ExecBashTmuxPendingRun {
                     duration_ms: handle.started.elapsed().as_millis() as u64,
                     partial_output: tail_lines_limited(
-                        pane.trim_end(),
+                        partial_output.trim_end(),
                         EXEC_BASH_PENDING_PARTIAL_LINES,
                     ),
                     handle,
@@ -1379,6 +1352,37 @@ fn shell_single_quote(raw: &str) -> String {
     format!("'{}'", raw.replace('\'', "'\"'\"'"))
 }
 
+fn append_text_block(target: &mut String, block: &str) {
+    let block = block.trim();
+    if block.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        target.push('\n');
+    }
+    target.push_str(block);
+}
+
+fn extract_tmux_run_output(pane: &str, run_id: &str) -> String {
+    let begin_marker = format!("__OD_BEGIN__{run_id}");
+    let end_marker = format!("__OD_EXIT__{run_id}:");
+    let mut output = pane;
+
+    if let Some(begin_pos) = output.find(begin_marker.as_str()) {
+        output = &output[begin_pos + begin_marker.len()..];
+        output = output
+            .split_once('\n')
+            .map(|(_, rest)| rest)
+            .unwrap_or_default();
+    }
+
+    if let Some(end_pos) = output.rfind(end_marker.as_str()) {
+        output = &output[..end_pos];
+    }
+
+    output.trim().to_string()
+}
+
 fn build_tmux_exec_script(
     run_id: &str,
     stdout_path: &Path,
@@ -1698,6 +1702,7 @@ async fn read_tmux_run_result(
     exit_code: i32,
 ) -> Result<ExecBashTmuxRunResult, AgentToolError> {
     sleep(Duration::from_millis(30)).await;
+    let pane = capture_tmux_pane_output(&handle.tmux_target).await?;
     let stdout = fs::read(&handle.stdout_path).await.map_err(|err| {
         AgentToolError::ExecFailed(format!(
             "read stdout log `{}` failed: {err}",
@@ -1714,6 +1719,7 @@ async fn read_tmux_run_result(
         exit_code,
         stdout,
         stderr,
+        mixed_output: extract_tmux_run_output(pane.as_str(), handle.run_id.as_str()),
         duration_ms: handle.started.elapsed().as_millis() as u64,
         tmux_session: handle.tmux_session.clone(),
     })
@@ -1799,6 +1805,100 @@ fn extract_single_tool_prompt_summary(_run_result: &ExecBashRunResult) -> Option
     None
 }
 
+fn decode_exec_bash_json_result(
+    run_result: &ExecBashRunResult,
+    command: &str,
+) -> Option<AgentToolResult> {
+    if !is_internal_agent_tool_command(command) {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&run_result.stdout);
+    let payload = stdout.trim();
+    if payload.is_empty() {
+        return None;
+    }
+
+    let result = serde_json::from_str::<AgentToolResult>(payload).ok()?;
+    Some(
+        result
+            .with_cmd_line(command)
+            .with_command_metadata_from_line(command)
+            .with_return_code(run_result.exit_code),
+    )
+}
+
+fn build_default_exec_bash_result(
+    run_result: &ExecBashRunResult,
+    command: &str,
+    session_id: &str,
+    max_output_bytes: usize,
+) -> AgentToolResult {
+    let pwd = run_result.pwd.clone();
+    let (stdout, stdout_truncated) = truncate_bytes(&run_result.stdout, max_output_bytes);
+    let (stderr, stderr_truncated) = truncate_bytes(&run_result.stderr, max_output_bytes);
+    let ok = run_result.exit_code == 0;
+    let summary = if ok {
+        extract_single_tool_prompt_summary(run_result)
+            .unwrap_or_else(|| format!("OK (exit=0, {}ms)", run_result.duration_ms))
+    } else {
+        format!("FAILED (exit={})", run_result.exit_code)
+    };
+    let stdout_prompt = (!stdout.trim().is_empty()).then_some(stdout.clone());
+    let stderr_prompt = (!stderr.trim().is_empty()).then_some(stderr.clone());
+
+    AgentToolResult::from_details(json!({
+        "status": if ok { "success" } else { "error" },
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+        "duration_ms": run_result.duration_ms,
+        "command": command,
+        "cwd": pwd.to_string_lossy().to_string(),
+        "pwd": pwd.to_string_lossy().to_string(),
+        "session_id": session_id,
+        "tmux_session": run_result.tmux_session,
+        "engine": run_result.engine,
+        "line_results": run_result.line_results,
+        "exit_code": run_result.exit_code,
+    }))
+    .with_cmd_line(command)
+    .with_result(summary)
+    .with_output(run_result.mixed_output.clone())
+    .with_return_code(run_result.exit_code)
+    .with_command_metadata_from_line(command)
+    .with_stdout(stdout_prompt)
+    .with_stderr(stderr_prompt)
+}
+
+fn is_internal_agent_tool_command(command: &str) -> bool {
+    let tokens = match AgentToolManager::parse_bash_command_name(command) {
+        Some(name) => vec![name],
+        None => tokenize_simple_command(command),
+    };
+    let Some(cmd_name) = tokens.first().map(|value| value.trim()) else {
+        return false;
+    };
+    if cmd_name.is_empty() {
+        return false;
+    }
+    if cmd_name == EXEC_BASH_AGENT_TOOL_BIN {
+        return true;
+    }
+    default_agent_cli_tool_names()
+        .iter()
+        .any(|tool_name| tool_name == cmd_name)
+}
+
+fn tokenize_simple_command(command: &str) -> Vec<String> {
+    command
+        .split_whitespace()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
 fn tail_lines_limited(text: &str, max_lines: usize) -> String {
     if max_lines == 0 {
         return String::new();
@@ -1868,6 +1968,7 @@ fn build_exec_bash_pending_task_data(
         "status": "pending",
         "pending_reason": "long_running",
         "summary": summary,
+        "output": partial_output,
         "check_after": EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS,
         "timeout_ms": timeout_ms,
         "duration_ms": duration_ms,
@@ -1907,6 +2008,7 @@ fn build_exec_bash_final_task_data(
         "kind": "tool.exec_bash",
         "status": if run_result.exit_code == 0 { "success" } else { "error" },
         "summary": summary,
+        "output": run_result.mixed_output,
         "timeout_ms": timeout_ms,
         "duration_ms": run_result.duration_ms,
         "command": command,
@@ -1915,6 +2017,7 @@ fn build_exec_bash_final_task_data(
         "session_id": session_id,
         "tmux_session": run_result.tmux_session,
         "engine": run_result.engine,
+        "return_code": run_result.exit_code,
         "exit_code": run_result.exit_code,
         "stdout": stdout,
         "stderr": stderr,

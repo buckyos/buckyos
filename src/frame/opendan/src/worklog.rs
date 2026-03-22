@@ -507,6 +507,57 @@ pub struct WorklogPromptView {
     pub detail: Json,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct WorklogActionPayload {
+    #[serde(default)]
+    pub action_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<AgentToolResult>,
+}
+
+impl WorklogActionPayload {
+    pub fn parse(payload: &Json) -> Option<Self> {
+        serde_json::from_value(payload.clone()).ok()
+    }
+
+    pub fn action_type_text(&self) -> &str {
+        let action_type = self.action_type.trim();
+        if action_type.is_empty() {
+            "action"
+        } else {
+            action_type
+        }
+    }
+
+    pub fn cmd_digest_text(&self) -> Option<&str> {
+        self.cmd_digest
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn result_digest_text(&self) -> Option<&str> {
+        self.result_digest
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorklogRecord {
     pub id: String,
@@ -1695,16 +1746,10 @@ fn render_nested_step_record(record: &WorklogRecord) -> Option<String> {
             ))
         }
         WorklogRecordType::ActionRecord => {
-            let action_type = record
-                .payload
-                .get("action_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("action");
-            let target = record
-                .payload
-                .get("cmd_digest")
-                .or_else(|| record.payload.get("command"))
-                .and_then(|v| v.as_str())
+            let payload = WorklogActionPayload::parse(&record.payload).unwrap_or_default();
+            let action_type = payload.action_type_text();
+            let target = payload
+                .cmd_digest_text()
                 .map(|v| sanitize_digest(v, 120))
                 .or_else(|| extract_record_target(record.payload.as_object()));
             Some(format!(
@@ -1925,18 +1970,10 @@ fn build_prompt_view_by_type(
             })
         }
         WorklogRecordType::ActionRecord => {
-            let action_type = payload
-                .get("action_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("bash");
-            let cmd_digest = payload
-                .get("cmd_digest")
-                .and_then(|v| v.as_str())
-                .unwrap_or("-");
-            let exit_code = payload
-                .get("exit_code")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let payload = WorklogActionPayload::parse(payload).unwrap_or_default();
+            let action_type = payload.action_type_text();
+            let cmd_digest = payload.cmd_digest_text().unwrap_or("-");
+            let exit_code = payload.exit_code.unwrap_or(0);
             Some(WorklogPromptView {
                 digest: sanitize_digest(
                     &format!(
@@ -1950,9 +1987,10 @@ fn build_prompt_view_by_type(
                     "action_type": action_type,
                     "cmd": sanitize_digest(cmd_digest, 200),
                     "exit_code": exit_code,
-                    "stderr_digest": payload.get("stderr_digest").cloned(),
-                    "raw_log_artifact": payload.get("raw_log_artifact").cloned(),
-                    "files_changed": payload.get("files_changed").cloned(),
+                    "stderr_digest": payload.stderr_digest,
+                    "cwd": payload.cwd,
+                    "tool_name": payload.tool_name,
+                    "tool_result": payload.tool_result,
                 }),
             })
         }

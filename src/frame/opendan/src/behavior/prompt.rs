@@ -20,7 +20,8 @@ use crate::agent_tool::AgentMemory;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::worklog::{
-    WorklogListOptions, WorklogRecord, WorklogRecordType, WorklogService, WorklogToolConfig,
+    WorklogActionPayload, WorklogListOptions, WorklogRecord, WorklogRecordType, WorklogService,
+    WorklogToolConfig,
 };
 use crate::workspace::agent_skill::{
     load_skill_from_root, merge_skill_records_from_dir, AgentSkillRecord,
@@ -1248,11 +1249,8 @@ fn extract_worklog_target(payload: Option<&serde_json::Map<String, Json>>) -> Op
 }
 
 fn is_tool_call_action_payload(payload: &Json) -> bool {
-    payload
-        .get("action_type")
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .map(|value| value.eq_ignore_ascii_case("tool_call"))
+    WorklogActionPayload::parse(payload)
+        .map(|value| value.action_type.eq_ignore_ascii_case("tool_call"))
         .unwrap_or(false)
 }
 
@@ -1296,23 +1294,15 @@ fn render_nested_db_worklog_line(record: &WorklogRecord) -> Option<String> {
             if is_tool_call_action_payload(&record.payload) {
                 return None;
             }
-            let action_type = record
-                .payload
-                .get("action_type")
-                .and_then(Json::as_str)
-                .unwrap_or("action");
-            let target = record
-                .payload
-                .get("cmd_digest")
-                .or_else(|| record.payload.get("command"))
-                .and_then(Json::as_str)
+            let payload = WorklogActionPayload::parse(&record.payload).unwrap_or_default();
+            let action_type = payload.action_type_text();
+            let target = payload
+                .cmd_digest_text()
                 .map(|value| sanitize_worklog_digest(value, 120))
                 .filter(|value| !value.is_empty())
                 .or_else(|| extract_worklog_target(record.payload.as_object()));
-            let result_digest = record
-                .payload
-                .get("result_digest")
-                .and_then(Json::as_str)
+            let result_digest = payload
+                .result_digest_text()
                 .map(|value| sanitize_worklog_digest(value, 180))
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| status_text.clone());
@@ -1583,23 +1573,15 @@ fn render_nested_runtime_worklog_line(record: &RuntimeWorklogRecord) -> Option<S
         if is_tool_call_action_payload(&record.payload) {
             return None;
         }
-        let action_type = record
-            .payload
-            .get("action_type")
-            .and_then(Json::as_str)
-            .unwrap_or("action");
-        let target = record
-            .payload
-            .get("cmd_digest")
-            .or_else(|| record.payload.get("command"))
-            .and_then(Json::as_str)
+        let payload = WorklogActionPayload::parse(&record.payload).unwrap_or_default();
+        let action_type = payload.action_type_text();
+        let target = payload
+            .cmd_digest_text()
             .map(|value| sanitize_worklog_digest(value, 120))
             .filter(|value| !value.is_empty())
             .or_else(|| extract_worklog_target(record.payload.as_object()));
-        let result_digest = record
-            .payload
-            .get("result_digest")
-            .and_then(Json::as_str)
+        let result_digest = payload
+            .result_digest_text()
             .map(|value| sanitize_worklog_digest(value, 180))
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| status_text.clone());

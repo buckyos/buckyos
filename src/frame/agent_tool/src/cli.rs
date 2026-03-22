@@ -1680,7 +1680,7 @@ fn task_pending_reason(task: &Task) -> Option<CliPendingReason> {
         .and_then(Json::as_str)
         .and_then(|value| match value {
             "user_approval" => Some(CliPendingReason::UserApproval),
-            "external_callback" => Some(CliPendingReason::ExternalCallback),
+            "wait_for_install" | "external_callback" => Some(CliPendingReason::WaitForInstall),
             "long_running" => Some(CliPendingReason::LongRunning),
             _ => None,
         })
@@ -1827,7 +1827,7 @@ mod tests {
         assert_eq!(output.exit_code, EXIT_SUCCESS);
         let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
         assert_eq!(payload["status"], "success");
-        assert_eq!(payload["tool"], TOOL_READ_FILE);
+        assert_eq!(payload["detail"]["tool"], TOOL_READ_FILE);
         assert_eq!(payload["detail"]["content"], "line-1");
     }
 
