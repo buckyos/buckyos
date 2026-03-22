@@ -47,6 +47,7 @@ fn gimini_provider(base_url: String, timeout_ms: u64) -> GoogleGiminiProvider {
 }
 
 #[tokio::test]
+// 意图：验证OpenAI 200 成功路径场景（adapter_openai_01_http_200_success）。预期start 成功，因为该输入会命中对应业务分支；不应被误分类为失败，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_openai_01_http_200_success() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -64,10 +65,11 @@ async fn adapter_openai_01_http_200_success() {
             Arc::new(NoopSink),
         )
         .await;
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "assert failed in adapter_openai_01_http_200_success: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证OpenAI 可重试错误分类场景（adapter_openai_02_http_429_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_openai_02_http_429_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 429,
@@ -86,10 +88,11 @@ async fn adapter_openai_02_http_429_retryable() {
         )
         .await
         .expect_err("must fail");
-    assert!(err.is_retryable());
+    assert!(err.is_retryable(), "assert failed in adapter_openai_02_http_429_retryable: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证OpenAI 可重试错误分类场景（adapter_openai_03_http_503_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_openai_03_http_503_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 503,
@@ -108,10 +111,11 @@ async fn adapter_openai_03_http_503_retryable() {
         )
         .await
         .expect_err("must fail");
-    assert!(err.is_retryable());
+    assert!(err.is_retryable(), "assert failed in adapter_openai_03_http_503_retryable: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证OpenAI 致命错误分类场景（adapter_openai_04_http_400_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_openai_04_http_400_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 400,
@@ -130,10 +134,11 @@ async fn adapter_openai_04_http_400_fatal() {
         )
         .await
         .expect_err("must fail");
-    assert!(!err.is_retryable());
+    assert!(!err.is_retryable(), "assert failed in adapter_openai_04_http_400_fatal: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证OpenAI 致命错误分类场景（adapter_openai_05_invalid_json_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_openai_05_invalid_json_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -152,10 +157,11 @@ async fn adapter_openai_05_invalid_json_fatal() {
         )
         .await
         .expect_err("must fail");
-    assert!(!err.is_retryable());
+    assert!(!err.is_retryable(), "assert failed in adapter_openai_05_invalid_json_fatal: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证OpenAI 可重试错误分类场景（adapter_openai_06_timeout_or_network_error_classified）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_openai_06_timeout_or_network_error_classified() {
     let provider = openai_provider("http://127.0.0.1:9".to_string(), 80);
     let err = provider
@@ -167,10 +173,11 @@ async fn adapter_openai_06_timeout_or_network_error_classified() {
         )
         .await
         .expect_err("must fail");
-    assert!(err.is_retryable());
+    assert!(err.is_retryable(), "assert failed in adapter_openai_06_timeout_or_network_error_classified: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证Gimini 200 成功路径场景（adapter_gimini_01_http_200_success）。预期start 成功，因为该输入会命中对应业务分支；不应被误分类为失败，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_gimini_01_http_200_success() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -188,10 +195,11 @@ async fn adapter_gimini_01_http_200_success() {
             Arc::new(NoopSink),
         )
         .await;
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "assert failed in adapter_gimini_01_http_200_success: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证Gimini 可重试错误分类场景（adapter_gimini_02_http_429_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_gimini_02_http_429_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 429,
@@ -210,10 +218,11 @@ async fn adapter_gimini_02_http_429_retryable() {
         )
         .await
         .expect_err("must fail");
-    assert!(err.is_retryable());
+    assert!(err.is_retryable(), "assert failed in adapter_gimini_02_http_429_retryable: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证Gimini 可重试错误分类场景（adapter_gimini_03_http_503_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_gimini_03_http_503_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 503,
@@ -232,10 +241,11 @@ async fn adapter_gimini_03_http_503_retryable() {
         )
         .await
         .expect_err("must fail");
-    assert!(err.is_retryable());
+    assert!(err.is_retryable(), "assert failed in adapter_gimini_03_http_503_retryable: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证Gimini 致命错误分类场景（adapter_gimini_04_http_400_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_gimini_04_http_400_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 400,
@@ -254,10 +264,11 @@ async fn adapter_gimini_04_http_400_fatal() {
         )
         .await
         .expect_err("must fail");
-    assert!(!err.is_retryable());
+    assert!(!err.is_retryable(), "assert failed in adapter_gimini_04_http_400_fatal: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证Gimini 致命错误分类场景（adapter_gimini_05_invalid_json_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_gimini_05_invalid_json_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -276,10 +287,11 @@ async fn adapter_gimini_05_invalid_json_fatal() {
         )
         .await
         .expect_err("must fail");
-    assert!(!err.is_retryable());
+    assert!(!err.is_retryable(), "assert failed in adapter_gimini_05_invalid_json_fatal: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证Gimini 可重试错误分类场景（adapter_gimini_06_timeout_or_network_error_classified）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn adapter_gimini_06_timeout_or_network_error_classified() {
     let provider = gimini_provider("http://127.0.0.1:9".to_string(), 80);
     let err = provider
@@ -291,10 +303,11 @@ async fn adapter_gimini_06_timeout_or_network_error_classified() {
         )
         .await
         .expect_err("must fail");
-    assert!(err.is_retryable());
+    assert!(err.is_retryable(), "assert failed in adapter_gimini_06_timeout_or_network_error_classified: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证文生图 prompt 优先级场景（proto_t2i_01_prompt_from_text）。预期优先使用 payload.text，因为该输入会命中对应业务分支；不应错误回退到其它字段，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn proto_t2i_01_prompt_from_text() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -316,10 +329,11 @@ async fn proto_t2i_01_prompt_from_text() {
             Arc::new(NoopSink),
         )
         .await;
-    assert!(res.is_ok());
+    assert!(res.is_ok(), "assert failed in proto_t2i_01_prompt_from_text: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证文生图产物结构场景（proto_t2i_04_artifact_url_format）。预期返回含有可用 URL 的 artifact，因为该输入会命中对应业务分支；不应返回空产物或非 URL 资源，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn proto_t2i_04_artifact_url_format() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -342,9 +356,9 @@ async fn proto_t2i_04_artifact_url_format() {
         .expect("should succeed");
     match res {
         aicc::ProviderStartResult::Immediate(summary) => {
-            assert!(!summary.artifacts.is_empty());
+            assert!(!summary.artifacts.is_empty(), "assert failed in proto_t2i_04_artifact_url_format: condition is false; check preconditions and expected branch outcome.");
             if let buckyos_api::ResourceRef::Url { url, .. } = &summary.artifacts[0].resource {
-                assert!(url.starts_with("https://"));
+                assert!(url.starts_with("https://"), "assert failed in proto_t2i_04_artifact_url_format: condition is false; check preconditions and expected branch outcome.");
             } else {
                 panic!("expected url artifact");
             }
@@ -354,6 +368,7 @@ async fn proto_t2i_04_artifact_url_format() {
 }
 
 #[tokio::test]
+// 意图：验证文生图 prompt 次级提取场景（proto_t2i_03_prompt_from_options）。预期从 options.prompt 提取，因为该输入会命中对应业务分支；不应丢失 prompt 或直接失败，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn proto_t2i_03_prompt_from_options() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -374,10 +389,11 @@ async fn proto_t2i_03_prompt_from_options() {
             Arc::new(NoopSink),
         )
         .await;
-    assert!(res.is_ok());
+    assert!(res.is_ok(), "assert failed in proto_t2i_03_prompt_from_options: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]
+// 意图：验证文生图 prompt 兜底提取场景（proto_t2i_02_prompt_from_messages）。预期从 messages 提取，因为该输入会命中对应业务分支；不应直接报缺参，否则说明路由、状态机或错误分类逻辑与契约不一致。
 async fn proto_t2i_02_prompt_from_messages() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -401,5 +417,5 @@ async fn proto_t2i_02_prompt_from_messages() {
             Arc::new(NoopSink),
         )
         .await;
-    assert!(res.is_ok());
+    assert!(res.is_ok(), "assert failed in proto_t2i_02_prompt_from_messages: condition is false; check preconditions and expected branch outcome.");
 }
