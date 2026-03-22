@@ -1349,6 +1349,8 @@ pub async fn create_test_env_configs() {
 
 #[cfg(test)]
 mod tests {
+    use serde::de;
+
     use super::*;
 
     /// Create DevEnvBuilder uniformly for tests, root directory distinguished by test name
@@ -1360,6 +1362,31 @@ mod tests {
     #[tokio::test]
     pub async fn test_verify_all_key_pairs() {
         TestKeys::verify_all_key_pairs().unwrap();
+    }
+
+    #[tokio::test]
+    pub async fn convert_device_mini_config() {
+        let owner_key_pem = r#"
+        -----BEGIN PRIVATE KEY-----
+        MC4CAQAwBQYDK2VwBCIEIJkT5ZZ2389lCNsvYF2BQGZvsRIJiWjSpeLYDs0JEvsS
+        -----END PRIVATE KEY-----
+        "#;
+        let device_jwt_str = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJAY29udGV4dCI6Imh0dHBzOi8vd3d3LnczLm9yZy9ucy9kaWQvdjEiLCJpZCI6ImRpZDpkZXY6VzU3MEpiUlBxSDFrdWttemNCX003eDVud0FvWS1pVTVHcnIyUlhjZjdHSSIsInZlcmlmaWNhdGlvbk1ldGhvZCI6W3sidHlwZSI6IkVkMjU1MTlWZXJpZmljYXRpb25LZXkyMDIwIiwiaWQiOiIjbWFpbl9rZXkiLCJjb250cm9sbGVyIjoiZGlkOmRldjpXNTcwSmJSUHFIMWt1a216Y0JfTTd4NW53QW9ZLWlVNUdycjJSWGNmN0dJIiwicHVibGljS2V5SndrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiVzU3MEpiUlBxSDFrdWttemNCX003eDVud0FvWS1pVTVHcnIyUlhjZjdHSSJ9fV0sImF1dGhlbnRpY2F0aW9uIjpbIiNtYWluX2tleSJdLCJhc3NlcnRpb25fbWV0aG9kIjpbIiNtYWluX2tleSJdLCJleHAiOjIwNTk0MTIyMTIsImlhdCI6MTc0NDA1MjIxMiwiZGV2aWNlX3R5cGUiOiJvb2QiLCJuYW1lIjoib29kMSIsIm5ldF9pZCI6IndhbiIsImlzcyI6ImJ1Y2t5In0.WT95o5617N-JCIgH6wEVDkt7uLW-NWtzIB8L9SZHl7sZEf269DLQ73oEp3PJ990uCzLcSFW-WJ12hppTr4A8CQ";
+        let encoded_doc = EncodedDocument::from_str(device_jwt_str.to_string()).unwrap();
+        let values = encoded_doc.clone().to_json_value().unwrap();
+        println!("device_jwt values: {:?}", values);
+        let device_mini_doc = DeviceMiniConfig {
+            name: "ood1".to_owned(),
+            x: "W570JbRPqH1kukmzcB_M7x5nwAoY-iU5Grr2RXcf7GI".to_owned(),
+            rtcp_port: None,
+            exp: 2059412212,
+            extra_info: HashMap::new(),
+        };
+        let device_mini_jwt = device_mini_doc.to_jwt(&get_encoding_key(owner_key_pem)).unwrap();
+        println!("device_mini_jwt: {}", device_mini_jwt);
+        let device_config = DeviceConfig::new_by_mini_config(&device_mini_jwt, &device_mini_doc, DID::new("web", "buckyos.ai"), DID::new("bns", "bucky"));
+        let device_config_jwt = device_config.encode(Some(&get_encoding_key(owner_key_pem))).unwrap();
+        println!("device_config_jwt: {}", device_config_jwt.to_string());
     }
 
     #[tokio::test]

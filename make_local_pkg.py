@@ -518,6 +518,54 @@ def _default_version() -> str:
     return f"{base_version}+build{datetime.now().strftime('%y%m%d')}"
 
 
+def _node_daemon_candidates(build_root: Path, target: TargetScript) -> list[Path]:
+    candidates = [build_root / "buckyos" / "bin" / "node-daemon" / "node_daemon"]
+    if target.platform_key == "windows":
+        candidates.insert(0, build_root / "buckyos" / "bin" / "node-daemon" / "node_daemon.exe")
+    return candidates
+
+
+def _extract_versions_from_text(version_text: str) -> tuple[str, str]:
+    full_match = re.search(r"\d+(?:\.\d+)*\+build\S+", version_text)
+    short_match = re.search(r"\d+(?:\.\d+)*\+build\d+", version_text)
+    if short_match is None:
+        raise RuntimeError(f"unable to parse short version from node_daemon --version output: {version_text!r}")
+    full_version = full_match.group(0) if full_match is not None else short_match.group(0)
+    short_version = short_match.group(0)
+    return short_version, full_version
+
+
+def _version_from_node_daemon(target: TargetScript) -> tuple[str, str]:
+    errors: list[str] = []
+    for candidate in _node_daemon_candidates(target.build_root, target):
+        if not candidate.exists():
+            continue
+        completed = subprocess.run(
+            [str(candidate), "--version"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        version_text = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part).strip()
+        if completed.returncode != 0:
+            errors.append(f"{candidate}: exited with {completed.returncode}: {version_text}")
+            continue
+        if not version_text:
+            errors.append(f"{candidate}: empty version output")
+            continue
+        try:
+            return _extract_versions_from_text(version_text)
+        except RuntimeError as exc:
+            errors.append(f"{candidate}: {exc}")
+    if errors:
+        raise RuntimeError("failed to determine package version from node_daemon --version:\n- " + "\n- ".join(errors))
+    raise RuntimeError(
+        "failed to determine package version: node_daemon binary not found under "
+        f"{target.build_root / 'buckyos' / 'bin' / 'node-daemon'}"
+    )
+
+
 def _python_executable() -> str:
     current = (sys.executable or "").strip()
     if current:
@@ -816,7 +864,7 @@ def prepare_root(argv: list[str]) -> int:
 
 def build_pkg(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="make_local_pkg.py build-pkg")
-    parser.add_argument("version", nargs="?", help="Package version, defaults to src/VERSION + buildYYMMDD")
+    parser.add_argument("version", nargs="?", help="Package version, defaults to short_version parsed from node_daemon --version")
     parser.add_argument("--arch", default=None, help="Override detected architecture")
     parser.add_argument("--project", default=str(SRC_DIR / "bucky_project.yaml"))
     parser.add_argument("--build-root", default=None, help="Override BUCKYOS_BUILD_ROOT")
@@ -838,7 +886,6 @@ def build_pkg(argv: list[str]) -> int:
 
     build_root_override = args.build_root or args.app_publish_dir
     target = detect_target(args.arch, build_root_override)
-    version = args.version or _default_version()
 
     if not args.skip_prepare:
         _prepare_common_build_root(
@@ -852,6 +899,14 @@ def build_pkg(argv: list[str]) -> int:
         )
     else:
         print("[prepare] skipped by --skip-prepare")
+
+    if args.version:
+        version = args.version
+    else:
+        short_version, full_version = _version_from_node_daemon(target)
+        version = short_version
+        print(f"[version] full_version={full_version}")
+        print(f"[version] short_version={short_version}")
 
     manifest_path = _write_project_manifest(
         project_path=Path(args.project),
