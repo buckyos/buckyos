@@ -704,28 +704,53 @@ def _rust_build_root() -> Path:
     return Path("/tmp/rust_build")
 
 
+def _desktop_target_triple(target: TargetScript) -> str | None:
+    if target.platform_key == "windows":
+        arch = "x86_64" if target.architecture == "amd64" else "aarch64"
+        return f"{arch}-pc-windows-msvc"
+    if target.platform_key == "macos":
+        arch = "x86_64" if target.architecture == "amd64" else "aarch64"
+        return f"{arch}-apple-darwin"
+    return None
+
+
 def _desktop_build_roots() -> list[Path]:
-    return [
-        _rust_build_root(),
+    rust_build_root = _rust_build_root()
+    roots = [
+        rust_build_root,
+        rust_build_root / "target",
         DESKTOP_APP_REPO_DIR / "src-tauri" / "target",
     ]
+    unique_roots: list[Path] = []
+    for root in roots:
+        if root not in unique_roots:
+            unique_roots.append(root)
+    return unique_roots
 
 
 def _built_desktop_app_candidates(target: TargetScript) -> list[Path]:
+    target_triple = _desktop_target_triple(target)
+
     if target.platform_key == "macos":
         candidates: list[Path] = []
         for root in _desktop_build_roots():
             candidates.append(root / "release" / "bundle" / "macos" / "BuckyOS.app")
+            if target_triple:
+                candidates.append(root / target_triple / "release" / "bundle" / "macos" / "BuckyOS.app")
         return candidates
     if target.platform_key == "windows":
         candidates = []
         for root in _desktop_build_roots():
-            candidates.extend(
-                [
-                    root / "release" / "buckyosapp.exe",
-                    root / "release" / "BuckyOS.exe",
-                ]
-            )
+            release_roots = [root / "release"]
+            if target_triple:
+                release_roots.append(root / target_triple / "release")
+            for release_root in release_roots:
+                candidates.extend(
+                    [
+                        release_root / "buckyosapp.exe",
+                        release_root / "BuckyOS.exe",
+                    ]
+                )
         return candidates
     return []
 
@@ -784,9 +809,12 @@ def _stage_desktop_app(
         print(f"[stage] reuse existing desktop app: {expected}")
         return
 
+    searched = _built_desktop_app_candidates(target)
+    searched_text = ", ".join(str(path) for path in searched)
     raise RuntimeError(
         "desktop app artifact is required but missing. "
-        f"Expected {expected}, or place BuckyOSApp beside this repo, or pass --desktop-app <path>."
+        f"Expected {expected}, or place BuckyOSApp beside this repo, or pass --desktop-app <path>. "
+        f"Searched: {searched_text}"
     )
 
 
