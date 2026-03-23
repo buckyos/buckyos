@@ -280,39 +280,52 @@ impl AgentTool for EditFileTool {
         }
 
         let details = json!({
-            "ok": true,
-            "path": file_path,
-            "abs_path": abs_path.to_string_lossy().to_string(),
-            "operation": operation,
-            "matched": matched,
-            "created": created,
-            "changed": changed,
-            "bytes_before": original_content.len(),
-            "bytes_after": updated_content.len(),
-            "diff": diff,
-            "diff_truncated": diff_truncated
+            "update": {
+                "mode": operation,
+                "matched": matched,
+                "changed": changed,
+                "line": original_content.find(&pos_chunk).map(|pos| {
+                    original_content[..pos].bytes().filter(|b| *b == b'\n').count() + 1
+                })
+            },
+            "content": updated_content,
         });
         let summary = if changed {
-            format!(
-                "{} {} -> {} bytes",
-                operation,
-                original_content.len(),
-                updated_content.len()
+            let line_text = original_content
+                .find(&pos_chunk)
+                .map(|pos| {
+                    original_content[..pos]
+                        .bytes()
+                        .filter(|b| *b == b'\n')
+                        .count()
+                        + 1
+                })
+                .map(|line| format!(" at line {line}"))
+                .unwrap_or_default();
+            build_summary_with_optional_block(
+                format!("edited {file_path} with {operation}{line_text}"),
+                "diff",
+                &diff,
             )
         } else if !matched {
-            "anchor not found, no change".to_string()
+            format!("edit {file_path} skipped, anchor not found")
         } else {
-            "no change".to_string()
+            format!("edit {file_path} made no change")
         };
         Ok(AgentToolResult::from_details(details)
             .with_is_agent_tool(true)
-            .with_cmd_line(format!(
-                "{} {} mode={} pos_chunk=\"{}\" new_content=\"{}\"",
-                TOOL_EDIT_FILE,
-                file_path,
-                operation,
-                compact_cmd_param_preview(&pos_chunk),
-                compact_cmd_param_preview(&new_content),
+            .with_cmd_line(build_edit_result_cmd_line(
+                &file_path,
+                matched,
+                operation.as_str(),
+                original_content.find(&pos_chunk).map(|pos| {
+                    original_content[..pos]
+                        .bytes()
+                        .filter(|b| *b == b'\n')
+                        .count()
+                        + 1
+                }),
+                &pos_chunk,
             ))
             .with_result(summary))
     }
@@ -451,32 +464,24 @@ impl AgentTool for WriteFileTool {
         }
 
         let details = json!({
-            "ok": true,
-            "path": file_path,
-            "abs_path": abs_path.to_string_lossy().to_string(),
-            "operation": operation,
-            "mode": mode,
-            "created": !exists,
-            "changed": changed,
-            "bytes_before": original_content.len(),
-            "bytes_after": updated_content.len(),
-            "diff": diff,
-            "diff_truncated": diff_truncated
+            "content": updated_content
         });
-        let summary = format!(
-            "{} {} -> {} bytes",
-            operation,
-            original_content.len(),
-            updated_content.len()
+        let summary = build_summary_with_optional_block(
+            format!(
+                "{} {file_path}, wrote {} bytes across {}",
+                describe_write_operation(operation.as_str()),
+                content.len(),
+                describe_line_count(count_content_lines(&content)),
+            ),
+            "content",
+            &build_content_preview(&content),
         );
         Ok(AgentToolResult::from_details(details)
             .with_is_agent_tool(true)
-            .with_cmd_line(format!(
-                "{} {} mode={} content=\"{}\"",
-                TOOL_WRITE_FILE,
-                file_path,
-                mode,
-                compact_cmd_param_preview(&content),
+            .with_cmd_line(build_write_result_cmd_line(
+                &file_path,
+                operation.as_str(),
+                count_content_lines(&content),
             ))
             .with_result(summary))
     }
@@ -1152,6 +1157,53 @@ fn build_read_result_cmd_line(
     cmd
 }
 
+fn build_write_result_cmd_line(path: &str, operation: &str, line_count: usize) -> String {
+    let line_text = describe_line_count(line_count);
+    match operation {
+        "append" => format!("append {path} and write {line_text}"),
+        "new" | "create" => format!("create {path} and write {line_text}"),
+        _ => format!("write {path} with {line_text}"),
+    }
+}
+
+fn build_edit_result_cmd_line(
+    path: &str,
+    matched: bool,
+    operation: &str,
+    line_no: Option<usize>,
+    pos_chunk: &str,
+) -> String {
+    if !matched {
+        return format!(
+            "edit {path}, anchor not found for \"{}\"",
+            compact_cmd_param_preview(pos_chunk)
+        );
+    }
+
+    match operation {
+        "replace" => match line_no {
+            Some(line_no) => format!(
+                "edit {path}, replace [{}:{}] to new content",
+                compact_cmd_param_preview(pos_chunk),
+                line_no
+            ),
+            None => format!(
+                "edit {path}, replace [{}] to new content",
+                compact_cmd_param_preview(pos_chunk)
+            ),
+        },
+        "before" => match line_no {
+            Some(line_no) => format!("edit {path}, insert content before line:{line_no}"),
+            None => format!("edit {path}, insert content before anchor"),
+        },
+        "after" => match line_no {
+            Some(line_no) => format!("edit {path}, insert content after line:{line_no}"),
+            None => format!("edit {path}, insert content after anchor"),
+        },
+        _ => format!("edit {path}"),
+    }
+}
+
 fn split_lines_preserve_ending(content: &str) -> Vec<String> {
     if content.is_empty() {
         return Vec::new();
@@ -1186,6 +1238,51 @@ fn build_read_file_output_preview(start_line: Option<usize>, selected_lines: &[S
         out.push_str(format!("... truncated to {} lines", READ_FILE_PREVIEW_MAX_LINES).as_str());
     }
     out
+}
+
+fn count_content_lines(content: &str) -> usize {
+    split_lines_preserve_ending(content).len()
+}
+
+fn describe_line_count(line_count: usize) -> String {
+    match line_count {
+        1 => "1 line".to_string(),
+        _ => format!("{line_count} lines"),
+    }
+}
+
+fn describe_write_operation(operation: &str) -> &'static str {
+    match operation {
+        "append" => "appended",
+        "new" | "create" => "created",
+        _ => "wrote",
+    }
+}
+
+fn build_content_preview(content: &str) -> String {
+    let lines = split_lines_preserve_ending(content);
+    let mut out = String::new();
+    for (idx, line) in lines.iter().take(READ_FILE_PREVIEW_MAX_LINES).enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        out.push_str(line.trim_end_matches(['\r', '\n']));
+    }
+    if lines.len() > READ_FILE_PREVIEW_MAX_LINES {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(format!("... truncated to {} lines", READ_FILE_PREVIEW_MAX_LINES).as_str());
+    }
+    out
+}
+
+fn build_summary_with_optional_block(base: String, fence: &str, block: &str) -> String {
+    if block.trim().is_empty() {
+        base
+    } else {
+        format!("{base}\n```{fence}\n{block}\n```")
+    }
 }
 
 fn build_simple_diff(
