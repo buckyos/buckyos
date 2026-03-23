@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use buckyos_api::{AiPayload, Capability, CompleteRequest, ModelSpec, Requirements};
+use buckyos_api::{
+    AiPayload, Capability, CompleteRequest, ModelSpec, MsgRecordWithObject, Requirements,
+};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
@@ -23,6 +25,8 @@ pub struct LLMStepRecord {
     pub started_at_ms: u64,
     pub llm_completed_at_ms: u64,
     pub action_completed_at_ms: u64,
+    pub new_msg: Vec<MsgRecordWithObject>,
+    //pub new_event : Vec<EventRecord>,
     pub input: String,
     #[serde(default = "empty_complete_request")]
     pub llm_prompt: CompleteRequest,
@@ -40,6 +44,7 @@ impl Default for LLMStepRecord {
             started_at_ms: 0,
             llm_completed_at_ms: 0,
             action_completed_at_ms: 0,
+            new_msg: vec![],
             input: String::new(),
             llm_prompt: empty_complete_request(),
             llm_result: BehaviorLLMResult::default(),
@@ -526,6 +531,7 @@ mod tests {
             started_at_ms: 1,
             llm_completed_at_ms: 2,
             action_completed_at_ms: 3,
+            new_msg: vec![],
             input: format!("input-{step_num}"),
             llm_prompt: CompleteRequest::new(
                 Capability::LlmRouter,

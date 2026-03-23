@@ -1028,6 +1028,34 @@ esac
         }
     }
 
+    fn test_agent_tool_bin_available() -> bool {
+        if let Some(candidate) = std::env::var_os("CARGO_BIN_EXE_agent_tool").map(PathBuf::from) {
+            if candidate.exists() {
+                return true;
+            }
+        }
+        if let Some(root) = std::env::var_os("BUCKYOS_ROOT") {
+            let candidate = PathBuf::from(root).join("bin").join("opendan").join("agent_tool");
+            if candidate.exists() {
+                return true;
+            }
+        }
+
+        let Some(current_dir) = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+        else {
+            return false;
+        };
+        if current_dir.join("agent_tool").exists() {
+            return true;
+        }
+        current_dir
+            .parent()
+            .map(|parent| parent.join("agent_tool").exists())
+            .unwrap_or(false)
+    }
+
     #[tokio::test]
     async fn exec_bash_tool_runs_linux_command() {
         if !tmux_ready().await {
@@ -1301,6 +1329,9 @@ esac
 
     #[tokio::test]
     async fn do_actions_mixed_cmds_and_calls_support_builtin_tools_in_bash_cmd() {
+        if !test_agent_tool_bin_available() {
+            return;
+        }
         let root = unique_agent_env_root("do-actions-mixed");
         let workshop = AgentWorkshop::new(AgentWorkshopConfig::new(&root))
             .await

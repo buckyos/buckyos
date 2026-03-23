@@ -1961,6 +1961,7 @@ mod tests {
                     started_at_ms: 1,
                     llm_completed_at_ms: 2,
                     action_completed_at_ms: 3,
+                    new_msg: vec![],
                     input: "task".to_string(),
                     llm_prompt: CompleteRequest::new(
                         Capability::LlmRouter,
@@ -2000,6 +2001,7 @@ mod tests {
                     started_at_ms: 4,
                     llm_completed_at_ms: 5,
                     action_completed_at_ms: 6,
+                    new_msg: vec![],
                     input: "continue".to_string(),
                     llm_prompt: CompleteRequest::new(
                         Capability::LlmRouter,

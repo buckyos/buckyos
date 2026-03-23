@@ -871,6 +871,16 @@ impl Router {
         let mut scored = vec![];
 
         for candidate in snapshot.candidates.iter() {
+            let provider_model = model_catalog.resolve(
+                tenant_id,
+                &req.capability,
+                req.model.alias.as_str(),
+                candidate.instance.provider_type.as_str(),
+            );
+            if provider_model.is_some() {
+                alias_mapped = true;
+            }
+
             if !candidate
                 .instance
                 .supports_features(&req.requirements.must_features)
@@ -889,17 +899,9 @@ impl Router {
                 }
             }
 
-            let provider_model = model_catalog.resolve(
-                tenant_id,
-                &req.capability,
-                req.model.alias.as_str(),
-                candidate.instance.provider_type.as_str(),
-            );
             let Some(provider_model) = provider_model else {
                 continue;
             };
-
-            alias_mapped = true;
             let Some(provider) = registry.get_provider(candidate.instance.instance_id.as_str())
             else {
                 continue;
@@ -1101,6 +1103,10 @@ impl AIComputeCenter {
         self.taskmgr = Some(taskmgr);
     }
 
+    pub fn task_manager_client(&self) -> Option<Arc<TaskManagerClient>> {
+        self.taskmgr.clone()
+    }
+
     pub fn set_base64_policy(&mut self, max_bytes: usize, mime_allowlist: HashSet<String>) {
         self.base64_max_bytes = max_bytes;
         self.base64_mime_allowlist = mime_allowlist;
@@ -1127,14 +1133,15 @@ impl AIComputeCenter {
         let event_sink: Arc<dyn TaskEventSink> = deferred_sink.clone();
 
         if let Err(error) = self.validate_request(&request) {
+            let code = extract_error_code(&error);
             warn!(
-                "aicc.complete bad_request: task_id={} tenant={} err={}",
-                external_task_id, invoke_ctx.tenant_id, error
+                "aicc.complete validation_failed: task_id={} tenant={} code={} err={}",
+                external_task_id, invoke_ctx.tenant_id, code, error
             );
             self.emit_task_error(
                 event_sink.clone(),
                 external_task_id.as_str(),
-                "bad_request",
+                code.as_str(),
                 error.to_string(),
             )
             .await;
@@ -1145,6 +1152,25 @@ impl AIComputeCenter {
                 event_ref,
             ));
         }
+
+        let resolved = match self.resource_resolver.resolve(&invoke_ctx, &request).await {
+            Ok(result) => result,
+            Err(error) => {
+                self.emit_task_error(
+                    event_sink.clone(),
+                    external_task_id.as_str(),
+                    "resource_invalid",
+                    error.to_string(),
+                )
+                .await;
+                return Ok(CompleteResponse::new(
+                    external_task_id,
+                    CompleteStatus::Failed,
+                    None,
+                    event_ref,
+                ));
+            }
+        };
 
         let snapshot = self.registry.snapshot(request.capability.clone());
         let route_cfg = self
@@ -1216,25 +1242,6 @@ impl AIComputeCenter {
             decision.fallback_instance_ids,
             route_attempts
         );
-
-        let resolved = match self.resource_resolver.resolve(&invoke_ctx, &request).await {
-            Ok(result) => result,
-            Err(error) => {
-                self.emit_task_error(
-                    event_sink.clone(),
-                    external_task_id.as_str(),
-                    "resource_invalid",
-                    error.to_string(),
-                )
-                .await;
-                return Ok(CompleteResponse::new(
-                    external_task_id,
-                    CompleteStatus::Failed,
-                    None,
-                    event_ref,
-                ));
-            }
-        };
 
         let start_result = self
             .start_with_fallback(
@@ -1435,7 +1442,7 @@ impl AIComputeCenter {
         sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<(ProviderStartResult, String), RPCErrors> {
         let mut last_err: Option<ProviderError> = None;
-        let request_log = serde_json::to_string(&req.request)
+        let _request_log = serde_json::to_string(&req.request)
             .unwrap_or_else(|err| format!("{{\"serialize_error\":\"{}\"}}", err));
         info!(
             "aicc.llm.input task_id={} tenant={} trace_id={:?}",

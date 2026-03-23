@@ -2342,6 +2342,14 @@ impl AIAgent {
             .or_else(|| serde_json::from_slice::<MsgRecord>(payload).ok())
     }
 
+    fn collect_step_input_new_msgs(step_inputs: &[Vec<u8>]) -> Vec<MsgRecordWithObject> {
+        step_inputs
+            .iter()
+            .filter_map(|raw| Self::parse_step_input_msg_record(raw.as_slice()))
+            .map(|record| MsgRecordWithObject { record, msg: None })
+            .collect()
+    }
+
     fn normalize_ui_session_id(value: &str) -> Option<String> {
         let session_id = value.trim();
         if session_id.is_empty() {
@@ -2493,27 +2501,21 @@ impl AIAgent {
             let guard = session.lock().await;
             guard.just_readed_input_msg.clone()
         };
-        for raw in step_inputs {
-            let Some(msg) = Self::parse_step_input_msg_record(raw.as_slice()) else {
-                continue;
-            };
-            let snippet = MsgRecordWithObject {
-                record: msg.clone(),
-                msg: None,
-            }
-            .get_msg()
-            .await
-            .ok()
-            .map(|msg_obj| msg_obj.content.content.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .map(|value| compact_text_for_log(value.as_str(), 220))
-            .unwrap_or_else(|| format!("kind={:?}", msg.msg_kind));
+        for msg in Self::collect_step_input_new_msgs(step_inputs.as_slice()) {
+            let snippet = msg
+                .get_msg()
+                .await
+                .ok()
+                .map(|msg_obj| msg_obj.content.content.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .map(|value| compact_text_for_log(value.as_str(), 220))
+                .unwrap_or_else(|| format!("kind={:?}", msg.record.msg_kind));
             let payload = json!({
-                "msg_id": msg.msg_id,
-                "record_id": msg.record_id,
-                "from": msg.from.to_string(),
-                "to": msg.to.to_string(),
-                "channel": format!("{:?}", msg.box_kind),
+                "msg_id": msg.record.msg_id,
+                "record_id": msg.record.record_id,
+                "from": msg.record.from.to_string(),
+                "to": msg.record.to.to_string(),
+                "channel": format!("{:?}", msg.record.box_kind),
                 "snippet": snippet.clone(),
                 "content_digest": snippet,
             });
@@ -2739,6 +2741,11 @@ impl AIAgent {
         llm_result: &BehaviorLLMResult,
         action_results: &ActionResultsMap,
     ) {
+        let new_msg = {
+            let guard = session.lock().await;
+            Self::collect_step_input_new_msgs(guard.just_readed_input_msg.as_slice())
+        };
+
         let record = LLMStepRecord {
             session_id: trace.session_id.clone(),
             step_num,
@@ -2747,6 +2754,7 @@ impl AIAgent {
             started_at_ms: step_started_ms,
             llm_completed_at_ms,
             action_completed_at_ms,
+            new_msg,
             input: input.input_prompt.clone(),
             llm_prompt: tracking.prompt_request.clone(),
             llm_result: llm_result.clone(),

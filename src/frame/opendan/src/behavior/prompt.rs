@@ -78,10 +78,14 @@ impl PromptBuilder {
             session.clone(),
         )
         .await?;
-        let system_text = render_section(cfg.system.as_str(), &env_context, session.clone()).await?;
+        let system_text =
+            render_section(cfg.system.as_str(), &env_context, session.clone()).await?;
         let system_role_prompt_text = [
             format!("<<role>>\n{}\n<</role>>", sanitize_text(role_text.as_str())),
-            format!("<<system>>\n{}\n<</system>>", sanitize_text(system_text.as_str())),
+            format!(
+                "<<system>>\n{}\n<</system>>",
+                sanitize_text(system_text.as_str())
+            ),
             format!(
                 "<<output_protocol>>\n{}\n<</output_protocol>>",
                 sanitize_text(output_protocol_text.as_str())

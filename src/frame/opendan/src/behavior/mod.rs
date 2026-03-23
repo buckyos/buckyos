@@ -18,4 +18,6 @@ pub use tool_loop::ToolContext;
 pub use types::*;
 
 #[cfg(test)]
+mod test_prompt;
+#[cfg(test)]
 mod tests;
