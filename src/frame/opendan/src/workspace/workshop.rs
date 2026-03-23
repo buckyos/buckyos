@@ -854,7 +854,9 @@ fn validate_tools_config(cfg: &AgentWorkshopToolsConfig) -> Result<(), AgentTool
 mod tests {
     use super::*;
     use crate::agent_session::AgentSessionMgr;
-    use crate::agent_tool::{AgentToolResult, AgentToolStatus, DoAction, DoActions};
+    use crate::agent_tool::{
+        AgentToolPendingReason, AgentToolResult, AgentToolStatus, DoAction, DoActions,
+    };
     use crate::behavior::SessionRuntimeContext;
     use crate::test_utils::MockTaskMgrHandler;
     use buckyos_api::{value_to_object_map, AiToolCall, TaskManagerClient, TaskStatus};
@@ -1089,10 +1091,8 @@ esac
 
         assert_eq!(result.status, AgentToolStatus::Success);
         assert_eq!(result.return_code, Some(0));
-        assert_eq!(result.stdout.as_deref(), Some("hello-linux"));
         assert_eq!(result.output.as_deref(), Some("hello-linux"));
-        assert_eq!(result["exit_code"], 0);
-        assert_eq!(result["engine"], "tmux");
+        assert!(!result.is_agent_tool);
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1133,10 +1133,14 @@ esac
         .await
         .expect("exec bash should return pending");
 
-        assert_eq!(result["status"], "pending");
-        assert_eq!(result["pending_reason"], "long_running");
-        let task_id = result["task_id"]
-            .as_str()
+        assert_eq!(result.status, AgentToolStatus::Pending);
+        assert_eq!(
+            result.pending_reason,
+            Some(AgentToolPendingReason::LongRunning)
+        );
+        let task_id = result
+            .task_id
+            .as_deref()
             .expect("pending task id should exist")
             .parse::<i64>()
             .expect("task id should parse");
@@ -1152,7 +1156,8 @@ esac
         assert_eq!(task.status, TaskStatus::Completed);
         assert_eq!(task.data["status"], "success");
         assert_eq!(task.data["exit_code"], 0);
-        assert_eq!(task.data["stdout"], "done");
+        assert_eq!(task.data["output"], "done");
+        assert_eq!(task.data["is_agent_tool"], false);
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1195,8 +1200,8 @@ esac
         assert_eq!(result.status, AgentToolStatus::Success);
         assert_eq!(result.return_code, Some(0));
         assert_eq!(result.cmd_name.as_deref(), Some(TOOL_READ_FILE));
-        assert_eq!(result["tool"], TOOL_READ_FILE);
-        assert_eq!(result["content"], "L1");
+        let payload = parse_last_cli_json_line(result.output.as_deref().unwrap_or_default());
+        assert_eq!(payload["detail"]["content"], "L1");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1250,7 +1255,6 @@ esac
         .expect("exec should succeed");
 
         assert_eq!(result.status, AgentToolStatus::Success);
-        assert_eq!(result["engine"], "tmux");
         let stdout = result.output.as_deref().unwrap_or_default();
         let pane_lines = stdout
             .lines()
@@ -1258,7 +1262,7 @@ esac
             .count();
         assert_eq!(pane_lines, 1, "stdout={stdout}");
         let payload = parse_last_cli_json_line(stdout);
-        assert_eq!(payload["tool"], TOOL_READ_FILE);
+        assert_eq!(payload["cmd_name"], TOOL_READ_FILE);
         assert_eq!(payload["detail"]["content"], "pane-line");
 
         let _ = fs::remove_dir_all(root).await;
@@ -1313,18 +1317,9 @@ esac
         .expect("exec should succeed");
 
         assert_eq!(result.status, AgentToolStatus::Success);
-        assert_eq!(result["engine"], "tmux");
-        assert_eq!(result["line_results"][0]["mode"], "bash");
-        assert_eq!(result["line_results"][1]["mode"], "bash");
-        assert_eq!(result["line_results"][0]["command"], "cd subdir");
-        assert!(result["pwd"]
-            .as_str()
-            .unwrap_or_default()
-            .ends_with("/subdir"));
-
         let stdout = result.output.as_deref().unwrap_or_default();
         let payload = parse_cli_json_line(stdout);
-        assert_eq!(payload["tool"], TOOL_READ_FILE);
+        assert_eq!(payload["cmd_name"], TOOL_READ_FILE);
         assert_eq!(payload["detail"]["content"], "cd-pane-line");
 
         let _ = fs::remove_dir_all(root).await;
@@ -1410,13 +1405,14 @@ esac
 
         let first_bash = &results[1];
         assert_eq!(first_bash.cmd_name.as_deref(), Some(TOOL_READ_FILE));
-        assert_eq!(first_bash["tool"], TOOL_READ_FILE);
-        assert_eq!(first_bash["content"], "L1");
+        let first_payload = parse_last_cli_json_line(first_bash.output.as_deref().unwrap_or_default());
+        assert_eq!(first_payload["detail"]["content"], "L1");
 
         let second_bash = &results[3];
         assert_eq!(second_bash.cmd_name.as_deref(), Some(TOOL_READ_FILE));
-        assert_eq!(second_bash["tool"], TOOL_READ_FILE);
-        assert_eq!(second_bash["content"], "L1\nL2-updated");
+        let second_payload =
+            parse_last_cli_json_line(second_bash.output.as_deref().unwrap_or_default());
+        assert_eq!(second_payload["detail"]["content"], "L1\nL2-updated");
 
         let final_call = &results[4];
         assert_eq!(final_call["content"], "L1\nL2-updated");

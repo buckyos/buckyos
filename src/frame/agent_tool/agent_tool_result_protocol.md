@@ -20,7 +20,7 @@
 
 Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这三个状态工作。
 
-### 2. 区分结构化结果与 bash 文本输出
+### 2. builtin tool 固定字段与 bash 文本输出分工
 
 `detail` 和 `output` 的职责不同：
 
@@ -28,6 +28,14 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 - `output`：给 bash 语义使用的主输出文本
 
 这两个字段不能混用。
+
+对 builtin tool，当前更强的字段约定是：
+
+- 固定返回 `is_agent_tool`
+- 固定返回 `cmd_name`
+- 固定返回 `status`
+- 固定返回 `summary`
+- 固定返回 `detail`
 
 尤其是：
 
@@ -45,7 +53,7 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 
 当前实现规则是：
 
-- 只有明确命中内置 AgentTool 命令时，`exec_bash` 才尝试把 stdout 解析为 `AgentToolResult`
+- 只有明确命中内置 AgentTool 命令，且 stdout JSON 中显式带有 `is_agent_tool=true` 时，`exec_bash` 才把它解析为 `AgentToolResult`
 - 普通 bash 命令始终按文本输出处理，落到 `output`
 
 这避免了 `echo '{"a":1}'` 之类输出触发隐式协议转换。
@@ -56,14 +64,15 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 
 ```json
 {
+  "is_agent_tool": true,
+  "cmd_name": "bash style cmd line",
   "status": "success|error|pending",
   "summary": "human readable summary",
-  "output": "primary text output for bash",
   "detail": {},
 
-  "return_code": 0,
-  "cmd_name": "",
   "cmd_args": "",
+  "output": "primary text output for bash",
+  "return_code": 0,
 
   "task_id": "optional",
   "partial_output": "",
@@ -74,7 +83,9 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 
 说明：
 
-- `output`、`return_code`、`cmd_name`、`cmd_args`、`task_id`、`partial_output`、`pending_reason`、`check_after` 都是可选字段
+- `is_agent_tool` 用来显式标识该 JSON 是否是 AgentTool 协议结果
+- 对 builtin tool，`cmd_name` 应视为固定字段
+- `cmd_args`、`output`、`return_code`、`task_id`、`partial_output`、`pending_reason`、`check_after` 都是可选字段
 - Rust 内部结构体字段名仍然是 `details`，但对外序列化字段名固定为 `detail`
 - 历史值 `external_callback` 仍作为兼容别名接受，但新协议统一写作 `wait_for_install`
 
@@ -88,6 +99,16 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 - `error`
 - `pending`
 
+### `is_agent_tool`
+
+协议标志位。
+
+规则：
+
+- 自有 AgentTool 输出的协议 JSON 必须显式写 `true`
+- 普通 bash 输出即使碰巧长得像 JSON，也不能仅凭内容猜成 AgentToolResult
+- `exec_bash` 用它来避免误判
+
 ### `summary`
 
 给人读的短摘要。
@@ -98,6 +119,17 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 - 用于 WorkLog、Prompt 压缩、任务列表展示
 - 不要求可机读，但要稳定、简短、可理解
 
+### `cmd_name`
+
+对 builtin tool，`cmd_name` 是固定字段。
+
+规则：
+
+- 使用 bash 风格命令文本
+- 用于 prompt / worklog / 调试
+- 不要求等于二进制真实 `argv[0]`
+- 如果 Rust 内部继续使用 `cmd_name + cmd_args` 结构，外部文档仍按“命令文本”语义理解
+
 ### `output`
 
 面向 bash 语义的主文本输出。
@@ -106,7 +138,7 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 
 - 普通 bash 命令的主要结果放这里
 - `exec_bash` 默认回退逻辑会把 tmux 视角下的混合输出放这里
-- 内置工具如果主要价值是结构化结果，可以省略该字段
+- builtin tool 如果主要价值是结构化结果，应默认省略该字段
 
 `output` 不要求是 JSON，也不要求可反序列化。
 
@@ -137,8 +169,8 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 
 规则：
 
-- 主要用于 `exec_bash` 结果和调试
-- 内置工具默认可以省略
+- 对 builtin tool，文档层优先把 `cmd_name` 当作命令文本理解
+- `cmd_args` 主要是当前 Rust 内部/兼容层的附加字段
 - `cmd_args` 是参数文本，不是 JSON 数组
 
 ### `task_id`
@@ -181,14 +213,16 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 
 推荐模式：
 
+- `cmd_name`：bash 风格命令文本
 - `summary`：给人读的摘要
 - `detail`：完整结构化结果
-- `output`：只有在确实需要暴露 bash 文本输出时才填写
+- `output`：只有在确实需要暴露 bash 文本输出时才填写，默认不作为 builtin tool 主字段
 
 示例：
 
 ```json
 {
+  "cmd_name": "read demo.txt range=1-20",
   "status": "success",
   "summary": "read 128 bytes",
   "detail": {
@@ -250,10 +284,11 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 建议统一按以下顺序处理：
 
 1. 先看 `status`
-2. 再看 `summary`
-3. 如果是 bash 语义结果，优先看 `output`
-4. 如果是内置工具结果，读取 `detail`
-5. 如果是 `pending`，保存 `task_id`，按 `check_after` 轮询
+2. 再看 `cmd_name`
+3. 再看 `summary`
+4. 如果是 bash 语义结果，优先看 `output`
+5. 如果是内置工具结果，读取 `detail`
+6. 如果是 `pending`，保存 `task_id`，按 `check_after` 轮询
 
 不要依赖下面这些不稳定模式：
 
@@ -267,9 +302,10 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都基于这
 
 需要注意的兼容点：
 
-- 结构体字段名是 `details` 
+- 结构体字段名是 `details`
 - 对外 JSON 字段名是 `detail`
-- `render_prompt()` 优先展示 `output`，其次才展示 `stdout`
+- 当前 Rust 内部仍可能把命令信息拆成 `cmd_name` + `cmd_args`
+- `render_prompt()` 只展示统一后的 `output`
 - `CliResultEnvelope` 最终也会转换回 `AgentToolResult` 再输出
 
 这意味着：

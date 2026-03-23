@@ -10,10 +10,56 @@ use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
-use crate::agent_tool::{AgentToolError, AgentToolResult, DoAction};
+use crate::agent_tool::{AgentHistoryShowLevel, AgentToolError, AgentToolResult, DoAction};
 use crate::behavior::BehaviorLLMResult;
 
 const DEFAULT_STEP_RECORD_FILE: &str = "llm_step_record.jsonl";
+
+/*
+Step Record压缩渲染的思路
+
+最小：只显示Step.tilte + Step.new_msg/new_event +Step.conclusion
+mini: 显示Step.tilte + Step.new_msg/new_event +Step.conclusion + Step.next_action 最小压缩
+中等: 显示Step.tilte + Step.new_msg/new_event + Step.conclusion + Step.next_action 中等压缩
+大： 显示Step.title + Step.new_msg/new_event + step.conclusion + step.next_action 略微损失压缩（包含完整错误输出）
+完整: 显示Step.title + Step.new_msg/new_event + step.conclusion + step.thinking + step.action 不压缩
+
+
+自动决定每个step的压缩级别的思路：
+目的：能显示所有的step，越后的step越完成
+
+
+算法：首先有1个完整的+1个大+1个中等+一个mini+剩下的都是最小的进行首次填充
+根据还剩多少token（剩余总数)，逐步膨胀一个最近的step，直到达到预算
+如果剩余总数>预算的50%，则增加一个完整的step
+如果剩余总数>预算的40%，则增加一个大的step
+如果剩余总数>预算的30%,增增加一个中等step
+如果剩余总数>预算的20%,增增加一个mini step
+
+agent_tool的action_result的压缩级别（从高到底)
+- cmd_name (此时已经包含了最小参数) => result (成功/失败/pending+基本原因) 
+- summary (已经在构造的时候包含了所有信息)
+- summary (已经在构造的时候包含了所有信息)
+- cmd_name + details（如有)
+
+注意: Reply是一个标准action_result
+
+一般的bash_exec会得到非标准action_result
+非标准action_result的压缩级别（从高到底)也分 4个级别
+
+- cmd_name 部分参数 => result (成功/失败/pending+基本原因)
+- cmd_name 部分参数 => result (成功/失败/pending+基本原因) 
+  如果失败的话，会显示output的最后n行
+- cmd完整显示  => result (成功/失败/pending+基本原因) 
+  如果失败的话，会显示output的最后n行
+  如果成功，会显示output的前n行
+- cmd完整显示  => result (成功/失败/pending+基本原因) 
+  如果失败的话，会显示output的最后K行
+  如果成功，会显示output的头部K行，K是多少取决于content limit
+   
+
+
+*/
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -318,10 +364,21 @@ fn render_single_step(
         let _ = write!(out, "\n- conclusion: {conclusion}");
     }
 
+    let action_result = if matches!(level, RenderCompressionLevel::Full) {
+        truncate_text(
+            render_action_results_for_prompt(&record.action_result, AgentHistoryShowLevel::Full)
+                .as_str(),
+            options.max_action_result_chars,
+        )
+    } else {
+        String::new()
+    };
+
     if matches!(
         level,
         RenderCompressionLevel::Summary | RenderCompressionLevel::Full
-    ) {
+    ) && action_result.is_empty()
+    {
         let next_action = truncate_text(
             render_llm_next_action(&record.llm_result).as_str(),
             options.max_next_action_chars,
@@ -344,12 +401,8 @@ fn render_single_step(
         if !thinking.is_empty() {
             let _ = write!(out, "\n- thinking: {thinking}");
         }
-        let action_result = truncate_text(
-            render_action_results_for_prompt(&record.action_result).as_str(),
-            options.max_action_result_chars,
-        );
         if !action_result.is_empty() {
-            let _ = write!(out, "\n- action_result:\n```text\n{action_result}\n```");
+            let _ = write!(out, "\n- action:\n```text\n{action_result}\n```");
         }
     }
 
@@ -427,53 +480,14 @@ fn render_llm_next_action(llm_result: &BehaviorLLMResult) -> String {
     lines.join("\n")
 }
 
-fn render_action_results_for_prompt(results: &HashMap<String, AgentToolResult>) -> String {
+fn render_action_results_for_prompt(
+    results: &HashMap<String, AgentToolResult>,
+    level: AgentHistoryShowLevel,
+) -> String {
     let mut keys = results.keys().cloned().collect::<Vec<_>>();
     keys.sort();
 
-    let mut success = 0usize;
-    let mut failed = 0usize;
-    let mut skipped = 0usize;
-    for result in results.values() {
-        let skipped_count = result
-            .details
-            .get("skipped_count")
-            .and_then(serde_json::Value::as_u64)
-            .map(|value| value as usize)
-            .unwrap_or(0);
-        if skipped_count > 0 {
-            skipped = skipped.saturating_add(skipped_count);
-            continue;
-        }
-        if result.status == crate::agent_tool::AgentToolStatus::Error {
-            failed = failed.saturating_add(1);
-        } else {
-            success = success.saturating_add(1);
-        }
-    }
-
-    let mut lines = vec![if skipped > 0 {
-        format!("ActionResults: SUCCESS ({success}), FAILED ({failed}), SKIPPED ({skipped})")
-    } else {
-        format!("ActionResults: SUCCESS ({success}), FAILED ({failed})")
-    }];
-    if let Some(pwd) = keys
-        .iter()
-        .filter_map(|key| results.get(key))
-        .filter_map(|result| {
-            result
-                .details
-                .get("pwd")
-                .or_else(|| result.details.get("cwd"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
-        .last()
-    {
-        lines.push(format!("pwd: {pwd}"));
-    }
+    let mut lines = Vec::<String>::new();
 
     for key in keys {
         if key.starts_with("__") {
@@ -482,7 +496,7 @@ fn render_action_results_for_prompt(results: &HashMap<String, AgentToolResult>) 
         let Some(result) = results.get(&key) else {
             continue;
         };
-        let prompt = result.render_prompt();
+        let prompt = result.render_for_level(level);
         if prompt.trim().is_empty() {
             continue;
         }
@@ -583,6 +597,8 @@ mod tests {
             },
         );
 
+        println!("rendered: {}", rendered);
+
         assert!(rendered.contains("### Step 0 [plan:0]"));
         assert!(rendered.contains("- conclusion: conclusion-0"));
         assert!(!rendered.contains("thinking-0"));
@@ -593,8 +609,9 @@ mod tests {
         assert!(!rendered.contains("thinking-2"));
 
         assert!(rendered.contains("### Step 4 [plan:4]"));
+        assert!(!rendered.contains("- next_action: exec: next-4"));
         assert!(rendered.contains("- thinking: thinking-4"));
-        assert!(rendered.contains("```text\nActionResults: SUCCESS (1), FAILED (0)"));
+        assert!(rendered.contains("- action:\n```text\n- tool-4 => action-4"));
         assert!(rendered.contains("- tool-4 => action-4"));
     }
 

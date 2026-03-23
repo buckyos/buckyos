@@ -4,10 +4,10 @@ use agent_tool::cli::run_process;
 async fn main() {
     let output = run_process().await;
     if !output.stdout.is_empty() {
-        println!("{}", output.stdout);
+        print!("{}", output.stdout);
     }
     if !output.stderr.is_empty() {
-        eprintln!("{}", output.stderr);
+        eprint!("{}", output.stderr);
     }
     std::process::exit(output.exit_code);
 }

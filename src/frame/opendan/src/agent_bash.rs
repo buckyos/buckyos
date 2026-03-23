@@ -17,9 +17,9 @@ use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, CliResultEnvelope, ToolSpec,
-    TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION, TOOL_READ_FILE,
-    TOOL_WRITE_FILE,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, AgentToolStatus,
+    CliResultEnvelope, ToolSpec, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE,
+    TOOL_GET_SESSION, TOOL_READ_FILE, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -257,32 +257,22 @@ impl AgentTool for ExecBashTool {
             ExecBashRunOutcome::Pending(pending_result) => {
                 self.persist_session_pwd(&session_id, &pending_result.pwd)
                     .await;
-                let pwd = pending_result.pwd.clone();
                 let stdout_prompt = (!pending_result.partial_output.trim().is_empty())
                     .then_some(pending_result.partial_output.clone());
-                Ok(AgentToolResult::from_details(json!({
-                    "status": "pending",
-                    "task_id": pending_result.task_id,
-                    "pending_reason": "long_running",
-                    "duration_ms": pending_result.duration_ms,
-                    "command": command,
-                    "cwd": pwd.to_string_lossy().to_string(),
-                    "pwd": pwd.to_string_lossy().to_string(),
-                    "session_id": session_id,
-                    "tmux_session": pending_result.tmux_session,
-                    "engine": pending_result.engine,
-                    "line_results": pending_result.line_results,
-                    "check_after": EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS,
-                }))
+                Ok(AgentToolResult::from_details(json!({}))
                 .with_status(::agent_tool::AgentToolStatus::Pending)
                 .with_cmd_line(&command)
                 .with_result(format!(
                     "PENDING (long_running, check_after={}s)",
                     EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS
                 ))
+                .with_task_id(pending_result.task_id)
+                .with_pending_reason(::agent_tool::AgentToolPendingReason::LongRunning)
+                .with_check_after(EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS)
+                .with_partial_output(pending_result.partial_output)
                 .with_return_code(0)
                 .with_command_metadata_from_line(&command)
-                .with_stdout(stdout_prompt))
+                .with_output(stdout_prompt.unwrap_or_default()))
             }
         }
     }
@@ -291,7 +281,6 @@ impl AgentTool for ExecBashTool {
 struct ExecBashRunResult {
     exit_code: i32,
     stdout: Vec<u8>,
-    stderr: Vec<u8>,
     mixed_output: String,
     duration_ms: u64,
     pwd: PathBuf,
@@ -353,11 +342,7 @@ enum ExecBashRunOutcome {
 struct ExecBashPendingResult {
     task_id: String,
     partial_output: String,
-    duration_ms: u64,
     pwd: PathBuf,
-    tmux_session: String,
-    engine: &'static str,
-    line_results: Vec<Json>,
 }
 
 struct ExecBashTmuxRunHandle {
@@ -477,7 +462,6 @@ impl ExecBashTool {
         ExecBashRunResult {
             exit_code,
             stdout: state.stdout,
-            stderr: state.stderr,
             mixed_output: state.mixed_output,
             duration_ms: state.duration_ms,
             pwd: state.current_pwd,
@@ -761,11 +745,7 @@ impl ExecBashTool {
             "exec_bash exceeded {}ms and continues in background",
             timeout_ms
         );
-        let pending_engine = state.engine();
-        let pending_line_results = state.line_results.clone();
         let pending_partial_output = pending_run.partial_output.clone();
-        let pending_duration_ms = pending_run.duration_ms;
-        let pending_tmux_session = pending_run.handle.tmux_session.clone();
         let task = task_mgr
             .create_task(
                 &format!(
@@ -845,11 +825,7 @@ impl ExecBashTool {
         Ok(ExecBashPendingResult {
             task_id: task.id.to_string(),
             partial_output: pending_partial_output,
-            duration_ms: pending_duration_ms,
             pwd: pending_pwd,
-            tmux_session: pending_tmux_session,
-            engine: pending_engine,
-            line_results: pending_line_results,
         })
     }
 
@@ -1893,6 +1869,9 @@ fn decode_exec_bash_json_result(
     } else {
         serde_json::from_str::<AgentToolResult>(payload).ok()?
     };
+    if !result.is_agent_tool {
+        return None;
+    }
     Some(
         result
             .with_cmd_line(command)
@@ -1904,12 +1883,9 @@ fn decode_exec_bash_json_result(
 fn build_default_exec_bash_result(
     run_result: &ExecBashRunResult,
     command: &str,
-    session_id: &str,
-    max_output_bytes: usize,
+    _session_id: &str,
+    _max_output_bytes: usize,
 ) -> AgentToolResult {
-    let pwd = run_result.pwd.clone();
-    let (stdout, stdout_truncated) = truncate_bytes(&run_result.stdout, max_output_bytes);
-    let (stderr, stderr_truncated) = truncate_bytes(&run_result.stderr, max_output_bytes);
     let ok = run_result.exit_code == 0;
     let summary = if ok {
         extract_single_tool_prompt_summary(run_result)
@@ -1917,32 +1893,18 @@ fn build_default_exec_bash_result(
     } else {
         format!("FAILED (exit={})", run_result.exit_code)
     };
-    let stdout_prompt = (!stdout.trim().is_empty()).then_some(stdout.clone());
-    let stderr_prompt = (!stderr.trim().is_empty()).then_some(stderr.clone());
 
-    AgentToolResult::from_details(json!({
-        "status": if ok { "success" } else { "error" },
-        "stdout": stdout,
-        "stderr": stderr,
-        "stdout_truncated": stdout_truncated,
-        "stderr_truncated": stderr_truncated,
-        "duration_ms": run_result.duration_ms,
-        "command": command,
-        "cwd": pwd.to_string_lossy().to_string(),
-        "pwd": pwd.to_string_lossy().to_string(),
-        "session_id": session_id,
-        "tmux_session": run_result.tmux_session,
-        "engine": run_result.engine,
-        "line_results": run_result.line_results,
-        "exit_code": run_result.exit_code,
-    }))
+    AgentToolResult::from_details(json!({}))
+    .with_status(if ok {
+        AgentToolStatus::Success
+    } else {
+        AgentToolStatus::Error
+    })
     .with_cmd_line(command)
     .with_result(summary)
     .with_output(run_result.mixed_output.clone())
     .with_return_code(run_result.exit_code)
     .with_command_metadata_from_line(command)
-    .with_stdout(stdout_prompt)
-    .with_stderr(stderr_prompt)
 }
 
 fn is_internal_agent_tool_command(command: &str) -> bool {
@@ -2037,6 +1999,7 @@ fn build_exec_bash_pending_task_data(
     summary: &str,
 ) -> Json {
     json!({
+        "is_agent_tool": false,
         "kind": "tool.exec_bash",
         "status": "pending",
         "pending_reason": "long_running",
@@ -2075,9 +2038,10 @@ fn build_exec_bash_final_task_data(
     max_output_bytes: usize,
     summary: &str,
 ) -> Json {
-    let (stdout, stdout_truncated) = truncate_bytes(&run_result.stdout, max_output_bytes);
-    let (stderr, stderr_truncated) = truncate_bytes(&run_result.stderr, max_output_bytes);
+    let (output, output_truncated) =
+        truncate_bytes(run_result.mixed_output.as_bytes(), max_output_bytes);
     json!({
+        "is_agent_tool": false,
         "kind": "tool.exec_bash",
         "status": if run_result.exit_code == 0 { "success" } else { "error" },
         "summary": summary,
@@ -2092,10 +2056,8 @@ fn build_exec_bash_final_task_data(
         "engine": run_result.engine,
         "return_code": run_result.exit_code,
         "exit_code": run_result.exit_code,
-        "stdout": stdout,
-        "stderr": stderr,
-        "stdout_truncated": stdout_truncated,
-        "stderr_truncated": stderr_truncated,
+        "output_preview": output,
+        "output_truncated": output_truncated,
         "line_results": run_result.line_results.clone(),
     })
 }

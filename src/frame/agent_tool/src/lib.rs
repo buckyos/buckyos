@@ -274,6 +274,20 @@ pub fn normalize_tool_name(name: &str) -> String {
     name.trim().to_string()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentHistoryShowLevel {
+    Min,
+    Mini,
+    Medium,
+    Full,
+}
+
+const HISTORY_COMPACT_CMD_MAX_CHARS: usize = 96;
+const HISTORY_STD_DETAILS_MAX_CHARS: usize = 1600;
+const HISTORY_BASH_OUTPUT_MINI_LINES: usize = 8;
+const HISTORY_BASH_OUTPUT_FULL_LINES: usize = 24;
+
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentToolStatus {
@@ -295,33 +309,35 @@ pub enum AgentToolPendingReason {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentToolResult {
     #[serde(default)]
-    pub status: AgentToolStatus,
-    #[serde(default)]
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    #[serde(rename = "detail", default = "default_json_object")]
-    pub details: Json,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub return_code: Option<i32>,
+    pub is_agent_tool: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmd_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cmd_args: Option<String>,
+    #[serde(default)]
+    pub status: AgentToolStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub partial_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_reason: Option<AgentToolPendingReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_after: Option<u64>,
-    #[serde(skip)]
-    pub cmd_line: String,
-    #[serde(skip)]
-    pub stdout: Option<String>,
-    #[serde(skip)]
-    pub stderr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_wait: Option<String>,
+
+    #[serde(default)]
+    pub summary: String,
+    #[serde(rename = "detail", default = "default_json_object")]
+    pub details: Json,
+
+    //下面的都是is_agent_tool = false 的属性
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd_args: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_output: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -350,6 +366,8 @@ pub struct CliRunOutput {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CliResultEnvelope {
+    #[serde(default)]
+    pub is_agent_tool: bool,
     pub status: CliStatus,
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -358,9 +376,9 @@ pub struct CliResultEnvelope {
     pub cmd_line: Option<String>,
     pub detail: Json,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stdout: Option<String>,
+    pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stderr: Option<String>,
+    pub return_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_reason: Option<CliPendingReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -412,52 +430,20 @@ fn truncate_prompt_stream_lines(content: &str, max_lines: usize) -> String {
 
 impl AgentToolResult {
     pub fn from_details(details: Json) -> Self {
-        let status = details
-            .get("status")
-            .and_then(Json::as_str)
-            .and_then(parse_agent_tool_status);
-        let summary = details
-            .get("summary")
-            .and_then(Json::as_str)
-            .map(|value| value.to_string())
-            .unwrap_or_default();
-        let return_code = details
-            .get("return_code")
-            .or_else(|| details.get("exit_code"))
-            .and_then(Json::as_i64)
-            .and_then(|value| i32::try_from(value).ok());
-        let output = details
-            .get("output")
-            .and_then(Json::as_str)
-            .map(|value| value.to_string());
-        let task_id = details
-            .get("task_id")
-            .and_then(Json::as_str)
-            .map(|value| value.to_string());
-        let partial_output = details
-            .get("partial_output")
-            .and_then(Json::as_str)
-            .map(|value| value.to_string());
-        let pending_reason = details
-            .get("pending_reason")
-            .and_then(Json::as_str)
-            .and_then(parse_agent_tool_pending_reason);
-        let check_after = details.get("check_after").and_then(Json::as_u64);
         Self {
-            status: status.unwrap_or(AgentToolStatus::Success),
-            summary,
-            output,
-            cmd_line: String::new(),
-            stdout: None,
-            stderr: None,
+            is_agent_tool: false,
+            status: AgentToolStatus::Success,
+            summary: String::new(),
             details,
-            return_code,
+            return_code: None,
             cmd_name: None,
             cmd_args: None,
-            task_id,
-            partial_output,
-            pending_reason,
-            check_after,
+            task_id: None,
+            partial_output: None,
+            pending_reason: None,
+            check_after: None,
+            estimated_wait: None,
+            output: None,
         }
     }
 
@@ -466,8 +452,14 @@ impl AgentToolResult {
         self
     }
 
+    pub fn with_is_agent_tool(mut self, is_agent_tool: bool) -> Self {
+        self.is_agent_tool = is_agent_tool;
+        self
+    }
+
     pub fn with_cmd_line(mut self, cmd_line: impl Into<String>) -> Self {
-        self.cmd_line = cmd_line.into();
+        let cmd_line = cmd_line.into();
+        self = self.with_command_metadata_from_line(cmd_line.as_str());
         self
     }
 
@@ -484,6 +476,34 @@ impl AgentToolResult {
 
     pub fn with_return_code(mut self, return_code: i32) -> Self {
         self.return_code = Some(return_code);
+        self
+    }
+
+    pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
+        let task_id = task_id.into();
+        self.task_id = (!task_id.trim().is_empty()).then_some(task_id);
+        self
+    }
+
+    pub fn with_pending_reason(mut self, pending_reason: AgentToolPendingReason) -> Self {
+        self.pending_reason = Some(pending_reason);
+        self
+    }
+
+    pub fn with_check_after(mut self, check_after: u64) -> Self {
+        self.check_after = Some(check_after);
+        self
+    }
+
+    pub fn with_partial_output(mut self, partial_output: impl Into<String>) -> Self {
+        let partial_output = partial_output.into();
+        self.partial_output = (!partial_output.trim().is_empty()).then_some(partial_output);
+        self
+    }
+
+    pub fn with_estimated_wait(mut self, estimated_wait: impl Into<String>) -> Self {
+        let estimated_wait = estimated_wait.into();
+        self.estimated_wait = (!estimated_wait.trim().is_empty()).then_some(estimated_wait);
         self
     }
 
@@ -522,25 +542,19 @@ impl AgentToolResult {
         self
     }
 
-    pub fn with_stdout(mut self, stdout: Option<String>) -> Self {
-        self.stdout = stdout;
-        self
-    }
-
-    pub fn with_stderr(mut self, stderr: Option<String>) -> Self {
-        self.stderr = stderr;
-        self
-    }
-
     pub fn render_prompt(&self) -> String {
         let mut lines = Vec::<String>::new();
-        let ok = self.status != AgentToolStatus::Error;
+        let cmd_line = self.command_line_text();
         let summary = match (
-            self.cmd_line.trim().is_empty(),
+            cmd_line.as_deref().unwrap_or_default().trim().is_empty(),
             Some(self.summary.trim()).filter(|value| !value.is_empty()),
         ) {
-            (false, Some(result)) => format!("{} => {}", self.cmd_line.trim(), result),
-            (false, None) => self.cmd_line.trim().to_string(),
+            (false, Some(result)) => format!(
+                "{} => {}",
+                cmd_line.as_deref().unwrap_or_default().trim(),
+                result
+            ),
+            (false, None) => cmd_line.unwrap_or_default().trim().to_string(),
             (true, Some(result)) => result.to_string(),
             (true, None) => compact_json_text(&self.details, 220),
         };
@@ -555,29 +569,172 @@ impl AgentToolResult {
             lines.push("```output".to_string());
             lines.push(truncate_prompt_stream_lines(output, PROMPT_STDIO_MAX_LINES));
             lines.push("```".to_string());
-        } else if let Some(stdout) = self
-            .stdout
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            lines.push("```stdout".to_string());
-            lines.push(truncate_prompt_stream_lines(stdout, PROMPT_STDIO_MAX_LINES));
-            lines.push("```".to_string());
-        }
-        if !ok {
-            if let Some(stderr) = self
-                .stderr
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-            {
-                lines.push("```stderr".to_string());
-                lines.push(truncate_prompt_stream_lines(stderr, PROMPT_STDIO_MAX_LINES));
-                lines.push("```".to_string());
-            }
         }
         lines.join("\n")
+    }
+
+    pub fn render_for_level(&self, level: AgentHistoryShowLevel) -> String {
+        if self.is_agent_tool {
+            self.render_agent_tool_for_level(level)
+        } else {
+            self.render_bash_result_for_level(level)
+        }
+    }
+
+    pub fn command_line_text(&self) -> Option<String> {
+        self.cmd_name.as_ref().map(|cmd_name| match self
+            .cmd_args
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(cmd_args) => format!("{cmd_name} {cmd_args}"),
+            None => cmd_name.clone(),
+        })
+    }
+
+    fn render_agent_tool_for_level(&self, level: AgentHistoryShowLevel) -> String {
+        match level {
+            AgentHistoryShowLevel::Min => {
+                self.render_command_with_status(self.history_compact_command_text())
+            }
+            AgentHistoryShowLevel::Mini | AgentHistoryShowLevel::Medium => {
+                let summary = self.summary.trim();
+                if summary.is_empty() {
+                    self.render_command_with_status(self.history_compact_command_text())
+                } else {
+                    summary.to_string()
+                }
+            }
+            AgentHistoryShowLevel::Full => {
+                let command = self
+                    .history_compact_command_text()
+                    .or_else(|| self.command_line_text())
+                    .unwrap_or_else(|| "action".to_string());
+                let mut lines = vec![command];
+                let mut body = vec![self.history_result_text()];
+                if let Some(details) = self.render_agent_tool_details_block() {
+                    body.push(details);
+                }
+                lines.push("```result".to_string());
+                lines.push(body.join("\n"));
+                lines.push("```".to_string());
+                lines.join("\n")
+            }
+        }
+    }
+
+    fn render_bash_result_for_level(&self, level: AgentHistoryShowLevel) -> String {
+        let command = match level {
+            AgentHistoryShowLevel::Min | AgentHistoryShowLevel::Mini => {
+                self.history_compact_command_text()
+            }
+            AgentHistoryShowLevel::Medium | AgentHistoryShowLevel::Full => {
+                self.command_line_text()
+                    .or_else(|| self.history_compact_command_text())
+            }
+        };
+        let mut lines = vec![self.render_command_with_status(command)];
+
+        let excerpt = match level {
+            AgentHistoryShowLevel::Min => None,
+            AgentHistoryShowLevel::Mini => match self.status {
+                AgentToolStatus::Error => self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES),
+                _ => None,
+            },
+            AgentHistoryShowLevel::Medium => match self.status {
+                AgentToolStatus::Error => self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES),
+                AgentToolStatus::Success => self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_MINI_LINES),
+                AgentToolStatus::Pending => None,
+            },
+            AgentHistoryShowLevel::Full => match self.status {
+                AgentToolStatus::Error => self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_FULL_LINES),
+                AgentToolStatus::Success => self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_FULL_LINES),
+                AgentToolStatus::Pending => None,
+            },
+        };
+
+        if let Some(excerpt) = excerpt {
+            lines.push("```output".to_string());
+            lines.push(excerpt);
+            lines.push("```".to_string());
+        }
+        lines.join("\n")
+    }
+
+    fn history_compact_command_text(&self) -> Option<String> {
+        let cmd = self.command_line_text()?;
+        Some(truncate_text(cmd.trim(), HISTORY_COMPACT_CMD_MAX_CHARS))
+    }
+
+    fn render_command_with_status(&self, command: Option<String>) -> String {
+        let status = self.history_result_text();
+        match command
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(command) => format!("{command} => {status}"),
+            None => status,
+        }
+    }
+
+    fn history_result_text(&self) -> String {
+        match self.status {
+            AgentToolStatus::Success => "success".to_string(),
+            AgentToolStatus::Pending => match self.history_pending_reason_text() {
+                Some(reason) => format!("pending ({reason})"),
+                None => "pending".to_string(),
+            },
+            AgentToolStatus::Error => match self.history_error_reason_text() {
+                Some(reason) => format!("failed ({reason})"),
+                None => "failed".to_string(),
+            },
+        }
+    }
+
+    fn history_pending_reason_text(&self) -> Option<String> {
+        self.pending_reason
+            .map(history_pending_reason_label)
+            .map(str::to_string)
+    }
+
+    fn history_error_reason_text(&self) -> Option<String> {
+        self.output
+            .as_deref()
+            .and_then(last_non_empty_line)
+            .map(|value| collapse_inline_whitespace(value, 120))
+            .or_else(|| self.return_code.map(|code| format!("exit={code}")))
+            .or_else(|| {
+                let summary = self.summary.trim();
+                (!summary.is_empty()).then(|| collapse_inline_whitespace(summary, 120))
+            })
+    }
+
+    fn render_agent_tool_details_block(&self) -> Option<String> {
+        match &self.details {
+            Json::Null => None,
+            Json::Object(map) if map.is_empty() => None,
+            value => Some(truncate_text(
+                serde_json::to_string_pretty(value)
+                    .unwrap_or_else(|_| compact_json_text(value, HISTORY_STD_DETAILS_MAX_CHARS))
+                    .as_str(),
+                HISTORY_STD_DETAILS_MAX_CHARS,
+            )),
+        }
+    }
+
+    fn render_output_excerpt(&self, head: bool, max_lines: usize) -> Option<String> {
+        let output = self
+            .output
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        if head {
+            Some(take_head_lines(output, max_lines))
+        } else {
+            Some(take_tail_lines(output, max_lines))
+        }
     }
 }
 
@@ -595,10 +752,66 @@ impl std::fmt::Display for AgentToolResult {
     }
 }
 
+fn history_pending_reason_label(reason: AgentToolPendingReason) -> &'static str {
+    match reason {
+        AgentToolPendingReason::LongRunning => "long_running",
+        AgentToolPendingReason::UserApproval => "user_approval",
+        AgentToolPendingReason::WaitForInstall => "wait_for_install",
+    }
+}
+
+fn collapse_inline_whitespace(input: &str, max_chars: usize) -> String {
+    let collapsed = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_text(collapsed.as_str(), max_chars)
+}
+
+fn last_non_empty_line(input: &str) -> Option<&str> {
+    input
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+}
+
+fn take_head_lines(content: &str, max_lines: usize) -> String {
+    if max_lines == 0 {
+        return String::new();
+    }
+    let lines = content.lines().collect::<Vec<_>>();
+    if lines.len() <= max_lines {
+        return content.to_string();
+    }
+    let mut out = lines[..max_lines].join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(
+        format!("... [TRUNCATED: showing first {max_lines} lines only] ...").as_str(),
+    );
+    out
+}
+
+fn take_tail_lines(content: &str, max_lines: usize) -> String {
+    if max_lines == 0 {
+        return String::new();
+    }
+    let lines = content.lines().collect::<Vec<_>>();
+    if lines.len() <= max_lines {
+        return content.to_string();
+    }
+    let start = lines.len().saturating_sub(max_lines);
+    let mut out = String::from("... [TRUNCATED: showing last ");
+    out.push_str(max_lines.to_string().as_str());
+    out.push_str(" lines only] ...\n");
+    out.push_str(lines[start..].join("\n").as_str());
+    out
+}
+
 impl CliResultEnvelope {
     pub fn from_tool_result(tool_name: &str, result: AgentToolResult) -> Self {
         let detail = result.details.clone();
         Self {
+            is_agent_tool: true,
             status: result.status.into(),
             summary: if result.summary.trim().is_empty() {
                 "completed".to_string()
@@ -606,17 +819,13 @@ impl CliResultEnvelope {
                 result.summary.clone()
             },
             tool: Some(tool_name.to_string()),
-            cmd_line: (!result.cmd_line.trim().is_empty()).then_some(result.cmd_line),
+            cmd_line: result.command_line_text(),
             detail,
-            stdout: result.stdout,
-            stderr: result.stderr,
+            output: result.output,
+            return_code: result.return_code,
             pending_reason: result.pending_reason.map(Into::into),
             task_id: result.task_id,
-            estimated_wait: result
-                .details
-                .get("estimated_wait")
-                .and_then(Json::as_str)
-                .map(|value| value.to_string()),
+            estimated_wait: result.estimated_wait,
             check_after: result.check_after,
         }
     }
@@ -624,16 +833,14 @@ impl CliResultEnvelope {
     pub fn error(tool_name: Option<&str>, err: &AgentToolError) -> Self {
         let message = err.to_string();
         Self {
+            is_agent_tool: true,
             status: CliStatus::Error,
             summary: message.clone(),
             tool: tool_name.map(|value| value.to_string()),
             cmd_line: None,
-            detail: json!({
-                "error_type": cli_error_kind(err),
-                "message": message,
-            }),
-            stdout: None,
-            stderr: None,
+            detail: json!({}),
+            output: Some(message.clone()),
+            return_code: None,
             pending_reason: None,
             task_id: None,
             estimated_wait: None,
@@ -643,13 +850,14 @@ impl CliResultEnvelope {
 
     pub fn success(tool: Option<String>, detail: Json, summary: impl Into<String>) -> Self {
         Self {
+            is_agent_tool: true,
             status: CliStatus::Success,
             summary: summary.into(),
             tool,
             cmd_line: None,
             detail,
-            stdout: None,
-            stderr: None,
+            output: None,
+            return_code: None,
             pending_reason: None,
             task_id: None,
             estimated_wait: None,
@@ -659,64 +867,32 @@ impl CliResultEnvelope {
 
     pub fn into_tool_result(self) -> AgentToolResult {
         let Self {
+            is_agent_tool,
             status,
             summary,
-            tool,
+            tool: _tool,
             cmd_line,
             detail,
-            stdout,
-            stderr,
+            output,
+            return_code,
             pending_reason,
             task_id,
             estimated_wait,
             check_after,
         } = self;
-        let mut detail = detail;
-        if let Some(map) = detail.as_object_mut() {
-            if let Some(tool) = tool.as_ref() {
-                map.entry("tool".to_string())
-                    .or_insert_with(|| Json::String(tool.clone()));
-            }
-            if let Some(cmd_line) = cmd_line.as_ref() {
-                map.entry("cmd_line".to_string())
-                    .or_insert_with(|| Json::String(cmd_line.clone()));
-            }
-            if let Some(estimated_wait) = estimated_wait.as_ref() {
-                map.entry("estimated_wait".to_string())
-                    .or_insert_with(|| Json::String(estimated_wait.clone()));
-            }
-        }
-
         let mut result = AgentToolResult::from_details(detail)
+            .with_is_agent_tool(is_agent_tool)
             .with_status(status.into())
             .with_result(summary);
-        result.cmd_line = cmd_line.unwrap_or_default();
-        result.output = result.output.or_else(|| {
-            stdout
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string())
-                .or_else(|| {
-                    stderr
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(|value| value.to_string())
-                })
-        });
-        result.stdout = stdout.clone();
-        result.stderr = stderr.clone();
+        if let Some(cmd_line) = cmd_line.as_deref() {
+            result = result.with_command_metadata_from_line(cmd_line);
+        }
+        result.output = result.output.or(output);
+        result.return_code = result.return_code.or(return_code);
         result.task_id = task_id;
         result.check_after = check_after;
-        result.partial_output = result.partial_output.or_else(|| {
-            stdout
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string())
-        });
         result.pending_reason = pending_reason.map(Into::into);
+        result.estimated_wait = estimated_wait;
         result
     }
 }
@@ -739,34 +915,6 @@ pub fn cli_exit_code_for_error(err: &AgentToolError) -> i32 {
         AgentToolError::AlreadyExists(_)
         | AgentToolError::ExecFailed(_)
         | AgentToolError::Timeout => CLI_EXIT_ERROR,
-    }
-}
-
-pub fn cli_error_kind(err: &AgentToolError) -> &'static str {
-    match err {
-        AgentToolError::NotFound(_) => "not_found",
-        AgentToolError::AlreadyExists(_) => "already_exists",
-        AgentToolError::InvalidArgs(_) => "invalid_args",
-        AgentToolError::ExecFailed(_) => "exec_failed",
-        AgentToolError::Timeout => "timeout",
-    }
-}
-
-fn parse_agent_tool_status(raw: &str) -> Option<AgentToolStatus> {
-    match raw.trim() {
-        "success" => Some(AgentToolStatus::Success),
-        "error" => Some(AgentToolStatus::Error),
-        "pending" => Some(AgentToolStatus::Pending),
-        _ => None,
-    }
-}
-
-fn parse_agent_tool_pending_reason(raw: &str) -> Option<AgentToolPendingReason> {
-    match raw.trim() {
-        "long_running" => Some(AgentToolPendingReason::LongRunning),
-        "user_approval" => Some(AgentToolPendingReason::UserApproval),
-        "wait_for_install" | "external_callback" => Some(AgentToolPendingReason::WaitForInstall),
-        _ => None,
     }
 }
 
@@ -2366,20 +2514,61 @@ mod tests {
     }
 
     #[test]
-    fn agent_tool_result_render_prompt_truncates_stdout_by_lines() {
-        let stdout = (0..(PROMPT_STDIO_MAX_LINES + 10))
+    fn agent_tool_result_render_prompt_truncates_output_by_lines() {
+        let output = (0..(PROMPT_STDIO_MAX_LINES + 10))
             .map(|idx| format!("line-{idx:04}"))
             .collect::<Vec<_>>()
             .join("\n");
         let rendered = AgentToolResult::from_details(json!({"ok": true}))
             .with_cmd_line("read_file a.txt")
             .with_result("ok")
-            .with_stdout(Some(stdout))
+            .with_output(output)
             .render_prompt();
 
         assert!(rendered.contains("line-0000"));
         assert!(rendered.contains(format!("line-{:04}", PROMPT_STDIO_MAX_LINES - 1).as_str()));
         assert!(!rendered.contains(format!("line-{:04}", PROMPT_STDIO_MAX_LINES).as_str()));
         assert!(rendered.contains("TRUNCATED FOR ACTION PREVIEW"));
+    }
+
+    #[test]
+    fn render_for_level_standard_agent_tool_uses_summary_and_details() {
+        let result = AgentToolResult::from_details(json!({
+            "ok": true,
+            "path": "demo.txt",
+            "bytes": 12
+        }))
+        .with_is_agent_tool(true)
+        .with_cmd_line("read_file demo.txt range=1-2")
+        .with_result("read 12 bytes");
+
+        let min = result.render_for_level(AgentHistoryShowLevel::Min);
+        let mini = result.render_for_level(AgentHistoryShowLevel::Mini);
+        let full = result.render_for_level(AgentHistoryShowLevel::Full);
+
+        assert!(min.contains("read_file demo.txt range=1-2 => success"));
+        assert_eq!(mini, "read 12 bytes");
+        assert!(full.contains("read_file demo.txt range=1-2"));
+        assert!(full.contains("```result"));
+        assert!(full.contains("\"path\": \"demo.txt\""));
+    }
+
+    #[test]
+    fn render_for_level_non_agent_tool_shows_tail_on_failure() {
+        let result = AgentToolResult::from_details(json!({}))
+        .with_cmd_line("cargo test --package demo")
+        .with_status(AgentToolStatus::Error)
+        .with_return_code(1)
+        .with_output("line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nline-8\nline-9");
+
+        let mini = result.render_for_level(AgentHistoryShowLevel::Mini);
+        let full = result.render_for_level(AgentHistoryShowLevel::Full);
+
+        assert!(mini.contains("cargo test --package demo => failed (line-9)"));
+        assert!(mini.contains("```output"));
+        assert!(mini.contains("line-9"));
+        assert!(full.contains("cargo test --package demo => failed (line-9)"));
+        assert!(full.contains("line-1"));
+        assert!(full.contains("line-9"));
     }
 }

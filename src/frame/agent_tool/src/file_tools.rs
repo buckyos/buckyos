@@ -16,6 +16,7 @@ pub const TOOL_WRITE_FILE: &str = "write_file";
 pub const TOOL_READ_FILE: &str = "read_file";
 
 const CMD_PARAM_PREVIEW_KEEP_CHARS: usize = 32;
+const READ_FILE_PREVIEW_MAX_LINES: usize = 200;
 
 #[derive(Clone, Debug)]
 pub struct FileToolConfig {
@@ -304,6 +305,7 @@ impl AgentTool for EditFileTool {
             "no change".to_string()
         };
         Ok(AgentToolResult::from_details(details)
+            .with_is_agent_tool(true)
             .with_cmd_line(format!(
                 "{} {} mode={} pos_chunk=\"{}\" new_content=\"{}\"",
                 TOOL_EDIT_FILE,
@@ -468,6 +470,7 @@ impl AgentTool for WriteFileTool {
             updated_content.len()
         );
         Ok(AgentToolResult::from_details(details)
+            .with_is_agent_tool(true)
             .with_cmd_line(format!(
                 "{} {} mode={} content=\"{}\"",
                 TOOL_WRITE_FILE,
@@ -489,6 +492,21 @@ impl ReadFileTool {
         Self { cfg }
     }
 }
+
+/*
+
+ReadFileTool 构造 AgentToolResult
+cmd_name : read $path $first_chunk $range
+summary :
+    成功：read $path $first_chunk $range 成功，共读取 $bytes 字节，一共多少行。
+    ```content
+    200: line-1
+    201: line-2
+    ... truncated to 200 lines
+    ```
+details:
+    "content": $read_result
+*/
 
 #[async_trait]
 impl AgentTool for ReadFileTool {
@@ -537,33 +555,66 @@ impl AgentTool for ReadFileTool {
 
         let full_content = read_text_file_lossy(&abs_path).await?;
         let first_chunk = optional_string_arg(&args, "first_chunk")?;
-        let (selected_content, matched) = if let Some(first_chunk) = first_chunk.as_deref() {
-            if let Some(pos) = full_content.find(first_chunk) {
-                (full_content[pos..].to_string(), true)
+        let (chunk_content, matched, chunk_start_line) =
+            if let Some(first_chunk) = first_chunk.as_deref() {
+                if let Some(pos) = full_content.find(first_chunk) {
+                    (
+                        full_content[pos..].to_string(),
+                        true,
+                        full_content[..pos].bytes().filter(|b| *b == b'\n').count() + 1,
+                    )
+                } else {
+                    (String::new(), false, 1usize)
+                }
             } else {
-                (String::new(), false)
+                (full_content.clone(), true, 1usize)
+            };
+
+        let chunk_lines = split_lines_preserve_ending(&chunk_content);
+        let total_chunk_lines = chunk_lines.len();
+        let (range_start, range_end, line_range_label) =
+            if let Some((start, end)) = parse_line_range(&args, total_chunk_lines)? {
+                (start, end, format!("{start}-{end}"))
+            } else if total_chunk_lines == 0 {
+                (1usize, 0usize, String::new())
+            } else {
+                (1usize, total_chunk_lines, String::new())
+            };
+        let selected_start_idx = range_start.saturating_sub(1).min(total_chunk_lines);
+        let selected_end_idx = range_end.min(total_chunk_lines);
+        let selected_lines = if selected_start_idx < selected_end_idx {
+            chunk_lines[selected_start_idx..selected_end_idx].to_vec()
+        } else {
+            Vec::new()
+        };
+        let content = selected_lines.concat();
+        let read_line_count = selected_lines.len();
+        let start_line = if read_line_count == 0 {
+            None
+        } else {
+            Some(chunk_start_line + selected_start_idx)
+        };
+        let end_line = start_line.map(|start| start + read_line_count.saturating_sub(1));
+        let preview = build_read_file_output_preview(start_line, &selected_lines);
+        let preview_truncated = read_line_count > READ_FILE_PREVIEW_MAX_LINES;
+        let summary = if matched {
+            let lines_text = match (start_line, end_line) {
+                (Some(start), Some(end)) if start == end => format!("1 line at {start}"),
+                (Some(start), Some(end)) => format!("{read_line_count} lines at {start}-{end}"),
+                _ => "0 lines".to_string(),
+            };
+            let base = format!(
+                "succeeded, read {} bytes across {lines_text}",
+                content.len()
+            );
+            if preview.is_empty() {
+                base
+            } else {
+                format!("{base}\n```content\n{preview}\n```")
             }
         } else {
-            (full_content.clone(), true)
+            "succeeded, first_chunk was not found, read 0 bytes across 0 lines".to_string()
         };
-
-        let (selected_content, line_range_label) = {
-            let lines = selected_content.lines().collect::<Vec<_>>();
-            if let Some((start, end)) = parse_line_range(&args, lines.len())? {
-                let start_idx = start.saturating_sub(1).min(lines.len());
-                let end_idx = end.min(lines.len());
-                let slice = if start_idx < end_idx {
-                    lines[start_idx..end_idx].join("\n")
-                } else {
-                    String::new()
-                };
-                (slice, format!("{start}-{end}"))
-            } else {
-                (selected_content, String::new())
-            }
-        };
-
-        let content = selected_content;
         let details = json!({
             "ok": true,
             "path": file_path,
@@ -571,19 +622,21 @@ impl AgentTool for ReadFileTool {
             "content": content,
             "matched": matched,
             "line_range": line_range_label,
-            "bytes": full_content.len(),
-            "truncated": false,
+            "bytes": content.len(),
+            "line_count": read_line_count,
+            "start_line": start_line,
+            "end_line": end_line,
+            "preview_truncated": preview_truncated,
             "pwd": self.cfg.root_dir.to_string_lossy().to_string(),
         });
-        let stdout_payload = (!content.trim().is_empty()).then_some(content.clone());
         Ok(AgentToolResult::from_details(details)
-            .with_cmd_line(build_read_file_cmd_line(
+            .with_is_agent_tool(true)
+            .with_cmd_line(build_read_result_cmd_line(
                 &file_path,
-                args.get("range"),
                 first_chunk.as_deref(),
+                args.get("range"),
             ))
-            .with_result(format!("read {} bytes", full_content.len()))
-            .with_stdout(stdout_payload))
+            .with_result(summary))
     }
 
     async fn exec(
@@ -600,20 +653,13 @@ impl AgentTool for ReadFileTool {
         }
 
         let mut args = parse_read_file_bash_args(&tokens[1..])?;
-        let shell_cwd_for_details = shell_cwd.map(|cwd| cwd.to_path_buf());
+
         if let Some(shell_cwd) = shell_cwd {
             rewrite_read_file_path_with_shell_cwd(&mut args, shell_cwd);
         }
         let mut result = self.call(ctx, args).await?;
-        result.cmd_line = line.trim().to_string();
-        if let Some(cwd) = shell_cwd_for_details {
-            if let Some(map) = result.details.as_object_mut() {
-                map.insert(
-                    "pwd".to_string(),
-                    Json::String(cwd.to_string_lossy().to_string()),
-                );
-            }
-        }
+        result = result.with_command_metadata_from_line(line.trim());
+
         Ok(result)
     }
 }
@@ -1079,17 +1125,12 @@ fn compact_cmd_param_preview(raw: &str) -> String {
     format!("{head}...(total {total_lines} lines)...{tail}")
 }
 
-fn build_read_file_cmd_line(path: &str, range: Option<&Json>, first_chunk: Option<&str>) -> String {
-    let mut cmd = format!("{TOOL_READ_FILE} {path}");
-    if let Some(range) = range {
-        let range_text = range
-            .as_str()
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| serde_json::to_string(range).unwrap_or_else(|_| "null".to_string()));
-        if !range_text.trim().is_empty() {
-            cmd.push_str(format!(" range={range_text}").as_str());
-        }
-    }
+fn build_read_result_cmd_line(
+    path: &str,
+    first_chunk: Option<&str>,
+    range: Option<&Json>,
+) -> String {
+    let mut cmd = format!("read {path}");
     if let Some(first_chunk) = first_chunk {
         cmd.push_str(
             format!(
@@ -1099,7 +1140,52 @@ fn build_read_file_cmd_line(path: &str, range: Option<&Json>, first_chunk: Optio
             .as_str(),
         );
     }
+    if let Some(range) = range {
+        let range_text = range
+            .as_str()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| serde_json::to_string(range).unwrap_or_else(|_| "null".to_string()));
+        if !range_text.trim().is_empty() {
+            cmd.push_str(format!(" range={range_text}").as_str());
+        }
+    }
     cmd
+}
+
+fn split_lines_preserve_ending(content: &str) -> Vec<String> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+    content
+        .split_inclusive('\n')
+        .map(|line| line.to_string())
+        .collect()
+}
+
+fn build_read_file_output_preview(start_line: Option<usize>, selected_lines: &[String]) -> String {
+    let Some(start_line) = start_line else {
+        return String::new();
+    };
+
+    let mut out = String::new();
+    for (idx, line) in selected_lines
+        .iter()
+        .take(READ_FILE_PREVIEW_MAX_LINES)
+        .enumerate()
+    {
+        if idx > 0 {
+            out.push('\n');
+        }
+        let line_no = start_line + idx;
+        out.push_str(format!("{line_no}: {}", line.trim_end_matches(['\r', '\n'])).as_str());
+    }
+    if selected_lines.len() > READ_FILE_PREVIEW_MAX_LINES {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(format!("... truncated to {} lines", READ_FILE_PREVIEW_MAX_LINES).as_str());
+    }
+    out
 }
 
 fn build_simple_diff(
@@ -1226,12 +1312,12 @@ mod tests {
     }
 
     #[test]
-    fn build_read_file_cmd_line_uses_compact_preview_for_first_chunk() {
+    fn build_read_result_cmd_line_uses_compact_preview_for_first_chunk() {
         let mut chunk = String::new();
         for _ in 0..80 {
             chunk.push_str("line-x\n");
         }
-        let cmd = build_read_file_cmd_line("demo.txt", Some(&json!("1-5")), Some(&chunk));
+        let cmd = build_read_result_cmd_line("demo.txt", Some(&chunk), Some(&json!("1-5")));
         assert!(cmd.contains("read_file demo.txt range=1-5 first_chunk=\""));
         assert!(cmd.contains("...(total 80 lines)..."));
     }

@@ -714,12 +714,13 @@ fn build_large_read_file_results(step_idx: u32) -> HashMap<String, AgentToolResu
         }
 
         let result = AgentToolResult::from_details(json!({
-            "tool": "read_file",
-            "summary": format!("read {} lines", 40),
-            "output": body,
+            "path": path,
+            "content_preview": format!("{path} line 01")
         }))
+        .with_is_agent_tool(true)
         .with_cmd_line(format!("read_file {path} range=1-40"))
-        .with_result("read 40 lines");
+        .with_result("read 40 lines")
+        .with_output(body);
         results.insert(format!("read_file_{file_idx:02}"), result);
     }
     results

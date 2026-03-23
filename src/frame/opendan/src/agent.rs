@@ -2062,7 +2062,7 @@ impl AIAgent {
                             action_cmd_line.as_str(),
                             prompt_error.as_str(),
                         )
-                        .with_stderr(Some(err.to_string())),
+                        .with_output(err.to_string()),
                     );
 
                     if !run_all {
@@ -3260,44 +3260,13 @@ fn compact_action_error_for_prompt(err: &crate::agent_tool::AgentToolError) -> S
 
 fn annotate_action_result(
     result: &mut AgentToolResult,
-    tool_name: Option<&str>,
-    detail_action: &Json,
+    _tool_name: Option<&str>,
+    _detail_action: &Json,
     action_cmd_line: &str,
 ) {
-    if result.cmd_line.trim().is_empty() && !action_cmd_line.trim().is_empty() {
-        result.cmd_line = action_cmd_line.trim().to_string();
+    if result.cmd_name.is_none() && !action_cmd_line.trim().is_empty() {
+        *result = result.clone().with_command_metadata_from_line(action_cmd_line.trim());
     }
-
-    let mut details = match result.details.clone() {
-        Json::Object(map) => map,
-        other => {
-            let mut map = serde_json::Map::new();
-            if !other.is_null() {
-                map.insert("raw_detail".to_string(), other);
-            }
-            map
-        }
-    };
-
-    if let Some(tool_name) = tool_name.map(str::trim).filter(|value| !value.is_empty()) {
-        details
-            .entry("tool".to_string())
-            .or_insert_with(|| Json::String(tool_name.to_string()));
-    }
-    if !action_cmd_line.trim().is_empty() {
-        details
-            .entry("cmd_line".to_string())
-            .or_insert_with(|| Json::String(action_cmd_line.trim().to_string()));
-    }
-    for key in ["kind", "action_name", "command", "params"] {
-        if let Some(value) = detail_action.get(key) {
-            details
-                .entry(key.to_string())
-                .or_insert_with(|| value.clone());
-        }
-    }
-
-    result.details = Json::Object(details);
 }
 
 fn build_action_error_result(
@@ -3307,19 +3276,11 @@ fn build_action_error_result(
     message: &str,
 ) -> AgentToolResult {
     let mut result = AgentToolResult::from_details(json!({}))
+        .with_is_agent_tool(true)
         .with_status(AgentToolStatus::Error)
-        .with_result(message.trim().to_string());
-    if !message.trim().is_empty() {
-        result.stderr = Some(message.trim().to_string());
-    }
+        .with_result(message.trim().to_string())
+        .with_output(message.trim().to_string());
     annotate_action_result(&mut result, tool_name, detail_action, action_cmd_line);
-
-    if let Some(map) = result.details.as_object_mut() {
-        map.insert(
-            "error".to_string(),
-            Json::String(message.trim().to_string()),
-        );
-    }
     result
 }
 
@@ -3343,73 +3304,41 @@ fn is_internal_action_result(exec_id: &str) -> bool {
 }
 
 fn action_result_kind(result: &AgentToolResult) -> Option<&str> {
-    result.details.get("kind").and_then(Json::as_str)
+    result.details.get("kind").and_then(Json::as_str).or_else(|| {
+        if result.is_agent_tool {
+            Some("call_tool")
+        } else {
+            Some("exec")
+        }
+    })
 }
 
 fn action_result_tool_name(result: &AgentToolResult) -> Option<String> {
     result
-        .details
-        .get("tool")
-        .and_then(Json::as_str)
+        .cmd_name
+        .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            result
-                .cmd_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
 }
 
 fn action_result_cmd_digest(result: &AgentToolResult) -> String {
-    if let Some(command) = result
-        .details
-        .get("command")
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return command.to_string();
-    }
-    if let Some(action_name) = result
-        .details
-        .get("action_name")
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let params = result
-            .details
-            .get("params")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        return compact_action_cmd_line(action_name, &params);
-    }
-    if !result.cmd_line.trim().is_empty() {
-        return result.cmd_line.trim().to_string();
+    if let Some(cmd_line) = result.command_line_text() {
+        let cmd_line = cmd_line.trim().to_string();
+        if !cmd_line.is_empty() {
+            return cmd_line;
+        }
     }
     action_result_tool_name(result).unwrap_or_else(|| "action".to_string())
 }
 
 fn action_result_error_text(result: &AgentToolResult) -> Option<String> {
     result
-        .details
-        .get("error")
-        .and_then(Json::as_str)
+        .output
+        .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            result
-                .stderr
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
         .or_else(|| {
             (result.status == AgentToolStatus::Error)
                 .then(|| result.summary.trim().to_string())
@@ -3466,14 +3395,8 @@ fn action_results_latest_pwd(results: &ActionResultsMap) -> Option<String> {
 }
 
 fn extract_action_result_pwd(result: &crate::agent_tool::AgentToolResult) -> Option<String> {
-    result
-        .details
-        .get("pwd")
-        .or_else(|| result.details.get("cwd"))
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(|v| v.to_string())
+    let _ = result;
+    None
 }
 
 async fn resolve_agent_env_root(agent_root: &Path) -> Result<PathBuf> {
@@ -4200,11 +4123,18 @@ system: "test behavior for action rendering"
         let results = agent.execute_actions(&trace, &actions).await;
         let missing_exec = results
             .values()
-            .find(|result| result.cmd_line.trim() == "cat missing_exec_preview.txt")
+            .find(|result| {
+                result.command_line_text().as_deref() == Some("cat missing_exec_preview.txt")
+            })
             .expect("missing exec result should exist");
         let curl_exec = results
             .values()
-            .find(|result| result.cmd_line.contains("curl_source.txt"))
+            .find(|result| {
+                result
+                    .command_line_text()
+                    .map(|value| value.contains("curl_source.txt"))
+                    .unwrap_or(false)
+            })
             .expect("curl exec result should exist");
         let rendered = render_action_results_for_prompt(&results);
         println!(
@@ -4214,7 +4144,10 @@ system: "test behavior for action rendering"
 
         assert_eq!(missing_exec.status, AgentToolStatus::Error);
         assert_ne!(missing_exec.return_code, Some(0));
-        assert!(missing_exec.cmd_line.contains("missing_exec_preview.txt"));
+        assert!(missing_exec
+            .command_line_text()
+            .map(|value| value.contains("missing_exec_preview.txt"))
+            .unwrap_or(false));
         assert_eq!(curl_exec.status, AgentToolStatus::Success);
         assert_eq!(curl_exec.return_code, Some(0));
         assert!(rendered.contains("ActionResults:"));
@@ -4244,7 +4177,6 @@ system: "test behavior for action rendering"
         assert!(
             rendered.contains("write mode `new` requires target file not exist: write_preview.txt")
         );
-        assert!(rendered.contains("pwd: "));
         assert!(rendered.contains("tree_preview/dir-03"));
         assert!(rendered.contains("pos_chunk=\"line-beta\""));
         assert!(rendered.contains("pos_chunk=\"line-gamma\""));

@@ -1,5 +1,6 @@
 use std::env;
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -61,6 +62,7 @@ struct CliRuntimeEnv {
     agent_env_root: PathBuf,
     has_agent_env: bool,
     current_dir: PathBuf,
+    stdout_is_terminal: bool,
     call_ctx: SessionRuntimeContext,
 }
 
@@ -82,6 +84,7 @@ impl CliRuntimeEnv {
             agent_env_root,
             has_agent_env,
             current_dir,
+            stdout_is_terminal: std::io::stdout().is_terminal(),
             call_ctx: SessionRuntimeContext {
                 trace_id: first_string_env(&["OPENDAN_TRACE_ID"])
                     .unwrap_or_else(|| DEFAULT_TRACE_ID.to_string()),
@@ -96,6 +99,10 @@ impl CliRuntimeEnv {
                     .unwrap_or_else(|| DEFAULT_SESSION_ID.to_string()),
             },
         })
+    }
+
+    fn use_plain_text_read_output(&self) -> bool {
+        !self.has_agent_env && !self.stdout_is_terminal
     }
 }
 
@@ -186,11 +193,18 @@ async fn execute(
             ))
         }
         ParsedCommand::ReadFile { tool_name, args } => {
-            let result = run_read_file(&env, args).await?;
-            Ok(render_cli_output(
-                &success_envelope(&tool_name, result),
-                EXIT_SUCCESS,
-            ))
+            if env.use_plain_text_read_output() {
+                match run_read_file(&env, args).await {
+                    Ok(result) => Ok(render_plain_read_file_output(result)),
+                    Err(err) => Ok(render_plain_error_output(&err)),
+                }
+            } else {
+                let result = run_read_file(&env, args).await?;
+                Ok(render_cli_output(
+                    &success_envelope(&tool_name, result),
+                    EXIT_SUCCESS,
+                ))
+            }
         }
         ParsedCommand::WriteFile {
             tool_name,
@@ -1144,6 +1158,28 @@ fn success_envelope(tool_name: &str, result: AgentToolResult) -> CliResultEnvelo
     CliResultEnvelope::from_tool_result(tool_name, result)
 }
 
+fn render_plain_read_file_output(result: AgentToolResult) -> CliRunOutput {
+    let stdout = result
+        .details
+        .get("content")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    CliRunOutput {
+        exit_code: EXIT_SUCCESS,
+        stdout,
+        stderr: String::new(),
+    }
+}
+
+fn render_plain_error_output(err: &AgentToolError) -> CliRunOutput {
+    CliRunOutput {
+        exit_code: cli_exit_code_for_error(err),
+        stdout: String::new(),
+        stderr: err.to_string(),
+    }
+}
+
 async fn build_help_envelope(_env: &CliRuntimeEnv, tool_name: Option<&str>) -> CliResultEnvelope {
     static_help_envelope(tool_name)
 }
@@ -1561,19 +1597,47 @@ fn build_check_task_envelope(tool_name: &str, task: Task) -> CliResultEnvelope {
     let top_status = task_protocol_status(&task);
     let summary = task_summary(&task, top_status);
     let pending_reason = task_pending_reason(&task);
-    let mut detail = normalized_task_detail(&task);
-    if let Some(map) = detail.as_object_mut() {
-        map.insert("task".to_string(), json!(task.clone()));
+    let is_agent_tool = task
+        .data
+        .get("is_agent_tool")
+        .and_then(Json::as_bool)
+        .unwrap_or(true);
+    let mut detail = if is_agent_tool {
+        normalized_task_detail(&task)
+    } else {
+        json!({})
+    };
+    if is_agent_tool {
+        if let Some(map) = detail.as_object_mut() {
+            map.insert("task".to_string(), json!(task.clone()));
+        }
     }
 
     CliResultEnvelope {
+        is_agent_tool,
         status: top_status,
         summary,
-        tool: Some(tool_name.to_string()),
-        cmd_line: Some(format!("{tool_name} {}", task.id)),
+        tool: is_agent_tool.then_some(tool_name.to_string()),
+        cmd_line: if is_agent_tool {
+            Some(format!("{tool_name} {}", task.id))
+        } else {
+            task.data
+                .get("command")
+                .and_then(Json::as_str)
+                .map(|value| value.to_string())
+        },
         detail,
-        stdout: None,
-        stderr: None,
+        output: task
+            .data
+            .get("output")
+            .and_then(Json::as_str)
+            .map(|value| value.to_string()),
+        return_code: task
+            .data
+            .get("return_code")
+            .or_else(|| task.data.get("exit_code"))
+            .and_then(Json::as_i64)
+            .and_then(|value| i32::try_from(value).ok()),
         pending_reason,
         task_id: Some(task.id.to_string()),
         estimated_wait: task
@@ -1610,13 +1674,14 @@ fn build_cancel_task_envelope(
     };
 
     CliResultEnvelope {
+        is_agent_tool: true,
         status: CliStatus::Success,
         summary,
         tool: Some(tool_name.to_string()),
         cmd_line: Some(format!("{tool_name} {}", task.id)),
         detail,
-        stdout: None,
-        stderr: None,
+        output: None,
+        return_code: None,
         pending_reason: None,
         task_id: Some(task.id.to_string()),
         estimated_wait: None,
@@ -1770,6 +1835,7 @@ mod tests {
             agent_env_root: canonicalize_or_normalize(agent_env_root, None),
             has_agent_env: true,
             current_dir: canonicalize_or_normalize(current_dir, None),
+            stdout_is_terminal: true,
             call_ctx: SessionRuntimeContext {
                 trace_id: "trace-test".to_string(),
                 agent_name: "did:example:agent".to_string(),
@@ -1836,7 +1902,7 @@ mod tests {
         assert_eq!(output.exit_code, EXIT_SUCCESS);
         let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
         assert_eq!(payload["status"], "success");
-        assert_eq!(payload["detail"]["tool"], TOOL_READ_FILE);
+        assert_eq!(payload["cmd_name"], TOOL_READ_FILE);
         assert_eq!(payload["detail"]["content"], "line-1");
     }
 
@@ -1971,6 +2037,7 @@ mod tests {
                 agent_env_root: canonicalize_or_normalize(temp.path().join("cwd"), None),
                 has_agent_env: false,
                 current_dir: canonicalize_or_normalize(temp.path().join("cwd"), None),
+                stdout_is_terminal: true,
                 call_ctx: SessionRuntimeContext {
                     trace_id: "trace-test".to_string(),
                     agent_name: "did:example:agent".to_string(),
@@ -1988,6 +2055,46 @@ mod tests {
         let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
         assert_eq!(payload["status"], "success");
         assert_eq!(payload["detail"]["content"], "free\n");
+    }
+
+    #[tokio::test]
+    async fn read_file_without_agent_env_and_without_tty_returns_plain_text() {
+        let temp = tempdir().expect("create tempdir");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside)
+            .await
+            .expect("create outside dir");
+        fs::write(outside.join("demo.txt"), "free\n")
+            .await
+            .expect("write outside file");
+
+        let output = execute(
+            vec![
+                OsString::from("/tmp/read_file"),
+                OsString::from(outside.join("demo.txt")),
+            ],
+            CliRuntimeEnv {
+                agent_env_root: canonicalize_or_normalize(temp.path().join("cwd"), None),
+                has_agent_env: false,
+                current_dir: canonicalize_or_normalize(temp.path().join("cwd"), None),
+                stdout_is_terminal: false,
+                call_ctx: SessionRuntimeContext {
+                    trace_id: "trace-test".to_string(),
+                    agent_name: "did:example:agent".to_string(),
+                    behavior: "cli".to_string(),
+                    step_idx: 0,
+                    wakeup_id: "wakeup-test".to_string(),
+                    session_id: "session-test".to_string(),
+                },
+            },
+            None,
+        )
+        .await
+        .expect("run read_file");
+
+        assert_eq!(output.exit_code, EXIT_SUCCESS);
+        assert_eq!(output.stdout, "free\n");
+        assert!(output.stderr.is_empty());
     }
 
     #[tokio::test]

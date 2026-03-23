@@ -70,6 +70,7 @@ AgentTool CLI 可执行文件启动
 协议文档已单独整理，见：
 
 - [agent_tool_result_protocol.md](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/agent_tool_result_protocol.md)
+- [builtin_agent_tools.md](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/builtin_agent_tools.md)
 
 本节只保留设计动机。具体字段定义、兼容规则、`output/detail` 分工、`exec_bash` 的判定规则都以单独文档为准。
 
@@ -95,8 +96,9 @@ AgentTool CLI 可执行文件启动
 ### 当前协议要点
 
 - 顶层协议对象统一为 `AgentToolResult`
-- `output` 是 bash 主输出
+- 对 builtin tool，固定字段优先是 `is_agent_tool / cmd_name / status / summary / detail`
 - `detail` 是内置工具结构化数据
+- `output` 不是 builtin tool 默认字段，只在明确需要 bash 主文本输出时才使用
 - `pending_reason` 当前统一使用 `long_running | user_approval | wait_for_install`
 - 历史值 `external_callback` 仅作为兼容别名继续接受
 
@@ -122,7 +124,7 @@ pending (user_approval)  →  pending (long_running)  →  success
 ### 设计要点
 
 - 所有自有 AgentTool 的 stdout 输出遵循此统一 JSON 协议
-- `summary` 字段在任何 status 下都有，支持 WorkLog 的不同粒度压缩渲染
+- builtin tool 应稳定提供 `cmd_name` 与 `summary`，支持 WorkLog 的不同粒度压缩渲染
 - 外部原生命令（非自有工具）的输出仍为纯文本，由 Runtime 侧做通用处理
 
 ## 异步执行与长任务支持
