@@ -1035,7 +1035,10 @@ esac
             }
         }
         if let Some(root) = std::env::var_os("BUCKYOS_ROOT") {
-            let candidate = PathBuf::from(root).join("bin").join("opendan").join("agent_tool");
+            let candidate = PathBuf::from(root)
+                .join("bin")
+                .join("opendan")
+                .join("agent_tool");
             if candidate.exists() {
                 return true;
             }

@@ -52,6 +52,7 @@ const EXEC_BASH_AGENT_CLI_TOOL_NAMES: [&str; 7] = [
 ];
 const EXEC_BASH_ALWAYS_AVAILABLE_CLI_TOOL_NAMES: [&str; 2] = ["check_task", "cancel_task"];
 static EXEC_BASH_TASK_NAME_SEQ: AtomicU64 = AtomicU64::new(1);
+static EXEC_BASH_RUN_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 struct PreparedSessionToolEnv {
@@ -363,6 +364,7 @@ struct ExecBashTmuxRunHandle {
     run_id: String,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
+    exit_code_path: PathBuf,
     script_path: PathBuf,
     tmux_session: String,
     tmux_target: String,
@@ -635,17 +637,26 @@ impl ExecBashTool {
         })?;
 
         let run_id = format!(
-            "{}-{}-{}-{}",
+            "{}-{}-{}-{}-{}",
             now_ms(),
             sanitize_token_for_id(&ctx.trace_id),
             sanitize_token_for_id(&ctx.behavior),
-            ctx.step_idx
+            ctx.step_idx,
+            EXEC_BASH_RUN_SEQ.fetch_add(1, Ordering::Relaxed)
         );
         let stdout_path = runtime_dir.join(format!("{run_id}.stdout.log"));
         let stderr_path = runtime_dir.join(format!("{run_id}.stderr.log"));
+        let exit_code_path = runtime_dir.join(format!("{run_id}.exit.code"));
         let script_path = runtime_dir.join(format!("{run_id}.exec.sh"));
-        let script =
-            build_tmux_exec_script(&run_id, &stdout_path, &stderr_path, cwd, command, env_vars);
+        let script = build_tmux_exec_script(
+            &run_id,
+            &stdout_path,
+            &stderr_path,
+            &exit_code_path,
+            cwd,
+            command,
+            env_vars,
+        );
         fs::write(&script_path, script).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
                 "write exec script `{}` failed: {err}",
@@ -671,6 +682,7 @@ impl ExecBashTool {
             run_id,
             stdout_path,
             stderr_path,
+            exit_code_path,
             script_path,
             tmux_session,
             tmux_target,
@@ -685,7 +697,7 @@ impl ExecBashTool {
         handle: ExecBashTmuxRunHandle,
         timeout_ms: Option<u64>,
     ) -> Result<ExecBashTmuxRunState, AgentToolError> {
-        match wait_tmux_exit_code(&handle.tmux_target, &handle.run_id, timeout_ms).await? {
+        match wait_tmux_exit_code(&handle, &handle.run_id, timeout_ms).await? {
             Some(exit_code) => {
                 let result = read_tmux_run_result(&handle, exit_code).await?;
                 cleanup_tmux_run_files(&handle).await;
@@ -1384,10 +1396,27 @@ fn extract_tmux_run_output(pane: &str, run_id: &str) -> String {
     output.trim().to_string()
 }
 
+fn mixed_output_from_tmux_and_logs(pane_output: String, stdout: &[u8], stderr: &[u8]) -> String {
+    let pane_output = pane_output.trim().to_string();
+    if !pane_output.is_empty() {
+        return pane_output;
+    }
+
+    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (false, false) => format!("{stdout}\n{stderr}"),
+        (true, true) => String::new(),
+    }
+}
+
 fn build_tmux_exec_script(
     run_id: &str,
     stdout_path: &Path,
     stderr_path: &Path,
+    exit_code_path: &Path,
     cwd: &Path,
     command: &str,
     env_vars: &[(String, String)],
@@ -1403,6 +1432,10 @@ fn build_tmux_exec_script(
         shell_single_quote(stderr_path.to_string_lossy().as_ref())
     ));
     lines.push(format!(
+        "__od_exit_code={}",
+        shell_single_quote(exit_code_path.to_string_lossy().as_ref())
+    ));
+    lines.push(format!(
         "__od_cwd={}",
         shell_single_quote(cwd.to_string_lossy().as_ref())
     ));
@@ -1410,6 +1443,7 @@ fn build_tmux_exec_script(
     lines.push("mkdir -p \"$(dirname \"$__od_stdout\")\"".to_string());
     lines.push(": > \"$__od_stdout\"".to_string());
     lines.push(": > \"$__od_stderr\"".to_string());
+    lines.push("rm -f \"$__od_exit_code\"".to_string());
     lines.push("{".to_string());
     lines.push("  cd \"$__od_cwd\" || { echo \"cd failed: $__od_cwd\" >&2; false; }".to_string());
     for (key, value) in env_vars {
@@ -1436,6 +1470,7 @@ fn build_tmux_exec_script(
     lines.push(command.to_string());
     lines.push("} > >(tee \"$__od_stdout\") 2> >(tee \"$__od_stderr\" >&2)".to_string());
     lines.push("__od_ec=$?".to_string());
+    lines.push("printf \"%s\\n\" \"$__od_ec\" > \"$__od_exit_code\"".to_string());
     lines.push("printf \"__OD_EXIT__%s:%s\\n\" \"$__od_run_id\" \"$__od_ec\"".to_string());
     lines.join("\n")
 }
@@ -1716,11 +1751,16 @@ async fn read_tmux_run_result(
             handle.stderr_path.display()
         ))
     })?;
+    let mixed_output = mixed_output_from_tmux_and_logs(
+        extract_tmux_run_output(pane.as_str(), handle.run_id.as_str()),
+        stdout.as_slice(),
+        stderr.as_slice(),
+    );
     Ok(ExecBashTmuxRunResult {
         exit_code,
         stdout,
         stderr,
-        mixed_output: extract_tmux_run_output(pane.as_str(), handle.run_id.as_str()),
+        mixed_output,
         duration_ms: handle.started.elapsed().as_millis() as u64,
         tmux_session: handle.tmux_session.clone(),
     })
@@ -1730,10 +1770,11 @@ async fn cleanup_tmux_run_files(handle: &ExecBashTmuxRunHandle) {
     let _ = fs::remove_file(&handle.script_path).await;
     let _ = fs::remove_file(&handle.stdout_path).await;
     let _ = fs::remove_file(&handle.stderr_path).await;
+    let _ = fs::remove_file(&handle.exit_code_path).await;
 }
 
 async fn wait_tmux_exit_code(
-    target: &str,
+    handle: &ExecBashTmuxRunHandle,
     run_id: &str,
     timeout_ms: Option<u64>,
 ) -> Result<Option<i32>, AgentToolError> {
@@ -1746,12 +1787,39 @@ async fn wait_tmux_exit_code(
                 return Ok(None);
             }
         }
-        let pane = capture_tmux_pane_output(target).await?;
+        if let Some(code) = read_tmux_exit_code_file(&handle.exit_code_path).await? {
+            return Ok(Some(code));
+        }
+        let pane = capture_tmux_pane_output(&handle.tmux_target).await?;
         if let Some(code) = parse_tmux_exit_code(pane.as_ref(), marker.as_str())? {
             return Ok(Some(code));
         }
         sleep(Duration::from_millis(EXEC_BASH_TMUX_POLL_MS)).await;
     }
+}
+
+async fn read_tmux_exit_code_file(path: &Path) -> Result<Option<i32>, AgentToolError> {
+    let raw = match fs::read_to_string(path).await {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(AgentToolError::ExecFailed(format!(
+                "read exit code file `{}` failed: {err}",
+                path.display()
+            )));
+        }
+    };
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let exit_code = value.parse::<i32>().map_err(|err| {
+        AgentToolError::ExecFailed(format!(
+            "invalid exit code file `{}` content `{value}`: {err}",
+            path.display()
+        ))
+    })?;
+    Ok(Some(exit_code))
 }
 
 fn parse_tmux_exit_code(pane: &str, marker: &str) -> Result<Option<i32>, AgentToolError> {
@@ -2109,6 +2177,7 @@ mod tests {
             "run-1",
             Path::new("/tmp/stdout"),
             Path::new("/tmp/stderr"),
+            Path::new("/tmp/exit.code"),
             Path::new("/tmp"),
             "read_file demo.txt",
             &[(
