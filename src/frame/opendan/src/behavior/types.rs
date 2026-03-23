@@ -129,13 +129,15 @@ pub struct ExecutorReply {
 #[serde(default)]
 pub struct BehaviorLLMResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_behavior: Option<String>,
+    pub conclusion: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reply: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub topic_tags: Vec<String>,
+
+    //---下面的字段都是next_action-----
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
     #[serde(default, skip_serializing_if = "DoActions::is_empty")]
     pub actions: DoActions,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -153,6 +155,8 @@ pub struct BehaviorLLMResult {
     pub route_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_session: Option<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_behavior: Option<String>,
 }
 impl BehaviorLLMResult {
     pub fn is_sleep(&self) -> bool {
@@ -626,6 +630,7 @@ pub struct LLMTrackingInfo {
     pub track: TrackInfo,
     pub tool_trace: Vec<ToolExecRecord>,
     pub raw_output: LLMOutput,
+    pub prompt_text: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

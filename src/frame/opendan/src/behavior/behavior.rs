@@ -16,7 +16,7 @@ use serde_json::{json, Map, Value as Json};
 use super::config::{BehaviorConfig, BehaviorConfigError};
 use super::observability::{AgentWorkEvent, WorklogSink};
 use super::policy_adapter::PolicyEngine;
-use super::prompt::{ChatMessage, ChatRole, PromptBuilder};
+use super::prompt::{render_complete_request_prompt, ChatMessage, ChatRole, PromptBuilder};
 use super::sanitize::Sanitizer;
 use super::tool_loop::{self, ToolContext};
 use super::types::*;
@@ -146,6 +146,7 @@ impl LLMBehavior {
         )
         .await
         .map_err(LLMComputeError::Internal)?;
+        let prompt_text = render_complete_request_prompt(&llm_req);
 
         let (mut usage, mut llm_resp, first_task_id) = self
             .do_inference_once(llm_req.clone(), None, behavior_task_id)
@@ -191,6 +192,7 @@ impl LLMBehavior {
             track,
             tool_trace,
             raw_output: LLMOutput::Text(llm_resp.content),
+            prompt_text,
         };
 
         Ok((behavior_result, tracking))

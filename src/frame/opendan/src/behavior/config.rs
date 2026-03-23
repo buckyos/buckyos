@@ -41,14 +41,20 @@ pub enum BehaviorConfigError {
 #[serde(default)]
 pub struct BehaviorConfig {
     pub name: String,
+    //TODO 去掉
     pub process_rule: String,
+    //TODO 去掉
     pub policy: String,
-    pub input: String,
-    pub memory: BehaviorMemoryConfig,
-    pub step_summary: String,
-    pub output_protocol: BehaviorOutputProtocol,
-    pub tools: BehaviorToolsConfig,
+    // 新增
+    pub system: String,
+    //TODO 去掉
     pub toolbox: BehaviorToolboxConfig,
+    pub tools: BehaviorToolsConfig,
+    pub memory: BehaviorMemoryConfig,
+    pub input: String,
+    pub output_protocol: BehaviorOutputProtocol,
+    //TODO 去掉
+    pub step_summary: String,
 
     // 如果因为系统原因失败了（比如 step_limit),切换到哪个 behavior，不设置时切回 session 默认 behavior
     pub faild_back: Option<String>,
@@ -63,6 +69,7 @@ impl Default for BehaviorConfig {
             name: String::new(),
             process_rule: String::new(),
             policy: String::new(),
+            system: String::new(),
             input: String::new(),
             memory: BehaviorMemoryConfig::default(),
             step_summary: String::new(),

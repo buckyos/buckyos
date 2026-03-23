@@ -237,6 +237,23 @@ impl AgentEnvironment {
         if k.is_empty() {
             return Ok(None);
         }
+        if k == "step_record" || k == "llm_step_record" {
+            let mut guard = session.lock().await;
+            return guard
+                .render_llm_step_records_prompt(None)
+                .await
+                .map(|text| clean_optional_text(Some(text.as_str())));
+        }
+        if k == "step_record.last" || k == "llm_step_record.last" {
+            let mut guard = session.lock().await;
+            return guard.render_last_llm_step_record().await;
+        }
+        if k == "step_record.path" || k == "llm_step_record.path" || k == "step_record_path" {
+            let mut guard = session.lock().await;
+            return Ok(guard
+                .llm_step_record_path()
+                .map(|path| path.display().to_string()));
+        }
         if k == "session_id" {
             return Ok(Some(session_id));
         }
@@ -1643,7 +1660,9 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_tool::{TodoTool, TodoToolConfig};
+    use crate::agent_tool::{AgentToolResult, TodoTool, TodoToolConfig};
+    use crate::behavior::BehaviorLLMResult;
+    use crate::step_record::LLMStepRecord;
     use crate::workspace::WorkshopWorkspaceRecord;
     use serde_json::json;
     use tempfile::tempdir;
@@ -1711,6 +1730,89 @@ mod tests {
         assert_eq!(result.env_not_found, 0);
         assert_eq!(result.var_registered, 1);
         assert_eq!(result.var_failed, 0);
+    }
+
+    #[tokio::test]
+    async fn load_value_from_session_step_record_renders_log_text() {
+        let root = tempdir().expect("create temp dir");
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "work-step-record",
+            "did:test:agent",
+            Some("plan"),
+        )));
+        {
+            let mut guard = session.lock().await;
+            guard.session_root_dir = root.path().to_path_buf();
+            guard
+                .append_llm_step_record(LLMStepRecord {
+                    session_id: "work-step-record".to_string(),
+                    step_num: 0,
+                    step_index: 0,
+                    behavior_name: "plan".to_string(),
+                    started_at_ms: 1,
+                    llm_completed_at_ms: 2,
+                    action_completed_at_ms: 3,
+                    input: "task".to_string(),
+                    llm_prompt: "prompt-0".to_string(),
+                    llm_result: BehaviorLLMResult {
+                        conclusion: Some("discover repo layout".to_string()),
+                        thinking: Some("inspect source tree".to_string()),
+                        shell_commands: vec!["rg -n AgentSession".to_string()],
+                        ..Default::default()
+                    },
+                    action_result: HashMap::from([(
+                        "#0".to_string(),
+                        AgentToolResult::from_details(json!({}))
+                            .with_cmd_line("rg -n AgentSession")
+                            .with_result("rg output"),
+                    )]),
+                })
+                .await
+                .expect("append step 0");
+            guard
+                .append_llm_step_record(LLMStepRecord {
+                    session_id: "work-step-record".to_string(),
+                    step_num: 1,
+                    step_index: 1,
+                    behavior_name: "plan".to_string(),
+                    started_at_ms: 4,
+                    llm_completed_at_ms: 5,
+                    action_completed_at_ms: 6,
+                    input: "continue".to_string(),
+                    llm_prompt: "prompt-1".to_string(),
+                    llm_result: BehaviorLLMResult {
+                        conclusion: Some("AgentSession needs a step log field".to_string()),
+                        thinking: Some("wire session storage and template access".to_string()),
+                        shell_commands: vec!["patch_files".to_string()],
+                        ..Default::default()
+                    },
+                    action_result: HashMap::from([(
+                        "#1".to_string(),
+                        AgentToolResult::from_details(json!({}))
+                            .with_cmd_line("patch_files")
+                            .with_result("patched files"),
+                    )]),
+                })
+                .await
+                .expect("append step 1");
+        }
+
+        let rendered = AgentEnvironment::load_value_from_session(session.clone(), "step_record")
+            .await
+            .expect("load step_record")
+            .expect("step_record should exist");
+        assert!(rendered.contains("## Step Records"), "rendered={rendered}");
+        assert!(
+            rendered.contains("AgentSession needs a step log field"),
+            "rendered={rendered}"
+        );
+
+        let last = AgentEnvironment::load_value_from_session(session, "step_record.last")
+            .await
+            .expect("load step_record.last")
+            .expect("step_record.last should exist");
+        assert!(last.contains("patched files"), "last={last}");
+        assert!(last.contains("wire session storage"), "last={last}");
     }
 
     #[tokio::test]

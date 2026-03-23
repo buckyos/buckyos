@@ -312,6 +312,310 @@
 
 ---
 
+# 范式三实例（修订版）：Step 15 时刻的完整提示词与推理结果
+
+## 核心模型修正
+
+### Step 的真实时序
+
+一个完整的 Step 横跨两个阶段：
+
+```
+action_result(n-1)
+    ↓
+[LLM 推理]
+    ↓
+LLM Result(n): conclusion(n) + thinking(n) + next_action(n)
+    ↓
+[系统执行 next_action]
+    ↓
+action_result(n)
+```
+
+- **conclusion**：承上——消化上一个 action_result，提炼结论
+- **thinking**：桥梁——基于 conclusion 推导下一步该做什么
+- **next_action**：启下——发起下一个系统调用
+
+### 三级压缩规则
+
+| 压缩级别 | LLM Result 保留 | action_result |
+|---------|----------------|---------------|
+| 不压缩 | conclusion + thinking + next_action | 全文保留 |
+| 半压缩 | conclusion + next_action | 丢弃 |
+| 全压缩 | conclusion 仅保留 | 丢弃 |
+
+**关键原则**：conclusion 是 LLM 对 action_result 的消化，只要 conclusion 在，action_result 就可丢弃。无需 `set_memory`，无需系统侧智能摘要，纯机械裁剪。
+
+---
+
+## 场景设定
+
+- **用户任务**：调研自托管 NAS 方案，输出一份选型报告
+- **Agent 类型**：Research Agent（OpenDAN Behavior Loop）
+- **当前状态**：Step 15 的 action_result 刚返回，系统正在组装 input 发起第 16 轮 LLM 推理
+
+---
+
+## Input 结构总览
+
+```
+input[0]  →  System Prompt
+input[1]  →  Memory 块（跨步骤聚合的高阶状态）
+input[2]  →  展开区（任务空间 + 三级压缩的 Step 序列）
+```
+
+---
+
+## input[0] — System Prompt
+
+```xml
+<system>
+你是 OpenDAN Research Agent。
+
+## 输出格式
+每次推理必须输出以下三个字段：
+- <conclusion>: 基于上一步 action_result 的结论提炼（必填，即使结论是"无新发现"）
+- <thinking>: 基于 conclusion 和当前任务状态的推理过程
+- <next_action>: 下一步要执行的操作（或 finish）
+
+## 可用 action
+- web_search(query)
+- read_url(url)
+- note(content)
+- write_section(title, content)
+- ask_user(question)
+- finish(summary)
+
+## 行为约束
+- 每步只执行一个 action
+- conclusion 应当是自包含的——后续步骤可能看不到原始 action_result，
+  所以关键数据和判断必须在 conclusion 中完整表达
+</system>
+```
+
+> 注意 system prompt 里对 conclusion 的约束："自包含"。
+> 这是让三级压缩能 work 的前提——LLM 知道 conclusion 会被独立保留。
+
+---
+
+## input[1] — Memory 块
+
+> **定位**：跨步骤聚合的高阶状态。不记录单步结论（那些在展开区），
+> 只存经过多步交叉验证后的稳定结论和用户偏好。
+
+```xml
+<memory>
+## 用户偏好
+- 偏好开源，闭源方案可纳入对比但需注明 license
+- 技术背景：熟悉 Linux/Docker，有 homelab 经验
+- 预算：硬件 ¥3000-5000，软件免费优先
+
+## 候选方案（已稳定）
+- TrueNAS SCALE | OpenMediaVault | Unraid | CasaOS
+
+## 已排除
+- Synology DSM / QNAP QTS（闭源，用户明确排除）
+
+## 评估维度（已确认）
+- 文件系统与数据安全 / 容器生态 / 社区与文档 / 硬件要求 / 易用性
+
+## 报告进度
+- [完成] 第 1-4 章
+- [进行中] 第 5 章：社区与文档质量对比
+- [待写] 第 6-7 章
+</memory>
+```
+
+---
+
+## input[2] — 展开区
+
+```xml
+<task_execution>
+
+<!-- ===================== 任务空间（锚点） ===================== -->
+<task_session>
+  <goal>调研主流自托管 NAS 开源方案，输出选型对比报告（markdown）</goal>
+  <constraints>聚焦开源/社区版；覆盖 5 个评估维度；交付结构化 markdown 报告</constraints>
+  <progress>Step 15 / 预估 ~20 步</progress>
+</task_session>
+
+
+<!-- ===================== 全压缩区：Step 1-10 ===================== -->
+<!-- 仅保留 conclusion -->
+
+<steps_compressed>
+  <step n="1">
+    <conclusion>初始搜索确定 6 个候选方案：TrueNAS SCALE、OMV、Unraid、CasaOS、Rockstor、XigmaNAS。后两者社区较小，暂列备选。</conclusion>
+  </step>
+  <step n="2">
+    <conclusion>TrueNAS vs OMV 的主流对比观点：TrueNAS 更适合数据安全优先场景（ZFS），OMV 更适合轻量/低功耗部署（Debian 基础）。</conclusion>
+  </step>
+  <step n="3">
+    <conclusion>TrueNAS SCALE 硬件要求：最低 8GB 内存（强烈推荐 ECC），需 x86_64，不支持 ARM。启动盘需独立 16GB+ SSD。</conclusion>
+  </step>
+  <step n="4">
+    <conclusion>OMV 硬件门槛最低，可运行在树莓派 4/5 上。基于 Debian，插件体系通过 omv-extras 扩展，核心插件约 30 个。</conclusion>
+  </step>
+  <step n="5">
+    <conclusion>Homelab 社区中 Unraid 用户满意度最高（灵活磁盘管理是核心卖点），但 license $59-$129 且非开源是主要争议点。</conclusion>
+  </step>
+  <step n="6">
+    <conclusion>Unraid 定价：Basic $59（6盘位）/ Plus $89（12盘位）/ Pro $129（无限）。一次付费终身有效。源码不公开，社区插件开源。</conclusion>
+  </step>
+  <step n="7">
+    <conclusion>CasaOS 定位为入门级，UI 最简洁但功能偏弱：无原生 RAID 支持，无 Btrfs/ZFS 集成，不适合作为主力存储方案。</conclusion>
+  </step>
+  <step n="8">
+    <conclusion>用户确认：Unraid 可纳入对比但需在报告中明确标注非开源 license。Rockstor 和 XigmaNAS 因社区规模过小正式排除。</conclusion>
+  </step>
+  <step n="9">
+    <conclusion>完成四方案五维度评估矩阵草稿。初步判断：数据安全维度 TrueNAS 领先，易用性维度 Unraid/CasaOS 领先，综合需要进一步量化。</conclusion>
+  </step>
+  <step n="10">
+    <conclusion>报告第 1 章（引言与需求定义）和第 2 章（候选方案概览）已写入。第 2 章包含四方案的基本介绍和定位对比表格。</conclusion>
+  </step>
+</steps_compressed>
+
+
+<!-- ===================== 半压缩区：Step 11-13 ===================== -->
+<!-- 保留 conclusion + next_action -->
+
+<steps_summary>
+  <step n="11">
+    <conclusion>ZFS 在数据完整性方面仍是 2025 年社区共识最强选择。Btrfs RAID5/6 仍标记为不稳定，生产环境不推荐。Unraid 自有 parity 机制可靠性介于两者之间，优势是允许混合容量磁盘。据此判定数据安全维度排序：TrueNAS (ZFS) > Unraid (parity) > OMV (Btrfs/mdadm) > CasaOS (无)。</conclusion>
+    <next_action>write_section("3. 文件系统与数据安全对比", ...)</next_action>
+  </step>
+  <step n="12">
+    <conclusion>第 3 章已写入，覆盖 ZFS / Btrfs / Unraid parity 三条技术路线的对比，含数据完整性、自愈能力、快照支持三个子维度的对比表格。</conclusion>
+    <next_action>web_search("TrueNAS SCALE docker compose support 2025")</next_action>
+  </step>
+  <step n="13">
+    <conclusion>TrueNAS SCALE 在 24.10 (Electric Eel) 版本正式从 K8s 切回 Docker Compose 原生支持，社区反响正面。OMV 通过 Portainer 插件管理容器，体验流畅但自定义性弱于直接 CLI。Unraid Community Apps 商店模板 2000+，一键体验最好但自定义 compose 需额外插件。CasaOS Docker 原生但缺 compose 和高级网络配置。容器生态排序：Unraid (生态) ≈ TrueNAS (灵活性) > OMV (中规中矩) > CasaOS (基础)。</conclusion>
+    <next_action>write_section("4. 容器生态对比", ...)</next_action>
+  </step>
+</steps_summary>
+
+
+<!-- ===================== 不压缩区：Step 14-15 ===================== -->
+<!-- 完整保留 conclusion + thinking + next_action + action_result -->
+
+<step n="14">
+  <conclusion>第 4 章已成功写入。内容覆盖四方案的 Docker 支持方式、商店/模板生态、CLI 自由度三个子维度对比，含横向对比表格。报告前 4 章已完成，进入第 5 章"社区与文档质量对比"阶段。</conclusion>
+  <thinking>第 5 章需要量化四个方案的社区活跃度。需要逐一搜索每个方案的论坛、GitHub、Reddit 数据。TrueNAS 作为最大的开源 NAS 项目，先搜它作为基准线，后续方案可做对比参照。</thinking>
+  <next_action>web_search("TrueNAS SCALE community forum activity 2025")</next_action>
+  <action_result>
+    搜索返回 8 条结果：
+    1. TrueNAS Community Forums - 月活帖子约 1200+，iXsystems 官方工程师
+       定期回复，响应时间通常 24h 内。2025 年初因 24.10 从 K8s 迁移到
+       Docker 引发大量讨论，整体反响正面。
+    2. Reddit r/truenas - 订阅 85k+，日均新帖 15-20 条，NAS 相关
+       subreddit 中最活跃。
+    3. TrueNAS 官方文档 - 覆盖全面但部分滞后于版本更新（24.10 文档仍有
+       K8s 残留描述）。有独立 contributor guide。
+    4. YouTube - TechnoTim、Raid Owl 等 homelab 频道有 TrueNAS 系列，
+       2024-2025 更新频繁。
+    5-8. 其他论坛/博客，主要是迁移指南和硬件兼容性经验帖。
+  </action_result>
+</step>
+
+<step n="15">
+  <conclusion>TrueNAS 社区在四个候选方案中活跃度最高：论坛月活 1200+ 帖、Reddit 85k 订阅、官方工程师深度参与。主要短板是文档更新滞后于版本发布。YouTube 教程生态丰富，降低了上手门槛。以此作为后续方案社区数据的对比基准线。</conclusion>
+  <thinking>TrueNAS 社区数据已足够，作为基准线建立完毕。下一步搜 OMV 的社区数据。OMV 基于 Debian 生态，它的社区有一部分和 Debian 社区重叠，搜索时需注意区分 OMV 专属社区和泛 Debian 讨论。优先搜 OMV 官方论坛和 GitHub 活跃度。</thinking>
+  <next_action>web_search("OpenMediaVault community forum GitHub activity 2025")</next_action>
+  <action_result>
+    搜索返回 6 条结果：
+    1. OMV GitHub (openmediavault/openmediavault) - 4.2k stars，过去 30 天
+       32 commits，主要贡献者 3 人（核心维护者 votdev 占 80%+）。
+       Issue 响应较快但 PR 合并周期长（平均 2-3 周）。
+    2. OMV 官方论坛 (forum.openmediavault.org) - 月活帖子约 300-400，
+       主要是安装配置类问题。深度技术讨论较少。
+    3. Reddit r/OpenMediaVault - 订阅 15k，日均新帖 2-3 条，活跃度
+       约为 r/truenas 的 1/5。
+    4. OMV 插件生态 (omv-extras) - 由社区成员 omv-extras.org 维护，
+       提供约 20 个额外插件，更新频率稳定。
+    5-6. 博客评测文章，主要关注 OMV 7 (基于 Debian 12) 的新特性。
+  </action_result>
+</step>
+
+</task_execution>
+```
+
+---
+
+## LLM 推理输出（第 16 轮）
+
+基于上述 input，LLM 生成的 Step 16：
+
+```xml
+<conclusion>
+OMV 社区规模约为 TrueNAS 的 1/4 到 1/3：GitHub 4.2k stars（TrueNAS 未统计
+但生态更大）、论坛月活 300-400（TrueNAS 1200+）、Reddit 15k（TrueNAS 85k）。
+核心风险是项目高度依赖单一维护者 votdev，公交因子（bus factor）极低。
+但插件生态 omv-extras 由独立社区维护，增加了一定的抗风险性。
+文档质量中等，基础安装文档完善但高级配置靠社区帖子。
+</conclusion>
+
+<thinking>
+TrueNAS 和 OMV 的社区数据已拿到。还剩 Unraid 和 CasaOS。
+Unraid 虽然非开源但社区非常活跃（从 Step 5 的调研已知用户满意度最高），
+它的论坛是 NAS 领域最大的独立社区之一，值得单独搜。
+CasaOS 是较新的项目，社区规模预期较小，可以和 Unraid 一起搜或单独一步。
+考虑到 Unraid 社区数据量可能较大，先单独搜 Unraid。
+</thinking>
+
+<next_action>web_search("Unraid community forum Reddit activity 2025")</next_action>
+```
+
+---
+
+## 压缩效果分析
+
+### conclusion 的信息密度对比
+
+以 Step 3 为例，对比全压缩区的 conclusion 和原始 action_result：
+
+| | 内容 | 预估 token |
+|---|---|---|
+| action_result 原文 | TrueNAS 官方文档全页内容，含安装步骤、兼容硬件列表、BIOS 设置建议... | ~800 |
+| conclusion | "TrueNAS SCALE 硬件要求：最低 8GB 内存（强烈推荐 ECC），需 x86_64，不支持 ARM。启动盘需独立 16GB+ SSD。" | ~40 |
+
+压缩比约 **20:1**，且保留了对后续决策真正有用的信息。
+
+### 展开区 token 预估
+
+| 区域 | 步数 | 单步 token | 合计 |
+|------|------|-----------|------|
+| 任务空间 | — | — | ~100 |
+| 全压缩 (conclusion only) | 10 步 | ~40 | ~400 |
+| 半压缩 (conclusion + next_action) | 3 步 | ~80 | ~240 |
+| 不压缩 (完整四段) | 2 步 | ~350 | ~700 |
+| **展开区合计** | | | **~1440** |
+
+加上 System Prompt (~200) 和 Memory 块 (~300)，**总 input 约 2000 token**。
+
+### Step 25 时的预估
+
+| 区域 | 步数 | 合计 |
+|------|------|------|
+| 全压缩 | 20 步 | ~800 |
+| 半压缩 | 3 步 | ~240 |
+| 不压缩 | 2 步 | ~700 |
+| **展开区合计** | | **~1840** |
+
+增长 10 步，展开区仅增加 ~400 token（全压缩区的 10 个 conclusion）。
+
+### 与旧版对比
+
+| 改进点 | 旧版 | 修订版 |
+|-------|------|--------|
+| 全压缩保留内容 | action final（干了什么） | conclusion（得出了什么） |
+| 信息密度 | 低——"搜索了 TrueNAS 文档" | 高——"TrueNAS 最低 8GB 内存，推荐 ECC" |
+| Memory 写入依赖 | 需要 set_memory 显式操作 | 不需要——conclusion 即持久化单元 |
+| 压缩机制 | 需要 LLM 判断"是否值得存" | 纯机械裁剪，无智能决策 |
+| LLM 额外负担 | 每步需做 set_memory 元决策 | 仅需保证 conclusion 自包含（system prompt 约束） |
+
+
 ## 七、可进一步验证的问题
 
 结合以上三种范式，后续可以重点验证以下问题：
@@ -321,16 +625,4 @@
 3. last step 放在提示词最末尾，是否会显著提升动作连续性。
 4. memory 中到底应该存“历史观察”，还是只存“状态化结论”。
 5. 在 step 数量约 20～30 的情况下，分层压缩是否能比简单摘要带来更好的稳定性与更低幻觉率。
-
-## 附录 原始语音
-
-```text
-我用语音说一些关于这个OpenDownloadAgent的这个提示词编排的整体结构的一些分类吧,因为这个这里面确实是有一些模式上的一些探讨的空间,我用语音说你帮我记录就好。
-
-第一种是比较传统的结构啊,就是这个来自于原来openAI的这个API里面的那种模式,就是一个message的一个数组嘛,然后一开始一个system message,然后完了之后就是用户的,就system message就是系统提示词了,然后第二个就是呃所谓的提示词编排,对吧?就比如说载入的那个memory啊,这个一些什么worklog啊,对吧,这个第一条user message,然后第二条user message通常是用户这时候的一次输入,然后这次输入,然后呢,每往前推进一个step 就是会产生一个user message,就是每个user message的话,呃它是相当于说是一个这个agent loop的step的一个结果,就比如说呃第一个刚刚讲的用户原始输入是step0,对吧,那那run一次之后呢,会生成这个step1,就加一条user message,然后呃一直一直往下往下排,那么快到窗口窗口那个大语言模型窗口边界的时候呢,系统就会自动裁剪,对吧,那这个自动裁剪就有两个策略了,两个策略,第一个策略就是呃非常非常古朴的,对吧,就我们把把这个从从这个step0开始 从step0开始,然后一直删掉这个,比如说删掉五个step,对吧,然后删掉五个step之后呢,把这五条user message删掉之后呢,然后呃把它混到最前面的memory里面去,对吧,但是就相当于浪出这个五个step的这个上下文空间嘛。 就这是一种,还有一种呢,就是说永远都保持step0,就相当于说其实呃认为system message的system message加上这个呃第一条的这种呃呃提示词编排的这个user message加上这个原始输入的这个step0是永久保留的,如果压缩的话,其实是在呃下面的这个step1开始的这个空间里面。呃这是一种一种逻辑啊,就这种逻辑其实呃它比较就比较符合过去传统的这种基于聊天记录或者这个function call这种的一条条往下加的逻辑啊。但从这个呃从这个提示词本身的这个注意力的分布来讲,呃其实它如果说认为用户的这个输入是最重要的话,其实它放的那个位置其实相对来讲是有一点点尴尬的,因为你的这个memory也会逐渐的增长啊,就是其实你的第二条也不是不动的,你每次压缩之后,这个第二条的这个user message其实也是在增加的, 对吧,所以说这是一种呃这个模式就属于属于大家默认就会做成这个样子。就大家说你差好不好呢,我觉得是可以讨论的。
-
-然后第二种结构就是我们所谓的编排结构了,编排结构的理论就是其实user message这种东西其实是一种强化训练的一种结果,其实完全没必要保留,然后完了之后现在这个新的这个这个API其实就是所谓的input的数组嘛,对吧,input的数组,那这个时候就变成固定三条,固定三条,然后第一条就是system这个没什么好说的,然后第二条就是刚刚讲的memory,但是呢,它在memory的时候呢,它的做法就是他把这个step的东西永远都是加在这一段,就是相当于说他的这个memory里面的话,它就相当于说它的这个就不存在说不进memory的这个step里造了,就相当于说step一开始,step二,step三,它只是在这个这一个message里的这个压缩比不同,就比如说可能最近的五条message五个step都是完全不压缩,然后超过五个step以上就是自动压缩,比如就只显示摘要了,对吧,这是第二条,就第二条相当于说它是一个特别大的音谱的。然后第三条就是所谓的原始输入,原始输入是什么?那就是看如果是个聊天的话,那就是user message,如果是一个任务的话,那就是这个任务的这个或者叫tasksessionsummary, 就是我这个任务的创建这个任务时候的整个任务空间呢,就有点像那个to do list的那个墙上那个列表吧,对吧,那个列表里面就告诉明确的说了这个的主目标是什么,然后现在的这个做法在第几步,这是第二种结构啊,第二种结构它其实相当于说不管agent loop怎么改,它其实就是三块,就是三块。 然后呢,对于这种模式来讲的话,其实有一些有一些这个工程师的这个认为说他其实有点反模式,他认为他今天有很多大语言模型,它不是为这种结构结构构造的,要强化训练的,他们觉得这种做法可能会让这个大语言模型无法准确的这个获得上一个步骤的这个这个结果吧。所以说,就换句话讲,呃他们认为认为这个大语言模型去理解这个结构下的这种连续性可能没有上一种好,因为上一种做过很多强化训练, 然后呢,做了一些改进之后就变成说把上一个step的,就说相当于说我们在最后一个input 会强制地把上一个step的结果和当前输入放在一起,也就是说在最后一个input的里面是属于这应该是属于模式二的这个小型修改哈,就相当于说在最后一个input的里面,我们放了这个这个session的原始输入,加上上一个step的这个这个结果,就还是让上一个step的运行结果能够处在这个整个提示词的这个最结尾的部分,但它的上一条永远是原始输入。不过这个这种这种改进之后呢,又有人提出来说这样子会不会让这个大语言模型认为认为只做了两步,对吧,就是它的连续性连续性的这个就是说说其实你这两个相关性没那么强,特别是当当这个这个agent的loop已经跑了很多遍之后,其实它已经已经已经已经那个就就就其实这个原始输入和上一个step之间关系没那么强了然后你在呃这个提示词里面把它们放得这么近,对吧,会不会产生让让让让这个大语言模型容易产生幻觉,对吧?所以这是这个这个改进后的这个这个做了一下微调之后的一个结果吧
-
-然后下面就是就是第三种嘛,第三种就属于我们在纠结的,就是一个改进方向嘛,就是第三种相当于说呃仍然会保持呃就是说相当于说呃在在memory里面有了有了这个有了这个所有的这个这个摘要之后啊,所有的摘要之后,然后会会会开始在在就是说相当于说在第三条这个这个这个区域会保持step0对吧,就step0还是很重的嘛,然后呢会强制压缩step就是说说到最小,只是说这部干了什么,对吧,从step1到stepn这个step当天如果是n的话就n减五这样的一个情况呃能完了之后呢,再把这个或者stepn-3吧,再把最后最后两两部的这个step给给相对来讲,这个这个更详细的放在这里,然后最后最后把这个把把这个这个step这个laststep的全文给弄出来,就相当于说呃对于对于对于大语言模型来说,它看到的这个呃最后一条message的结构就是呃任务空间里面的整体的摘要,对吧,然后任务的目标原始输入,然后呢,是过去经历过的,因为通常来讲一个agent的一个我们现在这种有有我们是有behaviorloop的嘛,就是说双loop的话,其实每一层我们其实观察不会超过三十条吧,不会很少超过三十三十个step对吧,那把三十个step全都平铺在这里,然后呢,只是最后最后一个step的话,它百分之百是这个原始输出。就是说这是我们在在考虑第三种模式啊,就相当于说呃它跟memory不冲突,对,跟memory不冲突,就相当于说可能呃这个这个worklog,就相当于说呃memory没有有各种各样的这种这种的这种的这种呃应该说是那种结论性的东西吧,就是说特别是呃 操作过,比如说举个例子,从观察角度来讲,对吧,就我们观察过的某些东西,当然这里面也涉及到对于这个action结果的一些分类啊,就有些人认为说历史上的观察结果其实没有意义,对吧,就memory里面那个第二条的这个这个memory块里面它存的东西应该都是都是属于状态机那种类型的,对吧,就属于你历史上观察到的一些东西,可以是被可以被覆盖掉的,就反正也是memory了,就它虽然也是按照时间排布的,但它的顺序性没有那么的强,对吧,那真正顺序强的其实是最后一个一个一个一个step,对吧,最后一个step,它能够让大语言模型能够基于它的这个rl的习惯,可以看到一个事情,呃从就相当于说最后一个step它的强时间相关的,对吧,从这个这个的这个这个这个上下文排布就是从从从任务表一直到到最后一个step,对吧,它能够有一个空间。当然这里面这个假设就是30个左右的step啊,就每一个step就一两句话,对吧,那这样的话你不会导致说最后一个input的message太像memory一样,中间变得特别的大,对吧,就相对说还是要控制最后一个input的整体的这个大小的。
-```
 

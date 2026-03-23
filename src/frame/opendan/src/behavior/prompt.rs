@@ -102,6 +102,7 @@ impl PromptBuilder {
         }
 
         // 根据当前session加载的skills，空内容时跳过<<skills>> section
+        // 这里要和tool policy进行匹配，所以不能是纯模板操作
         let skills_text = render_skills_text(session.clone()).await?;
         if !skills_text.trim().is_empty() {
             system_parts.push(format!(
@@ -176,6 +177,31 @@ impl PromptBuilder {
         );
         Ok(req)
     }
+}
+
+pub fn render_complete_request_prompt(request: &CompleteRequest) -> String {
+    let mut parts = Vec::<String>::new();
+
+    if let Some(text) = request
+        .payload
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("<<text>>\n{text}\n<</text>>"));
+    }
+
+    for message in &request.payload.messages {
+        let role = message.role.trim();
+        let content = message.content.trim();
+        if role.is_empty() || content.is_empty() {
+            continue;
+        }
+        parts.push(format!("<<{role}>>\n{content}\n<</{role}>>"));
+    }
+
+    parts.join("\n\n")
 }
 
 fn build_env_context(input: &BehaviorExecInput) -> HashMap<String, Json> {

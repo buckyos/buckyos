@@ -21,6 +21,7 @@ pub use ::agent_tool::GetSessionTool;
 
 use crate::agent_tool::{sanitize_session_id_for_path, session_record_path, AgentToolError};
 use crate::behavior::SessionRuntimeContext;
+use crate::step_record::{LLMStepPromptRenderOptions, LLMStepRecord, LLMStepRecordLog};
 use crate::worklog::{render_worklog_prompt_line, render_worklog_prompt_line_from_parts};
 use crate::workspace::LocalWorkspaceManager;
 use crate::workspace_path::{
@@ -113,6 +114,7 @@ struct SessionRuntimeState {
     //reply的默认对象
     default_remote: Option<String>,
 
+    step_num: u32,
     step_index: u32,
     last_step_summary: Option<Json>,
 
@@ -133,6 +135,7 @@ impl Default for SessionRuntimeState {
             wait_details: None,
             current_behavior: None,
             default_remote: None,
+            step_num: 0,
             step_index: 0,
             last_step_summary: None,
             workspace_info: None,
@@ -178,6 +181,7 @@ pub struct AgentSession {
 
     pub loaded_skills: Vec<String>,
     pub loaded_tools: Vec<String>,
+    pub llm_step_records: LLMStepRecordLog,
 
     pub cost_trace: Json,
     pub created_at_ms: u64,
@@ -317,6 +321,7 @@ impl AgentSession {
             worklog: vec![],
             loaded_skills: vec![],
             loaded_tools: vec![],
+            llm_step_records: LLMStepRecordLog::default(),
             cost_trace: json!({}),
             links: vec![],
             tags: vec![],
@@ -351,7 +356,7 @@ impl AgentSession {
             .as_ref()
             .and_then(extract_step_summary_text);
 
-        Self {
+        let mut session = Self {
             session_id: record.session_id,
             pwd: PathBuf::new(),
             session_root_dir: PathBuf::new(),
@@ -368,7 +373,7 @@ impl AgentSession {
             current_behavior: normalize_optional_string(runtime_meta.current_behavior)
                 .unwrap_or_default(),
             default_remote: normalize_optional_string(runtime_meta.default_remote),
-            step_num: 0,
+            step_num: runtime_meta.step_num,
             step_index: runtime_meta.step_index,
             last_step_summary: runtime_last_step_summary,
             msg_kmsgqueue_curosr: 0,
@@ -379,6 +384,7 @@ impl AgentSession {
             worklog: runtime_meta.worklog,
             loaded_skills: runtime_meta.loaded_skills,
             loaded_tools: runtime_meta.allow_tools,
+            llm_step_records: LLMStepRecordLog::default(),
             cost_trace: normalize_json_object(runtime_meta.cost_trace),
             links: record.links,
             tags: record.tags,
@@ -386,7 +392,9 @@ impl AgentSession {
             created_at_ms: record.created_at_ms,
             updated_at_ms: record.updated_at_ms,
             last_activity_ms: record.last_activity_ms,
-        }
+        };
+        session.sync_step_record_storage();
+        session
     }
 
     pub fn to_record(&self, touch_ts: bool) -> OpenDanAgentSessionRecord {
@@ -433,6 +441,7 @@ impl AgentSession {
             wait_details: self.wait_details.clone(),
             current_behavior: normalize_optional_string(Some(self.current_behavior.clone())),
             default_remote: self.default_remote.clone(),
+            step_num: self.step_num,
             step_index: self.step_index,
             last_step_summary: self.last_step_summary.clone().map(Json::String),
             workspace_info: self.workspace_info.clone(),
@@ -454,6 +463,40 @@ impl AgentSession {
 
     pub fn mark_input_links_used(&mut self, link_ids: &[String]) {
         let _ = link_ids;
+    }
+
+    pub fn sync_step_record_storage(&mut self) {
+        self.llm_step_records
+            .bind_session(self.session_id.as_str(), &self.session_root_dir);
+    }
+
+    pub async fn append_llm_step_record(
+        &mut self,
+        record: LLMStepRecord,
+    ) -> Result<(), AgentToolError> {
+        self.sync_step_record_storage();
+        self.llm_step_records.append(record).await?;
+        self.updated_at_ms = now_ms();
+        self.last_activity_ms = self.updated_at_ms;
+        Ok(())
+    }
+
+    pub async fn render_llm_step_records_prompt(
+        &mut self,
+        options: Option<&LLMStepPromptRenderOptions>,
+    ) -> Result<String, AgentToolError> {
+        self.sync_step_record_storage();
+        self.llm_step_records.render_prompt_text(options).await
+    }
+
+    pub async fn render_last_llm_step_record(&mut self) -> Result<Option<String>, AgentToolError> {
+        self.sync_step_record_storage();
+        self.llm_step_records.render_last_step_text().await
+    }
+
+    pub fn llm_step_record_path(&mut self) -> Option<PathBuf> {
+        self.sync_step_record_storage();
+        self.llm_step_records.record_file_path()
     }
 
     pub async fn append_worklog(
@@ -889,6 +932,7 @@ impl AgentSessionMgr {
         if session.session_root_dir.as_os_str().is_empty() {
             session.session_root_dir = self.sessions_root.clone();
         }
+        session.sync_step_record_storage();
     }
 
     pub fn is_ui_session(session_id: &str) -> bool {
@@ -1660,6 +1704,18 @@ mod tests {
         let restored = AgentSession::from_record(record);
         assert!(restored.summary.is_empty());
         assert_eq!(restored.last_step_summary.as_deref(), Some("step summary"));
+    }
+
+    #[test]
+    fn step_num_is_preserved_in_runtime_meta() {
+        let mut session = AgentSession::new("s-step-num", "did:opendan:test", Some("DO"));
+        session.step_num = 42;
+        session.step_index = 7;
+
+        let record = session.to_record(true);
+        let restored = AgentSession::from_record(record);
+        assert_eq!(restored.step_num, 42);
+        assert_eq!(restored.step_index, 7);
     }
 
     #[tokio::test]

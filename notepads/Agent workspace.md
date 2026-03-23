@@ -26,10 +26,10 @@
 
 **P0（必须）**：提供稳定、可预测的目录布局（用于工具链与提示词模板引用），至少包含：
 
-* `/<agent_root>/workshop/tools/`：工具定义与脚本
-* `/<agent_root>/workshop/skills/`：技能规则/配置
-* `/<agent_root>/workshop/sessions/`：会话运行态数据与摘要归档入口（具体 session 数据结构由 Session 模块定义）
-* `/<agent_root>/workshop/workspaces/`：所有已登记 workspace 的管理目录（包含 local 与 remote）
+* `/<agent_root>/tools/`：工具定义与脚本
+* `/<agent_root>/skills/`：技能规则/配置
+* `/<agent_root>/sessions/`：会话运行态数据与摘要归档入口（具体 session 数据结构由 Session 模块定义）
+* `/<agent_root>/workspaces/`：所有已登记 workspace 的管理目录（包含 local 与 remote）
 
 
 **P0（必须）**：Workshop 元信息文件（建议 `workshop/index.json` ）记录：

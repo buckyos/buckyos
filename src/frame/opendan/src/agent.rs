@@ -31,15 +31,15 @@ use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
 use crate::agent_tool::{
-    normalize_tool_name, ActionExecutionMeta, ActionExecutionRecord, AgentMemory,
-    AgentMemoryConfig, AgentPolicy, AgentToolManager, DoAction, DoActionResults, DoActions,
-    TOOL_EXEC_BASH,
+    normalize_tool_name, AgentMemory, AgentMemoryConfig, AgentPolicy, AgentToolManager,
+    AgentToolResult, AgentToolStatus, DoAction, DoActions, TOOL_EXEC_BASH,
 };
 use crate::behavior::{
     AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, LLMBehavior,
     LLMBehaviorDeps, LLMComputeError, LLMTrackingInfo, SessionRuntimeContext, Tokenizer,
     WorklogSink,
 };
+use crate::step_record::LLMStepRecord;
 use crate::worklog::WorklogActionPayload;
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
@@ -64,6 +64,9 @@ const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
 const AGENT_BEHAVIOR_ROUTER_RESOLVE: &str = "resolve_router";
 const AGENT_BEHAVIOR_WORK_DEFAULT: &str = "plan";
 const SESSION_META_CREATOR_UI_SESSION_ID: &str = "creator_ui_session_id";
+const ACTION_RESULTS_SKIPPED_KEY: &str = "__skipped__";
+
+type ActionResultsMap = HashMap<String, AgentToolResult>;
 
 #[derive(Debug)]
 struct PulledMsg {
@@ -954,7 +957,7 @@ impl AIAgent {
         let mut result_report = BehaviorLoopReport::default();
 
         loop {
-            let (session_id, current_step_index) = {
+            let (session_id, current_step_index, current_step_num) = {
                 //TODO 支持sub agent,可能还需要考虑读取owner agent的pause状态
                 let mut guard = session.lock().await;
                 if guard.state != SessionState::Running {
@@ -964,6 +967,7 @@ impl AIAgent {
                     break;
                 }
                 let current_step_index = guard.step_index;
+                let current_step_num = guard.step_num;
                 let session_id = guard.session_id.clone();
                 if guard.step_index == 0 {
                     //TODO 应该是session有一个通用函数，自动load当前behavior的skills
@@ -978,7 +982,7 @@ impl AIAgent {
                         behavior_cfg.toolbox.tools.names.clone()
                     }
                 };
-                (session_id, current_step_index)
+                (session_id, current_step_index, current_step_num)
             };
 
             info!(
@@ -1035,10 +1039,12 @@ impl AIAgent {
             );
 
             //run step
+            let step_started_ms = now_ms();
             let (llm_result, tracking) = llm_behavior
                 .run_step(&input)
                 .await
                 .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
+            let llm_completed_at_ms = now_ms();
 
             //execute side effects
             self.dispatch_step_msg_records(session.clone(), &llm_result)
@@ -1060,6 +1066,7 @@ impl AIAgent {
             //所有action都通过授权才会执行
             let action_plan = merged_actions_from_llm_result(&llm_result);
             let action_results = self.execute_actions(&trace, &action_plan).await;
+            let action_completed_at_ms = now_ms();
             self.append_action_record_worklogs(session.clone(), &trace, &tracking, &action_results)
                 .await;
 
@@ -1081,9 +1088,24 @@ impl AIAgent {
             )
             .await;
 
+            self.append_llm_step_record(
+                session.clone(),
+                &trace,
+                current_step_num,
+                step_started_ms,
+                llm_completed_at_ms,
+                action_completed_at_ms,
+                &input,
+                &tracking,
+                &llm_result,
+                &action_results,
+            )
+            .await;
+
             let (msg_cursor, msg_owner_agent) = {
                 let mut guard = session.lock().await;
                 guard.last_step_summary = step_summary.clone();
+                guard.step_num = current_step_num.saturating_add(1);
                 (guard.msg_kmsgqueue_curosr, guard.owner_agent.clone())
             };
 
@@ -1845,10 +1867,9 @@ impl AIAgent {
         &self,
         trace: &SessionRuntimeContext,
         actions: &DoActions,
-    ) -> DoActionResults {
-        let mut out = DoActionResults::default();
+    ) -> ActionResultsMap {
+        let mut out = ActionResultsMap::new();
         if actions.cmds.is_empty() {
-            out.summary = "SUCCESS (0), FAILED (0)".to_string();
             return out;
         }
 
@@ -1873,29 +1894,29 @@ impl AIAgent {
         };
 
         let run_all = actions.mode.trim().eq_ignore_ascii_case("all");
-        let mut success = 0usize;
-        let mut failed = 0usize;
-        let mut skipped = 0usize;
-        let mut latest_pwd = None::<String>;
 
         for (idx, action) in actions.cmds.iter().enumerate() {
             let (tool_name, tool_args, exec_id, detail_action, action_cmd_line) = match action {
                 DoAction::Exec(command) => {
                     let command = command.trim();
                     if command.is_empty() {
-                        failed = failed.saturating_add(1);
-                        out.details.insert(
+                        out.insert(
                             format!("#{idx}:exec"),
-                            ActionExecutionRecord::new(ActionExecutionMeta {
-                                kind: "exec".to_string(),
-                                action_name: None,
-                                command: None,
-                                params: None,
-                            })
-                            .with_error("empty command is not allowed"),
+                            build_action_error_result(
+                                None,
+                                &json!({
+                                    "kind": "exec",
+                                }),
+                                "",
+                                "empty command is not allowed",
+                            ),
                         );
                         if !run_all {
-                            skipped = actions.cmds.len().saturating_sub(idx + 1);
+                            insert_skipped_action_result(
+                                &mut out,
+                                actions.cmds.len().saturating_sub(idx + 1),
+                                "mode=failed_end and previous action failed",
+                            );
                             break;
                         }
                         continue;
@@ -1914,40 +1935,51 @@ impl AIAgent {
                 DoAction::Call(call) => {
                     let normalized_name = normalize_tool_name(&call.call_action_name);
                     if normalized_name.is_empty() {
-                        failed = failed.saturating_add(1);
-                        out.details.insert(
+                        out.insert(
                             format!("#{idx}:call"),
-                            ActionExecutionRecord::new(ActionExecutionMeta {
-                                kind: "call_tool".to_string(),
-                                action_name: None,
-                                command: None,
-                                params: Some(json!({
-                                    "raw_action_name": call.call_action_name,
-                                })),
-                            })
-                            .with_error("action name cannot be empty"),
+                            build_action_error_result(
+                                None,
+                                &json!({
+                                    "kind": "call_tool",
+                                    "params": {
+                                        "raw_action_name": call.call_action_name,
+                                    },
+                                }),
+                                "",
+                                "action name cannot be empty",
+                            ),
                         );
                         if !run_all {
-                            skipped = actions.cmds.len().saturating_sub(idx + 1);
+                            insert_skipped_action_result(
+                                &mut out,
+                                actions.cmds.len().saturating_sub(idx + 1),
+                                "mode=failed_end and previous action failed",
+                            );
                             break;
                         }
                         continue;
                     }
 
                     if !call.call_params.is_object() {
-                        failed = failed.saturating_add(1);
-                        out.details.insert(
+                        out.insert(
                             format!("#{idx}:`{normalized_name}`"),
-                            ActionExecutionRecord::new(ActionExecutionMeta {
-                                kind: "call_tool".to_string(),
-                                action_name: Some(normalized_name),
-                                command: None,
-                                params: Some(call.call_params.clone()),
-                            })
-                            .with_error("action params must be json object"),
+                            build_action_error_result(
+                                Some(normalized_name.as_str()),
+                                &json!({
+                                    "kind": "call_tool",
+                                    "action_name": normalized_name,
+                                    "params": call.call_params.clone(),
+                                }),
+                                normalized_name.as_str(),
+                                "action params must be json object",
+                            ),
                         );
                         if !run_all {
-                            skipped = actions.cmds.len().saturating_sub(idx + 1);
+                            insert_skipped_action_result(
+                                &mut out,
+                                actions.cmds.len().saturating_sub(idx + 1),
+                                "mode=failed_end and previous action failed",
+                            );
                             break;
                         }
                         continue;
@@ -1976,41 +2008,25 @@ impl AIAgent {
             };
 
             if !allowed_tool_names.contains(tool_name.as_str()) {
-                failed = failed.saturating_add(1);
-                out.details.insert(
+                out.insert(
                     exec_id,
-                    ActionExecutionRecord::new(ActionExecutionMeta {
-                        kind: detail_action
-                            .get("kind")
-                            .and_then(Json::as_str)
-                            .unwrap_or("action")
-                            .to_string(),
-                        action_name: detail_action
-                            .get("action_name")
-                            .and_then(Json::as_str)
-                            .map(|value| value.to_string()),
-                        command: detail_action
-                            .get("command")
-                            .and_then(Json::as_str)
-                            .map(|value| value.to_string()),
-                        params: detail_action.get("params").cloned(),
-                    })
-                    .with_tool(tool_name.clone())
-                    .with_prompt(format!(
-                        "{}  =>  {}",
-                        action_cmd_line,
+                    build_action_error_result(
+                        Some(tool_name.as_str()),
+                        &detail_action,
+                        action_cmd_line.as_str(),
                         format!(
                             "tool `{}` is unavailable or not allowed for behavior `{}`",
                             tool_name, trace.behavior
                         )
-                    ))
-                    .with_error(format!(
-                        "tool `{}` is unavailable or not allowed for behavior `{}`",
-                        tool_name, trace.behavior
-                    )),
+                        .as_str(),
+                    ),
                 );
                 if !run_all {
-                    skipped = actions.cmds.len().saturating_sub(idx + 1);
+                    insert_skipped_action_result(
+                        &mut out,
+                        actions.cmds.len().saturating_sub(idx + 1),
+                        "mode=failed_end and previous action failed",
+                    );
                     break;
                 }
                 continue;
@@ -2034,83 +2050,39 @@ impl AIAgent {
                 .await;
 
             match run_result {
-                Ok(result) => {
-                    success = success.saturating_add(1);
-                    if let Some(pwd) = extract_action_result_pwd(&result) {
-                        latest_pwd = Some(pwd);
-                    }
-                    let rendered = result.render_prompt();
-                    out.details.insert(
-                        exec_id,
-                        ActionExecutionRecord::new(ActionExecutionMeta {
-                            kind: detail_action
-                                .get("kind")
-                                .and_then(Json::as_str)
-                                .unwrap_or("action")
-                                .to_string(),
-                            action_name: detail_action
-                                .get("action_name")
-                                .and_then(Json::as_str)
-                                .map(|value| value.to_string()),
-                            command: detail_action
-                                .get("command")
-                                .and_then(Json::as_str)
-                                .map(|value| value.to_string()),
-                            params: detail_action.get("params").cloned(),
-                        })
-                        .with_tool(tool_name)
-                        .with_prompt(rendered)
-                        .with_result(result),
+                Ok(mut result) => {
+                    annotate_action_result(
+                        &mut result,
+                        Some(tool_name.as_str()),
+                        &detail_action,
+                        action_cmd_line.as_str(),
                     );
+                    out.insert(exec_id, result);
                 }
                 Err(err) => {
-                    failed = failed.saturating_add(1);
                     let prompt_error = compact_action_error_for_prompt(&err);
-                    out.details.insert(
+                    out.insert(
                         exec_id,
-                        ActionExecutionRecord::new(ActionExecutionMeta {
-                            kind: detail_action
-                                .get("kind")
-                                .and_then(Json::as_str)
-                                .unwrap_or("action")
-                                .to_string(),
-                            action_name: detail_action
-                                .get("action_name")
-                                .and_then(Json::as_str)
-                                .map(|value| value.to_string()),
-                            command: detail_action
-                                .get("command")
-                                .and_then(Json::as_str)
-                                .map(|value| value.to_string()),
-                            params: detail_action.get("params").cloned(),
-                        })
-                        .with_tool(tool_name)
-                        .with_prompt(format!("{}  =>  {}", action_cmd_line, prompt_error))
-                        .with_error(err.to_string()),
+                        build_action_error_result(
+                            Some(tool_name.as_str()),
+                            &detail_action,
+                            action_cmd_line.as_str(),
+                            prompt_error.as_str(),
+                        )
+                        .with_stderr(Some(err.to_string())),
                     );
 
                     if !run_all {
-                        skipped = actions.cmds.len().saturating_sub(idx + 1);
+                        insert_skipped_action_result(
+                            &mut out,
+                            actions.cmds.len().saturating_sub(idx + 1),
+                            "mode=failed_end and previous action failed",
+                        );
                         break;
                     }
                 }
             }
         }
-
-        if skipped > 0 {
-            out.details.insert(
-                "__skipped__".to_string(),
-                ActionExecutionRecord::default()
-                    .with_skipped(skipped, "mode=failed_end and previous action failed"),
-            );
-        }
-        out.pwd = latest_pwd;
-
-        out.summary = if skipped > 0 {
-            format!("SUCCESS ({success}), FAILED ({failed}), SKIPPED ({skipped})")
-        } else {
-            format!("SUCCESS ({success}), FAILED ({failed})")
-        };
         out
     }
 
@@ -2609,7 +2581,7 @@ impl AIAgent {
         session: Arc<Mutex<AgentSession>>,
         trace: &SessionRuntimeContext,
         tracking: &LLMTrackingInfo,
-        action_results: &DoActionResults,
+        action_results: &ActionResultsMap,
     ) {
         if !Self::should_append_worklog_for_trace(trace) {
             return;
@@ -2637,63 +2609,43 @@ impl AIAgent {
                 .await;
         }
 
-        let mut exec_ids = action_results.details.keys().cloned().collect::<Vec<_>>();
+        let mut exec_ids = action_results.keys().cloned().collect::<Vec<_>>();
         exec_ids.sort();
 
         for exec_id in exec_ids {
-            if exec_id.starts_with("__") {
+            if is_internal_action_result(exec_id.as_str()) {
                 continue;
             }
-            let Some(detail) = action_results.details.get(exec_id.as_str()) else {
+            let Some(result) = action_results.get(exec_id.as_str()) else {
                 continue;
             };
-            let status = if detail.ok { "OK" } else { "FAILED" };
+            let status = match result.status {
+                AgentToolStatus::Error => "FAILED",
+                AgentToolStatus::Pending => "PENDING",
+                AgentToolStatus::Success => "OK",
+            };
 
-            let action_kind = detail.action.kind.as_str();
+            let action_kind = action_result_kind(result).unwrap_or("action");
             let action_type = match action_kind {
                 "exec" => "bash",
                 "call_tool" => "tool_call",
                 other => other,
             };
 
-            let mut cmd_digest = detail
-                .action
-                .command
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .unwrap_or_default();
-            if cmd_digest.is_empty() {
-                if let Some(action_name) = detail.action.action_name.as_deref() {
-                    let params = detail.action.params.clone().unwrap_or_else(|| json!({}));
-                    cmd_digest = compact_action_cmd_line(action_name, &params);
-                }
-            }
-            if cmd_digest.is_empty() {
-                cmd_digest = detail
-                    .tool
-                    .as_deref()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| "action".to_string());
-            }
+            let cmd_digest = action_result_cmd_digest(result);
+            let rendered = result.render_prompt();
 
             let payload = crate::worklog::WorklogActionPayload {
                 action_type: action_type.to_string(),
                 cmd_digest: Some(compact_text_for_log(cmd_digest.as_str(), 220)),
-                tool_name: detail.tool.clone(),
+                tool_name: action_result_tool_name(result),
                 exec_id: Some(exec_id),
-                result_digest: detail
-                    .prompt
-                    .as_deref()
-                    .map(|v| compact_text_for_log(v, 220)),
-                exit_code: detail.result.as_ref().and_then(|result| result.return_code),
-                cwd: detail.result.as_ref().and_then(extract_action_result_pwd),
-                stderr_digest: detail
-                    .error
-                    .as_deref()
-                    .map(|v| compact_text_for_log(v, 220)),
-                tool_result: detail.result.clone(),
+                result_digest: Some(compact_text_for_log(rendered.as_str(), 220)),
+                exit_code: result.return_code,
+                cwd: extract_action_result_pwd(result),
+                stderr_digest: action_result_error_text(result)
+                    .map(|v| compact_text_for_log(v.as_str(), 220)),
+                tool_result: Some(result.clone()),
             };
             self.append_worklog_action_record(session.clone(), trace, status, payload)
                 .await;
@@ -2705,7 +2657,7 @@ impl AIAgent {
         session: Arc<Mutex<AgentSession>>,
         trace: &SessionRuntimeContext,
         llm_result: &BehaviorLLMResult,
-        action_results: &DoActionResults,
+        action_results: &ActionResultsMap,
         summary_text: Option<&str>,
     ) {
         if !Self::should_append_worklog_for_trace(trace) {
@@ -2729,13 +2681,15 @@ impl AIAgent {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| compact_text_for_log(value, 220))
-            .unwrap_or_else(|| compact_text_for_log(action_results.summary.as_str(), 220));
+            .unwrap_or_else(|| {
+                compact_text_for_log(action_results_summary(action_results).as_str(), 220)
+            });
 
         let payload = json!({
             "did_digest": did_digest,
             "result_digest": result_digest,
             "next_behavior": llm_result.next_behavior.clone(),
-            "action_summary": action_results.summary.as_str(),
+            "action_summary": action_results_summary(action_results),
         });
 
         let mut guard = session.lock().await;
@@ -2751,6 +2705,42 @@ impl AIAgent {
             warn!(
                 "agent.worklog_append_failed: did={:?} session={} step={} type=StepSummary err={}",
                 self.did, trace.session_id, trace.step_idx, err
+            );
+        }
+    }
+
+    async fn append_llm_step_record(
+        &self,
+        session: Arc<Mutex<AgentSession>>,
+        trace: &SessionRuntimeContext,
+        step_num: u32,
+        step_started_ms: u64,
+        llm_completed_at_ms: u64,
+        action_completed_at_ms: u64,
+        input: &BehaviorExecInput,
+        tracking: &LLMTrackingInfo,
+        llm_result: &BehaviorLLMResult,
+        action_results: &ActionResultsMap,
+    ) {
+        let record = LLMStepRecord {
+            session_id: trace.session_id.clone(),
+            step_num,
+            step_index: trace.step_idx,
+            behavior_name: trace.behavior.clone(),
+            started_at_ms: step_started_ms,
+            llm_completed_at_ms,
+            action_completed_at_ms,
+            input: input.input_prompt.clone(),
+            llm_prompt: tracking.prompt_text.clone(),
+            llm_result: llm_result.clone(),
+            action_result: action_results.clone(),
+        };
+
+        let mut guard = session.lock().await;
+        if let Err(err) = guard.append_llm_step_record(record).await {
+            warn!(
+                "agent.step_record_append_failed: did={:?} session={} step_num={} step_idx={} err={}",
+                self.did, trace.session_id, step_num, trace.step_idx, err
             );
         }
     }
@@ -3151,61 +3141,37 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn render_action_results_for_prompt(results: &DoActionResults) -> String {
-    let mut keys = results.details.keys().cloned().collect::<Vec<_>>();
+fn render_action_results_for_prompt(results: &ActionResultsMap) -> String {
+    let mut keys = results.keys().cloned().collect::<Vec<_>>();
     keys.sort();
 
-    let mut lines = vec![format!("ActionResults: {}", results.summary)];
-    if let Some(pwd) = results
-        .pwd
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
+    let mut lines = vec![format!(
+        "ActionResults: {}",
+        action_results_summary(results)
+    )];
+    if let Some(pwd) = action_results_latest_pwd(results) {
         lines.push(format!("pwd: {pwd}"));
     }
     for key in keys {
-        let Some(detail) = results.details.get(&key) else {
+        if is_internal_action_result(key.as_str()) {
+            continue;
+        }
+        let Some(result) = results.get(&key) else {
             continue;
         };
-        if let Some(prompt) = detail
-            .prompt
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            let mut prompt_lines = prompt.lines();
-            if let Some(first) = prompt_lines.next() {
-                lines.push(format!("- {}", first));
-                for line in prompt_lines {
-                    lines.push(line.to_string());
-                }
-            } else {
-                lines.push("-".to_string());
+        let prompt = result.render_prompt();
+        if prompt.trim().is_empty() {
+            continue;
+        }
+        let mut prompt_lines = prompt.lines();
+        if let Some(first) = prompt_lines.next() {
+            lines.push(format!("- {}", first));
+            for line in prompt_lines {
+                lines.push(line.to_string());
             }
-            continue;
+        } else {
+            lines.push("-".to_string());
         }
-        if let Some(error) = detail
-            .error
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            lines.push(format!("- {} ERROR: {}", key, error));
-            continue;
-        }
-        if let Some(skipped) = detail.skipped.as_ref() {
-            lines.push(format!(
-                "- {} SKIPPED: {} ({})",
-                key, skipped.count, skipped.reason
-            ));
-            continue;
-        }
-        lines.push(format!(
-            "- {} {}",
-            key,
-            serde_json::to_string(detail).unwrap_or_else(|_| "{}".to_string())
-        ));
     }
     lines.join("\n")
 }
@@ -3215,7 +3181,7 @@ async fn build_step_summary(
     behavior_cfg: &BehaviorConfig,
     llm_result: &BehaviorLLMResult,
     _tracking: &LLMTrackingInfo,
-    action_results: &DoActionResults,
+    action_results: &ActionResultsMap,
     session: Arc<Mutex<AgentSession>>,
 ) -> Option<String> {
     let mut env_context = HashMap::<String, Json>::new();
@@ -3318,6 +3284,210 @@ fn compact_action_error_for_prompt(err: &crate::agent_tool::AgentToolError) -> S
         | crate::agent_tool::AgentToolError::AlreadyExists(msg) => msg.trim().to_string(),
         crate::agent_tool::AgentToolError::Timeout => "timeout".to_string(),
     }
+}
+
+fn annotate_action_result(
+    result: &mut AgentToolResult,
+    tool_name: Option<&str>,
+    detail_action: &Json,
+    action_cmd_line: &str,
+) {
+    if result.cmd_line.trim().is_empty() && !action_cmd_line.trim().is_empty() {
+        result.cmd_line = action_cmd_line.trim().to_string();
+    }
+
+    let mut details = match result.details.clone() {
+        Json::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            if !other.is_null() {
+                map.insert("raw_detail".to_string(), other);
+            }
+            map
+        }
+    };
+
+    if let Some(tool_name) = tool_name.map(str::trim).filter(|value| !value.is_empty()) {
+        details
+            .entry("tool".to_string())
+            .or_insert_with(|| Json::String(tool_name.to_string()));
+    }
+    if !action_cmd_line.trim().is_empty() {
+        details
+            .entry("cmd_line".to_string())
+            .or_insert_with(|| Json::String(action_cmd_line.trim().to_string()));
+    }
+    for key in ["kind", "action_name", "command", "params"] {
+        if let Some(value) = detail_action.get(key) {
+            details
+                .entry(key.to_string())
+                .or_insert_with(|| value.clone());
+        }
+    }
+
+    result.details = Json::Object(details);
+}
+
+fn build_action_error_result(
+    tool_name: Option<&str>,
+    detail_action: &Json,
+    action_cmd_line: &str,
+    message: &str,
+) -> AgentToolResult {
+    let mut result = AgentToolResult::from_details(json!({}))
+        .with_status(AgentToolStatus::Error)
+        .with_result(message.trim().to_string());
+    if !message.trim().is_empty() {
+        result.stderr = Some(message.trim().to_string());
+    }
+    annotate_action_result(&mut result, tool_name, detail_action, action_cmd_line);
+
+    if let Some(map) = result.details.as_object_mut() {
+        map.insert(
+            "error".to_string(),
+            Json::String(message.trim().to_string()),
+        );
+    }
+    result
+}
+
+fn insert_skipped_action_result(results: &mut ActionResultsMap, count: usize, reason: &str) {
+    if count == 0 {
+        return;
+    }
+    let mut result = AgentToolResult::from_details(json!({
+        "kind": "skipped",
+        "skipped_count": count,
+        "reason": reason,
+    }))
+    .with_status(AgentToolStatus::Pending)
+    .with_result(format!("skipped {count} action(s)"));
+    result.pending_reason = None;
+    results.insert(ACTION_RESULTS_SKIPPED_KEY.to_string(), result);
+}
+
+fn is_internal_action_result(exec_id: &str) -> bool {
+    exec_id.starts_with("__")
+}
+
+fn action_result_kind(result: &AgentToolResult) -> Option<&str> {
+    result.details.get("kind").and_then(Json::as_str)
+}
+
+fn action_result_tool_name(result: &AgentToolResult) -> Option<String> {
+    result
+        .details
+        .get("tool")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            result
+                .cmd_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn action_result_cmd_digest(result: &AgentToolResult) -> String {
+    if let Some(command) = result
+        .details
+        .get("command")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return command.to_string();
+    }
+    if let Some(action_name) = result
+        .details
+        .get("action_name")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let params = result
+            .details
+            .get("params")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        return compact_action_cmd_line(action_name, &params);
+    }
+    if !result.cmd_line.trim().is_empty() {
+        return result.cmd_line.trim().to_string();
+    }
+    action_result_tool_name(result).unwrap_or_else(|| "action".to_string())
+}
+
+fn action_result_error_text(result: &AgentToolResult) -> Option<String> {
+    result
+        .details
+        .get("error")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            result
+                .stderr
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            (result.status == AgentToolStatus::Error)
+                .then(|| result.summary.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn action_result_skipped_count(result: &AgentToolResult) -> usize {
+    result
+        .details
+        .get("skipped_count")
+        .and_then(Json::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(0)
+}
+
+fn action_results_summary(results: &ActionResultsMap) -> String {
+    let mut success = 0usize;
+    let mut failed = 0usize;
+    let mut skipped = 0usize;
+
+    for result in results.values() {
+        let skipped_count = action_result_skipped_count(result);
+        if skipped_count > 0 {
+            skipped = skipped.saturating_add(skipped_count);
+            continue;
+        }
+        match result.status {
+            AgentToolStatus::Error => failed = failed.saturating_add(1),
+            AgentToolStatus::Pending | AgentToolStatus::Success => {
+                success = success.saturating_add(1)
+            }
+        }
+    }
+
+    if skipped > 0 {
+        format!("SUCCESS ({success}), FAILED ({failed}), SKIPPED ({skipped})")
+    } else {
+        format!("SUCCESS ({success}), FAILED ({failed})")
+    }
+}
+
+fn action_results_latest_pwd(results: &ActionResultsMap) -> Option<String> {
+    let mut exec_ids = results.keys().cloned().collect::<Vec<_>>();
+    exec_ids.sort();
+    exec_ids
+        .into_iter()
+        .filter_map(|exec_id| results.get(exec_id.as_str()))
+        .filter_map(extract_action_result_pwd)
+        .last()
 }
 
 fn extract_action_result_pwd(result: &crate::agent_tool::AgentToolResult) -> Option<String> {
@@ -3889,6 +4059,7 @@ mod tests {
             },
             tool_trace: vec![],
             raw_output: crate::behavior::LLMOutput::Text(String::new()),
+            prompt_text: String::new(),
         };
 
         let rendered = build_step_summary(
@@ -3896,7 +4067,7 @@ mod tests {
             &behavior_cfg,
             &llm_result,
             &tracking,
-            &DoActionResults::default(),
+            &HashMap::new(),
             session,
         )
         .await;
@@ -3941,16 +4112,23 @@ mod tests {
             },
             tool_trace: vec![],
             raw_output: crate::behavior::LLMOutput::Text(String::new()),
+            prompt_text: String::new(),
         };
-        let mut action_results = DoActionResults {
-            summary: "SUCCESS (1), FAILED (0)".to_string(),
-            pwd: Some("/tmp/demo".to_string()),
-            details: HashMap::new(),
-        };
-        action_results.details.insert(
+        let mut action_results = HashMap::new();
+        action_results.insert(
             "#0".to_string(),
-            ActionExecutionRecord::default()
-                .with_prompt("read_file demo.txt range=1-2 => read 2 lines\nline-1\nline-2"),
+            AgentToolResult::from_details(json!({
+                "kind": "call_tool",
+                "action_name": "read_file",
+                "params": {
+                    "path": "demo.txt",
+                    "range": "1-2"
+                },
+                "pwd": "/tmp/demo"
+            }))
+            .with_cmd_line("read_file demo.txt range=1-2")
+            .with_result("read 2 lines")
+            .with_output("line-1\nline-2"),
         );
 
         let rendered = build_step_summary(
@@ -4220,7 +4398,7 @@ process_rule: "test behavior for action rendering"
         assert!(!rendered.contains("\"abs_path\""));
         assert!(rendered.contains("curl_download_ok") || rendered.contains("curl_fallback_ok"));
         assert!(rendered.contains(
-            "read_file missing-file.txt  =>  read file failed: No such file or directory (os error 2)"
+            "read_file missing-file.txt => read file failed: No such file or directory (os error 2)"
         ));
 
         let edited = fs::read_to_string(agent.agent_env_root.join("edit_preview.txt"))
