@@ -1070,24 +1070,6 @@ impl AIAgent {
             self.append_action_record_worklogs(session.clone(), &trace, &tracking, &action_results)
                 .await;
 
-            let step_summary = build_step_summary(
-                &trace,
-                behavior_cfg,
-                &llm_result,
-                &tracking,
-                &action_results,
-                session.clone(),
-            )
-            .await;
-            self.append_step_summary_worklog(
-                session.clone(),
-                &trace,
-                &llm_result,
-                &action_results,
-                step_summary.as_deref(),
-            )
-            .await;
-
             self.append_llm_step_record(
                 session.clone(),
                 &trace,
@@ -1104,7 +1086,6 @@ impl AIAgent {
 
             let (msg_cursor, msg_owner_agent) = {
                 let mut guard = session.lock().await;
-                guard.last_step_summary = step_summary.clone();
                 guard.step_num = current_step_num.saturating_add(1);
                 (guard.msg_kmsgqueue_curosr, guard.owner_agent.clone())
             };
@@ -1322,21 +1303,16 @@ impl AIAgent {
         behavior_cfg: &BehaviorConfig,
         session: Arc<Mutex<AgentSession>>,
     ) -> Result<Option<BehaviorExecInput>> {
-        //核心:用agent_environment构造step_summary 和 input，至少要有一个，否则就没有有效的收入
-        //如果step>0,则构造step_summary
+        // 核心：用 agent_environment 构造 input，并在 step>0 时注入上一条 step record 作为连续性上下文
         let mut env_context = HashMap::<String, Json>::new();
-        let (session_id, step_index, last_step_summary) = {
+        let (session_id, step_index) = {
             let guard = session.lock().await;
-            (
-                guard.session_id.clone(),
-                guard.step_index,
-                guard.last_step_summary.clone(),
-            )
+            (guard.session_id.clone(), guard.step_index)
         };
         if step_index > 0 {
-            if let Some(step_summary) = last_step_summary {
-                let value = serde_json::to_value(&step_summary).unwrap_or(Json::Null);
-                env_context.insert("step_summary".to_string(), value);
+            let mut guard = session.lock().await;
+            if let Ok(Some(last_step)) = guard.render_last_llm_step_record().await {
+                env_context.insert("last_step".to_string(), Json::String(last_step));
             }
         }
 
@@ -2671,63 +2647,6 @@ impl AIAgent {
         }
     }
 
-    async fn append_step_summary_worklog(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        trace: &SessionRuntimeContext,
-        llm_result: &BehaviorLLMResult,
-        action_results: &ActionResultsMap,
-        summary_text: Option<&str>,
-    ) {
-        if !Self::should_append_worklog_for_trace(trace) {
-            return;
-        }
-
-        let did_digest = llm_result
-            .thinking
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| compact_text_for_log(value, 220))
-            .or_else(|| {
-                summary_text
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(|value| compact_text_for_log(value, 220))
-            })
-            .unwrap_or_else(|| "step completed".to_string());
-        let result_digest = summary_text
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| compact_text_for_log(value, 220))
-            .unwrap_or_else(|| {
-                compact_text_for_log(action_results_summary(action_results).as_str(), 220)
-            });
-
-        let payload = json!({
-            "did_digest": did_digest,
-            "result_digest": result_digest,
-            "next_behavior": llm_result.next_behavior.clone(),
-            "action_summary": action_results_summary(action_results),
-        });
-
-        let mut guard = session.lock().await;
-        if let Err(err) = guard
-            .append_step_summary_with_runtime_context(
-                trace,
-                payload,
-                summary_text,
-                Some(self.environment.local_workspace_manager()),
-            )
-            .await
-        {
-            warn!(
-                "agent.worklog_append_failed: did={:?} session={} step={} type=StepSummary err={}",
-                self.did, trace.session_id, trace.step_idx, err
-            );
-        }
-    }
-
     async fn append_llm_step_record(
         &self,
         session: Arc<Mutex<AgentSession>>,
@@ -3138,7 +3057,6 @@ fn apply_session_behavior_transition(
             keep_running = false;
         } else if next_behavior.eq_ignore_ascii_case("END") {
             //不切换behavior,但是当前behavior loop结束了
-            session.last_step_summary = None;
             session.state = SessionState::End;
             keep_running = false;
         } else {
@@ -3148,7 +3066,6 @@ fn apply_session_behavior_transition(
             if behavior_switched {
                 session.current_behavior = next_behavior.to_string();
                 session.step_index = 0;
-                // Keep last_step_summary: session still running, next behavior may use it for continuity
                 info!(
                     "agent.session_behavior_switch: session={} from={} to={} reason=next_behavior",
                     session.session_id, previous_behavior, session.current_behavior
@@ -3226,6 +3143,7 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn render_action_results_for_prompt(results: &ActionResultsMap) -> String {
     let mut keys = results.keys().cloned().collect::<Vec<_>>();
     keys.sort();
@@ -3259,37 +3177,6 @@ fn render_action_results_for_prompt(results: &ActionResultsMap) -> String {
         }
     }
     lines.join("\n")
-}
-
-async fn build_step_summary(
-    trace: &SessionRuntimeContext,
-    behavior_cfg: &BehaviorConfig,
-    llm_result: &BehaviorLLMResult,
-    _tracking: &LLMTrackingInfo,
-    action_results: &ActionResultsMap,
-    session: Arc<Mutex<AgentSession>>,
-) -> Option<String> {
-    let mut env_context = HashMap::<String, Json>::new();
-    env_context.insert("step_index".to_string(), Json::from(trace.step_idx));
-    env_context.insert(
-        "step_limit".to_string(),
-        Json::from(behavior_cfg.step_limit),
-    );
-
-    if let Ok(mut llm_result_json) = serde_json::to_value(llm_result) {
-        llm_result_json["action_results"] =
-            Json::String(render_action_results_for_prompt(action_results));
-        env_context.insert("llm_result".to_string(), llm_result_json);
-    }
-
-    if let Ok(trace_json) = serde_json::to_value(trace) {
-        env_context.insert("trace".to_string(), trace_json);
-    }
-
-    AgentEnvironment::render_prompt(&behavior_cfg.step_summary, &env_context, session)
-        .await
-        .ok()
-        .map(|render_result| render_result.rendered)
 }
 
 fn merged_actions_from_llm_result(llm_result: &BehaviorLLMResult) -> DoActions {
@@ -3530,6 +3417,7 @@ fn action_result_error_text(result: &AgentToolResult) -> Option<String> {
         })
 }
 
+#[cfg(test)]
 fn action_result_skipped_count(result: &AgentToolResult) -> usize {
     result
         .details
@@ -3539,6 +3427,7 @@ fn action_result_skipped_count(result: &AgentToolResult) -> usize {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn action_results_summary(results: &ActionResultsMap) -> String {
     let mut success = 0usize;
     let mut failed = 0usize;
@@ -3565,6 +3454,7 @@ fn action_results_summary(results: &ActionResultsMap) -> String {
     }
 }
 
+#[cfg(test)]
 fn action_results_latest_pwd(results: &ActionResultsMap) -> Option<String> {
     let mut exec_ids = results.keys().cloned().collect::<Vec<_>>();
     exec_ids.sort();
@@ -4105,145 +3995,6 @@ mod tests {
             AIAgent::creator_ui_session_id_from_meta(&empty_meta),
             Some("ui-owner".to_string())
         );
-    }
-
-    #[tokio::test]
-    async fn build_step_summary_uses_current_behavior_step_limit() {
-        let session = Arc::new(tokio::sync::Mutex::new(AgentSession::new(
-            "s1",
-            "did:test:agent",
-            Some("resolve_router"),
-        )));
-        session.lock().await.step_index = 99;
-
-        let trace = SessionRuntimeContext {
-            trace_id: "trace-1".to_string(),
-            agent_name: "agent-test".to_string(),
-            behavior: "plan".to_string(),
-            step_idx: 2,
-            wakeup_id: "wakeup-1".to_string(),
-            session_id: "s1".to_string(),
-        };
-        let mut behavior_cfg = BehaviorConfig::default();
-        behavior_cfg.step_limit = 16;
-        behavior_cfg.step_summary = "__OPENDAN_VAR(step_index, $step_index)__OPENDAN_VAR(step_limit, $step_limit)__OPENDAN_VAR(thinking, $llm_result.thinking)idx={{step_index}} limit={{step_limit}} thinking={{thinking}}".to_string();
-
-        let llm_result = BehaviorLLMResult {
-            thinking: Some("break down tasks".to_string()),
-            ..Default::default()
-        };
-        let tracking = crate::behavior::LLMTrackingInfo {
-            token_usage: crate::behavior::TokenUsage::default(),
-            track: crate::behavior::TrackInfo {
-                trace_id: "trace-1".to_string(),
-                model: "test-model".to_string(),
-                provider: "test-provider".to_string(),
-                latency_ms: 0,
-                llm_task_ids: vec![],
-                errors: vec![],
-            },
-            tool_trace: vec![],
-            raw_output: crate::behavior::LLMOutput::Text(String::new()),
-            prompt_request: buckyos_api::CompleteRequest::new(
-                buckyos_api::Capability::LlmRouter,
-                buckyos_api::ModelSpec::new(String::new(), None),
-                buckyos_api::Requirements::new(vec![], None, None, None),
-                buckyos_api::AiPayload::default(),
-                None,
-            ),
-        };
-
-        let rendered = build_step_summary(
-            &trace,
-            &behavior_cfg,
-            &llm_result,
-            &tracking,
-            &HashMap::new(),
-            session,
-        )
-        .await;
-
-        assert_eq!(
-            rendered.as_deref(),
-            Some("idx=2 limit=16 thinking=break down tasks")
-        );
-    }
-
-    #[tokio::test]
-    async fn build_step_summary_renders_action_results_prompt_preview() {
-        let session = Arc::new(tokio::sync::Mutex::new(AgentSession::new(
-            "s1",
-            "did:test:agent",
-            Some("resolve_router"),
-        )));
-
-        let trace = SessionRuntimeContext {
-            trace_id: "trace-1".to_string(),
-            agent_name: "agent-test".to_string(),
-            behavior: "plan".to_string(),
-            step_idx: 2,
-            wakeup_id: "wakeup-1".to_string(),
-            session_id: "s1".to_string(),
-        };
-        let mut behavior_cfg = BehaviorConfig::default();
-        behavior_cfg.step_summary =
-            "__OPENDAN_VAR(action_results, $llm_result.action_results)\n### Run Results\n{{action_results}}"
-                .to_string();
-
-        let llm_result = BehaviorLLMResult::default();
-        let tracking = crate::behavior::LLMTrackingInfo {
-            token_usage: crate::behavior::TokenUsage::default(),
-            track: crate::behavior::TrackInfo {
-                trace_id: "trace-1".to_string(),
-                model: "test-model".to_string(),
-                provider: "test-provider".to_string(),
-                latency_ms: 0,
-                llm_task_ids: vec![],
-                errors: vec![],
-            },
-            tool_trace: vec![],
-            raw_output: crate::behavior::LLMOutput::Text(String::new()),
-            prompt_request: buckyos_api::CompleteRequest::new(
-                buckyos_api::Capability::LlmRouter,
-                buckyos_api::ModelSpec::new(String::new(), None),
-                buckyos_api::Requirements::new(vec![], None, None, None),
-                buckyos_api::AiPayload::default(),
-                None,
-            ),
-        };
-        let mut action_results = HashMap::new();
-        action_results.insert(
-            "#0".to_string(),
-            AgentToolResult::from_details(json!({
-                "kind": "call_tool",
-                "action_name": "read_file",
-                "params": {
-                    "path": "demo.txt",
-                    "range": "1-2"
-                },
-                "pwd": "/tmp/demo"
-            }))
-            .with_cmd_line("read_file demo.txt range=1-2")
-            .with_result("read 2 lines")
-            .with_output("line-1\nline-2"),
-        );
-
-        let rendered = build_step_summary(
-            &trace,
-            &behavior_cfg,
-            &llm_result,
-            &tracking,
-            &action_results,
-            session,
-        )
-        .await
-        .expect("rendered summary");
-
-        assert!(rendered.contains("ActionResults: SUCCESS (1), FAILED (0)"));
-        assert!(rendered.contains("pwd: /tmp/demo"));
-        assert!(rendered.contains("- read_file demo.txt range=1-2 => read 2 lines"));
-        assert!(!rendered.contains("\"summary\""));
-        assert!(!rendered.contains("\"details\""));
     }
 
     #[tokio::test]

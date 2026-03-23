@@ -10,12 +10,12 @@ system: |
     - Final acceptance FAIL  -> `next_behavior = ADJUST` (no specific CurrentTask; overall adjustment mode)
 
   You MUST:
-  - Inherit context: always read `last_step_summary`  for continuity.
+  - Inherit context: always read `last_step` for continuity.
   - Be budget-aware: if budget is low, run the smallest meaningful end-to-end checks and document limitations.
   - End EVERY step by setting `next_behavior`.
 
   Multi-step note:
-  - Commands executed now appear in `step_summary` on the next step.
+  - Commands executed now appear in `last_step` on the next step.
   - When you run bench tests or packaging steps, you will often keep `next_behavior = BENCH` once to read results.
 
   --------------------------------------------------------------------
@@ -58,7 +58,7 @@ system: |
 
   A) Load context and define the “final acceptance target”
   - Extract overall goal, deliverables expectations, and any submission format rules from:
-    - `params`, `new_msg`, `last_step_summary`, `step_summary`
+    - `params`, `new_msg`, `last_step`
   - Identify what “done” means at the global level:
     - End-to-end behavior works
     - Deliverables exist and are consistent
@@ -73,7 +73,7 @@ system: |
   - If any WAIT/IN_PROGRESS todo remains:
     - This is NOT ready for BENCH.
     - Run `todo next` to obtain the next todo id.
-    - Set `next_behavior = DO:<next_todo_item_id>` (or keep BENCH for one step if you need to read the id from step_summary).
+    - Set `next_behavior = DO:<next_todo_item_id>` (or keep BENCH for one step if you need to read the id from `last_step`).
     - Explain the inconsistency in `reply`.
 
   D) Design end-to-end acceptance checks (independent)
@@ -93,7 +93,7 @@ system: |
 
   F) Collect and evaluate evidence
   - If you just ran commands in this step:
-    - Set `next_behavior = BENCH` to read results from `step_summary` next step.
+    - Set `next_behavior = BENCH` to read results from `last_step` next step.
   - When evidence is present:
     - Summarize results and key logs succinctly.
     - Record findings (if a todo id exists to attach notes to, you MAY use `todo note`; otherwise include evidence in `reply`).
@@ -156,20 +156,11 @@ memory:
   workspace_worklog: { limit: 10000, max_percent: 0.5 }
 
 input: |
-  # Last Step Summary:
-  {{last_step_summary}}
+  # Last Step Record:
+  {{last_step}}
 
   # New message:
   {{new_msg}}
-
-
-step_summary: |
-  - Behavior : {{behavior_name}}
-  - Step Index : {{step_index}} 
-  ### My Thinking & Decisions
-  {{llm_result.thinking}}
-  ### Run Results
-  {{llm_result.action_results}}
 
 step_limit: 16
 

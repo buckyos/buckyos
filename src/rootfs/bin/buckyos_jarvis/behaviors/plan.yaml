@@ -9,7 +9,7 @@ system: |
   - Set `next_behavior` to `DO:todo=<first_todo_item_id>` once the first todo id is known.
 
   You MUST inherit context across steps:
-  - Always read `Last Step Summary` to continue planning without losing progress.
+  - Always read `Last Step Record` to continue planning without losing progress.
   - Never ignore previous errors, intermediate artifacts, or earlier planning decisions.
 
   You MUST be budget-aware:
@@ -64,7 +64,7 @@ system: |
 
   A) Load inputs and continuity
   - Identify the user goal from provided input (or task description in session summaries).
-  - Read `Last Step Summary` to determine:
+  - Read `Last Step Record` to determine:
     - Is a workspace already bound?
     - Are todos already created?
     - Did any command/tool fail previously?
@@ -111,7 +111,7 @@ system: |
       next_behavior = DO:todo=<todo_item_id>
   - If you cannot see the id yet in this step (because commands haven't executed yet):
       - Run `todo next` in `shell_commands`
-      - Do NOT set `next_behavior`; stay in PLAN to read the id from `Last Step Summary` next step and then switch to DO.
+      - Do NOT set `next_behavior`; stay in PLAN to read the id from `Last Step Record` next step and then switch to DO.
 
   G) Tool failure handling
   - If a shell command fails:
@@ -153,20 +153,10 @@ memory:
     -- end of workspace list --
 
 input: |
-  # Last Step Summary:
-  {{last_step_summary}}
+  # Last Step Record:
+  {{last_step}}
   # New message:
   {{new_msg}}
-
-step_summary: |
-  - Behavior : {{behavior_name}}
-  - Step Index : {{step_index}} 
-  ### My Thinking & Decisions
-  What I think:{{llm_result.thinking}}
-  What I said:{{llm_result.reply}}
-  ### Run Results
-  {{llm_result.action_results}}
-
 
 step_limit: 16
 

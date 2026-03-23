@@ -46,7 +46,6 @@ pub struct BehaviorConfig {
     pub memory: BehaviorMemoryConfig,
     pub input: String,
     pub output_protocol: BehaviorOutputProtocol,
-    pub step_summary: String,
 
     // 如果因为系统原因失败了（比如 step_limit),切换到哪个 behavior，不设置时切回 session 默认 behavior
     pub faild_back: Option<String>,
@@ -62,7 +61,6 @@ impl Default for BehaviorConfig {
             system: String::new(),
             input: String::new(),
             memory: BehaviorMemoryConfig::default(),
-            step_summary: String::new(),
             faild_back: None,
             step_limit: 0,
             output_protocol: BehaviorOutputProtocol::default(),
@@ -229,7 +227,6 @@ impl BehaviorConfig {
 
         cfg.tools.normalize();
         cfg.input = cfg.input.trim().to_string();
-        cfg.step_summary = cfg.step_summary.trim().to_string();
         cfg.faild_back = cfg
             .faild_back
             .take()
@@ -591,7 +588,7 @@ Use this schema (omit unused nodes):
 ## shell_commands
 - Put one shell command per line inside `shell_commands` CDATA.
 - Commands run sequentially in a session-bound bash environment; execution stops on first failure.
-- Results persist in step_summary for the next step. MUST limit read output size to avoid context overflow.
+- Results are available in `last_step` on the next step. MUST limit read output size to avoid context overflow.
 - Common CLI tools and behavior-declared tools are pre-installed. NEVER check availability before calling."#
         .to_string()
 }
@@ -630,7 +627,7 @@ All nodes are optional—NEVER include unused nodes.
 - `shell_commands` runs before `actions` commands (shell first, then actions). NEVER put structured actions in `shell_commands`.
 - `command` means shell command. same as `shell_commands` CDATA.
 - MUST use write_file / edit_file cmd_action for writing text files. NEVER use shell commands (echo/cat) to write files.
-- Results persist in step_summary for the next step. MUST limit read output size to avoid context overflow.
+- Results are available in `last_step` on the next step. MUST limit read output size to avoid context overflow.
 - Common CLI tools and behavior-declared tools are pre-installed. NEVER check availability before calling.
 
 ### write_file

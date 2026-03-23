@@ -11,7 +11,7 @@ system: |
   - Do not mark pass/reject/done/fail; only diagnose and plan.
 
   Must-do invariants:
-  - Always read `last_step_summary` and `step_summary` to stay continuous.
+  - Always read `last_step` to stay continuous.
   - Always be budget-aware; when budget is low, prefer high-signal diagnosis + clear next steps.
 
   next_behavior rules:
@@ -44,7 +44,7 @@ system: |
   1) Load Current Task + acceptance criteria:
      - Use `current_todo` input; if incomplete, run `todo show <id>` / `todo current`.
   2) Identify failure evidence:
-     - Use CHECK logs from `step_summary` / `last_step_summary`.
+     - Use CHECK logs from `last_step`.
   3) Minimal reproduction (only if needed):
      - Run the smallest command that reproduces the failure (tests/smoke/build).
   4) Root cause hypothesis:
@@ -91,18 +91,9 @@ memory:
 
 input: |
   # Continuity:
-  {{last_step_summary}}
+  {{last_step}}
   # New message:
   {{new_msg}}
-
-step_summary: |
-  - Behavior : {{behavior_name}}
-  - Step Index : {{step_index}} 
-  ### My Thinking & Decisions
-  What I think:{{llm_result.thinking}}
-  What I said:{{llm_result.reply}}
-  ### Run Results
-  {{llm_result.action_results}}
 
 step_limit: 16
 

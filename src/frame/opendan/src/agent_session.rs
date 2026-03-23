@@ -116,7 +116,6 @@ struct SessionRuntimeState {
 
     step_num: u32,
     step_index: u32,
-    last_step_summary: Option<Json>,
 
     workspace_info: Option<Json>,
     local_workspace_id: Option<String>,
@@ -137,7 +136,6 @@ impl Default for SessionRuntimeState {
             default_remote: None,
             step_num: 0,
             step_index: 0,
-            last_step_summary: None,
             workspace_info: None,
             local_workspace_id: None,
             worklog: vec![],
@@ -159,8 +157,6 @@ pub struct AgentSession {
     pub meta: Json,
     //session 当前step的序号，从0开始递增，不会因为current_behavior改变而重置
     pub step_num: u32,
-
-    pub last_step_summary: Option<String>,
     pub is_paused: bool,
     pub state: SessionState,
     pub wait_details: Option<SessionWaitDetails>,
@@ -236,32 +232,6 @@ impl AgentSession {
         self.append_worklog(item, local_workspace_mgr).await
     }
 
-    pub async fn append_step_summary_with_runtime_context(
-        &mut self,
-        trace: &SessionRuntimeContext,
-        payload: Json,
-        summary: Option<&str>,
-        local_workspace_mgr: Option<&LocalWorkspaceManager>,
-    ) -> Result<(), AgentToolError> {
-        if !Self::is_work_session_id(trace.session_id.as_str()) {
-            return Ok(());
-        }
-
-        let mut item =
-            Self::build_worklog_record_from_runtime_context(trace, "StepSummary", "OK", payload);
-        if let Some(summary) = summary
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-        {
-            if let Some(obj) = item.as_object_mut() {
-                obj.insert("summary".to_string(), Json::String(summary));
-            }
-        }
-        self.append_step_summary_worklog(item, local_workspace_mgr)
-            .await
-    }
-
     fn has_bound_local_workspace(&self) -> bool {
         self.local_workspace_id
             .as_deref()
@@ -310,7 +280,6 @@ impl AgentSession {
             default_remote: None,
             step_num: 0,
             step_index: 0,
-            last_step_summary: None,
             msg_kmsgqueue_curosr: 0,
             event_kmsgqueue_curosr: 0,
             just_readed_input_msg: vec![],
@@ -351,10 +320,6 @@ impl AgentSession {
             map.remove("runtime_state");
         }
         let summary = record.summary.trim().to_string();
-        let runtime_last_step_summary = runtime_meta
-            .last_step_summary
-            .as_ref()
-            .and_then(extract_step_summary_text);
 
         let mut session = Self {
             session_id: record.session_id,
@@ -375,7 +340,6 @@ impl AgentSession {
             default_remote: normalize_optional_string(runtime_meta.default_remote),
             step_num: runtime_meta.step_num,
             step_index: runtime_meta.step_index,
-            last_step_summary: runtime_last_step_summary,
             msg_kmsgqueue_curosr: 0,
             event_kmsgqueue_curosr: 0,
             just_readed_input_msg: vec![],
@@ -443,7 +407,6 @@ impl AgentSession {
             default_remote: self.default_remote.clone(),
             step_num: self.step_num,
             step_index: self.step_index,
-            last_step_summary: self.last_step_summary.clone().map(Json::String),
             workspace_info: self.workspace_info.clone(),
             local_workspace_id: self.local_workspace_id.clone(),
             worklog: self.worklog.clone(),
@@ -578,61 +541,6 @@ impl AgentSession {
         let payload = item.get("payload").cloned().unwrap_or(Json::Null);
 
         render_worklog_prompt_line_from_parts(record_type, status, prompt_digest, summary, &payload)
-    }
-
-    async fn append_step_summary_worklog(
-        &mut self,
-        item: Json,
-        local_workspace_mgr: Option<&LocalWorkspaceManager>,
-    ) -> Result<(), AgentToolError> {
-        let has_local_workspace = self.has_bound_local_workspace();
-
-        if has_local_workspace {
-            let Some(local_workspace_mgr) = local_workspace_mgr else {
-                return Err(AgentToolError::InvalidArgs(format!(
-                    "session `{}` is bound to local workspace but LocalWorkspaceManager is missing",
-                    self.session_id
-                )));
-            };
-            for old_item in self.worklog.drain(..) {
-                local_workspace_mgr
-                    .append_worklog(
-                        self.session_id.as_str(),
-                        self.owner_agent.as_str(),
-                        self.current_behavior.as_str(),
-                        self.step_index,
-                        old_item,
-                    )
-                    .await?;
-            }
-
-            local_workspace_mgr
-                .append_step_summary_worklog(
-                    self.session_id.as_str(),
-                    self.owner_agent.as_str(),
-                    self.current_behavior.as_str(),
-                    self.step_index,
-                    item,
-                )
-                .await?;
-        } else {
-            self.worklog.push(item);
-            if self.worklog.len() > 256 {
-                let start = self.worklog.len().saturating_sub(256);
-                self.worklog = self.worklog.split_off(start);
-            }
-        }
-
-        self.updated_at_ms = now_ms();
-        self.last_activity_ms = self.updated_at_ms;
-        Ok(())
-    }
-
-    pub fn set_last_step_summary(&mut self, summary: Json) {
-        self.summary = extract_step_summary_text(&summary).unwrap_or_default();
-        self.last_step_summary = normalize_optional_string(Some(self.summary.clone()));
-        self.updated_at_ms = now_ms();
-        self.last_activity_ms = self.updated_at_ms;
     }
 
     pub fn should_ready_by_wait_timeout(&self, now_ms: u64) -> bool {
@@ -1398,38 +1306,6 @@ impl ::agent_tool::SessionViewBackend for AgentSessionMgr {
     }
 }
 
-fn extract_step_summary_text(summary: &Json) -> Option<String> {
-    if let Some(text) = summary.as_str() {
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    if let Some(text) = summary
-        .get("summary")
-        .or_else(|| summary.get("message"))
-        .and_then(|value| value.as_str())
-    {
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    if let Some(text) = summary
-        .get("llm")
-        .and_then(|value| value.get("next_behavior"))
-        .and_then(|value| value.as_str())
-    {
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            return Some(format!("next_behavior={trimmed}"));
-        }
-    }
-    None
-}
-
 fn resolve_workspace_worklog_db_path(
     workspace_info: Option<&Json>,
     session_cwd: &Path,
@@ -1695,15 +1571,14 @@ mod tests {
     }
 
     #[test]
-    fn from_record_does_not_backfill_summary_from_last_step_summary() {
+    fn from_record_ignores_legacy_last_step_summary_runtime_meta() {
         let mut session = AgentSession::new("s-summary", "did:opendan:test", Some("DO"));
         session.summary.clear();
-        session.last_step_summary = Some("step summary".to_string());
-
-        let record = session.to_record(true);
+        let mut record = session.to_record(true);
+        record.meta["runtime_state"]["last_step_summary"] = json!("step summary");
         let restored = AgentSession::from_record(record);
         assert!(restored.summary.is_empty());
-        assert_eq!(restored.last_step_summary.as_deref(), Some("step summary"));
+        assert_eq!(restored.step_index, 0);
     }
 
     #[test]

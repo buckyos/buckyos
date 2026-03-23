@@ -33,7 +33,7 @@ system: |
 
   Goal: Apply changes based on the preceding OBSERVE. Move fast.
 
-  `thinking`: derive execution plan from last_step_summary.
+  `thinking`: derive execution plan from `last_step`.
   `reply`: **motivation** — WHY you make these changes + expected outcome.
   `actions`/`shell_commands`: **WRITE allowed**.
   - `write_file`, `edit_file`, shell build/test, `todo start/done/fail/note`.
@@ -69,9 +69,8 @@ memory:
   session_step_records: { limit: 3000, max_percent: 0.25, skip_last_n: 1 }
   workspace_worklog: { limit: 10000, max_percent: 0.5 }
 input: |
-
-  # Last Step Summary:
-  {{last_step_summary}}
+  # Last Step Record:
+  {{last_step}}
 
   # Current Step Index: {{step_index}} (even=OBSERVE, odd=EXECUTE)
 
@@ -84,17 +83,6 @@ input: |
 
 faild_back: adjust
 step_limit: 24
-
-step_summary: |
-  - Behavior : {{behavior_name}}
-  - Step Index : {{step_index}} / {{step_limit}}
-  ### Thinking
-  {{llm_result.thinking}}
-  ### Reply
-  {{llm_result.reply}}
-  ### Action Results
-  {{llm_result.action_results}}
-
 
 limits:
   max_prompt_tokens: 64000

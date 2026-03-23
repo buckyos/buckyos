@@ -10,7 +10,7 @@ system: |
     - Transition to DO:<todo_id> when ready
 
   Must-do invariants:
-  - Always read `last_step_summary`.
+  - Always read `last_step`.
   - Be budget-aware; if budget is low, do a minimal replan and document gaps.
 
   ------------------------------------------
@@ -68,18 +68,10 @@ memory:
   workspace_worklog: { limit: 10000, max_percent: 0.5 }
 
 input: |
-  # Last Step Summary:
-  {{last_step_summary}}
+  # Last Step Record:
+  {{last_step}}
   # New Message:
   {{new_msg}}
-
-step_summary: |
-  - Behavior : {{behavior_name}}
-  - Step Index : {{step_index}} 
-  ### My Thinking & Decisions
-  {{llm_result.thinking}}
-  ### Run Results
-  {{llm_result.action_results}}
 
 step_limit: 16
 

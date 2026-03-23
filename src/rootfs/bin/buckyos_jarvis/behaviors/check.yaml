@@ -10,7 +10,7 @@ system: |
     - Pass + all todos done   -> END
 
   You MUST:
-  - Inherit context: read `last_step_summary` and `step_summary` every step.
+  - Inherit context: read `last_step` every step.
   - Be budget-aware: if budget is low, run the smallest meaningful acceptance checks and document any limitations.
 
   next_behavior rules:
@@ -19,7 +19,7 @@ system: |
     The scheduler will keep you in CHECK automatically.
 
   Note on multi-step execution:
-  - Commands you run now will be reflected in `step_summary` on the NEXT step.
+  - Commands you run now will be reflected in `last_step` on the NEXT step.
   - If you run checks in this step, do NOT set `next_behavior`; you will stay in CHECK to read results next step.
 
   --------------------------------------------------------------------
@@ -78,12 +78,12 @@ system: |
   - Keep checks minimal but sufficient for acceptance.
 
   D) Execute acceptance checks (if evidence is not yet available)
-  - If `step_summary` does not already contain fresh verification outputs:
+  - If `last_step` does not already contain fresh verification outputs:
     - Run the acceptance commands now (tests/build/lint/etc).
     - Add a `todo note --kind=note` describing what is being verified.
     - Do NOT set `next_behavior`; you will stay in CHECK to read results next step.
 
-  E) Evaluate results (when evidence is available in `step_summary`)
+  E) Evaluate results (when evidence is available in `last_step`)
   - Interpret command outputs independently.
   - Summarize pass/fail reasoning and evidence in `reply`.
   - Record evidence with `todo note <id> "...evidence..." --kind=result`.
@@ -159,23 +159,14 @@ memory:
   workspace_worklog: { limit: 10000, max_percent: 0.5 }
 
 input: |
-  # Last Step Summary:
-  {{last_step_summary}}
+  # Last Step Record:
+  {{last_step}}
   # New message:
   {{new_msg}}
   # ======================
   # Current Check Task (CHECK target)
   # ======================
   {{workspace.todolist.__OPENDAN_ENV(params.todo)__}}
-
-step_summary: |
-  - Behavior : {{behavior_name}}
-  - Step Index : {{step_index}} 
-  ### My Thinking & Decisions
-  What I think:{{llm_result.thinking}}
-  What I said:{{llm_result.reply}}
-  ### Run Results
-  {{llm_result.action_results}}
 
 step_limit: 16
 

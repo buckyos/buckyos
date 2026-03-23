@@ -168,7 +168,7 @@ __OPENDAN_VAR(session_title, $session_title)
 __OPENDAN_VAR(session_step_index, $step_index)
 __OPENDAN_VAR(session_step_num, $step_num)
 __OPENDAN_VAR(current_behavior, $current_behavior)
-__OPENDAN_VAR(last_step_summary, $last_step_summary)
+__OPENDAN_VAR(last_step, $last_step)
 __OPENDAN_VAR(workspace_id, $workspace.binding.local_workspace_id)
 __OPENDAN_VAR(workspace_rel_path, $workspace.binding.workspace_rel_path)
 __OPENDAN_VAR(project_name, $workspace.project.name)
@@ -183,7 +183,7 @@ __OPENDAN_VAR(step_record_path, $step_record.path)
 __OPENDAN_VAR(workspace_todolist, $workspace_todolist)
 Context Session={{ctx_session_id}} Loop={{ctx_loop_session_id}} TraceStep={{ctx_trace_step}}
 Session Title={{session_title}} StepIndex={{session_step_index}} StepNum={{session_step_num}} Behavior={{current_behavior}}
-Last Step Summary={{last_step_summary}}
+Last Step={{last_step}}
 Workspace={{workspace_id}} Rel={{workspace_rel_path}} Project={{project_name}}
 Current Todo Id={{current_todo_id}}
 Current Todo:
@@ -510,7 +510,6 @@ async fn create_ui_session(fixture: &PromptFixture, session_id: &str) -> Arc<Mut
     session.current_behavior = "resolve_router".to_string();
     session.step_index = 9;
     session.step_num = 14;
-    session.set_last_step_summary(json!("ui session last step summary for prompt render"));
     session.pwd = fixture.cwd_dir.clone();
     session.session_root_dir = fixture.sessions_root.clone();
     session.local_workspace_id = Some(fixture.workspace_id.clone());
@@ -652,7 +651,6 @@ async fn create_work_session(
     session.current_behavior = "plan".to_string();
     session.step_index = 12;
     session.step_num = 18;
-    session.set_last_step_summary(json!("work session last step summary for prompt render"));
     session.pwd = fixture.cwd_dir.clone();
     session.session_root_dir = fixture.sessions_root.clone();
     session.local_workspace_id = Some(fixture.workspace_id.clone());
@@ -804,7 +802,7 @@ async fn build_prompt_for_work_session_renders_dense_step_records_and_env_contex
     assert!(rendered.contains("TraceStep=15"));
     assert!(rendered.contains("Session Title=Dense Work Session"));
     assert!(rendered.contains("Behavior=plan"));
-    assert!(rendered.contains("Last Step Summary=work session last step summary"));
+    assert!(rendered.contains("Last Step="));
     assert!(rendered.contains("Current Todo Id=T102"));
     assert!(rendered.contains("Current Todo T102 [WAIT]"));
     assert!(rendered.contains("Step Record Path="));

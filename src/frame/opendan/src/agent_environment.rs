@@ -220,7 +220,6 @@ impl AgentEnvironment {
             behavior_name,
             step_index,
             step_num,
-            last_step_summary,
             workspace_info,
             session_cwd,
             session_root_dir,
@@ -234,7 +233,6 @@ impl AgentEnvironment {
                 guard.current_behavior.clone(),
                 guard.step_index,
                 guard.step_num,
-                guard.last_step_summary.clone(),
                 guard.workspace_info.clone(),
                 guard.pwd.clone(),
                 guard.session_root_dir.clone(),
@@ -274,9 +272,6 @@ impl AgentEnvironment {
         }
         if k == "step_num" {
             return Ok(Some(step_num.to_string()));
-        }
-        if k == "last_step_summary" {
-            return Ok(last_step_summary);
         }
         if k == "current_behavior" || k == "behavior_name" {
             return Ok(Some(behavior_name));
