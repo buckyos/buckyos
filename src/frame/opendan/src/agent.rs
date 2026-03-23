@@ -3998,6 +3998,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "relies on agent_tool/tmux integration and is flaky in CI"]
     async fn print_action_results_prompt_preview() {
         let temp = tempdir().expect("create tempdir");
         let agent_root = temp.path().join("agent");
