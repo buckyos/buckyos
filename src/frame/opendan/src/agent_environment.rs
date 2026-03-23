@@ -9,7 +9,7 @@ use buckyos_api::{
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use log::{debug, warn};
 use ndn_lib::MsgObject;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde_json::{Map, Value as Json};
 use tokio::fs;
 use tokio::sync::Mutex;
@@ -24,6 +24,7 @@ use crate::agent_tool::{
     get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
     AgentToolError, AgentToolManager,
 };
+use crate::step_record::LLMStepPromptRenderOptions;
 use crate::workspace::{
     AgentWorkshop, AgentWorkshopConfig, LocalWorkspaceManager, WorkshopIndex, WorkspaceType,
 };
@@ -41,6 +42,8 @@ const ESCAPED_CLOSE_SENTINEL: &str = "\u{001f}ESCAPED_CLOSE_BRACE\u{001f}";
 const DEFAULT_NEW_MSG_MAX_PULL: usize = 32;
 const DEFAULT_SESSION_LIST_MAX_PULL: usize = 16;
 const DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL: usize = 16;
+const DEFAULT_LAST_STEPS_MAX_PULL: usize = 8;
+const DEFAULT_WORKSPACE_TODO_LIST_MAX_ITEMS: usize = 64;
 const SESSION_RECORD_FILE_NAME: &str = "session.json";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemplateRenderMode {
@@ -213,22 +216,28 @@ impl AgentEnvironment {
         let k = key.trim();
         let (
             session_id,
+            session_title,
             behavior_name,
             step_index,
+            step_num,
             last_step_summary,
             workspace_info,
             session_cwd,
+            session_root_dir,
             owner_agent,
             local_workspace_id,
         ) = {
             let guard = session.lock().await;
             (
                 guard.session_id.clone(),
+                guard.title.clone(),
                 guard.current_behavior.clone(),
                 guard.step_index,
+                guard.step_num,
                 guard.last_step_summary.clone(),
                 guard.workspace_info.clone(),
                 guard.pwd.clone(),
+                guard.session_root_dir.clone(),
                 guard.owner_agent.clone(),
                 guard.local_workspace_id.clone(),
             )
@@ -257,14 +266,37 @@ impl AgentEnvironment {
         if k == "session_id" {
             return Ok(Some(session_id));
         }
+        if k == "session_title" {
+            return Ok(clean_optional_text(Some(session_title.as_str())));
+        }
         if k == "step_index" {
             return Ok(Some(step_index.to_string()));
+        }
+        if k == "step_num" {
+            return Ok(Some(step_num.to_string()));
         }
         if k == "last_step_summary" {
             return Ok(last_step_summary);
         }
-        if k == "behavior_name" {
+        if k == "current_behavior" || k == "behavior_name" {
             return Ok(Some(behavior_name));
+        }
+        if k == "last_step" {
+            let mut guard = session.lock().await;
+            return guard.render_last_llm_step_record().await;
+        }
+        if k.starts_with("last_steps") {
+            let max_pull = parse_pull_limit_from_key(k, "last_steps", DEFAULT_LAST_STEPS_MAX_PULL);
+            let options = LLMStepPromptRenderOptions {
+                max_render_steps: max_pull,
+                recent_detail_steps: max_pull,
+                ..LLMStepPromptRenderOptions::default()
+            };
+            let mut guard = session.lock().await;
+            return guard
+                .render_llm_step_records_prompt(Some(&options))
+                .await
+                .map(|text| clean_optional_text(Some(text.as_str())));
         }
 
         if k.starts_with("new_msg") {
@@ -321,13 +353,16 @@ impl AgentEnvironment {
             .await);
         }
 
-        if k.starts_with("local_workspace_list") {
+        if k.starts_with("local_workspace_list") || k.starts_with("workspace_list") {
             // k format: local_workspace_list / local_workspace_list.$num
-            let max_pull = parse_pull_limit_from_key(
-                k,
-                "local_workspace_list",
-                DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL,
-            );
+            // or workspace_list / workspace_list.$num
+            let prefix = if k.starts_with("workspace_list") {
+                "workspace_list"
+            } else {
+                "local_workspace_list"
+            };
+            let max_pull =
+                parse_pull_limit_from_key(k, prefix, DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL);
             return Ok(render_recent_local_workspaces_from_disk(
                 workspace_info.as_ref(),
                 &session_cwd,
@@ -340,8 +375,13 @@ impl AgentEnvironment {
         //     unimplemented!()
         // }
 
-        if k == "current_todo" || k == "workspace.todolist.next_ready_todo" {
-            let value_kind = if k == "current_todo" {
+        if k == "current_todo"
+            || k == "workspace_current_todo_id"
+            || k == "workspace_current_todo"
+            || k == "workspace_next_ready_todo"
+            || k == "workspace.todolist.next_ready_todo"
+        {
+            let value_kind = if k == "current_todo" || k == "workspace_current_todo_id" {
                 NextReadyTodoValueKind::TodoCode
             } else {
                 NextReadyTodoValueKind::RenderedDetail
@@ -388,12 +428,60 @@ impl AgentEnvironment {
             }
 
             if let Some(workspace_info) = workspace_info.as_ref() {
+                if k == "workspace_current_todo_id" {
+                    return Ok(resolve_workspace_info_text(workspace_info, "current_todo")
+                        .or_else(|| resolve_workspace_info_text(workspace_info, k)));
+                }
                 return Ok(resolve_workspace_info_text(workspace_info, k));
             }
             return Ok(None);
         }
 
-        if let Some(todo_ref_raw) = k.strip_prefix("workspace.todolist.") {
+        if k == "workspace_todolist" {
+            let workspace_id = resolve_session_workspace_id(
+                local_workspace_id.as_deref(),
+                workspace_info.as_ref(),
+            );
+            let todo_db_path = resolve_todo_db_path(
+                local_workspace_id.as_deref(),
+                workspace_info.as_ref(),
+                &session_cwd,
+            );
+
+            if let (Some(workspace_id), Some(todo_db_path)) = (workspace_id, todo_db_path) {
+                if todo_db_path.is_file() {
+                    match load_workspace_todo_list_text(
+                        todo_db_path.clone(),
+                        workspace_id.clone(),
+                        DEFAULT_WORKSPACE_TODO_LIST_MAX_ITEMS,
+                    )
+                    .await
+                    {
+                        Ok(Some(value)) => return Ok(Some(value)),
+                        Ok(None) => {}
+                        Err(err) => {
+                            warn!(
+                                "agent_env.load_value_from_session workspace_todolist query failed: session={} workspace={} db={} err={}",
+                                session_id,
+                                workspace_id,
+                                todo_db_path.display(),
+                                err
+                            );
+                        }
+                    }
+                }
+            }
+
+            if let Some(workspace_info) = workspace_info.as_ref() {
+                return Ok(resolve_workspace_info_text(workspace_info, k));
+            }
+            return Ok(None);
+        }
+
+        if let Some(todo_ref_raw) = k
+            .strip_prefix("workspace_todolist.")
+            .or_else(|| k.strip_prefix("workspace.todolist."))
+        {
             let todo_ref = todo_ref_raw.trim();
             if !todo_ref.is_empty() && todo_ref != "next_ready_todo" {
                 let workspace_id = resolve_session_workspace_id(
@@ -459,10 +547,19 @@ impl AgentEnvironment {
                 )
             })
             .unwrap_or_else(|| workspace_root.clone());
+        let session_root =
+            resolve_current_session_dir(&session_root_dir, &session_cwd, session_id.as_str()).await;
 
         if k.starts_with("$agent_root/") {
             let rel_path = &k["$agent_root/".len()..];
             return resolve_path_from_root(agent_root.as_path(), rel_path);
+        }
+        if k.starts_with("$session_root/") {
+            let rel_path = &k["$session_root/".len()..];
+            if let Some(session_root) = session_root.as_ref() {
+                return resolve_path_from_root(session_root.as_path(), rel_path);
+            }
+            return Ok(None);
         }
         if k.starts_with("$workspace/") {
             let rel_path = &k["$workspace/".len()..];
@@ -1217,6 +1314,20 @@ async fn render_recent_local_workspaces_from_disk(
     clean_optional_text(Some(lines.join("\n").as_str()))
 }
 
+async fn resolve_current_session_dir(
+    session_root_dir: &Path,
+    session_cwd: &Path,
+    current_session_id: &str,
+) -> Option<PathBuf> {
+    let session_id = clean_optional_text(Some(current_session_id))?;
+    if let Some(root) = non_empty_path(session_root_dir) {
+        return Some(root.join(session_id));
+    }
+    resolve_session_root_from_cwd(session_cwd, current_session_id)
+        .await
+        .map(|root| root.join(current_session_id.trim()))
+}
+
 async fn resolve_session_root_from_cwd(
     session_cwd: &Path,
     current_session_id: &str,
@@ -1477,6 +1588,103 @@ async fn load_session_todo_text_by_ref(
     .map_err(|err| AgentToolError::ExecFailed(format!("query session todo join failed: {err}")))?
 }
 
+async fn load_workspace_todo_list_text(
+    db_path: PathBuf,
+    workspace_id: String,
+    max_items: usize,
+) -> Result<Option<String>, AgentToolError> {
+    task::spawn_blocking(move || {
+        let conn = Connection::open(&db_path).map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "open todo db `{}` failed: {err}",
+                db_path.display()
+            ))
+        })?;
+
+        let version_key = format!("version:{workspace_id}");
+        let version = conn
+            .query_row(
+                "SELECT value FROM todo_meta WHERE key = ?1 LIMIT 1",
+                params![version_key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT todo_code, status, assignee_did, priority, title
+                 FROM todo_items
+                 WHERE workspace_id = ?1
+                 ORDER BY updated_at DESC
+                 LIMIT ?2",
+            )
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!("prepare workspace todo list failed: {err}"))
+            })?;
+        let mut rows = stmt
+            .query(params![workspace_id.as_str(), max_items as i64])
+            .map_err(|err| {
+                AgentToolError::ExecFailed(format!("query workspace todo list failed: {err}"))
+            })?;
+
+        let mut lines = vec![format!("Workspace Todo ({workspace_id}, v{version})")];
+        let mut count = 0usize;
+        while let Some(row) = rows.next().map_err(|err| {
+            AgentToolError::ExecFailed(format!("iterate workspace todo list failed: {err}"))
+        })? {
+            let todo_code = row.get::<_, String>(0).map_err(|err| {
+                AgentToolError::ExecFailed(format!("decode workspace todo_code failed: {err}"))
+            })?;
+            let status = row.get::<_, String>(1).map_err(|err| {
+                AgentToolError::ExecFailed(format!("decode workspace todo status failed: {err}"))
+            })?;
+            let assignee = row
+                .get::<_, Option<String>>(2)
+                .map_err(|err| {
+                    AgentToolError::ExecFailed(format!(
+                        "decode workspace todo assignee failed: {err}"
+                    ))
+                })?
+                .unwrap_or_else(|| "-".to_string());
+            let priority = row
+                .get::<_, Option<i64>>(3)
+                .map_err(|err| {
+                    AgentToolError::ExecFailed(format!(
+                        "decode workspace todo priority failed: {err}"
+                    ))
+                })?
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let title = row.get::<_, String>(4).map_err(|err| {
+                AgentToolError::ExecFailed(format!("decode workspace todo title failed: {err}"))
+            })?;
+
+            lines.push(format!(
+                "- {} [{}] assignee={} p={} {}",
+                todo_code,
+                status,
+                assignee,
+                priority,
+                truncate_chars(collapse_whitespace(title.as_str()).as_str(), 200)
+            ));
+            count = count.saturating_add(1);
+        }
+
+        if count == 0 {
+            lines.push("- No todo items available.".to_string());
+        }
+
+        let rendered = lines.join("\n");
+        Ok(clean_optional_text(Some(rendered.as_str())))
+    })
+    .await
+    .map_err(|err| {
+        AgentToolError::ExecFailed(format!("query workspace todo list join failed: {err}"))
+    })?
+}
+
 fn resolve_session_workspace_id(
     local_workspace_id: Option<&str>,
     workspace_info: Option<&Json>,
@@ -1664,6 +1872,7 @@ mod tests {
     use crate::behavior::BehaviorLLMResult;
     use crate::step_record::LLMStepRecord;
     use crate::workspace::WorkshopWorkspaceRecord;
+    use buckyos_api::{AiMessage, AiPayload, Capability, CompleteRequest, ModelSpec, Requirements};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -1753,7 +1962,20 @@ mod tests {
                     llm_completed_at_ms: 2,
                     action_completed_at_ms: 3,
                     input: "task".to_string(),
-                    llm_prompt: "prompt-0".to_string(),
+                    llm_prompt: CompleteRequest::new(
+                        Capability::LlmRouter,
+                        ModelSpec::new("llm.default".to_string(), None),
+                        Requirements::new(vec![], None, None, None),
+                        AiPayload::new(
+                            None,
+                            vec![AiMessage::new("user".to_string(), "prompt-0".to_string())],
+                            vec![],
+                            vec![],
+                            None,
+                            None,
+                        ),
+                        Some("step-0".to_string()),
+                    ),
                     llm_result: BehaviorLLMResult {
                         conclusion: Some("discover repo layout".to_string()),
                         thinking: Some("inspect source tree".to_string()),
@@ -1779,7 +2001,20 @@ mod tests {
                     llm_completed_at_ms: 5,
                     action_completed_at_ms: 6,
                     input: "continue".to_string(),
-                    llm_prompt: "prompt-1".to_string(),
+                    llm_prompt: CompleteRequest::new(
+                        Capability::LlmRouter,
+                        ModelSpec::new("llm.default".to_string(), None),
+                        Requirements::new(vec![], None, None, None),
+                        AiPayload::new(
+                            None,
+                            vec![AiMessage::new("user".to_string(), "prompt-1".to_string())],
+                            vec![],
+                            vec![],
+                            None,
+                            None,
+                        ),
+                        Some("step-1".to_string()),
+                    ),
                     llm_result: BehaviorLLMResult {
                         conclusion: Some("AgentSession needs a step log field".to_string()),
                         thinking: Some("wire session storage and template access".to_string()),
@@ -1807,12 +2042,34 @@ mod tests {
             "rendered={rendered}"
         );
 
-        let last = AgentEnvironment::load_value_from_session(session, "step_record.last")
+        let last = AgentEnvironment::load_value_from_session(session.clone(), "step_record.last")
             .await
             .expect("load step_record.last")
             .expect("step_record.last should exist");
         assert!(last.contains("patched files"), "last={last}");
         assert!(last.contains("wire session storage"), "last={last}");
+
+        let alias_last = AgentEnvironment::load_value_from_session(session.clone(), "last_step")
+            .await
+            .expect("load last_step")
+            .expect("last_step should exist");
+        assert!(
+            alias_last.contains("patched files"),
+            "alias_last={alias_last}"
+        );
+
+        let alias_steps = AgentEnvironment::load_value_from_session(session, "last_steps.$2")
+            .await
+            .expect("load last_steps.$2")
+            .expect("last_steps.$2 should exist");
+        assert!(
+            alias_steps.contains("## Step Records"),
+            "alias_steps={alias_steps}"
+        );
+        assert!(
+            alias_steps.contains("discover repo layout"),
+            "alias_steps={alias_steps}"
+        );
     }
 
     #[tokio::test]
@@ -1964,7 +2221,7 @@ mod tests {
         let session = Arc::new(Mutex::new(s));
 
         let rendered =
-            AgentEnvironment::load_value_from_session(session, "workspace.todolist.T001")
+            AgentEnvironment::load_value_from_session(session.clone(), "workspace.todolist.T001")
                 .await
                 .expect("load todo by ref")
                 .expect("todo text should exist");
@@ -1990,6 +2247,47 @@ mod tests {
                 .await
                 .expect("query other session todo");
         assert!(hidden.is_none(), "todo from other session should be hidden");
+
+        let list_rendered =
+            AgentEnvironment::load_value_from_session(session.clone(), "workspace_todolist")
+                .await
+                .expect("load workspace_todolist")
+                .expect("workspace_todolist should exist");
+        assert!(
+            list_rendered.starts_with("Workspace Todo (ws-demo, v0)"),
+            "list_rendered={list_rendered}"
+        );
+        assert!(
+            list_rendered.contains("T001 [WAIT]"),
+            "list_rendered={list_rendered}"
+        );
+
+        let todo_code =
+            AgentEnvironment::load_value_from_session(session.clone(), "workspace_current_todo_id")
+                .await
+                .expect("load workspace_current_todo_id")
+                .expect("workspace_current_todo_id should exist");
+        assert_eq!(todo_code, "T001");
+
+        let next_ready =
+            AgentEnvironment::load_value_from_session(session.clone(), "workspace_next_ready_todo")
+                .await
+                .expect("load workspace_next_ready_todo")
+                .expect("workspace_next_ready_todo should exist");
+        assert!(
+            next_ready.contains("Current Todo T001 [WAIT]"),
+            "next_ready={next_ready}"
+        );
+
+        let alias_rendered =
+            AgentEnvironment::load_value_from_session(session, "workspace_todolist.T001")
+                .await
+                .expect("load workspace_todolist.T001")
+                .expect("workspace_todolist.T001 should exist");
+        assert!(
+            alias_rendered.contains("Current Todo T001 [WAIT]"),
+            "alias_rendered={alias_rendered}"
+        );
     }
 
     #[tokio::test]
@@ -2330,7 +2628,7 @@ mod tests {
         );
 
         let rendered_2 =
-            AgentEnvironment::load_value_from_session(session, "local_workspace_list.$2")
+            AgentEnvironment::load_value_from_session(session.clone(), "local_workspace_list.$2")
                 .await
                 .expect("load local_workspace_list.$2")
                 .expect("local_workspace_list.$2 should be rendered");
@@ -2348,6 +2646,68 @@ mod tests {
             !rendered_2.contains("$local-alpha-1"),
             "rendered={}",
             rendered_2
+        );
+
+        let rendered_alias =
+            AgentEnvironment::load_value_from_session(session.clone(), "workspace_list.$2")
+                .await
+                .expect("load workspace_list.$2")
+                .expect("workspace_list.$2 should be rendered");
+        assert_eq!(rendered_alias, rendered_2);
+    }
+
+    #[tokio::test]
+    async fn load_value_from_session_supports_session_aliases_and_session_root_path() {
+        let root = tempdir().expect("create temp dir");
+        let sessions_root = root.path().join("sessions");
+        fs::create_dir_all(sessions_root.join("sess-alias"))
+            .await
+            .expect("create session dir");
+
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "sess-alias",
+            "did:test:agent",
+            Some("plan"),
+        )));
+        {
+            let mut guard = session.lock().await;
+            guard.title = "Alias Session".to_string();
+            guard.step_num = 7;
+            guard.current_behavior = "check".to_string();
+            guard.pwd = root.path().to_path_buf();
+            guard.session_root_dir = sessions_root.clone();
+        }
+
+        let title = AgentEnvironment::load_value_from_session(session.clone(), "session_title")
+            .await
+            .expect("load session_title")
+            .expect("session_title should exist");
+        assert_eq!(title, "Alias Session");
+
+        let behavior =
+            AgentEnvironment::load_value_from_session(session.clone(), "current_behavior")
+                .await
+                .expect("load current_behavior")
+                .expect("current_behavior should exist");
+        assert_eq!(behavior, "check");
+
+        let step_num = AgentEnvironment::load_value_from_session(session.clone(), "step_num")
+            .await
+            .expect("load step_num")
+            .expect("step_num should exist");
+        assert_eq!(step_num, "7");
+
+        let session_summary_path =
+            AgentEnvironment::load_value_from_session(session, "$session_root/summary.md")
+                .await
+                .expect("load $session_root/summary.md")
+                .expect("$session_root/summary.md should resolve");
+        assert_eq!(
+            session_summary_path,
+            sessions_root
+                .join("sess-alias")
+                .join("summary.md")
+                .to_string_lossy()
         );
     }
 }

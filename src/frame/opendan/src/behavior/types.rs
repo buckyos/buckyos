@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use buckyos_api::CompleteRequest;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -630,7 +631,7 @@ pub struct LLMTrackingInfo {
     pub track: TrackInfo,
     pub tool_trace: Vec<ToolExecRecord>,
     pub raw_output: LLMOutput,
-    pub prompt_text: String,
+    pub prompt_request: CompleteRequest,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

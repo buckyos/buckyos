@@ -185,56 +185,97 @@ __OPENDAN_VAR(current_todo, $workspace.todolist.next_ready_todo)
 
 ### 4.2 当前支持的变量类型
 
-以下是系统当前支持的动态变量，按类别分组。这个列表是可扩展的。
+以下按 **session context** 视角重新整理当前可用变量，便于把模板依赖映射到 prompt 上下文槽位。
 
-**调用参数**
+状态说明：
+
+- **已有**：当前文档中已经定义了可直接取值的动态变量
+- **间接**：没有独立结构化变量，但可以通过通用路径变量或近似字段拼装
+- **暂无**：当前文档未定义对应动态变量
+
+#### 4.2.1 System Identity
+
+| 上下文项 | 状态 | 可用变量 | 说明 |
+|----------|------|----------|------|
+| `role.md` | 间接 | `$agent_root/<rel_path>` | 可通过 `__OPENDAN_CONTENT($agent_root/role.md)__` 读取；前提是该文件实际存在 |
+| `self.md` | 间接 | `$agent_root/<rel_path>` | 可通过 `__OPENDAN_CONTENT($agent_root/self.md)__` 读取；前提是该文件实际存在 |
+
+#### 4.2.2 Task-Session Context
+
+鼓励用文件获得全局信息，
+`__OPENDAN_CONTENT($session_root/summary.md)` (这个默认都有，一般说明session的目标，或是sesion的文件地图)
+
+
+规则里，会说明session的文件地图
+
+与任务上下文直接相关的现有变量：
 
 | 变量 | 说明 |
 |------|------|
+| `$session_title` |  session的title，String |
+| `$current_behavior` | 当前behavior_name |
 | `$params` | 请求参数 JSON 对象 |
-| `$params.<path>` | 参数中的嵌套路径，如 `$params.todo` |
-
-**会话与运行时**
-
-| 变量 | 说明 |
-|------|------|
-| `$session_id` | 当前会话 ID |
 | `$new_msg` | 新消息（默认最多 32 条） |
 | `$new_msg.$n` | 指定拉取上限，`$n` 为 1–4096 |
 | `$session_list` | 最近会话列表（默认最多 16 条） |
 | `$session_list.$n` | 指定拉取上限 |
-| `$local_workspace_list` | 最近本地工作区列表（默认最多 16 条） |
-| `$local_workspace_list.$n` | 指定拉取上限 |
-| `$last_step_summary` | 上一步摘要文本 |
+| `$workspace_list` | 最近本地工作区列表（默认最多 16 条）,Json数组 |
+| `$workspace_list.$n` | 指定拉取上限 ，Json数组|
 
-**工作流步骤**
+#### 4.2.3 Workspace Context
 
-| 变量 | 说明 |
-|------|------|
-| `$step_summary` | 上一步摘要 |
-| `$step_index` | 步骤索引 |
-| `$step_limit` | 步骤上限 |
-| `$llm_result` | LLM 返回结果 |
-| `$trace` | 执行追踪信息 |
-| `$loop.session_id` | 循环中的会话 ID |
 
-**工作区与 Todo**
+注意workspace就是原来session bind的唯一的local workspace
+
+`__OPENDAN_CONTENT($workspace/summary.md)`
+
+可以得到workspace的文件地图
+
 
 | 变量 | 说明 |
 |------|------|
-| `$current_todo` | 下一个就绪 todo 的代码（如 T01） |
-| `$workspace.todolist` | todo 列表信息 |
-| `$workspace.todolist.next_ready_todo` | 下一个就绪 todo 的渲染详情 |
-| `$workspace.todolist.todo` | todo 列表中的嵌套路径 |
-| `$workspace.current_todo` | 当前 todo |
-
-**文件路径**
-
-| 变量 | 说明 |
-|------|------|
-| `$agent_root/<rel_path>` | 当前 agent_env_root 目录下的文件路径 |
+| `$workspace_todolist` | todo 列表信息, 已经渲染好的字符串 |
+| `$workspace_current_todo_id` | 当前todo 的代码（如 T01） |
+| `$workspace_current_todo` | 当前 todo 的Json |
+| `$workspace_next_ready_todo` | 下一个就绪 todo 的json |
+| `$workspace_todolist.$todo_id` | 通过todo_id得到todo的json ||
+| `$workspace/<rel_path>` | 当前 `workspace` 目录下的文件路径 |
 
 **路径安全**：`rel_path` 必须是相对路径，不允许 `..` 等越界访问。
+
+#### 4.2.4 Memory Context
+
+使用基于token limit的机械压缩控制，支持启用3种
+- Agent Memory
+- History Message
+- Session Step Records
+
+(worklog后期将只用于workspace的审计，不再在promp中使用)
+
+#### 4.2.5 Execution Context
+
+
+与执行上下文直接相关的现有变量：
+
+| 变量 | 说明 |
+|------|------|
+| `$last_step` | 引用上一步的StepRecord |
+| `$last_steps.$num` | 前n步的StepRecord Array,按顺序从远到近排列 |
+| `$step_index` | 当前step |
+
+| `$step_num` | 当前session的step_num 
+| `$step_limit` | 当前behavior的步骤上限 |
+| `$llm_result` | 去掉，可以在StepRecord中访问 |
+| `$trace` | 执行追踪信息，去掉，提示词渲染不看这个 |
+
+### 4.2 TODO（实现差异与待补齐）
+
+- `$workspace_list`：当前实现可补齐为最近本地 workspace 列表的 alias，但返回值仍是渲染后的文本，不是本节表述中的 Json 数组。
+- `$workspace_current_todo`、`$workspace_next_ready_todo`、`$workspace_todolist.$todo_id`：当前实现可提供 todo 详情文本，但不是本节表述中的结构化 Json。
+- `$last_step`、`$last_steps.$num`：当前实现只能稳定提供 step record 的渲染文本；若要严格对齐为 `StepRecord` / `StepRecord Array`，需要把 session 动态变量取值链路扩展为支持结构化非字符串返回。
+- `$step_limit`：当前只能在调用方显式放入 render `env_context` 时获取；`agent_environment.rs` 仅靠 session 还无法独立反查当前 behavior config。
+- 4.2.4 `Memory Context` 目前只有压缩策略说明，尚未整理出一组已经稳定暴露给 `agent_environment.rs` 的动态变量名，需要后续补全。
+
 
 ### 4.3 扩展
 
@@ -378,9 +419,6 @@ MyProject 的工作区
 |--------|--------|
 | 总输出长度 | `MAX_TOTAL_RENDER_BYTES`（256KB） |
 | 单文件内容（`__OPENDAN_CONTENT`） | `MAX_INCLUDE_BYTES`（64KB） |
-| `$new_msg` 拉取上限 | 默认 32 条，最大 4096 |
-| `$session_list` 拉取上限 | 默认 16 条 |
-| `$local_workspace_list` 拉取上限 | 默认 16 条 |
 
 ## 八、返回值
 
@@ -409,7 +447,3 @@ MyProject 的工作区
 - **显式声明**：upon 上下文中的每个变量都必须由 `__OPENDAN_VAR` 显式声明，不存在隐式注入。
 - **职责分离**：动态取值和模板渲染是两个独立阶段，不交叉。
 - **统一求值**：三种指令使用同一套动态变量获取器，扩展一次，三处受益。
-
-## 十、相关代码位置
-
-<!-- TODO -->

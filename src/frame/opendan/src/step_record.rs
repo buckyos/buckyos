@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use buckyos_api::{AiPayload, Capability, CompleteRequest, ModelSpec, Requirements};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
@@ -12,7 +13,7 @@ use crate::behavior::BehaviorLLMResult;
 
 const DEFAULT_STEP_RECORD_FILE: &str = "llm_step_record.jsonl";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LLMStepRecord {
     pub session_id: String,
@@ -23,9 +24,28 @@ pub struct LLMStepRecord {
     pub llm_completed_at_ms: u64,
     pub action_completed_at_ms: u64,
     pub input: String,
-    pub llm_prompt: String,
+    #[serde(default = "empty_complete_request")]
+    pub llm_prompt: CompleteRequest,
     pub llm_result: BehaviorLLMResult,
     pub action_result: HashMap<String, AgentToolResult>,
+}
+
+impl Default for LLMStepRecord {
+    fn default() -> Self {
+        Self {
+            session_id: String::new(),
+            step_num: 0,
+            step_index: 0,
+            behavior_name: String::new(),
+            started_at_ms: 0,
+            llm_completed_at_ms: 0,
+            action_completed_at_ms: 0,
+            input: String::new(),
+            llm_prompt: empty_complete_request(),
+            llm_result: BehaviorLLMResult::default(),
+            action_result: HashMap::new(),
+        }
+    }
 }
 
 impl LLMStepRecord {
@@ -211,6 +231,16 @@ impl LLMStepRecordLog {
         self.records = loaded;
         Ok(())
     }
+}
+
+fn empty_complete_request() -> CompleteRequest {
+    CompleteRequest::new(
+        Capability::LlmRouter,
+        ModelSpec::new(String::new(), None),
+        Requirements::new(vec![], None, None, None),
+        AiPayload::default(),
+        None,
+    )
 }
 
 fn render_prompt_text_from_records(
@@ -486,7 +516,23 @@ mod tests {
             llm_completed_at_ms: 2,
             action_completed_at_ms: 3,
             input: format!("input-{step_num}"),
-            llm_prompt: format!("prompt-{step_num}"),
+            llm_prompt: CompleteRequest::new(
+                Capability::LlmRouter,
+                ModelSpec::new("llm.default".to_string(), None),
+                Requirements::new(vec![], None, None, None),
+                AiPayload::new(
+                    None,
+                    vec![buckyos_api::AiMessage::new(
+                        "user".to_string(),
+                        format!("prompt-{step_num}"),
+                    )],
+                    vec![],
+                    vec![],
+                    None,
+                    None,
+                ),
+                Some(format!("step-{step_num}")),
+            ),
             llm_result: BehaviorLLMResult {
                 conclusion: Some(format!("conclusion-{step_num}")),
                 thinking: Some(format!("thinking-{step_num}")),

@@ -23,7 +23,6 @@ use serde_json::{json, Value as Json};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 use tokio::{fs, task};
-use uuid::Uuid;
 
 use crate::agent_config::AIAgentConfig;
 use crate::agent_environment::AgentEnvironment;
@@ -31,8 +30,9 @@ use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
 use crate::agent_tool::{
-    normalize_tool_name, AgentMemory, AgentMemoryConfig, AgentPolicy, AgentToolManager,
-    AgentToolResult, AgentToolStatus, DoAction, DoActions, TOOL_EXEC_BASH,
+    normalize_tool_name, sanitize_session_id_for_path, AgentMemory, AgentMemoryConfig, AgentPolicy,
+    AgentToolManager, AgentToolResult, AgentToolStatus, DoAction, DoActions, MAX_SESSION_ID_LEN,
+    TOOL_EXEC_BASH,
 };
 use crate::behavior::{
     AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, LLMBehavior,
@@ -63,6 +63,7 @@ const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
 const AGENT_BEHAVIOR_ROUTER_RESOLVE: &str = "resolve_router";
 const AGENT_BEHAVIOR_WORK_DEFAULT: &str = "plan";
+const WORK_SESSION_ID_PREFIX: &str = "work-";
 const SESSION_META_CREATOR_UI_SESSION_ID: &str = "creator_ui_session_id";
 const ACTION_RESULTS_SKIPPED_KEY: &str = "__skipped__";
 
@@ -1168,7 +1169,9 @@ impl AIAgent {
         } else if let Some((new_session_title, new_session_summary)) =
             llm_result.new_session.as_ref()
         {
-            let new_session_id = self.gen_new_work_session_id();
+            let new_session_id = self
+                .gen_new_work_session_id(new_session_title.as_str())
+                .await?;
             route_targets.insert(
                 new_session_id,
                 StepRouteTarget {
@@ -1267,10 +1270,25 @@ impl AIAgent {
         Ok(())
     }
 
-    fn gen_new_work_session_id(&self) -> String {
-        let new_uuid = Uuid::new_v4().simple().to_string();
+    async fn gen_new_work_session_id(&self, session_title: &str) -> Result<String> {
         let now = Utc::now().format("%y%m%d").to_string();
-        format!("work-{}-{}", now, new_uuid)
+        let base_session_id = build_work_session_id(session_title, now.as_str(), None);
+        if self.work_session_id_exists(base_session_id.as_str()).await {
+            return Err(anyhow!(
+                "new session title already exists for today: title={} session_id={}",
+                session_title.trim(),
+                base_session_id
+            ));
+        }
+        Ok(base_session_id)
+    }
+
+    async fn work_session_id_exists(&self, session_id: &str) -> bool {
+        if self.session_mgr.get_session(session_id).await.is_some() {
+            return true;
+        }
+        let session_dir = self.session_mgr.sessions_root().join(session_id);
+        is_existing_dir(&session_dir).await
     }
 
     fn get_params_from_behavior_name(behavior_name: &str) -> Option<Json> {
@@ -2731,7 +2749,7 @@ impl AIAgent {
             llm_completed_at_ms,
             action_completed_at_ms,
             input: input.input_prompt.clone(),
-            llm_prompt: tracking.prompt_text.clone(),
+            llm_prompt: tracking.prompt_request.clone(),
             llm_result: llm_result.clone(),
             action_result: action_results.clone(),
         };
@@ -3023,6 +3041,66 @@ impl AIAgent {
 
     fn parse_owner_did_for_msg_center(&self) -> Option<DID> {
         Some(self.msg_owner_did.clone())
+    }
+}
+
+fn build_work_session_id(
+    session_title: &str,
+    date_token: &str,
+    duplicate_suffix: Option<u32>,
+) -> String {
+    let date_token = date_token.trim();
+    let duplicate_suffix = duplicate_suffix.filter(|value| *value > 1);
+    let duplicate_suffix = duplicate_suffix
+        .map(|value| format!("-{value}"))
+        .unwrap_or_default();
+    let slug_budget = MAX_SESSION_ID_LEN.saturating_sub(
+        WORK_SESSION_ID_PREFIX.len() + date_token.len() + duplicate_suffix.len() + 1,
+    );
+    let title_slug = slugify_session_title(session_title, slug_budget);
+    let session_id = format!("{WORK_SESSION_ID_PREFIX}{title_slug}-{date_token}{duplicate_suffix}");
+
+    sanitize_session_id_for_path(session_id.as_str()).unwrap_or_else(|_| {
+        format!("{WORK_SESSION_ID_PREFIX}session-{date_token}{duplicate_suffix}")
+    })
+}
+
+fn slugify_session_title(title: &str, max_bytes: usize) -> String {
+    let mut slug = String::new();
+    let mut pending_separator = false;
+
+    for ch in title.trim().chars() {
+        if ch.is_alphanumeric() {
+            if pending_separator && !slug.is_empty() {
+                if slug.len() + 1 > max_bytes {
+                    break;
+                }
+                slug.push('-');
+            }
+            pending_separator = false;
+
+            for lower in ch.to_lowercase() {
+                if slug.len() + lower.len_utf8() > max_bytes {
+                    return finalize_session_title_slug(slug);
+                }
+                slug.push(lower);
+            }
+        } else if !slug.is_empty() {
+            pending_separator = true;
+        }
+    }
+
+    finalize_session_title_slug(slug)
+}
+
+fn finalize_session_title_slug(mut slug: String) -> String {
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "session".to_string()
+    } else {
+        slug
     }
 }
 
@@ -4059,7 +4137,13 @@ mod tests {
             },
             tool_trace: vec![],
             raw_output: crate::behavior::LLMOutput::Text(String::new()),
-            prompt_text: String::new(),
+            prompt_request: buckyos_api::CompleteRequest::new(
+                buckyos_api::Capability::LlmRouter,
+                buckyos_api::ModelSpec::new(String::new(), None),
+                buckyos_api::Requirements::new(vec![], None, None, None),
+                buckyos_api::AiPayload::default(),
+                None,
+            ),
         };
 
         let rendered = build_step_summary(
@@ -4112,7 +4196,13 @@ mod tests {
             },
             tool_trace: vec![],
             raw_output: crate::behavior::LLMOutput::Text(String::new()),
-            prompt_text: String::new(),
+            prompt_request: buckyos_api::CompleteRequest::new(
+                buckyos_api::Capability::LlmRouter,
+                buckyos_api::ModelSpec::new(String::new(), None),
+                buckyos_api::Requirements::new(vec![], None, None, None),
+                buckyos_api::AiPayload::default(),
+                None,
+            ),
         };
         let mut action_results = HashMap::new();
         action_results.insert(
@@ -4416,5 +4506,35 @@ process_rule: "test behavior for action rendering"
             .await
             .expect("read downloaded file");
         assert_eq!(downloaded, curl_source);
+    }
+
+    #[test]
+    fn build_work_session_id_uses_title_slug_and_date() {
+        let session_id = build_work_session_id("Fix Control Panel Session Naming", "260322", None);
+        assert_eq!(session_id, "work-fix-control-panel-session-naming-260322");
+    }
+
+    #[test]
+    fn build_work_session_id_preserves_readable_unicode_when_available() {
+        let session_id = build_work_session_id("统一 Session 目录命名", "260322", None);
+        assert_eq!(session_id, "work-统一-session-目录命名-260322");
+    }
+
+    #[test]
+    fn build_work_session_id_falls_back_for_blank_title_and_stays_within_limit() {
+        let session_id = build_work_session_id("   ", "260322", None);
+        assert_eq!(session_id, "work-session-260322");
+        assert!(session_id.len() <= MAX_SESSION_ID_LEN);
+        assert!(sanitize_session_id_for_path(session_id.as_str()).is_ok());
+    }
+
+    #[test]
+    fn build_work_session_id_truncates_long_titles_to_session_id_limit() {
+        let title = "Very Long Session Title ".repeat(32);
+        let session_id = build_work_session_id(title.as_str(), "260322", None);
+        assert!(session_id.len() <= MAX_SESSION_ID_LEN);
+        assert!(session_id.starts_with("work-very-long-session-title"));
+        assert!(session_id.ends_with("-260322"));
+        assert!(sanitize_session_id_for_path(session_id.as_str()).is_ok());
     }
 }
