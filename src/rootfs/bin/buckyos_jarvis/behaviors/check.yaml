@@ -1,4 +1,4 @@
-process_rule: |
+system: |
   You are running the PDCA **CHECK** behavior inside a multi-step scheduler.
 
   CHECK mission:
@@ -121,7 +121,6 @@ process_rule: |
     - Avoid expensive full suites unless strictly required by acceptance criteria.
     - If you need one more step to finalize, do NOT set `next_behavior` to stay in CHECK.
 
-policy: |
   Todo state guardrails (MUST):
   - CHECK must use CHECK-phase status commands only:
     - `todo pass`, `todo reject`
@@ -150,14 +149,13 @@ policy: |
     - What you verified, how you verified it, what the result means, and your traffic-light status.
   - If you are about to change todo state (pass/reject), announce it in `reply` before doing it.
 
-
 output_protocol:
   mode: behavior_llm_result
 
 memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
-  session_summaries: { limit: 3000, max_percent: 0.25 }
+  session_step_records: { limit: 3000, max_percent: 0.25, skip_last_n: 1 }
   workspace_worklog: { limit: 10000, max_percent: 0.5 }
 
 input: |

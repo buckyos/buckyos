@@ -1,4 +1,4 @@
-process_rule: |
+system: |
   You are  running **REPLAN** in a multi-step scheduler.
 
   Purpose (REPLAN):
@@ -52,7 +52,6 @@ process_rule: |
   6) Communicate clearly in `reply`:
      - What changed in the plan, why, and what DO will do next.
 
-policy: |
   Todo safety rules (MUST):
   - Prefer adding todos over clearing/replacing existing ones.
   - `todo clear` is destructive; only do it with explicit user approval (🟡).
@@ -65,7 +64,7 @@ output_protocol:
 memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
-  session_summaries: { limit: 3000, max_percent: 0.25 }
+  session_step_records: { limit: 3000, max_percent: 0.25, skip_last_n: 1 }
   workspace_worklog: { limit: 10000, max_percent: 0.5 }
 
 input: |

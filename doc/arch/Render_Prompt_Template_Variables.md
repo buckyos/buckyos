@@ -268,7 +268,7 @@ __OPENDAN_VAR(current_todo, $workspace.todolist.next_ready_todo)
 | `$llm_result` | 去掉，可以在StepRecord中访问 |
 | `$trace` | 执行追踪信息，去掉，提示词渲染不看这个 |
 
-### 4.2 TODO（实现差异与待补齐）
+### 4.2 实现差异与待补齐
 
 - `$workspace_list`：当前实现可补齐为最近本地 workspace 列表的 alias，但返回值仍是渲染后的文本，不是本节表述中的 Json 数组。
 - `$workspace_current_todo`、`$workspace_next_ready_todo`、`$workspace_todolist.$todo_id`：当前实现可提供 todo 详情文本，但不是本节表述中的结构化 Json。

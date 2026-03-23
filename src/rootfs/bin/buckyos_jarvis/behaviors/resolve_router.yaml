@@ -1,4 +1,4 @@
-process_rule: |
+system: |
 
   Goal: classify the incoming message, keep chat quality, and route correctly.
 
@@ -21,7 +21,6 @@ process_rule: |
   {{session_list}}
   -- end of work session list --
 
-policy: |
   * Session creation is expensive. MUST be used only for substantial tasks.
   * route_session_id MUST be selected from `Work Session List` only.
   * Routing MUST be exclusive: set exactly ONE of route_session_id or new_session.
@@ -42,15 +41,13 @@ output_protocol:
   mode: route_result
 
 # 不允许是用任何工具，限制了该behavior只能快速的完成
-# toolbox: 
-#   skills: ["buildin"]
 
 #TODO：ui session summary还是应该有的，系统在首次创建ui session的时候，应该把联系人的摘要信息放到summary里
 memory:
   total_limt: 12000
   agent_memory: { limit: 6000 }
   history_messages: { limit: 6000, max_percent: 0.5 }
-  session_summaries: { limit: 2500, max_percent: 0.25 }
+  session_step_records: { limit: 2500, max_percent: 0.25, skip_last_n: 1 }
 
 input: |
   {{new_msg}}

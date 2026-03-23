@@ -971,16 +971,15 @@ impl AIAgent {
                 let current_step_num = guard.step_num;
                 let session_id = guard.session_id.clone();
                 if guard.step_index == 0 {
-                    //TODO 应该是session有一个通用函数，自动load当前behavior的skills
-                    guard.loaded_skills = behavior_cfg.toolbox.load_skills.clone();
+                    guard.loaded_skills.clear();
                 }
-                guard.loaded_tools = match behavior_cfg.toolbox.tools.mode {
+                guard.loaded_tools = match behavior_cfg.tools.mode {
                     crate::behavior::config::BehaviorToolMode::All => vec![],
                     crate::behavior::config::BehaviorToolMode::None => {
-                        vec!["__toolbox_none__".to_string()]
+                        vec!["__tools_none__".to_string()]
                     }
                     crate::behavior::config::BehaviorToolMode::AllowList => {
-                        behavior_cfg.toolbox.tools.names.clone()
+                        behavior_cfg.tools.names.clone()
                     }
                 };
                 (session_id, current_step_index, current_step_num)
@@ -1359,7 +1358,7 @@ impl AIAgent {
                 trace: trace.clone(),
                 role_md: self.role_md.clone(),
                 self_md: self.self_md.clone(),
-                behavior_prompt: behavior_cfg.process_rule.clone(),
+                behavior_prompt: behavior_cfg.system.clone(),
                 limits: behavior_cfg.limits.clone(),
                 behavior_cfg: behavior_cfg.clone(),
                 session_id,
@@ -4255,7 +4254,7 @@ mod tests {
         fs::write(
             agent_root.join("behaviors/resolve_router.yaml"),
             r#"
-process_rule: "test behavior for action rendering"
+system: "test behavior for action rendering"
 "#,
         )
         .await

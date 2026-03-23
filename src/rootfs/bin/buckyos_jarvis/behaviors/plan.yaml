@@ -1,4 +1,4 @@
-process_rule: |
+system: |
   You are running the PDCA **PLAN** behavior inside a multi-step scheduler.
 
   PLAN mission:
@@ -118,7 +118,6 @@ process_rule: |
     - Retry once (in a subsequent step if needed).
     - If still failing, treat as RED: explain what is blocked, set `next_behavior = WAIT_FOR_MSG`.
 
-policy: |
   Planning rules (MUST):
   - "Observe first, then decide" for Workspace actions.
   - "Announce then act" in `reply` before workspace creation/binding or other destructive operations (e.g., `todo clear`).
@@ -139,7 +138,6 @@ policy: |
     - Avoid destructive commands
     - Set `next_behavior = WAIT_FOR_MSG`
 
-
 output_protocol:
   mode: behavior_llm_no_action_result
 
@@ -147,7 +145,7 @@ output_protocol:
 memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
-  session_summaries: { limit: 3000, max_percent: 0.25 }
+  session_step_records: { limit: 3000, max_percent: 0.25, skip_last_n: 1 }
   workspace_worklog: { limit: 10000, max_percent: 0.5 }
   last_prompt: |
     ## Workspace List:

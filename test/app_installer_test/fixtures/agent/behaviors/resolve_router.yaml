@@ -1,9 +1,6 @@
-process_rule: |
+system: |
   This is a local app_installer fixture behavior.
   Stay idle until the runtime receives a real event.
-
-toolbox:
-  mode: none
 
 memory:
   total_limit: 5%

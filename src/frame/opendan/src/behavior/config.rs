@@ -41,19 +41,11 @@ pub enum BehaviorConfigError {
 #[serde(default)]
 pub struct BehaviorConfig {
     pub name: String,
-    //TODO 去掉
-    pub process_rule: String,
-    //TODO 去掉
-    pub policy: String,
-    // 新增
     pub system: String,
-    //TODO 去掉
-    pub toolbox: BehaviorToolboxConfig,
     pub tools: BehaviorToolsConfig,
     pub memory: BehaviorMemoryConfig,
     pub input: String,
     pub output_protocol: BehaviorOutputProtocol,
-    //TODO 去掉
     pub step_summary: String,
 
     // 如果因为系统原因失败了（比如 step_limit),切换到哪个 behavior，不设置时切回 session 默认 behavior
@@ -67,8 +59,6 @@ impl Default for BehaviorConfig {
     fn default() -> Self {
         Self {
             name: String::new(),
-            process_rule: String::new(),
-            policy: String::new(),
             system: String::new(),
             input: String::new(),
             memory: BehaviorMemoryConfig::default(),
@@ -77,7 +67,6 @@ impl Default for BehaviorConfig {
             step_limit: 0,
             output_protocol: BehaviorOutputProtocol::default(),
             tools: BehaviorToolsConfig::default(),
-            toolbox: BehaviorToolboxConfig::default(),
             llm: LLMBehaviorConfig::default(),
             limits: StepLimits::default(),
         }
@@ -230,20 +219,17 @@ impl BehaviorConfig {
                 .unwrap_or_default()
                 .to_string();
         }
-        if cfg.process_rule.trim().is_empty() {
+        cfg.system = cfg.system.trim().to_string();
+        if cfg.system.is_empty() {
             return Err(BehaviorConfigError::Invalid {
                 path: path.display().to_string(),
-                message: "process_rule must be provided in behavior config".to_string(),
+                message: "system must be provided in behavior config".to_string(),
             });
         }
 
         cfg.tools.normalize();
-        cfg.toolbox.normalize();
-        let resolved_tools = cfg.toolbox.resolve_tools(&cfg.tools);
-        cfg.tools = resolved_tools.clone();
-        cfg.toolbox.tools = resolved_tools;
-        cfg.policy = cfg.policy.trim().to_string();
         cfg.input = cfg.input.trim().to_string();
+        cfg.step_summary = cfg.step_summary.trim().to_string();
         cfg.faild_back = cfg
             .faild_back
             .take()
@@ -320,12 +306,9 @@ impl BehaviorConfig {
 pub struct BehaviorMemoryConfig {
     pub total_limit: u32,
     pub agent_memory: BehaviorMemoryBucketConfig,
-    pub workspace_summary: BehaviorMemoryBucketConfig,
-
     pub history_messages: BehaviorMemoryBucketConfig,
+    pub session_step_records: BehaviorMemoryBucketConfig,
     pub workspace_worklog: BehaviorMemoryBucketConfig,
-
-    pub session_summaries: BehaviorMemoryBucketConfig,
 
     pub first_prompt: Option<String>,
     pub last_prompt: Option<String>,
@@ -336,9 +319,8 @@ impl Default for BehaviorMemoryConfig {
         Self {
             total_limit: 0,
             agent_memory: BehaviorMemoryBucketConfig::default(),
-            session_summaries: BehaviorMemoryBucketConfig::default(),
             history_messages: BehaviorMemoryBucketConfig::default(),
-            workspace_summary: BehaviorMemoryBucketConfig::default(),
+            session_step_records: BehaviorMemoryBucketConfig::default(),
             workspace_worklog: BehaviorMemoryBucketConfig::default(),
             first_prompt: None,
             last_prompt: None,
@@ -349,9 +331,8 @@ impl Default for BehaviorMemoryConfig {
 impl BehaviorMemoryConfig {
     fn normalize(&mut self) {
         self.agent_memory.normalize();
-        self.session_summaries.normalize();
         self.history_messages.normalize();
-        self.workspace_summary.normalize();
+        self.session_step_records.normalize();
         self.workspace_worklog.normalize();
         self.first_prompt = Self::normalize_optional_text(self.first_prompt.take());
         self.last_prompt = Self::normalize_optional_text(self.last_prompt.take());
@@ -360,9 +341,8 @@ impl BehaviorMemoryConfig {
     pub fn is_empty(&self) -> bool {
         self.total_limit == 0
             && self.agent_memory.is_empty()
-            && self.session_summaries.is_empty()
             && self.history_messages.is_empty()
-            && self.workspace_summary.is_empty()
+            && self.session_step_records.is_empty()
             && self.workspace_worklog.is_empty()
             && self
                 .first_prompt
@@ -393,6 +373,7 @@ pub struct BehaviorMemoryBucketConfig {
     pub limit: u32,
     pub max_percent: Option<f32>,
     pub is_enable: bool,
+    pub skip_last_n: Option<u32>,
 }
 
 impl Default for BehaviorMemoryBucketConfig {
@@ -401,6 +382,7 @@ impl Default for BehaviorMemoryBucketConfig {
             limit: 0,
             max_percent: None,
             is_enable: false,
+            skip_last_n: None,
         }
     }
 }
@@ -411,137 +393,11 @@ impl BehaviorMemoryBucketConfig {
             let v = *value;
             v.is_finite() && v > 0.0 && v <= 1.0
         });
+        self.skip_last_n = self.skip_last_n.filter(|value| *value > 0);
     }
 
     fn is_empty(&self) -> bool {
         self.limit == 0 && self.max_percent.is_none()
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct BehaviorToolboxConfig {
-    pub mode: BehaviorToolboxMode,
-    pub tools: BehaviorToolsConfig,
-    pub skills: Vec<String>,
-    pub load_skills: Vec<String>,
-    pub loaded_tools: Vec<String>,
-    pub default_load_actions: Vec<String>,
-}
-
-impl Default for BehaviorToolboxConfig {
-    fn default() -> Self {
-        Self {
-            mode: BehaviorToolboxMode::default(),
-            tools: BehaviorToolsConfig::default(),
-            skills: vec![],
-            load_skills: vec![],
-            loaded_tools: vec![],
-            default_load_actions: vec![],
-        }
-    }
-}
-
-impl BehaviorToolboxConfig {
-    fn normalize(&mut self) {
-        self.tools.normalize();
-        Self::normalize_string_list(&mut self.skills);
-        Self::normalize_string_list(&mut self.load_skills);
-        Self::normalize_string_list(&mut self.loaded_tools);
-        Self::normalize_string_list(&mut self.default_load_actions);
-        if self.mode == BehaviorToolboxMode::None {
-            self.tools.mode = BehaviorToolMode::None;
-            self.tools.names.clear();
-        }
-    }
-
-    pub fn is_none_mode(&self) -> bool {
-        self.mode == BehaviorToolboxMode::None
-    }
-
-    pub fn effective_skills(&self) -> Vec<String> {
-        match self.mode {
-            BehaviorToolboxMode::None => vec![],
-            BehaviorToolboxMode::Alone => self.skills.clone(),
-            BehaviorToolboxMode::Inherit => Self::merge_unique(&self.load_skills, &self.skills),
-        }
-    }
-
-    pub fn resolve_tools(&self, legacy_tools: &BehaviorToolsConfig) -> BehaviorToolsConfig {
-        if self.mode == BehaviorToolboxMode::None {
-            return BehaviorToolsConfig {
-                mode: BehaviorToolMode::None,
-                names: vec![],
-            };
-        }
-        if self.tools != BehaviorToolsConfig::default() {
-            return self.tools.clone();
-        }
-
-        match self.mode {
-            BehaviorToolboxMode::None => BehaviorToolsConfig {
-                mode: BehaviorToolMode::None,
-                names: vec![],
-            },
-            BehaviorToolboxMode::Inherit => legacy_tools.clone(),
-            BehaviorToolboxMode::Alone => {
-                if self.loaded_tools.is_empty() {
-                    return BehaviorToolsConfig {
-                        mode: BehaviorToolMode::None,
-                        names: vec![],
-                    };
-                }
-                BehaviorToolsConfig {
-                    mode: BehaviorToolMode::AllowList,
-                    names: self.loaded_tools.clone(),
-                }
-            }
-        }
-    }
-
-    fn normalize_string_list(values: &mut Vec<String>) {
-        let mut uniq = HashSet::<String>::new();
-        let mut normalized = Vec::<String>::new();
-        for value in values.iter() {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if uniq.insert(trimmed.to_string()) {
-                normalized.push(trimmed.to_string());
-            }
-        }
-        *values = normalized;
-    }
-
-    fn merge_unique(primary: &[String], secondary: &[String]) -> Vec<String> {
-        let mut out = Vec::<String>::new();
-        let mut uniq = HashSet::<String>::new();
-
-        for value in primary.iter().chain(secondary.iter()) {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if uniq.insert(trimmed.to_string()) {
-                out.push(trimmed.to_string());
-            }
-        }
-        out
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BehaviorToolboxMode {
-    Inherit,
-    Alone,
-    None,
-}
-
-impl Default for BehaviorToolboxMode {
-    fn default() -> Self {
-        Self::Inherit
     }
 }
 
@@ -617,19 +473,23 @@ impl BehaviorToolsConfig {
     }
 
     fn normalize(&mut self) {
-        let mut uniq = HashSet::<String>::new();
-        let mut normalized = Vec::<String>::new();
-        for name in &self.names {
-            let trimmed = name.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if uniq.insert(trimmed.to_string()) {
-                normalized.push(trimmed.to_string());
-            }
-        }
-        self.names = normalized;
+        normalize_unique_string_list(&mut self.names);
     }
+}
+
+fn normalize_unique_string_list(values: &mut Vec<String>) {
+    let mut uniq = HashSet::<String>::new();
+    let mut normalized = Vec::<String>::new();
+    for value in values.iter() {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if uniq.insert(trimmed.to_string()) {
+            normalized.push(trimmed.to_string());
+        }
+    }
+    *values = normalized;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -732,7 +592,7 @@ Use this schema (omit unused nodes):
 - Put one shell command per line inside `shell_commands` CDATA.
 - Commands run sequentially in a session-bound bash environment; execution stops on first failure.
 - Results persist in step_summary for the next step. MUST limit read output size to avoid context overflow.
-- Common CLI tools and process_rule-declared tools are pre-installed. NEVER check availability before calling."#
+- Common CLI tools and behavior-declared tools are pre-installed. NEVER check availability before calling."#
         .to_string()
 }
 
@@ -771,7 +631,7 @@ All nodes are optional—NEVER include unused nodes.
 - `command` means shell command. same as `shell_commands` CDATA.
 - MUST use write_file / edit_file cmd_action for writing text files. NEVER use shell commands (echo/cat) to write files.
 - Results persist in step_summary for the next step. MUST limit read output size to avoid context overflow.
-- Common CLI tools and process_rule-declared tools are pre-installed. NEVER check availability before calling.
+- Common CLI tools and behavior-declared tools are pre-installed. NEVER check availability before calling.
 
 ### write_file
 ```xml
@@ -936,7 +796,7 @@ mod tests {
     use tokio::fs;
 
     #[test]
-    fn behavior_config_yaml_requires_process_rule() {
+    fn behavior_config_yaml_requires_system() {
         let path = Path::new("on_wakeup.yaml");
         let err = BehaviorConfig::parse_from_str(
             path,
@@ -947,20 +807,20 @@ tools:
     - exec_bash
 "#,
         )
-        .expect_err("process_rule should be required");
+        .expect_err("system should be required");
 
         let msg = err.to_string();
-        assert!(msg.contains("process_rule"));
+        assert!(msg.contains("system"));
     }
 
     #[test]
-    fn behavior_config_yaml_parses_process_rule_and_allowlist() {
+    fn behavior_config_yaml_parses_system_and_allowlist() {
         let path = Path::new("on_wakeup.yaml");
         let cfg = BehaviorConfig::parse_from_str(
             path,
             r#"
-process_rule: test_rule
-policy: safe_only
+system: |
+  test_rule
 input: |
   {{new_msg}}
 memory:
@@ -973,16 +833,11 @@ tools:
   mode: allow_list
   names:
     - exec_bash
-toolbox:
-  skills:
-    - plan
-    - plan
 "#,
         )
         .expect("parse behavior yaml");
         assert_eq!(cfg.name, "on_wakeup");
-        assert_eq!(cfg.process_rule, "test_rule");
-        assert_eq!(cfg.policy, "safe_only");
+        assert_eq!(cfg.system, "test_rule");
         assert_eq!(cfg.input, "{{new_msg}}");
         assert_eq!(cfg.step_limit, 6);
         assert_eq!(cfg.memory.total_limit, 12_000);
@@ -990,8 +845,6 @@ toolbox:
         assert_eq!(cfg.memory.history_messages.max_percent, Some(0.3));
         assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
         assert_eq!(cfg.tools.names, vec!["exec_bash".to_string()]);
-        assert_eq!(cfg.toolbox.tools.mode, BehaviorToolMode::AllowList);
-        assert_eq!(cfg.toolbox.skills, vec!["plan".to_string()]);
         assert_eq!(cfg.llm.process_name, "opendan-llm-behavior");
         assert_eq!(cfg.limits.max_prompt_tokens, 200_000);
         assert!(cfg.llm.force_json);
@@ -1005,7 +858,7 @@ toolbox:
         let cfg = BehaviorConfig::parse_from_str(
             path,
             r#"
-process_rule: test_rule
+system: test_rule
 faild_back: plan
 "#,
         )
@@ -1019,7 +872,7 @@ faild_back: plan
         let cfg = BehaviorConfig::parse_from_str(
             path,
             r#"
-process_rule: test_rule
+system: test_rule
 output_protocol:
   mode: route_result
   text: protocol_from_cfg
@@ -1055,25 +908,22 @@ llm:
     }
 
     #[test]
-    fn behavior_config_toolbox_tools_override_legacy_tools_field() {
+    fn behavior_config_tools_allowlist_normalizes_names() {
         let path = Path::new("route.yaml");
         let cfg = BehaviorConfig::parse_from_str(
             path,
             r#"
-process_rule: route_rule
+system: route_rule
 tools:
-  mode: all
-toolbox:
-  tools:
-    mode: allow_list
-    names:
-      - load_memory
+  mode: allow_list
+  names:
+    - load_memory
+    - load_memory
 "#,
         )
         .expect("parse behavior yaml");
         assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
         assert_eq!(cfg.tools.names, vec!["load_memory".to_string()]);
-        assert_eq!(cfg.toolbox.tools.mode, BehaviorToolMode::AllowList);
     }
 
     #[test]
@@ -1082,14 +932,15 @@ toolbox:
         let cfg = BehaviorConfig::parse_from_str(
             path,
             r#"
-process_rule: memory_rule
+system: memory_rule
 memory:
   total_limit: 1024
   first_prompt: "  memory header text  "
   last_prompt: "   "
-  session_summaries:
+  session_step_records:
     limit: 256
     max_percent: 1.5
+    skip_last_n: 0
   history_messages:
     max_percent: 0.4
 "#,
@@ -1102,8 +953,9 @@ memory:
             Some("memory header text")
         );
         assert_eq!(cfg.memory.last_prompt, None);
-        assert_eq!(cfg.memory.session_summaries.limit, 256);
-        assert_eq!(cfg.memory.session_summaries.max_percent, None);
+        assert_eq!(cfg.memory.session_step_records.limit, 256);
+        assert_eq!(cfg.memory.session_step_records.max_percent, None);
+        assert_eq!(cfg.memory.session_step_records.skip_last_n, None);
         assert_eq!(cfg.memory.history_messages.max_percent, Some(0.4));
     }
 
@@ -1135,96 +987,22 @@ memory:
     }
 
     #[test]
-    fn behavior_config_toolbox_none_mode_disables_tools_and_skills() {
+    fn behavior_config_tools_none_mode_is_preserved() {
         let path = Path::new("route.yaml");
         let cfg = BehaviorConfig::parse_from_str(
             path,
             r#"
-process_rule: route_rule
+system: route_rule
 tools:
-  mode: allow_list
+  mode: none
   names:
     - exec_bash
-toolbox:
-  mode: none
-  skills:
-    - coding/rust
-  default_load_skills:
-    - buildin
 "#,
         )
         .expect("parse behavior yaml");
 
         assert_eq!(cfg.tools.mode, BehaviorToolMode::None);
-        assert!(cfg.tools.names.is_empty());
-        assert_eq!(cfg.toolbox.tools.mode, BehaviorToolMode::None);
-        assert!(cfg.toolbox.effective_skills().is_empty());
-    }
-
-    #[test]
-    fn behavior_config_toolbox_alone_mode_uses_loaded_tools_and_load_skills() {
-        let path = Path::new("do.yaml");
-        let cfg = BehaviorConfig::parse_from_str(
-            path,
-            r#"
-process_rule: do_rule
-tools:
-  mode: all
-toolbox:
-  mode: alone
-  skills:
-    - coding/rust
-    - coding/rust
-  loaded_tools:
-    - read_file
-    - read_file
-    - bash
-  load_skills:
-    - buildin
-"#,
-        )
-        .expect("parse behavior yaml");
-
-        assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
-        assert_eq!(
-            cfg.tools.names,
-            vec!["read_file".to_string(), "bash".to_string()]
-        );
-        assert_eq!(cfg.toolbox.loaded_tools, cfg.tools.names);
-        assert_eq!(
-            cfg.toolbox.effective_skills(),
-            vec!["coding/rust".to_string()]
-        );
-    }
-
-    #[test]
-    fn behavior_config_toolbox_inherit_mode_merges_load_and_behavior_skills() {
-        let path = Path::new("plan.yaml");
-        let cfg = BehaviorConfig::parse_from_str(
-            path,
-            r#"
-process_rule: plan_rule
-tools:
-  mode: allow_list
-  names:
-    - exec_bash
-toolbox:
-  load_skills:
-    - buildin
-    - buildin
-  skills:
-    - coding/rust
-    - buildin
-"#,
-        )
-        .expect("parse behavior yaml");
-
-        assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
         assert_eq!(cfg.tools.names, vec!["exec_bash".to_string()]);
-        assert_eq!(
-            cfg.toolbox.effective_skills(),
-            vec!["buildin".to_string(), "coding/rust".to_string()]
-        );
     }
 
     #[tokio::test]
@@ -1240,14 +1018,11 @@ toolbox:
         fs::write(
             package_root.join("plan.yaml"),
             r#"
-process_rule: package_rule
+system: package_rule
 tools:
   mode: allow_list
   names:
     - exec_bash
-toolbox:
-  default_load_skills:
-    - buildin
 "#,
         )
         .await
@@ -1255,10 +1030,7 @@ toolbox:
         fs::write(
             env_root.join("plan.yaml"),
             r#"
-process_rule: env_rule
-toolbox:
-  skills:
-    - coding/rust
+system: env_rule
 "#,
         )
         .await
@@ -1269,9 +1041,8 @@ toolbox:
                 .await
                 .expect("merge behavior config");
 
-        assert_eq!(cfg.process_rule, "env_rule");
+        assert_eq!(cfg.system, "env_rule");
         assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
         assert_eq!(cfg.tools.names, vec!["exec_bash".to_string()]);
-        assert_eq!(cfg.toolbox.skills, vec!["coding/rust".to_string()]);
     }
 }

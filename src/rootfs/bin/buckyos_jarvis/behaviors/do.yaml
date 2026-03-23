@@ -1,4 +1,4 @@
-process_rule: |
+system: |
   Core mission (DO):
   - Execute the CURRENT TODO toward its acceptance criteria as fast as possible.
   - Work in an **Observe → Execute** loop.
@@ -44,7 +44,6 @@ process_rule: |
   in this EXECUTE step and record via `todo note <id> "..." --kind=result`.
   The following OBSERVE will read the results and transition to CHECK.
 
-policy: |
   Phase discipline (MUST):
   - OBSERVE (even): read-only. No write_file/edit_file.
   - EXECUTE (odd): writes allowed. next_behavior MUST NOT be set.
@@ -61,14 +60,13 @@ policy: |
   - OBSERVE: brief status.
   - EXECUTE: motivation (why + expected outcome).
 
-
 output_protocol:
   mode: behavior_llm_result
 
 memory:
   total_limt: 18000
   agent_memory: { limit: 3500, max_percent: 0.25 }
-  session_summaries: { limit: 3000, max_percent: 0.25 }
+  session_step_records: { limit: 3000, max_percent: 0.25, skip_last_n: 1 }
   workspace_worklog: { limit: 10000, max_percent: 0.5 }
 input: |
 

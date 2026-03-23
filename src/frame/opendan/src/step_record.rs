@@ -199,38 +199,49 @@ impl LLMStepRecordLog {
             return Ok(());
         };
 
-        let payload = match fs::read_to_string(&path).await {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(err) => {
-                return Err(AgentToolError::ExecFailed(format!(
-                    "read llm step record file `{}` failed: {err}",
-                    path.display()
-                )))
-            }
-        };
-
-        let mut loaded = Vec::<LLMStepRecord>::new();
-        for (line_no, raw_line) in payload.lines().enumerate() {
-            let line = raw_line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<LLMStepRecord>(line) {
-                Ok(record) => loaded.push(record),
-                Err(err) => {
-                    warn!(
-                        "step_record.load skip invalid json: path={} line={} err={}",
-                        path.display(),
-                        line_no + 1,
-                        err
-                    );
-                }
-            }
-        }
-        self.records = loaded;
+        self.records = load_records_from_path(&path).await?;
         Ok(())
     }
+}
+
+pub async fn load_records_from_path(path: &Path) -> Result<Vec<LLMStepRecord>, AgentToolError> {
+    let payload = match fs::read_to_string(path).await {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(err) => {
+            return Err(AgentToolError::ExecFailed(format!(
+                "read llm step record file `{}` failed: {err}",
+                path.display()
+            )))
+        }
+    };
+
+    let mut loaded = Vec::<LLMStepRecord>::new();
+    for (line_no, raw_line) in payload.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<LLMStepRecord>(line) {
+            Ok(record) => loaded.push(record),
+            Err(err) => {
+                warn!(
+                    "step_record.load skip invalid json: path={} line={} err={}",
+                    path.display(),
+                    line_no + 1,
+                    err
+                );
+            }
+        }
+    }
+    Ok(loaded)
+}
+
+pub fn render_prompt_text_from_records(
+    records: &[LLMStepRecord],
+    options: &LLMStepPromptRenderOptions,
+) -> String {
+    render_prompt_text_from_records_impl(records, options)
 }
 
 fn empty_complete_request() -> CompleteRequest {
@@ -243,7 +254,7 @@ fn empty_complete_request() -> CompleteRequest {
     )
 }
 
-fn render_prompt_text_from_records(
+fn render_prompt_text_from_records_impl(
     records: &[LLMStepRecord],
     options: &LLMStepPromptRenderOptions,
 ) -> String {

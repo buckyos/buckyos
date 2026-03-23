@@ -19,21 +19,20 @@ use crate::agent_session::AgentSession;
 use crate::agent_tool::AgentMemory;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
+use crate::step_record::{
+    load_records_from_path, render_prompt_text_from_records, LLMStepPromptRenderOptions,
+};
 use crate::worklog::{
     WorklogActionPayload, WorklogListOptions, WorklogRecord, WorklogRecordType, WorklogService,
     WorklogToolConfig,
 };
-use crate::workspace::agent_skill::{
-    load_skill_from_root, merge_skill_records_from_dir, AgentSkillRecord,
-};
 use crate::workspace_path::{
     resolve_agent_env_root,
     resolve_default_local_workspace_path as resolve_default_local_workspace_root,
-    resolve_session_workspace_root, LOCAL_WORKSPACE_SKILLS_DIR,
     LOCAL_WORKSPACE_WORKLOG_DB_REL_PATH, WORKSHOP_WORKLOG_DB_REL_PATH,
 };
 
-use super::sanitize::{sanitize_json_compact, sanitize_text};
+use super::sanitize::sanitize_text;
 use super::types::BehaviorExecInput;
 use super::Tokenizer;
 
@@ -66,57 +65,29 @@ impl PromptBuilder {
         session: Option<Arc<Mutex<AgentSession>>>,
         memory: Option<AgentMemory>,
     ) -> Result<CompleteRequest, String> {
-        let env_context = build_env_context(input);
+        let mut env_context = build_env_context(input);
         let loaded_tools = Vec::new();
-
-        let process_rules =
-            render_section(cfg.process_rule.as_str(), &env_context, session.clone()).await?;
-
+        let output_protocol_text = cfg.output_protocol.to_prompt_text();
+        env_context.insert(
+            "output_protocol".to_string(),
+            Json::String(output_protocol_text.clone()),
+        );
         let role_text = render_section(
             format!("{}\n\n{}", input.role_md, input.self_md).as_str(),
             &env_context,
             session.clone(),
         )
         .await?;
-
-        let policy_text = if cfg.policy.trim().is_empty() {
-            String::new()
-        } else {
-            render_section(cfg.policy.as_str(), &env_context, session.clone()).await?
-        };
-
-        let output_protocol_text = cfg.output_protocol.to_prompt_text();
-
-        let mut system_parts = vec![
+        let system_text = render_section(cfg.system.as_str(), &env_context, session.clone()).await?;
+        let system_role_prompt_text = [
             format!("<<role>>\n{}\n<</role>>", sanitize_text(role_text.as_str())),
+            format!("<<system>>\n{}\n<</system>>", sanitize_text(system_text.as_str())),
             format!(
-                "<<process_rules>>\n{}\n<</process_rules>>",
-                sanitize_text(process_rules.as_str())
+                "<<output_protocol>>\n{}\n<</output_protocol>>",
+                sanitize_text(output_protocol_text.as_str())
             ),
-        ];
-        if !policy_text.is_empty() {
-            system_parts.push(format!(
-                "<<policy>>\n{}\n<</policy>>",
-                sanitize_text(policy_text.as_str())
-            ));
-        }
-
-        // 根据当前session加载的skills，空内容时跳过<<skills>> section
-        // 这里要和tool policy进行匹配，所以不能是纯模板操作
-        let skills_text = render_skills_text(session.clone()).await?;
-        if !skills_text.trim().is_empty() {
-            system_parts.push(format!(
-                "<<skills>>\n{}\n<</skills>>",
-                sanitize_text(skills_text.as_str())
-            ));
-        }
-
-        system_parts.push(format!(
-            "<<output_protocol>>\n{}\n<</output_protocol>>",
-            sanitize_text(output_protocol_text.as_str())
-        ));
-
-        let system_role_prompt_text = system_parts.join("\n\n");
+        ]
+        .join("\n\n");
         let tool_define_used = 1024;
         let system_used_token = tokenizer.count_tokens(system_role_prompt_text.as_str());
         let input_used_token = tokenizer.count_tokens(&input.input_prompt);
@@ -242,64 +213,6 @@ async fn render_section(
     Ok(result.rendered)
 }
 
-async fn render_skills_text(session: Option<Arc<Mutex<AgentSession>>>) -> Result<String, String> {
-    let Some(session) = session else {
-        return Ok(String::new());
-    };
-
-    let (loaded_skills, local_workspace_id, workspace_info, session_cwd) = {
-        let guard = session.lock().await;
-        (
-            guard.loaded_skills.clone(),
-            guard.local_workspace_id.clone(),
-            guard.workspace_info.clone(),
-            guard.pwd.clone(),
-        )
-    };
-
-    let skill_roots = collect_workspace_skill_roots(
-        local_workspace_id.as_deref(),
-        workspace_info.as_ref(),
-        &session_cwd,
-    )
-    .await;
-
-    let mut all_records = HashMap::<String, AgentSkillRecord>::new();
-    for root in &skill_roots {
-        let _ = merge_skill_records_from_dir(root.as_path(), &mut all_records).await;
-    }
-
-    let mut loaded_rules = Vec::<String>::new();
-    let loaded_skills = normalize_unique_string_list(loaded_skills);
-    for skill_name in &loaded_skills {
-        for root in &skill_roots {
-            if let Ok(spec) = load_skill_from_root(root.as_path(), skill_name.as_str()).await {
-                if !spec.rules.is_empty() {
-                    loaded_rules.push(format!("## {} Skill\n{}", skill_name, spec.rules));
-                }
-                break;
-            }
-        }
-    }
-
-    Ok(loaded_rules.join("\n\n"))
-}
-
-fn normalize_unique_string_list(values: Vec<String>) -> Vec<String> {
-    let mut out = Vec::<String>::new();
-    let mut seen = HashSet::<String>::new();
-    for value in values {
-        let normalized = value.trim();
-        if normalized.is_empty() {
-            continue;
-        }
-        if seen.insert(normalized.to_string()) {
-            out.push(normalized.to_string());
-        }
-    }
-    out
-}
-
 /// Build memory prompt with dynamic compression skeleton.
 async fn build_memory_prompt_text(
     input: &BehaviorExecInput,
@@ -335,28 +248,15 @@ async fn build_memory_prompt_text(
     };
     let dynamic_budget = total_budget.saturating_sub(fixed_budget);
 
-    let workspace_summary_budget =
-        calc_memory_bucket_budget(dynamic_budget, &cfg.memory.workspace_summary);
     let agent_memory_budget = calc_memory_bucket_budget(dynamic_budget, &cfg.memory.agent_memory);
     let history_messages_budget =
         calc_memory_bucket_budget(dynamic_budget, &cfg.memory.history_messages);
+    let session_step_records_budget =
+        calc_memory_bucket_budget(dynamic_budget, &cfg.memory.session_step_records);
     let workspace_worklog_budget =
         calc_memory_bucket_budget(dynamic_budget, &cfg.memory.workspace_worklog);
-    let session_summaries_budget =
-        calc_memory_bucket_budget(dynamic_budget, &cfg.memory.session_summaries);
 
     let mut memory_sections = Vec::<String>::new();
-
-    if workspace_summary_budget > 0 {
-        let workspace_summary =
-            load_workspace_summary_with_limit(input, workspace_summary_budget, tokenizer).await;
-        if !workspace_summary.trim().is_empty() {
-            memory_sections.push(format!(
-                "## Workspace Introduce\n{}\n",
-                sanitize_text(workspace_summary.trim())
-            ));
-        }
-    }
 
     if agent_memory_budget > 0 {
         let remembered_things = load_agent_memory_with_limit(
@@ -372,6 +272,19 @@ async fn build_memory_prompt_text(
                 "## What you remember:\n{}\n",
                 sanitize_text(remembered_things.trim())
             ));
+        }
+    }
+
+    if session_step_records_budget > 0 {
+        let step_records = load_session_step_records_with_limit(
+            input,
+            &cfg.memory.session_step_records,
+            session_step_records_budget,
+            tokenizer,
+        )
+        .await;
+        if !step_records.trim().is_empty() {
+            memory_sections.push(sanitize_text(step_records.trim()));
         }
     }
 
@@ -397,22 +310,6 @@ async fn build_memory_prompt_text(
             "## Timeline Logs\n```log\n{}\n```\n",
             sanitize_text(timeline_text.trim())
         ));
-    }
-
-    let mut session_summary_parts = Vec::<String>::new();
-    if session_summaries_budget > 0 {
-        let session_summary =
-            load_session_summaries_with_limit(input, session_summaries_budget, tokenizer).await;
-        if !session_summary.trim().is_empty() {
-            session_summary_parts.push(format!(
-                "## Session Summary\n{}\n",
-                sanitize_text(session_summary.trim())
-            ));
-        }
-    }
-
-    if !session_summary_parts.is_empty() {
-        memory_sections.push(session_summary_parts.join("\n"));
     }
 
     let mut memory_body = if dynamic_budget == 0 {
@@ -494,6 +391,21 @@ fn compose_memory_prompt(memory_head: &str, memory_body: &str, memory_tail: &str
     format!("<<memory>>\n{}\n<</memory>>", parts.join("\n\n"))
 }
 
+fn bucket_skip_last_n(bucket: &BehaviorMemoryBucketConfig) -> usize {
+    bucket
+        .skip_last_n
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0)
+}
+
+fn truncate_recent_records<T>(records: &mut Vec<T>, skip_last_n: usize) {
+    if skip_last_n == 0 || records.is_empty() {
+        return;
+    }
+    let keep = records.len().saturating_sub(skip_last_n);
+    records.truncate(keep);
+}
+
 #[derive(Clone, Debug)]
 struct MemoryTimelineRecord {
     update_time: u64,
@@ -558,33 +470,6 @@ fn render_memory_timeline_text(records: &[MemoryTimelineRecord]) -> String {
     lines.join("\n")
 }
 
-async fn load_workspace_summary_with_limit(
-    input: &BehaviorExecInput,
-    token_limit: u32,
-    tokenizer: &dyn Tokenizer,
-) -> String {
-    if token_limit == 0 {
-        return String::new();
-    }
-    let Some(session) = input.session.as_ref() else {
-        return String::new();
-    };
-
-    let workspace_info = {
-        let guard = session.lock().await;
-        guard.workspace_info.clone()
-    };
-
-    let mut lines = Vec::<String>::new();
-    if let Some(workspace_info) = workspace_info.as_ref() {
-        if lines.is_empty() {
-            lines.push(format!("{}", sanitize_json_compact(workspace_info)));
-        }
-    }
-
-    fit_text_with_token_limit(lines.join("\n"), token_limit, tokenizer)
-}
-
 async fn load_agent_memory_with_limit(
     _input: &BehaviorExecInput,
     topic_tags: &[String],
@@ -619,8 +504,9 @@ async fn load_agent_memory_with_limit(
     fit_text_with_token_limit(raw_text, token_limit, tokenizer)
 }
 
-async fn load_session_summaries_with_limit(
+async fn load_session_step_records_with_limit(
     input: &BehaviorExecInput,
+    bucket: &BehaviorMemoryBucketConfig,
     token_limit: u32,
     tokenizer: &dyn Tokenizer,
 ) -> String {
@@ -631,24 +517,33 @@ async fn load_session_summaries_with_limit(
         return String::new();
     };
 
-    let (session_id, title, summary) = {
-        let guard = session.lock().await;
-        (
-            guard.session_id.clone(),
-            guard.title.clone(),
-            guard.summary.clone(),
-        )
+    let record_file = {
+        let mut guard = session.lock().await;
+        guard.llm_step_record_path()
+    };
+    let Some(record_file) = record_file else {
+        return String::new();
     };
 
-    let mut lines = vec![format!("- session_id: {session_id}")];
-    if !title.trim().is_empty() {
-        lines.push(format!("- title: {}", title.trim()));
-    }
-    if !summary.trim().is_empty() {
-        lines.push(format!("- summary: {}", summary.trim()));
+    let mut records = match load_records_from_path(&record_file).await {
+        Ok(records) => records,
+        Err(err) => {
+            warn!(
+                "prompt.load_session_step_records read failed: path={} err={}",
+                record_file.display(),
+                err
+            );
+            return String::new();
+        }
+    };
+    truncate_recent_records(&mut records, bucket_skip_last_n(bucket));
+    if records.is_empty() {
+        return String::new();
     }
 
-    fit_text_with_token_limit(lines.join("\n"), token_limit, tokenizer)
+    let rendered =
+        render_prompt_text_from_records(records.as_slice(), &LLMStepPromptRenderOptions::default());
+    fit_text_with_token_limit(rendered, token_limit, tokenizer)
 }
 
 fn fit_text_with_token_limit(
@@ -2175,47 +2070,6 @@ async fn load_workspace_worklog_with_limit(
     return records;
 }
 
-async fn collect_workspace_skill_roots(
-    local_workspace_id: Option<&str>,
-    workspace_info: Option<&Json>,
-    session_cwd: &Path,
-) -> Vec<PathBuf> {
-    let mut skill_roots = Vec::<PathBuf>::new();
-    if let Some(local_workspace_path) =
-        resolve_default_local_workspace_root(local_workspace_id, workspace_info, session_cwd)
-            .filter(|path| path.is_dir())
-    {
-        push_unique_pathbuf(
-            &mut skill_roots,
-            local_workspace_path.join(LOCAL_WORKSPACE_SKILLS_DIR),
-        );
-    }
-    if let Some(workspace_root) = resolve_session_workspace_root(workspace_info, session_cwd) {
-        push_unique_pathbuf(
-            &mut skill_roots,
-            workspace_root.join(LOCAL_WORKSPACE_SKILLS_DIR),
-        );
-    }
-    if let Some(agent_env_root) = resolve_agent_env_root(workspace_info, session_cwd) {
-        push_unique_pathbuf(
-            &mut skill_roots,
-            agent_env_root.join(LOCAL_WORKSPACE_SKILLS_DIR),
-        );
-    }
-
-    let mut existing = Vec::<PathBuf>::new();
-    for skill_root in skill_roots {
-        if fs::metadata(&skill_root)
-            .await
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false)
-        {
-            existing.push(skill_root);
-        }
-    }
-    existing
-}
-
 fn contains_any_marker(content: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| content.contains(marker))
 }
@@ -2265,7 +2119,7 @@ impl Truncator {
             }
         }
 
-        let shrink_order = ["<<Input>>", "<<toolbox>>", "<<role>>"];
+        let shrink_order = ["<<Input>>", "<<system>>", "<<role>>"];
         for marker in shrink_order {
             let Some(idx) = messages.iter().position(|m| m.content.contains(marker)) else {
                 continue;
@@ -2338,6 +2192,7 @@ mod tests {
     use crate::agent_tool::AgentTool;
     use crate::agent_tool::{AgentMemory, AgentMemoryConfig};
     use crate::behavior::types::{SessionRuntimeContext, StepLimits};
+    use crate::step_record::LLMStepRecord;
     use crate::worklog::{WorklogTool, WorklogToolConfig};
     use buckyos_api::MsgRecordWithObject;
     use tempfile::tempdir;
@@ -2370,8 +2225,7 @@ mod tests {
             behavior_prompt: "rules".to_string(),
             limits: StepLimits::default(),
             behavior_cfg: BehaviorConfig {
-                process_rule: "Process rules.".to_string(),
-                policy: "Policy text.".to_string(),
+                system: "Process rules.".to_string(),
                 ..Default::default()
             },
             session: None,
@@ -2389,10 +2243,8 @@ mod tests {
             .unwrap_or_default();
 
         assert!(system.contains("<<role>>"));
-        assert!(system.contains("<<process_rules>>"));
-        assert!(system.contains("<<policy>>"));
+        assert!(system.contains("<<system>>"));
         assert!(system.contains("<<output_protocol>>"));
-        assert!(!system.contains("<<skills>>"));
         assert!(system.contains("You are a helpful assistant."));
         assert!(system.contains("Process rules."));
     }
@@ -2445,6 +2297,7 @@ mod tests {
             limit: 256,
             max_percent: Some(1.0),
             is_enable: true,
+            skip_last_n: None,
         };
 
         let tokenizer = MockTokenizer;
@@ -2628,6 +2481,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_memory_prompt_text_includes_session_step_records_and_skips_latest() {
+        let temp = tempdir().expect("create tempdir");
+        let session_root_dir = temp.path().join("sessions");
+        let session_id = "session-1";
+
+        let mut session = AgentSession::new(session_id, "did:web:agent.example.com", None);
+        session.session_root_dir = session_root_dir;
+        session
+            .append_llm_step_record(LLMStepRecord {
+                session_id: session_id.to_string(),
+                step_num: 1,
+                step_index: 1,
+                behavior_name: "plan".to_string(),
+                llm_result: crate::behavior::BehaviorLLMResult {
+                    conclusion: Some("collect requirements".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .await
+            .expect("append step record 1");
+        session
+            .append_llm_step_record(LLMStepRecord {
+                session_id: session_id.to_string(),
+                step_num: 2,
+                step_index: 2,
+                behavior_name: "plan".to_string(),
+                llm_result: crate::behavior::BehaviorLLMResult {
+                    conclusion: Some("draft execution plan".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .await
+            .expect("append step record 2");
+        session
+            .append_llm_step_record(LLMStepRecord {
+                session_id: session_id.to_string(),
+                step_num: 3,
+                step_index: 3,
+                behavior_name: "do".to_string(),
+                llm_result: crate::behavior::BehaviorLLMResult {
+                    conclusion: Some("latest step should be skipped".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .await
+            .expect("append step record 3");
+
+        let input = BehaviorExecInput {
+            session_id: session_id.to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-step-records".to_string(),
+                agent_name: "did:web:agent.example.com".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 4,
+                wakeup_id: "wakeup-step-records".to_string(),
+                session_id: "session-test".to_string(),
+            },
+            input_prompt: "continue".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig::default(),
+            session: Some(Arc::new(Mutex::new(session))),
+        };
+
+        let mut cfg = BehaviorConfig::default();
+        cfg.memory.total_limit = 256;
+        cfg.memory.session_step_records = BehaviorMemoryBucketConfig {
+            limit: 256,
+            max_percent: Some(1.0),
+            is_enable: true,
+            skip_last_n: Some(1),
+        };
+
+        let prompt = build_memory_prompt_text(
+            &input,
+            &cfg,
+            vec![],
+            cfg.memory.total_limit,
+            &MockTokenizer,
+            None,
+        )
+        .await;
+
+        println!("\n[session_step_records prompt preview]\n{prompt}\n");
+        assert!(prompt.contains("## Step Records"));
+        assert!(prompt.contains("### Step 1 [plan:1]"));
+        assert!(prompt.contains("collect requirements"));
+        assert!(prompt.contains("### Step 2 [plan:2]"));
+        assert!(prompt.contains("draft execution plan"));
+        assert!(!prompt.contains("### Step 3 [do:3]"));
+        assert!(!prompt.contains("latest step should be skipped"));
+    }
+
+    #[tokio::test]
     async fn build_memory_prompt_text_includes_history_messages_timeline() {
         let temp = tempdir().expect("create tempdir");
         let agent_env_root = temp.path().join("workspace");
@@ -2770,6 +2723,7 @@ mod tests {
             limit: 256,
             max_percent: Some(1.0),
             is_enable: true,
+            skip_last_n: None,
         };
 
         let prompt = build_memory_prompt_text(

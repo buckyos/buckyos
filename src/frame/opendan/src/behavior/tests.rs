@@ -206,7 +206,7 @@ async fn run_step_with_tool_followup() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: test_rule
+system: test_rule
 tools:
   mode: allow_list
   names:
@@ -254,7 +254,7 @@ tools:
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: "session-test".to_string(),
-        behavior_prompt: behavior_cfg.process_rule.clone(),
+        behavior_prompt: behavior_cfg.system.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
         session: None,
@@ -338,7 +338,7 @@ async fn run_step_resolves_prefixed_running_aicc_task_id_from_task_data() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: test_rule
+system: test_rule
 "#,
     )
     .await;
@@ -374,7 +374,7 @@ process_rule: test_rule
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: "session-test".to_string(),
-        behavior_prompt: behavior_cfg.process_rule.clone(),
+        behavior_prompt: behavior_cfg.system.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
         session: None,
@@ -420,7 +420,7 @@ async fn run_step_accepts_succeeded_response_with_string_task_id() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: test_rule
+system: test_rule
 "#,
     )
     .await;
@@ -457,7 +457,7 @@ process_rule: test_rule
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: "session-test".to_string(),
-        behavior_prompt: behavior_cfg.process_rule.clone(),
+        behavior_prompt: behavior_cfg.system.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
         session: None,
@@ -503,7 +503,7 @@ async fn run_step_sets_behavior_task_as_parent_for_aicc_requests() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: test_rule
+system: test_rule
 "#,
     )
     .await;
@@ -537,7 +537,7 @@ process_rule: test_rule
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: "session-test".to_string(),
-        behavior_prompt: behavior_cfg.process_rule.clone(),
+        behavior_prompt: behavior_cfg.system.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
         session: None,
@@ -629,7 +629,7 @@ async fn run_step_uses_session_id_as_task_rootid_when_present() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: test_rule
+system: test_rule
 "#,
     )
     .await;
@@ -663,7 +663,7 @@ process_rule: test_rule
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: "session-user-1".to_string(),
-        behavior_prompt: behavior_cfg.process_rule.clone(),
+        behavior_prompt: behavior_cfg.system.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
         session: None,
@@ -755,7 +755,7 @@ async fn run_step_returns_provider_error_when_summary_has_no_text_and_no_tools()
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: test_rule
+system: test_rule
 "#,
     )
     .await;
@@ -789,7 +789,7 @@ process_rule: test_rule
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: "session-user-1".to_string(),
-        behavior_prompt: behavior_cfg.process_rule.clone(),
+        behavior_prompt: behavior_cfg.system.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
         session: None,
@@ -902,7 +902,7 @@ async fn run_step_then_run_actions_followup() {
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"
-process_rule: test_rule
+system: test_rule
 tools:
   mode: none
 "#,
@@ -946,7 +946,7 @@ tools:
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: "session-test".to_string(),
-        behavior_prompt: behavior_cfg.process_rule.clone(),
+        behavior_prompt: behavior_cfg.system.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
         session: None,
@@ -978,7 +978,7 @@ tools:
         role_md: "role".to_string(),
         self_md: "self".to_string(),
         session_id: "session-test".to_string(),
-        behavior_prompt: behavior_cfg.process_rule.clone(),
+        behavior_prompt: behavior_cfg.system.clone(),
         limits: behavior_cfg.limits.clone(),
         behavior_cfg: behavior_cfg.clone(),
         session: None,
