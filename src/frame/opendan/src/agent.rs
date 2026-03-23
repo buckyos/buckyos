@@ -4085,10 +4085,11 @@ system: "test behavior for action rendering"
             );
         }
 
+        let session_id = format!("session-test-{}", now_ms());
         let session = agent
             .session_mgr
             .ensure_session(
-                "session-test",
+                session_id.as_str(),
                 Some("Session Test".to_string()),
                 None,
                 Some("resolve_router"),
@@ -4101,7 +4102,7 @@ system: "test behavior for action rendering"
         }
         agent
             .session_mgr
-            .save_session("session-test")
+            .save_session(session_id.as_str())
             .await
             .expect("save session");
 
@@ -4179,7 +4180,7 @@ system: "test behavior for action rendering"
                 ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-gamma","new_content":"\nline-gamma-after","mode":"after"}],
                 ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-alpha","new_content":"line-alpha-before\n","mode":"before"}],
                 "if command -v tree >/dev/null 2>&1; then tree tree_preview; else find tree_preview -print | sort; fi",
-                "sleep 1 && if command -v curl >/dev/null 2>&1; then curl -fsSL \"file://$(pwd)/curl_source.txt\" -o curl_download.txt && echo curl_download_ok; else cp curl_source.txt curl_download.txt && echo curl_fallback_ok; fi && wc -c curl_download.txt",
+                "sleep 1 && if command -v curl >/dev/null 2>&1 && curl -fsSL \"file://$(pwd)/curl_source.txt\" -o curl_download.txt; then echo curl_download_ok; else cp curl_source.txt curl_download.txt && echo curl_fallback_ok; fi && wc -c curl_download.txt",
                 "cd tree_preview/dir-03",
                 "read_file file-00.txt 1-1",
                 ["read_file", {"path":"missing-file.txt"}]
@@ -4192,7 +4193,7 @@ system: "test behavior for action rendering"
             behavior: "resolve_router".to_string(),
             step_idx: 3,
             wakeup_id: "wakeup-preview".to_string(),
-            session_id: "session-test".to_string(),
+            session_id: session_id.clone(),
         };
 
         let results = agent.execute_actions(&trace, &actions).await;
@@ -4200,6 +4201,10 @@ system: "test behavior for action rendering"
             .values()
             .find(|result| result.cmd_line.trim() == "cat missing_exec_preview.txt")
             .expect("missing exec result should exist");
+        let curl_exec = results
+            .values()
+            .find(|result| result.cmd_line.contains("curl_source.txt"))
+            .expect("curl exec result should exist");
         let rendered = render_action_results_for_prompt(&results);
         println!(
             "\n=== Action Results Prompt Preview ===\n{}\n=== End Preview ===\n",
@@ -4209,6 +4214,8 @@ system: "test behavior for action rendering"
         assert_eq!(missing_exec.status, AgentToolStatus::Error);
         assert_ne!(missing_exec.return_code, Some(0));
         assert!(missing_exec.cmd_line.contains("missing_exec_preview.txt"));
+        assert_eq!(curl_exec.status, AgentToolStatus::Success);
+        assert_eq!(curl_exec.return_code, Some(0));
         assert!(rendered.contains("ActionResults:"));
         assert!(rendered.contains("step-summary-preview"));
         assert!(rendered.contains("cat missing_exec_preview.txt"));
