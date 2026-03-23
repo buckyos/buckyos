@@ -1313,8 +1313,8 @@ impl AIAgent {
             session.clone(),
         )
         .await?;
-
-        if input_prompt_result.successful_count > 0 {
+        //TODO 这个检查非常的弱，实际上系统里能用的INPUT就几类
+        if !input_prompt_result.rendered.trim().is_empty() {
             return Ok(Some(BehaviorExecInput {
                 trace: trace.clone(),
                 role_md: self.role_md.clone(),
@@ -3871,8 +3871,7 @@ mod tests {
         };
         let mut behavior_cfg = BehaviorConfig::default();
         behavior_cfg.step_limit = 16;
-        behavior_cfg.step_summary =
-            "idx={{step_index}} limit={{step_limit}} thinking={{llm_result.thinking}}".to_string();
+        behavior_cfg.step_summary = "__OPENDAN_VAR(step_index, $step_index)__OPENDAN_VAR(step_limit, $step_limit)__OPENDAN_VAR(thinking, $llm_result.thinking)idx={{step_index}} limit={{step_limit}} thinking={{thinking}}".to_string();
 
         let llm_result = BehaviorLLMResult {
             thinking: Some("break down tasks".to_string()),
@@ -3925,7 +3924,9 @@ mod tests {
             session_id: "s1".to_string(),
         };
         let mut behavior_cfg = BehaviorConfig::default();
-        behavior_cfg.step_summary = "### Run Results\n{{llm_result.action_results}}".to_string();
+        behavior_cfg.step_summary =
+            "__OPENDAN_VAR(action_results, $llm_result.action_results)\n### Run Results\n{{action_results}}"
+                .to_string();
 
         let llm_result = BehaviorLLMResult::default();
         let tracking = crate::behavior::LLMTrackingInfo {

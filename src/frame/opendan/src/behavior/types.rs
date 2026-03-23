@@ -406,7 +406,9 @@ fn parse_heredoc_delimiter(raw: &str) -> Option<String> {
 }
 
 fn leading_whitespace_prefix(line: &str) -> &str {
-    let indent_len = line.find(|ch: char| !ch.is_whitespace()).unwrap_or(line.len());
+    let indent_len = line
+        .find(|ch: char| !ch.is_whitespace())
+        .unwrap_or(line.len());
     &line[..indent_len]
 }
 
@@ -817,8 +819,7 @@ PY"#
     fn behavior_result_accepts_shell_commands_with_heredoc_variants() {
         let raw = "<response>\r\n  <shell_commands><![CDATA[\r\n\tpython - <<-'PY'\r\n\tprint('line-1')\r\n\t\r\n\tprint('line-2')\r\n\tPY\r\n\techo done\r\n  ]]></shell_commands>\r\n</response>";
 
-        let parsed =
-            BehaviorLLMResult::from_xml_str(raw).expect("heredoc variants should parse");
+        let parsed = BehaviorLLMResult::from_xml_str(raw).expect("heredoc variants should parse");
         assert_eq!(parsed.shell_commands.len(), 2);
         assert_eq!(
             parsed.shell_commands[0],

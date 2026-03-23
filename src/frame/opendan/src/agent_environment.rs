@@ -62,16 +62,15 @@ pub struct AgentEnvironment {
     workshop: AgentWorkshop,
 }
 
+#[derive(Debug)]
 pub struct AgentTemplateRenderResult {
     pub rendered: String,
-    /// __OPENDAN_ENV preprocessing: tokens found in env_context
     pub env_expanded: u32,
-    /// __OPENDAN_ENV preprocessing: tokens not found in env_context
     pub env_not_found: u32,
-    /// {{key}} replacements: successfully resolved
-    pub successful_count: u32,
-    /// {{key}} replacements: not found
-    pub failed_count: u32,
+    pub content_loaded: u32,
+    pub content_failed: u32,
+    pub var_registered: u32,
+    pub var_failed: u32,
 }
 
 impl AgentEnvironment {
@@ -129,65 +128,59 @@ impl AgentEnvironment {
         F: Fn(&str) -> Fut,
         Fut: Future<Output = Result<Option<String>, AgentToolError>>,
     {
-        // 1) Expand __OPENDAN_ENV(path)__ from env_context only.
-        // 2) Replace {{key}} with env_context value first.
-        // 3) If env_context misses, call load_value(key); None => empty string.
-        let (expanded_input, env_ok, env_fail) = expand_opendan_env_tokens(input, env_context);
-        let escaped = escape_template_literals(&expanded_input);
+        const MAX_PREPROCESS_PASSES: usize = 32;
 
-        let mut rebuilt_template = String::new();
+        let mut preprocessed = input.to_string();
         let mut render_ctx = Map::<String, Json>::new();
-        let mut slot_seq = 0usize;
-        let mut cursor = 0usize;
-        let mut brace_ok = 0u32;
-        let mut brace_fail = 0u32;
+        let mut env_expanded = 0u32;
+        let mut env_not_found = 0u32;
+        let mut content_loaded = 0u32;
+        let mut content_failed = 0u32;
+        let mut var_registered = 0u32;
+        let mut var_failed = 0u32;
 
-        while let Some(open_pos) = escaped[cursor..].find("{{").map(|idx| cursor + idx) {
-            rebuilt_template.push_str(&escaped[cursor..open_pos]);
-            let content_start = open_pos + 2;
-            let Some(close_pos) = escaped[content_start..]
-                .find("}}")
-                .map(|idx| content_start + idx)
-            else {
-                rebuilt_template.push_str(&escaped[open_pos..]);
-                cursor = escaped.len();
+        for _ in 0..MAX_PREPROCESS_PASSES {
+            let (
+                next_template,
+                changed,
+                pass_env_expanded,
+                pass_env_not_found,
+                pass_content_loaded,
+                pass_content_failed,
+                pass_var_registered,
+                pass_var_failed,
+            ) = preprocess_text_template_pass(
+                preprocessed.as_str(),
+                &load_value,
+                env_context,
+                &mut render_ctx,
+            )
+            .await?;
+
+            preprocessed = next_template;
+            env_expanded = env_expanded.saturating_add(pass_env_expanded);
+            env_not_found = env_not_found.saturating_add(pass_env_not_found);
+            content_loaded = content_loaded.saturating_add(pass_content_loaded);
+            content_failed = content_failed.saturating_add(pass_content_failed);
+            var_registered = var_registered.saturating_add(pass_var_registered);
+            var_failed = var_failed.saturating_add(pass_var_failed);
+
+            if !changed {
                 break;
-            };
-
-            let placeholder_raw = escaped[content_start..close_pos].trim();
-            let slot_name = format!("slot_{slot_seq}");
-            slot_seq = slot_seq.saturating_add(1);
-            rebuilt_template.push_str("{{");
-            rebuilt_template.push_str(&slot_name);
-            rebuilt_template.push_str("}}");
-
-            let resolved = if placeholder_raw.is_empty() {
-                None
-            } else {
-                resolve_env_context_value(env_context, placeholder_raw)
-                    .and_then(json_value_to_compact_text)
-                    .or(clean_optional_text(
-                        load_value(placeholder_raw).await?.as_deref(),
-                    ))
-            };
-            if !placeholder_raw.is_empty() {
-                if resolved.is_some() {
-                    brace_ok = brace_ok.saturating_add(1);
-                } else {
-                    brace_fail = brace_fail.saturating_add(1);
-                }
             }
-            render_ctx.insert(slot_name, Json::String(resolved.unwrap_or_default()));
-            cursor = close_pos + 2;
         }
 
-        if cursor < escaped.len() {
-            rebuilt_template.push_str(&escaped[cursor..]);
+        if preprocessed.contains("__OPENDAN_") {
+            return Err(AgentToolError::ExecFailed(
+                "render text template failed: unresolved __OPENDAN_* directive remains after preprocessing"
+                    .to_string(),
+            ));
         }
 
+        let escaped = escape_template_literals(&preprocessed);
         let mut engine = Engine::new();
         engine
-            .add_template("text_template", &rebuilt_template)
+            .add_template("text_template", &escaped)
             .map_err(|err| {
                 AgentToolError::ExecFailed(format!("add text template failed: {err}"))
             })?;
@@ -204,10 +197,12 @@ impl AgentEnvironment {
 
         Ok(AgentTemplateRenderResult {
             rendered,
-            env_expanded: env_ok,
-            env_not_found: env_fail,
-            successful_count: brace_ok,
-            failed_count: brace_fail,
+            env_expanded,
+            env_not_found,
+            content_loaded,
+            content_failed,
+            var_registered,
+            var_failed,
         })
     }
 
@@ -438,16 +433,27 @@ impl AgentEnvironment {
                 AgentToolError::ExecFailed(format!("read current_dir failed: {err}"))
             })?);
         let cwd_root = non_empty_path(&session_cwd).unwrap_or_else(|| workspace_root.clone());
+        let agent_root = resolve_agent_env_root(workspace_info.as_ref(), &session_cwd)
+            .or_else(|| {
+                resolve_agent_env_root_from_local_workspace_hint(
+                    local_workspace_id.as_deref(),
+                    workspace_info.as_ref(),
+                    &session_cwd,
+                )
+            })
+            .unwrap_or_else(|| workspace_root.clone());
 
-        //$workspace/readme.txt
+        if k.starts_with("$agent_root/") {
+            let rel_path = &k["$agent_root/".len()..];
+            return resolve_path_from_root(agent_root.as_path(), rel_path);
+        }
         if k.starts_with("$workspace/") {
             let rel_path = &k["$workspace/".len()..];
-            return load_text_from_root(workspace_root.as_path(), rel_path).await;
+            return resolve_path_from_root(workspace_root.as_path(), rel_path);
         }
-        //$cwd/readme.txt
         if k.starts_with("$cwd/") {
             let rel_path = &k["$cwd/".len()..];
-            return load_text_from_root(cwd_root.as_path(), rel_path).await;
+            return resolve_path_from_root(cwd_root.as_path(), rel_path);
         }
 
         Ok(None)
@@ -686,50 +692,287 @@ fn json_value_to_compact_text(value: &Json) -> Option<String> {
     }
 }
 
-fn expand_opendan_env_tokens(
+async fn preprocess_text_template_pass<F, Fut>(
     input: &str,
+    load_value: &F,
     env_context: &HashMap<String, Json>,
-) -> (String, u32, u32) {
+    render_ctx: &mut Map<String, Json>,
+) -> Result<(String, bool, u32, u32, u32, u32, u32, u32), AgentToolError>
+where
+    F: Fn(&str) -> Fut,
+    Fut: Future<Output = Result<Option<String>, AgentToolError>>,
+{
     const ENV_TOKEN_OPEN: &str = "__OPENDAN_ENV(";
-    const ENV_TOKEN_CLOSE: &str = ")__";
+    const CONTENT_TOKEN_OPEN: &str = "__OPENDAN_CONTENT(";
+    const VAR_TOKEN_OPEN: &str = "__OPENDAN_VAR(";
+    const TOKEN_PREFIX: &str = "__OPENDAN_";
 
     let mut output = String::with_capacity(input.len());
     let mut cursor = 0usize;
-    let mut found_count = 0u32;
-    let mut not_found_count = 0u32;
+    let mut changed = false;
+    let mut env_expanded = 0u32;
+    let mut env_not_found = 0u32;
+    let mut content_loaded = 0u32;
+    let content_failed = 0u32;
+    let mut var_registered = 0u32;
+    let mut var_failed = 0u32;
 
-    while let Some(start) = input[cursor..].find(ENV_TOKEN_OPEN).map(|idx| cursor + idx) {
+    while let Some(start) = input[cursor..].find(TOKEN_PREFIX).map(|idx| cursor + idx) {
         output.push_str(&input[cursor..start]);
-        let key_start = start + ENV_TOKEN_OPEN.len();
-        let Some(key_end) = input[key_start..]
-            .find(ENV_TOKEN_CLOSE)
-            .map(|idx| key_start + idx)
-        else {
-            output.push_str(&input[start..]);
-            cursor = input.len();
-            break;
-        };
 
-        let key = input[key_start..key_end].trim();
-        let found = !key.is_empty() && resolve_env_context_value(env_context, key).is_some();
-        let value = resolve_env_context_value(env_context, key)
-            .and_then(json_value_to_compact_text)
-            .unwrap_or_default();
-        if !key.is_empty() {
-            if found {
-                found_count = found_count.saturating_add(1);
-            } else {
-                not_found_count = not_found_count.saturating_add(1);
+        if input[start..].starts_with(ENV_TOKEN_OPEN) {
+            let arg_start = start + ENV_TOKEN_OPEN.len();
+            let Some(arg_end) = input[arg_start..].find(")__").map(|idx| arg_start + idx) else {
+                return Err(AgentToolError::ExecFailed(
+                    "render text template failed: malformed __OPENDAN_ENV directive".to_string(),
+                ));
+            };
+            let expr = input[arg_start..arg_end].trim();
+            if !expr.starts_with('$') {
+                return Err(AgentToolError::ExecFailed(format!(
+                    "render text template failed: __OPENDAN_ENV expects a dynamic variable expression, got `{expr}`"
+                )));
             }
+
+            let value = resolve_dynamic_value(expr, load_value, env_context).await?;
+            if value.is_some() {
+                env_expanded = env_expanded.saturating_add(1);
+            } else {
+                env_not_found = env_not_found.saturating_add(1);
+            }
+            output.push_str(
+                &value
+                    .as_ref()
+                    .and_then(json_value_to_compact_text)
+                    .unwrap_or_default(),
+            );
+            cursor = arg_end + 3;
+            changed = true;
+            continue;
         }
-        output.push_str(&value);
-        cursor = key_end + ENV_TOKEN_CLOSE.len();
+
+        if input[start..].starts_with(CONTENT_TOKEN_OPEN) {
+            let arg_start = start + CONTENT_TOKEN_OPEN.len();
+            let Some(arg_end) = input[arg_start..].find(")__").map(|idx| arg_start + idx) else {
+                return Err(AgentToolError::ExecFailed(
+                    "render text template failed: malformed __OPENDAN_CONTENT directive"
+                        .to_string(),
+                ));
+            };
+            let path_arg = input[arg_start..arg_end].trim();
+            let content = load_text_from_content_arg(path_arg, load_value, env_context).await?;
+            content_loaded = content_loaded.saturating_add(1);
+            output.push_str(content.as_str());
+            cursor = arg_end + 3;
+            changed = true;
+            continue;
+        }
+
+        if input[start..].starts_with(VAR_TOKEN_OPEN) {
+            let arg_start = start + VAR_TOKEN_OPEN.len();
+            let Some(arg_end) = input[arg_start..].find(')').map(|idx| arg_start + idx) else {
+                return Err(AgentToolError::ExecFailed(
+                    "render text template failed: malformed __OPENDAN_VAR directive".to_string(),
+                ));
+            };
+            let raw_args = input[arg_start..arg_end].trim();
+            let Some((var_name_raw, expr_raw)) = raw_args.split_once(',') else {
+                return Err(AgentToolError::ExecFailed(
+                    "render text template failed: __OPENDAN_VAR requires `var_name, $expr`"
+                        .to_string(),
+                ));
+            };
+
+            let var_name = var_name_raw.trim();
+            if !is_variable_name(var_name) {
+                return Err(AgentToolError::ExecFailed(format!(
+                    "render text template failed: invalid __OPENDAN_VAR name `{var_name}`"
+                )));
+            }
+
+            let expr = expr_raw.trim();
+            if !expr.starts_with('$') {
+                return Err(AgentToolError::ExecFailed(format!(
+                    "render text template failed: __OPENDAN_VAR expects a dynamic variable expression, got `{expr}`"
+                )));
+            }
+
+            let value = resolve_dynamic_value(expr, load_value, env_context).await?;
+            if let Some(value) = value {
+                render_ctx.insert(var_name.to_string(), value);
+                var_registered = var_registered.saturating_add(1);
+            } else {
+                render_ctx.insert(var_name.to_string(), Json::String(String::new()));
+                var_failed = var_failed.saturating_add(1);
+            }
+            cursor = arg_end + 1;
+            changed = true;
+            continue;
+        }
+
+        return Err(AgentToolError::ExecFailed(format!(
+            "render text template failed: unsupported OpenDAN directive near `{}`",
+            truncate_chars(&input[start..], 64)
+        )));
     }
 
     if cursor < input.len() {
         output.push_str(&input[cursor..]);
     }
-    (output, found_count, not_found_count)
+
+    Ok((
+        output,
+        changed,
+        env_expanded,
+        env_not_found,
+        content_loaded,
+        content_failed,
+        var_registered,
+        var_failed,
+    ))
+}
+
+async fn resolve_dynamic_value<F, Fut>(
+    expr: &str,
+    load_value: &F,
+    env_context: &HashMap<String, Json>,
+) -> Result<Option<Json>, AgentToolError>
+where
+    F: Fn(&str) -> Fut,
+    Fut: Future<Output = Result<Option<String>, AgentToolError>>,
+{
+    let trimmed = expr.trim();
+    let Some(key) = trimmed.strip_prefix('$').map(str::trim) else {
+        return Err(AgentToolError::ExecFailed(format!(
+            "dynamic variable expression must start with `$`: {trimmed}"
+        )));
+    };
+
+    if key.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(value) = resolve_env_context_value(env_context, key) {
+        return Ok(Some(value.clone()));
+    }
+
+    if let Some(value) = clean_optional_text(load_value(key).await?.as_deref()) {
+        return Ok(Some(Json::String(value)));
+    }
+
+    if let Some(value) = clean_optional_text(load_value(trimmed).await?.as_deref()) {
+        return Ok(Some(Json::String(value)));
+    }
+
+    Ok(None)
+}
+
+async fn load_text_from_content_arg<F, Fut>(
+    path_arg: &str,
+    load_value: &F,
+    env_context: &HashMap<String, Json>,
+) -> Result<String, AgentToolError>
+where
+    F: Fn(&str) -> Fut,
+    Fut: Future<Output = Result<Option<String>, AgentToolError>>,
+{
+    let raw_path = if path_arg.starts_with('$') {
+        resolve_dynamic_value(path_arg, load_value, env_context)
+            .await?
+            .as_ref()
+            .and_then(json_value_to_compact_text)
+            .ok_or_else(|| {
+                AgentToolError::ExecFailed(format!(
+                    "render text template failed: __OPENDAN_CONTENT path expression `{path_arg}` resolved to empty"
+                ))
+            })?
+    } else if path_arg.starts_with('/') {
+        path_arg.trim().to_string()
+    } else {
+        return Err(AgentToolError::ExecFailed(format!(
+            "render text template failed: __OPENDAN_CONTENT expects a dynamic variable or absolute path, got `{path_arg}`"
+        )));
+    };
+
+    load_text_from_absolute_path(expand_system_env_vars(raw_path.as_str()).as_str()).await
+}
+
+async fn load_text_from_absolute_path(path: &str) -> Result<String, AgentToolError> {
+    let path = path.trim();
+    let absolute_path = PathBuf::from(path);
+    if !absolute_path.is_absolute() {
+        return Err(AgentToolError::ExecFailed(format!(
+            "render text template failed: __OPENDAN_CONTENT path must be absolute after env expansion, got `{path}`"
+        )));
+    }
+
+    let bytes = fs::read(&absolute_path).await.map_err(|err| {
+        AgentToolError::ExecFailed(format!(
+            "render text template failed: read content `{}` failed: {err}",
+            absolute_path.display()
+        ))
+    })?;
+    let content = String::from_utf8(bytes).map_err(|err| {
+        AgentToolError::ExecFailed(format!(
+            "render text template failed: decode content `{}` failed: {err}",
+            absolute_path.display()
+        ))
+    })?;
+
+    Ok(truncate_utf8(&content, MAX_INCLUDE_BYTES))
+}
+
+fn expand_system_env_vars(input: &str) -> String {
+    let chars = input.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(input.len());
+    let mut idx = 0usize;
+
+    while idx < chars.len() {
+        if chars[idx] != '$' {
+            output.push(chars[idx]);
+            idx += 1;
+            continue;
+        }
+
+        if idx + 1 >= chars.len() {
+            output.push('$');
+            idx += 1;
+            continue;
+        }
+
+        if chars[idx + 1] == '{' {
+            let mut end = idx + 2;
+            while end < chars.len() && chars[end] != '}' {
+                end += 1;
+            }
+            if end >= chars.len() {
+                output.push('$');
+                idx += 1;
+                continue;
+            }
+
+            let name = chars[idx + 2..end].iter().collect::<String>();
+            output.push_str(std::env::var(name.as_str()).unwrap_or_default().as_str());
+            idx = end + 1;
+            continue;
+        }
+
+        let mut end = idx + 1;
+        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+            end += 1;
+        }
+        if end == idx + 1 {
+            output.push('$');
+            idx += 1;
+            continue;
+        }
+
+        let name = chars[idx + 1..end].iter().collect::<String>();
+        output.push_str(std::env::var(name.as_str()).unwrap_or_default().as_str());
+        idx = end;
+    }
+
+    output
 }
 
 fn resolve_env_context_value<'a>(
@@ -1262,13 +1505,10 @@ fn resolve_workspace_info_text(workspace_info: &Json, key: &str) -> Option<Strin
     resolve_json_path(workspace_info, key).and_then(json_value_to_compact_text)
 }
 
-async fn load_text_from_root(
-    root: &Path,
-    rel_path: &str,
-) -> Result<Option<String>, AgentToolError> {
+fn resolve_path_from_root(root: &Path, rel_path: &str) -> Result<Option<String>, AgentToolError> {
     let rel_path = rel_path.trim();
     if rel_path.is_empty() || !is_safe_relative_path(rel_path) {
-        warn!("agent_env.render skip unsafe include: rel_path={rel_path}");
+        warn!("agent_env.render skip unsafe path ref: rel_path={rel_path}");
         return Ok(None);
     }
 
@@ -1279,57 +1519,10 @@ async fn load_text_from_root(
             .map_err(|err| AgentToolError::ExecFailed(format!("read current_dir failed: {err}")))?
             .join(root)
     };
-    let include_path = absolute_root.join(rel_path);
 
-    let canonical_root = fs::canonicalize(&absolute_root)
-        .await
-        .unwrap_or(absolute_root);
-    let canonical_path = match fs::canonicalize(&include_path).await {
-        Ok(path) => path,
-        Err(err) => {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                warn!(
-                    "agent_env.render include resolve failed: path={} err={}",
-                    include_path.display(),
-                    err
-                );
-            }
-            return Ok(None);
-        }
-    };
-    if !canonical_path.starts_with(&canonical_root) {
-        warn!(
-            "agent_env.render include escaped root: include={} root={}",
-            canonical_path.display(),
-            canonical_root.display()
-        );
-        return Ok(None);
-    }
-
-    let bytes = match fs::read(&canonical_path).await {
-        Ok(content) => content,
-        Err(err) => {
-            warn!(
-                "agent_env.render include read failed: path={} err={}",
-                canonical_path.display(),
-                err
-            );
-            return Ok(None);
-        }
-    };
-    let content = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(err) => {
-            warn!(
-                "agent_env.render include utf8 decode failed: path={} err={}",
-                canonical_path.display(),
-                err
-            );
-            return Ok(None);
-        }
-    };
-    let content = truncate_utf8(&content, MAX_INCLUDE_BYTES);
-    Ok(clean_optional_text(Some(content.as_str())))
+    Ok(Some(
+        absolute_root.join(rel_path).to_string_lossy().to_string(),
+    ))
 }
 
 fn resolve_json_path<'a>(value: &'a Json, path: &str) -> Option<&'a Json> {
@@ -1469,86 +1662,97 @@ mod tests {
         env_context.insert("params.x".to_string(), Json::String("env_val".to_string()));
 
         let result = AgentEnvironment::render_prompt(
-            "sid={{session_id}} step={{step_index}} todo={{current_todo}} x=__OPENDAN_ENV(params.x)__",
+            "__OPENDAN_VAR(session_id, $session_id)\n__OPENDAN_VAR(step_index, $step_index)\n__OPENDAN_VAR(current_todo, $current_todo)\nsid={{session_id}} step={{step_index}} todo={{current_todo}} x=__OPENDAN_ENV($params.x)__",
             &env_context,
             session,
         )
         .await
         .expect("render prompt");
 
-        assert_eq!(result.rendered, "sid=s1 step=3 todo=T01 x=env_val");
+        assert_eq!(result.rendered.trim(), "sid=s1 step=3 todo=T01 x=env_val");
         assert_eq!(result.env_expanded, 1);
-        assert_eq!(result.successful_count, 3);
+        assert_eq!(result.var_registered, 3);
     }
 
     #[tokio::test]
-    async fn render_text_template_expands_env_and_loads_value() {
+    async fn render_text_template_requires_explicit_var_registration() {
         let mut env_context = HashMap::<String, Json>::new();
-        env_context.insert(
-            "params".to_string(),
-            json!({ "todo": "T01","priority": "high" }),
-        );
+        env_context.insert("session_id".to_string(), Json::String("s-demo".to_string()));
 
-        let result = AgentEnvironment::render_text_template(
-            "{{workspace.todolist.__OPENDAN_ENV(params.todo)__}}",
-            |key| {
-                let owned_key = key.to_string();
-                async move {
-                    if owned_key == "workspace.todolist.T01" {
-                        Ok(Some("Do home Work".to_string()))
-                    } else {
-                        Ok(None)
-                    }
-                }
-            },
+        let err = AgentEnvironment::render_text_template(
+            "sid={{session_id}}",
+            |_key| async { Ok(Some("from-loader".to_string())) },
             &env_context,
         )
         .await
-        .expect("render text template");
+        .expect_err("unregistered upon variable should fail");
 
-        assert_eq!(result.rendered, "Do home Work");
-        assert_eq!(result.env_expanded, 1);
-        assert_eq!(result.env_not_found, 0);
-        assert_eq!(result.successful_count, 1);
-        assert_eq!(result.failed_count, 0);
+        assert!(
+            err.to_string().contains("not found in this scope"),
+            "err={err}"
+        );
     }
 
     #[tokio::test]
-    async fn render_text_template_prefers_env_context_with_json_path() {
+    async fn render_text_template_registers_context_for_upon_render() {
         let mut env_context = HashMap::<String, Json>::new();
-        env_context.insert("params".to_string(), json!({ "todo": "T02" }));
-        env_context.insert(
-            "workspace".to_string(),
-            json!({
-                "todolist": {
-                    "T02": "Do from context"
-                }
-            }),
-        );
+        env_context.insert("params".to_string(), json!({ "message": "hello" }));
 
         let result = AgentEnvironment::render_text_template(
-            "{{workspace.todolist.__OPENDAN_ENV(params.todo)__}}",
+            "__OPENDAN_VAR(new_msg, $params.message)\n{%- if new_msg %}msg={{new_msg}}{%- endif %}",
             |_key| async { Ok(None) },
             &env_context,
         )
         .await
         .expect("render text template");
 
-        assert_eq!(result.rendered, "Do from context");
+        assert_eq!(result.rendered.trim(), "msg=hello");
+        assert_eq!(result.env_expanded, 0);
+        assert_eq!(result.env_not_found, 0);
+        assert_eq!(result.var_registered, 1);
+        assert_eq!(result.var_failed, 0);
+    }
+
+    #[tokio::test]
+    async fn render_text_template_loads_content_and_reprocesses_nested_directives() {
+        let root = tempdir().expect("create temp dir");
+        let include_path = root.path().join("prompt.md");
+        fs::write(&include_path, "Project __OPENDAN_ENV($params.project)__")
+            .await
+            .expect("write include file");
+
+        let mut env_context = HashMap::<String, Json>::new();
+        env_context.insert(
+            "params.project".to_string(),
+            Json::String("Alpha".to_string()),
+        );
+        env_context.insert(
+            "dynamic.path".to_string(),
+            Json::String(include_path.to_string_lossy().to_string()),
+        );
+
+        let result = AgentEnvironment::render_text_template(
+            "__OPENDAN_CONTENT($dynamic.path)__",
+            |_key| async { Ok(None) },
+            &env_context,
+        )
+        .await
+        .expect("render text template");
+
+        assert_eq!(result.rendered, "Project Alpha");
         assert_eq!(result.env_expanded, 1);
         assert_eq!(result.env_not_found, 0);
-        assert_eq!(result.successful_count, 1);
-        assert_eq!(result.failed_count, 0);
+        assert_eq!(result.content_loaded, 1);
+        assert_eq!(result.var_registered, 0);
     }
 
     #[tokio::test]
     async fn render_text_template_env_not_found_counts_separately() {
         let mut env_context = HashMap::<String, Json>::new();
         env_context.insert("params.todo".to_string(), Json::String("T01".to_string()));
-        // params.missing is NOT in env_context
 
         let result = AgentEnvironment::render_text_template(
-            "a=__OPENDAN_ENV(params.todo)__ b=__OPENDAN_ENV(params.missing)__",
+            "a=__OPENDAN_ENV($params.todo)__ b=__OPENDAN_ENV($params.missing)__",
             |_key| async { Ok(None) },
             &env_context,
         )
@@ -1558,8 +1762,8 @@ mod tests {
         assert_eq!(result.rendered, "a=T01 b=");
         assert_eq!(result.env_expanded, 1);
         assert_eq!(result.env_not_found, 1);
-        assert_eq!(result.successful_count, 0);
-        assert_eq!(result.failed_count, 0);
+        assert_eq!(result.content_loaded, 0);
+        assert_eq!(result.var_registered, 0);
     }
 
     #[test]
@@ -1687,148 +1891,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_text_template_mixed_success_and_fail_for_braces() {
-        let mut env_context = HashMap::<String, Json>::new();
-        env_context.insert("found_key".to_string(), Json::String("value1".to_string()));
-
-        let result = AgentEnvironment::render_text_template(
-            "{{found_key}} | {{missing_key}} | {{another_missing}}",
-            |key| {
-                let k = key.to_string();
-                async move {
-                    if k == "found_key" {
-                        Ok(Some("from_load".to_string()))
-                    } else {
-                        Ok(None)
-                    }
-                }
-            },
-            &env_context,
-        )
-        .await
-        .expect("render text template");
-
-        // found_key: from env_context (preferred over load_value)
-        // missing_key, another_missing: load_value returns None -> failed
-        assert_eq!(result.rendered, "value1 |  | ");
-        assert_eq!(result.env_expanded, 0);
-        assert_eq!(result.env_not_found, 0);
-        assert_eq!(result.successful_count, 1);
-        assert_eq!(result.failed_count, 2);
-    }
-
-    #[tokio::test]
-    async fn render_text_template_multiple_opendan_env_in_one_placeholder() {
-        let mut env_context = HashMap::<String, Json>::new();
-        env_context.insert("a".to_string(), Json::String("X".to_string()));
-        env_context.insert("b".to_string(), Json::String("Y".to_string()));
-        env_context.insert("c".to_string(), Json::String("Z".to_string()));
-
-        let result = AgentEnvironment::render_text_template(
-            "{{__OPENDAN_ENV(a)__/__OPENDAN_ENV(b)__/__OPENDAN_ENV(c)__}}",
-            |key| {
-                let k = key.to_string();
-                async move {
-                    if k == "X/Y/Z" {
-                        Ok(Some("nested_value".to_string()))
-                    } else {
-                        Ok(None)
-                    }
-                }
-            },
-            &env_context,
-        )
-        .await
-        .expect("render text template");
-
-        assert_eq!(result.rendered, "nested_value");
-        assert_eq!(result.env_expanded, 3);
-        assert_eq!(result.env_not_found, 0);
-        assert_eq!(result.successful_count, 1);
-        assert_eq!(result.failed_count, 0);
-    }
-
-    #[tokio::test]
-    async fn render_text_template_all_stats_non_zero() {
-        let mut env_context = HashMap::<String, Json>::new();
-        env_context.insert("ok_env".to_string(), Json::String("E1".to_string()));
-        // missing_env is NOT in env_context
-
-        let result = AgentEnvironment::render_text_template(
-            "env_ok=__OPENDAN_ENV(ok_env)__ env_fail=__OPENDAN_ENV(missing_env)__ brace_ok={{ok}} brace_fail={{nope}}",
-            |key| {
-                let k = key.to_string();
-                async move {
-                    if k == "ok" {
-                        Ok(Some("OK".to_string()))
-                    } else {
-                        Ok(None)
-                    }
-                }
-            },
-            &env_context,
-        )
-        .await
-        .expect("render text template");
-
-        assert_eq!(
-            result.rendered,
-            "env_ok=E1 env_fail= brace_ok=OK brace_fail="
-        );
-        assert_eq!(result.env_expanded, 1);
-        assert_eq!(result.env_not_found, 1);
-        assert_eq!(result.successful_count, 1);
-        assert_eq!(result.failed_count, 1);
-    }
-
-    #[tokio::test]
-    async fn render_text_template_empty_placeholder_not_counted() {
+    async fn render_text_template_var_missing_counts_as_failed() {
         let env_context = HashMap::<String, Json>::new();
 
         let result = AgentEnvironment::render_text_template(
-            "a={{}}b={{  }}c={{x}}",
-            |key| {
-                let k = key.to_string();
-                async move {
-                    if k == "x" {
-                        Ok(Some("X".to_string()))
-                    } else {
-                        Ok(None)
-                    }
-                }
-            },
-            &env_context,
-        )
-        .await
-        .expect("render text template");
-
-        assert_eq!(result.rendered, "a=b=c=X");
-        assert_eq!(result.successful_count, 1);
-        assert_eq!(result.failed_count, 0);
-    }
-
-    #[tokio::test]
-    async fn render_text_template_json_path_array_index() {
-        let mut env_context = HashMap::<String, Json>::new();
-        env_context.insert(
-            "data".to_string(),
-            json!({
-                "items": ["first", "second", "third"],
-                "meta": { "count": 3 }
-            }),
-        );
-
-        let result = AgentEnvironment::render_text_template(
-            "{{data.items.0}} | {{data.items.1}} | {{data.meta.count}}",
+            "__OPENDAN_VAR(todo, $workspace.todolist.T001)\ntodo={{todo}}",
             |_key| async { Ok(None) },
             &env_context,
         )
         .await
         .expect("render text template");
 
-        assert_eq!(result.rendered, "first | second | 3");
-        assert_eq!(result.successful_count, 3);
-        assert_eq!(result.failed_count, 0);
+        assert_eq!(result.rendered.trim(), "todo=");
+        assert_eq!(result.var_registered, 0);
+        assert_eq!(result.var_failed, 1);
+    }
+
+    #[tokio::test]
+    async fn render_text_template_rejects_non_dollar_env_arg() {
+        let err = AgentEnvironment::render_text_template(
+            "__OPENDAN_ENV(params.todo)__",
+            |_key| async { Ok(None) },
+            &HashMap::new(),
+        )
+        .await
+        .expect_err("env arg without `$` should fail");
+
+        assert!(
+            err.to_string()
+                .contains("__OPENDAN_ENV expects a dynamic variable expression"),
+            "err={err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_text_template_rejects_relative_content_path() {
+        let err = AgentEnvironment::render_text_template(
+            "__OPENDAN_CONTENT(./prompt.md)__",
+            |_key| async { Ok(None) },
+            &HashMap::new(),
+        )
+        .await
+        .expect_err("relative content path should fail");
+
+        assert!(
+            err.to_string()
+                .contains("__OPENDAN_CONTENT expects a dynamic variable or absolute path"),
+            "err={err}"
+        );
     }
 
     #[tokio::test]

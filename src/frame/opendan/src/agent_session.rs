@@ -38,8 +38,8 @@ const DEFAULT_WORK_BEHAVIOR: &str = "plan";
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionState {
     Wait,         //运行中，等待任意触发
-    WaitForMsg,   //运行中，等待特定触发
-    WaitForEvent, //运行中，等待特定触发
+    WaitForMsg,   //运行中，等待用户输入触发
+    WaitForEvent, //运行中，等待特定事件触发
 
     Ready,   //已经触发，等待调度成Running
     Running, //正在运行中
@@ -154,6 +154,8 @@ pub struct AgentSession {
     pub links: Vec<OpenDanSessionLink>,
     pub tags: Vec<String>,
     pub meta: Json,
+    //session 当前step的序号，从0开始递增，不会因为current_behavior改变而重置
+    pub step_num: u32,
 
     pub last_step_summary: Option<String>,
     pub is_paused: bool,
@@ -302,6 +304,7 @@ impl AgentSession {
             wait_details: None,
             current_behavior,
             default_remote: None,
+            step_num: 0,
             step_index: 0,
             last_step_summary: None,
             msg_kmsgqueue_curosr: 0,
@@ -365,6 +368,7 @@ impl AgentSession {
             current_behavior: normalize_optional_string(runtime_meta.current_behavior)
                 .unwrap_or_default(),
             default_remote: normalize_optional_string(runtime_meta.default_remote),
+            step_num: 0,
             step_index: runtime_meta.step_index,
             last_step_summary: runtime_last_step_summary,
             msg_kmsgqueue_curosr: 0,

@@ -1,153 +1,415 @@
 # Render Prompt 模板变量说明
 
-本文档描述 `AgentEnvironment::render_prompt` 在渲染 prompt 时支持的模板变量和语法。
+本文档描述 Render Prompt 的目标渲染流程，以及模板变量在各阶段的展开规则。
 
 ## 概述
 
-`render_prompt` 通过 `render_text_template` 实现，解析流程分为两个阶段：
+Render Prompt 逻辑分为两个阶段：
 
-1. **阶段一**：展开 `__OPENDAN_ENV(path)__` 占位符（仅从 `env_context` 取值）
-2. **阶段二**：替换 `{{key}}` 占位符（优先 `env_context`，未命中则从 session 加载）
+1. **阶段一：OpenDAN 预处理**
+   - 处理三种指令：`__OPENDAN_ENV($key)__`、`__OPENDAN_CONTENT(path)__`、`__OPENDAN_VAR(var_name, $exp)`。
+   - `__OPENDAN_ENV($key)__` 是**纯文本替换**：通过动态变量获取求值后，将结果直接替换到当前位置，不做路径识别、不读文件。参数必须以 `$` 开头，表示动态变量引用。
+   - `__OPENDAN_CONTENT(path)__` 是**文件内容内联**：解析路径后，读取文件全文并替换到当前位置。参数可以是 `$` 开头的动态变量引用，也可以是绝对路径。
+   - `__OPENDAN_VAR(var_name, $exp)` 是**上下文注册指令**：求值后将结果注入 upon 渲染上下文，指令本身替换为空字符串（因此可以写在模板任意位置）。
+   - 三者共享同一套动态变量获取机制（见第四节）。
+   - 阶段完成后，文本中不应再存在任何 `__OPENDAN_*` 指令，否则报错。
+   - 阶段一的输出可以继续包含 upon 占位符，留待第二阶段渲染。
 
-## 一、`__OPENDAN_ENV(path)__` 语法
+2. **阶段二：标准 upon 渲染**
+   - 只走标准 upon 引擎，不再做任何动态变量获取。
+   - 使用阶段一构建好的上下文，完成最终的模板替换。
+   - upon 上下文中的每一个变量都必须由 `__OPENDAN_VAR` 显式声明，没有隐式注入。
 
-**格式**：`__OPENDAN_ENV(key)__`
+从职责上讲：
 
-- 仅从 `env_context`（`HashMap<String, Json>`）中取值
-- 若 key 不存在，替换为空字符串
+- **阶段一**负责"获取值"——动态、异步、需要运行时计算的值都在这一步解决。
+- **阶段二**负责"渲染模板"——纯粹的标准模板引擎，只做变量替换。
+- 两个阶段之间的边界是**upon 上下文**：阶段一写入，阶段二只读。
 
-**示例**：
+三种指令各司其职，互不重叠：
+
+| 指令 | 职责 | 输出 |
+|------|------|------|
+| `__OPENDAN_ENV($key)__` | 动态值 → 文本替换 | 求值结果内联到文本 |
+| `__OPENDAN_CONTENT(path)__` | 路径 → 读取文件 → 内容替换 | 文件内容内联到文本 |
+| `__OPENDAN_VAR(var_name, $exp)` | 动态值 → 注册上下文 | 文本中替换为空 |
+
+## 一、`__OPENDAN_ENV($key)__`：纯文本替换
+
+### 1.1 语义
+
+`__OPENDAN_ENV($key)__` 将 `$key` 对应的动态变量求值后，直接替换到模板文本的当前位置。不做路径识别，不读取文件。
+
+**约定**：参数必须以 `$` 开头，表示这是一个动态变量引用。若参数不以 `$` 开头，报错。
+
+### 1.2 适用场景
+
+- 将动态计算或异步获取的文本值内联到 prompt 中
+- 在进入 upon 之前完成一轮字符串替换
+
+### 1.3 展开规则
+
+1. 检查参数是否以 `$` 开头，若不是则报错
+2. 通过动态变量获取机制（见第四节）解析 `$key` 对应的值
+3. 将求值结果直接替换到当前位置
+4. 若展开后的文本中包含 upon 占位符，保留到第二阶段继续渲染
+5. 若 `$key` 无法解析，按空字符串处理
+
+### 1.4 示例
+
+```text
+__OPENDAN_ENV($params.todo)__
+__OPENDAN_ENV($session_id)__
 ```
-__OPENDAN_ENV(params.todo)__
-__OPENDAN_ENV(step_summary)__
+
+## 二、`__OPENDAN_CONTENT(path)__`：文件内容内联
+
+### 2.1 语义
+
+`__OPENDAN_CONTENT(path)__` 解析参数得到文件路径，读取文件全文，将内容替换到模板文本的当前位置。
+
+**参数支持两种形式**：
+- **动态变量引用**：以 `$` 开头，通过动态变量获取机制求值得到路径（如 `$agent_root/system_prompt.md`）。
+- **绝对路径**：直接写绝对路径（如 `/opt/prompts/system_prompt.md`），不经过动态变量求值。
+
+### 2.2 适用场景
+
+- 将外部文件（system prompt、README、配置文件等）的全文嵌入到 prompt 中
+- 需要根据运行时动态决定加载哪个文件
+
+### 2.3 展开规则
+
+1. 判断参数形式：
+   - 若以 `$` 开头，通过动态变量获取机制（见第四节）解析得到文件路径
+   - 若以 `/` 开头，视为绝对路径直接使用
+   - 其他情况，**报错**
+2. 若路径中仍包含 `$` 开头的环境变量引用（如 `$HOME`），先用系统环境变量展开
+3. 读取文件全文，将内容替换到当前位置
+4. 若文件内容中包含 upon 占位符，保留到第二阶段继续渲染
+5. 若最终路径不合法或文件不存在，**报错**（不静默替换为空）
+
+### 2.4 路径安全
+
+- 相对路径不允许 `..` 等越界访问
+- 文件内容截断至 `MAX_INCLUDE_BYTES`（64KB）
+
+### 2.5 示例
+
+```text
+__OPENDAN_CONTENT($agent_root/system_prompt.md)__
+__OPENDAN_CONTENT($workspace/README.md)__
+__OPENDAN_CONTENT(/opt/prompts/shared_rules.md)__
+__OPENDAN_CONTENT($dynamic.prompt_source)__
 ```
 
-## 二、`{{key}}` 占位符
+示例流程：
 
-**格式**：`{{key}}`
+- 第一个：`$agent_root` 求值得到 agent 根目录，拼接后读取 `system_prompt.md`
+- 第三个：绝对路径，直接读取 `/opt/prompts/shared_rules.md`
+- 第四个：`$dynamic.prompt_source` 异步求值得到 `$HOME/prompts/todo.md`，系统环境变量展开 `$HOME` → `/home/user/prompts/todo.md`，读取文件并内联
 
-解析顺序：
+## 三、`__OPENDAN_VAR(var_name, $exp)`：上下文注册指令
 
-1. 先在 `env_context` 中查找（支持 JSON 路径）
-2. 若未找到，再调用 `load_value_from_session` 从 session 加载
+### 3.1 语义
 
-### 2.1 来自 env_context 的变量
+`__OPENDAN_VAR(var_name, $exp)` 将 `$exp` 求值后的结果，以 `var_name` 为键注入到 upon 渲染上下文中。指令本身在文本中替换为空字符串。
 
-`env_context` 由调用方传入，常见字段包括（视调用场景而定）：
+等价于：
+
+```
+upon_context[var_name] = evaluate($exp)
+```
+
+这是 upon 上下文变量的**唯一注入方式**。模板中未通过 `__OPENDAN_VAR` 声明的变量，在 upon 渲染阶段不可用。
+
+### 3.2 适用场景
+
+- 为 upon 模板准备所需的上下文变量
+- 控制 session 数据的拉取参数（如消息条数上限）
+- 按需声明，避免不必要的数据加载
+
+### 3.3 语法
+
+```text
+__OPENDAN_VAR(var_name, $exp)
+```
+
+- `var_name`：注入到 upon 上下文中的变量名，在 upon 模板中通过 `{{var_name}}` 引用。
+- `$exp`：动态变量获取表达式（见第四节），用于求出实际值。
+
+### 3.4 示例
+
+```text
+__OPENDAN_VAR(new_msg, $new_msg.16)
+__OPENDAN_VAR(todo_list, $workspace.todolist)
+__OPENDAN_VAR(session_id, $session_id)
+```
+
+效果：
+
+| 指令 | upon 上下文结果 |
+|------|----------------|
+| `__OPENDAN_VAR(new_msg, $new_msg.16)` | `new_msg` = 最近 16 条新消息 |
+| `__OPENDAN_VAR(todo_list, $workspace.todolist)` | `todo_list` = 当前 todo 列表 |
+| `__OPENDAN_VAR(session_id, $session_id)` | `session_id` = 当前会话 ID |
+
+### 3.5 放置位置
+
+由于 `__OPENDAN_VAR` 处理后替换为空字符串，它可以放在模板的任意位置。建议集中放在模板开头，便于一目了然地看到当前模板依赖了哪些上下文变量：
+
+```text
+__OPENDAN_VAR(new_msg, $new_msg.32)
+__OPENDAN_VAR(session_id, $session_id)
+__OPENDAN_VAR(current_todo, $workspace.todolist.next_ready_todo)
+
+你是一个任务助手。当前会话：{{session_id}}
+{%- if new_msg %}
+
+最新消息：
+{{new_msg}}
+{%- endif %}
+{%- if current_todo %}
+
+当前待办：
+{{current_todo}}
+{%- endif %}
+```
+
+## 四、动态变量获取机制
+
+`__OPENDAN_ENV`、`__OPENDAN_CONTENT`、`__OPENDAN_VAR` 共享同一套动态变量获取机制。这不是一个表达式引擎——不支持组合运算、条件判断——而是一个**可扩展的动态变量获取器**，每个 key 对应一种取值方式。
+
+### 4.1 取值规则
+
+给定一个 key（如 `$new_msg.16`、`$params.todo`、`$workspace/README.md`），系统匹配已注册的取值器并调用对应逻辑获取值。若无法匹配，返回空字符串。
+
+### 4.2 当前支持的变量类型
+
+以下是系统当前支持的动态变量，按类别分组。这个列表是可扩展的。
+
+**调用参数**
 
 | 变量 | 说明 |
 |------|------|
-| `params` | 请求参数 JSON 对象 |
-| `params.<path>` | 参数中的嵌套路径，如 `params.todo`、`params.x` |
-| `role_md` | 角色描述 Markdown |
-| `self_md` | 自身描述 Markdown |
-| `session_id` | 会话 ID |
-| `loop.session_id` | 循环中的会话 ID |
-| `step.index` | 当前步骤索引 |
-| `step_summary` | 上一步摘要 |
-| `step_index` | 步骤索引 |
-| `step_limit` | 步骤上限 |
-| `llm_result` | LLM 返回结果 |
-| `trace` | 执行追踪信息 |
+| `$params` | 请求参数 JSON 对象 |
+| `$params.<path>` | 参数中的嵌套路径，如 `$params.todo` |
 
-**JSON 路径**：支持 `.` 访问嵌套字段和数组下标，例如：
-
-- `params.todo` → 对象字段
-- `params.items.0` → 数组第一个元素
-
-### 2.2 来自 Session 的变量（load_value_from_session）
-
-当 `env_context` 中无对应 key 时，从 session 加载：
-
-#### 会话元数据
+**会话与运行时**
 
 | 变量 | 说明 |
 |------|------|
-| `session_id` | 当前会话 ID |
-| `step_index` | 当前步骤索引 |
-| `last_step_summary` | 上一步摘要文本 |
+| `$session_id` | 当前会话 ID |
+| `$new_msg` | 新消息（默认最多 32 条） |
+| `$new_msg.$n` | 指定拉取上限，`$n` 为 1–4096 |
+| `$session_list` | 最近会话列表（默认最多 16 条） |
+| `$session_list.$n` | 指定拉取上限 |
+| `$local_workspace_list` | 最近本地工作区列表（默认最多 16 条） |
+| `$local_workspace_list.$n` | 指定拉取上限 |
+| `$last_step_summary` | 上一步摘要文本 |
 
-#### 消息与事件
-
-| 变量 | 说明 |
-|------|------|
-| `new_msg` | 新消息（从 kmsgqueue 拉取，默认最多 32 条） |
-| `new_msg.$n` | 同上，`$n` 为 1–4096 的拉取上限，如 `new_msg.8` |
-
-#### 会话与工作区列表
+**工作流步骤**
 
 | 变量 | 说明 |
 |------|------|
-| `session_list` | 最近会话列表（默认最多 16 条） |
-| `session_list.$n` | 同上，`$n` 为拉取上限 |
-| `local_workspace_list` | 最近本地工作区列表（默认最多 16 条） |
-| `local_workspace_list.$n` | 同上，`$n` 为拉取上限 |
+| `$step_summary` | 上一步摘要 |
+| `$step_index` | 步骤索引 |
+| `$step_limit` | 步骤上限 |
+| `$llm_result` | LLM 返回结果 |
+| `$trace` | 执行追踪信息 |
+| `$loop.session_id` | 循环中的会话 ID |
 
-#### Todo 相关
-
-| 变量 | 说明 |
-|------|------|
-| `current_todo` | 下一个就绪 todo 的代码（如 T01） |
-| `workspace.todolist.next_ready_todo` | 下一个就绪 todo 的渲染详情 |
-
-#### 工作区信息（workspace_info）
+**工作区与 Todo**
 
 | 变量 | 说明 |
 |------|------|
-| `workspace.<path>` | 从 session 的 `workspace_info` JSON 中按路径取值 |
-| `current_todo` | 也可映射到 `workspace.current_todo` |
+| `$current_todo` | 下一个就绪 todo 的代码（如 T01） |
+| `$workspace.todolist` | todo 列表信息 |
+| `$workspace.todolist.next_ready_todo` | 下一个就绪 todo 的渲染详情 |
+| `$workspace.todolist.todo` | todo 列表中的嵌套路径 |
+| `$workspace.current_todo` | 当前 todo |
 
-支持的路径包括但不限于：
-
-- `workspace.current_todo`
-- `workspace.todolist`
-- `workspace.todolist.<path>`
-
-#### 文件包含
+**文件路径**
 
 | 变量 | 说明 |
 |------|------|
-| `$workspace/<rel_path>` | 从工作区根目录读取文件内容 |
-| `$cwd/<rel_path>` | 从当前会话工作目录读取文件内容 |
+| `$agent_root/<rel_path>` | 当前 agent_env_root 目录下的文件路径 |
 
 **路径安全**：`rel_path` 必须是相对路径，不允许 `..` 等越界访问。
 
-**示例**：
-```
-{{$workspace/readme.txt}}
-{{$cwd/config.yaml}}
+### 4.3 扩展
+
+新增一种动态变量时，只需注册对应的取值器即可。三种指令会自动支持新变量，无需修改渲染流程。
+
+## 五、阶段二：标准 upon 渲染
+
+阶段一完成后，模板进入标准 upon 渲染流程。
+
+这一阶段的约束：
+
+- **只使用已构建好的 upon 上下文**，不再做任何动态变量获取
+- 不承担 OpenDAN 专有的预处理职责
+- 只做标准 upon 模板替换
+
+### 5.1 模板语法
+
+upon 语法风格接近 Liquid / Jinja，支持表达式输出和控制块。
+
+**表达式输出**：`{{ var_name }}`，将变量值输出到结果中。
+
+```text
+{{session_id}}
+{{new_msg}}
 ```
 
-## 三、转义
+**条件块**：`{% if %}...{% endif %}`，当变量为 falsy（`None`、`false`、`0`、空串、空列表、空 map）时跳过。
+
+```text
+{%- if new_msg %}
+最新消息：
+{{new_msg}}
+{%- endif %}
+```
+
+**循环**：`{% for item in seq %}...{% endfor %}`，遍历列表或 map。
+
+```text
+{% for msg in messages %}
+- {{msg.sender}}: {{msg.content}}
+{% endfor %}
+```
+
+**空白控制**：`{%-` / `-%}` 去掉标签一侧的相邻空白，用于避免条件块和循环引入多余空行。
+
+所有 `var_name` 必须是通过 `__OPENDAN_VAR` 注册过的。upon 引擎的完整语法参见 `upon::syntax`。
+
+### 5.2 转义
 
 若需输出字面量 `{{` 或 `}}`，使用反斜杠转义：
 
 - `\{{` → `{{`
 - `\}}` → `}}`
 
-## 四、限制
+## 六、完整示例
 
-- **总输出长度**：渲染结果截断至 `MAX_TOTAL_RENDER_BYTES`（256KB）
-- **文件包含**：单文件内容截断至 `MAX_INCLUDE_BYTES`（64KB）
-- **new_msg 拉取**：默认 32 条，最大 4096
-- **session_list / local_workspace_list**：默认 16 条
+### 6.1 模板源文件
 
-## 五、返回值
+```text
+__OPENDAN_VAR(new_msg, $new_msg.16)
+__OPENDAN_VAR(session_id, $session_id)
+__OPENDAN_VAR(current_todo, $workspace.todolist.next_ready_todo)
+
+__OPENDAN_CONTENT($agent_root/system_prompt.md)__
+
+你是一个任务助手。当前会话：{{session_id}}
+
+项目说明：
+__OPENDAN_ENV($params.project_name)__ 的工作区
+{%- if new_msg %}
+
+最新消息（最近 16 条）：
+{{new_msg}}
+{%- endif %}
+{%- if current_todo %}
+
+当前待办：
+{{current_todo}}
+{%- endif %}
+
+请根据以上信息回复用户。
+```
+
+这里用到了 upon 的条件块语法：`{% if new_msg %}...{% endif %}`。当 `new_msg` 为空（falsy）时，整个"最新消息"段落不会出现在最终 prompt 中。`{%-` 的减号用于消除条件块引入的多余空行。
+
+### 6.2 渲染过程
+
+**阶段一：**
+
+1. `__OPENDAN_VAR(new_msg, $new_msg.16)` → 拉取最近 16 条消息，注入 upon 上下文 `new_msg`，指令替换为空
+2. `__OPENDAN_VAR(session_id, $session_id)` → 获取会话 ID，注入上下文 `session_id`，指令替换为空
+3. `__OPENDAN_VAR(current_todo, $workspace.todolist.next_ready_todo)` → 获取下一个就绪 todo，注入上下文 `current_todo`，指令替换为空
+4. `__OPENDAN_CONTENT($agent_root/system_prompt.md)__` → 求值得到文件路径，读取文件全文（如 "你是 OpenDAN 的智能助手。"），内联到当前位置
+5. `__OPENDAN_ENV($params.project_name)__` → 求值得到项目名（如 "MyProject"），直接替换
+
+**阶段一输出（upon 占位符和控制块保留）：**
+
+```text
+你是 OpenDAN 的智能助手。
+
+你是一个任务助手。当前会话：{{session_id}}
+
+项目说明：
+MyProject 的工作区
+{%- if new_msg %}
+
+最新消息（最近 16 条）：
+{{new_msg}}
+{%- endif %}
+{%- if current_todo %}
+
+当前待办：
+{{current_todo}}
+{%- endif %}
+
+请根据以上信息回复用户。
+```
+
+**阶段二（假设 new_msg 有内容、current_todo 为空）：**
+
+upon 引擎执行变量替换和条件判断。因为 `current_todo` 为空（falsy），对应的 `{% if current_todo %}` 块被跳过，最终输出：
+
+```text
+你是 OpenDAN 的智能助手。
+
+你是一个任务助手。当前会话：sess_abc123
+
+项目说明：
+MyProject 的工作区
+
+最新消息（最近 16 条）：
+[用户A] 请帮我看一下这个 bug
+[用户B] 已经修复了，PR 在这里
+
+请根据以上信息回复用户。
+```
+
+## 七、限制
+
+| 限制项 | 默认值 |
+|--------|--------|
+| 总输出长度 | `MAX_TOTAL_RENDER_BYTES`（256KB） |
+| 单文件内容（`__OPENDAN_CONTENT`） | `MAX_INCLUDE_BYTES`（64KB） |
+| `$new_msg` 拉取上限 | 默认 32 条，最大 4096 |
+| `$session_list` 拉取上限 | 默认 16 条 |
+| `$local_workspace_list` 拉取上限 | 默认 16 条 |
+
+## 八、返回值
 
 `AgentTemplateRenderResult` 包含：
 
 | 字段 | 说明 |
 |------|------|
-| `rendered` | 渲染后的文本 |
+| `rendered` | 渲染后的最终文本 |
 | `env_expanded` | `__OPENDAN_ENV` 成功展开数量 |
 | `env_not_found` | `__OPENDAN_ENV` 未找到数量 |
-| `successful_count` | `{{key}}` 成功替换数量 |
-| `failed_count` | `{{key}}` 未找到数量 |
+| `content_loaded` | `__OPENDAN_CONTENT` 成功加载数量 |
+| `content_failed` | `__OPENDAN_CONTENT` 加载失败数量 |
+| `var_registered` | `__OPENDAN_VAR` 成功注册数量 |
+| `var_failed` | `__OPENDAN_VAR` 求值失败数量 |
 
-## 六、相关代码位置
+## 九、实现边界说明
 
-- `AgentEnvironment::render_prompt`：`src/frame/opendan/src/agent_environment.rs:396`
-- `render_text_template`：`src/frame/opendan/src/agent_environment.rs:114`
-- `load_value_from_session`：`src/frame/opendan/src/agent_environment.rs:204`
-- `expand_opendan_env_tokens`：`src/frame/opendan/src/agent_environment.rs:629`
-- `resolve_env_context_value`：`src/frame/opendan/src/agent_environment.rs:675`
+当前代码中仍能看到历史上的自定义模板渲染实现和隐式变量注入逻辑，但目标架构应当收敛为：
+
+1. **阶段一**：OpenDAN 预处理——三种指令各司其职，共享同一套动态变量获取机制。
+2. **阶段二**：纯标准 upon 渲染——只使用阶段一构建好的上下文。
+
+核心原则：
+
+- **职责单一**：`__OPENDAN_ENV` 只做文本替换，`__OPENDAN_CONTENT` 只做文件内联，`__OPENDAN_VAR` 只做上下文注册。
+- **显式声明**：upon 上下文中的每个变量都必须由 `__OPENDAN_VAR` 显式声明，不存在隐式注入。
+- **职责分离**：动态取值和模板渲染是两个独立阶段，不交叉。
+- **统一求值**：三种指令使用同一套动态变量获取器，扩展一次，三处受益。
+
+## 十、相关代码位置
+
+<!-- TODO -->
