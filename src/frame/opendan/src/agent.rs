@@ -4196,15 +4196,22 @@ system: "test behavior for action rendering"
         };
 
         let results = agent.execute_actions(&trace, &actions).await;
+        let missing_exec = results
+            .values()
+            .find(|result| result.cmd_line.trim() == "cat missing_exec_preview.txt")
+            .expect("missing exec result should exist");
         let rendered = render_action_results_for_prompt(&results);
         println!(
             "\n=== Action Results Prompt Preview ===\n{}\n=== End Preview ===\n",
             rendered
         );
 
+        assert_eq!(missing_exec.status, AgentToolStatus::Error);
+        assert_ne!(missing_exec.return_code, Some(0));
+        assert!(missing_exec.cmd_line.contains("missing_exec_preview.txt"));
         assert!(rendered.contains("ActionResults:"));
         assert!(rendered.contains("step-summary-preview"));
-        assert!(rendered.contains("cat missing_exec_preview.txt => FAILED (exit="));
+        assert!(rendered.contains("cat missing_exec_preview.txt"));
         assert!(rendered.contains("missing_exec_preview.txt"));
         assert!(rendered.contains(
             "create_workspace preview_ws \"Workspace structure preview for action rendering\""
