@@ -153,9 +153,9 @@ pub struct BehaviorLLMResult {
     //#[serde(default, skip_serializing_if = "Vec::is_empty")]
     //pub enable_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route_session_id: Option<String>,
+    pub work_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub new_session: Option<(String, String)>,
+    pub new_work_session: Option<(String, String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_behavior: Option<String>,
 }
@@ -201,8 +201,8 @@ fn parse_behavior_llm_result_xml(input: &str) -> Result<BehaviorLLMResult, Strin
     result.next_behavior = child_text(&root, "next_behavior");
     result.thinking = child_text(&root, "thinking");
     result.reply = child_text(&root, "reply");
-    result.route_session_id = child_text(&root, "route_session_id");
-    result.new_session = parse_new_session(&root)?;
+    result.work_session_id = child_text(&root, "route_session_id");
+    result.new_work_session = parse_new_session(&root)?;
     result.topic_tags = parse_text_list(&root, "topic_tags", &["tag"]);
     result.shell_commands = parse_shell_commands(&root);
     result.set_memory = parse_set_memory(&root)?;

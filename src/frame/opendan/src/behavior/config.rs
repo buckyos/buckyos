@@ -500,7 +500,7 @@ pub enum BehaviorOutputProtocol {
 
 impl Default for BehaviorOutputProtocol {
     fn default() -> Self {
-        Self::Structured(BehaviorOutputProtocolStructured::default())
+        Self::None
     }
 }
 
@@ -610,9 +610,9 @@ fn behavior_llm_no_action_result() -> String {
 Use this schema (omit unused nodes):
 ```xml
 <response>
-  <next_behavior>...</next_behavior>
-  <thinking>...</thinking>
-  <reply>...</reply>
+  <conclusion>Distilled conclusion from the previous step's action result (required, even if the conclusion is "no new findings")</conclusion>
+  <thinking>Reasoning based on conclusion and current task state</thinking>
+  <reply>Message to the user; optional; only fill when reporting important updates</reply>
   <shell_commands>
     <![CDATA[
       ls -l
@@ -620,8 +620,10 @@ Use this schema (omit unused nodes):
       echo "Hello, world!" > readme.txt
     ]]>
   </shell_commands>
+  <next_behavior>...</next_behavior>
 </response>
 ```
+- The conclusion MUST be self-contained—later steps may not see the raw action_result, so key data and judgments MUST be fully expressed in conclusion.
 
 ## shell_commands
 - Put one shell command per line inside `shell_commands` CDATA.
@@ -636,9 +638,9 @@ fn build_behavior_llm_result_protocol() -> String {
 Use this schema (omit unused nodes):
 ```xml
 <response>
-  <next_behavior>...</next_behavior>
-  <thinking>...</thinking>
-  <reply>...</reply>
+  <conclusion>Distilled conclusion from the previous step's action result (required, even if the conclusion is "no new findings")</conclusion>
+  <thinking>Reasoning based on conclusion and current task state</thinking>
+  <reply>Message to the user; optional; only fill when reporting important updates</reply>
   <shell_commands>
     <![CDATA[
         ls -l
@@ -646,26 +648,23 @@ Use this schema (omit unused nodes):
         echo "Hello, world!" > readme.txt
     ]]>
   </shell_commands>
-  <actions mode="failed_end|all">
-    <command>...</command>
+  <actions>
     <exec name="write_file" path="readme.txt" mode="write">
     <![CDATA[
         file content
     ]]>
     </exec>
   </actions>
+  <next_behavior>...</next_behavior>
 </response>
 ```
-All nodes are optional—NEVER include unused nodes.
+- The conclusion MUST be self-contained—later steps may not see the raw action_result, so key data and judgments MUST be fully expressed in conclusion.
 
 ## actions
 - Commands run sequentially in a session-bound bash env. On failure: `failed_end` stops, `all` continues.
-
 - `<exec name="...">` means structured cmd_action; XML attributes are action args.
 - `shell_commands` runs before `actions` commands (shell first, then actions). NEVER put structured actions in `shell_commands`.
-- `command` means shell command. same as `shell_commands` CDATA.
-- MUST use write_file / edit_file cmd_action for writing text files. NEVER use shell commands (echo/cat) to write files.
-- Results are available in `last_step` on the next step. MUST limit read output size to avoid context overflow.
+- MUST use write_file / edit_file action for writing text files. NEVER use shell commands (echo/cat) to write files.
 - Common CLI tools and behavior-declared tools are pre-installed. NEVER check availability before calling.
 
 ### write_file
@@ -684,9 +683,7 @@ hello
 hello world
 ]]>
 </exec>
-```
-
-NEVER include `session_id` or `new_session` in this mode."#
+```"#
         .to_string()
 }
 
@@ -695,30 +692,34 @@ fn build_route_result_protocol() -> String {
 Use this schema (omit unused nodes):
 ```xml
 <response>
+  <thinking>...</thinking>
   <reply>...</reply>
   <set_memory>
-    <item key="user/name">Alice</item>
-    <item key="project/stack">React + Go</item>
+    <item key="reminder/2026-03-25/dentist">Dentist appointment at 3pm</item>
   </set_memory>
   <topic_tags>
     <tag>travel</tag>
     <tag>tokyo</tag>
   </topic_tags>
-  <route_session_id>...</route_session_id>
-  <new_session>
+  <work_session_id>...</work_session_id>
+  <new_work_session>
     <title>...</title>
     <summary>...</summary>
-  </new_session>
+  </new_work_session>
 </response>
 ```
 
 All nodes are optional—NEVER include unused nodes.
 If `<reply>` content is long or contains special characters (e.g. `<`, `>`, `&`), wrap it in a CDATA section: `<reply><![CDATA[...long content...]]></reply>`.
 
-**set_memory**: A persistent notebook organized by path keys.
-Write when the user reveals info worth remembering long-term.
-Paths use "/" hierarchy, e.g. `user/name`, `project/stack`.
-Set value to empty string to delete.
+**set_memory**: Long-lived key–value notes (same `key="..."` shape as the schema). Keys are slash-separated paths: `scope/topic/leaf`—usually 2–4 segments. Use short, stable segment names; avoid spaces in keys.
+Examples:
+- `user/alice/birthday` → `March 15`
+- `preference/coding/language` → `TypeScript`
+- `reminder/2026-03-25/dentist` → `Dentist appointment at 3pm`
+
+* NEVER write temporary noise into memory.
+Omit `<set_memory>` when nothing is worth storing.
 
 **topic_tags**: 0-5 short labels for this conversation (for later retrieval).
 

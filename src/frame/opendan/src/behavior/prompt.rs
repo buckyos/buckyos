@@ -73,21 +73,18 @@ impl PromptBuilder {
             "output_protocol".to_string(),
             Json::String(output_protocol_text.clone()),
         );
-        let role_text = render_section(
-            format!("{}\n\n{}", input.role_md, input.self_md).as_str(),
-            &env_context,
-            session.clone(),
-        )
-        .await?;
+        // let role_text = render_section(
+        //     format!("{}\n\n{}", input.role_md, input.self_md).as_str(),
+        //     &env_context,
+        //     session.clone(),
+        // )
+        // .await?;
         let system_text =
             render_section(cfg.system.as_str(), &env_context, session.clone()).await?;
-        let mut system_sections = vec![
-            format!("<<role>>\n{}\n<</role>>", sanitize_text(role_text.as_str())),
-            format!(
-                "<<system>>\n{}\n<</system>>",
-                sanitize_text(system_text.as_str())
-            ),
-        ];
+        let mut system_sections = vec![format!(
+            "<<system>>\n{}\n<</system>>",
+            sanitize_text(system_text.as_str())
+        )];
         if !cfg.output_protocol.is_disabled() && !output_protocol_text.is_empty() {
             system_sections.push(format!(
                 "<<output_protocol>>\n{}\n<</output_protocol>>",
@@ -112,10 +109,7 @@ impl PromptBuilder {
         let ai_messages: Vec<AiMessage> = vec![
             AiMessage::new("system".to_string(), system_role_prompt_text),
             AiMessage::new("user".to_string(), memory_prompt_text),
-            AiMessage::new(
-                "user".to_string(),
-                format!("<<input>>\n{}\n<</input>>", input.input_prompt),
-            ),
+            AiMessage::new("user".to_string(), input.input_prompt.clone()),
         ];
 
         let mut must_features = Vec::new();
@@ -276,7 +270,7 @@ async fn build_memory_prompt_text(
         .await;
         if !remembered_things.trim().is_empty() {
             memory_sections.push(format!(
-                "## What you remember:\n{}\n",
+                "<<memory>>\n{}\n<</memory>>",
                 sanitize_text(remembered_things.trim())
             ));
         }
@@ -395,7 +389,7 @@ fn compose_memory_prompt(memory_head: &str, memory_body: &str, memory_tail: &str
     if parts.is_empty() {
         return String::new();
     }
-    format!("<<memory>>\n{}\n<</memory>>", parts.join("\n\n"))
+    parts.join("\n\n")
 }
 
 fn bucket_skip_last_n(bucket: &BehaviorMemoryBucketConfig) -> usize {

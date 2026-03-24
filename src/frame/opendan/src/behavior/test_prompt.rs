@@ -665,7 +665,9 @@ async fn create_work_session(
             1 => "plan",
             _ => "do",
         };
-        let action_result = if idx >= 12 {
+        let action_result = if idx == 14 {
+            HashMap::new()
+        } else if idx >= 12 {
             build_large_read_file_results(fixture, idx).await
         } else {
             HashMap::new()
@@ -677,22 +679,26 @@ async fn create_work_session(
                 step_index: idx,
                 behavior_name: behavior_name.to_string(),
                 input: format!("step input {idx}: verify prompt build coverage"),
-                llm_result: BehaviorLLMResult {
-                    conclusion: Some(format!(
-                        "step {idx} conclusion keeps the prompt builder on the happy path"
-                    )),
-                    thinking: Some(format!(
-                        "step {idx} thinking enumerates env-context values and record density"
-                    )),
-                    reply: Some(format!("step {idx} reply placeholder")),
-                    next_behavior: Some(if idx < 14 {
-                        "do".to_string()
-                    } else {
-                        "END".to_string()
-                    }),
-                    ..Default::default()
+                llm_result: if idx == 14 {
+                    BehaviorLLMResult::default()
+                } else {
+                    BehaviorLLMResult {
+                        conclusion: Some(format!(
+                            "step {idx} conclusion keeps the prompt builder on the happy path"
+                        )),
+                        thinking: Some(format!(
+                            "step {idx} thinking enumerates env-context values and record density"
+                        )),
+                        reply: Some(format!("step {idx} reply placeholder")),
+                        next_behavior: Some("do".to_string()),
+                        ..Default::default()
+                    }
                 },
                 action_result,
+                error: (idx == 14).then(|| {
+                    "run_step failed: invalid behavior llm xml: root tag must be <response>"
+                        .to_string()
+                }),
                 ..Default::default()
             })
             .await
@@ -836,12 +842,17 @@ async fn build_prompt_for_work_session_renders_dense_step_records_and_env_contex
     assert!(rendered.contains("<step behavior=\"plan\" step_num=13 step_time=\""));
     assert!(rendered.contains("<step behavior=\"do\" step_num=14 step_time=\""));
     assert!(rendered.contains("Last Step Record:"));
-    assert!(rendered.contains("step 14 conclusion keeps the prompt builder"));
+    assert!(rendered.contains("step 13 conclusion keeps the prompt builder"));
     assert!(rendered.contains("<steps_summary>"));
     assert!(rendered.contains("<step behavior=\"plan\" step_num=1 step_time=\""));
     assert!(rendered.contains("<step behavior=\"plan\" step_num=7 step_time=\""));
     assert!(rendered.contains("<step behavior=\"do\" step_num=14 step_time=\""));
-    assert!(rendered.contains("step 14 thinking enumerates env-context values"));
+    assert!(rendered.contains(
+        "<error>run_step failed: invalid behavior llm xml: root tag must be <response></error>"
+    ));
+    assert!(!rendered.contains("step 14 conclusion keeps the prompt builder"));
+    assert!(!rendered.contains("step 14 thinking enumerates env-context values"));
+    assert!(!rendered.contains("step 14 reply placeholder"));
     assert!(rendered.contains("Agent Guide:"));
     assert!(rendered.contains("Session Summary:"));
     assert!(rendered.contains("dense llm step records"));

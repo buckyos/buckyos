@@ -75,6 +75,7 @@ pub struct LLMStepRecord {
     pub llm_prompt: CompleteRequest,
     pub llm_result: BehaviorLLMResult,
     pub action_result: HashMap<String, AgentToolResult>,
+    pub error: Option<String>,
 }
 
 impl Default for LLMStepRecord {
@@ -92,6 +93,7 @@ impl Default for LLMStepRecord {
             llm_prompt: empty_complete_request(),
             llm_result: BehaviorLLMResult::default(),
             action_result: HashMap::new(),
+            error: None,
         }
     }
 }
@@ -134,7 +136,10 @@ impl RenderCompressionLevel {
     }
 
     fn shows_reply(self) -> bool {
-        matches!(self, Self::Mini | Self::Medium | Self::Full | Self::Complete)
+        matches!(
+            self,
+            Self::Mini | Self::Medium | Self::Full | Self::Complete
+        )
     }
 
     fn shows_thinking(self) -> bool {
@@ -487,13 +492,7 @@ fn promote_step_to_target(
             break;
         };
         if !try_upgrade_step(
-            idx,
-            next_level,
-            levels,
-            cache,
-            budget,
-            total_cost,
-            tokenizer,
+            idx, next_level, levels, cache, budget, total_cost, tokenizer,
         ) {
             break;
         }
@@ -551,7 +550,10 @@ fn total_render_cost(
     }
 }
 
-fn assemble_rendered_history(cache: &[StepRenderCache], levels: &[RenderCompressionLevel]) -> String {
+fn assemble_rendered_history(
+    cache: &[StepRenderCache],
+    levels: &[RenderCompressionLevel],
+) -> String {
     let blocks = levels
         .iter()
         .enumerate()
@@ -561,6 +563,11 @@ fn assemble_rendered_history(cache: &[StepRenderCache], levels: &[RenderCompress
 }
 
 fn wrap_steps_summary(blocks: &[String]) -> String {
+    let blocks = blocks
+        .iter()
+        .map(|block| block.trim())
+        .filter(|block| !block.is_empty())
+        .collect::<Vec<_>>();
     if blocks.is_empty() {
         return String::new();
     }
@@ -586,6 +593,16 @@ fn render_single_step(
         let _ = write!(out, "\n{new_msg}");
     }
 
+    let error = truncate_text(
+        record.error.as_deref().unwrap_or_default().trim(),
+        options.max_next_action_chars,
+    );
+    if !error.is_empty() {
+        let _ = write!(out, "\n<error>{error}</error>");
+        out.push_str("\n</step>");
+        return out;
+    }
+
     let conclusion = truncate_text(
         record
             .llm_result
@@ -609,7 +626,10 @@ fn render_single_step(
             if reply_to.is_empty() {
                 let _ = write!(out, "\n<reply_msg>{reply_msg}</reply_msg>");
             } else {
-                let _ = write!(out, "\n<reply_msg to=\"{reply_to}\">{reply_msg}</reply_msg>");
+                let _ = write!(
+                    out,
+                    "\n<reply_msg to=\"{reply_to}\">{reply_msg}</reply_msg>"
+                );
             }
         }
     }
@@ -703,7 +723,12 @@ fn render_new_msg_summary(record: &MsgRecordWithObject, max_chars: usize) -> Str
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| collapse_inline_whitespace(value, max_chars))
-        .unwrap_or_else(|| format!("msg_id={} state={:?}", record.record.msg_id, record.record.state));
+        .unwrap_or_else(|| {
+            format!(
+                "msg_id={} state={:?}",
+                record.record.msg_id, record.record.state
+            )
+        });
     format!("<recive_msg from=\"{sender}\">{content}</recive_msg>")
 }
 
@@ -816,6 +841,7 @@ mod tests {
                             .join("\n"),
                     ),
             )]),
+            error: None,
         }
     }
 
@@ -864,8 +890,19 @@ mod tests {
     }
 
     #[test]
+    fn wrap_steps_summary_skips_empty_sections() {
+        let rendered = wrap_steps_summary(&[String::new(), "   ".to_string()]);
+
+        assert!(rendered.is_empty());
+    }
+
+    #[test]
     fn render_prompt_text_respects_render_token_budget() {
-        let records = vec![sample_record(0, 0), sample_record(1, 1), sample_record(2, 2)];
+        let records = vec![
+            sample_record(0, 0),
+            sample_record(1, 1),
+            sample_record(2, 2),
+        ];
         let tokenizer = CountingTokenizer;
         let base_options = LLMStepPromptRenderOptions {
             max_render_steps: 3,
@@ -908,6 +945,24 @@ mod tests {
         assert!(rendered.contains("<reply_msg>reply-9</reply_msg>"));
         assert!(rendered.contains("<thinking>thinking-9</thinking>"));
         assert!(rendered.contains("step-9-line-9"));
+    }
+
+    #[test]
+    fn render_step_includes_error_when_present() {
+        let mut record = sample_record(5, 5);
+        record.error = Some("run_step failed: invalid behavior llm xml".to_string());
+
+        let rendered = render_single_step(
+            &record,
+            RenderCompressionLevel::Complete,
+            &LLMStepPromptRenderOptions::default(),
+        );
+
+        assert!(rendered.contains("<error>run_step failed: invalid behavior llm xml</error>"));
+        assert!(!rendered.contains("<conclusion>"));
+        assert!(!rendered.contains("<reply_msg>"));
+        assert!(!rendered.contains("<action>"));
+        assert!(!rendered.contains("<thinking>"));
     }
 
     #[tokio::test]

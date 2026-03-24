@@ -4,10 +4,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    get_buckyos_api_runtime, MsgRecord, OpenDanAgentSessionRecord, TaskManagerClient,
+    get_buckyos_api_runtime, Contact, MsgRecord, OpenDanAgentSessionRecord, TaskManagerClient,
 };
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use log::{debug, warn};
+use name_lib::DID;
 use ndn_lib::MsgObject;
 use rusqlite::{params, Connection};
 use serde_json::{Map, Value as Json};
@@ -279,6 +280,9 @@ impl AgentEnvironment {
         }
         if k == "current_behavior" || k == "behavior_name" {
             return Ok(Some(behavior_name));
+        }
+        if k == "owner" || k.starts_with("owner.") {
+            return Ok(load_owner_value_for_prompt(k).await);
         }
         if k == "last_step" {
             let mut guard = session.lock().await;
@@ -974,14 +978,24 @@ where
     }
 
     if let Some(value) = clean_optional_text(load_value(key).await?.as_deref()) {
-        return Ok(Some(Json::String(value)));
+        return Ok(Some(parse_loaded_dynamic_value(value.as_str())));
     }
 
     if let Some(value) = clean_optional_text(load_value(trimmed).await?.as_deref()) {
-        return Ok(Some(Json::String(value)));
+        return Ok(Some(parse_loaded_dynamic_value(value.as_str())));
     }
 
     Ok(None)
+}
+
+fn parse_loaded_dynamic_value(value: &str) -> Json {
+    let trimmed = value.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(parsed) = serde_json::from_str::<Json>(trimmed) {
+            return parsed;
+        }
+    }
+    Json::String(trimmed.to_string())
 }
 
 async fn load_text_from_content_arg<F, Fut>(
@@ -1223,16 +1237,15 @@ async fn render_recent_sessions_from_disk(
         .into_iter()
         .take(max_pull)
         .map(|record| {
-            let title = clean_optional_text(Some(record.title.as_str()))
-                .unwrap_or_else(|| format!("Session {}", record.session_id));
+            // let title = clean_optional_text(Some(record.title.as_str()))
+            //     .unwrap_or_else(|| format!("Session {}", record.session_id));
             let activity_ms = record
                 .last_activity_ms
                 .max(record.updated_at_ms)
                 .max(record.created_at_ms);
             format!(
-                "- {} : {}  {}",
+                "{} | {}  ",
                 record.session_id,
-                title,
                 format_compact_timestamp(activity_ms)
             )
         })
@@ -1240,6 +1253,132 @@ async fn render_recent_sessions_from_disk(
 
     let rendered = lines.join("\n");
     clean_optional_text(Some(rendered.as_str()))
+}
+
+async fn load_owner_value_for_prompt(key: &str) -> Option<String> {
+    let runtime = match get_buckyos_api_runtime() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            debug!("agent_env.load_owner runtime_unavailable: err={}", err);
+            return None;
+        }
+    };
+
+    let owner_did = resolve_owner_did_from_runtime(&runtime)?;
+    let owner_user_id = runtime
+        .get_owner_user_id()
+        .and_then(|value| normalize_optional_text(Some(value.as_str())));
+
+    let msg_center = match runtime.get_msg_center_client().await {
+        Ok(client) => client,
+        Err(err) => {
+            warn!("agent_env.load_owner msg_center_unavailable: err={}", err);
+            let value = build_owner_json_value(&owner_did, owner_user_id.as_deref(), None);
+            return resolve_owner_json_value(key, &value);
+        }
+    };
+
+    let contact = match msg_center
+        .get_contact(owner_did.clone(), Some(owner_did.clone()))
+        .await
+    {
+        Ok(contact) => contact,
+        Err(err) => {
+            warn!(
+                "agent_env.load_owner get_contact_failed: owner={} err={}",
+                owner_did.to_string(),
+                err
+            );
+            let value = build_owner_json_value(&owner_did, owner_user_id.as_deref(), None);
+            return resolve_owner_json_value(key, &value);
+        }
+    };
+
+    let value = build_owner_json_value(&owner_did, owner_user_id.as_deref(), contact.as_ref());
+    resolve_owner_json_value(key, &value)
+}
+
+fn resolve_owner_did_from_runtime(runtime: &buckyos_api::BuckyOSRuntime) -> Option<DID> {
+    if let Some(zone_config) = runtime.get_zone_config() {
+        if zone_config.owner.is_valid() {
+            return Some(zone_config.owner.clone());
+        }
+    }
+
+    runtime
+        .get_owner_user_id()
+        .and_then(|owner_id| normalize_optional_text(Some(owner_id.as_str())))
+        .map(|owner_id| DID::new("bns", owner_id.as_str()))
+}
+
+fn resolve_owner_json_value(key: &str, value: &Json) -> Option<String> {
+    if key == "owner" {
+        return json_value_to_compact_text(value);
+    }
+
+    key.strip_prefix("owner.")
+        .and_then(|path| resolve_json_path(value, path))
+        .and_then(json_value_to_compact_text)
+}
+
+fn build_owner_json_value(
+    owner_did: &DID,
+    owner_user_id: Option<&str>,
+    contact: Option<&Contact>,
+) -> Json {
+    let user_id = normalize_optional_text(owner_user_id).unwrap_or_else(|| owner_did.id.clone());
+    let show_name = contact
+        .and_then(|contact| normalize_optional_text(Some(contact.name.as_str())))
+        .unwrap_or_else(|| user_id.clone());
+
+    let contact_value = match contact {
+        Some(contact) => {
+            let bindings = contact
+                .bindings
+                .iter()
+                .map(|binding| {
+                    serde_json::json!({
+                        "platform": binding.platform,
+                        "account_id": binding.account_id,
+                        "display_id": binding.display_id,
+                        "tunnel_id": binding.tunnel_id,
+                        "last_active_at": binding.last_active_at,
+                        "meta": binding.meta,
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            serde_json::json!({
+                "did": contact.did.to_string(),
+                "name": contact.name,
+                "avatar": contact.avatar,
+                "note": contact.note,
+                "source": contact.source,
+                "is_verified": contact.is_verified,
+                "access_level": contact.access_level,
+                "groups": contact.groups,
+                "tags": contact.tags,
+                "bindings": bindings,
+            })
+        }
+        None => serde_json::json!({
+            "did": owner_did.to_string(),
+            "name": show_name,
+            "avatar": null,
+            "note": null,
+            "groups": [],
+            "tags": [],
+            "bindings": [],
+        }),
+    };
+
+    serde_json::json!({
+        "user_id": user_id,
+        "did": owner_did.to_string(),
+        "name": show_name,
+        "show_name": show_name,
+        "contact": contact_value,
+    })
 }
 
 async fn render_recent_local_workspaces_from_disk(
@@ -1954,7 +2093,10 @@ mod tests {
     use crate::behavior::BehaviorLLMResult;
     use crate::step_record::LLMStepRecord;
     use crate::workspace::WorkshopWorkspaceRecord;
-    use buckyos_api::{AiMessage, AiPayload, Capability, CompleteRequest, ModelSpec, Requirements};
+    use buckyos_api::{
+        AccessGroupLevel, AccountBinding, AiMessage, AiPayload, Capability, CompleteRequest,
+        Contact, ContactSource, ModelSpec, Requirements,
+    };
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -2051,6 +2193,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn render_text_template_supports_json_value_loaded_from_session() {
+        let result = AgentEnvironment::render_text_template(
+            "__OPENDAN_VAR(owner, $owner)\nname={{owner.show_name}} tg={{owner.contact.bindings.0.display_id}}",
+            |key| {
+                let key = key.to_string();
+                async move {
+                    if key == "owner" {
+                        Ok(Some(
+                            r#"{"user_id":"devtest","show_name":"Liu Zhicong","contact":{"bindings":[{"display_id":"wacer2026"}]}}"#
+                                .to_string(),
+                        ))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            },
+            &HashMap::new(),
+        )
+        .await
+        .expect("render text template");
+
+        assert_eq!(result.rendered.trim(), "name=Liu Zhicong tg=wacer2026");
+        assert_eq!(result.resolved_vars.get("owner"), Some(&true));
+    }
+
+    #[tokio::test]
     async fn load_value_from_session_step_record_renders_log_text() {
         let root = tempdir().expect("create temp dir");
         let session = Arc::new(Mutex::new(AgentSession::new(
@@ -2098,6 +2266,7 @@ mod tests {
                             .with_cmd_line("rg -n AgentSession")
                             .with_result("rg output"),
                     )]),
+                    error: None,
                 })
                 .await
                 .expect("append step 0");
@@ -2138,6 +2307,7 @@ mod tests {
                             .with_cmd_line("patch_files")
                             .with_result("patched files"),
                     )]),
+                    error: None,
                 })
                 .await
                 .expect("append step 1");
@@ -2821,6 +2991,57 @@ mod tests {
                 .join("sess-alias")
                 .join("summary.md")
                 .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn build_owner_json_value_exposes_show_name_and_bindings() {
+        let contact = Contact {
+            did: DID::new("bns", "alice"),
+            name: "Alice".to_string(),
+            avatar: Some("https://example.com/avatar.png".to_string()),
+            note: Some("Primary owner".to_string()),
+            source: ContactSource::ManualCreate,
+            is_verified: true,
+            bindings: vec![
+                AccountBinding {
+                    platform: "telegram".to_string(),
+                    account_id: "alice_001".to_string(),
+                    display_id: "@alice".to_string(),
+                    tunnel_id: "did:bns:tg-tunnel".to_string(),
+                    last_active_at: 0,
+                    meta: HashMap::new(),
+                },
+                AccountBinding {
+                    platform: "email".to_string(),
+                    account_id: "alice@example.com".to_string(),
+                    display_id: "alice@example.com".to_string(),
+                    tunnel_id: "did:bns:email-tunnel".to_string(),
+                    last_active_at: 0,
+                    meta: HashMap::new(),
+                },
+            ],
+            access_level: AccessGroupLevel::Friend,
+            temp_grants: vec![],
+            groups: vec![],
+            tags: vec!["owner".to_string(), "trusted".to_string()],
+            created_at: 1,
+            updated_at: 2,
+        };
+
+        let value = build_owner_json_value(&contact.did, Some("devtest"), Some(&contact));
+        assert_eq!(value["user_id"], json!("devtest"));
+        assert_eq!(value["did"], json!("did:bns:alice"));
+        assert_eq!(value["show_name"], json!("Alice"));
+        assert_eq!(value["contact"]["did"], json!("did:bns:alice"));
+        assert_eq!(value["contact"]["note"], json!("Primary owner"));
+        assert_eq!(
+            value["contact"]["bindings"][0]["display_id"],
+            json!("@alice")
+        );
+        assert_eq!(
+            value["contact"]["bindings"][1]["account_id"],
+            json!("alice@example.com")
         );
     }
 }

@@ -1040,10 +1040,60 @@ impl AIAgent {
 
             //run step
             let step_started_ms = now_ms();
-            let (llm_result, tracking) = llm_behavior
-                .run_step(&input)
-                .await
-                .map_err(|err| anyhow!("llm behavior step failed: {err}"))?;
+            let (llm_result, tracking) = match llm_behavior.run_step(&input).await {
+                Ok(result) => result,
+                Err(err) => {
+                    let llm_completed_at_ms = now_ms();
+                    if !should_record_llm_step_error(&err) {
+                        return Err(anyhow!("llm behavior step failed: {err}"));
+                    }
+
+                    let error = format_llm_step_error("run_step", &err);
+                    warn!(
+                        "{}.run_behavior_loop recoverable_step_error: session_id={} behavior_name={} current_step_index={} err={}",
+                        self.agent_name, session_id, behavior_name, current_step_index, err
+                    );
+                    self.append_llm_step_record(
+                        session.clone(),
+                        &trace,
+                        current_step_num,
+                        step_started_ms,
+                        llm_completed_at_ms,
+                        llm_completed_at_ms,
+                        &input,
+                        None,
+                        &BehaviorLLMResult::default(),
+                        &ActionResultsMap::new(),
+                        Some(error),
+                    )
+                    .await;
+
+                    {
+                        let mut guard = session.lock().await;
+                        guard.step_num = current_step_num.saturating_add(1);
+                    }
+
+                    result_report.executed_steps = result_report.executed_steps.saturating_add(1);
+
+                    let transition = {
+                        let mut guard = session.lock().await;
+                        apply_session_behavior_transition(
+                            &mut guard,
+                            self.default_behavior.as_str(),
+                            behavior_cfg.step_limit,
+                            behavior_cfg.faild_back.as_deref(),
+                            None,
+                        )
+                    };
+                    result_report.keep_running = transition.keep_running;
+                    result_report.behavior_switched = transition.behavior_switched;
+
+                    if !transition.keep_running {
+                        break;
+                    }
+                    continue;
+                }
+            };
             let llm_completed_at_ms = now_ms();
 
             //execute side effects
@@ -1051,7 +1101,7 @@ impl AIAgent {
                 .await?;
 
             let mut reply_history = Vec::<ReplyHistoryRecord>::new();
-            if llm_result.route_session_id.is_none() {
+            if llm_result.work_session_id.is_none() {
                 reply_history = self
                     .handle_reply(session.clone(), &trace, llm_result.reply.as_deref())
                     .await;
@@ -1078,9 +1128,10 @@ impl AIAgent {
                 llm_completed_at_ms,
                 action_completed_at_ms,
                 &input,
-                &tracking,
+                Some(&tracking),
                 &llm_result,
                 &action_results,
+                None,
             )
             .await;
 
@@ -1142,12 +1193,12 @@ impl AIAgent {
     ) -> Result<()> {
         let mut route_targets = HashMap::<String, StepRouteTarget>::new();
 
-        if let Some(session_id) = llm_result.route_session_id.as_deref() {
+        if let Some(session_id) = llm_result.work_session_id.as_deref() {
             route_targets
                 .entry(session_id.to_string())
                 .or_insert_with(StepRouteTarget::default);
         } else if let Some((new_session_title, new_session_summary)) =
-            llm_result.new_session.as_ref()
+            llm_result.new_work_session.as_ref()
         {
             let new_session_id = self
                 .gen_new_work_session_id(new_session_title.as_str())
@@ -2659,9 +2710,10 @@ impl AIAgent {
         llm_completed_at_ms: u64,
         action_completed_at_ms: u64,
         input: &BehaviorExecInput,
-        tracking: &LLMTrackingInfo,
+        tracking: Option<&LLMTrackingInfo>,
         llm_result: &BehaviorLLMResult,
         action_results: &ActionResultsMap,
+        error: Option<String>,
     ) {
         let new_msg = {
             let guard = session.lock().await;
@@ -2678,9 +2730,12 @@ impl AIAgent {
             action_completed_at_ms,
             new_msg,
             input: input.input_prompt.clone(),
-            llm_prompt: tracking.prompt_request.clone(),
+            llm_prompt: tracking
+                .map(|value| value.prompt_request.clone())
+                .unwrap_or_else(|| LLMStepRecord::default().llm_prompt),
             llm_result: llm_result.clone(),
             action_result: action_results.clone(),
+            error,
         };
 
         let mut guard = session.lock().await;
@@ -3270,6 +3325,25 @@ fn compact_action_cmd_line(tool_name: &str, args: &Json) -> String {
     format!("{tool_name} {}", parts.join(" "))
 }
 
+fn should_record_llm_step_error(err: &LLMComputeError) -> bool {
+    match err {
+        LLMComputeError::Timeout | LLMComputeError::Cancelled | LLMComputeError::Provider(_) => {
+            true
+        }
+        LLMComputeError::Internal(msg) => {
+            let msg = msg.to_ascii_lowercase();
+            msg.contains("invalid behavior llm xml")
+                || msg.contains("tool loop exceeded max_tool_rounds")
+                || msg.contains("max_tool_calls_per_round")
+                || msg.contains("is not allowed for behavior")
+        }
+    }
+}
+
+fn format_llm_step_error(stage: &str, err: &LLMComputeError) -> String {
+    compact_text_for_log(format!("{stage} failed: {err}").as_str(), 600)
+}
+
 fn compact_action_error_for_prompt(err: &crate::agent_tool::AgentToolError) -> String {
     match err {
         crate::agent_tool::AgentToolError::ExecFailed(msg)
@@ -3287,7 +3361,9 @@ fn annotate_action_result(
     action_cmd_line: &str,
 ) {
     if result.cmd_name.is_none() && !action_cmd_line.trim().is_empty() {
-        *result = result.clone().with_command_metadata_from_line(action_cmd_line.trim());
+        *result = result
+            .clone()
+            .with_command_metadata_from_line(action_cmd_line.trim());
     }
 }
 
@@ -3326,13 +3402,17 @@ fn is_internal_action_result(exec_id: &str) -> bool {
 }
 
 fn action_result_kind(result: &AgentToolResult) -> Option<&str> {
-    result.details.get("kind").and_then(Json::as_str).or_else(|| {
-        if result.is_agent_tool {
-            Some("call_tool")
-        } else {
-            Some("exec")
-        }
-    })
+    result
+        .details
+        .get("kind")
+        .and_then(Json::as_str)
+        .or_else(|| {
+            if result.is_agent_tool {
+                Some("call_tool")
+            } else {
+                Some("exec")
+            }
+        })
 }
 
 fn action_result_tool_name(result: &AgentToolResult) -> Option<String> {
@@ -3815,6 +3895,20 @@ mod tests {
                 DoAction::Exec("echo from-actions".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn recoverable_llm_step_error_accepts_invalid_xml_internal_error() {
+        assert!(should_record_llm_step_error(&LLMComputeError::Internal(
+            "invalid behavior llm xml: root tag must be <response>".to_string(),
+        )));
+    }
+
+    #[test]
+    fn recoverable_llm_step_error_rejects_runtime_internal_error() {
+        assert!(!should_record_llm_step_error(&LLMComputeError::Internal(
+            "load buckyos runtime failed: missing runtime".to_string(),
+        )));
     }
 
     #[test]

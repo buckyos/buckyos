@@ -260,19 +260,19 @@ impl AgentTool for ExecBashTool {
                 let stdout_prompt = (!pending_result.partial_output.trim().is_empty())
                     .then_some(pending_result.partial_output.clone());
                 Ok(AgentToolResult::from_details(json!({}))
-                .with_status(::agent_tool::AgentToolStatus::Pending)
-                .with_cmd_line(&command)
-                .with_result(format!(
-                    "PENDING (long_running, check_after={}s)",
-                    EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS
-                ))
-                .with_task_id(pending_result.task_id)
-                .with_pending_reason(::agent_tool::AgentToolPendingReason::LongRunning)
-                .with_check_after(EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS)
-                .with_partial_output(pending_result.partial_output)
-                .with_return_code(0)
-                .with_command_metadata_from_line(&command)
-                .with_output(stdout_prompt.unwrap_or_default()))
+                    .with_status(::agent_tool::AgentToolStatus::Pending)
+                    .with_cmd_line(&command)
+                    .with_result(format!(
+                        "PENDING (long_running, check_after={}s)",
+                        EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS
+                    ))
+                    .with_task_id(pending_result.task_id)
+                    .with_pending_reason(::agent_tool::AgentToolPendingReason::LongRunning)
+                    .with_check_after(EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS)
+                    .with_partial_output(pending_result.partial_output)
+                    .with_return_code(0)
+                    .with_command_metadata_from_line(&command)
+                    .with_output(stdout_prompt.unwrap_or_default()))
             }
         }
     }
@@ -1895,16 +1895,16 @@ fn build_default_exec_bash_result(
     };
 
     AgentToolResult::from_details(json!({}))
-    .with_status(if ok {
-        AgentToolStatus::Success
-    } else {
-        AgentToolStatus::Error
-    })
-    .with_cmd_line(command)
-    .with_result(summary)
-    .with_output(run_result.mixed_output.clone())
-    .with_return_code(run_result.exit_code)
-    .with_command_metadata_from_line(command)
+        .with_status(if ok {
+            AgentToolStatus::Success
+        } else {
+            AgentToolStatus::Error
+        })
+        .with_cmd_line(command)
+        .with_result(summary)
+        .with_output(run_result.mixed_output.clone())
+        .with_return_code(run_result.exit_code)
+        .with_command_metadata_from_line(command)
 }
 
 fn is_internal_agent_tool_command(command: &str) -> bool {

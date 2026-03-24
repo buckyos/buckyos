@@ -217,6 +217,10 @@ __OPENDAN_VAR(current_todo, $workspace.todolist.next_ready_todo)
 | `$params` | 请求参数 JSON 对象 |
 | `$new_msg` | 新消息（默认最多 32 条） |
 | `$new_msg.$n` | 指定拉取上限，`$n` 为 1–4096 |
+| `$owner` | 当前 owner 信息，Json 对象 |
+| `$owner.did` | 当前 owner 的 DID |
+| `$owner.show_name` | 当前 owner 的显示名 |
+| `$owner.contact` | 当前 owner 的联系人信息 Json |
 | `$session_list` | 最近会话列表（默认最多 16 条） |
 | `$session_list.$n` | 指定拉取上限 |
 | `$workspace_list` | 最近本地工作区列表（默认最多 16 条）,Json数组 |
@@ -272,6 +276,7 @@ __OPENDAN_VAR(current_todo, $workspace.todolist.next_ready_todo)
 
 - `$workspace_list`：当前实现可补齐为最近本地 workspace 列表的 alias，但返回值仍是渲染后的文本，不是本节表述中的 Json 数组。
 - `$workspace_current_todo`、`$workspace_next_ready_todo`、`$workspace_todolist.$todo_id`：当前实现可提供 todo 详情文本，但不是本节表述中的结构化 Json。
+- `$owner`：当前实现通过 contact mgr 查询 owner 联系人，返回的 Json 至少包含 `user_id`、`show_name`、`contact.did/groups/tags/bindings`；它不是完整的 `users/$id/settings` 镜像。
 - `$last_step`、`$last_steps.$num`：当前实现只能稳定提供 step record 的渲染文本；若要严格对齐为 `StepRecord` / `StepRecord Array`，需要把 session 动态变量取值链路扩展为支持结构化非字符串返回。
 - `$step_limit`：当前只能在调用方显式放入 render `env_context` 时获取；`agent_environment.rs` 仅靠 session 还无法独立反查当前 behavior config。
 - 4.2.4 `Memory Context` 目前只有压缩策略说明，尚未整理出一组已经稳定暴露给 `agent_environment.rs` 的动态变量名，需要后续补全。
