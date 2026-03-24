@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -74,6 +74,7 @@ pub struct AgentTemplateRenderResult {
     pub content_failed: u32,
     pub var_registered: u32,
     pub var_failed: u32,
+    pub resolved_vars: HashMap<String, bool>,
 }
 
 impl AgentEnvironment {
@@ -141,6 +142,7 @@ impl AgentEnvironment {
         let mut content_failed = 0u32;
         let mut var_registered = 0u32;
         let mut var_failed = 0u32;
+        let mut resolved_vars = HashMap::<String, bool>::new();
 
         for _ in 0..MAX_PREPROCESS_PASSES {
             let (
@@ -157,6 +159,7 @@ impl AgentEnvironment {
                 &load_value,
                 env_context,
                 &mut render_ctx,
+                &mut resolved_vars,
             )
             .await?;
 
@@ -206,6 +209,7 @@ impl AgentEnvironment {
             content_failed,
             var_registered,
             var_failed,
+            resolved_vars,
         })
     }
 
@@ -573,9 +577,10 @@ impl AgentEnvironment {
         env_context: &HashMap<String, Json>,
         session: Arc<Mutex<AgentSession>>,
     ) -> Result<AgentTemplateRenderResult, AgentToolError> {
+        let prepared_input = prepare_prompt_template(input);
         let session_clone = session.clone();
         Self::render_text_template(
-            input,
+            prepared_input.as_str(),
             |key| {
                 let s = session_clone.clone();
                 let k = key.to_string();
@@ -806,6 +811,7 @@ async fn preprocess_text_template_pass<F, Fut>(
     load_value: &F,
     env_context: &HashMap<String, Json>,
     render_ctx: &mut Map<String, Json>,
+    resolved_vars: &mut HashMap<String, bool>,
 ) -> Result<(String, bool, u32, u32, u32, u32, u32, u32), AgentToolError>
 where
     F: Fn(&str) -> Fut,
@@ -907,9 +913,11 @@ where
             }
 
             let value = resolve_dynamic_value(expr, load_value, env_context).await?;
+            let resolved_entry = resolved_vars.entry(var_name.to_string()).or_insert(false);
             if let Some(value) = value {
                 render_ctx.insert(var_name.to_string(), value);
                 var_registered = var_registered.saturating_add(1);
+                *resolved_entry = true;
             } else {
                 render_ctx.insert(var_name.to_string(), Json::String(String::new()));
                 var_failed = var_failed.saturating_add(1);
@@ -1845,6 +1853,85 @@ fn normalize_input_block_output(text: &str) -> Option<String> {
     }
 }
 
+fn prepare_prompt_template(template: &str) -> String {
+    if template.trim().is_empty() {
+        return String::new();
+    }
+
+    let escaped = escape_template_literals(template);
+    let declared_vars = collect_declared_prompt_vars(escaped.as_str());
+    let placeholder_vars = collect_plain_placeholder_vars(escaped.as_str());
+    let mut auto_vars = Vec::<String>::new();
+
+    for var_name in placeholder_vars {
+        if !declared_vars.contains(var_name.as_str()) {
+            auto_vars.push(var_name);
+        }
+    }
+
+    if auto_vars.is_empty() {
+        return template.to_string();
+    }
+
+    let prologue = auto_vars
+        .into_iter()
+        .map(|var_name| format!("__OPENDAN_VAR({0}, ${0})", var_name))
+        .collect::<Vec<_>>()
+        .join("");
+    format!("{prologue}{template}")
+}
+
+fn collect_declared_prompt_vars(template: &str) -> HashSet<String> {
+    const VAR_TOKEN_OPEN: &str = "__OPENDAN_VAR(";
+
+    let mut declared = HashSet::<String>::new();
+    let mut cursor = 0usize;
+    while let Some(start) = template[cursor..]
+        .find(VAR_TOKEN_OPEN)
+        .map(|idx| cursor + idx)
+    {
+        let arg_start = start + VAR_TOKEN_OPEN.len();
+        let Some(arg_end) = template[arg_start..].find(')').map(|idx| arg_start + idx) else {
+            break;
+        };
+        let raw_args = template[arg_start..arg_end].trim();
+        if let Some((var_name_raw, _expr_raw)) = raw_args.split_once(',') {
+            let var_name = var_name_raw.trim();
+            if is_variable_name(var_name) {
+                declared.insert(var_name.to_string());
+            }
+        }
+        cursor = arg_end.saturating_add(1);
+    }
+    declared
+}
+
+fn collect_plain_placeholder_vars(template: &str) -> Vec<String> {
+    let mut vars = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    let mut cursor = 0usize;
+
+    while let Some(open_pos) = template[cursor..].find("{{").map(|idx| cursor + idx) {
+        let content_start = open_pos + 2;
+        let Some(close_pos) = template[content_start..]
+            .find("}}")
+            .map(|idx| content_start + idx)
+        else {
+            break;
+        };
+        let placeholder = template[content_start..close_pos].trim();
+        if is_variable_name(placeholder) {
+            let name = placeholder.to_string();
+            if seen.insert(name.clone()) {
+                vars.push(name);
+            }
+        }
+        cursor = close_pos + 2;
+    }
+
+    vars
+}
+
 fn truncate_utf8(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
@@ -1895,6 +1982,32 @@ mod tests {
         assert_eq!(result.rendered.trim(), "sid=s1 step=3 todo=T01 x=env_val");
         assert_eq!(result.env_expanded, 1);
         assert_eq!(result.var_registered, 3);
+        assert_eq!(result.resolved_vars.get("session_id"), Some(&true));
+        assert_eq!(result.resolved_vars.get("step_index"), Some(&true));
+        assert_eq!(result.resolved_vars.get("current_todo"), Some(&true));
+    }
+
+    #[tokio::test]
+    async fn render_prompt_auto_registers_plain_placeholders() {
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "s-auto",
+            "did:test:agent",
+            Some("on_wakeup"),
+        )));
+        session.lock().await.step_index = 2;
+
+        let result = AgentEnvironment::render_prompt(
+            "sid={{session_id}} step={{step_index}} last={{last_step}}",
+            &HashMap::new(),
+            session,
+        )
+        .await
+        .expect("render prompt");
+
+        assert_eq!(result.rendered, "sid=s-auto step=2 last=");
+        assert_eq!(result.resolved_vars.get("session_id"), Some(&true));
+        assert_eq!(result.resolved_vars.get("step_index"), Some(&true));
+        assert_eq!(result.resolved_vars.get("last_step"), Some(&false));
     }
 
     #[tokio::test]
@@ -1934,6 +2047,7 @@ mod tests {
         assert_eq!(result.env_not_found, 0);
         assert_eq!(result.var_registered, 1);
         assert_eq!(result.var_failed, 0);
+        assert_eq!(result.resolved_vars.get("new_msg"), Some(&true));
     }
 
     #[tokio::test]
@@ -2303,6 +2417,7 @@ mod tests {
         assert_eq!(result.rendered.trim(), "todo=");
         assert_eq!(result.var_registered, 0);
         assert_eq!(result.var_failed, 1);
+        assert_eq!(result.resolved_vars.get("todo"), Some(&false));
     }
 
     #[tokio::test]

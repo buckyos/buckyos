@@ -227,6 +227,7 @@ impl BehaviorConfig {
 
         cfg.tools.normalize();
         cfg.input = cfg.input.trim().to_string();
+        cfg.output_protocol.normalize();
         cfg.faild_back = cfg
             .faild_back
             .take()
@@ -494,6 +495,7 @@ fn normalize_unique_string_list(values: &mut Vec<String>) {
 pub enum BehaviorOutputProtocol {
     Text(String),
     Structured(BehaviorOutputProtocolStructured),
+    None,
 }
 
 impl Default for BehaviorOutputProtocol {
@@ -503,9 +505,43 @@ impl Default for BehaviorOutputProtocol {
 }
 
 impl BehaviorOutputProtocol {
+    pub fn normalize(&mut self) {
+        let normalized = match self {
+            BehaviorOutputProtocol::Text(text) => {
+                let trimmed = text.trim();
+                if trimmed.eq_ignore_ascii_case("none") {
+                    BehaviorOutputProtocol::None
+                } else {
+                    BehaviorOutputProtocol::Text(trimmed.to_string())
+                }
+            }
+            BehaviorOutputProtocol::Structured(spec) => {
+                spec.mode = normalize_output_mode(spec.mode.as_str());
+                spec.text = spec
+                    .text
+                    .take()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+
+                if spec.mode == "none" {
+                    BehaviorOutputProtocol::None
+                } else {
+                    BehaviorOutputProtocol::Structured(spec.clone())
+                }
+            }
+            BehaviorOutputProtocol::None => BehaviorOutputProtocol::None,
+        };
+        *self = normalized;
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        matches!(self, BehaviorOutputProtocol::None)
+    }
+
     pub fn to_prompt_text(&self) -> String {
         let mode = self.mode_name();
         match self {
+            BehaviorOutputProtocol::None => String::new(),
             BehaviorOutputProtocol::Text(text) => text.trim().to_string(),
             BehaviorOutputProtocol::Structured(spec) => {
                 if let Some(text) = &spec.text {
@@ -523,6 +559,7 @@ impl BehaviorOutputProtocol {
 
     pub fn mode_name(&self) -> String {
         match self {
+            BehaviorOutputProtocol::None => "auto".to_string(),
             BehaviorOutputProtocol::Text(_) => "auto".to_string(),
             BehaviorOutputProtocol::Structured(spec) => normalize_output_mode(spec.mode.as_str()),
         }
@@ -551,6 +588,7 @@ fn normalize_output_mode(mode: &str) -> String {
     let normalized = mode.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "" | "auto" => "auto".to_string(),
+        "none" => "none".to_string(),
         "behavior_llm_result" => "behavior_llm_result".to_string(),
         "route_result" => "route_result".to_string(),
         "behavior_llm_no_action_result" => "behavior_llm_no_action_result".to_string(),
@@ -887,6 +925,42 @@ llm:
         assert_eq!(cfg.llm.process_name, "custom-process");
         assert_eq!(cfg.llm.model_policy.preferred, "fast-model");
         assert_eq!(cfg.llm.model_policy.temperature, 0.2);
+    }
+
+    #[test]
+    fn behavior_config_output_protocol_none_disables_auto_protocol_prompt() {
+        let path = Path::new("on_msg.yml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+system: test_rule
+output_protocol: None
+"#,
+        )
+        .expect("parse behavior yaml");
+
+        assert_eq!(cfg.output_protocol, BehaviorOutputProtocol::None);
+        assert!(cfg.output_protocol.is_disabled());
+        assert_eq!(cfg.llm.output_protocol, "");
+        assert_eq!(cfg.llm.output_mode, "auto");
+    }
+
+    #[test]
+    fn behavior_config_output_protocol_structured_none_disables_auto_protocol_prompt() {
+        let path = Path::new("on_msg.yml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+system: test_rule
+output_protocol:
+  mode: none
+"#,
+        )
+        .expect("parse behavior yaml");
+
+        assert_eq!(cfg.output_protocol, BehaviorOutputProtocol::None);
+        assert_eq!(cfg.llm.output_protocol, "");
+        assert_eq!(cfg.llm.output_mode, "auto");
     }
 
     #[test]

@@ -81,18 +81,20 @@ impl PromptBuilder {
         .await?;
         let system_text =
             render_section(cfg.system.as_str(), &env_context, session.clone()).await?;
-        let system_role_prompt_text = [
+        let mut system_sections = vec![
             format!("<<role>>\n{}\n<</role>>", sanitize_text(role_text.as_str())),
             format!(
                 "<<system>>\n{}\n<</system>>",
                 sanitize_text(system_text.as_str())
             ),
-            format!(
+        ];
+        if !cfg.output_protocol.is_disabled() && !output_protocol_text.is_empty() {
+            system_sections.push(format!(
                 "<<output_protocol>>\n{}\n<</output_protocol>>",
                 sanitize_text(output_protocol_text.as_str())
-            ),
-        ]
-        .join("\n\n");
+            ));
+        }
+        let system_role_prompt_text = system_sections.join("\n\n");
         let tool_define_used = 1024;
         let system_used_token = tokenizer.count_tokens(system_role_prompt_text.as_str());
         let input_used_token = tokenizer.count_tokens(&input.input_prompt);
@@ -2257,6 +2259,49 @@ mod tests {
         assert!(system.contains("<<system>>"));
         assert!(system.contains("<<output_protocol>>"));
         assert!(system.contains("You are a helpful assistant."));
+        assert!(system.contains("Process rules."));
+    }
+
+    #[tokio::test]
+    async fn build_omits_output_protocol_when_disabled() {
+        let input = BehaviorExecInput {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-1".to_string(),
+                agent_name: "did:example:agent".to_string(),
+                behavior: "on_wakeup".to_string(),
+                step_idx: 2,
+                wakeup_id: "wakeup-1".to_string(),
+                session_id: "session-test".to_string(),
+            },
+            input_prompt: "user input".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig {
+                system: "Process rules.".to_string(),
+                output_protocol: crate::behavior::config::BehaviorOutputProtocol::None,
+                ..Default::default()
+            },
+            session: None,
+        };
+
+        let req = PromptBuilder::build(&input, &input.behavior_cfg, &MockTokenizer, None, None)
+            .await
+            .expect("build prompt");
+
+        let system = req
+            .payload
+            .messages
+            .first()
+            .map(|msg| msg.content.clone())
+            .unwrap_or_default();
+
+        assert!(system.contains("<<role>>"));
+        assert!(system.contains("<<system>>"));
+        assert!(!system.contains("<<output_protocol>>"));
         assert!(system.contains("Process rules."));
     }
 

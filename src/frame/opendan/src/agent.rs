@@ -25,7 +25,7 @@ use tokio::time::sleep;
 use tokio::{fs, task};
 
 use crate::agent_config::AIAgentConfig;
-use crate::agent_environment::AgentEnvironment;
+use crate::agent_environment::{AgentEnvironment, AgentTemplateRenderResult};
 use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
 };
@@ -1328,8 +1328,7 @@ impl AIAgent {
             session.clone(),
         )
         .await?;
-        //TODO 这个检查非常的弱，实际上系统里能用的INPUT就几类
-        if !input_prompt_result.rendered.trim().is_empty() {
+        if should_continue_with_rendered_input(&input_prompt_result) {
             return Ok(Some(BehaviorExecInput {
                 trace: trace.clone(),
                 role_md: self.role_md.clone(),
@@ -1343,6 +1342,10 @@ impl AIAgent {
                 session: Some(session.clone()),
             }));
         } else {
+            info!(
+                "agent.generate_input_skip: session_id={} behavior={} resolved_vars={:?}",
+                session_id, behavior_name, input_prompt_result.resolved_vars
+            );
             return Ok(None);
         }
     }
@@ -3097,6 +3100,25 @@ fn apply_session_behavior_transition(
     }
 }
 
+fn should_continue_with_rendered_input(result: &AgentTemplateRenderResult) -> bool {
+    let mut driver_tracked = false;
+
+    for key in ["new_msg", "last_step"] {
+        if let Some(resolved) = result.resolved_vars.get(key) {
+            driver_tracked = true;
+            if *resolved {
+                return true;
+            }
+        }
+    }
+
+    if driver_tracked {
+        return false;
+    }
+
+    !result.rendered.trim().is_empty()
+}
+
 fn advance_session_step_or_apply_limit_fallback(
     session: &mut crate::agent_session::AgentSession,
     default_behavior: &str,
@@ -3852,6 +3874,60 @@ mod tests {
         assert_eq!(session.current_behavior, "PLAN");
         assert_eq!(session.step_index, 0);
         assert_eq!(session.state, SessionState::Wait);
+    }
+
+    #[test]
+    fn rendered_input_requires_at_least_one_driver_var_when_tracked() {
+        let result = AgentTemplateRenderResult {
+            rendered: "# Last Step\n# New Msg".to_string(),
+            env_expanded: 0,
+            env_not_found: 0,
+            content_loaded: 0,
+            content_failed: 0,
+            var_registered: 0,
+            var_failed: 2,
+            resolved_vars: HashMap::from([
+                ("last_step".to_string(), false),
+                ("new_msg".to_string(), false),
+            ]),
+        };
+
+        assert!(!should_continue_with_rendered_input(&result));
+    }
+
+    #[test]
+    fn rendered_input_continues_when_any_driver_var_resolves() {
+        let result = AgentTemplateRenderResult {
+            rendered: "# Last Step\nstep record".to_string(),
+            env_expanded: 0,
+            env_not_found: 0,
+            content_loaded: 0,
+            content_failed: 0,
+            var_registered: 1,
+            var_failed: 1,
+            resolved_vars: HashMap::from([
+                ("last_step".to_string(), true),
+                ("new_msg".to_string(), false),
+            ]),
+        };
+
+        assert!(should_continue_with_rendered_input(&result));
+    }
+
+    #[test]
+    fn rendered_input_falls_back_to_text_when_no_driver_var_is_tracked() {
+        let result = AgentTemplateRenderResult {
+            rendered: "# Current TODO\nT001".to_string(),
+            env_expanded: 0,
+            env_not_found: 0,
+            content_loaded: 0,
+            content_failed: 0,
+            var_registered: 0,
+            var_failed: 0,
+            resolved_vars: HashMap::from([("step_index".to_string(), true)]),
+        };
+
+        assert!(should_continue_with_rendered_input(&result));
     }
 
     fn build_step_input_payload(record_id: &str, ui_session_id: Option<&str>) -> Vec<u8> {
