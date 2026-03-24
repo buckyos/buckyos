@@ -1164,6 +1164,11 @@ impl AIAgent {
             result_report.executed_steps = result_report.executed_steps + 1;
             result_report.last_result = Some(llm_result.clone());
 
+            let effective_next_behavior = next_behavior_after_action_results(
+                &action_results,
+                llm_result.next_behavior.as_deref(),
+            );
+
             //process next_behavior
             let transition = {
                 let mut guard = session.lock().await;
@@ -1172,13 +1177,13 @@ impl AIAgent {
                     self.default_behavior.as_str(),
                     behavior_cfg.step_limit,
                     behavior_cfg.faild_back.as_deref(),
-                    llm_result.next_behavior.as_deref(),
+                    effective_next_behavior,
                 )
             };
             result_report.keep_running = transition.keep_running;
             result_report.behavior_switched = transition.behavior_switched;
 
-            if !transition.keep_running || llm_result.next_behavior.is_some() {
+            if !transition.keep_running || effective_next_behavior.is_some() {
                 break;
             }
         }
@@ -3448,6 +3453,20 @@ fn action_result_error_text(result: &AgentToolResult) -> Option<String> {
         })
 }
 
+fn next_behavior_after_action_results<'a>(
+    results: &ActionResultsMap,
+    next_behavior: Option<&'a str>,
+) -> Option<&'a str> {
+    if results
+        .values()
+        .any(|result| result.status == AgentToolStatus::Error)
+    {
+        None
+    } else {
+        next_behavior
+    }
+}
+
 #[cfg(test)]
 fn action_result_skipped_count(result: &AgentToolResult) -> usize {
     result
@@ -3968,6 +3987,43 @@ mod tests {
         assert_eq!(session.current_behavior, "PLAN");
         assert_eq!(session.step_index, 0);
         assert_eq!(session.state, SessionState::Wait);
+    }
+
+    #[test]
+    fn next_behavior_is_ignored_when_any_action_failed() {
+        let results = HashMap::from([
+            (
+                "#0".to_string(),
+                AgentToolResult::from_details(json!({})).with_status(AgentToolStatus::Success),
+            ),
+            (
+                "#1".to_string(),
+                AgentToolResult::from_details(json!({})).with_status(AgentToolStatus::Error),
+            ),
+        ]);
+
+        assert_eq!(
+            next_behavior_after_action_results(&results, Some("END")),
+            None
+        );
+        assert_eq!(
+            next_behavior_after_action_results(&results, Some("CHECK")),
+            None
+        );
+        assert_eq!(next_behavior_after_action_results(&results, None), None);
+    }
+
+    #[test]
+    fn next_behavior_is_preserved_when_all_actions_succeeded() {
+        let results = HashMap::from([(
+            "#0".to_string(),
+            AgentToolResult::from_details(json!({})).with_status(AgentToolStatus::Success),
+        )]);
+
+        assert_eq!(
+            next_behavior_after_action_results(&results, Some("CHECK")),
+            Some("CHECK")
+        );
     }
 
     #[test]

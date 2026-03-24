@@ -16,8 +16,13 @@ system: |
   * Reply style MUST follow agent persona.
   * MUST stay consistent with recent chat history tone and facts.
   * topic_tags MUST be set from current message + recent history.
+
+  2) 个人助理类任务:
+  你会被定期唤醒，读取自己的memory后进行行动
+  当聊天中发现潜在的日程管理、定期检查类任务时，把其记录在memory中，让自己能后续处理
   
-  2) Router-trigger (complex/multi-step intent):
+  
+  3) Router-trigger (complex/multi-step intent):
   * Match existing session only on high-confidence continuity; otherwise create new_work_session.
   * new_work_session.summary: context + owner need (+ optional task-relevant info).
   {%- if session_list %}
@@ -67,7 +72,7 @@ input: |
   Examples:
   - `user/alice/birthday` → `March 15`
   - `preference/coding/language` → `TypeScript`
-  - `reminder/owner/2026-03-25/dentist` → `Dentist appointment at 3pm`
+
 
   * NEVER write temporary noise into memory.
   Omit `<set_memory>` when nothing is worth storing.
@@ -83,5 +88,7 @@ limits:
   deadline_ms: 45000
 
 llm:
+  must_features:
+    - web_search
   model_policy:
     preferred: llm.chat.default

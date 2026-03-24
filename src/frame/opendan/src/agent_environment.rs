@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -564,6 +565,13 @@ impl AgentEnvironment {
             }
             return Ok(None);
         }
+        if k == "workspace_root" || k == "$workspace_root" {
+            return Ok(Some(workspace_root.to_string_lossy().to_string()));
+        }
+        if k.starts_with("$workspace_root/") {
+            let rel_path = &k["$workspace_root/".len()..];
+            return resolve_path_from_root(workspace_root.as_path(), rel_path);
+        }
         if k.starts_with("$workspace/") {
             let rel_path = &k["$workspace/".len()..];
             return resolve_path_from_root(workspace_root.as_path(), rel_path);
@@ -832,7 +840,7 @@ where
     let mut env_expanded = 0u32;
     let mut env_not_found = 0u32;
     let mut content_loaded = 0u32;
-    let content_failed = 0u32;
+    let mut content_failed = 0u32;
     let mut var_registered = 0u32;
     let mut var_failed = 0u32;
 
@@ -879,9 +887,19 @@ where
                 ));
             };
             let path_arg = input[arg_start..arg_end].trim();
-            let content = load_text_from_content_arg(path_arg, load_value, env_context).await?;
-            content_loaded = content_loaded.saturating_add(1);
-            output.push_str(content.as_str());
+            match load_text_from_content_arg(path_arg, load_value, env_context).await? {
+                ContentLoadResult::Loaded(content) => {
+                    content_loaded = content_loaded.saturating_add(1);
+                    output.push_str(content.as_str());
+                }
+                ContentLoadResult::Missing(absolute_path) => {
+                    content_failed = content_failed.saturating_add(1);
+                    warn!(
+                        "agent_env.render_text_template missing __OPENDAN_CONTENT file, substituting empty text: path={}",
+                        absolute_path.display()
+                    );
+                }
+            }
             cursor = arg_end + 3;
             changed = true;
             continue;
@@ -998,11 +1016,29 @@ fn parse_loaded_dynamic_value(value: &str) -> Json {
     Json::String(trimmed.to_string())
 }
 
+enum ContentLoadResult {
+    Loaded(String),
+    Missing(PathBuf),
+}
+
 async fn load_text_from_content_arg<F, Fut>(
     path_arg: &str,
     load_value: &F,
     env_context: &HashMap<String, Json>,
-) -> Result<String, AgentToolError>
+) -> Result<ContentLoadResult, AgentToolError>
+where
+    F: Fn(&str) -> Fut,
+    Fut: Future<Output = Result<Option<String>, AgentToolError>>,
+{
+    let absolute_path = resolve_content_absolute_path(path_arg, load_value, env_context).await?;
+    load_text_from_absolute_path(&absolute_path).await
+}
+
+async fn resolve_content_absolute_path<F, Fut>(
+    path_arg: &str,
+    load_value: &F,
+    env_context: &HashMap<String, Json>,
+) -> Result<PathBuf, AgentToolError>
 where
     F: Fn(&str) -> Fut,
     Fut: Future<Output = Result<Option<String>, AgentToolError>>,
@@ -1025,24 +1061,33 @@ where
         )));
     };
 
-    load_text_from_absolute_path(expand_system_env_vars(raw_path.as_str()).as_str()).await
-}
-
-async fn load_text_from_absolute_path(path: &str) -> Result<String, AgentToolError> {
-    let path = path.trim();
-    let absolute_path = PathBuf::from(path);
+    let expanded_path = expand_system_env_vars(raw_path.as_str());
+    let absolute_path = PathBuf::from(expanded_path.trim());
     if !absolute_path.is_absolute() {
         return Err(AgentToolError::ExecFailed(format!(
-            "render text template failed: __OPENDAN_CONTENT path must be absolute after env expansion, got `{path}`"
+            "render text template failed: __OPENDAN_CONTENT path must be absolute after env expansion, got `{}`",
+            expanded_path.trim()
         )));
     }
 
-    let bytes = fs::read(&absolute_path).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!(
-            "render text template failed: read content `{}` failed: {err}",
-            absolute_path.display()
-        ))
-    })?;
+    Ok(absolute_path)
+}
+
+async fn load_text_from_absolute_path(
+    absolute_path: &Path,
+) -> Result<ContentLoadResult, AgentToolError> {
+    let bytes = match fs::read(absolute_path).await {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Ok(ContentLoadResult::Missing(absolute_path.to_path_buf()));
+        }
+        Err(err) => {
+            return Err(AgentToolError::ExecFailed(format!(
+                "render text template failed: read content `{}` failed: {err}",
+                absolute_path.display()
+            )));
+        }
+    };
     let content = String::from_utf8(bytes).map_err(|err| {
         AgentToolError::ExecFailed(format!(
             "render text template failed: decode content `{}` failed: {err}",
@@ -1050,7 +1095,10 @@ async fn load_text_from_absolute_path(path: &str) -> Result<String, AgentToolErr
         ))
     })?;
 
-    Ok(truncate_utf8(&content, MAX_INCLUDE_BYTES))
+    Ok(ContentLoadResult::Loaded(truncate_utf8(
+        &content,
+        MAX_INCLUDE_BYTES,
+    )))
 }
 
 fn expand_system_env_vars(input: &str) -> String {
@@ -2388,6 +2436,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn render_text_template_missing_content_file_counts_as_failed_and_renders_empty() {
+        let root = tempdir().expect("create temp dir");
+        let missing_path = root.path().join("missing.md");
+
+        let mut env_context = HashMap::<String, Json>::new();
+        env_context.insert(
+            "dynamic.path".to_string(),
+            Json::String(missing_path.to_string_lossy().to_string()),
+        );
+
+        let result = AgentEnvironment::render_text_template(
+            "before __OPENDAN_CONTENT($dynamic.path)__ after",
+            |_key| async { Ok(None) },
+            &env_context,
+        )
+        .await
+        .expect("render text template");
+
+        assert_eq!(result.rendered, "before  after");
+        assert_eq!(result.content_loaded, 0);
+        assert_eq!(result.content_failed, 1);
+    }
+
+    #[tokio::test]
     async fn render_text_template_env_not_found_counts_separately() {
         let mut env_context = HashMap::<String, Json>::new();
         env_context.insert("params.todo".to_string(), Json::String("T01".to_string()));
@@ -2991,6 +3063,46 @@ mod tests {
                 .join("sess-alias")
                 .join("summary.md")
                 .to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
+    async fn load_value_from_session_supports_workspace_root_alias_and_path() {
+        let root = tempdir().expect("create temp dir");
+        let workspace_root = root.path().join("workspaces").join("ws-alias");
+
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "sess-workspace-root",
+            "did:test:agent",
+            Some("plan"),
+        )));
+        {
+            let mut guard = session.lock().await;
+            guard.pwd = root.path().to_path_buf();
+            guard.workspace_info = Some(json!({
+                "binding": {
+                    "local_workspace_id": "ws-alias",
+                    "workspace_rel_path": "workspaces/ws-alias",
+                    "agent_env_root": root.path(),
+                }
+            }));
+        }
+
+        let rendered_root =
+            AgentEnvironment::load_value_from_session(session.clone(), "workspace_root")
+                .await
+                .expect("load workspace_root")
+                .expect("workspace_root should resolve");
+        assert_eq!(rendered_root, workspace_root.to_string_lossy());
+
+        let rendered_child =
+            AgentEnvironment::load_value_from_session(session, "$workspace_root/objective")
+                .await
+                .expect("load $workspace_root/objective")
+                .expect("$workspace_root/objective should resolve");
+        assert_eq!(
+            rendered_child,
+            workspace_root.join("objective").to_string_lossy()
         );
     }
 

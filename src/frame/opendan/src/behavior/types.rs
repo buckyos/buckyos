@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use buckyos_api::CompleteRequest;
 use log::warn;
+use quick_xml::de::from_str as xml_from_str;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tokio::sync::Mutex;
@@ -159,6 +160,117 @@ pub struct BehaviorLLMResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_behavior: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename = "response")]
+struct BehaviorLLMResultXml {
+    pub conclusion: Option<String>,
+    pub thinking: Option<String>,
+    pub topic_tags: TopicTagsXml,
+    pub reply: Option<String>,
+    pub shell_commands: Option<String>,
+    pub set_memory: SetMemoryXml,
+    pub work_session_id: Option<String>,
+    pub new_work_session: Option<NewWorkSessionXml>,
+    pub next_behavior: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct TopicTagsXml {
+    #[serde(rename = "tag")]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct SetMemoryXml {
+    #[serde(rename = "item")]
+    pub items: Vec<SetMemoryItemXml>,
+}
+
+impl SetMemoryXml {
+    fn into_map(self) -> Result<HashMap<String, String>, String> {
+        let mut out = HashMap::new();
+        for item in self.items {
+            let key = normalize_optional_text(item.key)
+                .ok_or_else(|| "set_memory item missing key".to_string())?;
+            out.insert(key, item.value.trim().to_string());
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct SetMemoryItemXml {
+    #[serde(rename = "@key")]
+    pub key: Option<String>,
+    #[serde(rename = "$text")]
+    pub value: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct NewWorkSessionXml {
+    pub title: Option<String>,
+    pub summary: Option<String>,
+}
+
+impl TryFrom<NewWorkSessionXml> for Option<(String, String)> {
+    type Error = String;
+
+    fn try_from(value: NewWorkSessionXml) -> Result<Self, Self::Error> {
+        let title = normalize_optional_text(value.title);
+        let summary = normalize_optional_text(value.summary);
+        match (title, summary) {
+            (Some(title), Some(summary)) => Ok(Some((title, summary))),
+            (None, None) => Ok(None),
+            _ => Err("new_work_session requires both <title> and <summary>".to_string()),
+        }
+    }
+}
+
+impl TryFrom<BehaviorLLMResultXml> for BehaviorLLMResult {
+    type Error = String;
+
+    fn try_from(value: BehaviorLLMResultXml) -> Result<Self, Self::Error> {
+        let work_session_id = normalize_optional_text(value.work_session_id);
+        let new_work_session = value
+            .new_work_session
+            .map(TryInto::try_into)
+            .transpose()?
+            .flatten();
+        if work_session_id.is_some() && new_work_session.is_some() {
+            return Err(
+                "response must not set both <work_session_id> and <new_work_session>".to_string(),
+            );
+        }
+
+        Ok(Self {
+            conclusion: normalize_optional_text(value.conclusion),
+            thinking: normalize_optional_text(value.thinking),
+            topic_tags: value
+                .topic_tags
+                .tags
+                .into_iter()
+                .filter_map(|tag| normalize_optional_text(Some(tag)))
+                .collect(),
+            reply: normalize_optional_text(value.reply),
+            actions: DoActions::default(),
+            shell_commands: value
+                .shell_commands
+                .as_deref()
+                .map(split_shell_command_lines)
+                .unwrap_or_default(),
+            set_memory: value.set_memory.into_map()?,
+            work_session_id,
+            new_work_session,
+            next_behavior: normalize_optional_text(value.next_behavior),
+        })
+    }
+}
+
 impl BehaviorLLMResult {
     pub fn is_sleep(&self) -> bool {
         self.next_behavior.as_deref() == Some("END")
@@ -192,20 +304,11 @@ impl BehaviorLLMResult {
 }
 
 fn parse_behavior_llm_result_xml(input: &str) -> Result<BehaviorLLMResult, String> {
-    let root = Element::parse(input.as_bytes()).map_err(|err| err.to_string())?;
-    if !root.name.eq_ignore_ascii_case("response") {
-        return Err("root tag must be <response>".to_string());
-    }
-    let mut result = BehaviorLLMResult::default();
+    let mut result = BehaviorLLMResult::try_from(
+        xml_from_str::<BehaviorLLMResultXml>(input).map_err(|err| err.to_string())?,
+    )?;
 
-    result.next_behavior = child_text(&root, "next_behavior");
-    result.thinking = child_text(&root, "thinking");
-    result.reply = child_text(&root, "reply");
-    result.work_session_id = child_text(&root, "route_session_id");
-    result.new_work_session = parse_new_session(&root)?;
-    result.topic_tags = parse_text_list(&root, "topic_tags", &["tag"]);
-    result.shell_commands = parse_shell_commands(&root);
-    result.set_memory = parse_set_memory(&root)?;
+    let root = Element::parse(input.as_bytes()).map_err(|err| err.to_string())?;
     if let Some(actions_node) = first_child_named(&root, "actions") {
         result.actions = parse_actions(actions_node)?;
     }
@@ -258,57 +361,22 @@ fn first_child_named<'a>(element: &'a Element, name: &str) -> Option<&'a Element
     })
 }
 
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 fn child_text(element: &Element, name: &str) -> Option<String> {
     first_child_named(element, name).and_then(element_text)
 }
 
-fn parse_new_session(root: &Element) -> Result<Option<(String, String)>, String> {
-    let Some(node) = first_child_named(root, "new_session") else {
-        return Ok(None);
-    };
-    let title = child_text(node, "title");
-    let summary = child_text(node, "summary");
-    match (title, summary) {
-        (Some(title), Some(summary)) => Ok(Some((title, summary))),
-        (None, None) => Ok(None),
-        _ => Err("new_session requires both <title> and <summary>".to_string()),
-    }
-}
-
-fn parse_text_list(root: &Element, field_name: &str, item_names: &[&str]) -> Vec<String> {
-    let Some(list_node) = first_child_named(root, field_name) else {
-        return Vec::new();
-    };
-
-    let mut out = Vec::new();
-    for node in &list_node.children {
-        let XMLNode::Element(item) = node else {
-            continue;
-        };
-        if !item_names
-            .iter()
-            .any(|name| item.name.eq_ignore_ascii_case(name))
-        {
-            continue;
-        }
-        if let Some(value) = element_text(item) {
-            out.push(value);
-        }
-    }
-
-    if out.is_empty() {
-        if let Some(value) = element_direct_text(list_node) {
-            out.push(value);
-        }
-    }
-    out
-}
-
-fn parse_shell_commands(root: &Element) -> Vec<String> {
-    let Some(shell_node) = first_child_named(root, "shell_commands") else {
-        return Vec::new();
-    };
-
+fn parse_shell_commands_node(shell_node: &Element) -> Vec<String> {
     element_direct_text(shell_node)
         .map(|block| split_shell_command_lines(block.as_str()))
         .unwrap_or_default()
@@ -431,33 +499,6 @@ fn normalize_heredoc_line(line: &str, state: &HeredocState) -> String {
     normalized.to_string()
 }
 
-fn parse_set_memory(root: &Element) -> Result<HashMap<String, String>, String> {
-    let mut out = HashMap::new();
-    let Some(set_memory_node) = first_child_named(root, "set_memory") else {
-        return Ok(out);
-    };
-
-    for node in &set_memory_node.children {
-        let XMLNode::Element(item) = node else {
-            continue;
-        };
-        if !item.name.eq_ignore_ascii_case("item") {
-            continue;
-        }
-
-        let key = item
-            .attributes
-            .get("key")
-            .cloned()
-            .ok_or_else(|| "set_memory item missing key".to_string())?;
-
-        let value = element_direct_text(item).unwrap_or_default();
-
-        out.insert(key, value);
-    }
-    Ok(out)
-}
-
 fn parse_actions(actions_node: &Element) -> Result<DoActions, String> {
     let mut actions = DoActions::default();
     if let Some(mode) = actions_node
@@ -473,6 +514,12 @@ fn parse_actions(actions_node: &Element) -> Result<DoActions, String> {
         let XMLNode::Element(child) = node else {
             continue;
         };
+        if child.name.eq_ignore_ascii_case("shell_commands") {
+            for command in parse_shell_commands_node(child) {
+                actions.cmds.push(DoAction::Exec(command));
+            }
+            continue;
+        }
         if child.name.eq_ignore_ascii_case("command") {
             if let Some(command) = element_text(child) {
                 actions.cmds.push(DoAction::Exec(command));
@@ -486,7 +533,7 @@ fn parse_actions(actions_node: &Element) -> Result<DoActions, String> {
             continue;
         }
         return Err(format!(
-            "unsupported actions child tag `<{}>`, only <command> and <exec> are allowed",
+            "unsupported actions child tag `<{}>`, only <shell_commands>, <command>, and <exec> are allowed",
             child.name
         ));
     }
@@ -639,6 +686,7 @@ pub struct LLMTrackingInfo {
 pub struct LLMBehaviorConfig {
     pub process_name: String,
     pub model_policy: ModelPolicy,
+    pub must_features: Vec<String>,
     pub response_schema: Option<Json>,
     pub force_json: bool,
     pub output_mode: String,
@@ -650,6 +698,7 @@ impl Default for LLMBehaviorConfig {
         Self {
             process_name: "opendan-llm-behavior".to_string(),
             model_policy: ModelPolicy::default(),
+            must_features: vec![],
             response_schema: None,
             force_json: true,
             output_mode: "auto".to_string(),
@@ -684,12 +733,14 @@ mod tests {
     #[test]
     fn behavior_result_accepts_basic_xml() {
         let raw = r#"<response>
+  <conclusion>ready</conclusion>
   <actions mode="all"></actions>
   <next_behavior>DO:1</next_behavior>
   <thinking>done</thinking>
 </response>"#;
         let parsed = BehaviorLLMResult::from_xml_str(raw).expect("xml should be parsed");
 
+        assert_eq!(parsed.conclusion.as_deref(), Some("ready"));
         assert_eq!(parsed.actions.mode, "all");
         assert_eq!(parsed.actions.cmds.len(), 0);
         assert_eq!(parsed.next_behavior.as_deref(), Some("DO:1"));
@@ -734,7 +785,7 @@ end"#;
     ]]>
   </shell_commands>
   <actions mode="all">
-    <command>echo hello</command>
+    <shell_commands>echo hello</shell_commands>
     <exec name="write_file" path="workspaces/llk-frontend-game-1772767149633-0/index.html" mode="write">
       <![CDATA[
         hello from cdata
@@ -767,6 +818,64 @@ end"#;
             }
             other => panic!("expected structured call action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn behavior_result_accepts_interleaved_actions_shell_commands_and_exec() {
+        let raw = r#"<response>
+  <actions>
+    <shell_commands>
+      <![CDATA[
+        tree ./
+      ]]>
+    </shell_commands>
+    <exec name="write_file" path="test.py" mode="write">
+      <![CDATA[
+        print("hello")
+      ]]>
+    </exec>
+    <shell_commands>
+      <![CDATA[
+        python test.py
+      ]]>
+    </shell_commands>
+  </actions>
+</response>"#;
+
+        let parsed = BehaviorLLMResult::from_xml_str(raw)
+            .expect("interleaved actions shell_commands xml should parse");
+
+        assert_eq!(parsed.shell_commands.len(), 0);
+        assert_eq!(parsed.actions.mode, "failed_end");
+        assert_eq!(parsed.actions.cmds.len(), 3);
+        assert_eq!(
+            parsed.actions.cmds[0],
+            DoAction::Exec("tree ./".to_string())
+        );
+        match &parsed.actions.cmds[1] {
+            DoAction::Call(call) => {
+                assert_eq!(call.call_action_name, "write_file");
+                assert_eq!(
+                    call.call_params
+                        .get("path")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default(),
+                    "test.py"
+                );
+                assert_eq!(
+                    call.call_params
+                        .get("content")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default(),
+                    "print(\"hello\")"
+                );
+            }
+            other => panic!("expected structured call action, got {other:?}"),
+        }
+        assert_eq!(
+            parsed.actions.cmds[2],
+            DoAction::Exec("python test.py".to_string())
+        );
     }
 
     #[test]
@@ -832,5 +941,43 @@ PY"#
             "python - <<-'PY'\nprint('line-1')\n\nprint('line-2')\nPY"
         );
         assert_eq!(parsed.shell_commands[1], "echo done");
+    }
+
+    #[test]
+    fn behavior_result_accepts_work_session_routing_xml() {
+        let raw = r#"<response>
+  <thinking>route it</thinking>
+  <new_work_session>
+    <title>Build UI</title>
+    <summary>Implement the requested frontend task.</summary>
+  </new_work_session>
+</response>"#;
+
+        let parsed = BehaviorLLMResult::from_xml_str(raw).expect("routing xml should parse");
+        assert_eq!(parsed.thinking.as_deref(), Some("route it"));
+        assert_eq!(parsed.work_session_id, None);
+        assert_eq!(
+            parsed.new_work_session,
+            Some((
+                "Build UI".to_string(),
+                "Implement the requested frontend task.".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn behavior_result_rejects_ambiguous_work_session_routing_xml() {
+        let raw = r#"<response>
+  <work_session_id>work-001</work_session_id>
+  <new_work_session>
+    <title>Build UI</title>
+    <summary>Implement the requested frontend task.</summary>
+  </new_work_session>
+</response>"#;
+
+        let err = BehaviorLLMResult::from_xml_str(raw).expect_err("routing xml should fail");
+        assert!(err
+            .to_string()
+            .contains("must not set both <work_session_id> and <new_work_session>"));
     }
 }

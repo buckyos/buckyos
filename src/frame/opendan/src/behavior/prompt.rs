@@ -112,10 +112,15 @@ impl PromptBuilder {
             AiMessage::new("user".to_string(), input.input_prompt.clone()),
         ];
 
-        let mut must_features = Vec::new();
+        let mut must_features = cfg.llm.must_features.clone();
         if !loaded_tools.is_empty() {
             must_features.push(features::TOOL_CALLING.to_string());
         }
+        let mut seen = HashSet::new();
+        must_features.retain(|feature| {
+            let normalized = feature.trim();
+            !normalized.is_empty() && seen.insert(normalized.to_string())
+        });
 
         let mut options = Map::new();
         options.insert(
@@ -2297,6 +2302,45 @@ mod tests {
         assert!(system.contains("<<system>>"));
         assert!(!system.contains("<<output_protocol>>"));
         assert!(system.contains("Process rules."));
+    }
+
+    #[tokio::test]
+    async fn build_includes_llm_must_features_from_behavior_config() {
+        let input = BehaviorExecInput {
+            session_id: "session-1".to_string(),
+            trace: SessionRuntimeContext {
+                trace_id: "trace-1".to_string(),
+                agent_name: "did:example:agent".to_string(),
+                behavior: "resolve_router".to_string(),
+                step_idx: 1,
+                wakeup_id: "wakeup-1".to_string(),
+                session_id: "session-test".to_string(),
+            },
+            input_prompt: "find recent info".to_string(),
+            last_step_prompt: String::new(),
+            role_md: "You are a helpful assistant.".to_string(),
+            self_md: "Self description.".to_string(),
+            behavior_prompt: "rules".to_string(),
+            limits: StepLimits::default(),
+            behavior_cfg: BehaviorConfig {
+                system: "Process rules.".to_string(),
+                llm: crate::behavior::types::LLMBehaviorConfig {
+                    must_features: vec!["web_search".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            session: None,
+        };
+
+        let req = PromptBuilder::build(&input, &input.behavior_cfg, &MockTokenizer, None, None)
+            .await
+            .expect("build prompt");
+
+        assert_eq!(
+            req.requirements.must_features,
+            vec!["web_search".to_string()]
+        );
     }
 
     #[tokio::test]

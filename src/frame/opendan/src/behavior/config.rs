@@ -723,7 +723,7 @@ Omit `<set_memory>` when nothing is worth storing.
 
 **topic_tags**: 0-5 short labels for this conversation (for later retrieval).
 
-**Routing**: MUST provide exactly one of `route_session_id` or `new_session`. NEVER both. Both MUST follow process rules."#
+**Routing**: MUST provide exactly one of `work_session_id` or `new_work_session`. NEVER both. Both MUST follow process rules."#
             .to_string()
 }
 
@@ -914,6 +914,8 @@ output_protocol:
   text: protocol_from_cfg
 llm:
   process_name: custom-process
+  must_features:
+    - web_search
   model_policy:
     preferred: fast-model
 "#,
@@ -924,6 +926,7 @@ llm:
         assert_eq!(cfg.llm.output_protocol, "protocol_from_cfg".to_string());
         assert_eq!(cfg.llm.output_mode, "route_result");
         assert_eq!(cfg.llm.process_name, "custom-process");
+        assert_eq!(cfg.llm.must_features, vec!["web_search".to_string()]);
         assert_eq!(cfg.llm.model_policy.preferred, "fast-model");
         assert_eq!(cfg.llm.model_policy.temperature, 0.2);
     }
@@ -967,16 +970,16 @@ output_protocol:
     #[test]
     fn route_result_protocol_includes_session_routing_keys() {
         let protocol = build_route_result_protocol();
-        assert!(protocol.contains("route_session_id"));
-        assert!(protocol.contains("new_session"));
+        assert!(protocol.contains("work_session_id"));
+        assert!(protocol.contains("new_work_session"));
         assert!(protocol.contains("MUST provide exactly one of"));
     }
 
     #[test]
     fn behavior_llm_result_protocol_disallows_session_routing_keys() {
         let protocol = build_behavior_llm_result_protocol();
-        assert!(!protocol.contains("route_session_id"));
-        assert!(protocol.contains("NEVER include `session_id` or `new_session` in this mode."));
+        assert!(!protocol.contains("work_session_id"));
+        assert!(!protocol.contains("new_work_session"));
     }
 
     #[test]

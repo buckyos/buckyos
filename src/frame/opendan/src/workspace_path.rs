@@ -27,6 +27,14 @@ impl WorkspaceBindingRef {
         non_empty_path_str(&self.workspace_path)
     }
 
+    fn normalized_workspace_rel_path(&self) -> Option<PathBuf> {
+        let rel_path = non_empty_path_str(&self.workspace_rel_path)?;
+        if rel_path.is_absolute() {
+            return None;
+        }
+        Some(rel_path)
+    }
+
     fn normalized_agent_env_root(&self) -> Option<PathBuf> {
         non_empty_path_str(&self.agent_env_root)
     }
@@ -46,8 +54,15 @@ pub(crate) fn resolve_workspace_binding_ref(
 }
 
 pub(crate) fn resolve_bound_workspace_root(workspace_info: Option<&Json>) -> Option<PathBuf> {
-    resolve_workspace_binding_ref(workspace_info)
-        .and_then(|binding| binding.normalized_workspace_path())
+    resolve_workspace_binding_ref(workspace_info).and_then(|binding| {
+        binding.normalized_workspace_path().or_else(|| {
+            Some(
+                binding
+                    .normalized_agent_env_root()?
+                    .join(binding.normalized_workspace_rel_path()?),
+            )
+        })
+    })
 }
 
 pub(crate) fn resolve_bound_workspace_id(workspace_info: Option<&Json>) -> Option<String> {
@@ -265,6 +280,22 @@ mod tests {
                 Some(&workspace_info),
                 std::path::Path::new("")
             ),
+            Some(std::path::PathBuf::from("/tmp/demo/workspaces/ws-demo"))
+        );
+    }
+
+    #[test]
+    fn resolve_bound_workspace_root_falls_back_to_agent_env_root_and_rel_path() {
+        let workspace_info = json!({
+            "binding": {
+                "local_workspace_id": "ws-demo",
+                "workspace_rel_path": "workspaces/ws-demo",
+                "agent_env_root": "/tmp/demo"
+            }
+        });
+
+        assert_eq!(
+            resolve_bound_workspace_root(Some(&workspace_info)),
             Some(std::path::PathBuf::from("/tmp/demo/workspaces/ws-demo"))
         );
     }
