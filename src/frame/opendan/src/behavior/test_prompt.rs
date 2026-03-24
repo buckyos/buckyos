@@ -812,15 +812,15 @@ async fn build_prompt_for_work_session_renders_dense_step_records_and_env_contex
     assert!(rendered.contains("- work-rich-step-records : Current Session"));
     assert!(rendered.contains("Workspace Todo (ws-rich, v7)"));
     assert!(rendered.contains("Last Steps Snapshot:"));
-    assert!(rendered.contains("### Step 12 [check:12]"));
-    assert!(rendered.contains("### Step 13 [plan:13]"));
-    assert!(rendered.contains("### Step 14 [do:14]"));
+    assert!(rendered.contains("<step behavior=\"check\" step_num=12 step_time=\""));
+    assert!(rendered.contains("<step behavior=\"plan\" step_num=13 step_time=\""));
+    assert!(rendered.contains("<step behavior=\"do\" step_num=14 step_time=\""));
     assert!(rendered.contains("Last Step Record:"));
     assert!(rendered.contains("step 14 conclusion keeps the prompt builder"));
-    assert!(rendered.contains("## Step Records"));
-    assert!(rendered.contains("### Step 1 [plan:1]"));
-    assert!(rendered.contains("### Step 7 [plan:7]"));
-    assert!(rendered.contains("### Step 14 [do:14]"));
+    assert!(rendered.contains("<steps_summary>"));
+    assert!(rendered.contains("<step behavior=\"plan\" step_num=1 step_time=\""));
+    assert!(rendered.contains("<step behavior=\"plan\" step_num=7 step_time=\""));
+    assert!(rendered.contains("<step behavior=\"do\" step_num=14 step_time=\""));
     assert!(rendered.contains("step 14 thinking enumerates env-context values"));
     assert!(rendered.contains("Agent Guide:"));
     assert!(rendered.contains("Session Summary:"));
@@ -882,8 +882,8 @@ async fn build_prompt_shows_step_record_truncation_when_token_budget_is_small() 
     println!("\n[step-record compressed prompt]\n{rendered}\n");
 
     assert!(rendered.contains("STEP_HEAD"));
-    assert!(rendered.contains("## Step Records"));
-    assert!(rendered.contains("### Step 1 [plan:1]"));
+    assert!(rendered.contains("<steps_summary>"));
+    assert!(rendered.contains("<step behavior=\"plan\" step_num=1 step_time=\""));
     assert!(rendered.contains("[TRUNCATED]"));
-    assert!(!rendered.contains("### Step 14 [do:14]"));
+    assert!(!rendered.contains("<step behavior=\"do\" step_num=14 step_time=\""));
 }

@@ -20,7 +20,8 @@ use crate::agent_tool::AgentMemory;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
 use crate::step_record::{
-    load_records_from_path, render_prompt_text_from_records, LLMStepPromptRenderOptions,
+    load_records_from_path, render_prompt_text_from_records_with_tokenizer,
+    LLMStepPromptRenderOptions,
 };
 use crate::worklog::{
     WorklogActionPayload, WorklogListOptions, WorklogRecord, WorklogRecordType, WorklogService,
@@ -545,8 +546,14 @@ async fn load_session_step_records_with_limit(
         return String::new();
     }
 
-    let rendered =
-        render_prompt_text_from_records(records.as_slice(), &LLMStepPromptRenderOptions::default());
+    let rendered = render_prompt_text_from_records_with_tokenizer(
+        records.as_slice(),
+        &LLMStepPromptRenderOptions {
+            max_render_tokens: token_limit,
+            ..LLMStepPromptRenderOptions::default()
+        },
+        tokenizer,
+    );
     fit_text_with_token_limit(rendered, token_limit, tokenizer)
 }
 
@@ -2575,12 +2582,12 @@ mod tests {
         .await;
 
         println!("\n[session_step_records prompt preview]\n{prompt}\n");
-        assert!(prompt.contains("## Step Records"));
-        assert!(prompt.contains("### Step 1 [plan:1]"));
+        assert!(prompt.contains("<steps_summary>"));
+        assert!(prompt.contains("<step behavior=\"plan\" step_num=1 step_time=\""));
         assert!(prompt.contains("collect requirements"));
-        assert!(prompt.contains("### Step 2 [plan:2]"));
+        assert!(prompt.contains("<step behavior=\"plan\" step_num=2 step_time=\""));
         assert!(prompt.contains("draft execution plan"));
-        assert!(!prompt.contains("### Step 3 [do:3]"));
+        assert!(!prompt.contains("<step behavior=\"do\" step_num=3 step_time=\""));
         assert!(!prompt.contains("latest step should be skipped"));
     }
 

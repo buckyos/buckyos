@@ -5,59 +5,56 @@ use std::path::{Path, PathBuf};
 use buckyos_api::{
     AiPayload, Capability, CompleteRequest, ModelSpec, MsgRecordWithObject, Requirements,
 };
+use chrono::{DateTime, Utc};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
-use crate::agent_tool::{AgentHistoryShowLevel, AgentToolError, AgentToolResult, DoAction};
-use crate::behavior::BehaviorLLMResult;
+use crate::agent_tool::{AgentHistoryShowLevel, AgentToolError, AgentToolResult};
+use crate::behavior::{BehaviorLLMResult, Tokenizer};
 
 const DEFAULT_STEP_RECORD_FILE: &str = "llm_step_record.jsonl";
 
 /*
-Step Record压缩渲染的思路
+Step history 的 HistoryShow 只保留 4 档：
+- Min: title + new_msg + conclusion
+- Mini: Min + reply_msg
+- Medium: Mini + action_result(medium)
+- Full: Mini + action_result(full)
 
-最小：只显示Step.tilte + Step.new_msg/new_event +Step.conclusion
-mini: 显示Step.tilte + Step.new_msg/new_event +Step.conclusion + Step.next_action 最小压缩
-中等: 显示Step.tilte + Step.new_msg/new_event + Step.conclusion + Step.next_action 中等压缩
-大： 显示Step.title + Step.new_msg/new_event + step.conclusion + step.next_action 略微损失压缩（包含完整错误输出）
-完整: 显示Step.title + Step.new_msg/new_event + step.conclusion + step.thinking + step.action 不压缩
+完整渲染不属于 HistoryShow，只用于 render_last_step_text：
+- Complete: title + new_msg + conclusion + reply_msg + thinking + action_result(full)
 
+预算控制：
+- 先给最近的 step 做种子分配：2 个 Full + 1 个 Medium + 1 个 Mini
+- 然后在预算内按“最近优先”逐级升级剩余 step
+- action_result 的 4 档渲染复用 agent_tool 的 AgentHistoryShowLevel
 
-自动决定每个step的压缩级别的思路：
-目的：能显示所有的step，越后的step越完成
-
-
-算法：首先有1个完整的+1个大+1个中等+一个mini+剩下的都是最小的进行首次填充
-根据还剩多少token（剩余总数)，逐步膨胀一个最近的step，直到达到预算
-如果剩余总数>预算的50%，则增加一个完整的step
-如果剩余总数>预算的40%，则增加一个大的step
-如果剩余总数>预算的30%,增增加一个中等step
-如果剩余总数>预算的20%,增增加一个mini step
-
-agent_tool的action_result的压缩级别（从高到底)
-- cmd_name (此时已经包含了最小参数) => result (成功/失败/pending+基本原因) 
-- summary (已经在构造的时候包含了所有信息)
-- summary (已经在构造的时候包含了所有信息)
-- cmd_name + details（如有)
-
-注意: Reply是一个标准action_result
-
-一般的bash_exec会得到非标准action_result
-非标准action_result的压缩级别（从高到底)也分 4个级别
-
-- cmd_name 部分参数 => result (成功/失败/pending+基本原因)
-- cmd_name 部分参数 => result (成功/失败/pending+基本原因) 
-  如果失败的话，会显示output的最后n行
-- cmd完整显示  => result (成功/失败/pending+基本原因) 
-  如果失败的话，会显示output的最后n行
-  如果成功，会显示output的前n行
-- cmd完整显示  => result (成功/失败/pending+基本原因) 
-  如果失败的话，会显示output的最后K行
-  如果成功，会显示output的头部K行，K是多少取决于content limit
-   
-
+输出格式:
+<steps_summary>
+<step behavior="plan" step_num=0 step_time="2026-03-23 10:00:00">
+<recive_msg from="Alic">msg content</recive_msg>
+<conclusion>初始搜索确定 6 个候选方案：TrueNAS SCALE、OMV、Unraid、CasaOS、Rockstor、XigmaNAS。后两者社区较小，暂列备选。</conclusion>
+<thinking>分析了 6 个候选方案的优缺点，选择了 TrueNAS SCALE 作为首选方案。</thinking>
+<reply_msg to="Alic">TrueNAS SCALE 的优点是：xxxx</reply_msg>
+<action>
+- write xxxx => success
+- tool-2 => success
+```output
+step-2-line-1
+step-2-line-2
+step-2-line-3
+step-2-line-4
+step-2-line-5
+step-2-line-6
+step-2-line-7
+step-2-line-8
+... [TRUNCATED: showing first 8 lines only] ...
+```
+</action>
+</step>
+</steps_summary>
 
 */
 
@@ -111,19 +108,61 @@ impl LLMStepRecord {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenderCompressionLevel {
+    Min,
+    Mini,
+    Medium,
     Full,
-    Summary,
-    ConclusionOnly,
+    Complete,
+}
+
+impl RenderCompressionLevel {
+    fn next_history_level(self) -> Option<Self> {
+        match self {
+            Self::Min => Some(Self::Mini),
+            Self::Mini => Some(Self::Medium),
+            Self::Medium => Some(Self::Full),
+            Self::Full | Self::Complete => None,
+        }
+    }
+
+    fn action_result_level(self) -> Option<AgentHistoryShowLevel> {
+        match self {
+            Self::Min | Self::Mini => None,
+            Self::Medium => Some(AgentHistoryShowLevel::Medium),
+            Self::Full | Self::Complete => Some(AgentHistoryShowLevel::Full),
+        }
+    }
+
+    fn shows_reply(self) -> bool {
+        matches!(self, Self::Mini | Self::Medium | Self::Full | Self::Complete)
+    }
+
+    fn shows_thinking(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+
+    fn history_index(self) -> usize {
+        match self {
+            Self::Min => 0,
+            Self::Mini => 1,
+            Self::Medium => 2,
+            Self::Full => 3,
+            Self::Complete => 4,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LLMStepPromptRenderOptions {
     pub max_render_steps: usize,
     pub recent_detail_steps: usize,
+    pub max_render_tokens: u32,
+    pub max_render_chars: usize,
     pub max_conclusion_chars: usize,
     pub max_thinking_chars: usize,
     pub max_next_action_chars: usize,
     pub max_action_result_chars: usize,
+    pub max_new_msg_chars: usize,
 }
 
 impl Default for LLMStepPromptRenderOptions {
@@ -131,10 +170,13 @@ impl Default for LLMStepPromptRenderOptions {
         Self {
             max_render_steps: 24,
             recent_detail_steps: 4,
+            max_render_tokens: 0,
+            max_render_chars: 0,
             max_conclusion_chars: 280,
             max_thinking_chars: 400,
             max_next_action_chars: 280,
             max_action_result_chars: 1200,
+            max_new_msg_chars: 240,
         }
     }
 }
@@ -234,7 +276,7 @@ impl LLMStepRecordLog {
         Ok(self.records.last().map(|record| {
             render_single_step(
                 record,
-                RenderCompressionLevel::Full,
+                RenderCompressionLevel::Complete,
                 &LLMStepPromptRenderOptions::default(),
             )
         }))
@@ -292,7 +334,15 @@ pub fn render_prompt_text_from_records(
     records: &[LLMStepRecord],
     options: &LLMStepPromptRenderOptions,
 ) -> String {
-    render_prompt_text_from_records_impl(records, options)
+    render_prompt_text_from_records_impl(records, options, None)
+}
+
+pub fn render_prompt_text_from_records_with_tokenizer(
+    records: &[LLMStepRecord],
+    options: &LLMStepPromptRenderOptions,
+    tokenizer: &dyn Tokenizer,
+) -> String {
+    render_prompt_text_from_records_impl(records, options, Some(tokenizer))
 }
 
 fn empty_complete_request() -> CompleteRequest {
@@ -308,6 +358,7 @@ fn empty_complete_request() -> CompleteRequest {
 fn render_prompt_text_from_records_impl(
     records: &[LLMStepRecord],
     options: &LLMStepPromptRenderOptions,
+    tokenizer: Option<&dyn Tokenizer>,
 ) -> String {
     if records.is_empty() || options.max_render_steps == 0 {
         return String::new();
@@ -319,23 +370,201 @@ fn render_prompt_text_from_records_impl(
         return String::new();
     }
 
-    let mut blocks = Vec::<String>::new();
-    let detail_cutoff = visible
-        .len()
-        .saturating_sub(options.recent_detail_steps.saturating_add(1));
+    let levels = allocate_render_levels(visible, options, tokenizer);
+    let blocks = visible
+        .iter()
+        .zip(levels.iter().copied())
+        .map(|(record, level)| render_single_step(record, level, options))
+        .collect::<Vec<_>>();
 
-    for (idx, record) in visible.iter().enumerate() {
-        let level = if idx + 1 == visible.len() {
-            RenderCompressionLevel::Full
-        } else if idx >= detail_cutoff {
-            RenderCompressionLevel::Summary
-        } else {
-            RenderCompressionLevel::ConclusionOnly
-        };
-        blocks.push(render_single_step(record, level, options));
+    wrap_steps_summary(blocks.as_slice())
+}
+
+fn allocate_render_levels(
+    records: &[LLMStepRecord],
+    options: &LLMStepPromptRenderOptions,
+    tokenizer: Option<&dyn Tokenizer>,
+) -> Vec<RenderCompressionLevel> {
+    let mut levels = vec![RenderCompressionLevel::Min; records.len()];
+    if records.is_empty() {
+        return levels;
     }
 
-    format!("## Step Records\n{}", blocks.join("\n\n"))
+    let cache = records
+        .iter()
+        .map(|record| build_render_cache(record, options))
+        .collect::<Vec<_>>();
+    let budget = render_budget(options, tokenizer);
+    let mut total_cost = total_render_cost(cache.as_slice(), levels.as_slice(), tokenizer);
+
+    let seed_levels = [
+        RenderCompressionLevel::Full,
+        RenderCompressionLevel::Full,
+        RenderCompressionLevel::Medium,
+        RenderCompressionLevel::Mini,
+    ];
+    for (offset, target) in seed_levels
+        .iter()
+        .copied()
+        .enumerate()
+        .take(options.recent_detail_steps.min(seed_levels.len()))
+    {
+        let Some(idx) = records.len().checked_sub(offset + 1) else {
+            break;
+        };
+        promote_step_to_target(
+            idx,
+            target,
+            levels.as_mut_slice(),
+            cache.as_slice(),
+            budget,
+            &mut total_cost,
+            tokenizer,
+        );
+    }
+
+    if budget.is_none() {
+        return levels;
+    }
+
+    loop {
+        let mut upgraded = false;
+        for idx in (0..records.len()).rev() {
+            let Some(next_level) = levels[idx].next_history_level() else {
+                continue;
+            };
+            if try_upgrade_step(
+                idx,
+                next_level,
+                levels.as_mut_slice(),
+                cache.as_slice(),
+                budget,
+                &mut total_cost,
+                tokenizer,
+            ) {
+                upgraded = true;
+                break;
+            }
+        }
+        if !upgraded {
+            break;
+        }
+    }
+
+    levels
+}
+
+struct StepRenderCache {
+    renders: Vec<String>,
+}
+
+fn build_render_cache(
+    record: &LLMStepRecord,
+    options: &LLMStepPromptRenderOptions,
+) -> StepRenderCache {
+    StepRenderCache {
+        renders: vec![
+            render_single_step(record, RenderCompressionLevel::Min, options),
+            render_single_step(record, RenderCompressionLevel::Mini, options),
+            render_single_step(record, RenderCompressionLevel::Medium, options),
+            render_single_step(record, RenderCompressionLevel::Full, options),
+            render_single_step(record, RenderCompressionLevel::Complete, options),
+        ],
+    }
+}
+
+fn promote_step_to_target(
+    idx: usize,
+    target: RenderCompressionLevel,
+    levels: &mut [RenderCompressionLevel],
+    cache: &[StepRenderCache],
+    budget: Option<usize>,
+    total_cost: &mut usize,
+    tokenizer: Option<&dyn Tokenizer>,
+) {
+    while levels[idx] != target {
+        let Some(next_level) = levels[idx].next_history_level() else {
+            break;
+        };
+        if !try_upgrade_step(
+            idx,
+            next_level,
+            levels,
+            cache,
+            budget,
+            total_cost,
+            tokenizer,
+        ) {
+            break;
+        }
+    }
+}
+
+fn try_upgrade_step(
+    idx: usize,
+    next_level: RenderCompressionLevel,
+    levels: &mut [RenderCompressionLevel],
+    cache: &[StepRenderCache],
+    budget: Option<usize>,
+    total_cost: &mut usize,
+    tokenizer: Option<&dyn Tokenizer>,
+) -> bool {
+    let current_level = levels[idx];
+    levels[idx] = next_level;
+    let next_total = total_render_cost(cache, levels, tokenizer);
+    if let Some(budget) = budget {
+        if next_total > budget {
+            levels[idx] = current_level;
+            return false;
+        }
+    }
+    *total_cost = next_total;
+    true
+}
+
+fn render_budget(
+    options: &LLMStepPromptRenderOptions,
+    tokenizer: Option<&dyn Tokenizer>,
+) -> Option<usize> {
+    if tokenizer.is_some() && options.max_render_tokens > 0 {
+        Some(options.max_render_tokens as usize)
+    } else if options.max_render_chars > 0 {
+        Some(options.max_render_chars)
+    } else {
+        None
+    }
+}
+
+fn total_render_cost(
+    cache: &[StepRenderCache],
+    levels: &[RenderCompressionLevel],
+    tokenizer: Option<&dyn Tokenizer>,
+) -> usize {
+    if levels.is_empty() {
+        return 0;
+    }
+
+    let rendered = assemble_rendered_history(cache, levels);
+    match tokenizer {
+        Some(tokenizer) => tokenizer.count_tokens(rendered.as_str()) as usize,
+        None => rendered.len(),
+    }
+}
+
+fn assemble_rendered_history(cache: &[StepRenderCache], levels: &[RenderCompressionLevel]) -> String {
+    let blocks = levels
+        .iter()
+        .enumerate()
+        .map(|(idx, level)| cache[idx].renders[level.history_index()].clone())
+        .collect::<Vec<_>>();
+    wrap_steps_summary(blocks.as_slice())
+}
+
+fn wrap_steps_summary(blocks: &[String]) -> String {
+    if blocks.is_empty() {
+        return String::new();
+    }
+    format!("<steps_summary>\n{}\n</steps_summary>", blocks.join("\n"))
 }
 
 fn render_single_step(
@@ -346,10 +575,16 @@ fn render_single_step(
     let mut out = String::new();
     let _ = write!(
         out,
-        "### Step {} [{}]",
+        "<step behavior=\"{}\" step_num={} step_time=\"{}\">",
+        record.behavior_name.trim(),
         record.step_num,
-        record.behavior_step_label()
+        format_step_timestamp(record.started_at_ms)
     );
+
+    let new_msg = render_new_msgs_for_prompt(record.new_msg.as_slice(), options.max_new_msg_chars);
+    if !new_msg.is_empty() {
+        let _ = write!(out, "\n{new_msg}");
+    }
 
     let conclusion = truncate_text(
         record
@@ -361,34 +596,38 @@ fn render_single_step(
         options.max_conclusion_chars,
     );
     if !conclusion.is_empty() {
-        let _ = write!(out, "\n- conclusion: {conclusion}");
+        let _ = write!(out, "\n<conclusion>{conclusion}</conclusion>");
     }
 
-    let action_result = if matches!(level, RenderCompressionLevel::Full) {
-        truncate_text(
-            render_action_results_for_prompt(&record.action_result, AgentHistoryShowLevel::Full)
-                .as_str(),
-            options.max_action_result_chars,
-        )
-    } else {
-        String::new()
-    };
-
-    if matches!(
-        level,
-        RenderCompressionLevel::Summary | RenderCompressionLevel::Full
-    ) && action_result.is_empty()
-    {
-        let next_action = truncate_text(
-            render_llm_next_action(&record.llm_result).as_str(),
+    if level.shows_reply() {
+        let reply_msg = truncate_text(
+            record.llm_result.reply.as_deref().unwrap_or_default(),
             options.max_next_action_chars,
         );
-        if !next_action.is_empty() {
-            let _ = write!(out, "\n- next_action: {next_action}");
+        if !reply_msg.is_empty() {
+            let reply_to = infer_reply_target(record);
+            if reply_to.is_empty() {
+                let _ = write!(out, "\n<reply_msg>{reply_msg}</reply_msg>");
+            } else {
+                let _ = write!(out, "\n<reply_msg to=\"{reply_to}\">{reply_msg}</reply_msg>");
+            }
         }
     }
 
-    if matches!(level, RenderCompressionLevel::Full) {
+    let action_result = level
+        .action_result_level()
+        .map(|action_level| {
+            truncate_text(
+                render_action_results_for_prompt(&record.action_result, action_level).as_str(),
+                options.max_action_result_chars,
+            )
+        })
+        .unwrap_or_default();
+    if !action_result.is_empty() {
+        let _ = write!(out, "\n<action>{action_result}</action>");
+    }
+
+    if level.shows_thinking() {
         let thinking = truncate_text(
             record
                 .llm_result
@@ -399,85 +638,12 @@ fn render_single_step(
             options.max_thinking_chars,
         );
         if !thinking.is_empty() {
-            let _ = write!(out, "\n- thinking: {thinking}");
-        }
-        if !action_result.is_empty() {
-            let _ = write!(out, "\n- action:\n```text\n{action_result}\n```");
+            let _ = write!(out, "\n<thinking>{thinking}</thinking>");
         }
     }
 
+    out.push_str("\n</step>");
     out
-}
-
-fn render_llm_next_action(llm_result: &BehaviorLLMResult) -> String {
-    let mut lines = Vec::<String>::new();
-
-    if let Some(reply) = llm_result
-        .reply
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(format!("reply: {reply}"));
-    }
-
-    for command in &llm_result.shell_commands {
-        let command = command.trim();
-        if !command.is_empty() {
-            lines.push(format!("exec: {command}"));
-        }
-    }
-
-    for action in &llm_result.actions.cmds {
-        match action {
-            DoAction::Exec(command) => {
-                let command = command.trim();
-                if !command.is_empty() {
-                    lines.push(format!("exec: {command}"));
-                }
-            }
-            DoAction::Call(call) => {
-                let action_name = call.call_action_name.trim();
-                if action_name.is_empty() {
-                    continue;
-                }
-                let params =
-                    serde_json::to_string(&call.call_params).unwrap_or_else(|_| "{}".to_string());
-                lines.push(format!("call: {action_name} {params}"));
-            }
-        }
-    }
-
-    if let Some(route_session_id) = llm_result
-        .route_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(format!("route_session_id: {route_session_id}"));
-    }
-
-    if let Some((session_title, behavior_name)) = llm_result.new_session.as_ref() {
-        let session_title = session_title.trim();
-        let behavior_name = behavior_name.trim();
-        if !session_title.is_empty() || !behavior_name.is_empty() {
-            lines.push(format!(
-                "new_session: title={} behavior={}",
-                session_title, behavior_name
-            ));
-        }
-    }
-
-    if let Some(next_behavior) = llm_result
-        .next_behavior
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(format!("next_behavior: {next_behavior}"));
-    }
-
-    lines.join("\n")
 }
 
 fn render_action_results_for_prompt(
@@ -512,6 +678,66 @@ fn render_action_results_for_prompt(
     lines.join("\n")
 }
 
+fn render_new_msgs_for_prompt(messages: &[MsgRecordWithObject], max_chars: usize) -> String {
+    let mut rendered = messages
+        .iter()
+        .take(2)
+        .map(|record| render_new_msg_summary(record, max_chars))
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+    if messages.len() > 2 {
+        rendered.push(format!(
+            "<recive_msg from=\"summary\">+{} more</recive_msg>",
+            messages.len() - 2
+        ));
+    }
+    rendered.join("\n")
+}
+
+fn render_new_msg_summary(record: &MsgRecordWithObject, max_chars: usize) -> String {
+    let sender = render_msg_sender(record);
+    let content = record
+        .msg
+        .as_ref()
+        .map(|msg| msg.content.content.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| collapse_inline_whitespace(value, max_chars))
+        .unwrap_or_else(|| format!("msg_id={} state={:?}", record.record.msg_id, record.record.state));
+    format!("<recive_msg from=\"{sender}\">{content}</recive_msg>")
+}
+
+fn render_msg_sender(record: &MsgRecordWithObject) -> String {
+    record
+        .record
+        .from_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| record.record.from.to_string())
+}
+
+fn infer_reply_target(record: &LLMStepRecord) -> String {
+    record
+        .new_msg
+        .first()
+        .map(render_msg_sender)
+        .unwrap_or_default()
+}
+
+fn format_step_timestamp(timestamp_ms: u64) -> String {
+    let secs = (timestamp_ms / 1000) as i64;
+    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
+    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn collapse_inline_whitespace(input: &str, max_chars: usize) -> String {
+    let collapsed = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_text(collapsed.as_str(), max_chars)
+}
+
 fn truncate_text(input: &str, max_chars: usize) -> String {
     let normalized = input.trim();
     if normalized.is_empty() || max_chars == 0 {
@@ -535,6 +761,14 @@ fn truncate_text(input: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct CountingTokenizer;
+
+    impl Tokenizer for CountingTokenizer {
+        fn count_tokens(&self, text: &str) -> u32 {
+            text.chars().count() as u32
+        }
+    }
 
     fn sample_record(step_num: u32, step_index: u32) -> LLMStepRecord {
         LLMStepRecord {
@@ -567,20 +801,26 @@ mod tests {
             llm_result: BehaviorLLMResult {
                 conclusion: Some(format!("conclusion-{step_num}")),
                 thinking: Some(format!("thinking-{step_num}")),
-                shell_commands: vec![format!("next-{step_num}")],
+                reply: Some(format!("reply-{step_num}")),
                 ..Default::default()
             },
             action_result: HashMap::from([(
                 "#0".to_string(),
                 AgentToolResult::from_details(serde_json::json!({}))
                     .with_cmd_line(format!("tool-{step_num}"))
-                    .with_result(format!("action-{step_num}")),
+                    .with_result(format!("action-{step_num}"))
+                    .with_output(
+                        (1..=9)
+                            .map(|line| format!("step-{step_num}-line-{line}"))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    ),
             )]),
         }
     }
 
     #[test]
-    fn render_prompt_text_uses_three_level_compression() {
+    fn render_prompt_text_uses_four_level_history_compression() {
         let records = vec![
             sample_record(0, 0),
             sample_record(1, 1),
@@ -592,27 +832,82 @@ mod tests {
             &records,
             &LLMStepPromptRenderOptions {
                 max_render_steps: 5,
-                recent_detail_steps: 2,
+                recent_detail_steps: 4,
                 ..Default::default()
             },
         );
 
         println!("rendered: {}", rendered);
 
-        assert!(rendered.contains("### Step 0 [plan:0]"));
-        assert!(rendered.contains("- conclusion: conclusion-0"));
+        assert!(rendered.contains("<steps_summary>"));
+        assert!(rendered.contains("<step behavior=\"plan\" step_num=0 step_time=\""));
+        assert!(rendered.contains("<conclusion>conclusion-0</conclusion>"));
         assert!(!rendered.contains("thinking-0"));
-        assert!(!rendered.contains("action-0"));
+        assert!(!rendered.contains("step-0-line-1"));
 
-        assert!(rendered.contains("### Step 2 [plan:2]"));
-        assert!(rendered.contains("- next_action: exec: next-2"));
-        assert!(!rendered.contains("thinking-2"));
+        assert!(rendered.contains("<step behavior=\"plan\" step_num=1 step_time=\""));
+        assert!(rendered.contains("<reply_msg>reply-1</reply_msg>"));
+        assert!(!rendered.contains("<action>- tool-1 => success"));
+        assert!(!rendered.contains("step-1-line-1"));
 
-        assert!(rendered.contains("### Step 4 [plan:4]"));
-        assert!(!rendered.contains("- next_action: exec: next-4"));
-        assert!(rendered.contains("- thinking: thinking-4"));
-        assert!(rendered.contains("- action:\n```text\n- tool-4 => action-4"));
-        assert!(rendered.contains("- tool-4 => action-4"));
+        assert!(rendered.contains("<step behavior=\"plan\" step_num=2 step_time=\""));
+        assert!(rendered.contains("<reply_msg>reply-2</reply_msg>"));
+        assert!(rendered.contains("<action>- tool-2 => success"));
+        assert!(!rendered.contains("step-2-line-9"));
+
+        assert!(rendered.contains("<step behavior=\"plan\" step_num=4 step_time=\""));
+        assert!(rendered.contains("<reply_msg>reply-4</reply_msg>"));
+        assert!(rendered.contains("<action>- tool-4 => success"));
+        assert!(rendered.contains("step-4-line-9"));
+        assert!(!rendered.contains("thinking-4"));
+        assert!(rendered.contains("</steps_summary>"));
+    }
+
+    #[test]
+    fn render_prompt_text_respects_render_token_budget() {
+        let records = vec![sample_record(0, 0), sample_record(1, 1), sample_record(2, 2)];
+        let tokenizer = CountingTokenizer;
+        let base_options = LLMStepPromptRenderOptions {
+            max_render_steps: 3,
+            recent_detail_steps: 4,
+            ..Default::default()
+        };
+        let min_plus_latest_mini = wrap_steps_summary(
+            vec![
+                render_single_step(&records[0], RenderCompressionLevel::Min, &base_options),
+                render_single_step(&records[1], RenderCompressionLevel::Min, &base_options),
+                render_single_step(&records[2], RenderCompressionLevel::Mini, &base_options),
+            ]
+            .as_slice(),
+        );
+        let rendered = render_prompt_text_from_records_with_tokenizer(
+            &records,
+            &LLMStepPromptRenderOptions {
+                max_render_steps: 3,
+                recent_detail_steps: 4,
+                max_render_tokens: min_plus_latest_mini.len() as u32,
+                ..Default::default()
+            },
+            &tokenizer,
+        );
+
+        assert_eq!(rendered.len(), min_plus_latest_mini.len());
+        assert!(rendered.contains("<reply_msg>reply-2</reply_msg>"));
+        assert!(!rendered.contains("<action>- tool-2 => success"));
+        assert!(!rendered.contains("step-2-line-1"));
+    }
+
+    #[test]
+    fn render_complete_step_includes_thinking() {
+        let rendered = render_single_step(
+            &sample_record(9, 9),
+            RenderCompressionLevel::Complete,
+            &LLMStepPromptRenderOptions::default(),
+        );
+
+        assert!(rendered.contains("<reply_msg>reply-9</reply_msg>"));
+        assert!(rendered.contains("<thinking>thinking-9</thinking>"));
+        assert!(rendered.contains("step-9-line-9"));
     }
 
     #[tokio::test]
@@ -631,7 +926,7 @@ mod tests {
             .await
             .expect("render from file");
 
-        assert!(rendered.contains("### Step 7 [plan:3]"));
+        assert!(rendered.contains("<step behavior=\"plan\" step_num=7 step_time=\""));
         assert!(reloaded.record_file_path().expect("record path").is_file());
     }
 }

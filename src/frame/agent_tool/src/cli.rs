@@ -1902,8 +1902,10 @@ mod tests {
         assert_eq!(output.exit_code, EXIT_SUCCESS);
         let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
         assert_eq!(payload["status"], "success");
-        assert_eq!(payload["cmd_name"], TOOL_READ_FILE);
-        assert_eq!(payload["detail"]["content"], "line-1");
+        assert_eq!(payload["cmd_name"], "read");
+        let cmd_args = payload["cmd_args"].as_str().expect("cmd_args string");
+        assert!(cmd_args.ends_with("/demo.txt range=1-1"));
+        assert_eq!(payload["detail"]["content"], "line-1\n");
     }
 
     #[tokio::test]

@@ -2033,7 +2033,7 @@ mod tests {
             .await
             .expect("load step_record")
             .expect("step_record should exist");
-        assert!(rendered.contains("## Step Records"), "rendered={rendered}");
+        assert!(rendered.contains("<steps_summary>"), "rendered={rendered}");
         assert!(
             rendered.contains("AgentSession needs a step log field"),
             "rendered={rendered}"
@@ -2043,7 +2043,8 @@ mod tests {
             .await
             .expect("load step_record.last")
             .expect("step_record.last should exist");
-        assert!(last.contains("patched files"), "last={last}");
+        assert!(last.contains("patch_files"), "last={last}");
+        assert!(last.contains("success"), "last={last}");
         assert!(last.contains("wire session storage"), "last={last}");
 
         let alias_last = AgentEnvironment::load_value_from_session(session.clone(), "last_step")
@@ -2051,7 +2052,7 @@ mod tests {
             .expect("load last_step")
             .expect("last_step should exist");
         assert!(
-            alias_last.contains("patched files"),
+            alias_last.contains("patch_files"),
             "alias_last={alias_last}"
         );
 
@@ -2060,7 +2061,7 @@ mod tests {
             .expect("load last_steps.$2")
             .expect("last_steps.$2 should exist");
         assert!(
-            alias_steps.contains("## Step Records"),
+            alias_steps.contains("<steps_summary>"),
             "alias_steps={alias_steps}"
         );
         assert!(

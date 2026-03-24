@@ -969,6 +969,15 @@ mod tests {
         parse_cli_json_line(line)
     }
 
+    fn assert_read_file_cli_payload(payload: &Json, expected_content: &str) {
+        assert_eq!(payload["is_agent_tool"], true);
+        assert_eq!(payload["status"], "success");
+        assert_eq!(payload["cmd_name"], "read");
+        assert!(payload["cmd_args"].is_string(), "payload={payload}");
+        let content = payload["detail"]["content"].as_str().unwrap_or_default();
+        assert_eq!(content, expected_content);
+    }
+
     fn ensure_test_agent_tool_bin() {
         let exe_dir = std::env::current_exe()
             .ok()
@@ -999,19 +1008,45 @@ case "$cmd" in
       esac
       shift
     done
-    content=""
-    case "$range" in
-      [0-9]*:[0-9]*)
-        start="${range%%:*}"
-        end="${range##*:}"
-        content="$(sed -n "${start},${end}p" "$path" 2>/dev/null)"
-        ;;
-      *)
-        content="$(sed -n '1p' "$path" 2>/dev/null)"
-        ;;
-    esac
-    json_content="$(printf '%s' "$content" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
-    printf '{"status":"success","summary":"read mock content","tool":"read_file","detail":{"ok":true,"tool":"read_file","content":%s}}\n' "$json_content"
+    python3 - "$path" "$range" <<'PY'
+import json
+import pathlib
+import sys
+
+path = sys.argv[1]
+range_spec = sys.argv[2]
+
+try:
+    lines = pathlib.Path(path).read_text().splitlines(keepends=True)
+except Exception:
+    lines = []
+
+content = ""
+if range_spec and ":" in range_spec:
+    start_text, end_text = range_spec.split(":", 1)
+    if start_text.isdigit() and end_text.isdigit():
+        start = max(int(start_text), 1)
+        end = max(int(end_text), start)
+        content = "".join(lines[start - 1:end])
+    else:
+        content = "".join(lines[:1])
+else:
+    content = "".join(lines[:1])
+
+cmd_args = path if not range_spec else f"{path} range={range_spec}"
+print(json.dumps({
+    "is_agent_tool": True,
+    "cmd_name": "read",
+    "cmd_args": cmd_args,
+    "status": "success",
+    "summary": "read mock content",
+    "detail": {
+        "ok": True,
+        "path": path,
+        "content": content,
+    },
+}, ensure_ascii=False))
+PY
     ;;
   *)
     printf '{"status":"error","tool":"%s"}\n' "$cmd"
@@ -1199,9 +1234,9 @@ esac
 
         assert_eq!(result.status, AgentToolStatus::Success);
         assert_eq!(result.return_code, Some(0));
+        assert_eq!(result.is_agent_tool, true);
         assert_eq!(result.cmd_name.as_deref(), Some(TOOL_READ_FILE));
-        let payload = parse_last_cli_json_line(result.output.as_deref().unwrap_or_default());
-        assert_eq!(payload["detail"]["content"], "L1");
+        assert_eq!(result["content"], "L1\n");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1262,8 +1297,7 @@ esac
             .count();
         assert_eq!(pane_lines, 1, "stdout={stdout}");
         let payload = parse_last_cli_json_line(stdout);
-        assert_eq!(payload["cmd_name"], TOOL_READ_FILE);
-        assert_eq!(payload["detail"]["content"], "pane-line");
+        assert_read_file_cli_payload(&payload, "pane-line\n");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1319,8 +1353,7 @@ esac
         assert_eq!(result.status, AgentToolStatus::Success);
         let stdout = result.output.as_deref().unwrap_or_default();
         let payload = parse_cli_json_line(stdout);
-        assert_eq!(payload["cmd_name"], TOOL_READ_FILE);
-        assert_eq!(payload["detail"]["content"], "cd-pane-line");
+        assert_read_file_cli_payload(&payload, "cd-pane-line\n");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1404,18 +1437,19 @@ esac
         }
 
         let first_bash = &results[1];
+        assert_eq!(first_bash.status, AgentToolStatus::Success);
+        assert_eq!(first_bash.is_agent_tool, true);
         assert_eq!(first_bash.cmd_name.as_deref(), Some(TOOL_READ_FILE));
-        let first_payload = parse_last_cli_json_line(first_bash.output.as_deref().unwrap_or_default());
-        assert_eq!(first_payload["detail"]["content"], "L1");
+        assert_eq!(first_bash["content"], "L1\n");
 
         let second_bash = &results[3];
+        assert_eq!(second_bash.status, AgentToolStatus::Success);
+        assert_eq!(second_bash.is_agent_tool, true);
         assert_eq!(second_bash.cmd_name.as_deref(), Some(TOOL_READ_FILE));
-        let second_payload =
-            parse_last_cli_json_line(second_bash.output.as_deref().unwrap_or_default());
-        assert_eq!(second_payload["detail"]["content"], "L1\nL2-updated");
+        assert_eq!(second_bash["content"], "L1\nL2-updated\n");
 
         let final_call = &results[4];
-        assert_eq!(final_call["content"], "L1\nL2-updated");
+        assert_eq!(final_call["content"], "L1\nL2-updated\n");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1457,11 +1491,12 @@ esac
         .await
         .expect("replace should succeed");
 
+        assert_eq!(result.status, AgentToolStatus::Success);
         let content = fs::read_to_string(root.join("notes/todo.md"))
             .await
             .expect("read file");
         assert!(content.contains("lineX"));
-        let diff = result["diff"].as_str().unwrap_or_default();
+        let diff = result.summary.as_str();
         assert!(diff.contains("-line2"));
         assert!(diff.contains("+lineX"));
 
@@ -1573,8 +1608,9 @@ esac
         )
         .await
         .expect("before edit should succeed");
-        assert_eq!(before_result["matched"], true);
-        assert_eq!(before_result["changed"], true);
+        assert_eq!(before_result.status, AgentToolStatus::Success);
+        assert_eq!(before_result["update"]["matched"], true);
+        assert_eq!(before_result["update"]["changed"], true);
 
         let miss_result = call(
             &tool_mgr,
@@ -1588,8 +1624,9 @@ esac
         )
         .await
         .expect("miss should not fail");
-        assert_eq!(miss_result["matched"], false);
-        assert_eq!(miss_result["changed"], false);
+        assert_eq!(miss_result.status, AgentToolStatus::Success);
+        assert_eq!(miss_result["update"]["matched"], false);
+        assert_eq!(miss_result["update"]["changed"], false);
 
         let content = fs::read_to_string(root.join("notes/anchor.txt"))
             .await
@@ -1639,7 +1676,7 @@ esac
         assert_eq!(result["matched"], true);
         assert_eq!(result["line_range"], "1-2");
         let content = result["content"].as_str().unwrap_or_default();
-        assert_eq!(content, "L3\nL4");
+        assert_eq!(content, "L3\nL4\n");
 
         let chunk_to_end = call(
             &tool_mgr,
@@ -1669,7 +1706,7 @@ esac
         .await
         .expect("read last line in chunk should succeed");
         assert_eq!(last_line_in_chunk["matched"], true);
-        assert_eq!(last_line_in_chunk["content"], "L5");
+        assert_eq!(last_line_in_chunk["content"], "L5\n");
 
         let _ = fs::remove_dir_all(root).await;
     }

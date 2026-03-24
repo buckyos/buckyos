@@ -1415,7 +1415,8 @@ mod tests {
             chunk.push_str("line-x\n");
         }
         let cmd = build_read_result_cmd_line("demo.txt", Some(&chunk), Some(&json!("1-5")));
-        assert!(cmd.contains("read_file demo.txt range=1-5 first_chunk=\""));
+        assert!(cmd.contains("read demo.txt first_chunk=\""));
+        assert!(cmd.contains(" range=1-5"));
         assert!(cmd.contains("...(total 80 lines)..."));
     }
 
