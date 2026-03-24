@@ -7,8 +7,8 @@ use serde::Deserialize;
 use serde_json::{json, Value as Json};
 
 use crate::{
-    tokenize_bash_command_line, AgentTool, AgentToolError, AgentToolResult, SessionRuntimeContext,
-    ToolSpec,
+    build_builtin_tool_result, tokenize_bash_command_line, AgentTool, AgentToolError,
+    AgentToolResult, SessionRuntimeContext, ToolSpec,
 };
 
 use super::*;
@@ -704,6 +704,17 @@ impl AgentTool for TodoTool {
 
         let subcommand = tokens[1].trim().to_lowercase();
         let cli_args = TodoCliArgs::parse(&tokens[2..])?;
+        if subcommand == "help" {
+            return Ok(build_builtin_tool_result(
+                json!({
+                    "ok": true,
+                    "tool": TOOL_TODO,
+                    "usage": TODO_USAGE
+                }),
+                line.trim().to_string(),
+                "show usage",
+            ));
+        }
         let workspace_id =
             self.resolve_workspace_id_for_exec(cli_args.flag_string("ws")?, ctx, shell_cwd)?;
         let session_id = cli_args
@@ -768,15 +779,6 @@ impl AgentTool for TodoTool {
             "pending" => self.exec_pending(&cli_args, &workspace_id)?,
             "prompt" => self.exec_prompt(&cli_args, &workspace_id)?,
             "current" => self.exec_current(&cli_args, &workspace_id, &session_id)?,
-            "help" => {
-                return Ok(AgentToolResult::from_details(json!({
-                "ok": true,
-                "tool": TOOL_TODO,
-                "usage": TODO_USAGE
-                }))
-                .with_cmd_line(line.trim().to_string())
-                .with_result("show usage"));
-            }
             _ => {
                 return Err(AgentToolError::InvalidArgs(format!(
                     "unsupported todo subcommand `{}`",
@@ -827,11 +829,7 @@ impl AgentTool for TodoTool {
             }
         }
 
-        result.map(|details| {
-            AgentToolResult::from_details(details)
-                .with_cmd_line(format!("{TOOL_TODO} {action}"))
-                .with_result("ok")
-        })
+        result.map(|details| build_builtin_tool_result(details, format!("{TOOL_TODO} {action}"), "ok"))
     }
 }
 
@@ -1443,6 +1441,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn todo_help_returns_builtin_result_protocol() {
+        let tool = tool_for_test();
+        let ctx = test_ctx("did:od:jarvis");
+
+        let result = exec(&tool, &ctx, "todo help").await.expect("todo help");
+
+        assert!(result.is_agent_tool);
+        assert_eq!(result.summary, "show usage");
+        assert_eq!(result.command_line_text().as_deref(), Some("todo help"));
+        assert_eq!(result["tool"], TOOL_TODO);
+    }
+
+    #[tokio::test]
     async fn apply_init_replace_assigns_codes_and_order() {
         let tool = tool_for_test();
         let ctx = test_ctx("did:od:jarvis");
@@ -1812,6 +1823,7 @@ mod tests {
         assert_eq!(t002["item"]["priority"], 20);
 
         let next = exec(&tool, &ctx, "todo next").await.expect("todo next");
+        assert!(next.is_agent_tool);
         assert_eq!(next["item"]["todo_code"], "T001");
 
         exec(&tool, &ctx, "todo start T001")

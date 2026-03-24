@@ -752,6 +752,17 @@ impl std::fmt::Display for AgentToolResult {
     }
 }
 
+pub(crate) fn build_builtin_tool_result(
+    details: Json,
+    cmd_line: impl Into<String>,
+    summary: impl Into<String>,
+) -> AgentToolResult {
+    AgentToolResult::from_details(details)
+        .with_is_agent_tool(true)
+        .with_cmd_line(cmd_line)
+        .with_result(summary)
+}
+
 fn history_pending_reason_label(reason: AgentToolPendingReason) -> &'static str {
     match reason {
         AgentToolPendingReason::LongRunning => "long_running",
@@ -1060,12 +1071,14 @@ impl AgentTool for GetSessionTool {
             ));
         }
         let session = self.backend.session_view(session_id).await?;
-        Ok(AgentToolResult::from_details(json!({
+        Ok(build_builtin_tool_result(
+            json!({
             "ok": true,
             "session": session
-        }))
-        .with_cmd_line(format!("{TOOL_GET_SESSION} {session_id}"))
-        .with_result("ok"))
+            }),
+            format!("{TOOL_GET_SESSION} {session_id}"),
+            "ok",
+        ))
     }
 
     async fn exec(
@@ -1184,11 +1197,11 @@ impl AgentTool for LoadMemoryTool {
             .backend
             .load_memory_preview(token_limit, tags, current_time)
             .await?;
-        Ok(
-            AgentToolResult::from_details(Json::String(preview.rendered))
-                .with_cmd_line(TOOL_LOAD_MEMORY.to_string())
-                .with_result(format!("loaded {} memory item(s)", preview.item_count)),
-        )
+        Ok(build_builtin_tool_result(
+            Json::String(preview.rendered),
+            TOOL_LOAD_MEMORY.to_string(),
+            format!("loaded {} memory item(s)", preview.item_count),
+        ))
     }
 }
 
@@ -1332,11 +1345,7 @@ impl AgentTool for CreateWorkspaceTool {
         self.backend
             .create_workspace(ctx, name.to_string(), summary.to_string())
             .await
-            .map(|details| {
-                AgentToolResult::from_details(details)
-                    .with_cmd_line(line.trim().to_string())
-                    .with_result("ok")
-            })
+            .map(|details| build_builtin_tool_result(details, line.trim().to_string(), "ok"))
     }
 }
 
@@ -1429,12 +1438,14 @@ impl AgentTool for BindExternalWorkspaceTool {
             .bind_external_workspace(agent_did.as_str(), name.as_str(), workspace_path.as_str())
             .await?;
 
-        Ok(AgentToolResult::from_details(json!({
-            "ok": true,
-            "binding": binding
-        }))
-        .with_cmd_line(TOOL_BIND_EXTERNAL_WORKSPACE.to_string())
-        .with_result("ok"))
+        Ok(build_builtin_tool_result(
+            json!({
+                "ok": true,
+                "binding": binding
+            }),
+            TOOL_BIND_EXTERNAL_WORKSPACE.to_string(),
+            "ok",
+        ))
     }
 }
 
@@ -1496,12 +1507,14 @@ impl AgentTool for ListExternalWorkspacesTool {
             .backend
             .list_external_workspaces(agent_did.as_str())
             .await?;
-        Ok(AgentToolResult::from_details(json!({
-            "ok": true,
-            "workspaces": workspaces
-        }))
-        .with_cmd_line(TOOL_LIST_EXTERNAL_WORKSPACES.to_string())
-        .with_result("ok"))
+        Ok(build_builtin_tool_result(
+            json!({
+                "ok": true,
+                "workspaces": workspaces
+            }),
+            TOOL_LIST_EXTERNAL_WORKSPACES.to_string(),
+            "ok",
+        ))
     }
 }
 
@@ -1607,11 +1620,7 @@ impl AgentTool for BindWorkspaceTool {
         self.backend
             .bind_workspace(ctx, ctx.session_id.as_str(), workspace_id.as_str())
             .await
-            .map(|details| {
-                AgentToolResult::from_details(details)
-                    .with_cmd_line(line.trim().to_string())
-                    .with_result("ok")
-            })
+            .map(|details| build_builtin_tool_result(details, line.trim().to_string(), "ok"))
     }
 }
 
@@ -1707,9 +1716,11 @@ impl AgentTool for WorklogTool {
             .and_then(Json::as_str)
             .unwrap_or("worklog")
             .to_string();
-        Ok(AgentToolResult::from_details(details)
-            .with_cmd_line(TOOL_WORKLOG_MANAGE.to_string())
-            .with_result(action))
+        Ok(build_builtin_tool_result(
+            details,
+            TOOL_WORKLOG_MANAGE.to_string(),
+            action,
+        ))
     }
 }
 
@@ -2199,16 +2210,16 @@ impl AgentToolManager {
         let spec = tool.spec();
         let usage = render_bash_tool_usage(&spec);
         if is_help_flag(&tokens[1..]) {
-            return Ok(Some(
-                AgentToolResult::from_details(json!({
+            return Ok(Some(build_builtin_tool_result(
+                json!({
                     "ok": true,
                     "tool": tool_name,
                     "usage": usage,
                     "args_schema": spec.args_schema
-                }))
-                .with_cmd_line(line.trim().to_string())
-                .with_result("show usage"),
-            ));
+                }),
+                line.trim().to_string(),
+                "show usage",
+            )));
         }
 
         let call_id = format!("bash-cli-{}-{}", ctx.trace_id, ctx.step_idx);
@@ -2411,6 +2422,35 @@ mod tests {
         usage: Option<String>,
     }
 
+    struct StaticSessionBackend;
+
+    #[async_trait]
+    impl SessionViewBackend for StaticSessionBackend {
+        async fn session_view(&self, session_id: &str) -> Result<Json, AgentToolError> {
+            Ok(json!({
+                "session_id": session_id,
+                "status": "wait"
+            }))
+        }
+    }
+
+    struct StaticWorklogBackend;
+
+    #[async_trait]
+    impl WorklogActionBackend for StaticWorklogBackend {
+        async fn execute_action(
+            &self,
+            _ctx: &SessionRuntimeContext,
+            args: Json,
+        ) -> Result<Json, AgentToolError> {
+            Ok(json!({
+                "ok": true,
+                "action": args.get("action").cloned().unwrap_or_else(|| json!("list")),
+                "records": []
+            }))
+        }
+    }
+
     #[async_trait]
     impl AgentTool for EchoTool {
         fn spec(&self) -> ToolSpec {
@@ -2511,6 +2551,55 @@ mod tests {
         assert_eq!(result.details["ok"], true);
         assert_eq!(result.details["args"]["path"], "a.txt");
         assert_eq!(result.details["args"]["range"], "1:2");
+    }
+
+    #[tokio::test]
+    async fn manager_help_result_is_marked_as_builtin_tool() {
+        let mgr = AgentToolManager::new();
+        mgr.register_tool(EchoTool {
+            name: "read_file".to_string(),
+            usage: Some("read_file path=<path>".to_string()),
+        })
+        .expect("register tool");
+
+        let result = mgr
+            .call_tool_from_bash_line(&test_call_ctx(), "read_file --help")
+            .await
+            .expect("bash help succeeds")
+            .expect("tool matched");
+
+        assert!(result.is_agent_tool);
+        assert_eq!(result.summary, "show usage");
+        assert_eq!(result.command_line_text().as_deref(), Some("read_file --help"));
+        assert_eq!(result["tool"], "read_file");
+    }
+
+    #[tokio::test]
+    async fn get_session_tool_marks_result_as_builtin_tool() {
+        let tool = GetSessionTool::new(Arc::new(StaticSessionBackend));
+        let result = tool
+            .call(&test_call_ctx(), json!({ "session_id": "session-9" }))
+            .await
+            .expect("get session");
+
+        assert!(result.is_agent_tool);
+        assert_eq!(result.summary, "ok");
+        assert_eq!(result.command_line_text().as_deref(), Some("get_session session-9"));
+        assert_eq!(result["session"]["session_id"], "session-9");
+    }
+
+    #[tokio::test]
+    async fn worklog_tool_marks_result_as_builtin_tool() {
+        let tool = WorklogTool::new(Arc::new(StaticWorklogBackend));
+        let result = tool
+            .call(&test_call_ctx(), json!({ "action": "list_worklog" }))
+            .await
+            .expect("worklog call");
+
+        assert!(result.is_agent_tool);
+        assert_eq!(result.summary, "list_worklog");
+        assert_eq!(result.command_line_text().as_deref(), Some("worklog_manage"));
+        assert_eq!(result["action"], "list_worklog");
     }
 
     #[test]

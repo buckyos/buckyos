@@ -16,7 +16,10 @@ use super::{
     StepLimits, Tokenizer,
 };
 use crate::agent_session::AgentSession;
-use crate::agent_tool::{AgentToolResult, TodoTool, TodoToolConfig};
+use crate::agent_tool::{
+    AgentTool, AgentToolResult, FileToolConfig, ReadFileTool,
+    SessionRuntimeContext as ToolSessionRuntimeContext, TodoTool, TodoToolConfig,
+};
 use crate::step_record::LLMStepRecord;
 use crate::workspace::{WorkshopIndex, WorkshopWorkspaceRecord, WorkspaceType};
 use crate::workspace_path::WORKSHOP_INDEX_FILE_NAME;
@@ -663,7 +666,7 @@ async fn create_work_session(
             _ => "do",
         };
         let action_result = if idx >= 12 {
-            build_large_read_file_results(idx)
+            build_large_read_file_results(fixture, idx).await
         } else {
             HashMap::new()
         };
@@ -699,7 +702,19 @@ async fn create_work_session(
     Arc::new(Mutex::new(session))
 }
 
-fn build_large_read_file_results(step_idx: u32) -> HashMap<String, AgentToolResult> {
+async fn build_large_read_file_results(
+    fixture: &PromptFixture,
+    step_idx: u32,
+) -> HashMap<String, AgentToolResult> {
+    let tool = ReadFileTool::new(FileToolConfig::new(fixture.cwd_dir.clone()));
+    let ctx = ToolSessionRuntimeContext {
+        trace_id: format!("prompt-read-trace-{step_idx}"),
+        agent_name: "did:web:agent.example.com".to_string(),
+        behavior: "test_prompt".to_string(),
+        step_idx,
+        wakeup_id: format!("prompt-read-wakeup-{step_idx}"),
+        session_id: format!("prompt-read-session-{step_idx}"),
+    };
     let mut results = HashMap::new();
     for file_idx in 0..6_u32 {
         let path = format!("docs/context-{step_idx:02}-{file_idx:02}.md");
@@ -712,15 +727,20 @@ fn build_large_read_file_results(step_idx: u32) -> HashMap<String, AgentToolResu
                 .as_str(),
             );
         }
+        fs::write(fixture.cwd_dir.join(&path), &body)
+            .await
+            .expect("write realistic read_file payload");
 
-        let result = AgentToolResult::from_details(json!({
-            "path": path,
-            "content_preview": format!("{path} line 01")
-        }))
-        .with_is_agent_tool(true)
-        .with_cmd_line(format!("read_file {path} range=1-40"))
-        .with_result("read 40 lines")
-        .with_output(body);
+        let result = tool
+            .call(
+                &ctx,
+                json!({
+                    "path": path,
+                    "range": "1-40"
+                }),
+            )
+            .await
+            .expect("call read_file tool");
         results.insert(format!("read_file_{file_idx:02}"), result);
     }
     results

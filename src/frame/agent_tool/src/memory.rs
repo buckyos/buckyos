@@ -948,6 +948,7 @@ mod tests {
             )
             .await
             .expect("call load_memory tool");
+        assert!(result.is_agent_tool);
         let memory_text = result.as_str().expect("load_memory returns string");
         assert!(memory_text.contains("agent/status/current"));
     }
