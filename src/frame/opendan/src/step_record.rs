@@ -605,7 +605,9 @@ fn render_single_step(
     );
 
     let new_msg = match level {
-        RenderCompressionLevel::Complete => render_new_msgs_for_last_step(record.new_msg.as_slice()),
+        RenderCompressionLevel::Complete => {
+            render_new_msgs_for_last_step(record.new_msg.as_slice())
+        }
         _ => render_new_msgs_for_prompt(record.new_msg.as_slice(), options.max_new_msg_chars),
     };
     if !new_msg.is_empty() {
@@ -1139,7 +1141,9 @@ mod tests {
         let reply_idx = rendered
             .find("<reply_msg>")
             .expect("reply should be rendered");
-        let action_idx = rendered.find("<action>").expect("action should be rendered");
+        let action_idx = rendered
+            .find("<action>")
+            .expect("action should be rendered");
 
         assert!(conclusion_idx < thinking_idx);
         assert!(thinking_idx < reply_idx);
@@ -1157,7 +1161,8 @@ mod tests {
             &last_step_render_options(),
         );
 
-        assert!(rendered.contains("<recive_msg from=\"alice.example.com\" time=\"1970-01-01 00:00:01\">"));
+        assert!(rendered
+            .contains("<recive_msg from=\"alice.example.com\" time=\"1970-01-01 00:00:01\">"));
         assert!(rendered.contains("line 1\n\nline 2\nline 3"));
         assert!(!rendered.contains("line 1 line 2 line 3"));
     }

@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
+use chrono::Utc;
 use log::{info, warn};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -65,6 +66,8 @@ pub const TOOL_BIND_EXTERNAL_WORKSPACE: &str = "bind_external_workspace";
 pub const TOOL_CREATE_WORKSPACE: &str = "create_workspace";
 pub const TOOL_BIND_WORKSPACE: &str = "bind_workspace";
 pub const TOOL_LOAD_MEMORY: &str = "load_memory";
+pub const TOOL_SET_MEMORY: &str = "set_memory";
+pub const TOOL_REMOVE_MEMORY: &str = "remove_memory";
 pub const TOOL_TODO_MANAGE: &str = "todo_manage";
 pub const TOOL_WORKLOG_MANAGE: &str = "worklog_manage";
 
@@ -1191,6 +1194,17 @@ pub trait MemoryLoadBackend: Send + Sync {
     ) -> Result<MemoryLoadPreview, AgentToolError>;
 }
 
+#[async_trait]
+pub trait MemoryMutationBackend: Send + Sync {
+    async fn set_memory(
+        &self,
+        key: String,
+        content: String,
+        source: Json,
+    ) -> Result<Json, AgentToolError>;
+    async fn remove_memory(&self, key: String, source: Json) -> Result<Json, AgentToolError>;
+}
+
 #[derive(Clone)]
 pub struct LoadMemoryTool {
     backend: Arc<dyn MemoryLoadBackend>,
@@ -1271,6 +1285,221 @@ impl AgentTool for LoadMemoryTool {
             TOOL_LOAD_MEMORY.to_string(),
             format!("loaded {} memory item(s)", preview.item_count),
         ))
+    }
+}
+
+#[derive(Clone)]
+pub struct SetMemoryTool {
+    backend: Arc<dyn MemoryMutationBackend>,
+}
+
+impl SetMemoryTool {
+    pub fn new(backend: Arc<dyn MemoryMutationBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+impl AgentTool for SetMemoryTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_SET_MEMORY.to_string(),
+            description: "Store a memory entry by key and content.".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "key": {"type":"string"},
+                    "content": {"type":"string"}
+                },
+                "required": ["key", "content"]
+            }),
+            output_schema: json!({
+                "type":"object"
+            }),
+            usage: Some("set_memory <key> <content> | set_memory key=<key> content=<content>".to_string()),
+        }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        true
+    }
+
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let key = args
+            .get("key")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| AgentToolError::InvalidArgs("key is required".to_string()))?
+            .to_string();
+        let content = args
+            .get("content")
+            .and_then(Json::as_str)
+            .ok_or_else(|| AgentToolError::InvalidArgs("content is required".to_string()))?
+            .to_string();
+        let source = json!({
+            "kind": "tool",
+            "name": TOOL_SET_MEMORY,
+            "retrieved_at": Utc::now().to_rfc3339(),
+            "locator": {
+                "trace_id": ctx.trace_id,
+                "session_id": ctx.session_id,
+                "agent_name": ctx.agent_name,
+                "behavior": ctx.behavior,
+                "step_idx": ctx.step_idx,
+                "wakeup_id": ctx.wakeup_id
+            }
+        });
+
+        let details = self
+            .backend
+            .set_memory(key.clone(), content, source)
+            .await?;
+        Ok(build_builtin_tool_result(
+            details,
+            format!("{TOOL_SET_MEMORY} {key}"),
+            "ok",
+        ))
+    }
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        _shell_cwd: Option<&Path>,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let tokens = tokenize_bash_command_line(line)?;
+        if tokens.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "empty bash command line".to_string(),
+            ));
+        }
+        if tokens.len() >= 3 && !tokens[1].contains('=') {
+            let content = tokens[2..].join(" ");
+            return self
+                .call(
+                    ctx,
+                    json!({
+                        "key": tokens[1].trim(),
+                        "content": content
+                    }),
+                )
+                .await;
+        }
+        let args = parse_default_bash_exec_args(&tokens[1..])?;
+        self.call(ctx, args).await
+    }
+}
+
+#[derive(Clone)]
+pub struct RemoveMemoryTool {
+    backend: Arc<dyn MemoryMutationBackend>,
+}
+
+impl RemoveMemoryTool {
+    pub fn new(backend: Arc<dyn MemoryMutationBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+#[async_trait]
+impl AgentTool for RemoveMemoryTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: TOOL_REMOVE_MEMORY.to_string(),
+            description: "Remove a memory entry by key and delete its stored file.".to_string(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "key": {"type":"string"}
+                },
+                "required": ["key"]
+            }),
+            output_schema: json!({
+                "type":"object"
+            }),
+            usage: Some("remove_memory <key> | remove_memory key=<key>".to_string()),
+        }
+    }
+
+    fn support_bash(&self) -> bool {
+        true
+    }
+
+    fn support_action(&self) -> bool {
+        false
+    }
+
+    fn support_llm_tool_call(&self) -> bool {
+        true
+    }
+
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Json,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let key = args
+            .get("key")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| AgentToolError::InvalidArgs("key is required".to_string()))?
+            .to_string();
+        let source = json!({
+            "kind": "tool",
+            "name": TOOL_REMOVE_MEMORY,
+            "retrieved_at": Utc::now().to_rfc3339(),
+            "locator": {
+                "trace_id": ctx.trace_id,
+                "session_id": ctx.session_id,
+                "agent_name": ctx.agent_name,
+                "behavior": ctx.behavior,
+                "step_idx": ctx.step_idx,
+                "wakeup_id": ctx.wakeup_id
+            }
+        });
+
+        let details = self.backend.remove_memory(key.clone(), source).await?;
+        Ok(build_builtin_tool_result(
+            details,
+            format!("{TOOL_REMOVE_MEMORY} {key}"),
+            "ok",
+        ))
+    }
+
+    async fn exec(
+        &self,
+        ctx: &SessionRuntimeContext,
+        line: &str,
+        _shell_cwd: Option<&Path>,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let tokens = tokenize_bash_command_line(line)?;
+        if tokens.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "empty bash command line".to_string(),
+            ));
+        }
+        if tokens.len() == 1 {
+            return Err(AgentToolError::InvalidArgs("key is required".to_string()));
+        }
+        if tokens.len() == 2 && !tokens[1].contains('=') {
+            return self.call(ctx, json!({ "key": tokens[1].trim() })).await;
+        }
+        let args = parse_default_bash_exec_args(&tokens[1..])?;
+        self.call(ctx, args).await
     }
 }
 

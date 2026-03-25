@@ -46,6 +46,8 @@ for tool_name in \
   write_file \
   edit_file \
   get_session \
+  set_memory \
+  remove_memory \
   todo \
   create_workspace \
   bind_workspace \

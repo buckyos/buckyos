@@ -15,6 +15,7 @@ use super::{
     BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, PromptBuilder, SessionRuntimeContext,
     StepLimits, Tokenizer,
 };
+use crate::agent_environment::{AgentEnvironment, PromptTemplateContext, TemplateRenderMode};
 use crate::agent_session::AgentSession;
 use crate::agent_tool::{
     AgentTool, AgentToolResult, FileToolConfig, ReadFileTool,
@@ -708,6 +709,31 @@ async fn create_work_session(
     Arc::new(Mutex::new(session))
 }
 
+#[tokio::test]
+async fn test_prompt_renders_new_event_variable() {
+    let fixture = PromptFixture::new().await;
+    let env = AgentEnvironment::new(&fixture.agent_env_root)
+        .await
+        .expect("create agent environment");
+    let ctx = PromptTemplateContext {
+        new_event: Some("/taskmgr/new/task_001".to_string()),
+        ..PromptTemplateContext::default()
+    };
+
+    let rendered = env
+        .render_prompt_template(
+            "Prompt Event: {{new_event}}",
+            TemplateRenderMode::Text,
+            &ctx,
+        )
+        .await
+        .expect("render new_event template")
+        .expect("text mode should return rendered text");
+
+    println!("rendered: {}", rendered);
+    assert_eq!(rendered, "Prompt Event: /taskmgr/new/task_001");
+}
+
 async fn build_large_read_file_results(
     fixture: &PromptFixture,
     step_idx: u32,
@@ -784,8 +810,8 @@ async fn build_prompt_for_ui_session_renders_dense_history_and_env_context() {
     assert!(rendered.contains("Current Todo T001 [WAIT]"));
     assert!(rendered.contains("Workspace Todo (ws-rich, v7)"));
     assert!(rendered.contains("Recent Sessions:"));
-    assert!(rendered.contains("- work-gamma : Gamma Session"));
-    assert!(rendered.contains("- work-beta : Beta Session"));
+    assert!(rendered.contains("work-gamma |"));
+    assert!(rendered.contains("work-beta |"));
     assert!(rendered.contains("Recent Workspaces:"));
     assert!(rendered.contains("$ws-rich"));
     assert!(rendered.contains("Agent Guide:"));
@@ -835,7 +861,7 @@ async fn build_prompt_for_work_session_renders_dense_step_records_and_env_contex
     assert!(rendered.contains("Step Record Path="));
     assert!(rendered.contains("llm_step_record.jsonl"));
     assert!(rendered.contains("Recent Sessions:"));
-    assert!(rendered.contains("- work-rich-step-records : Current Session"));
+    assert!(rendered.contains("work-rich-step-records |"));
     assert!(rendered.contains("Workspace Todo (ws-rich, v7)"));
     assert!(rendered.contains("Last Steps Snapshot:"));
     assert!(rendered.contains("<step behavior=\"check\" step_num=12 step_time=\""));

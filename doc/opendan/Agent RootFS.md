@@ -196,6 +196,15 @@ session 绑定本地 workspace 后，`workspace_info.binding` 必须至少包含
 
 另外还包含 `max_steps_per_wakeup`、`max_behavior_hops`、`max_walltime_ms`、sleep/hp/memory 限制等运行控制参数。
 
+Agent package / env root 下的本地 `agent.json` 还可以覆盖部分运行时默认值：
+
+- `default_ui_behavior_name`
+  UI session 的默认 behavior 名称；未设置时继续按现有逻辑自动选择，优先 `resolve_router`。
+- `default_work_behavior_name`
+  work session 的默认 behavior 名称；未设置时继续按现有逻辑自动选择，优先 `plan` / `do`。
+- `self_check_timer`
+  agent 自检定时器周期，单位秒；默认 `10`。设置为 `0` 表示关闭。当前版本只会启动线程并输出日志，后续再补真实自检行为。
+
 ## 7. Agent 加载逻辑
 
 ### 7.1 启动器到 opendan 进程

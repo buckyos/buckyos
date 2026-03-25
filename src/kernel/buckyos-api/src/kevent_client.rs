@@ -246,7 +246,7 @@ impl KEventClientInner {
     async fn dispatch_event(&self, event: &Event) {
         let snapshot: Vec<Arc<ReaderState>> = self.readers.read().await.values().cloned().collect();
         for reader in snapshot {
-            if reader_match_event(&reader.patterns, &event.eventid) {
+            if match_event_patterns(&reader.patterns, &event.eventid) {
                 reader.push(event.clone()).await;
             }
         }
@@ -259,7 +259,7 @@ impl KEventClientInner {
         let snapshot: Vec<Arc<ReaderState>> =
             self.readers.blocking_read().values().cloned().collect();
         for reader in snapshot {
-            if reader_match_event(&reader.patterns, &event.eventid) {
+            if match_event_patterns(&reader.patterns, &event.eventid) {
                 reader.push_sync(event.clone());
             }
         }
@@ -841,8 +841,9 @@ fn build_timer_data(timer_id: &str, tick_count: u64, data: Option<Value>) -> Val
     }
 }
 
-fn reader_match_event(patterns: &[String], eventid: &str) -> bool {
+pub fn match_event_patterns<S: AsRef<str>>(patterns: &[S], eventid: &str) -> bool {
     for pattern in patterns {
+        let pattern = pattern.as_ref();
         if is_global_pattern(pattern) {
             if is_global_eventid(eventid) && match_global_pattern(pattern, eventid) {
                 return true;
@@ -1047,6 +1048,16 @@ mod tests {
         ));
         assert!(match_global_pattern("/taskmgr/**", "/taskmgr/new"));
         assert!(match_global_pattern("/taskmgr/**", "/taskmgr/new/task_001"));
+    }
+
+    #[test]
+    fn test_match_event_patterns() {
+        let patterns = ["heartbeat_tick", "/taskmgr/**"];
+
+        assert!(match_event_patterns(&patterns, "heartbeat_tick"));
+        assert!(match_event_patterns(&patterns, "/taskmgr/new/task_001"));
+        assert!(!match_event_patterns(&patterns, "heartbeat_tock"));
+        assert!(!match_event_patterns(&patterns, "/other/task_001"));
     }
 
     #[tokio::test]

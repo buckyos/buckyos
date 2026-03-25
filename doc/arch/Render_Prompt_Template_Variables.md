@@ -7,11 +7,12 @@
 Render Prompt 逻辑分为两个阶段：
 
 1. **阶段一：OpenDAN 预处理**
-   - 处理三种指令：`__OPENDAN_ENV($key)__`、`__OPENDAN_CONTENT(path)__`、`__OPENDAN_VAR(var_name, $exp)`。
+   - 处理四种指令：`__OPENDAN_ENV($key)__`、`__OPENDAN_CONTENT(path)__`、`__OPENDAN_EXEC(cmd)`、`__OPENDAN_VAR(var_name, $exp)`。
    - `__OPENDAN_ENV($key)__` 是**纯文本替换**：通过动态变量获取求值后，将结果直接替换到当前位置，不做路径识别、不读文件。参数必须以 `$` 开头，表示动态变量引用。
    - `__OPENDAN_CONTENT(path)__` 是**文件内容内联**：解析路径后，读取文件全文并替换到当前位置。参数可以是 `$` 开头的动态变量引用，也可以是绝对路径。
+   - `__OPENDAN_EXEC(cmd)` 是**命令执行内联**：执行 shell 命令后，将标准输出替换到当前位置。命令里可以直接引用 OpenDAN 动态路径变量，例如 `__OPENDAN_EXEC("tree -L 3 $agent_root/memory")__`。
    - `__OPENDAN_VAR(var_name, $exp)` 是**上下文注册指令**：求值后将结果注入 upon 渲染上下文，指令本身替换为空字符串（因此可以写在模板任意位置）。
-   - 三者共享同一套动态变量获取机制（见第四节）。
+   - 四者共享同一套动态变量获取机制（见第四节）。
    - 阶段完成后，文本中不应再存在任何 `__OPENDAN_*` 指令，否则报错。
    - 阶段一的输出可以继续包含 upon 占位符，留待第二阶段渲染。
 
@@ -26,12 +27,13 @@ Render Prompt 逻辑分为两个阶段：
 - **阶段二**负责"渲染模板"——纯粹的标准模板引擎，只做变量替换。
 - 两个阶段之间的边界是**upon 上下文**：阶段一写入，阶段二只读。
 
-三种指令各司其职，互不重叠：
+四种指令各司其职，互不重叠：
 
 | 指令 | 职责 | 输出 |
 |------|------|------|
 | `__OPENDAN_ENV($key)__` | 动态值 → 文本替换 | 求值结果内联到文本 |
 | `__OPENDAN_CONTENT(path)__` | 路径 → 读取文件 → 内容替换 | 文件内容内联到文本 |
+| `__OPENDAN_EXEC(cmd)` | 执行命令 → 读取 stdout → 文本替换 | 命令输出内联到文本 |
 | `__OPENDAN_VAR(var_name, $exp)` | 动态值 → 注册上下文 | 文本中替换为空 |
 
 ## 一、`__OPENDAN_ENV($key)__`：纯文本替换

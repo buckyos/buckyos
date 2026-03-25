@@ -90,6 +90,8 @@ impl Default for SessionWaitDetails {
 pub struct SessionInputItem {
     pub msg: Option<MsgRecord>,
     pub event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_data: Option<Json>,
 }
 
 impl Default for SessionInputItem {
@@ -97,6 +99,7 @@ impl Default for SessionInputItem {
         Self {
             msg: None,
             event_id: None,
+            event_data: None,
         }
     }
 }
@@ -168,6 +171,7 @@ pub struct AgentSession {
     pub event_kmsgqueue_curosr: u64,
     //这个不会被序列化
     pub just_readed_input_msg: Vec<Vec<u8>>,
+    pub just_readed_input_event: Vec<Vec<u8>>,
 
     pub pwd: PathBuf,
     pub session_root_dir: PathBuf,
@@ -283,6 +287,7 @@ impl AgentSession {
             msg_kmsgqueue_curosr: 0,
             event_kmsgqueue_curosr: 0,
             just_readed_input_msg: vec![],
+            just_readed_input_event: vec![],
             pwd: PathBuf::new(),
             session_root_dir: PathBuf::new(),
             workspace_info: None,
@@ -343,6 +348,7 @@ impl AgentSession {
             msg_kmsgqueue_curosr: 0,
             event_kmsgqueue_curosr: 0,
             just_readed_input_msg: vec![],
+            just_readed_input_event: vec![],
             workspace_info: runtime_meta.workspace_info,
             local_workspace_id: normalize_optional_string(runtime_meta.local_workspace_id),
             worklog: runtime_meta.worklog,
@@ -789,10 +795,15 @@ impl AgentSessionMgr {
     pub async fn new(
         owner_agent: impl Into<String>,
         sessions_root: impl Into<PathBuf>,
-        _default_behavior: String,
+        default_ui_behavior: String,
+        default_work_behavior: String,
     ) -> Result<Self, AgentToolError> {
         let owner_agent = owner_agent.into();
         let sessions_root = sessions_root.into();
+        let default_ui_behavior = normalize_optional_string(Some(default_ui_behavior))
+            .unwrap_or_else(|| DEFAULT_UI_BEHAVIOR.to_string());
+        let default_work_behavior = normalize_optional_string(Some(default_work_behavior))
+            .unwrap_or_else(|| DEFAULT_WORK_BEHAVIOR.to_string());
 
         if !is_existing_dir(&sessions_root).await {
             info!(
@@ -811,8 +822,8 @@ impl AgentSessionMgr {
         let store = Self {
             owner_agent,
             sessions_root,
-            default_ui_behavior: DEFAULT_UI_BEHAVIOR.to_string(),
-            default_work_behavior: DEFAULT_WORK_BEHAVIOR.to_string(),
+            default_ui_behavior,
+            default_work_behavior,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             scheduler_lock: Arc::new(Mutex::new(())),
             ready_notify: Arc::new(Notify::new()),
@@ -1084,6 +1095,10 @@ impl AgentSessionMgr {
         tokio::time::timeout(timeout, self.ready_notify.notified())
             .await
             .is_ok()
+    }
+
+    pub fn notify_ready(&self) {
+        self.ready_notify.notify_one();
     }
 
     pub async fn session_view(&self, session_id: &str) -> Result<Json, AgentToolError> {
@@ -1414,6 +1429,26 @@ mod tests {
     use crate::workspace::{
         CreateLocalWorkspaceRequest, LocalWorkspaceManagerConfig, WorkspaceOwner,
     };
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn session_mgr_uses_configured_default_behaviors() {
+        let temp = tempdir().expect("create tempdir");
+        let mgr = AgentSessionMgr::new(
+            "agent.test",
+            temp.path().join("sessions"),
+            "ui_default".to_string(),
+            "work_default".to_string(),
+        )
+        .await
+        .expect("create session manager");
+
+        assert_eq!(mgr.default_behavior_for_session_id("ui-demo"), "ui_default");
+        assert_eq!(
+            mgr.default_behavior_for_session_id("work-demo"),
+            "work_default"
+        );
+    }
 
     #[test]
     fn summary_view_has_zero_queue_counters() {
@@ -1601,6 +1636,7 @@ mod tests {
             "did:opendan:test",
             sessions_root.clone(),
             "resolve_router".to_string(),
+            "plan".to_string(),
         )
         .await
         .expect("create session manager");
@@ -1641,6 +1677,7 @@ mod tests {
             "did:opendan:test",
             sessions_root.clone(),
             "resolve_router".to_string(),
+            "plan".to_string(),
         )
         .await
         .expect("reload session manager");
@@ -1660,6 +1697,7 @@ mod tests {
             "did:opendan:test",
             sessions_root.clone(),
             "resolve_router".to_string(),
+            "plan".to_string(),
         )
         .await
         .expect("create session manager");
@@ -1688,6 +1726,7 @@ mod tests {
             "did:opendan:test",
             sessions_root,
             "resolve_router".to_string(),
+            "plan".to_string(),
         )
         .await
         .expect("reload session manager");

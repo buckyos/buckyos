@@ -887,6 +887,7 @@ mod tests {
                 "did:example:agent".to_string(),
                 root.join("sessions"),
                 "on_wakeup".to_string(),
+                "on_wakeup".to_string(),
             )
             .await
             .expect("create session store"),

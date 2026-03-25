@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,7 +16,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     AgentToolError, AgentToolManager, LoadMemoryTool, MemoryLoadBackend, MemoryLoadPreview,
-    TOOL_LOAD_MEMORY,
+    MemoryMutationBackend, RemoveMemoryTool, SetMemoryTool, TOOL_LOAD_MEMORY, TOOL_REMOVE_MEMORY,
+    TOOL_SET_MEMORY,
 };
 
 const DEFAULT_MEMORY_DIR_NAME: &str = "memory";
@@ -150,7 +152,17 @@ impl AgentMemory {
         if !tool_mgr.has_tool(TOOL_LOAD_MEMORY) {
             tool_mgr.register_tool(LoadMemoryTool::new(Arc::new(self.clone())))?;
         }
+        if !tool_mgr.has_tool(TOOL_SET_MEMORY) {
+            tool_mgr.register_tool(SetMemoryTool::new(Arc::new(self.clone())))?;
+        }
+        if !tool_mgr.has_tool(TOOL_REMOVE_MEMORY) {
+            tool_mgr.register_tool(RemoveMemoryTool::new(Arc::new(self.clone())))?;
+        }
         Ok(())
+    }
+
+    pub async fn remove_memory(&self, key: &str, source: Json) -> Result<Json, AgentToolError> {
+        self.set_memory(key, "null", source).await
     }
 
     pub async fn set_memory(
@@ -187,6 +199,7 @@ impl AgentMemory {
         };
 
         let index_path = self.index_path_for_key(&normalized_key);
+        let memory_path = self.memory_path_for_key(&normalized_key);
         {
             let _guard = self.inner.write_lock.lock().await;
             self.append_log_line(&envelope).await?;
@@ -194,9 +207,11 @@ impl AgentMemory {
             let mut current = self.read_state_map().await?;
             if envelope.valid {
                 current.insert(normalized_key.clone(), envelope.clone());
+                self.write_memory_content(&memory_path, content).await?;
                 self.write_index_doc(&index_path, &envelope).await?;
             } else {
                 current.remove(&normalized_key);
+                self.remove_memory_content(&memory_path).await?;
                 if let Err(err) = fs::remove_file(&index_path).await {
                     if err.kind() != std::io::ErrorKind::NotFound {
                         return Err(AgentToolError::ExecFailed(format!(
@@ -221,6 +236,7 @@ impl AgentMemory {
             "key": normalized_key,
             "valid": envelope.valid,
             "ts": envelope.ts,
+            "memory_path": memory_path.to_string_lossy(),
             "index_path": index_path.to_string_lossy(),
         }))
     }
@@ -296,9 +312,14 @@ impl AgentMemory {
                 Ok(envelope) => {
                     if envelope.valid {
                         let index_path = self.index_path_for_key(&envelope.key);
+                        let memory_path = self.memory_path_for_key(&envelope.key);
+                        let raw_content = serialize_memory_content(&envelope.content)?;
+                        self.write_memory_content(&memory_path, &raw_content).await?;
                         self.write_index_doc(&index_path, &envelope).await?;
                         state_map.insert(envelope.key.clone(), envelope);
                     } else {
+                        let memory_path = self.memory_path_for_key(&envelope.key);
+                        self.remove_memory_content(&memory_path).await?;
                         state_map.remove(&envelope.key);
                     }
                 }
@@ -551,11 +572,45 @@ impl AgentMemory {
         atomic_write(path, &bytes).await
     }
 
+    async fn write_memory_content(
+        &self,
+        path: &Path,
+        content: &str,
+    ) -> Result<(), AgentToolError> {
+        atomic_write(path, content.as_bytes()).await
+    }
+
+    async fn remove_memory_content(&self, path: &Path) -> Result<(), AgentToolError> {
+        match fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(AgentToolError::ExecFailed(format!(
+                "remove memory content file failed: path={} err={err}",
+                path.display()
+            ))),
+        }
+    }
+
     fn index_path_for_key(&self, key: &str) -> PathBuf {
         let digest = Sha256::digest(key.as_bytes());
         let hex = hex::encode(digest);
         let dir = &hex[..MAX_INDEX_SEGMENT_BYTES.min(hex.len())];
         self.inner.index_root.join(dir).join("entry.json")
+    }
+
+    fn memory_path_for_key(&self, key: &str) -> PathBuf {
+        let raw = key.trim().trim_start_matches('/');
+        match parse_memory_relative_path(
+            raw,
+            [
+                self.inner.cfg.log_file_name.as_str(),
+                self.inner.cfg.state_file_name.as_str(),
+                self.inner.cfg.index_dir_name.as_str(),
+            ],
+        ) {
+            Some(path) => self.inner.memory_dir.join(path),
+            None => self.inner.memory_dir.join(flat_memory_file_name(raw)),
+        }
     }
 }
 
@@ -573,6 +628,22 @@ impl MemoryLoadBackend for AgentMemory {
             rendered: Self::render_memory_items(&items),
             item_count: items.len(),
         })
+    }
+}
+
+#[async_trait]
+impl MemoryMutationBackend for AgentMemory {
+    async fn set_memory(
+        &self,
+        key: String,
+        content: String,
+        source: Json,
+    ) -> Result<Json, AgentToolError> {
+        self.set_memory(key.as_str(), content.as_str(), source).await
+    }
+
+    async fn remove_memory(&self, key: String, source: Json) -> Result<Json, AgentToolError> {
+        self.set_memory(key.as_str(), "null", source).await
     }
 }
 
@@ -680,6 +751,15 @@ fn parse_content_value(content: &str) -> Json {
     serde_json::from_str::<Json>(content).unwrap_or_else(|_| Json::String(content.to_string()))
 }
 
+fn serialize_memory_content(content: &Json) -> Result<String, AgentToolError> {
+    match content {
+        Json::String(text) => Ok(text.clone()),
+        other => serde_json::to_string(other).map_err(|err| {
+            AgentToolError::ExecFailed(format!("serialize memory content failed: {err}"))
+        }),
+    }
+}
+
 fn estimate_token_count(text: &str) -> usize {
     text.chars().count().div_ceil(4).max(1)
 }
@@ -728,6 +808,39 @@ fn normalize_key(key: &str) -> Result<String, AgentToolError> {
         format!("/{trimmed}")
     };
     Ok(normalized)
+}
+
+fn parse_memory_relative_path<'a, I>(raw: &str, reserved_roots: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    if raw.is_empty() {
+        return None;
+    }
+
+    let reserved_roots = reserved_roots.into_iter().collect::<HashSet<_>>();
+    let segments = raw.split('/').collect::<Vec<_>>();
+    if segments.iter().any(|segment| segment.is_empty()) {
+        return None;
+    }
+    if reserved_roots.contains(segments[0]) {
+        return None;
+    }
+
+    let mut path = PathBuf::new();
+    for segment in segments {
+        let segment_path = Path::new(segment);
+        let mut components = segment_path.components();
+        match components.next() {
+            Some(Component::Normal(_)) if components.next().is_none() => path.push(segment),
+            _ => return None,
+        }
+    }
+    Some(path)
+}
+
+fn flat_memory_file_name(raw: &str) -> String {
+    format!(".memory-key-{}", hex::encode(raw.as_bytes()))
 }
 
 async fn touch_file(path: &Path) -> Result<(), AgentToolError> {
@@ -907,6 +1020,118 @@ mod tests {
         let memory_text = AgentMemory::render_memory_items(&loaded);
 
         assert!(!memory_text.contains("user/calendar/meeting"));
+        assert!(
+            fs::metadata(memory.memory_path_for_key("/user/calendar/meeting"))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_memory_delegates_to_set_memory_and_deletes_file() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
+            .await
+            .expect("create memory");
+
+        memory
+            .set_memory(
+                "/user/calendar/meeting",
+                "weekly meeting",
+                json!({
+                    "kind":"user",
+                    "name":"chat",
+                    "retrieved_at":"2026-03-23T10:00:00Z",
+                    "locator":{"conversation_id":"c1","message_id":"m5"}
+                }),
+            )
+            .await
+            .expect("set memory");
+        let memory_path = memory.memory_path_for_key("/user/calendar/meeting");
+        assert!(fs::metadata(&memory_path).await.is_ok());
+
+        let result = memory
+            .remove_memory(
+                "/user/calendar/meeting",
+                json!({
+                    "kind":"tool",
+                    "name":"remove_memory",
+                    "retrieved_at":"2026-03-23T10:01:00Z",
+                    "locator":{"call_id":"rm-1"}
+                }),
+            )
+            .await
+            .expect("remove memory");
+
+        assert_eq!(result["valid"], false);
+        assert!(fs::metadata(&memory_path).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn set_memory_creates_nested_directories_from_key() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
+            .await
+            .expect("create memory");
+
+        memory
+            .set_memory(
+                "remind/bob/20260323",
+                "weekly meeting",
+                json!({
+                    "kind":"user",
+                    "name":"chat",
+                    "retrieved_at":"2026-03-23T10:00:00Z",
+                    "locator":{"conversation_id":"c1","message_id":"m3"}
+                }),
+            )
+            .await
+            .expect("set nested memory");
+
+        let memory_path = memory.memory_path_for_key("/remind/bob/20260323");
+        let written = fs::read_to_string(&memory_path)
+            .await
+            .expect("read nested memory file");
+        assert_eq!(written, "weekly meeting");
+        assert!(memory_path.ends_with("remind/bob/20260323"));
+    }
+
+    #[tokio::test]
+    async fn invalid_relative_path_key_falls_back_to_single_file() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
+            .await
+            .expect("create memory");
+
+        memory
+            .set_memory(
+                "remind/../20260323",
+                "weekly meeting",
+                json!({
+                    "kind":"user",
+                    "name":"chat",
+                    "retrieved_at":"2026-03-23T10:00:00Z",
+                    "locator":{"conversation_id":"c1","message_id":"m4"}
+                }),
+            )
+            .await
+            .expect("set fallback memory");
+
+        let memory_path = memory.memory_path_for_key("/remind/../20260323");
+        let written = fs::read_to_string(&memory_path)
+            .await
+            .expect("read fallback memory file");
+        assert_eq!(written, "weekly meeting");
+        assert_eq!(
+            memory_path.parent().expect("fallback file parent"),
+            memory.memory_dir()
+        );
+        assert!(memory_path.file_name().is_some_and(|name| {
+            name.to_string_lossy().starts_with(".memory-key-")
+        }));
     }
 
     #[tokio::test]
@@ -951,6 +1176,53 @@ mod tests {
         assert!(result.is_agent_tool);
         let memory_text = result.as_str().expect("load_memory returns string");
         assert!(memory_text.contains("agent/status/current"));
+    }
+
+    #[tokio::test]
+    async fn remove_memory_tool_is_callable_and_deletes_file() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
+            .await
+            .expect("create memory");
+        memory
+            .set_memory(
+                "/agent/status/current",
+                "ready",
+                json!({
+                    "kind":"agent",
+                    "name":"self",
+                    "retrieved_at":"2026-02-22T12:00:00Z",
+                    "locator":{"step":"boot"}
+                }),
+            )
+            .await
+            .expect("set memory");
+
+        let memory_path = memory.memory_path_for_key("/agent/status/current");
+        assert!(fs::metadata(&memory_path).await.is_ok());
+
+        let tool_mgr = AgentToolManager::new();
+        memory
+            .register_tools(&tool_mgr)
+            .expect("register memory tools");
+
+        let result = tool_mgr
+            .call_tool(
+                &test_trace_ctx(),
+                AiToolCall {
+                    name: TOOL_REMOVE_MEMORY.to_string(),
+                    args: value_to_object_map(json!({
+                        "key": "/agent/status/current"
+                    })),
+                    call_id: "call-remove-memory-1".to_string(),
+                },
+            )
+            .await
+            .expect("call remove_memory tool");
+        assert!(result.is_agent_tool);
+        assert_eq!(result.details["valid"], false);
+        assert!(fs::metadata(&memory_path).await.is_err());
     }
 
     #[tokio::test]

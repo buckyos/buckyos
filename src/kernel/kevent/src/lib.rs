@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use buckyos_api::{
-    is_global_eventid, is_global_pattern, match_global_pattern, validate_event_data_size,
+    is_global_eventid, is_global_pattern, match_event_patterns, validate_event_data_size,
     validate_eventid, validate_pattern, Event, KEventDaemonRequest, KEventDaemonResponse,
     KEventError, KEventResult,
 };
@@ -249,7 +249,7 @@ impl KEventService {
         let snapshot: Vec<Arc<ServiceReaderState>> =
             self.readers.read().await.values().cloned().collect();
         for reader in snapshot {
-            if match_reader(&reader.patterns, &event.eventid) {
+            if match_event_patterns(&reader.patterns, &event.eventid) {
                 reader.push(event.clone()).await;
             }
         }
@@ -268,15 +268,6 @@ impl KEventService {
             None => Ok(()),
         }
     }
-}
-
-fn match_reader(patterns: &[String], eventid: &str) -> bool {
-    for pattern in patterns {
-        if match_global_pattern(pattern, eventid) {
-            return true;
-        }
-    }
-    false
 }
 
 fn now_millis() -> u64 {

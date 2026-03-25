@@ -3,6 +3,9 @@
   "name": "Jarvis",
   "kind": "root-agent",
   "description": "Default built-in OpenDAN agent for BuckyOS",
+  "default_ui_behavior_name": "resolve_router",
+  "default_work_behavior_name": "plan",
+  "self_check_timer": 10,
   "self" : "",
   "role" : ""
 }

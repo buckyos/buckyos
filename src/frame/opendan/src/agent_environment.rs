@@ -14,8 +14,10 @@ use ndn_lib::MsgObject;
 use rusqlite::{params, Connection};
 use serde_json::{Map, Value as Json};
 use tokio::fs;
+use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task;
+use tokio::time::{timeout, Duration};
 use upon::Engine;
 
 use buckyos_api::msg_queue::Message;
@@ -39,9 +41,11 @@ use crate::workspace_path::{
 
 const MAX_INCLUDE_BYTES: usize = 64 * 1024;
 const MAX_TOTAL_RENDER_BYTES: usize = 256 * 1024;
+const TEMPLATE_EXEC_TIMEOUT_MS: u64 = 10_000;
 const ESCAPED_OPEN_SENTINEL: &str = "\u{001f}ESCAPED_OPEN_BRACE\u{001f}";
 const ESCAPED_CLOSE_SENTINEL: &str = "\u{001f}ESCAPED_CLOSE_BRACE\u{001f}";
 const DEFAULT_NEW_MSG_MAX_PULL: usize = 32;
+const DEFAULT_NEW_EVENT_MAX_PULL: usize = 32;
 const DEFAULT_SESSION_LIST_MAX_PULL: usize = 16;
 const DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL: usize = 16;
 const DEFAULT_LAST_STEPS_MAX_PULL: usize = 8;
@@ -345,6 +349,48 @@ impl AgentEnvironment {
             return Ok(render_new_msgs_from_kmsgqueue(new_msgs.as_slice()).await);
         }
 
+        if k.starts_with("new_event") {
+            let max_pull = parse_pull_limit_from_key(k, "new_event", DEFAULT_NEW_EVENT_MAX_PULL);
+            let kmsg_sub_id = AIAgent::get_session_kmsgqueue_sub_id(
+                owner_agent.as_str(),
+                session_id.as_str(),
+                InputQueueKind::Event,
+            );
+            let max_pull_u32 = (max_pull.min(u32::MAX as usize)) as u32;
+            let new_events =
+                AgentSession::pull_new_msg_from_kmsgqueue(kmsg_sub_id.as_str(), max_pull_u32).await;
+
+            if new_events.is_err() {
+                warn!(
+                    "agent_env.load_value_from_session pull_new_event failed: session={} sub={} err={}",
+                    session_id,
+                    kmsg_sub_id,
+                    new_events.err().unwrap()
+                );
+                return Ok(None);
+            }
+
+            let new_events = new_events.unwrap();
+            if new_events.is_empty() {
+                return Ok(None);
+            }
+            debug!(
+                "agent_env.new_event_pull: session={} sub_id={} count={}",
+                session_id,
+                kmsg_sub_id,
+                new_events.len()
+            );
+
+            if let Some(last_msg) = new_events.last() {
+                let mut guard = session.lock().await;
+                guard.just_readed_input_event =
+                    new_events.iter().map(|r| r.payload.clone()).collect();
+                guard.event_kmsgqueue_curosr = last_msg.index;
+            }
+
+            return Ok(render_new_events_from_kmsgqueue(new_events.as_slice()));
+        }
+
         if k.starts_with("session_list") {
             // k format: session_list / session_list.$num
             let max_pull =
@@ -374,11 +420,6 @@ impl AgentEnvironment {
             )
             .await);
         }
-
-        // if k.starts_with("new_event") {
-        //     unimplemented!()
-        // }
-
         if k == "current_todo"
             || k == "workspace_current_todo_id"
             || k == "workspace_current_todo"
@@ -831,6 +872,7 @@ where
 {
     const ENV_TOKEN_OPEN: &str = "__OPENDAN_ENV(";
     const CONTENT_TOKEN_OPEN: &str = "__OPENDAN_CONTENT(";
+    const EXEC_TOKEN_OPEN: &str = "__OPENDAN_EXEC(";
     const VAR_TOKEN_OPEN: &str = "__OPENDAN_VAR(";
     const TOKEN_PREFIX: &str = "__OPENDAN_";
 
@@ -900,6 +942,22 @@ where
                     );
                 }
             }
+            cursor = arg_end + 3;
+            changed = true;
+            continue;
+        }
+
+        if input[start..].starts_with(EXEC_TOKEN_OPEN) {
+            let arg_start = start + EXEC_TOKEN_OPEN.len();
+            let Some(arg_end) = input[arg_start..].find(")__").map(|idx| arg_start + idx) else {
+                return Err(AgentToolError::ExecFailed(
+                    "render text template failed: malformed __OPENDAN_EXEC directive".to_string(),
+                ));
+            };
+            let command_arg = input[arg_start..arg_end].trim();
+            let output_text =
+                execute_text_template_command(command_arg, load_value, env_context).await?;
+            output.push_str(output_text.as_str());
             cursor = arg_end + 3;
             changed = true;
             continue;
@@ -1099,6 +1157,142 @@ async fn load_text_from_absolute_path(
         &content,
         MAX_INCLUDE_BYTES,
     )))
+}
+
+async fn execute_text_template_command<F, Fut>(
+    command_arg: &str,
+    load_value: &F,
+    env_context: &HashMap<String, Json>,
+) -> Result<String, AgentToolError>
+where
+    F: Fn(&str) -> Fut,
+    Fut: Future<Output = Result<Option<String>, AgentToolError>>,
+{
+    let command = parse_exec_command_arg(command_arg)?;
+    if command.is_empty() {
+        return Err(AgentToolError::ExecFailed(
+            "render text template failed: __OPENDAN_EXEC command is empty".to_string(),
+        ));
+    }
+
+    let expanded_command =
+        expand_exec_command_dynamic_values(command, load_value, env_context).await?;
+    let output = timeout(
+        Duration::from_millis(TEMPLATE_EXEC_TIMEOUT_MS),
+        Command::new("sh")
+            .arg("-lc")
+            .arg(expanded_command.as_str())
+            .output(),
+    )
+    .await
+    .map_err(|_| {
+        AgentToolError::ExecFailed(format!(
+            "render text template failed: __OPENDAN_EXEC timed out after {}ms: `{}`",
+            TEMPLATE_EXEC_TIMEOUT_MS,
+            truncate_chars(expanded_command.as_str(), 160)
+        ))
+    })?
+    .map_err(|err| {
+        AgentToolError::ExecFailed(format!(
+            "render text template failed: __OPENDAN_EXEC spawn failed: command=`{}` err={err}",
+            truncate_chars(expanded_command.as_str(), 160)
+        ))
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = truncate_chars(stderr.trim(), 200);
+        let exit_code = output.status.code().unwrap_or_default();
+        let detail = if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(" stderr={stderr}")
+        };
+        return Err(AgentToolError::ExecFailed(format!(
+            "render text template failed: __OPENDAN_EXEC command failed: exit_code={} command=`{}`{}",
+            exit_code,
+            truncate_chars(expanded_command.as_str(), 160),
+            detail
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(truncate_utf8(stdout.as_ref(), MAX_INCLUDE_BYTES))
+}
+
+fn parse_exec_command_arg(command_arg: &str) -> Result<&str, AgentToolError> {
+    let trimmed = command_arg.trim();
+    if trimmed.is_empty() {
+        return Ok(trimmed);
+    }
+
+    let first = trimmed.chars().next().unwrap_or_default();
+    let last = trimmed.chars().last().unwrap_or_default();
+    if (first == '"' || first == '\'') && first != last {
+        return Err(AgentToolError::ExecFailed(format!(
+            "render text template failed: malformed __OPENDAN_EXEC command `{}`",
+            truncate_chars(trimmed, 160)
+        )));
+    }
+    if (first == '"' || first == '\'') && trimmed.len() >= 2 {
+        return Ok(&trimmed[1..trimmed.len() - 1]);
+    }
+    Ok(trimmed)
+}
+
+async fn expand_exec_command_dynamic_values<F, Fut>(
+    command: &str,
+    load_value: &F,
+    env_context: &HashMap<String, Json>,
+) -> Result<String, AgentToolError>
+where
+    F: Fn(&str) -> Fut,
+    Fut: Future<Output = Result<Option<String>, AgentToolError>>,
+{
+    let mut output = String::with_capacity(command.len());
+    let mut cursor = 0usize;
+
+    while cursor < command.len() {
+        let next_dollar = command[cursor..]
+            .find('$')
+            .map(|idx| cursor + idx)
+            .unwrap_or(command.len());
+        output.push_str(&command[cursor..next_dollar]);
+        if next_dollar >= command.len() {
+            break;
+        }
+
+        let prev_char = command[..next_dollar].chars().last();
+        if matches!(prev_char, Some('\\')) {
+            output.push('$');
+            cursor = next_dollar + 1;
+            continue;
+        }
+
+        let token_len = command[next_dollar..]
+            .chars()
+            .take_while(|ch| {
+                *ch == '$' || ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '/' | '-')
+            })
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if token_len <= 1 {
+            output.push('$');
+            cursor = next_dollar + 1;
+            continue;
+        }
+
+        let expr = &command[next_dollar..next_dollar + token_len];
+        let resolved = resolve_dynamic_value(expr, load_value, env_context).await?;
+        if let Some(text) = resolved.as_ref().and_then(json_value_to_compact_text) {
+            output.push_str(text.as_str());
+        } else {
+            output.push_str(expr);
+        }
+        cursor = next_dollar + token_len;
+    }
+
+    Ok(output)
 }
 
 fn expand_system_env_vars(input: &str) -> String {
@@ -1579,6 +1773,12 @@ fn parse_msg_record_from_kmsg_payload(payload: &[u8]) -> Option<MsgRecord> {
     serde_json::from_slice::<MsgRecord>(payload).ok()
 }
 
+fn parse_event_from_kmsg_payload(payload: &[u8]) -> Option<(String, Option<Json>)> {
+    let input_item = serde_json::from_slice::<SessionInputItem>(payload).ok()?;
+    let event_id = input_item.event_id?;
+    Some((event_id, input_item.event_data))
+}
+
 async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> {
     if messages.is_empty() {
         return None;
@@ -1647,6 +1847,47 @@ async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> 
             msg_obj.as_ref(),
         ));
     }
+    if lines.is_empty() {
+        return None;
+    }
+    clean_optional_text(Some(lines.join("\n\n").as_str()))
+}
+
+fn render_new_events_from_kmsgqueue(messages: &[Message]) -> Option<String> {
+    if messages.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::<String>::new();
+    for message in messages {
+        let Some((event_id, event_data)) = parse_event_from_kmsg_payload(&message.payload) else {
+            if let Ok(raw_text) = String::from_utf8(message.payload.clone()) {
+                let content = normalize_multiline_text(raw_text.as_str());
+                if !content.is_empty() {
+                    let mut event = Map::<String, Json>::new();
+                    let mut event_data = Map::<String, Json>::new();
+                    event_data.insert("raw".to_string(), Json::String(content));
+                    event.insert("eventid".to_string(), Json::String("unknown".to_string()));
+                    event.insert("eventdata".to_string(), Json::Object(event_data));
+                    if let Ok(text) = serde_json::to_string_pretty(&Json::Object(event)) {
+                        lines.push(text);
+                    }
+                }
+            }
+            continue;
+        };
+
+        let mut event = Map::<String, Json>::new();
+        event.insert("eventid".to_string(), Json::String(event_id));
+        if let Some(event_data) = event_data {
+            event.insert("eventdata".to_string(), event_data);
+        }
+
+        if let Ok(text) = serde_json::to_string_pretty(&Json::Object(event)) {
+            lines.push(text);
+        }
+    }
+
     if lines.is_empty() {
         return None;
     }
@@ -2460,6 +2701,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn render_text_template_executes_command_and_expands_dynamic_paths() {
+        let root = tempdir().expect("create temp dir");
+        let memory_dir = root.path().join("memory");
+        let result_path = memory_dir.join("result.txt");
+        fs::create_dir_all(&memory_dir)
+            .await
+            .expect("create memory dir");
+        fs::write(&result_path, "command-result")
+            .await
+            .expect("write command result");
+
+        let agent_root = root.path().to_path_buf();
+        let result = AgentEnvironment::render_text_template(
+            r#"__OPENDAN_EXEC("cat $agent_root/memory/result.txt")__"#,
+            move |key| {
+                let agent_root = agent_root.clone();
+                let key = key.to_string();
+                async move {
+                    if let Some(rel_path) = key.strip_prefix("$agent_root/") {
+                        return Ok(Some(
+                            agent_root.join(rel_path).to_string_lossy().to_string(),
+                        ));
+                    }
+                    Ok(None)
+                }
+            },
+            &HashMap::new(),
+        )
+        .await
+        .expect("render text template");
+
+        assert_eq!(result.rendered, "command-result");
+    }
+
+    #[tokio::test]
+    async fn render_text_template_exec_failure_returns_error() {
+        let err = AgentEnvironment::render_text_template(
+            r#"__OPENDAN_EXEC("printf fail >&2; exit 7")__"#,
+            |_key| async { Ok(None) },
+            &HashMap::new(),
+        )
+        .await
+        .expect_err("exec failure should abort render");
+
+        assert!(
+            err.to_string()
+                .contains("__OPENDAN_EXEC command failed: exit_code=7"),
+            "err={err}"
+        );
+    }
+
+    #[tokio::test]
     async fn render_text_template_env_not_found_counts_separately() {
         let mut env_context = HashMap::<String, Json>::new();
         env_context.insert("params.todo".to_string(), Json::String("T01".to_string()));
@@ -2504,6 +2797,30 @@ mod tests {
     }
 
     #[test]
+    fn load_value_from_session_new_event_respects_numeric_pull_limit() {
+        assert_eq!(
+            parse_pull_limit_from_key("new_event.2", "new_event", DEFAULT_NEW_EVENT_MAX_PULL),
+            2
+        );
+        assert_eq!(
+            parse_pull_limit_from_key("new_event.0", "new_event", DEFAULT_NEW_EVENT_MAX_PULL),
+            DEFAULT_NEW_EVENT_MAX_PULL
+        );
+    }
+
+    #[test]
+    fn load_value_from_session_new_event_supports_dollar_pull_limit() {
+        assert_eq!(
+            parse_pull_limit_from_key("new_event.$3", "new_event", DEFAULT_NEW_EVENT_MAX_PULL),
+            3
+        );
+        assert_eq!(
+            parse_pull_limit_from_key("new_event.$99999", "new_event", DEFAULT_NEW_EVENT_MAX_PULL),
+            4096
+        );
+    }
+
+    #[test]
     fn render_new_msg_prefers_from_name_as_sender() {
         let record: MsgRecord = serde_json::from_value(json!({
             "record_id": "rid-1",
@@ -2522,6 +2839,61 @@ mod tests {
         let rendered = render_human_readable_msg_line(&record, None);
         assert!(rendered.starts_with("Alice ["), "rendered={}", rendered);
         assert!(!rendered.starts_with("alice ["), "rendered={}", rendered);
+    }
+
+    #[test]
+    fn render_new_event_formats_id_and_payload() {
+        let payload = serde_json::to_vec(&SessionInputItem {
+            msg: None,
+            event_id: Some("/taskmgr/new/task_001".to_string()),
+            event_data: Some(json!({
+                "task_id": "task_001",
+                "status": "created"
+            })),
+        })
+        .expect("serialize session input");
+        let rendered = render_new_events_from_kmsgqueue(&[Message {
+            index: 1,
+            payload,
+            created_at: 1_735_689_600_000u64,
+            headers: HashMap::new(),
+        }])
+        .expect("rendered event");
+
+        let parsed: Json = serde_json::from_str(&rendered).expect("parse rendered event json");
+        assert_eq!(
+            parsed["eventid"],
+            Json::String("/taskmgr/new/task_001".to_string())
+        );
+        assert_eq!(
+            parsed["eventdata"]["task_id"],
+            Json::String("task_001".to_string())
+        );
+        assert_eq!(
+            parsed["eventdata"]["status"],
+            Json::String("created".to_string())
+        );
+    }
+
+    #[test]
+    fn render_new_event_omits_missing_eventdata() {
+        let payload = serde_json::to_vec(&SessionInputItem {
+            msg: None,
+            event_id: Some("/taskmgr/ping".to_string()),
+            event_data: None,
+        })
+        .expect("serialize session input");
+        let rendered = render_new_events_from_kmsgqueue(&[Message {
+            index: 1,
+            payload,
+            created_at: 1_735_689_600_000u64,
+            headers: HashMap::new(),
+        }])
+        .expect("rendered event");
+
+        let parsed: Json = serde_json::from_str(&rendered).expect("parse rendered event json");
+        assert_eq!(parsed["eventid"], Json::String("/taskmgr/ping".to_string()));
+        assert!(parsed.get("eventdata").is_none(), "rendered={rendered}");
     }
 
     #[tokio::test]
@@ -2714,6 +3086,26 @@ mod tests {
             .expect("text mode should return string");
 
         assert_eq!(rendered, "A=hello");
+    }
+
+    #[tokio::test]
+    async fn render_text_replaces_new_event_variable() {
+        let root = tempdir().expect("create temp dir");
+        let env = AgentEnvironment::new(root.path())
+            .await
+            .expect("create env");
+        let ctx = PromptTemplateContext {
+            new_event: Some("/taskmgr/new/task_001".to_string()),
+            ..PromptTemplateContext::default()
+        };
+
+        let rendered = env
+            .render_prompt_template("Event={{new_event}}", TemplateRenderMode::Text, &ctx)
+            .await
+            .expect("render template")
+            .expect("text mode should return string");
+
+        assert_eq!(rendered, "Event=/taskmgr/new/task_001");
     }
 
     #[tokio::test]

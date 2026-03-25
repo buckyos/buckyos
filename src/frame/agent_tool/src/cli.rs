@@ -20,11 +20,12 @@ use tokio::process::Command;
 use crate::{
     cli_exit_code_for_error, normalize_abs_path, parse_read_file_bash_args, render_cli_output,
     rewrite_read_file_path_with_shell_cwd, session_record_path, AgentTool, AgentToolError,
-    AgentToolResult, BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput,
-    CliStatus, CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool,
-    NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, SessionViewBackend, TodoTool,
-    TodoToolConfig, WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE,
-    TOOL_CREATE_WORKSPACE, TOOL_GET_SESSION,
+    AgentToolResult, AgentMemory, AgentMemoryConfig, BindWorkspaceTool, CliPendingReason,
+    CliResultEnvelope, CliRunOutput, CliStatus, CreateWorkspaceTool, EditFileTool,
+    FileToolConfig, GetSessionTool, NoopFileWriteAudit, ReadFileTool, RemoveMemoryTool,
+    SessionRuntimeContext, SessionViewBackend, SetMemoryTool, TodoTool, TodoToolConfig,
+    WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE,
+    TOOL_GET_SESSION, TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY,
 };
 
 const TOOL_TODO: &str = "todo";
@@ -33,11 +34,13 @@ const TOOL_WRITE_FILE: &str = "write_file";
 const TOOL_EDIT_FILE: &str = "edit_file";
 const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
-const TOOL_NAMES: [&str; 9] = [
+const TOOL_NAMES: [&str; 11] = [
     TOOL_READ_FILE,
     TOOL_WRITE_FILE,
     TOOL_EDIT_FILE,
     TOOL_GET_SESSION,
+    TOOL_SET_MEMORY,
+    TOOL_REMOVE_MEMORY,
     TOOL_TODO,
     TOOL_CREATE_WORKSPACE,
     TOOL_BIND_WORKSPACE,
@@ -363,7 +366,8 @@ fn parse_tool_command(
         TOOL_WRITE_FILE => parse_write_file_cli_args(tool_name, tokens, current_dir),
         TOOL_EDIT_FILE => parse_edit_file_cli_args(tool_name, tokens, current_dir),
         TOOL_GET_SESSION => parse_get_session_cli_command(tool_name, tokens),
-        TOOL_TODO | TOOL_CREATE_WORKSPACE | TOOL_BIND_WORKSPACE => {
+        TOOL_SET_MEMORY | TOOL_REMOVE_MEMORY | TOOL_TODO | TOOL_CREATE_WORKSPACE
+        | TOOL_BIND_WORKSPACE => {
             Ok(parse_passthrough_bash_command(tool_name, tokens))
         }
         TOOL_CHECK_TASK => parse_check_task_cli_command(tool_name, tokens),
@@ -1084,6 +1088,18 @@ async fn execute_bash_tool(
                 .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
                 .await
         }
+        TOOL_SET_MEMORY => {
+            build_set_memory_tool(env)
+                .await?
+                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
+                .await
+        }
+        TOOL_REMOVE_MEMORY => {
+            build_remove_memory_tool(env)
+                .await?
+                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
+                .await
+        }
         _ => Err(AgentToolError::NotFound(tool_name.to_string())),
     }
 }
@@ -1112,6 +1128,22 @@ fn build_bind_workspace_tool(env: &CliRuntimeEnv) -> Result<BindWorkspaceTool, A
         state_root: cli_state_root(env),
         agent_id: env.call_ctx.agent_name.clone(),
     })))
+}
+
+async fn build_memory_backend(env: &CliRuntimeEnv) -> Result<Arc<AgentMemory>, AgentToolError> {
+    AgentMemory::new(AgentMemoryConfig::new(cli_state_root(env)))
+        .await
+        .map(Arc::new)
+}
+
+async fn build_set_memory_tool(env: &CliRuntimeEnv) -> Result<SetMemoryTool, AgentToolError> {
+    Ok(SetMemoryTool::new(build_memory_backend(env).await?))
+}
+
+async fn build_remove_memory_tool(
+    env: &CliRuntimeEnv,
+) -> Result<RemoveMemoryTool, AgentToolError> {
+    Ok(RemoveMemoryTool::new(build_memory_backend(env).await?))
 }
 
 fn build_cli_file_tool_config(env: &CliRuntimeEnv) -> FileToolConfig {
@@ -1246,6 +1278,8 @@ fn static_tool_usage(tool_name: &str) -> &'static str {
             "edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)"
         }
         TOOL_GET_SESSION => "get_session [session_id]",
+        TOOL_SET_MEMORY => "set_memory <key> <content>",
+        TOOL_REMOVE_MEMORY => "remove_memory <key>",
         TOOL_TODO => "todo <command> [args...]",
         TOOL_CREATE_WORKSPACE => "create_workspace <name> <summary>",
         TOOL_BIND_WORKSPACE => "bind_workspace <workspace_id|workspace_path>",
@@ -1256,7 +1290,7 @@ fn static_tool_usage(tool_name: &str) -> &'static str {
 }
 
 fn generic_usage() -> &'static str {
-    "agent_tool <read_file|write_file|edit_file|get_session|todo|create_workspace|bind_workspace|check_task|cancel_task> [args...]"
+    "agent_tool <read_file|write_file|edit_file|get_session|set_memory|remove_memory|todo|create_workspace|bind_workspace|check_task|cancel_task> [args...]"
 }
 
 fn first_string_env(keys: &[&str]) -> Option<String> {
@@ -2040,8 +2074,50 @@ mod tests {
         assert_eq!(payload["status"], "success");
         assert_eq!(
             payload["detail"]["tools"].as_array().map(|v| v.len()),
-            Some(9)
+            Some(11)
         );
+    }
+
+    #[tokio::test]
+    async fn set_memory_and_remove_memory_aliases_manage_memory_files() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
+
+        let set_output = execute(
+            vec![
+                OsString::from("/tmp/set_memory"),
+                OsString::from("remind/bob/20260323"),
+                OsString::from("weekly meeting"),
+            ],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("run set_memory");
+        assert_eq!(set_output.exit_code, EXIT_SUCCESS);
+
+        let memory_path = root.join("memory").join("remind").join("bob").join("20260323");
+        let content = fs::read_to_string(&memory_path)
+            .await
+            .expect("read memory file");
+        assert_eq!(content, "weekly meeting");
+
+        let remove_output = execute(
+            vec![
+                OsString::from("/tmp/remove_memory"),
+                OsString::from("remind/bob/20260323"),
+            ],
+            test_env(root.clone(), cwd),
+            None,
+        )
+        .await
+        .expect("run remove_memory");
+        assert_eq!(remove_output.exit_code, EXIT_SUCCESS);
+        assert!(fs::metadata(&memory_path).await.is_err());
     }
 
     #[test]

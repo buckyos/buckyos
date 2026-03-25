@@ -8,13 +8,13 @@ use std::vec;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime,
+    get_buckyos_api_runtime, match_event_patterns,
     msg_queue::{Message, MsgQueueClient, QueueConfig, SubPosition},
-    value_to_object_map, AiToolCall, AiccClient, BoxKind, Event, EventReader, KEventClient,
-    KEventError, MsgCenterClient, MsgRecord, MsgRecordWithObject, MsgState, PostSendResult,
-    SendContext, TaskManagerClient,
+    validate_pattern, value_to_object_map, AiToolCall, AiccClient, BoxKind, Event, EventReader,
+    KEventClient, KEventError, MsgCenterClient, MsgRecord, MsgRecordWithObject, MsgState,
+    PostSendResult, SendContext, TaskManagerClient,
 };
-use chrono::Utc;
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use log::{debug, info, warn};
 use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
@@ -24,7 +24,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 use tokio::{fs, task};
 
-use crate::agent_config::AIAgentConfig;
+use crate::agent_config::{AIAgentConfig, AgentLocalConfigOverrides};
 use crate::agent_environment::{AgentEnvironment, AgentTemplateRenderResult};
 use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
@@ -43,6 +43,7 @@ use crate::step_record::LLMStepRecord;
 use crate::worklog::WorklogActionPayload;
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
+const AGENT_CONFIG_CANDIDATES: [&str; 2] = ["agent.json", "Agent.json"];
 const MAX_MSG_PULL_PER_TICK: usize = 128;
 const MAX_EVENT_PULL_TIMEOUT_MS: u64 = 1_000;
 const MAX_SESSION_WORKER_IDLE_SLEEP_MS: u64 = 10_000;
@@ -62,12 +63,29 @@ const SESSION_QUEUE_APP_ID: &str = "opendan";
 const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
 const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
 const AGENT_BEHAVIOR_ROUTER_RESOLVE: &str = "resolve_router";
+const AGENT_BEHAVIOR_SELF_CHECK: &str = "self_check";
 const AGENT_BEHAVIOR_WORK_DEFAULT: &str = "plan";
 const WORK_SESSION_ID_PREFIX: &str = "work-";
+const SELF_CHECK_SESSION_ID: &str = "self-check-session";
+const SELF_CHECK_SESSION_TITLE: &str = "Self Check";
+const SELF_CHECK_TRIGGER_EVENT_ID: &str = "timer_self_check_trigger";
+const SELF_CHECK_META_LAST_TRIGGER_MS: &str = "self_check_last_trigger_ms";
+const SELF_CHECK_MIN_TRIGGER_INTERVAL_MS: u64 = 60_000;
+const SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS: u64 = 15 * 60_000;
+const SELF_CHECK_EXACT_TIME_WINDOW_MS: u64 = 10_000;
 const SESSION_META_CREATOR_UI_SESSION_ID: &str = "creator_ui_session_id";
 const ACTION_RESULTS_SKIPPED_KEY: &str = "__skipped__";
+const SESSION_KEVENT_SUBSCRIPTIONS_FILE: &str = "session_kevent_subscriptions.json";
 
 type ActionResultsMap = HashMap<String, AgentToolResult>;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SelfCheckMemoryMatch {
+    has_explicit_time: bool,
+    retained: bool,
+    exact_time_hit: bool,
+    coarse_time_hit: bool,
+}
 
 #[derive(Debug)]
 struct PulledMsg {
@@ -76,7 +94,11 @@ struct PulledMsg {
 }
 
 #[derive(Debug)]
-struct PulledEvent;
+struct PulledEvent {
+    session_id: Option<String>,
+    event_id: String,
+    event_data: Json,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum InputQueueKind {
@@ -222,15 +244,13 @@ pub struct AIAgent {
 
     deps: AIAgentDeps,
     kevent_client: KEventClient,
-    msg_center_event_reader: Mutex<Option<Arc<EventReader>>>,
+    kevent_event_reader: Mutex<Option<Arc<EventReader>>>,
+    session_kevent_subscriptions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     session_queue_bindings: Arc<RwLock<HashMap<String, SessionQueueBinding>>>,
 }
 
 impl AIAgent {
     pub async fn load(mut cfg: AIAgentConfig, deps: AIAgentDeps) -> Result<Self> {
-        cfg.normalize()
-            .map_err(|err| anyhow!("invalid agent config: {err}"))?;
-
         let agent_root = to_abs_path(&cfg.agent_root)?;
         let package_root = cfg
             .agent_package_root
@@ -256,6 +276,21 @@ impl AIAgent {
                 package_root.display()
             );
         }
+        let (local_overrides, local_config_status) =
+            load_local_agent_config_overrides(&agent_root, package_root.as_deref()).await?;
+        cfg.apply_local_overrides(local_overrides);
+        cfg.normalize()
+            .map_err(|err| anyhow!("invalid agent config: {err}"))?;
+        log_overlay_status("agent_config", &cfg.agent_instance_id, &local_config_status);
+        info!(
+            "agent.loader.local_config: instance={} default_ui_behavior={} default_work_behavior={} self_check_timer_secs={}",
+            cfg.agent_instance_id,
+            cfg.default_ui_behavior_name.as_deref().unwrap_or("<auto>"),
+            cfg.default_work_behavior_name
+                .as_deref()
+                .unwrap_or("<auto>"),
+            cfg.self_check_timer_secs
+        );
 
         let did_raw = load_agent_did(&cfg, &agent_root, package_root.as_deref()).await?;
         let did = DID::from_str(did_raw.as_str()).map_err(|err| {
@@ -316,16 +351,34 @@ impl AIAgent {
                 .map_err(|err| anyhow!("init agent environment failed: {err}"))?,
         );
 
-        let default_behavior = resolve_default_behavior_name(&behavior_roots)
-            .await
+        let default_behavior = cfg
+            .default_ui_behavior_name
+            .clone()
             .unwrap_or_else(|| AGENT_BEHAVIOR_ROUTER_RESOLVE.to_string());
-        let default_worker_behavior =
-            resolve_default_worker_behavior_name(&behavior_roots, default_behavior.as_str()).await;
+        let default_behavior = if cfg.default_ui_behavior_name.is_some() {
+            default_behavior
+        } else {
+            resolve_default_behavior_name(&behavior_roots)
+                .await
+                .unwrap_or(default_behavior)
+        };
+        let default_worker_behavior = if let Some(default_work_behavior_name) =
+            cfg.default_work_behavior_name.clone()
+        {
+            default_work_behavior_name
+        } else {
+            resolve_default_worker_behavior_name(&behavior_roots, default_behavior.as_str()).await
+        };
 
         let session_store = Arc::new(
-            AgentSessionMgr::new(agent_name.clone(), session_root, default_behavior.clone())
-                .await
-                .map_err(|err| anyhow!("init session store failed: {err}"))?,
+            AgentSessionMgr::new(
+                agent_name.clone(),
+                session_root,
+                default_behavior.clone(),
+                default_worker_behavior.clone(),
+            )
+            .await
+            .map_err(|err| anyhow!("init session store failed: {err}"))?,
         );
 
         environment
@@ -350,6 +403,9 @@ impl AIAgent {
         let behavior_cfg_cache = Arc::new(RwLock::new(HashMap::new()));
         let policy = Arc::new(AgentPolicy::new(tools.clone(), behavior_cfg_cache.clone()));
         let kevent_source_node = msg_owner_did.to_raw_host_name();
+        let session_kevent_subscriptions = Arc::new(RwLock::new(
+            load_session_kevent_subscriptions(&agent_env_root).await?,
+        ));
         log_overlay_status("role", &cfg.agent_instance_id, &role_status);
         log_overlay_status("self", &cfg.agent_instance_id, &self_status);
         info!(
@@ -377,7 +433,8 @@ impl AIAgent {
             tokenizer: Arc::new(SimpleTokenizer),
             deps,
             kevent_client: KEventClient::new_full(kevent_source_node, None),
-            msg_center_event_reader: Mutex::new(None),
+            kevent_event_reader: Mutex::new(None),
+            session_kevent_subscriptions,
             session_queue_bindings: Arc::new(RwLock::new(HashMap::new())),
             default_behavior,
             default_worker_behavior,
@@ -407,6 +464,19 @@ impl AIAgent {
             .await
             .map_err(|err| anyhow!("refresh session status failed: {err}"))?;
 
+        let mut self_check_handle = None;
+        if self.cfg.self_check_timer_secs > 0 {
+            let timer_agent = self.clone();
+            self_check_handle = Some(task::spawn(async move {
+                timer_agent.run_self_check_timer_loop().await;
+            }));
+        } else {
+            info!(
+                "agent.self_check_timer.disabled: agent={} interval_secs=0",
+                self.agent_name
+            );
+        }
+
         let mut worker_handles = Vec::with_capacity(self.cfg.session_worker_threads);
         for worker_idx in 0..self.cfg.session_worker_threads {
             let worker_agent = self.clone();
@@ -422,13 +492,234 @@ impl AIAgent {
         }
 
         let result = self.run_agent_dispatch_loop(stop_after_ticks).await;
+        if let Some(self_check_handle) = &self_check_handle {
+            self_check_handle.abort();
+        }
         for worker_handle in &worker_handles {
             worker_handle.abort();
+        }
+        if let Some(self_check_handle) = self_check_handle {
+            let _ = self_check_handle.await;
         }
         for worker_handle in worker_handles {
             let _ = worker_handle.await;
         }
         result
+    }
+
+    async fn run_self_check_timer_loop(self: Arc<Self>) {
+        let interval_secs = self.cfg.self_check_timer_secs;
+        let interval = Duration::from_secs(interval_secs);
+        info!(
+            "agent.self_check_timer.started: agent={} did={} interval_secs={}",
+            self.agent_name,
+            self.did.to_string(),
+            interval_secs
+        );
+        let mut tick = 0_u64;
+
+        loop {
+            sleep(interval).await;
+            tick = tick.saturating_add(1);
+            info!(
+                "agent.self_check_timer.tick: agent={} did={} tick={} interval_secs={}",
+                self.agent_name,
+                self.did.to_string(),
+                tick,
+                interval_secs
+            );
+            if let Err(err) = self.run_self_check_timer_tick(tick, Utc::now()).await {
+                warn!(
+                    "agent.self_check_timer.tick_failed: agent={} did={} tick={} err={}",
+                    self.agent_name,
+                    self.did.to_string(),
+                    tick,
+                    err
+                );
+            }
+        }
+    }
+
+    async fn run_self_check_timer_tick(
+        &self,
+        tick: u64,
+        current_time: DateTime<Utc>,
+    ) -> Result<()> {
+        if !behavior_exists(&self.behavior_roots, AGENT_BEHAVIOR_SELF_CHECK).await {
+            debug!(
+                "agent.self_check_timer.skip_missing_behavior: agent={} tick={} behavior={}",
+                self.agent_name, tick, AGENT_BEHAVIOR_SELF_CHECK
+            );
+            return Ok(());
+        }
+
+        let now_ms = current_time.timestamp_millis().max(0) as u64;
+        let memory_items = self
+            .memory
+            .load_memory(Some(1024), vec![], Some(current_time))
+            .await
+            .map_err(|err| anyhow!("load self-check memory failed: {err}"))?;
+        if memory_items.is_empty() {
+            debug!(
+                "agent.self_check_timer.skip_empty_memory: agent={} tick={}",
+                self.agent_name, tick
+            );
+            return Ok(());
+        }
+        let mut retained_memory_items = Vec::new();
+        let mut temporal_candidate_count = 0usize;
+        let mut exact_time_hit_count = 0usize;
+        let mut coarse_time_hit_count = 0usize;
+        for item in memory_items {
+            let matched =
+                match_self_check_memory_item(&item, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
+            if matched.has_explicit_time {
+                temporal_candidate_count = temporal_candidate_count.saturating_add(1);
+            }
+            if matched.exact_time_hit {
+                exact_time_hit_count = exact_time_hit_count.saturating_add(1);
+            }
+            if matched.coarse_time_hit {
+                coarse_time_hit_count = coarse_time_hit_count.saturating_add(1);
+            }
+            if matched.retained {
+                retained_memory_items.push(item);
+            }
+        }
+        if temporal_candidate_count == 0 {
+            debug!(
+                "agent.self_check_timer.skip_no_explicit_time: agent={} tick={}",
+                self.agent_name, tick
+            );
+            return Ok(());
+        }
+
+        let session = self
+            .session_mgr
+            .ensure_session(
+                SELF_CHECK_SESSION_ID,
+                Some(SELF_CHECK_SESSION_TITLE.to_string()),
+                Some(AGENT_BEHAVIOR_SELF_CHECK),
+                None,
+            )
+            .await
+            .map_err(|err| anyhow!("ensure self-check session failed: {err}"))?;
+
+        let (session_id, should_save, should_trigger, session_state, last_trigger_ms, force_due) = {
+            let mut guard = session.lock().await;
+            let last_trigger_ms = self_check_last_trigger_ms(&guard.meta).unwrap_or(0);
+            let since_last_trigger = now_ms.saturating_sub(last_trigger_ms);
+            let force_due = since_last_trigger >= SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS;
+
+            if guard.state == SessionState::Running {
+                (
+                    guard.session_id.clone(),
+                    false,
+                    false,
+                    guard.state,
+                    last_trigger_ms,
+                    force_due,
+                )
+            } else if retained_memory_items.is_empty() && !force_due {
+                (
+                    guard.session_id.clone(),
+                    false,
+                    false,
+                    guard.state,
+                    last_trigger_ms,
+                    force_due,
+                )
+            } else if last_trigger_ms > 0 && since_last_trigger < SELF_CHECK_MIN_TRIGGER_INTERVAL_MS
+            {
+                (
+                    guard.session_id.clone(),
+                    false,
+                    false,
+                    guard.state,
+                    last_trigger_ms,
+                    force_due,
+                )
+            } else if !force_due && last_trigger_ms > 0 {
+                (
+                    guard.session_id.clone(),
+                    false,
+                    false,
+                    guard.state,
+                    last_trigger_ms,
+                    force_due,
+                )
+            } else {
+                guard.current_behavior = AGENT_BEHAVIOR_SELF_CHECK.to_string();
+                guard.step_index = 0;
+                guard.wait_details = None;
+                guard.updated_at_ms = now_ms;
+                guard.last_activity_ms = now_ms;
+                guard.state = SessionState::Wait;
+                set_self_check_last_trigger_ms(&mut guard.meta, now_ms);
+                (
+                    guard.session_id.clone(),
+                    true,
+                    true,
+                    guard.state,
+                    last_trigger_ms,
+                    force_due,
+                )
+            }
+        };
+
+        if should_trigger {
+            let session_input = SessionInputItem {
+                msg: None,
+                event_id: Some(SELF_CHECK_TRIGGER_EVENT_ID.to_string()),
+                event_data: Some(build_self_check_trigger_event_data(
+                    tick,
+                    current_time,
+                    last_trigger_ms,
+                )),
+            };
+            self.wakeup_by_session_input(
+                session_id.as_str(),
+                &session_input,
+                InputQueueKind::Event,
+            )
+            .await
+            .map_err(|err| anyhow!("wake self-check session by timer event failed: {err}"))?;
+        }
+        if should_save {
+            self.session_mgr
+                .save_session(session_id.as_str())
+                .await
+                .map_err(|err| anyhow!("save self-check session failed: {err}"))?;
+        }
+        if should_trigger {
+            info!(
+                "agent.self_check_timer.triggered: agent={} tick={} session_id={} retained_memory_items={} temporal_candidates={} exact_hits={} coarse_hits={} force_due={}",
+                self.agent_name,
+                tick,
+                session_id,
+                retained_memory_items.len(),
+                temporal_candidate_count,
+                exact_time_hit_count,
+                coarse_time_hit_count,
+                force_due
+            );
+        } else {
+            debug!(
+                "agent.self_check_timer.not_triggered: agent={} tick={} session_id={} state={:?} retained_memory_items={} temporal_candidates={} exact_hits={} coarse_hits={} last_trigger_ms={} force_due={}",
+                self.agent_name,
+                tick,
+                session_id,
+                session_state,
+                retained_memory_items.len(),
+                temporal_candidate_count,
+                exact_time_hit_count,
+                coarse_time_hit_count,
+                last_trigger_ms,
+                force_due
+            );
+        }
+
+        Ok(())
     }
 
     async fn run_agent_dispatch_loop(&self, stop_after_ticks: Option<u32>) -> Result<()> {
@@ -533,9 +824,11 @@ impl AIAgent {
         &self,
         wait_timeout_ms: u64,
     ) -> Result<(Vec<PulledMsg>, Vec<PulledEvent>, bool)> {
-        //目前Agent关心的外部输入,后续需要根据agent的配置订阅新的event
+        //TODO: Agent需要根据自己持久化的订阅列表，创建event_reader, msg_center_event_reader只是其中之一
+        //目前Agent自动订阅的event:
         // - /msg_center/{owner_did}/box/{box_name}/**
-        let Some(event_reader) = self.ensure_msg_center_event_reader().await else {
+
+        let Some(event_reader) = self.ensure_kevent_event_reader().await else {
             warn!("{}.event_reader_unavailable", self.agent_name);
             let pulled_msgs = self.pull_msg_packs().await;
             return Ok((pulled_msgs, vec![], false));
@@ -571,7 +864,7 @@ impl AIAgent {
                     self.agent_name, wait_timeout_ms, err
                 );
                 if matches!(err, KEventError::ReaderClosed(_)) {
-                    self.reset_msg_center_event_reader().await;
+                    self.reset_kevent_event_reader().await;
                 }
             }
         }
@@ -700,6 +993,43 @@ impl AIAgent {
         }
     }
 
+    pub async fn session_sub_kevent(&self, session_id: &str, event_pattern: &str) -> Result<()> {
+        //先持久化到agent的event订阅列表
+        //设置下一个loop重新需要重新创建reader
+        let event_pattern = event_pattern.trim();
+        if event_pattern.is_empty() {
+            return Err(anyhow!("event_pattern must not be empty"));
+        }
+        validate_pattern(event_pattern)
+            .map_err(|err| anyhow!("invalid event pattern `{event_pattern}`: {err}"))?;
+
+        let session = self
+            .session_mgr
+            .ensure_session(session_id, None, None, None)
+            .await
+            .map_err(|err| anyhow!("ensure session `{session_id}` failed: {err}"))?;
+        let normalized_session_id = {
+            let guard = session.lock().await;
+            guard.session_id.clone()
+        };
+
+        let changed = {
+            let mut guard = self.session_kevent_subscriptions.write().await;
+            guard
+                .entry(event_pattern.to_string())
+                .or_insert_with(HashSet::new)
+                .insert(normalized_session_id.clone())
+        };
+
+        if !changed {
+            return Ok(());
+        }
+
+        self.persist_session_kevent_subscriptions().await?;
+        self.reset_kevent_event_reader().await;
+        Ok(())
+    }
+
     async fn dispatch_pulled_inputs(
         &self,
         pulled_msgs: Vec<PulledMsg>,
@@ -711,6 +1041,51 @@ impl AIAgent {
             pulled_msgs.len(),
             pulled_events.len()
         );
+
+        for pulled in pulled_events {
+            let mut target_session_ids = if let Some(session_id) = pulled.session_id.as_deref() {
+                vec![session_id.to_string()]
+            } else {
+                self.match_session_kevent_targets(pulled.event_id.as_str())
+                    .await
+            };
+            target_session_ids.sort();
+            target_session_ids.dedup();
+            if target_session_ids.is_empty() {
+                debug!(
+                    "agent.dispatch_event_skip_unmatched: event_id={}",
+                    pulled.event_id
+                );
+                continue;
+            }
+
+            let session_input = SessionInputItem {
+                msg: None,
+                event_id: Some(pulled.event_id.clone()),
+                event_data: Some(pulled.event_data.clone()),
+            };
+
+            for target_session_id in target_session_ids {
+                self.wakeup_by_session_input(
+                    target_session_id.as_str(),
+                    &session_input,
+                    InputQueueKind::Event,
+                )
+                .await
+                .map_err(|err| {
+                    anyhow!(
+                        "wake routed session by event failed: target_session={} err={}",
+                        target_session_id,
+                        err
+                    )
+                })?;
+                info!(
+                    "{}.dispatch_event_to_session: event_id={} session_id={}",
+                    self.agent_name, pulled.event_id, target_session_id
+                );
+            }
+        }
+
         for pulled in pulled_msgs {
             let record_id = pulled.record.record.record_id.clone();
             let mut msg_record = pulled.record.record.clone();
@@ -758,22 +1133,19 @@ impl AIAgent {
             let session_input = SessionInputItem {
                 msg: Some(msg_record),
                 event_id: None,
+                event_data: None,
             };
 
             for session_id in &route_result.linked_session_ids {
-                self.enqueue_session_input(
+                self.wakeup_by_session_input(
                     session_id.as_str(),
                     &session_input,
                     InputQueueKind::Msg,
                 )
-                .await?;
-
-                self.session_mgr
-                    .try_wakeup_session_by_input_item(session_id.as_str(), &session_input)
-                    .await
-                    .map_err(|err| {
-                        anyhow!("mark msg arrival for session `{session_id}` failed: {err}")
-                    })?;
+                .await
+                .map_err(|err| {
+                    anyhow!("mark msg arrival for session `{session_id}` failed: {err}")
+                })?;
                 info!(
                     "{}.try_wakeup_session_by_input_item: record_id={} session_id={}",
                     self.agent_name, record_id, session_id
@@ -783,10 +1155,6 @@ impl AIAgent {
             self.set_msg_readed(record_id).await;
         }
 
-        for _pulled in pulled_events {
-            //TODO：Event可能能1次唤醒多个Session，这里需要改造
-            unimplemented!()
-        }
         info!("agent.dispatch_pulled_inputs_done: did={:?}", self.did);
         Ok(())
     }
@@ -1135,10 +1503,14 @@ impl AIAgent {
             )
             .await;
 
-            let (msg_cursor, msg_owner_agent) = {
+            let (msg_cursor, event_cursor, msg_owner_agent) = {
                 let mut guard = session.lock().await;
                 guard.step_num = current_step_num.saturating_add(1);
-                (guard.msg_kmsgqueue_curosr, guard.owner_agent.clone())
+                (
+                    guard.msg_kmsgqueue_curosr,
+                    guard.event_kmsgqueue_curosr,
+                    guard.owner_agent.clone(),
+                )
             };
 
             //write just readed input msg to msg_record(both work-session record and ui-session record)
@@ -1156,9 +1528,16 @@ impl AIAgent {
                 msg_cursor,
             )
             .await?;
+            self.commit_session_queue_event_ack(
+                msg_owner_agent.as_str(),
+                session_id.as_str(),
+                event_cursor,
+            )
+            .await?;
             {
                 let mut guard = session.lock().await;
                 guard.just_readed_input_msg.clear();
+                guard.just_readed_input_event.clear();
             }
 
             result_report.executed_steps = result_report.executed_steps + 1;
@@ -1284,22 +1663,19 @@ impl AIAgent {
             }
 
             for input_item in &step_msg_inputs {
-                self.enqueue_session_input(
+                self.wakeup_by_session_input(
                     target_session_id.as_str(),
                     input_item,
                     InputQueueKind::Msg,
                 )
-                .await?;
-                self.session_mgr
-                    .try_wakeup_session_by_input_item(target_session_id.as_str(), input_item)
-                    .await
-                    .map_err(|err| {
-                        anyhow!(
-                            "wake routed session by step msg failed: target_session={} err={}",
-                            target_session_id,
-                            err
-                        )
-                    })?;
+                .await
+                .map_err(|err| {
+                    anyhow!(
+                        "wake routed session by step msg failed: target_session={} err={}",
+                        target_session_id,
+                        err
+                    )
+                })?;
             }
         }
 
@@ -1467,13 +1843,26 @@ impl AIAgent {
         }
     }
 
-    async fn ensure_msg_center_event_reader(&self) -> Option<Arc<EventReader>> {
-        let mut guard = self.msg_center_event_reader.lock().await;
+    async fn build_agent_kevent_patterns(&self) -> Vec<String> {
+        let mut out = Self::build_msg_center_event_patterns(&self.msg_owner_did);
+        let subscriptions = self.session_kevent_subscriptions.read().await;
+        let mut custom_patterns = subscriptions.keys().cloned().collect::<Vec<_>>();
+        custom_patterns.sort();
+        for pattern in custom_patterns {
+            if !out.contains(&pattern) {
+                out.push(pattern);
+            }
+        }
+        out
+    }
+
+    async fn ensure_kevent_event_reader(&self) -> Option<Arc<EventReader>> {
+        let mut guard = self.kevent_event_reader.lock().await;
         if let Some(reader) = guard.as_ref() {
             return Some(reader.clone());
         }
 
-        let patterns = Self::build_msg_center_event_patterns(&self.msg_owner_did);
+        let patterns = self.build_agent_kevent_patterns().await;
         match self
             .kevent_client
             .create_event_reader(patterns.clone())
@@ -1514,9 +1903,16 @@ impl AIAgent {
         }
     }
 
-    async fn reset_msg_center_event_reader(&self) {
-        let mut guard = self.msg_center_event_reader.lock().await;
-        *guard = None;
+    async fn reset_kevent_event_reader(&self) {
+        let reader = {
+            let mut guard = self.kevent_event_reader.lock().await;
+            guard.take()
+        };
+        if let Some(reader) = reader {
+            if let Err(err) = reader.close().await {
+                debug!("agent.event_reader_close_failed: err={:?}", err);
+            }
+        }
     }
 
     fn msg_center_event_box_kind(event: &Event) -> Option<BoxKind> {
@@ -1582,7 +1978,52 @@ impl AIAgent {
             );
             return None;
         }
-        Some(PulledEvent)
+        Some(PulledEvent {
+            session_id: None,
+            event_id: event.eventid,
+            event_data: event.data,
+        })
+    }
+
+    async fn match_session_kevent_targets(&self, event_id: &str) -> Vec<String> {
+        let subscriptions = self.session_kevent_subscriptions.read().await;
+        collect_session_kevent_targets_from_subscriptions(&subscriptions, event_id)
+    }
+
+    fn session_kevent_subscriptions_path(&self) -> PathBuf {
+        self.agent_env_root.join(SESSION_KEVENT_SUBSCRIPTIONS_FILE)
+    }
+
+    async fn persist_session_kevent_subscriptions(&self) -> Result<()> {
+        let path = self.session_kevent_subscriptions_path();
+        let payload = {
+            let guard = self.session_kevent_subscriptions.read().await;
+            serialize_session_kevent_subscriptions(&guard)
+        };
+        let bytes = serde_json::to_vec_pretty(&payload).map_err(|err| {
+            anyhow!(
+                "serialize session kevent subscriptions failed: path={} err={}",
+                path.display(),
+                err
+            )
+        })?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.map_err(|err| {
+                anyhow!(
+                    "create kevent subscription dir failed: path={} err={}",
+                    parent.display(),
+                    err
+                )
+            })?;
+        }
+        fs::write(&path, bytes).await.map_err(|err| {
+            anyhow!(
+                "write session kevent subscriptions failed: path={} err={}",
+                path.display(),
+                err
+            )
+        })?;
+        Ok(())
     }
 
     fn msg_record_to_pulled_msg(record: MsgRecordWithObject) -> PulledMsg {
@@ -1862,6 +2303,28 @@ impl AIAgent {
         Ok(())
     }
 
+    async fn wakeup_by_session_input(
+        &self,
+        session_id: &str,
+        session_input: &SessionInputItem,
+        kind: InputQueueKind,
+    ) -> Result<()> {
+        self.enqueue_session_input(session_id, session_input, kind)
+            .await?;
+        self.session_mgr
+            .try_wakeup_session_by_input_item(session_id, session_input)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "wake session by queued input failed: session={} kind={:?} err={}",
+                    session_id,
+                    kind,
+                    err
+                )
+            })?;
+        Ok(())
+    }
+
     async fn commit_session_queue_msg_ack(
         &self,
         owner_id: &str,
@@ -1881,6 +2344,30 @@ impl AIAgent {
         );
         msg_queue
             .commit_ack(sub_id.as_str(), last_pulled_msg_index as u64)
+            .await?;
+        Ok(())
+    }
+
+    async fn commit_session_queue_event_ack(
+        &self,
+        owner_id: &str,
+        session_id: &str,
+        last_pulled_event_index: u64,
+    ) -> Result<()> {
+        if last_pulled_event_index == 0 {
+            return Ok(());
+        }
+        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
+            return Err(anyhow!("message queue dependency not available"));
+        };
+        let sub_id =
+            Self::get_session_kmsgqueue_sub_id(owner_id, session_id, InputQueueKind::Event);
+        debug!(
+            "agent.commit_event_ack: session={} sub_id={} index={}",
+            session_id, sub_id, last_pulled_event_index
+        );
+        msg_queue
+            .commit_ack(sub_id.as_str(), last_pulled_event_index as u64)
             .await?;
         Ok(())
     }
@@ -2144,10 +2631,17 @@ impl AIAgent {
         set_memory: &HashMap<String, String>,
     ) {
         let source = json!({
-            "trace_id": trace.trace_id,
-            "behavior": trace.behavior,
-            "step_idx": trace.step_idx,
-            "agent_did": trace.agent_name,
+            "kind": "agent",
+            "name": trace.behavior,
+            "retrieved_at": Utc::now().to_rfc3339(),
+            "locator": {
+                "trace_id": trace.trace_id,
+                "behavior": trace.behavior,
+                "step_idx": trace.step_idx,
+                "agent_did": trace.agent_name,
+                "session_id": trace.session_id,
+                "wakeup_id": trace.wakeup_id,
+            },
         });
 
         for (raw_key, content) in set_memory {
@@ -3179,7 +3673,7 @@ fn apply_session_behavior_transition(
 fn should_continue_with_rendered_input(result: &AgentTemplateRenderResult) -> bool {
     let mut driver_tracked = false;
 
-    for key in ["new_msg", "last_step"] {
+    for key in ["new_msg", "new_event", "last_step"] {
         if let Some(resolved) = result.resolved_vars.get(key) {
             driver_tracked = true;
             if *resolved {
@@ -3536,6 +4030,111 @@ fn extract_action_result_pwd(result: &crate::agent_tool::AgentToolResult) -> Opt
     None
 }
 
+fn serialize_session_kevent_subscriptions(
+    subscriptions: &HashMap<String, HashSet<String>>,
+) -> Json {
+    let mut patterns = subscriptions.keys().cloned().collect::<Vec<_>>();
+    patterns.sort();
+
+    let mut out = serde_json::Map::new();
+    for pattern in patterns {
+        let Some(session_ids) = subscriptions.get(pattern.as_str()) else {
+            continue;
+        };
+        let mut session_ids = session_ids
+            .iter()
+            .map(|value| Json::String(value.clone()))
+            .collect::<Vec<_>>();
+        session_ids.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+        out.insert(pattern, Json::Array(session_ids));
+    }
+    Json::Object(out)
+}
+
+fn parse_session_kevent_subscriptions(value: &Json) -> HashMap<String, HashSet<String>> {
+    let Some(obj) = value.as_object() else {
+        return HashMap::new();
+    };
+
+    let mut out = HashMap::<String, HashSet<String>>::new();
+    for (pattern, raw_session_ids) in obj {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            continue;
+        }
+        if validate_pattern(pattern).is_err() {
+            continue;
+        }
+        let Some(items) = raw_session_ids.as_array() else {
+            continue;
+        };
+        let mut session_ids = HashSet::<String>::new();
+        for item in items {
+            let Some(session_id) = item.as_str().map(str::trim) else {
+                continue;
+            };
+            if session_id.is_empty() {
+                continue;
+            }
+            session_ids.insert(session_id.to_string());
+        }
+        if !session_ids.is_empty() {
+            out.insert(pattern.to_string(), session_ids);
+        }
+    }
+    out
+}
+
+fn collect_session_kevent_targets_from_subscriptions(
+    subscriptions: &HashMap<String, HashSet<String>>,
+    event_id: &str,
+) -> Vec<String> {
+    let mut out = HashSet::<String>::new();
+    for (pattern, session_ids) in subscriptions {
+        if !match_event_patterns(std::slice::from_ref(pattern), event_id) {
+            continue;
+        }
+        for session_id in session_ids {
+            out.insert(session_id.clone());
+        }
+    }
+    let mut out = out.into_iter().collect::<Vec<_>>();
+    out.sort();
+    out
+}
+
+async fn load_session_kevent_subscriptions(
+    agent_env_root: &Path,
+) -> Result<HashMap<String, HashSet<String>>> {
+    let path = agent_env_root.join(SESSION_KEVENT_SUBSCRIPTIONS_FILE);
+    let exists = fs::try_exists(&path).await.map_err(|err| {
+        anyhow!(
+            "check kevent subscriptions file failed: path={} err={}",
+            path.display(),
+            err
+        )
+    })?;
+    if !exists {
+        return Ok(HashMap::new());
+    }
+
+    let raw = fs::read_to_string(&path).await.map_err(|err| {
+        anyhow!(
+            "read kevent subscriptions file failed: path={} err={}",
+            path.display(),
+            err
+        )
+    })?;
+    let value: Json = serde_json::from_str(&raw).map_err(|err| {
+        anyhow!(
+            "parse kevent subscriptions file failed: path={} err={}",
+            path.display(),
+            err
+        )
+    })?;
+    Ok(parse_session_kevent_subscriptions(&value))
+}
+
 async fn resolve_agent_env_root(agent_root: &Path) -> Result<PathBuf> {
     let root = agent_root.to_path_buf();
     info!(
@@ -3759,6 +4358,68 @@ async fn load_overlay_text_resource(
     ))
 }
 
+async fn load_overlay_json_resource(
+    agent_root: &Path,
+    package_root: Option<&Path>,
+    candidate_rel_paths: &[&str],
+) -> Result<(Option<Json>, ResourceOverlayStatus)> {
+    let mut status = ResourceOverlayStatus {
+        selected_path: None,
+        env_path: None,
+        package_path: None,
+    };
+    let mut selected_json = None::<Json>;
+
+    for rel_path in candidate_rel_paths {
+        let path = agent_root.join(rel_path);
+        let Some(content) = read_text_if_exists(&path).await? else {
+            continue;
+        };
+        let parsed = serde_json::from_str::<Json>(&content)
+            .with_context(|| format!("parse json resource failed: path={}", path.display()))?;
+        status.env_path = Some(path);
+        selected_json = Some(parsed);
+        break;
+    }
+
+    if let Some(package_root) = package_root {
+        for rel_path in candidate_rel_paths {
+            let path = package_root.join(rel_path);
+            let Some(content) = read_text_if_exists(&path).await? else {
+                continue;
+            };
+            let parsed = serde_json::from_str::<Json>(&content)
+                .with_context(|| format!("parse json resource failed: path={}", path.display()))?;
+            status.package_path = Some(path);
+            if selected_json.is_none() {
+                selected_json = Some(parsed);
+            }
+            break;
+        }
+    }
+
+    status.selected_path = status
+        .env_path
+        .clone()
+        .or_else(|| status.package_path.clone());
+
+    Ok((selected_json, status))
+}
+
+async fn load_local_agent_config_overrides(
+    agent_root: &Path,
+    package_root: Option<&Path>,
+) -> Result<(AgentLocalConfigOverrides, ResourceOverlayStatus)> {
+    let (raw_config, status) =
+        load_overlay_json_resource(agent_root, package_root, &AGENT_CONFIG_CANDIDATES).await?;
+    let overrides = match raw_config {
+        Some(config) => AgentLocalConfigOverrides::from_json(&config)
+            .map_err(|err| anyhow!("parse local agent config failed: {err}"))?,
+        None => AgentLocalConfigOverrides::default(),
+    };
+    Ok((overrides, status))
+}
+
 fn log_overlay_status(resource: &str, instance_id: &str, status: &ResourceOverlayStatus) {
     info!(
         "agent.loader.resource: instance={} resource={} selected={} env_override={} package_default={}",
@@ -3809,6 +4470,327 @@ fn compact_text_for_log(value: &str, max_chars: usize) -> String {
     }
 }
 
+fn self_check_last_trigger_ms(meta: &Json) -> Option<u64> {
+    meta.as_object()
+        .and_then(|map| map.get(SELF_CHECK_META_LAST_TRIGGER_MS))
+        .and_then(Json::as_u64)
+}
+
+fn build_self_check_trigger_event_data(
+    tick: u64,
+    current_time: DateTime<Utc>,
+    last_trigger_ms: u64,
+) -> Json {
+    let last_trigger_time = if last_trigger_ms == 0 {
+        Json::Null
+    } else {
+        Utc.timestamp_millis_opt(last_trigger_ms as i64)
+            .single()
+            .map(|value| Json::String(value.to_rfc3339()))
+            .unwrap_or(Json::Null)
+    };
+    let last_trigger_time_ms = if last_trigger_ms == 0 {
+        Json::Null
+    } else {
+        Json::from(last_trigger_ms)
+    };
+
+    json!({
+        "tick": tick,
+        "current_time": current_time.to_rfc3339(),
+        "current_time_ms": current_time.timestamp_millis().max(0) as u64,
+        "last_trigger_time": last_trigger_time,
+        "last_trigger_time_ms": last_trigger_time_ms,
+    })
+}
+
+fn set_self_check_last_trigger_ms(meta: &mut Json, trigger_ms: u64) {
+    if !meta.is_object() {
+        *meta = json!({});
+    }
+    if let Some(map) = meta.as_object_mut() {
+        map.insert(
+            SELF_CHECK_META_LAST_TRIGGER_MS.to_string(),
+            Json::from(trigger_ms),
+        );
+    }
+}
+
+fn match_self_check_memory_item(
+    item: &crate::agent_tool::MemoryRankItem,
+    current_time: DateTime<Utc>,
+    exact_window_ms: u64,
+) -> SelfCheckMemoryMatch {
+    let mut matched = match_self_check_memory_value(&item.content, current_time, exact_window_ms);
+    let key_matched = match_self_check_memory_key(item.key.as_str(), current_time, exact_window_ms);
+    matched.has_explicit_time |= key_matched.has_explicit_time;
+    matched.retained |= key_matched.retained;
+    matched.exact_time_hit |= key_matched.exact_time_hit;
+    matched.coarse_time_hit |= key_matched.coarse_time_hit;
+    matched
+}
+
+fn match_self_check_memory_value(
+    value: &Json,
+    current_time: DateTime<Utc>,
+    exact_window_ms: u64,
+) -> SelfCheckMemoryMatch {
+    let mut out = SelfCheckMemoryMatch::default();
+    match value {
+        Json::Object(map) => {
+            for (key, child) in map {
+                if is_self_check_time_field(key.as_str()) {
+                    let direct = match_self_check_time_field(child, current_time, exact_window_ms);
+                    out.has_explicit_time |= direct.has_explicit_time;
+                    out.retained |= direct.retained;
+                    out.exact_time_hit |= direct.exact_time_hit;
+                    out.coarse_time_hit |= direct.coarse_time_hit;
+                }
+                let nested = match_self_check_memory_value(child, current_time, exact_window_ms);
+                out.has_explicit_time |= nested.has_explicit_time;
+                out.retained |= nested.retained;
+                out.exact_time_hit |= nested.exact_time_hit;
+                out.coarse_time_hit |= nested.coarse_time_hit;
+            }
+        }
+        Json::Array(items) => {
+            for child in items {
+                let nested = match_self_check_memory_value(child, current_time, exact_window_ms);
+                out.has_explicit_time |= nested.has_explicit_time;
+                out.retained |= nested.retained;
+                out.exact_time_hit |= nested.exact_time_hit;
+                out.coarse_time_hit |= nested.coarse_time_hit;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn is_self_check_time_field(key: &str) -> bool {
+    matches!(
+        key.trim().to_ascii_lowercase().as_str(),
+        "trigger_at"
+            | "trigger_time"
+            | "time"
+            | "date"
+            | "datetime"
+            | "start_at"
+            | "start_time"
+            | "end_at"
+            | "end_time"
+            | "deadline"
+            | "deadline_at"
+            | "due_at"
+            | "due_time"
+            | "scheduled_at"
+            | "scheduled_for"
+            | "occur_at"
+            | "occur_time"
+            | "remind_at"
+            | "timestamp"
+            | "ts"
+    )
+}
+
+fn match_self_check_time_field(
+    value: &Json,
+    current_time: DateTime<Utc>,
+    exact_window_ms: u64,
+) -> SelfCheckMemoryMatch {
+    if let Some(timestamp_ms) = parse_self_check_exact_timestamp_ms(value) {
+        let current_ms = current_time.timestamp_millis().max(0) as u64;
+        let delta = current_ms.abs_diff(timestamp_ms);
+        let hit = delta <= exact_window_ms;
+        return SelfCheckMemoryMatch {
+            has_explicit_time: true,
+            retained: hit,
+            exact_time_hit: hit,
+            coarse_time_hit: false,
+        };
+    }
+
+    if parse_self_check_coarse_date(value).is_some() {
+        return SelfCheckMemoryMatch {
+            has_explicit_time: true,
+            retained: true,
+            exact_time_hit: false,
+            coarse_time_hit: true,
+        };
+    }
+
+    SelfCheckMemoryMatch::default()
+}
+
+fn match_self_check_memory_key(
+    key: &str,
+    current_time: DateTime<Utc>,
+    exact_window_ms: u64,
+) -> SelfCheckMemoryMatch {
+    let Some((date, _, date_end)) = extract_self_check_date_span_from_text(key) else {
+        return SelfCheckMemoryMatch::default();
+    };
+    let time_of_day = extract_self_check_time_of_day_from_key(key, date_end);
+    if let Some((hour, minute)) = time_of_day {
+        let Some(timestamp_ms) = build_local_datetime_timestamp_ms(date, hour, minute) else {
+            return SelfCheckMemoryMatch::default();
+        };
+        let current_ms = current_time.timestamp_millis().max(0) as u64;
+        let delta = current_ms.abs_diff(timestamp_ms);
+        let hit = delta <= exact_window_ms;
+        return SelfCheckMemoryMatch {
+            has_explicit_time: true,
+            retained: hit,
+            exact_time_hit: hit,
+            coarse_time_hit: false,
+        };
+    }
+
+    SelfCheckMemoryMatch {
+        has_explicit_time: true,
+        retained: true,
+        exact_time_hit: false,
+        coarse_time_hit: true,
+    }
+}
+
+fn parse_self_check_exact_timestamp_ms(value: &Json) -> Option<u64> {
+    if let Some(parsed) = value.as_u64() {
+        return Some(parsed);
+    }
+    if let Some(parsed) = value.as_i64() {
+        if parsed > 0 {
+            return Some(parsed as u64);
+        }
+    }
+    let raw = value.as_str()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.parse::<u64>().ok().is_some() {
+        return raw.parse::<u64>().ok();
+    }
+    if raw
+        .parse::<i64>()
+        .ok()
+        .filter(|parsed| *parsed > 0)
+        .is_some()
+    {
+        return raw.parse::<i64>().ok().map(|parsed| parsed as u64);
+    }
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(raw) {
+        return Some(parsed.timestamp_millis().max(0) as u64);
+    }
+    for format in [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+    ] {
+        if let Some(parsed) = parse_local_naive_datetime_to_utc(raw, format) {
+            return Some(parsed.timestamp_millis().max(0) as u64);
+        }
+    }
+    None
+}
+
+fn parse_self_check_coarse_date(value: &Json) -> Option<NaiveDate> {
+    let raw = value.as_str()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    for format in ["%Y-%m-%d", "%Y/%m/%d"] {
+        if let Ok(date) = NaiveDate::parse_from_str(raw, format) {
+            return Some(date);
+        }
+    }
+    None
+}
+
+fn parse_local_naive_datetime_to_utc(value: &str, format: &str) -> Option<DateTime<Utc>> {
+    let naive = NaiveDateTime::parse_from_str(value, format).ok()?;
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
+        chrono::LocalResult::Ambiguous(dt, _) => Some(dt.with_timezone(&Utc)),
+        chrono::LocalResult::None => None,
+    }
+}
+
+fn build_local_datetime_timestamp_ms(date: NaiveDate, hour: u32, minute: u32) -> Option<u64> {
+    let naive = date.and_hms_opt(hour, minute, 0)?;
+    let local = match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(dt, _) => dt,
+        chrono::LocalResult::None => return None,
+    };
+    Some(local.with_timezone(&Utc).timestamp_millis().max(0) as u64)
+}
+
+fn extract_self_check_date_span_from_text(value: &str) -> Option<(NaiveDate, usize, usize)> {
+    let chars = value.chars().collect::<Vec<_>>();
+    for start in 0..chars.len() {
+        for len in [10usize] {
+            if start + len > chars.len() {
+                continue;
+            }
+            let candidate = chars[start..start + len].iter().collect::<String>();
+            for format in ["%Y-%m-%d", "%Y/%m/%d"] {
+                if let Ok(date) = NaiveDate::parse_from_str(candidate.as_str(), format) {
+                    return Some((date, start, start + len));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_self_check_time_of_day_from_key(value: &str, date_end: usize) -> Option<(u32, u32)> {
+    let suffix = value
+        .get(date_end..)?
+        .trim_start_matches(['_', '-', ' ', 'T']);
+    let chars = suffix.chars().collect::<Vec<_>>();
+    if chars.len() < 4 || !chars[0].is_ascii_digit() {
+        return None;
+    }
+
+    let mut hour_end = 0usize;
+    while hour_end < chars.len() && chars[hour_end].is_ascii_digit() && hour_end < 2 {
+        hour_end += 1;
+    }
+    if hour_end == 0 {
+        return None;
+    }
+    let hour = chars[..hour_end]
+        .iter()
+        .collect::<String>()
+        .parse::<u32>()
+        .ok()?;
+    if hour >= 24 {
+        return None;
+    }
+
+    if hour_end >= chars.len() || !matches!(chars[hour_end], ':' | '-') {
+        return None;
+    }
+    let minute_start = hour_end + 1;
+    let minute_end = minute_start + 2;
+    if minute_end > chars.len() {
+        return None;
+    }
+    let minute = chars[minute_start..minute_end]
+        .iter()
+        .collect::<String>()
+        .parse::<u32>()
+        .ok()?;
+    if minute >= 60 {
+        return None;
+    }
+
+    Some((hour, minute))
+}
+
 fn now_ms() -> u64 {
     ::agent_tool::now_ms()
 }
@@ -3825,13 +4807,302 @@ impl Tokenizer for SimpleTokenizer {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use async_trait::async_trait;
     use serde_json::json;
     use tempfile::tempdir;
     use tokio::fs;
 
     use crate::test_utils::MockTaskMgrHandler;
+
+    #[derive(Clone)]
+    struct TestMsgQueueState {
+        config: QueueConfig,
+        messages: Vec<Message>,
+        next_index: u64,
+    }
+
+    #[derive(Clone)]
+    struct TestSubscriptionState {
+        queue_urn: String,
+        cursor: u64,
+    }
+
+    struct TestMsgQueue {
+        queues: Mutex<HashMap<String, TestMsgQueueState>>,
+        subscriptions: Mutex<HashMap<String, TestSubscriptionState>>,
+        next_subscription_id: AtomicU64,
+    }
+
+    impl TestMsgQueue {
+        fn new() -> Self {
+            Self {
+                queues: Mutex::new(HashMap::new()),
+                subscriptions: Mutex::new(HashMap::new()),
+                next_subscription_id: AtomicU64::new(1),
+            }
+        }
+
+        fn next_subscription_id(&self) -> String {
+            let id = self.next_subscription_id.fetch_add(1, Ordering::SeqCst);
+            format!("test-sub-{id}")
+        }
+    }
+
+    #[async_trait]
+    impl buckyos_api::msg_queue::MsgQueueHandler for TestMsgQueue {
+        async fn handle_create_queue(
+            &self,
+            name: Option<&str>,
+            _appid: &str,
+            _app_owner: &str,
+            config: QueueConfig,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<String, kRPC::RPCErrors> {
+            let queue_urn = name
+                .map(str::to_string)
+                .ok_or_else(|| kRPC::RPCErrors::ReasonError("missing queue name".to_string()))?;
+            let mut queues = self.queues.lock().expect("lock queues");
+            if queues.contains_key(queue_urn.as_str()) {
+                return Err(kRPC::RPCErrors::ReasonError(format!(
+                    "Queue already exists: {queue_urn}"
+                )));
+            }
+            queues.insert(
+                queue_urn.clone(),
+                TestMsgQueueState {
+                    config,
+                    messages: Vec::new(),
+                    next_index: 1,
+                },
+            );
+            Ok(queue_urn)
+        }
+
+        async fn handle_delete_queue(
+            &self,
+            queue_urn: &str,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<(), kRPC::RPCErrors> {
+            let mut queues = self.queues.lock().expect("lock queues");
+            if queues.remove(queue_urn).is_none() {
+                return Err(kRPC::RPCErrors::ReasonError(format!(
+                    "Queue not found: {queue_urn}"
+                )));
+            }
+            Ok(())
+        }
+
+        async fn handle_get_queue_stats(
+            &self,
+            queue_urn: &str,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<buckyos_api::msg_queue::QueueStats, kRPC::RPCErrors> {
+            let queues = self.queues.lock().expect("lock queues");
+            let queue = queues.get(queue_urn).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
+            })?;
+            Ok(buckyos_api::msg_queue::QueueStats {
+                message_count: queue.messages.len() as u64,
+                first_index: queue.messages.first().map(|msg| msg.index).unwrap_or(0),
+                last_index: queue.messages.last().map(|msg| msg.index).unwrap_or(0),
+                size_bytes: queue
+                    .messages
+                    .iter()
+                    .map(|msg| msg.payload.len() as u64)
+                    .sum(),
+            })
+        }
+
+        async fn handle_update_queue_config(
+            &self,
+            queue_urn: &str,
+            config: QueueConfig,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<(), kRPC::RPCErrors> {
+            let mut queues = self.queues.lock().expect("lock queues");
+            let queue = queues.get_mut(queue_urn).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
+            })?;
+            queue.config = config;
+            Ok(())
+        }
+
+        async fn handle_post_message(
+            &self,
+            queue_urn: &str,
+            mut message: Message,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<u64, kRPC::RPCErrors> {
+            let mut queues = self.queues.lock().expect("lock queues");
+            let queue = queues.get_mut(queue_urn).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
+            })?;
+            let index = queue.next_index;
+            queue.next_index += 1;
+            message.index = index;
+            queue.messages.push(message);
+            Ok(index)
+        }
+
+        async fn handle_subscribe(
+            &self,
+            queue_urn: &str,
+            _user_id: &str,
+            _app_id: &str,
+            sub_id: Option<String>,
+            position: SubPosition,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<String, kRPC::RPCErrors> {
+            let queues = self.queues.lock().expect("lock queues");
+            let queue = queues.get(queue_urn).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
+            })?;
+            let last_index = queue.messages.last().map(|msg| msg.index).unwrap_or(0);
+            let first_index = queue.messages.first().map(|msg| msg.index).unwrap_or(1);
+            drop(queues);
+
+            let cursor = match position {
+                SubPosition::Earliest => first_index,
+                SubPosition::Latest => last_index + 1,
+                SubPosition::At(index) => index,
+            };
+            let sub_id = sub_id.unwrap_or_else(|| self.next_subscription_id());
+            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
+            if subscriptions.contains_key(sub_id.as_str()) {
+                return Err(kRPC::RPCErrors::ReasonError(format!(
+                    "Subscription already exists: {sub_id}"
+                )));
+            }
+            subscriptions.insert(
+                sub_id.clone(),
+                TestSubscriptionState {
+                    queue_urn: queue_urn.to_string(),
+                    cursor,
+                },
+            );
+            Ok(sub_id)
+        }
+
+        async fn handle_unsubscribe(
+            &self,
+            sub_id: &str,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<(), kRPC::RPCErrors> {
+            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
+            if subscriptions.remove(sub_id).is_none() {
+                return Err(kRPC::RPCErrors::ReasonError(format!(
+                    "Subscription not found: {sub_id}"
+                )));
+            }
+            Ok(())
+        }
+
+        async fn handle_fetch_messages(
+            &self,
+            sub_id: &str,
+            length: usize,
+            auto_commit: bool,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<Vec<Message>, kRPC::RPCErrors> {
+            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
+            let subscription = subscriptions.get_mut(sub_id).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Subscription not found: {sub_id}"))
+            })?;
+            let queues = self.queues.lock().expect("lock queues");
+            let queue = queues.get(subscription.queue_urn.as_str()).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Queue not found: {}", subscription.queue_urn))
+            })?;
+            let messages: Vec<Message> = queue
+                .messages
+                .iter()
+                .filter(|msg| msg.index >= subscription.cursor)
+                .take(length)
+                .cloned()
+                .collect();
+            if auto_commit {
+                if let Some(last) = messages.last() {
+                    subscription.cursor = last.index + 1;
+                }
+            }
+            Ok(messages)
+        }
+
+        async fn handle_read_message(
+            &self,
+            queue_urn: &str,
+            cursor: u64,
+            length: usize,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<Vec<Message>, kRPC::RPCErrors> {
+            let queues = self.queues.lock().expect("lock queues");
+            let queue = queues.get(queue_urn).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
+            })?;
+            Ok(queue
+                .messages
+                .iter()
+                .filter(|msg| msg.index >= cursor)
+                .take(length)
+                .cloned()
+                .collect())
+        }
+
+        async fn handle_commit_ack(
+            &self,
+            sub_id: &str,
+            index: u64,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<(), kRPC::RPCErrors> {
+            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
+            let subscription = subscriptions.get_mut(sub_id).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Subscription not found: {sub_id}"))
+            })?;
+            subscription.cursor = index + 1;
+            Ok(())
+        }
+
+        async fn handle_seek(
+            &self,
+            sub_id: &str,
+            index: SubPosition,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<(), kRPC::RPCErrors> {
+            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
+            let subscription = subscriptions.get_mut(sub_id).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Subscription not found: {sub_id}"))
+            })?;
+            subscription.cursor = match index {
+                SubPosition::Earliest => 1,
+                SubPosition::Latest => {
+                    let queues = self.queues.lock().expect("lock queues");
+                    queues
+                        .get(subscription.queue_urn.as_str())
+                        .and_then(|queue| queue.messages.last().map(|msg| msg.index + 1))
+                        .unwrap_or(1)
+                }
+                SubPosition::At(value) => value,
+            };
+            Ok(())
+        }
+
+        async fn handle_delete_message_before(
+            &self,
+            queue_urn: &str,
+            index: u64,
+            _ctx: kRPC::RPCContext,
+        ) -> std::result::Result<u64, kRPC::RPCErrors> {
+            let mut queues = self.queues.lock().expect("lock queues");
+            let queue = queues.get_mut(queue_urn).ok_or_else(|| {
+                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
+            })?;
+            let before = queue.messages.len();
+            queue.messages.retain(|msg| msg.index >= index);
+            Ok((before - queue.messages.len()) as u64)
+        }
+    }
 
     fn make_event(eventid: &str) -> Event {
         Event {
@@ -3903,6 +5174,55 @@ mod tests {
         assert!(msg_pull_boxes.contains(&BoxKind::GroupInbox));
         assert!(msg_pull_boxes.contains(&BoxKind::RequestBox));
         assert!(pulled_events.is_empty());
+    }
+
+    #[test]
+    fn session_kevent_targets_match_wildcard_patterns() {
+        let mut subscriptions = HashMap::<String, HashSet<String>>::new();
+        subscriptions.insert(
+            "/taskmgr/**".to_string(),
+            HashSet::from(["work-alpha".to_string(), "work-beta".to_string()]),
+        );
+        subscriptions.insert(
+            "/system/*/done".to_string(),
+            HashSet::from(["work-gamma".to_string()]),
+        );
+
+        assert_eq!(
+            collect_session_kevent_targets_from_subscriptions(
+                &subscriptions,
+                "/taskmgr/new/task_001"
+            ),
+            vec!["work-alpha".to_string(), "work-beta".to_string()]
+        );
+        assert_eq!(
+            collect_session_kevent_targets_from_subscriptions(&subscriptions, "/system/job/done"),
+            vec!["work-gamma".to_string()]
+        );
+        assert!(
+            collect_session_kevent_targets_from_subscriptions(&subscriptions, "/other/path")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn parse_session_kevent_subscriptions_skips_invalid_patterns() {
+        let parsed = parse_session_kevent_subscriptions(&json!({
+            "/taskmgr/**": ["work-one", "work-two"],
+            "bad/name": ["work-bad"],
+            "": ["work-empty"],
+            "/system/*/done": ["work-three", ""]
+        }));
+
+        assert_eq!(
+            collect_session_kevent_targets_from_subscriptions(&parsed, "/taskmgr/new/task_001"),
+            vec!["work-one".to_string(), "work-two".to_string()]
+        );
+        assert_eq!(
+            collect_session_kevent_targets_from_subscriptions(&parsed, "/system/job/done"),
+            vec!["work-three".to_string()]
+        );
+        assert!(collect_session_kevent_targets_from_subscriptions(&parsed, "bad/name").is_empty());
     }
 
     #[test]
@@ -4055,6 +5375,7 @@ mod tests {
             resolved_vars: HashMap::from([
                 ("last_step".to_string(), false),
                 ("new_msg".to_string(), false),
+                ("new_event".to_string(), false),
             ]),
         };
 
@@ -4074,6 +5395,27 @@ mod tests {
             resolved_vars: HashMap::from([
                 ("last_step".to_string(), true),
                 ("new_msg".to_string(), false),
+                ("new_event".to_string(), false),
+            ]),
+        };
+
+        assert!(should_continue_with_rendered_input(&result));
+    }
+
+    #[test]
+    fn rendered_input_continues_when_new_event_resolves() {
+        let result = AgentTemplateRenderResult {
+            rendered: "# Event\n/taskmgr/new/task_001".to_string(),
+            env_expanded: 0,
+            env_not_found: 0,
+            content_loaded: 0,
+            content_failed: 0,
+            var_registered: 1,
+            var_failed: 1,
+            resolved_vars: HashMap::from([
+                ("last_step".to_string(), false),
+                ("new_msg".to_string(), false),
+                ("new_event".to_string(), true),
             ]),
         };
 
@@ -4094,6 +5436,100 @@ mod tests {
         };
 
         assert!(should_continue_with_rendered_input(&result));
+    }
+
+    #[test]
+    fn self_check_memory_filter_requires_explicit_time_or_date() {
+        let current_time = match Local.with_ymd_and_hms(2026, 3, 24, 10, 0, 5) {
+            chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
+            chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
+            chrono::LocalResult::None => panic!("build local current time"),
+        };
+        let exact_hit = crate::agent_tool::MemoryRankItem {
+            key: "/reminder/owner/2026-03-24_10-00_dentist".to_string(),
+            ts: current_time.to_rfc3339(),
+            source: json!({}),
+            content: Json::String("Dentist appointment".to_string()),
+            importance: 0,
+            recency_hours: 0,
+            token_estimate: 0,
+            tags: vec![],
+            type_name: "reminder".to_string(),
+            summary: "exact hit".to_string(),
+            tag_score: 0,
+            ts_unix_ms: current_time.timestamp_millis(),
+        };
+        let exact_miss = crate::agent_tool::MemoryRankItem {
+            key: "/reminder/owner/2026-03-24_10-01_dentist".to_string(),
+            ts: current_time.to_rfc3339(),
+            source: json!({}),
+            content: Json::String("Dentist appointment".to_string()),
+            importance: 0,
+            recency_hours: 0,
+            token_estimate: 0,
+            tags: vec![],
+            type_name: "reminder".to_string(),
+            summary: "exact miss".to_string(),
+            tag_score: 0,
+            ts_unix_ms: current_time.timestamp_millis(),
+        };
+        let coarse_date = crate::agent_tool::MemoryRankItem {
+            key: "/reminder/owner/2026-03-24-dentist".to_string(),
+            ts: current_time.to_rfc3339(),
+            source: json!({}),
+            content: Json::String("Dentist appointment at 3pm".to_string()),
+            importance: 0,
+            recency_hours: 0,
+            token_estimate: 0,
+            tags: vec![],
+            type_name: "reminder".to_string(),
+            summary: "date only".to_string(),
+            tag_score: 0,
+            ts_unix_ms: current_time.timestamp_millis(),
+        };
+        let untimed = crate::agent_tool::MemoryRankItem {
+            key: "/demo/untimed".to_string(),
+            ts: current_time.to_rfc3339(),
+            source: json!({}),
+            content: json!({
+                "type": "note",
+                "summary": "no explicit time"
+            }),
+            importance: 0,
+            recency_hours: 0,
+            token_estimate: 0,
+            tags: vec![],
+            type_name: "note".to_string(),
+            summary: "no explicit time".to_string(),
+            tag_score: 0,
+            ts_unix_ms: current_time.timestamp_millis(),
+        };
+
+        let exact_hit_match =
+            match_self_check_memory_item(&exact_hit, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
+        let exact_miss_match = match_self_check_memory_item(
+            &exact_miss,
+            current_time,
+            SELF_CHECK_EXACT_TIME_WINDOW_MS,
+        );
+        let coarse_date_match = match_self_check_memory_item(
+            &coarse_date,
+            current_time,
+            SELF_CHECK_EXACT_TIME_WINDOW_MS,
+        );
+        let untimed_match =
+            match_self_check_memory_item(&untimed, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
+
+        assert!(exact_hit_match.has_explicit_time);
+        assert!(exact_hit_match.retained);
+        assert!(exact_hit_match.exact_time_hit);
+        assert!(exact_miss_match.has_explicit_time);
+        assert!(!exact_miss_match.retained);
+        assert!(coarse_date_match.has_explicit_time);
+        assert!(coarse_date_match.retained);
+        assert!(coarse_date_match.coarse_time_hit);
+        assert!(!untimed_match.has_explicit_time);
+        assert!(!untimed_match.retained);
     }
 
     fn build_step_input_payload(record_id: &str, ui_session_id: Option<&str>) -> Vec<u8> {
@@ -4160,6 +5596,250 @@ mod tests {
             AIAgent::creator_ui_session_id_from_meta(&empty_meta),
             Some("ui-owner".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn load_agent_applies_local_agent_json_overrides() {
+        let temp = tempdir().expect("create tempdir");
+        let agent_root = temp.path().join("agent");
+        let package_root = temp.path().join("package");
+        fs::create_dir_all(package_root.join("behaviors"))
+            .await
+            .expect("create package behaviors dir");
+        fs::write(
+            package_root.join("agent.json"),
+            r#"{
+  "default_ui_behavior_name": "resolve_router",
+  "default_work_behavior_name": "do",
+  "self_check_timer": 0
+}"#,
+        )
+        .await
+        .expect("write local agent config");
+        fs::write(
+            package_root.join("behaviors/resolve_router.yaml"),
+            r#"
+system: "router behavior"
+"#,
+        )
+        .await
+        .expect("write resolve_router behavior");
+        fs::write(
+            package_root.join("behaviors/do.yaml"),
+            r#"
+system: "worker behavior"
+"#,
+        )
+        .await
+        .expect("write do behavior");
+
+        let mut cfg = AIAgentConfig::new(agent_root);
+        cfg.agent_did = Some("did:opendan:test-agent".to_string());
+        cfg.agent_package_root = Some(package_root);
+
+        let taskmgr = Arc::new(buckyos_api::TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: Arc::new(Mutex::new(HashMap::new())),
+            },
+        )));
+        let agent = AIAgent::load(
+            cfg,
+            AIAgentDeps {
+                taskmgr,
+                msg_center: None,
+                msg_queue: None,
+            },
+        )
+        .await
+        .expect("load agent");
+
+        assert_eq!(agent.default_behavior, "resolve_router");
+        assert_eq!(agent.default_worker_behavior, "do");
+        assert_eq!(agent.cfg.self_check_timer_secs, 0);
+    }
+
+    #[tokio::test]
+    async fn self_check_tick_wakes_fixed_session_when_memory_exists() {
+        let temp = tempdir().expect("create tempdir");
+        let agent_root = temp.path().join("agent");
+        fs::create_dir_all(agent_root.join("behaviors"))
+            .await
+            .expect("create behaviors dir");
+        fs::write(
+            agent_root.join("behaviors/resolve_router.yaml"),
+            r#"
+system: "router behavior"
+"#,
+        )
+        .await
+        .expect("write resolve_router behavior");
+        fs::write(
+            agent_root.join("behaviors/self_check.yaml"),
+            r#"
+system: "self check behavior"
+"#,
+        )
+        .await
+        .expect("write self_check behavior");
+
+        let mut cfg = AIAgentConfig::new(agent_root);
+        cfg.agent_did = Some("did:opendan:test-agent".to_string());
+
+        let msg_queue = Arc::new(MsgQueueClient::new_in_process(
+            Box::new(TestMsgQueue::new()),
+        ));
+        let taskmgr = Arc::new(buckyos_api::TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: Arc::new(Mutex::new(HashMap::new())),
+            },
+        )));
+        let agent = AIAgent::load(
+            cfg,
+            AIAgentDeps {
+                taskmgr,
+                msg_center: None,
+                msg_queue: Some(msg_queue.clone()),
+            },
+        )
+        .await
+        .expect("load agent");
+
+        let current_time = Utc::now();
+        agent
+            .memory
+            .set_memory(
+                "self/check/demo",
+                format!(
+                    r#"{{"summary":"pending self-check item","importance":1,"trigger_at":"{}"}}"#,
+                    current_time.to_rfc3339()
+                )
+                .as_str(),
+                json!({
+                    "kind": "test",
+                    "name": "self-check",
+                    "retrieved_at": current_time.to_rfc3339(),
+                    "locator": "unit-test"
+                }),
+            )
+            .await
+            .expect("set memory");
+
+        agent
+            .run_self_check_timer_tick(1, current_time)
+            .await
+            .expect("run self-check tick");
+
+        let session = agent
+            .session_mgr
+            .get_session(SELF_CHECK_SESSION_ID)
+            .await
+            .expect("self-check session exists");
+        let guard = session.lock().await;
+        assert_eq!(guard.current_behavior, AGENT_BEHAVIOR_SELF_CHECK);
+        assert_eq!(guard.state, SessionState::Ready);
+        assert_eq!(guard.title, SELF_CHECK_SESSION_TITLE);
+        assert!(
+            self_check_last_trigger_ms(&guard.meta).unwrap_or_default()
+                >= current_time.timestamp_millis().max(0) as u64
+        );
+        drop(guard);
+
+        let binding = agent
+            .ensure_session_queue_binding(SELF_CHECK_SESSION_ID)
+            .await
+            .expect("ensure self-check queue binding")
+            .expect("self-check queue binding exists");
+        let queued_events = msg_queue
+            .fetch_messages(binding.event_sub_id.as_str(), 8, false)
+            .await
+            .expect("fetch self-check queued events");
+        assert_eq!(queued_events.len(), 1);
+
+        let queued_input = serde_json::from_slice::<SessionInputItem>(&queued_events[0].payload)
+            .expect("parse queued self-check input");
+        assert_eq!(
+            queued_input.event_id.as_deref(),
+            Some(SELF_CHECK_TRIGGER_EVENT_ID)
+        );
+        let event_data = queued_input
+            .event_data
+            .expect("self-check trigger should include event data");
+        assert_eq!(event_data["tick"], Json::from(1));
+        assert_eq!(
+            event_data["current_time"],
+            Json::from(current_time.to_rfc3339())
+        );
+        assert_eq!(event_data["last_trigger_time"], Json::Null);
+    }
+
+    #[tokio::test]
+    async fn self_check_tick_skips_untimed_memory_items() {
+        let temp = tempdir().expect("create tempdir");
+        let agent_root = temp.path().join("agent");
+        fs::create_dir_all(agent_root.join("behaviors"))
+            .await
+            .expect("create behaviors dir");
+        fs::write(
+            agent_root.join("behaviors/resolve_router.yaml"),
+            r#"
+system: "router behavior"
+"#,
+        )
+        .await
+        .expect("write resolve_router behavior");
+        fs::write(
+            agent_root.join("behaviors/self_check.yaml"),
+            r#"
+system: "self check behavior"
+"#,
+        )
+        .await
+        .expect("write self_check behavior");
+
+        let mut cfg = AIAgentConfig::new(agent_root);
+        cfg.agent_did = Some("did:opendan:test-agent".to_string());
+
+        let taskmgr = Arc::new(buckyos_api::TaskManagerClient::new_in_process(Box::new(
+            MockTaskMgrHandler {
+                counter: Mutex::new(0),
+                tasks: Arc::new(Mutex::new(HashMap::new())),
+            },
+        )));
+        let agent = AIAgent::load(
+            cfg,
+            AIAgentDeps {
+                taskmgr,
+                msg_center: None,
+                msg_queue: None,
+            },
+        )
+        .await
+        .expect("load agent");
+
+        agent
+            .memory
+            .set_memory(
+                "self/check/untimed",
+                r#"{"summary":"plain note without explicit time","importance":1}"#,
+                json!({
+                    "kind": "test",
+                    "name": "self-check",
+                    "retrieved_at": Utc::now().to_rfc3339(),
+                    "locator": "unit-test"
+                }),
+            )
+            .await
+            .expect("set untimed memory");
+
+        agent
+            .run_self_check_timer_tick(1, Utc::now())
+            .await
+            .expect("run self-check tick");
+
+        let session = agent.session_mgr.get_session(SELF_CHECK_SESSION_ID).await;
+        assert!(session.is_none());
     }
 
     #[tokio::test]
