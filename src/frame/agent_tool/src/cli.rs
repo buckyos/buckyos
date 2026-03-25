@@ -865,7 +865,10 @@ impl WorkspaceToolBackend for CliWorkspaceBackend {
 
         let now = now_ms();
         let workspace_id = format!("ws-{now:x}-{:x}", std::process::id());
-        let workspace_rel_path = format!("workspaces/{workspace_id}");
+        let mut index = load_workspace_index(&self.state_root).await?;
+        let workspace_dir_name =
+            allocate_cli_workspace_dir_name(&self.state_root, &index, &name).await?;
+        let workspace_rel_path = format!("workspaces/{workspace_dir_name}");
         let workspace_path = self.state_root.join(&workspace_rel_path);
         fs::create_dir_all(&workspace_path).await.map_err(|err| {
             AgentToolError::ExecFailed(format!(
@@ -883,7 +886,6 @@ impl WorkspaceToolBackend for CliWorkspaceBackend {
                 ))
             })?;
 
-        let mut index = load_workspace_index(&self.state_root).await?;
         let workspace = CliWorkspaceRecord {
             workspace_id: workspace_id.clone(),
             name: name.trim().to_string(),
@@ -1557,6 +1559,73 @@ fn workspace_root_for_record(state_root: &Path, record: &CliWorkspaceRecord) -> 
         .unwrap_or_else(|| state_root.join("workspaces").join(&record.workspace_id))
 }
 
+async fn allocate_cli_workspace_dir_name(
+    state_root: &Path,
+    index: &CliWorkspaceIndex,
+    workspace_name: &str,
+) -> Result<String, AgentToolError> {
+    let base_name = sanitize_cli_workspace_dir_name(workspace_name);
+
+    for suffix in 1u32.. {
+        let candidate = if suffix == 1 {
+            base_name.clone()
+        } else {
+            format!("{base_name}-{suffix}")
+        };
+
+        let already_indexed = index.workspaces.iter().any(|item| {
+            item.relative_path
+                .as_deref()
+                .and_then(|rel| Path::new(rel).file_name())
+                .and_then(|value| value.to_str())
+                == Some(candidate.as_str())
+        });
+        if already_indexed {
+            continue;
+        }
+
+        let candidate_path = state_root.join("workspaces").join(&candidate);
+        if !fs::try_exists(&candidate_path).await.map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "check workspace dir `{}` failed: {err}",
+                candidate_path.display()
+            ))
+        })? {
+            return Ok(candidate);
+        }
+    }
+
+    unreachable!("workspace dir allocation should always find a candidate")
+}
+
+fn sanitize_cli_workspace_dir_name(workspace_name: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+
+    for ch in workspace_name.trim().chars() {
+        let is_forbidden =
+            ch.is_control() || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|');
+        if is_forbidden {
+            if !out.is_empty() {
+                pending_dash = true;
+            }
+            continue;
+        }
+
+        if pending_dash && !out.ends_with('-') {
+            out.push('-');
+        }
+        pending_dash = false;
+        out.push(ch);
+    }
+
+    let sanitized = out.trim_matches([' ', '.']).trim();
+    match sanitized {
+        "" | "." | ".." => "workspace".to_string(),
+        _ => sanitized.to_string(),
+    }
+}
+
 async fn build_task_manager_client(
     _env: &CliRuntimeEnv,
 ) -> Result<TaskManagerClient, AgentToolError> {
@@ -2164,6 +2233,45 @@ mod tests {
             session_payload["detail"]["session"]["local_workspace_id"],
             workspace_id
         );
+    }
+
+    #[tokio::test]
+    async fn create_workspace_alias_uses_title_for_workspace_dir() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
+        seed_session(&root, "session-test", &cwd).await;
+
+        let output = execute(
+            vec![
+                OsString::from("/tmp/create_workspace"),
+                OsString::from("My Workspace"),
+                OsString::from("workspace summary"),
+            ],
+            test_env(root.clone(), cwd),
+            None,
+        )
+        .await
+        .expect("run create_workspace");
+
+        let payload: Json = serde_json::from_str(&output.stdout).expect("parse create json");
+        assert_eq!(payload["status"], "success");
+        assert_eq!(
+            payload["detail"]["binding"]["workspace_rel_path"],
+            "workspaces/My Workspace"
+        );
+        let workspace_path = payload["detail"]["binding"]["workspace_path"]
+            .as_str()
+            .expect("workspace path");
+        assert!(workspace_path.ends_with("workspaces/My Workspace"));
+        assert!(!workspace_path
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .starts_with("ws-"));
     }
 
     #[tokio::test]

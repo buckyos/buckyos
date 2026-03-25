@@ -829,7 +829,9 @@ impl AgentTool for TodoTool {
             }
         }
 
-        result.map(|details| build_builtin_tool_result(details, format!("{TOOL_TODO} {action}"), "ok"))
+        result.map(|details| {
+            build_builtin_tool_result(details, format!("{TOOL_TODO} {action}"), "ok")
+        })
     }
 }
 

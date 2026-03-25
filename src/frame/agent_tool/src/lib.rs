@@ -285,8 +285,7 @@ pub enum AgentHistoryShowLevel {
 const HISTORY_COMPACT_CMD_MAX_CHARS: usize = 96;
 const HISTORY_STD_DETAILS_MAX_CHARS: usize = 1600;
 const HISTORY_BASH_OUTPUT_MINI_LINES: usize = 8;
-const HISTORY_BASH_OUTPUT_FULL_LINES: usize = 24;
-
+const HISTORY_BASH_OUTPUT_FULL_LINES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -581,15 +580,25 @@ impl AgentToolResult {
         }
     }
 
+    pub fn render_for_last_step(&self) -> String {
+        if self.is_agent_tool {
+            self.render_agent_tool_for_last_step()
+        } else {
+            self.render_bash_result_for_last_step()
+        }
+    }
+
     pub fn command_line_text(&self) -> Option<String> {
-        self.cmd_name.as_ref().map(|cmd_name| match self
-            .cmd_args
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            Some(cmd_args) => format!("{cmd_name} {cmd_args}"),
-            None => cmd_name.clone(),
+        self.cmd_name.as_ref().map(|cmd_name| {
+            match self
+                .cmd_args
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                Some(cmd_args) => format!("{cmd_name} {cmd_args}"),
+                None => cmd_name.clone(),
+            }
         })
     }
 
@@ -624,32 +633,65 @@ impl AgentToolResult {
         }
     }
 
+    fn render_agent_tool_for_last_step(&self) -> String {
+        let command = self
+            .command_line_text()
+            .or_else(|| self.history_compact_command_text())
+            .unwrap_or_else(|| "action".to_string());
+        let mut lines = vec![command, "```result".to_string(), self.history_result_text()];
+        if let Some(details) = self.render_agent_tool_details_block_uncompressed() {
+            lines.push(details);
+        }
+        lines.push("```".to_string());
+
+        if let Some(output) = self
+            .output
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push("```output".to_string());
+            lines.push(output.to_string());
+            lines.push("```".to_string());
+        }
+
+        lines.join("\n")
+    }
+
     fn render_bash_result_for_level(&self, level: AgentHistoryShowLevel) -> String {
         let command = match level {
             AgentHistoryShowLevel::Min | AgentHistoryShowLevel::Mini => {
                 self.history_compact_command_text()
             }
-            AgentHistoryShowLevel::Medium | AgentHistoryShowLevel::Full => {
-                self.command_line_text()
-                    .or_else(|| self.history_compact_command_text())
-            }
+            AgentHistoryShowLevel::Medium | AgentHistoryShowLevel::Full => self
+                .command_line_text()
+                .or_else(|| self.history_compact_command_text()),
         };
         let mut lines = vec![self.render_command_with_status(command)];
 
         let excerpt = match level {
             AgentHistoryShowLevel::Min => None,
             AgentHistoryShowLevel::Mini => match self.status {
-                AgentToolStatus::Error => self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES),
+                AgentToolStatus::Error => {
+                    self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES)
+                }
                 _ => None,
             },
             AgentHistoryShowLevel::Medium => match self.status {
-                AgentToolStatus::Error => self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES),
-                AgentToolStatus::Success => self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_MINI_LINES),
+                AgentToolStatus::Error => {
+                    self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES)
+                }
+                AgentToolStatus::Success => {
+                    self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_MINI_LINES)
+                }
                 AgentToolStatus::Pending => None,
             },
             AgentHistoryShowLevel::Full => match self.status {
-                AgentToolStatus::Error => self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_FULL_LINES),
-                AgentToolStatus::Success => self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_FULL_LINES),
+                AgentToolStatus::Error => {
+                    self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_FULL_LINES)
+                }
+                AgentToolStatus::Success => {
+                    self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_FULL_LINES)
+                }
                 AgentToolStatus::Pending => None,
             },
         };
@@ -659,6 +701,25 @@ impl AgentToolResult {
             lines.push(excerpt);
             lines.push("```".to_string());
         }
+        lines.join("\n")
+    }
+
+    fn render_bash_result_for_last_step(&self) -> String {
+        let command = self
+            .command_line_text()
+            .or_else(|| self.history_compact_command_text());
+        let mut lines = vec![self.render_command_with_status(command)];
+
+        if let Some(output) = self
+            .output
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push("```output".to_string());
+            lines.push(output.to_string());
+            lines.push("```".to_string());
+        }
+
         lines.join("\n")
     }
 
@@ -721,6 +782,16 @@ impl AgentToolResult {
                     .as_str(),
                 HISTORY_STD_DETAILS_MAX_CHARS,
             )),
+        }
+    }
+
+    fn render_agent_tool_details_block_uncompressed(&self) -> Option<String> {
+        match &self.details {
+            Json::Null => None,
+            Json::Object(map) if map.is_empty() => None,
+            value => {
+                Some(serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
+            }
         }
     }
 
@@ -796,9 +867,7 @@ fn take_head_lines(content: &str, max_lines: usize) -> String {
     if !out.is_empty() {
         out.push('\n');
     }
-    out.push_str(
-        format!("... [TRUNCATED: showing first {max_lines} lines only] ...").as_str(),
-    );
+    out.push_str(format!("... [TRUNCATED: showing first {max_lines} lines only] ...").as_str());
     out
 }
 
@@ -2570,7 +2639,10 @@ mod tests {
 
         assert!(result.is_agent_tool);
         assert_eq!(result.summary, "show usage");
-        assert_eq!(result.command_line_text().as_deref(), Some("read_file --help"));
+        assert_eq!(
+            result.command_line_text().as_deref(),
+            Some("read_file --help")
+        );
         assert_eq!(result["tool"], "read_file");
     }
 
@@ -2584,7 +2656,10 @@ mod tests {
 
         assert!(result.is_agent_tool);
         assert_eq!(result.summary, "ok");
-        assert_eq!(result.command_line_text().as_deref(), Some("get_session session-9"));
+        assert_eq!(
+            result.command_line_text().as_deref(),
+            Some("get_session session-9")
+        );
         assert_eq!(result["session"]["session_id"], "session-9");
     }
 
@@ -2598,7 +2673,10 @@ mod tests {
 
         assert!(result.is_agent_tool);
         assert_eq!(result.summary, "list_worklog");
-        assert_eq!(result.command_line_text().as_deref(), Some("worklog_manage"));
+        assert_eq!(
+            result.command_line_text().as_deref(),
+            Some("worklog_manage")
+        );
         assert_eq!(result["action"], "list_worklog");
     }
 
@@ -2645,10 +2723,10 @@ mod tests {
     #[test]
     fn render_for_level_non_agent_tool_shows_tail_on_failure() {
         let result = AgentToolResult::from_details(json!({}))
-        .with_cmd_line("cargo test --package demo")
-        .with_status(AgentToolStatus::Error)
-        .with_return_code(1)
-        .with_output("line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nline-8\nline-9");
+            .with_cmd_line("cargo test --package demo")
+            .with_status(AgentToolStatus::Error)
+            .with_return_code(1)
+            .with_output("line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nline-8\nline-9");
 
         let mini = result.render_for_level(AgentHistoryShowLevel::Mini);
         let full = result.render_for_level(AgentHistoryShowLevel::Full);
@@ -2659,5 +2737,40 @@ mod tests {
         assert!(full.contains("cargo test --package demo => failed (line-9)"));
         assert!(full.contains("line-1"));
         assert!(full.contains("line-9"));
+    }
+
+    #[test]
+    fn render_for_level_full_non_agent_tool_keeps_512_success_lines() {
+        let output = (1..=600)
+            .map(|idx| format!("line-{idx:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered = AgentToolResult::from_details(json!({}))
+            .with_cmd_line("sed -n '1,600p' demo.log")
+            .with_output(output)
+            .render_for_level(AgentHistoryShowLevel::Full);
+
+        assert!(rendered.contains("line-001"));
+        assert!(rendered.contains("line-512"));
+        assert!(!rendered.contains("line-513"));
+        assert!(rendered.contains("showing first 512 lines only"));
+    }
+
+    #[test]
+    fn render_for_last_step_non_agent_tool_keeps_full_output() {
+        let output = (1..=30)
+            .map(|idx| format!("line-{idx:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered = AgentToolResult::from_details(json!({}))
+            .with_cmd_line("sed -n '1,30p' demo.log")
+            .with_output(output)
+            .render_for_last_step();
+
+        assert!(rendered.contains("sed -n"));
+        assert!(rendered.contains("demo.log => success"));
+        assert!(rendered.contains("line-01"));
+        assert!(rendered.contains("line-30"));
+        assert!(!rendered.contains("TRUNCATED"));
     }
 }

@@ -2385,6 +2385,21 @@ impl AIAgent {
             .collect()
     }
 
+    async fn collect_step_input_new_msgs_with_objects(
+        step_inputs: &[Vec<u8>],
+    ) -> Vec<MsgRecordWithObject> {
+        let mut messages = Self::collect_step_input_new_msgs(step_inputs);
+        for message in &mut messages {
+            if message.msg.is_some() {
+                continue;
+            }
+            if let Ok(msg_obj) = message.get_msg().await {
+                message.msg = Some(msg_obj);
+            }
+        }
+        messages
+    }
+
     fn normalize_ui_session_id(value: &str) -> Option<String> {
         let session_id = value.trim();
         if session_id.is_empty() {
@@ -2722,7 +2737,8 @@ impl AIAgent {
     ) {
         let new_msg = {
             let guard = session.lock().await;
-            Self::collect_step_input_new_msgs(guard.just_readed_input_msg.as_slice())
+            Self::collect_step_input_new_msgs_with_objects(guard.just_readed_input_msg.as_slice())
+                .await
         };
 
         let record = LLMStepRecord {

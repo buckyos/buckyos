@@ -266,8 +266,9 @@ impl LocalWorkspaceManager {
 
         let created_at_ms = now_ms();
         let workspace_id = generate_workspace_id(&name, created_at_ms);
+        let workspace_dir_name = self.allocate_workspace_dir_name(&name).await?;
         let relative_path = Path::new(LOCAL_WORKSPACES_REL_PATH)
-            .join(&workspace_id)
+            .join(&workspace_dir_name)
             .to_string_lossy()
             .to_string();
         let abs_path = self.cfg.agent_env_root.join(&relative_path);
@@ -338,6 +339,44 @@ impl LocalWorkspaceManager {
 
         self.persist_state_locked(&guard).await?;
         Ok(record)
+    }
+
+    async fn allocate_workspace_dir_name(&self, name: &str) -> Result<String, AgentToolError> {
+        let base_name = sanitize_workspace_dir_name(name);
+        let existing_dir_names = {
+            let guard = self.state.lock().await;
+            guard
+                .index
+                .workspaces
+                .iter()
+                .filter_map(|item| item.relative_path.as_deref())
+                .filter_map(|path| Path::new(path).file_name())
+                .filter_map(|value| value.to_str())
+                .map(str::to_string)
+                .collect::<std::collections::HashSet<_>>()
+        };
+
+        let workspaces_root = self.workspaces_root();
+        for suffix in 1u32.. {
+            let candidate = if suffix == 1 {
+                base_name.clone()
+            } else {
+                format!("{base_name}-{suffix}")
+            };
+            if existing_dir_names.contains(candidate.as_str()) {
+                continue;
+            }
+
+            let candidate_path = workspaces_root.join(&candidate);
+            if !fs::try_exists(&candidate_path)
+                .await
+                .map_err(|err| io_error("check local workspace path", &candidate_path, err))?
+            {
+                return Ok(candidate);
+            }
+        }
+
+        unreachable!("workspace dir allocation should always return a candidate")
     }
 
     pub async fn bind_local_workspace(
@@ -889,6 +928,34 @@ fn generate_workspace_id(name: &str, timestamp_ms: u64) -> String {
     format!("local-{slug}-{timestamp_ms}-{counter}")
 }
 
+fn sanitize_workspace_dir_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+
+    for ch in name.trim().chars() {
+        let is_forbidden =
+            ch.is_control() || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|');
+        if is_forbidden {
+            if !out.is_empty() {
+                pending_dash = true;
+            }
+            continue;
+        }
+
+        if pending_dash && !out.ends_with('-') {
+            out.push('-');
+        }
+        pending_dash = false;
+        out.push(ch);
+    }
+
+    let sanitized = out.trim_matches([' ', '.']).trim();
+    match sanitized {
+        "" | "." | ".." => "workspace".to_string(),
+        _ => sanitized.to_string(),
+    }
+}
+
 async fn ensure_agent_env_layout(agent_env_root: &Path) -> Result<(), AgentToolError> {
     let dirs = [
         agent_env_root.to_path_buf(),
@@ -1106,12 +1173,14 @@ mod tests {
             })
             .await
             .expect("create local workspace");
+        assert_eq!(created.relative_path.as_deref(), Some("workspaces/devbox"));
 
         let binding = manager
             .bind_local_workspace("session-a", &created.workspace_id)
             .await
             .expect("bind local workspace");
         assert_eq!(binding.local_workspace_id, created.workspace_id);
+        assert_eq!(binding.workspace_rel_path, "workspaces/devbox");
 
         let lock = manager
             .acquire(&created.workspace_id, "session-a")
@@ -1123,7 +1192,7 @@ mod tests {
             .snapshot_metadata(&created.workspace_id)
             .await
             .expect("snapshot metadata");
-        assert!(snapshot.path.ends_with(&created.workspace_id));
+        assert!(snapshot.path.ends_with("workspaces/devbox"));
 
         let released = manager
             .release(&created.workspace_id, "session-a")
@@ -1139,6 +1208,58 @@ mod tests {
 
         let cleaned = manager.cleanup().await.expect("cleanup");
         assert_eq!(cleaned.removed_stale_bindings, 0);
+
+        let _ = fs::remove_dir_all(&root).await;
+    }
+
+    #[tokio::test]
+    async fn workspace_directory_uses_title_and_duplicate_suffix() {
+        let root = unique_root("dir-name");
+        let cfg = LocalWorkspaceManagerConfig::new(&root);
+        let manager = LocalWorkspaceManager::create_workshop("did:example:agent", cfg)
+            .await
+            .expect("create manager");
+
+        let first = manager
+            .create_local_workspace(CreateLocalWorkspaceRequest {
+                name: "My Workspace".to_string(),
+                template: None,
+                owner: WorkspaceOwner::AgentCreated,
+                created_by_session: None,
+                policy_profile_id: None,
+            })
+            .await
+            .expect("create first local workspace");
+        let second = manager
+            .create_local_workspace(CreateLocalWorkspaceRequest {
+                name: "My Workspace".to_string(),
+                template: None,
+                owner: WorkspaceOwner::AgentCreated,
+                created_by_session: None,
+                policy_profile_id: None,
+            })
+            .await
+            .expect("create second local workspace");
+
+        assert_eq!(
+            first.relative_path.as_deref(),
+            Some("workspaces/My Workspace")
+        );
+        assert_eq!(
+            second.relative_path.as_deref(),
+            Some("workspaces/My Workspace-2")
+        );
+
+        let first_path = manager
+            .get_local_workspace_path(&first.workspace_id)
+            .await
+            .expect("get first workspace path");
+        let second_path = manager
+            .get_local_workspace_path(&second.workspace_id)
+            .await
+            .expect("get second workspace path");
+        assert!(first_path.ends_with("workspaces/My Workspace"));
+        assert!(second_path.ends_with("workspaces/My Workspace-2"));
 
         let _ = fs::remove_dir_all(&root).await;
     }

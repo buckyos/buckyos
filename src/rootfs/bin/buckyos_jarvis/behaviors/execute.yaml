@@ -90,11 +90,11 @@ input: |
   {{last_step}}
   <</last_step>>
  
-  <% if new_msg %>
+  {% if new_msg %}
   <<new_msg>>
   {{new_msg}}
   <</new_msg>>
-  <% endif %>
+  {% endif %}
  
   你现在处于第 {{step_num}} 步，请基于以上信息完成本轮推理。
  
@@ -129,8 +129,6 @@ input: |
     <thinking>
     距离评估：当前状态距目标还差什么？
     动作选择：本步做什么能最有效缩短距离？为什么？
-    预期收益：本步预计缩短什么距离？
-    验证方式：下一轮应根据什么现象判断本步是否有效？
     </thinking>
     <reply>给用户的消息；可选；仅在有重要进展或需要用户输入时填写</reply>
     <actions>

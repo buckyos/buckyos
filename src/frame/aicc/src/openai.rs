@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nono,gpt-5-pro";
 const DEFAULT_OPENAI_IMAGE_MODELS: &str = "dall-e-3,dall-e-2";
 const OPENAI_TOOL_TYPE_WEB_SEARCH: &str = "web_search_preview";

@@ -24,7 +24,7 @@ Step history 的 HistoryShow 只保留 4 档：
 - Full: Mini + action_result(full)
 
 完整渲染不属于 HistoryShow，只用于 render_last_step_text：
-- Complete: title + new_msg + conclusion + reply_msg + thinking + action_result(full)
+- Complete: title + new_msg + conclusion + thinking + reply_msg + action_result(uncompressed)
 
 预算控制：
 - 先给最近的 step 做种子分配：2 个 Full + 1 个 Medium + 1 个 Mini
@@ -278,13 +278,15 @@ impl LLMStepRecordLog {
 
     pub async fn render_last_step_text(&mut self) -> Result<Option<String>, AgentToolError> {
         self.ensure_loaded().await?;
-        Ok(self.records.last().map(|record| {
-            render_single_step(
-                record,
-                RenderCompressionLevel::Complete,
-                &LLMStepPromptRenderOptions::default(),
-            )
-        }))
+        let Some(record) = self.records.last() else {
+            return Ok(None);
+        };
+        let record = enrich_record_new_msgs(record).await;
+        Ok(Some(render_single_step(
+            &record,
+            RenderCompressionLevel::Complete,
+            &last_step_render_options(),
+        )))
     }
 
     pub async fn ensure_loaded(&mut self) -> Result<(), AgentToolError> {
@@ -358,6 +360,20 @@ fn empty_complete_request() -> CompleteRequest {
         AiPayload::default(),
         None,
     )
+}
+
+fn last_step_render_options() -> LLMStepPromptRenderOptions {
+    LLMStepPromptRenderOptions {
+        max_render_steps: 1,
+        recent_detail_steps: 1,
+        max_render_tokens: 0,
+        max_render_chars: 0,
+        max_conclusion_chars: usize::MAX,
+        max_thinking_chars: usize::MAX,
+        max_next_action_chars: usize::MAX,
+        max_action_result_chars: usize::MAX,
+        max_new_msg_chars: usize::MAX,
+    }
 }
 
 fn render_prompt_text_from_records_impl(
@@ -588,7 +604,10 @@ fn render_single_step(
         format_step_timestamp(record.started_at_ms)
     );
 
-    let new_msg = render_new_msgs_for_prompt(record.new_msg.as_slice(), options.max_new_msg_chars);
+    let new_msg = match level {
+        RenderCompressionLevel::Complete => render_new_msgs_for_last_step(record.new_msg.as_slice()),
+        _ => render_new_msgs_for_prompt(record.new_msg.as_slice(), options.max_new_msg_chars),
+    };
     if !new_msg.is_empty() {
         let _ = write!(out, "\n{new_msg}");
     }
@@ -616,6 +635,21 @@ fn render_single_step(
         let _ = write!(out, "\n<conclusion>{conclusion}</conclusion>");
     }
 
+    if level.shows_thinking() {
+        let thinking = truncate_text(
+            record
+                .llm_result
+                .thinking
+                .as_deref()
+                .unwrap_or_default()
+                .trim(),
+            options.max_thinking_chars,
+        );
+        if !thinking.is_empty() {
+            let _ = write!(out, "\n<thinking>{thinking}</thinking>");
+        }
+    }
+
     if level.shows_reply() {
         let reply_msg = truncate_text(
             record.llm_result.reply.as_deref().unwrap_or_default(),
@@ -634,32 +668,23 @@ fn render_single_step(
         }
     }
 
-    let action_result = level
-        .action_result_level()
-        .map(|action_level| {
-            truncate_text(
-                render_action_results_for_prompt(&record.action_result, action_level).as_str(),
-                options.max_action_result_chars,
-            )
-        })
-        .unwrap_or_default();
+    let action_result = match level {
+        RenderCompressionLevel::Complete => truncate_text(
+            render_action_results_for_last_step(&record.action_result).as_str(),
+            options.max_action_result_chars,
+        ),
+        _ => level
+            .action_result_level()
+            .map(|action_level| {
+                truncate_text(
+                    render_action_results_for_prompt(&record.action_result, action_level).as_str(),
+                    options.max_action_result_chars,
+                )
+            })
+            .unwrap_or_default(),
+    };
     if !action_result.is_empty() {
         let _ = write!(out, "\n<action>{action_result}</action>");
-    }
-
-    if level.shows_thinking() {
-        let thinking = truncate_text(
-            record
-                .llm_result
-                .thinking
-                .as_deref()
-                .unwrap_or_default()
-                .trim(),
-            options.max_thinking_chars,
-        );
-        if !thinking.is_empty() {
-            let _ = write!(out, "\n<thinking>{thinking}</thinking>");
-        }
     }
 
     out.push_str("\n</step>");
@@ -698,6 +723,35 @@ fn render_action_results_for_prompt(
     lines.join("\n")
 }
 
+fn render_action_results_for_last_step(results: &HashMap<String, AgentToolResult>) -> String {
+    let mut keys = results.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+
+    let mut lines = Vec::<String>::new();
+
+    for key in keys {
+        if key.starts_with("__") {
+            continue;
+        }
+        let Some(result) = results.get(&key) else {
+            continue;
+        };
+        let prompt = result.render_for_last_step();
+        if prompt.trim().is_empty() {
+            continue;
+        }
+        let mut prompt_lines = prompt.lines();
+        if let Some(first) = prompt_lines.next() {
+            lines.push(format!("- {}", first));
+            for line in prompt_lines {
+                lines.push(line.to_string());
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
 fn render_new_msgs_for_prompt(messages: &[MsgRecordWithObject], max_chars: usize) -> String {
     let mut rendered = messages
         .iter()
@@ -712,6 +766,15 @@ fn render_new_msgs_for_prompt(messages: &[MsgRecordWithObject], max_chars: usize
         ));
     }
     rendered.join("\n")
+}
+
+fn render_new_msgs_for_last_step(messages: &[MsgRecordWithObject]) -> String {
+    messages
+        .iter()
+        .map(render_new_msg_original)
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_new_msg_summary(record: &MsgRecordWithObject, max_chars: usize) -> String {
@@ -732,6 +795,32 @@ fn render_new_msg_summary(record: &MsgRecordWithObject, max_chars: usize) -> Str
     format!("<recive_msg from=\"{sender}\">{content}</recive_msg>")
 }
 
+fn render_new_msg_original(record: &MsgRecordWithObject) -> String {
+    let sender = render_msg_sender(record);
+    let time = format_step_timestamp(resolve_msg_timestamp_ms(record));
+    let content = record
+        .msg
+        .as_ref()
+        .map(|msg| msg.content.content.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_step_msg_multiline_text)
+        .unwrap_or_else(|| {
+            format!(
+                "msg_id={} state={:?}",
+                record.record.msg_id, record.record.state
+            )
+        });
+    if content.is_empty() {
+        return String::new();
+    }
+    if content.contains('\n') {
+        format!("<recive_msg from=\"{sender}\" time=\"{time}\">\n{content}\n</recive_msg>")
+    } else {
+        format!("<recive_msg from=\"{sender}\" time=\"{time}\">{content}</recive_msg>")
+    }
+}
+
 fn render_msg_sender(record: &MsgRecordWithObject) -> String {
     record
         .record
@@ -740,6 +829,13 @@ fn render_msg_sender(record: &MsgRecordWithObject) -> String {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+        .or_else(|| {
+            record
+                .msg
+                .as_ref()
+                .map(|msg| msg.from.to_raw_host_name())
+                .filter(|value| !value.trim().is_empty())
+        })
         .unwrap_or_else(|| record.record.from.to_string())
 }
 
@@ -756,6 +852,56 @@ fn format_step_timestamp(timestamp_ms: u64) -> String {
     let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
     let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn resolve_msg_timestamp_ms(record: &MsgRecordWithObject) -> u64 {
+    let msg_ts = record
+        .msg
+        .as_ref()
+        .map(|msg| msg.created_at_ms)
+        .unwrap_or(0);
+    record
+        .record
+        .updated_at_ms
+        .max(record.record.created_at_ms)
+        .max(msg_ts)
+}
+
+fn normalize_step_msg_multiline_text(input: &str) -> String {
+    let mut lines = Vec::<String>::new();
+    let mut last_blank = false;
+    for raw_line in input.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            if last_blank {
+                continue;
+            }
+            lines.push(String::new());
+            last_blank = true;
+            continue;
+        }
+        lines.push(line.to_string());
+        last_blank = false;
+    }
+    let merged = lines.join("\n");
+    if merged.trim().is_empty() {
+        String::new()
+    } else {
+        merged.trim().to_string()
+    }
+}
+
+async fn enrich_record_new_msgs(record: &LLMStepRecord) -> LLMStepRecord {
+    let mut enriched = record.clone();
+    for msg in &mut enriched.new_msg {
+        if msg.msg.is_some() {
+            continue;
+        }
+        if let Ok(msg_obj) = msg.get_msg().await {
+            msg.msg = Some(msg_obj);
+        }
+    }
+    enriched
 }
 
 fn collapse_inline_whitespace(input: &str, max_chars: usize) -> String {
@@ -843,6 +989,35 @@ mod tests {
             )]),
             error: None,
         }
+    }
+
+    fn sample_new_msg(content: &str) -> MsgRecordWithObject {
+        serde_json::from_value(serde_json::json!({
+            "record": {
+                "record_id": "record-1",
+                "box_kind": "INBOX",
+                "msg_id": "sha256:00000000000000000000000000000001",
+                "msg_kind": "chat",
+                "state": "UNREAD",
+                "from": "did:web:alice.example.com",
+                "from_name": "alice.example.com",
+                "to": "did:web:agent.example.com",
+                "created_at_ms": 1000,
+                "updated_at_ms": 1000,
+                "sort_key": 1000,
+                "tags": []
+            },
+            "msg": {
+                "from": "did:web:alice.example.com",
+                "to": ["did:web:agent.example.com"],
+                "kind": "chat",
+                "created_at_ms": 1000,
+                "content": {
+                    "content": content
+                }
+            }
+        }))
+        .expect("sample msg should parse")
     }
 
     #[test]
@@ -948,6 +1123,46 @@ mod tests {
     }
 
     #[test]
+    fn render_complete_step_orders_sections_as_conclusion_thinking_reply_action() {
+        let rendered = render_single_step(
+            &sample_record(10, 10),
+            RenderCompressionLevel::Complete,
+            &LLMStepPromptRenderOptions::default(),
+        );
+
+        let conclusion_idx = rendered
+            .find("<conclusion>")
+            .expect("conclusion should be rendered");
+        let thinking_idx = rendered
+            .find("<thinking>")
+            .expect("thinking should be rendered");
+        let reply_idx = rendered
+            .find("<reply_msg>")
+            .expect("reply should be rendered");
+        let action_idx = rendered.find("<action>").expect("action should be rendered");
+
+        assert!(conclusion_idx < thinking_idx);
+        assert!(thinking_idx < reply_idx);
+        assert!(reply_idx < action_idx);
+    }
+
+    #[test]
+    fn render_complete_step_keeps_multiline_new_msg_content() {
+        let mut record = sample_record(11, 11);
+        record.new_msg = vec![sample_new_msg("line 1\n\nline 2\nline 3")];
+
+        let rendered = render_single_step(
+            &record,
+            RenderCompressionLevel::Complete,
+            &last_step_render_options(),
+        );
+
+        assert!(rendered.contains("<recive_msg from=\"alice.example.com\" time=\"1970-01-01 00:00:01\">"));
+        assert!(rendered.contains("line 1\n\nline 2\nline 3"));
+        assert!(!rendered.contains("line 1 line 2 line 3"));
+    }
+
+    #[test]
     fn render_step_includes_error_when_present() {
         let mut record = sample_record(5, 5);
         record.error = Some("run_step failed: invalid behavior llm xml".to_string());
@@ -983,5 +1198,36 @@ mod tests {
 
         assert!(rendered.contains("<step behavior=\"plan\" step_num=7 step_time=\""));
         assert!(reloaded.record_file_path().expect("record path").is_file());
+    }
+
+    #[tokio::test]
+    async fn render_last_step_text_keeps_full_action_output() {
+        let root = tempfile::tempdir().expect("create tempdir");
+        let mut log = LLMStepRecordLog::default();
+        log.bind_session("work-1", root.path());
+
+        let mut record = sample_record(8, 8);
+        let output = (1..=40)
+            .map(|line| format!("step-8-line-{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        record.action_result = HashMap::from([(
+            "#0".to_string(),
+            AgentToolResult::from_details(serde_json::json!({}))
+                .with_cmd_line("sed -n '1,40p' build.log")
+                .with_output(output),
+        )]);
+
+        log.append(record).await.expect("append record");
+
+        let rendered = log
+            .render_last_step_text()
+            .await
+            .expect("render last step")
+            .expect("last step text");
+
+        assert!(rendered.contains("step-8-line-1"));
+        assert!(rendered.contains("step-8-line-40"));
+        assert!(!rendered.contains("TRUNCATED"));
     }
 }
