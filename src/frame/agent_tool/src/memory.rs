@@ -9,7 +9,6 @@ use chrono::{DateTime, Utc};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
-use sha2::{Digest, Sha256};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -23,10 +22,8 @@ use crate::{
 const DEFAULT_MEMORY_DIR_NAME: &str = "memory";
 const DEFAULT_LOG_FILE_NAME: &str = "log.jsonl";
 const DEFAULT_STATE_FILE_NAME: &str = "state.jsonl";
-const DEFAULT_INDEX_DIR_NAME: &str = "index";
 const DEFAULT_MAX_JSON_CONTENT_BYTES: usize = 256 * 1024;
 const DEFAULT_TOKEN_LIMIT: u32 = 1200;
-const MAX_INDEX_SEGMENT_BYTES: usize = 72;
 
 #[derive(Clone, Debug)]
 pub struct AgentMemoryConfig {
@@ -34,7 +31,6 @@ pub struct AgentMemoryConfig {
     pub memory_dir_name: String,
     pub log_file_name: String,
     pub state_file_name: String,
-    pub index_dir_name: String,
     pub max_json_content_bytes: usize,
     pub default_token_limit: u32,
 }
@@ -46,7 +42,6 @@ impl AgentMemoryConfig {
             memory_dir_name: DEFAULT_MEMORY_DIR_NAME.to_string(),
             log_file_name: DEFAULT_LOG_FILE_NAME.to_string(),
             state_file_name: DEFAULT_STATE_FILE_NAME.to_string(),
-            index_dir_name: DEFAULT_INDEX_DIR_NAME.to_string(),
             max_json_content_bytes: DEFAULT_MAX_JSON_CONTENT_BYTES,
             default_token_limit: DEFAULT_TOKEN_LIMIT,
         }
@@ -64,7 +59,6 @@ struct AgentMemoryInner {
     memory_dir: PathBuf,
     log_path: PathBuf,
     state_path: PathBuf,
-    index_root: PathBuf,
     write_lock: Mutex<()>,
 }
 
@@ -73,14 +67,6 @@ struct MemoryEnvelope {
     key: String,
     ts: String,
     valid: bool,
-    source: Json,
-    content: Json,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct MemoryIndexDocument {
-    key: String,
-    ts: String,
     source: Json,
     content: Json,
 }
@@ -104,17 +90,6 @@ impl AgentMemory {
         let memory_dir = cfg.agent_root.join(&cfg.memory_dir_name);
         let log_path = memory_dir.join(&cfg.log_file_name);
         let state_path = memory_dir.join(&cfg.state_file_name);
-        let index_root = memory_dir.join(&cfg.index_dir_name);
-
-        if fs::metadata(&index_root).await.is_err() {
-            info!(
-                "opendan.persist_entity_prepare: kind=memory_index_dir path={}",
-                index_root.display()
-            );
-        }
-        fs::create_dir_all(&index_root).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!("create memory index dir failed: {err}"))
-        })?;
         if fs::metadata(&log_path).await.is_err() {
             info!(
                 "opendan.persist_entity_prepare: kind=memory_log_file path={}",
@@ -136,7 +111,6 @@ impl AgentMemory {
                 memory_dir,
                 log_path,
                 state_path,
-                index_root,
                 write_lock: Mutex::new(()),
             }),
         };
@@ -198,7 +172,6 @@ impl AgentMemory {
             content: json_content,
         };
 
-        let index_path = self.index_path_for_key(&normalized_key);
         let memory_path = self.memory_path_for_key(&normalized_key);
         {
             let _guard = self.inner.write_lock.lock().await;
@@ -208,27 +181,18 @@ impl AgentMemory {
             if envelope.valid {
                 current.insert(normalized_key.clone(), envelope.clone());
                 self.write_memory_content(&memory_path, content).await?;
-                self.write_index_doc(&index_path, &envelope).await?;
             } else {
                 current.remove(&normalized_key);
                 self.remove_memory_content(&memory_path).await?;
-                if let Err(err) = fs::remove_file(&index_path).await {
-                    if err.kind() != std::io::ErrorKind::NotFound {
-                        return Err(AgentToolError::ExecFailed(format!(
-                            "remove memory index file failed: path={}, err={err}",
-                            index_path.display()
-                        )));
-                    }
-                }
             }
 
             self.write_state_map_atomic(&current).await?;
         }
         info!(
-            "agent_memory.set_memory: key={} valid={} index={}",
+            "agent_memory.set_memory: key={} valid={} path={}",
             normalized_key,
             envelope.valid,
-            index_path.display()
+            memory_path.display()
         );
 
         Ok(json!({
@@ -237,7 +201,6 @@ impl AgentMemory {
             "valid": envelope.valid,
             "ts": envelope.ts,
             "memory_path": memory_path.to_string_lossy(),
-            "index_path": index_path.to_string_lossy(),
         }))
     }
 
@@ -311,11 +274,9 @@ impl AgentMemory {
             match serde_json::from_str::<MemoryEnvelope>(trimmed) {
                 Ok(envelope) => {
                     if envelope.valid {
-                        let index_path = self.index_path_for_key(&envelope.key);
                         let memory_path = self.memory_path_for_key(&envelope.key);
                         let raw_content = serialize_memory_content(&envelope.content)?;
                         self.write_memory_content(&memory_path, &raw_content).await?;
-                        self.write_index_doc(&index_path, &envelope).await?;
                         state_map.insert(envelope.key.clone(), envelope);
                     } else {
                         let memory_path = self.memory_path_for_key(&envelope.key);
@@ -555,23 +516,6 @@ impl AgentMemory {
         atomic_write(&self.inner.state_path, body.as_bytes()).await
     }
 
-    async fn write_index_doc(
-        &self,
-        path: &Path,
-        envelope: &MemoryEnvelope,
-    ) -> Result<(), AgentToolError> {
-        let doc = MemoryIndexDocument {
-            key: envelope.key.clone(),
-            ts: envelope.ts.clone(),
-            source: envelope.source.clone(),
-            content: envelope.content.clone(),
-        };
-        let bytes = serde_json::to_vec_pretty(&doc).map_err(|err| {
-            AgentToolError::ExecFailed(format!("serialize memory index doc failed: {err}"))
-        })?;
-        atomic_write(path, &bytes).await
-    }
-
     async fn write_memory_content(
         &self,
         path: &Path,
@@ -591,13 +535,6 @@ impl AgentMemory {
         }
     }
 
-    fn index_path_for_key(&self, key: &str) -> PathBuf {
-        let digest = Sha256::digest(key.as_bytes());
-        let hex = hex::encode(digest);
-        let dir = &hex[..MAX_INDEX_SEGMENT_BYTES.min(hex.len())];
-        self.inner.index_root.join(dir).join("entry.json")
-    }
-
     fn memory_path_for_key(&self, key: &str) -> PathBuf {
         let raw = key.trim().trim_start_matches('/');
         match parse_memory_relative_path(
@@ -605,7 +542,6 @@ impl AgentMemory {
             [
                 self.inner.cfg.log_file_name.as_str(),
                 self.inner.cfg.state_file_name.as_str(),
-                self.inner.cfg.index_dir_name.as_str(),
             ],
         ) {
             Some(path) => self.inner.memory_dir.join(path),
@@ -1132,6 +1068,36 @@ mod tests {
         assert!(memory_path.file_name().is_some_and(|name| {
             name.to_string_lossy().starts_with(".memory-key-")
         }));
+    }
+
+    #[tokio::test]
+    async fn index_prefix_is_now_available_as_regular_memory_path() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
+            .await
+            .expect("create memory");
+
+        memory
+            .set_memory(
+                "index/demo",
+                "usable path",
+                json!({
+                    "kind":"user",
+                    "name":"chat",
+                    "retrieved_at":"2026-03-23T10:00:00Z",
+                    "locator":{"conversation_id":"c1","message_id":"m6"}
+                }),
+            )
+            .await
+            .expect("set memory under former index prefix");
+
+        let memory_path = memory.memory_path_for_key("/index/demo");
+        let written = fs::read_to_string(&memory_path)
+            .await
+            .expect("read former index-prefix memory file");
+        assert_eq!(written, "usable path");
+        assert!(memory_path.ends_with("index/demo"));
     }
 
     #[tokio::test]

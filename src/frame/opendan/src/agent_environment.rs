@@ -197,12 +197,18 @@ impl AgentEnvironment {
                 AgentToolError::ExecFailed(format!("add text template failed: {err}"))
             })?;
 
+        let render_ctx_summary = summarize_render_context(&render_ctx);
+        let template_preview = truncate_chars(&preprocessed, 160);
+
         let mut rendered = engine
             .template("text_template")
             .render(&render_ctx)
             .to_string()
             .map_err(|err| {
-                AgentToolError::ExecFailed(format!("render text template failed: {err}"))
+                AgentToolError::ExecFailed(format!(
+                    "render text template failed: {err}; vars=[{}]; template=`{}`",
+                    render_ctx_summary, template_preview
+                ))
             })?;
         rendered = unescape_template_literals(&rendered);
         rendered = truncate_utf8(&rendered, MAX_TOTAL_RENDER_BYTES);
@@ -857,6 +863,30 @@ fn json_value_to_compact_text(value: &Json) -> Option<String> {
             .ok()
             .and_then(|text| clean_optional_text(Some(text.as_str()))),
     }
+}
+
+fn json_value_type_name(value: &Json) -> &'static str {
+    match value {
+        Json::Null => "null",
+        Json::Bool(_) => "bool",
+        Json::Number(_) => "number",
+        Json::String(_) => "string",
+        Json::Array(_) => "array",
+        Json::Object(_) => "map",
+    }
+}
+
+fn summarize_render_context(render_ctx: &Map<String, Json>) -> String {
+    if render_ctx.is_empty() {
+        return String::new();
+    }
+
+    let mut entries = render_ctx
+        .iter()
+        .map(|(key, value)| format!("{key}={}", json_value_type_name(value)))
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.join(", ")
 }
 
 async fn preprocess_text_template_pass<F, Fut>(
@@ -2505,6 +2535,32 @@ mod tests {
 
         assert_eq!(result.rendered.trim(), "name=Liu Zhicong tg=wacer2026");
         assert_eq!(result.resolved_vars.get("owner"), Some(&true));
+    }
+
+    #[tokio::test]
+    async fn render_text_template_error_reports_registered_var_types() {
+        let err = AgentEnvironment::render_text_template(
+            "__OPENDAN_VAR(new_event, $new_event)\n{{new_event}}",
+            |key| {
+                let key = key.to_string();
+                async move {
+                    if key == "new_event" {
+                        Ok(Some(
+                            r#"{"tick":1,"current_time":"2026-03-25T22:35:50Z"}"#.to_string(),
+                        ))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            },
+            &HashMap::new(),
+        )
+        .await
+        .expect_err("rendering a map directly should fail");
+
+        let err_text = err.to_string();
+        assert!(err_text.contains("vars=[new_event=map]"), "err={err_text}");
+        assert!(err_text.contains("{{new_event}}"), "err={err_text}");
     }
 
     #[tokio::test]

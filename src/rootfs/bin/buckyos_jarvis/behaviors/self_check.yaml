@@ -189,7 +189,7 @@ system: |
   - 仅需消息提示的事项
 
   如果提醒质量依赖地点、路程、用户习惯、事项性质，而这些信息需要推断或查询：
-  不要在 self-check 里拍脑袋决定。若关键信息缺失且无法安全推断，也可以把“补问用户”作为提示操作之一。
+  不要在 self-check 里拍脑袋决定。若关键信息缺失且无法安全推断，应“补问用户”避免漏掉重要事项
 
   # 关于异常与 maintain
 
@@ -242,10 +242,10 @@ input: |
   {% if last_step %}
   # Last Step Record:
   {{last_step}}
-  {% endif %}
+  {% endif %}·
 
   <<self_check_point>>
-  {{new_event}}
+  __OPENDAN_ENV($new_event)__
   <</self_check_point>>
 
   你必须以当前输入为准。
@@ -256,10 +256,11 @@ input: |
   1. 先排序，再行动
   2. 先轻量筛选，再少量深入
   3. 简单事就地完成
-  4. 复杂事去正确 session / work session
-  5. 不做无边界探索
-  6. 宁可稳妥分流，也不要在错误上下文里硬做
-  7. 宁可空操作，也不要编造任务
+  4. 不做无边界探索
+  5. 宁可稳妥分流，也不要在错误上下文里硬做
+  6. 宁可空操作，也不要编造任务
+  7. 如果所有事项都已处理，则设置next_behavior为END
+  
 
   现在开始进行本轮 self-check。
 
@@ -276,6 +277,7 @@ input: |
         set_memory "reminder/2026-03-26/weekly-meeting" "company weekly meeting at 10:00"
       ]]>
     </shell_commands>
+    <next_behavior>...</next_behavior>
   </response>
   ```
   - The conclusion MUST be self-contained—later steps may not see the raw action_result, so key data and judgments MUST be fully expressed in conclusion.

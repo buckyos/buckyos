@@ -1353,7 +1353,7 @@ impl AIAgent {
                 (session_id, current_step_index, current_step_num)
             };
 
-            info!(
+            debug!(
                 "{}.run_behavior_loop: session_id={} behavior_name={} current_step_index={}",
                 self.agent_name, session_id, behavior_name, current_step_index
             );
