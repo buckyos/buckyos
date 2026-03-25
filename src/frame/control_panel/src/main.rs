@@ -3550,17 +3550,6 @@ impl ControlPanelServer {
                     "capabilities": ["Local LLM", "Low-cost fallback"],
                     "defaultModel": "Not assigned",
                     "note": "Reserved for local or self-hosted models once the backend management flow is connected."
-                },
-                {
-                    "id": "claude-planned",
-                    "displayName": "Claude",
-                    "providerType": "Anthropic",
-                    "status": "planned",
-                    "endpoint": "https://api.anthropic.com",
-                    "authMode": "API key",
-                    "capabilities": ["Long-form reasoning", "Tool calling"],
-                    "defaultModel": "Planned",
-                    "note": "Documented as a future provider family; not wired in this control-panel phase."
                 }
             ]
         })
@@ -3584,6 +3573,14 @@ impl ControlPanelServer {
                     "capabilities": ["llm_router"],
                     "features": ["json_output", "tool_calling", "api"],
                     "useCases": ["message_hub.task_extract", "agent.raw_explain"]
+                },
+                {
+                    "alias": "claude-reasoning",
+                    "providerId": "claude-main",
+                    "providerModel": "claude-3-7-sonnet-20250219",
+                    "capabilities": ["llm_router"],
+                    "features": ["plan", "tool_calling", "json_output"],
+                    "useCases": ["agent.reasoning", "message_hub.summary"]
                 },
                 {
                     "alias": "gpt-fast",
@@ -3668,7 +3665,7 @@ impl ControlPanelServer {
         let mut merged = base_items;
         for override_item in overrides.iter() {
             if let Some(id) = override_item.get("id").and_then(|value| value.as_str()) {
-                if ["openai-main", "google-main", "minimax-main"].contains(&id) {
+                if ["openai-main", "google-main", "claude-main", "minimax-main"].contains(&id) {
                     continue;
                 }
                 Self::upsert_item_by_id(&mut merged, id, override_item.clone());
@@ -3838,6 +3835,73 @@ impl ControlPanelServer {
         })
     }
 
+    fn ai_claude_provider_card(settings: &Value, secret_doc: &Value) -> Value {
+        let claude = settings
+            .get("claude")
+            .or_else(|| settings.get("anthropic"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let enabled = claude
+            .get("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let api_token = claude
+            .get("api_token")
+            .or_else(|| claude.get("api_key"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let instances = claude
+            .get("instances")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let first = instances.first().cloned().unwrap_or_else(|| json!({}));
+        let endpoint = first
+            .get("base_url")
+            .and_then(|value| value.as_str())
+            .unwrap_or("https://api.anthropic.com/v1");
+        let default_model = first
+            .get("default_model")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                first
+                    .get("models")
+                    .and_then(|value| value.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or("claude-3-7-sonnet-20250219");
+        let credential_configured = !api_token.trim().is_empty()
+            || Self::provider_secret_configured("claude-main", secret_doc);
+        let masked_api_key = Self::mask_secret(api_token)
+            .or_else(|| Self::provider_masked_secret("claude-main", secret_doc));
+        let status = if enabled && credential_configured {
+            "healthy"
+        } else if enabled {
+            "degraded"
+        } else {
+            "needs_setup"
+        };
+
+        json!({
+            "id": "claude-main",
+            "displayName": "Claude",
+            "providerType": "Anthropic",
+            "status": status,
+            "endpoint": endpoint,
+            "authMode": "X-API-Key",
+            "credentialConfigured": credential_configured,
+            "maskedApiKey": masked_api_key,
+            "availableModels": [
+                "claude-3-7-sonnet-20250219",
+                "claude-3-5-haiku-20241022"
+            ],
+            "capabilities": ["Long-form reasoning", "Tool calling"],
+            "defaultModel": default_model,
+            "note": "Native Anthropic Claude runtime for reasoning-heavy and tool-calling workloads."
+        })
+    }
+
     fn ai_minimax_provider_card(settings: &Value, secret_doc: &Value) -> Value {
         let minimax = settings
             .get("minimax")
@@ -3910,6 +3974,7 @@ impl ControlPanelServer {
         let base_items = vec![
             Self::ai_openai_provider_card(settings),
             Self::ai_google_provider_card(settings),
+            Self::ai_claude_provider_card(settings, secret_doc),
             Self::ai_minimax_provider_card(settings, secret_doc),
         ];
 
@@ -3944,6 +4009,11 @@ impl ControlPanelServer {
             .or_else(|| settings.get("gemini"))
             .cloned()
             .unwrap_or_else(|| json!({}));
+        let claude = settings
+            .get("claude")
+            .or_else(|| settings.get("anthropic"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let openai_instance = openai
             .get("instances")
             .and_then(|value| value.as_array())
@@ -3951,6 +4021,12 @@ impl ControlPanelServer {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let google_instance = google
+            .get("instances")
+            .and_then(|value| value.as_array())
+            .and_then(|items| items.first())
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let claude_instance = claude
             .get("instances")
             .and_then(|value| value.as_array())
             .and_then(|items| items.first())
@@ -3979,6 +4055,17 @@ impl ControlPanelServer {
                     .and_then(|value| value.as_str())
             })
             .unwrap_or("gemini-2.5-flash");
+        let claude_default = claude_instance
+            .get("default_model")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                claude_instance
+                    .get("models")
+                    .and_then(|value| value.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or("claude-3-7-sonnet-20250219");
 
         let mut items = vec![
             json!({
@@ -4004,6 +4091,14 @@ impl ControlPanelServer {
                 "capabilities": ["llm_router"],
                 "features": ["json_output", "vision"],
                 "useCases": ["message_hub.task_extract", "message_hub.priority_rank"]
+            }),
+            json!({
+                "alias": "claude-reasoning",
+                "providerId": "claude-main",
+                "providerModel": claude_default,
+                "capabilities": ["llm_router"],
+                "features": ["plan", "tool_calling", "json_output"],
+                "useCases": ["agent.reasoning", "message_hub.summary"]
             }),
         ];
 
@@ -4233,6 +4328,13 @@ impl ControlPanelServer {
                         "actionLabel": "Run again"
                     },
                     {
+                        "id": "diag-claude",
+                        "title": "Claude reasoning profile",
+                        "status": "pass",
+                        "detail": "Anthropic-compatible Claude runtime is available through /kapi/aicc when the provider is configured.",
+                        "actionLabel": "Run again"
+                    },
+                    {
                         "id": "diag-local",
                         "title": "Local LLM gateway",
                         "status": "pending",
@@ -4250,6 +4352,7 @@ impl ControlPanelServer {
         let alias = match provider_id.as_str() {
             "openai-main" => "gpt-fast",
             "google-main" => "gemini-ops",
+            "claude-main" => "claude-reasoning",
             "minimax-main" => "minimax-code-plan",
             _ => {
                 return Ok(RPCResponse::new(
@@ -4505,6 +4608,7 @@ impl ControlPanelServer {
 
         if provider_id == "openai-main"
             || provider_id == "google-main"
+            || provider_id == "claude-main"
             || provider_id == "minimax-main"
         {
             let mut settings =
@@ -4513,6 +4617,8 @@ impl ControlPanelServer {
                 "openai"
             } else if provider_id == "google-main" {
                 "google"
+            } else if provider_id == "claude-main" {
+                "claude"
             } else {
                 "minimax"
             };
@@ -4571,6 +4677,8 @@ impl ControlPanelServer {
             first["default_model"] = Value::String(default_model.to_string());
             if provider_id == "minimax-main" {
                 first["provider_type"] = Value::String("minimax".to_string());
+            } else if provider_id == "claude-main" {
+                first["provider_type"] = Value::String("claude".to_string());
             }
             if first.get("models").is_none() {
                 first["models"] = json!([default_model]);
@@ -4585,6 +4693,17 @@ impl ControlPanelServer {
                 {
                     models.insert(0, Value::String(default_model.to_string()));
                 }
+            }
+            if provider_id == "claude-main" {
+                let mut alias_map = section
+                    .get("alias_map")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                if !alias_map.is_object() {
+                    alias_map = json!({});
+                }
+                alias_map["claude-reasoning"] = Value::String(default_model.to_string());
+                section["alias_map"] = alias_map;
             }
             let api_key_present = section
                 .get("api_token")

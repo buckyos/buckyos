@@ -1,4 +1,5 @@
 pub mod aicc;
+pub mod claude;
 pub mod claude_protocol;
 pub mod complete_request_queue;
 pub mod gimini;

@@ -649,7 +649,24 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
             "openai".to_string(),
             json!({
                 "enabled": true,
-                "api_token": api_token
+                "api_token": api_token,
+                "alias_map": {
+                    "gpt-fast": "gpt-5-mini",
+                    "gpt-plan": "gpt-5"
+                },
+                "instances": [
+                    {
+                        "instance_id": "openai-default",
+                        "provider_type": "openai",
+                        "base_url": "https://api.openai.com/v1",
+                        "timeout_ms": 300000,
+                        "models": ["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"],
+                        "default_model": "gpt-5-mini",
+                        "image_models": ["dall-e-3", "dall-e-2"],
+                        "default_image_model": "dall-e-3",
+                        "features": ["plan", "json_output", "tool_calling", "web_search"]
+                    }
+                ]
             }),
         );
     }
@@ -659,7 +676,50 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
             "google".to_string(),
             json!({
                 "enabled": true,
-                "api_token": api_token
+                "api_token": api_token,
+                "alias_map": {
+                    "gemini-ops": "gemini-2.5-flash"
+                },
+                "instances": [
+                    {
+                        "instance_id": "google-gimini-default",
+                        "provider_type": "google-gimini",
+                        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                        "timeout_ms": 60000,
+                        "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
+                        "default_model": "gemini-2.5-flash",
+                        "image_models": [
+                            "gemini-2.0-flash-exp-image-generation",
+                            "gemini-2.5-flash-image-preview"
+                        ],
+                        "default_image_model": "gemini-2.5-flash-image-preview",
+                        "features": ["plan", "json_output"]
+                    }
+                ]
+            }),
+        );
+    }
+
+    if let Some(api_token) = trim_to_option(config.ai_provider_config.claude_api_token.as_str()) {
+        settings.insert(
+            "claude".to_string(),
+            json!({
+                "enabled": true,
+                "api_token": api_token,
+                "alias_map": {
+                    "claude-reasoning": "claude-3-7-sonnet-20250219"
+                },
+                "instances": [
+                    {
+                        "instance_id": "claude-default",
+                        "provider_type": "claude",
+                        "base_url": "https://api.anthropic.com/v1",
+                        "timeout_ms": 60000,
+                        "models": ["claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022"],
+                        "default_model": "claude-3-7-sonnet-20250219",
+                        "features": ["plan", "json_output", "tool_calling"]
+                    }
+                ]
             }),
         );
     }
@@ -942,8 +1002,26 @@ mod tests {
         let settings = build_aicc_settings(&summary);
 
         assert_eq!(settings["openai"]["api_token"], "sk-openai");
+        assert_eq!(settings["openai"]["alias_map"]["gpt-fast"], "gpt-5-mini");
+        assert_eq!(
+            settings["openai"]["instances"][0]["default_model"],
+            "gpt-5-mini"
+        );
         assert_eq!(settings["google"]["api_token"], "google-token");
-        assert!(settings.get("claude").is_none());
+        assert_eq!(settings["google"]["alias_map"]["gemini-ops"], "gemini-2.5-flash");
+        assert_eq!(
+            settings["google"]["instances"][0]["provider_type"],
+            "google-gimini"
+        );
+        assert_eq!(settings["claude"]["api_token"], "claude-token");
+        assert_eq!(
+            settings["claude"]["alias_map"]["claude-reasoning"],
+            "claude-3-7-sonnet-20250219"
+        );
+        assert_eq!(
+            settings["claude"]["instances"][0]["default_model"],
+            "claude-3-7-sonnet-20250219"
+        );
     }
 
     #[test]

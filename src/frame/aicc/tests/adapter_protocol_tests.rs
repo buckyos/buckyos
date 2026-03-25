@@ -1,5 +1,6 @@
 mod common;
 
+use aicc::claude::{ClaudeInstanceConfig, ClaudeProvider};
 use aicc::gimini::{GoogleGiminiInstanceConfig, GoogleGiminiProvider};
 use aicc::openai::{OpenAIInstanceConfig, OpenAIProvider};
 use aicc::{InvokeCtx, Provider, ResolvedRequest};
@@ -44,6 +45,23 @@ fn gimini_provider(base_url: String, timeout_ms: u64) -> GoogleGiminiProvider {
         "token".to_string(),
     )
     .expect("gimini provider")
+}
+
+fn claude_provider(base_url: String, timeout_ms: u64) -> ClaudeProvider {
+    ClaudeProvider::new(
+        ClaudeInstanceConfig {
+            instance_id: "claude-test".to_string(),
+            provider_type: "claude".to_string(),
+            base_url,
+            timeout_ms,
+            models: vec!["claude-3-7-sonnet-20250219".to_string()],
+            default_model: Some("claude-3-7-sonnet-20250219".to_string()),
+            features: vec!["plan".to_string()],
+            alias_map: HashMap::new(),
+        },
+        "token".to_string(),
+    )
+    .expect("claude provider")
 }
 
 #[tokio::test]
@@ -203,7 +221,8 @@ async fn adapter_gimini_01_http_200_success() {
 async fn adapter_gimini_02_http_429_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 429,
-        body: r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"too many requests"}}"#.to_string(),
+        body: r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"too many requests"}}"#
+            .to_string(),
         content_type: "application/json",
         delay_ms: 0,
     }])
@@ -219,6 +238,90 @@ async fn adapter_gimini_02_http_429_retryable() {
         .await
         .expect_err("must fail");
     assert!(err.is_retryable(), "assert failed in adapter_gimini_02_http_429_retryable: condition is false; check preconditions and expected branch outcome.");
+}
+
+#[tokio::test]
+// 意图：验证Claude 200 成功路径场景（adapter_claude_01_http_200_success）。预期start 成功，因为该输入会命中对应业务分支；不应被误分类为失败，否则说明路由、状态机或错误分类逻辑与契约不一致。
+async fn adapter_claude_01_http_200_success() {
+    let base_url = spawn_fake_http_server(vec![MockHttpReply {
+        status_code: 200,
+        body: r#"{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1},"stop_reason":"end_turn"}"#.to_string(),
+        content_type: "application/json",
+        delay_ms: 0,
+    }])
+    .await;
+    let provider = claude_provider(base_url, 500);
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "claude-3-7-sonnet-20250219".to_string(),
+            ResolvedRequest::new(base_request()),
+            Arc::new(NoopSink),
+        )
+        .await;
+    assert!(result.is_ok(), "assert failed in adapter_claude_01_http_200_success: condition is false; check preconditions and expected branch outcome.");
+}
+
+#[tokio::test]
+// 意图：验证Claude 可重试错误分类场景（adapter_claude_02_http_429_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+async fn adapter_claude_02_http_429_retryable() {
+    let base_url = spawn_fake_http_server(vec![MockHttpReply {
+        status_code: 429,
+        body: r#"{"error":{"message":"too many requests"}}"#.to_string(),
+        content_type: "application/json",
+        delay_ms: 0,
+    }])
+    .await;
+    let provider = claude_provider(base_url, 500);
+    let err = provider
+        .start(
+            InvokeCtx::default(),
+            "claude-3-7-sonnet-20250219".to_string(),
+            ResolvedRequest::new(base_request()),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect_err("must fail");
+    assert!(err.is_retryable(), "assert failed in adapter_claude_02_http_429_retryable: condition is false; check preconditions and expected branch outcome.");
+}
+
+#[tokio::test]
+// 意图：验证Claude 致命错误分类场景（adapter_claude_03_http_400_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
+async fn adapter_claude_03_http_400_fatal() {
+    let base_url = spawn_fake_http_server(vec![MockHttpReply {
+        status_code: 400,
+        body: r#"{"error":{"message":"bad request"}}"#.to_string(),
+        content_type: "application/json",
+        delay_ms: 0,
+    }])
+    .await;
+    let provider = claude_provider(base_url, 500);
+    let err = provider
+        .start(
+            InvokeCtx::default(),
+            "claude-3-7-sonnet-20250219".to_string(),
+            ResolvedRequest::new(base_request()),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect_err("must fail");
+    assert!(!err.is_retryable(), "assert failed in adapter_claude_03_http_400_fatal: condition is false; check preconditions and expected branch outcome.");
+}
+
+#[tokio::test]
+// 意图：验证Claude 网络错误分类场景（adapter_claude_04_timeout_or_network_error_classified）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+async fn adapter_claude_04_timeout_or_network_error_classified() {
+    let provider = claude_provider("http://127.0.0.1:9".to_string(), 80);
+    let err = provider
+        .start(
+            InvokeCtx::default(),
+            "claude-3-7-sonnet-20250219".to_string(),
+            ResolvedRequest::new(base_request()),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect_err("must fail");
+    assert!(err.is_retryable(), "assert failed in adapter_claude_04_timeout_or_network_error_classified: condition is false; check preconditions and expected branch outcome.");
 }
 
 #[tokio::test]

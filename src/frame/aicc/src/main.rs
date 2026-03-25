@@ -1,4 +1,5 @@
 mod aicc;
+mod claude;
 mod claude_protocol;
 mod complete_request_queue;
 mod gimini;
@@ -26,6 +27,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::aicc::AIComputeCenter;
+use crate::claude::register_claude_providers;
 use crate::gimini::register_google_gimini_providers;
 use crate::minimax::register_minimax_providers;
 use crate::openai::register_openai_llm_providers;
@@ -65,6 +67,15 @@ fn apply_provider_settings(
         }
         Err(err) => {
             errors.push(format!("gimini: {}", err));
+        }
+    }
+
+    match register_claude_providers(center, settings) {
+        Ok(count) => {
+            registered_total = registered_total.saturating_add(count);
+        }
+        Err(err) => {
+            errors.push(format!("claude: {}", err));
         }
     }
 

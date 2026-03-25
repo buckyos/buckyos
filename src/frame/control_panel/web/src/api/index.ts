@@ -866,7 +866,7 @@ export type AiDiagnosticEntry = {
 }
 
 const mockAiModelsOverview: AiModelOverview = {
-  providersOnline: 2,
+  providersOnline: 3,
   providersTotal: 5,
   defaultReplyModel: 'gpt-fast',
   defaultSummaryModel: 'gpt-fast',
@@ -927,6 +927,20 @@ const mockAiProviders: AiProviderCard[] = [
     note: 'Prepared for MiniMax code-planning and API-oriented workflows inside control_panel.',
   },
   {
+    id: 'claude-main',
+    displayName: 'Claude',
+    providerType: 'Anthropic',
+    status: 'healthy',
+    endpoint: 'https://api.anthropic.com/v1',
+    authMode: 'X-API-Key',
+    credentialConfigured: true,
+    maskedApiKey: 'sk-a***demo',
+    availableModels: ['claude-3-7-sonnet-20250219', 'claude-3-5-haiku-20241022'],
+    capabilities: ['Long-form reasoning', 'Tool calling'],
+    defaultModel: 'claude-3-7-sonnet-20250219',
+    note: 'Native Anthropic Claude runtime for reasoning-heavy and tool-calling workloads.',
+  },
+  {
     id: 'openai-compatible',
     displayName: 'OpenAI-Compatible Gateway',
     providerType: 'Compatible',
@@ -939,20 +953,6 @@ const mockAiProviders: AiProviderCard[] = [
     capabilities: ['Local LLM', 'Low-cost fallback'],
     defaultModel: 'Not assigned',
     note: 'Reserved for local or self-hosted models once the backend management flow is connected.',
-  },
-  {
-    id: 'claude-planned',
-    displayName: 'Claude',
-    providerType: 'Anthropic',
-    status: 'planned',
-    endpoint: 'https://api.anthropic.com',
-    authMode: 'API key',
-    credentialConfigured: false,
-    maskedApiKey: undefined,
-    availableModels: ['Claude Sonnet'],
-    capabilities: ['Long-form reasoning', 'Tool calling'],
-    defaultModel: 'Planned',
-    note: 'Documented as a future provider family; not wired in this control-panel-only phase.',
   },
 ]
 
@@ -996,6 +996,14 @@ const mockAiModelCatalog: AiModelCatalogEntry[] = [
     capabilities: ['llm_router'],
     features: ['json_output', 'vision'],
     useCases: ['message_hub.task_extract', 'message_hub.priority_rank'],
+  },
+  {
+    alias: 'claude-reasoning',
+    providerId: 'claude-main',
+    providerModel: 'claude-3-7-sonnet-20250219',
+    capabilities: ['llm_router'],
+    features: ['plan', 'tool_calling', 'json_output'],
+    useCases: ['agent.reasoning', 'message_hub.summary'],
   },
 ]
 
