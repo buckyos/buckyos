@@ -252,8 +252,8 @@ input: |
   {% endif %}
 
   <<self_check_point>>
-  上次触发时间: {{new_event.eventdata.last_trigger_time_local}}
-  当前触发时间: {{new_event.eventdata.current_time_local}}
+  上次触发时间: {% if new_event.eventdata.last_trigger_time %}{{new_event.eventdata.last_trigger_time}}{% else %}无{% endif %}
+  当前触发时间: {{new_event.eventdata.current_time}}
   <</self_check_point>>
 
   你必须以当前输入为准。

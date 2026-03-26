@@ -8,7 +8,6 @@ pub mod agent_tool;
 pub mod ai_runtime;
 pub mod behavior;
 pub mod buildin_tool;
-pub mod prompt_time;
 pub mod skill_tool;
 pub mod step_record;
 

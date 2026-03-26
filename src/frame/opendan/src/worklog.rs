@@ -19,7 +19,6 @@ use crate::agent_tool::{
     AgentToolError, AgentToolResult, ToolSpec,
 };
 use crate::behavior::SessionRuntimeContext;
-use crate::prompt_time::{format_local_date_ymd, format_local_hhmm};
 
 const DEFAULT_LIST_LIMIT: usize = 64;
 const DEFAULT_MAX_LIST_LIMIT: usize = 256;
@@ -1673,7 +1672,10 @@ fn build_prompt_text(records: &[WorklogRecord], cfg: &PromptBuildInput) -> Strin
 }
 
 fn format_date_ymd(timestamp_ms: u64) -> String {
-    format_local_date_ymd(timestamp_ms)
+    let secs = (timestamp_ms / 1000) as i64;
+    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
+    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
+    dt.format("%Y-%m-%d").to_string()
 }
 
 fn build_step_nested_lines(
@@ -1803,7 +1805,10 @@ fn render_status_text(record: &WorklogRecord) -> String {
 }
 
 fn format_hhmm(timestamp_ms: u64) -> String {
-    format_local_hhmm(timestamp_ms)
+    let secs = (timestamp_ms / 1000) as i64;
+    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
+    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
+    dt.format("%H:%M").to_string()
 }
 
 fn parse_impact(

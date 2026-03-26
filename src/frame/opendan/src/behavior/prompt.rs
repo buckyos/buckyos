@@ -19,7 +19,6 @@ use crate::agent_session::AgentSession;
 use crate::agent_tool::AgentMemory;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
-use crate::prompt_time::{format_local_date_ymd, format_local_hhmm};
 use crate::step_record::{
     load_records_from_path, render_prompt_text_from_records_with_tokenizer,
     LLMStepPromptRenderOptions,
@@ -842,11 +841,19 @@ fn render_history_msg_line(record: &MsgRecordWithObject, agent_did: Option<&str>
 }
 
 fn format_history_date(timestamp_ms: u64) -> String {
-    format_local_date_ymd(timestamp_ms)
+    let dt = history_datetime_utc(timestamp_ms);
+    dt.format("%Y-%m-%d").to_string()
 }
 
 fn format_history_time(timestamp_ms: u64) -> String {
-    format_local_hhmm(timestamp_ms)
+    let dt = history_datetime_utc(timestamp_ms);
+    dt.format("%H:%M").to_string()
+}
+
+fn history_datetime_utc(timestamp_ms: u64) -> DateTime<Utc> {
+    let secs = (timestamp_ms / 1000) as i64;
+    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
+    DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now)
 }
 
 fn render_history_sender(
@@ -2826,25 +2833,25 @@ mod tests {
 
         println!("\n[history_messages prompt preview]\n{prompt}\n");
         assert!(prompt.contains("## Timeline Logs"));
-        assert!(prompt.contains(&format!("### {}", format_local_date_ymd(1772578920000_u64))));
+        assert!(prompt.contains(&format!("### {}", format_history_date(1772578920000_u64))));
         assert!(prompt.contains(&format!(
             "- {} alice: i want to buy a new laptop",
-            format_local_hhmm(1772578920000_u64)
+            format_history_time(1772578920000_u64)
         )));
         assert!(prompt.contains(&format!(
             "- {} alice: can you help me?",
-            format_local_hhmm(1772578980000_u64)
+            format_history_time(1772578980000_u64)
         )));
         assert!(prompt.contains(&format!(
             "- {} Jarvis(me):",
-            format_local_hhmm(1772579040000_u64)
+            format_history_time(1772579040000_u64)
         )));
         assert!(prompt.contains("  history line3 content"));
         assert!(prompt.contains("  long content"));
-        assert!(prompt.contains(&format!("### {}", format_local_date_ymd(1772582520000_u64))));
+        assert!(prompt.contains(&format!("### {}", format_history_date(1772582520000_u64))));
         assert!(prompt.contains(&format!(
             "- {} bob(did:bns:bob): hello, how are you?",
-            format_local_hhmm(1772582520000_u64)
+            format_history_time(1772582520000_u64)
         )));
     }
 

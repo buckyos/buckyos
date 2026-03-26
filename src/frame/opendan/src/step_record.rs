@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use buckyos_api::{
     AiPayload, Capability, CompleteRequest, ModelSpec, MsgRecordWithObject, Requirements,
 };
+use chrono::{DateTime, Utc};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
@@ -12,7 +13,6 @@ use tokio::io::AsyncWriteExt;
 
 use crate::agent_tool::{AgentHistoryShowLevel, AgentToolError, AgentToolResult};
 use crate::behavior::{BehaviorLLMResult, Tokenizer};
-use crate::prompt_time::format_local_timestamp;
 
 const DEFAULT_STEP_RECORD_FILE: &str = "llm_step_record.jsonl";
 
@@ -850,7 +850,10 @@ fn infer_reply_target(record: &LLMStepRecord) -> String {
 }
 
 fn format_step_timestamp(timestamp_ms: u64) -> String {
-    format_local_timestamp(timestamp_ms)
+    let secs = (timestamp_ms / 1000) as i64;
+    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
+    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn resolve_msg_timestamp_ms(record: &MsgRecordWithObject) -> u64 {
@@ -1160,7 +1163,7 @@ mod tests {
 
         assert!(rendered.contains(&format!(
             "<recive_msg from=\"alice.example.com\" time=\"{}\">",
-            format_local_timestamp(1000)
+            format_step_timestamp(1000)
         )));
         assert!(rendered.contains("line 1\n\nline 2\nline 3"));
         assert!(!rendered.contains("line 1 line 2 line 3"));
