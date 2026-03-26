@@ -2231,6 +2231,9 @@ mod tests {
             limits: StepLimits::default(),
             behavior_cfg: BehaviorConfig {
                 system: "Process rules.".to_string(),
+                output_protocol: crate::behavior::config::BehaviorOutputProtocol::Structured(
+                    crate::behavior::config::BehaviorOutputProtocolStructured::default(),
+                ),
                 ..Default::default()
             },
             session: None,
@@ -2247,11 +2250,10 @@ mod tests {
             .map(|msg| msg.content.clone())
             .unwrap_or_default();
 
-        assert!(system.contains("<<role>>"));
         assert!(system.contains("<<system>>"));
         assert!(system.contains("<<output_protocol>>"));
-        assert!(system.contains("You are a helpful assistant."));
         assert!(system.contains("Process rules."));
+        assert!(system.contains("<response>"));
     }
 
     #[tokio::test]
@@ -2291,7 +2293,6 @@ mod tests {
             .map(|msg| msg.content.clone())
             .unwrap_or_default();
 
-        assert!(system.contains("<<role>>"));
         assert!(system.contains("<<system>>"));
         assert!(!system.contains("<<output_protocol>>"));
         assert!(system.contains("Process rules."));
@@ -2377,7 +2378,7 @@ mod tests {
         };
 
         let mut cfg = BehaviorConfig::default();
-        cfg.memory.total_limit = 8;
+        cfg.memory.total_limit = 7;
         cfg.memory.first_prompt = Some("HEAD_FIXED alpha beta gamma".to_string());
         cfg.memory.last_prompt = Some("TAIL_FIXED one two three".to_string());
         cfg.memory.agent_memory = BehaviorMemoryBucketConfig {
@@ -2824,16 +2825,27 @@ mod tests {
         .await;
 
         println!("\n[history_messages prompt preview]\n{prompt}\n");
-        assert!(prompt.contains("<<memory>>"));
-        assert!(prompt.contains("## Timeline"));
-        assert!(prompt.contains("### 2026-03-03"));
-        assert!(prompt.contains("- 23:02 alice: i want to buy a new laptop"));
-        assert!(prompt.contains("- 23:03 alice: can you help me?"));
-        assert!(prompt.contains("- 23:04 Jarvis(me):"));
+        assert!(prompt.contains("## Timeline Logs"));
+        assert!(prompt.contains(&format!("### {}", format_local_date_ymd(1772578920000_u64))));
+        assert!(prompt.contains(&format!(
+            "- {} alice: i want to buy a new laptop",
+            format_local_hhmm(1772578920000_u64)
+        )));
+        assert!(prompt.contains(&format!(
+            "- {} alice: can you help me?",
+            format_local_hhmm(1772578980000_u64)
+        )));
+        assert!(prompt.contains(&format!(
+            "- {} Jarvis(me):",
+            format_local_hhmm(1772579040000_u64)
+        )));
         assert!(prompt.contains("  history line3 content"));
         assert!(prompt.contains("  long content"));
-        assert!(prompt.contains("### 2026-03-04"));
-        assert!(prompt.contains("- 00:02 bob(did:bns:bob): hello, how are you?"));
+        assert!(prompt.contains(&format!("### {}", format_local_date_ymd(1772582520000_u64))));
+        assert!(prompt.contains(&format!(
+            "- {} bob(did:bns:bob): hello, how are you?",
+            format_local_hhmm(1772582520000_u64)
+        )));
     }
 
     #[tokio::test]

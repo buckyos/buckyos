@@ -843,7 +843,7 @@ impl LocalWorkspaceManager {
         Ok(())
     }
 
-    // skills/$skill_name/$skill_name.yaml
+    // skills/<skill>/<skill>.(md|txt|yaml|json...)
     pub async fn list_skills(
         &self,
         local_workspace_id: &str,
@@ -1327,22 +1327,34 @@ mod tests {
             .await
             .expect("create agent shared skill dir");
         fs::write(
-            agent_shared_dir.join("shared.yaml"),
-            "name: shared\nintroduce: agent shared\nrules: a\n",
+            agent_shared_dir.join("meta.json"),
+            r#"{"name":"shared","summary":"agent shared"}"#,
         )
         .await
-        .expect("write agent shared skill");
+        .expect("write agent shared skill meta");
+        fs::write(
+            agent_shared_dir.join("skill.md"),
+            "# shared\nagent shared\n",
+        )
+        .await
+        .expect("write agent shared skill body");
 
         let agent_only_dir = root.join("skills/agent_only");
         fs::create_dir_all(&agent_only_dir)
             .await
             .expect("create agent only skill dir");
         fs::write(
-            agent_only_dir.join("agent_only.yaml"),
-            "name: agent_only\nintroduce: agent only\nrules: b\nactions: [build]\nloaded_tools: [exec_bash]\n",
+            agent_only_dir.join("meta.json"),
+            r#"{"name":"agent_only","summary":"agent only skill"}"#,
         )
         .await
-        .expect("write agent only skill");
+        .expect("write agent only skill meta");
+        fs::write(
+            agent_only_dir.join("skill.md"),
+            "agent only skill\nfollow agent-only flow\n",
+        )
+        .await
+        .expect("write agent only skill body");
 
         let workspace_path = manager
             .get_local_workspace_path(&created.workspace_id)
@@ -1353,22 +1365,31 @@ mod tests {
             .await
             .expect("create workspace shared dir");
         fs::write(
-            workspace_shared_dir.join("shared.yaml"),
-            "name: shared\nintroduce: workspace shared\nrules: ws\n",
+            workspace_shared_dir.join("meta.json"),
+            r#"{"name":"shared","summary":"workspace shared"}"#,
         )
         .await
-        .expect("write workspace shared skill");
+        .expect("write workspace shared meta");
+        fs::write(
+            workspace_shared_dir.join("skill.md"),
+            "# shared\nworkspace shared\n",
+        )
+        .await
+        .expect("write workspace shared body");
 
         let workspace_only_dir = workspace_path.join("skills/ws_only");
         fs::create_dir_all(&workspace_only_dir)
             .await
             .expect("create workspace only dir");
         fs::write(
-            workspace_only_dir.join("ws_only.yaml"),
-            "name: ws_only\nintroduce: workspace only\nrules: ws-only\n",
+            workspace_only_dir.join("meta.json"),
+            r#"{"name":"ws_only","summary":"workspace only"}"#,
         )
         .await
-        .expect("write workspace only skill");
+        .expect("write workspace only meta");
+        fs::write(workspace_only_dir.join("skill.md"), "workspace only\n")
+            .await
+            .expect("write workspace only body");
 
         let skills = manager
             .list_skills(&created.workspace_id)
@@ -1378,17 +1399,18 @@ mod tests {
 
         let mut by_name = HashMap::<String, String>::new();
         for item in skills {
-            by_name.insert(item.name, item.introduce);
+            by_name.insert(item.name, item.summary);
         }
-        assert_eq!(by_name.get("agent_only"), Some(&"agent only".to_string()));
+        assert_eq!(
+            by_name.get("agent_only"),
+            Some(&"agent only skill".to_string())
+        );
         assert_eq!(by_name.get("ws_only"), Some(&"workspace only".to_string()));
         assert_eq!(by_name.get("shared"), Some(&"workspace shared".to_string()));
 
         let loaded = manager.load_skill("agent_only").await.expect("load skill");
-        assert_eq!(loaded.introduce, "agent only");
-        assert_eq!(loaded.rules, "b");
-        assert_eq!(loaded.actions, vec!["build".to_string()]);
-        assert_eq!(loaded.loaded_tools, vec!["exec_bash".to_string()]);
+        assert_eq!(loaded.summary, "agent only skill");
+        assert_eq!(loaded.content, "agent only skill\nfollow agent-only flow");
 
         let _ = fs::remove_dir_all(&root).await;
     }

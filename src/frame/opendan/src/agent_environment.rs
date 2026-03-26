@@ -33,7 +33,8 @@ use crate::prompt_time::{
 };
 use crate::step_record::LLMStepPromptRenderOptions;
 use crate::workspace::{
-    AgentWorkshop, AgentWorkshopConfig, LocalWorkspaceManager, WorkshopIndex, WorkspaceType,
+    agent_skill, AgentWorkshop, AgentWorkshopConfig, LocalWorkspaceManager, WorkshopIndex,
+    WorkspaceType,
 };
 use crate::workspace_path::{
     non_empty_path, resolve_agent_env_root, resolve_agent_env_root_from_local_workspace_hint,
@@ -51,6 +52,7 @@ const DEFAULT_NEW_MSG_MAX_PULL: usize = 32;
 const DEFAULT_NEW_EVENT_MAX_PULL: usize = 32;
 const DEFAULT_SESSION_LIST_MAX_PULL: usize = 16;
 const DEFAULT_LOCAL_WORKSPACE_LIST_MAX_PULL: usize = 16;
+const DEFAULT_SESSION_SKILL_LIST_MAX_PULL: usize = 16;
 const DEFAULT_LAST_STEPS_MAX_PULL: usize = 8;
 const DEFAULT_WORKSPACE_TODO_LIST_MAX_ITEMS: usize = 64;
 const SESSION_RECORD_FILE_NAME: &str = "session.json";
@@ -410,6 +412,50 @@ impl AgentEnvironment {
                 max_pull,
             )
             .await);
+        }
+
+        if k.starts_with("session_skill_list") {
+            let max_pull = parse_pull_limit_from_key(
+                k,
+                "session_skill_list",
+                DEFAULT_SESSION_SKILL_LIST_MAX_PULL,
+            );
+            let (recent_refs, loaded_refs) = {
+                let guard = session.lock().await;
+                (
+                    guard.skill_recent_list.clone(),
+                    guard.effective_loaded_skills(),
+                )
+            };
+            let skill_roots = build_session_skill_roots(
+                local_workspace_id.as_deref(),
+                workspace_info.as_ref(),
+                &session_cwd,
+            );
+            let records = agent_skill::list_skill_records_from_roots(&skill_roots).await?;
+            let rendered = agent_skill::render_skill_records_for_prompt(
+                records,
+                &recent_refs,
+                &loaded_refs,
+                max_pull,
+            );
+            return Ok(clean_optional_text(Some(rendered.as_str())));
+        }
+
+        if k == "session_skills" {
+            let loaded_refs = {
+                let guard = session.lock().await;
+                guard.effective_loaded_skills()
+            };
+            let skill_roots = build_session_skill_roots(
+                local_workspace_id.as_deref(),
+                workspace_info.as_ref(),
+                &session_cwd,
+            );
+            let rendered =
+                agent_skill::render_loaded_skills_content(&skill_roots, &session_cwd, &loaded_refs)
+                    .await?;
+            return Ok(clean_optional_text(Some(rendered.as_str())));
         }
 
         if k.starts_with("local_workspace_list") || k.starts_with("workspace_list") {
@@ -836,6 +882,29 @@ fn resolve_variable(name: &str, ctx: &PromptTemplateContext) -> Option<String> {
     }
 }
 
+fn build_session_skill_roots(
+    local_workspace_id: Option<&str>,
+    workspace_info: Option<&Json>,
+    session_cwd: &Path,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::<PathBuf>::new();
+    if let Some(agent_root) = resolve_agent_env_root(workspace_info, session_cwd).or_else(|| {
+        resolve_agent_env_root_from_local_workspace_hint(
+            local_workspace_id,
+            workspace_info,
+            session_cwd,
+        )
+    }) {
+        roots.push(agent_root.join(agent_skill::SKILLS_REL_PATH));
+    }
+    if let Some(workspace_root) =
+        resolve_default_local_workspace_path(local_workspace_id, workspace_info, session_cwd)
+    {
+        roots.push(workspace_root.join(agent_skill::SKILLS_REL_PATH));
+    }
+    roots
+}
+
 fn extract_input_source(payload: &Json, scalar_key: &str, array_key: &str) -> Option<String> {
     if let Some(v) = payload.get(scalar_key) {
         return json_value_to_compact_text(v);
@@ -1121,6 +1190,14 @@ where
     F: Fn(&str) -> Fut,
     Fut: Future<Output = Result<Option<String>, AgentToolError>>,
 {
+    let trimmed = path_arg.trim();
+    if trimmed == "session_skills" {
+        if let Some(value) = clean_optional_text(load_value("session_skills").await?.as_deref()) {
+            return Ok(ContentLoadResult::Loaded(value));
+        }
+        return Ok(ContentLoadResult::Loaded(String::new()));
+    }
+
     let absolute_path = resolve_content_absolute_path(path_arg, load_value, env_context).await?;
     load_text_from_absolute_path(&absolute_path).await
 }
@@ -1933,9 +2010,13 @@ fn enrich_event_data_for_prompt(event_data: Json) -> Option<Json> {
     if let Some(local_value) = render_event_time_field_as_local(object.get("current_time")) {
         object.insert("current_time_local".to_string(), Json::String(local_value));
     }
-    if let Some(local_value) = render_event_time_field_as_local_or_none(object.get("last_trigger_time"))
+    if let Some(local_value) =
+        render_event_time_field_as_local_or_none(object.get("last_trigger_time"))
     {
-        object.insert("last_trigger_time_local".to_string(), Json::String(local_value));
+        object.insert(
+            "last_trigger_time_local".to_string(),
+            Json::String(local_value),
+        );
     }
 
     Some(Json::Object(object))
@@ -1981,7 +2062,12 @@ fn render_human_readable_msg_line(record: &MsgRecord, msg_obj: Option<&MsgObject
         .filter(|value| !value.is_empty())
         .map(normalize_multiline_text)
         .unwrap_or_else(|| format!("msg_id={} state={:?}", record.msg_id, record.state));
-    format!("{} [{}]\n{}", from, format_local_timestamp(time_ms), content)
+    format!(
+        "{} [{}]\n{}",
+        from,
+        format_local_timestamp(time_ms),
+        content
+    )
 }
 
 fn normalize_multiline_text(input: &str) -> String {
@@ -2482,6 +2568,47 @@ mod tests {
         assert_eq!(result.resolved_vars.get("session_id"), Some(&true));
         assert_eq!(result.resolved_vars.get("step_index"), Some(&true));
         assert_eq!(result.resolved_vars.get("last_step"), Some(&false));
+    }
+
+    #[tokio::test]
+    async fn render_prompt_supports_session_skill_list_and_loaded_skill_content() {
+        let temp = tempdir().expect("create temp dir");
+        let skills_dir = temp.path().join("skills/planner");
+        fs::create_dir_all(&skills_dir)
+            .await
+            .expect("create skill dir");
+        fs::write(
+            skills_dir.join("meta.json"),
+            r#"{"name":"planner","summary":"planning helper"}"#,
+        )
+        .await
+        .expect("write skill meta");
+        fs::write(skills_dir.join("skill.md"), "plan carefully")
+            .await
+            .expect("write skill body");
+
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "s-skill",
+            "did:test:agent",
+            Some("plan"),
+        )));
+        {
+            let mut guard = session.lock().await;
+            guard.pwd = temp.path().to_path_buf();
+            guard.session_loaded_skills = vec!["planner".to_string()];
+            guard.skill_recent_list = vec!["planner".to_string()];
+        }
+
+        let result = AgentEnvironment::render_prompt(
+            "__OPENDAN_VAR(skill_list, $session_skill_list.$4)\n{{skill_list}}\n__OPENDAN_CONTENT(session_skills)__",
+            &HashMap::new(),
+            session,
+        )
+        .await
+        .expect("render prompt");
+
+        assert!(result.rendered.contains("- planner [loaded]"));
+        assert!(result.rendered.contains("plan carefully"));
     }
 
     #[tokio::test]
@@ -3387,9 +3514,9 @@ mod tests {
 
         let lines = rendered.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), 3);
-        assert!(lines[0].starts_with("- work-s2 : Session 2  "));
-        assert!(lines[1].starts_with("- work-s3 : Session 3  "));
-        assert!(lines[2].starts_with("- work-s1 : Session 1  "));
+        assert!(lines[0].starts_with("work-s2 | "));
+        assert!(lines[1].starts_with("work-s3 | "));
+        assert!(lines[2].starts_with("work-s1 | "));
         assert!(!rendered.contains("ui-chat-1"));
         assert!(!rendered.contains("tg:lzc_jarvis:5397330802"));
 
@@ -3399,8 +3526,8 @@ mod tests {
             .expect("session_list.$2 should be rendered");
         let lines_2 = rendered_2.lines().collect::<Vec<_>>();
         assert_eq!(lines_2.len(), 2);
-        assert!(lines_2[0].starts_with("- work-s2 : Session 2  "));
-        assert!(lines_2[1].starts_with("- work-s3 : Session 3  "));
+        assert!(lines_2[0].starts_with("work-s2 | "));
+        assert!(lines_2[1].starts_with("work-s3 | "));
     }
 
     #[tokio::test]

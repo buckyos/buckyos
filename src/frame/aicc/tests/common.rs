@@ -1,7 +1,7 @@
 use aicc::{
-    AIComputeCenter, CostEstimate, InvokeCtx, ModelCatalog, Provider, ProviderError, ProviderInstance,
-    ProviderStartResult, Registry, ResolvedRequest, ResourceResolver, RouteConfig, TaskEvent,
-    TaskEventSink, TaskEventSinkFactory,
+    AIComputeCenter, CostEstimate, InvokeCtx, ModelCatalog, Provider, ProviderError,
+    ProviderInstance, ProviderStartResult, Registry, ResolvedRequest, ResourceResolver,
+    RouteConfig, TaskEvent, TaskEventSink, TaskEventSinkFactory,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -48,7 +48,14 @@ pub fn base_request_for(capability: Capability, alias: &str) -> CompleteRequest 
         capability,
         ModelSpec::new(alias.to_string(), None),
         Requirements::new(vec!["plan".to_string()], Some(3000), Some(0.2), None),
-        AiPayload::new(Some("hello".to_string()), vec![], vec![], vec![], None, None),
+        AiPayload::new(
+            Some("hello".to_string()),
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+        ),
         Some("idem-test".to_string()),
     )
 }
@@ -132,7 +139,11 @@ impl Provider for MockProvider {
             .unwrap_or_else(|| Err(ProviderError::fatal("no preset start result")))
     }
 
-    async fn cancel(&self, _ctx: InvokeCtx, task_id: &str) -> std::result::Result<(), ProviderError> {
+    async fn cancel(
+        &self,
+        _ctx: InvokeCtx,
+        task_id: &str,
+    ) -> std::result::Result<(), ProviderError> {
         self.canceled
             .lock()
             .expect("canceled lock")
@@ -450,7 +461,9 @@ pub struct MockHttpReply {
 }
 
 pub async fn spawn_fake_http_server(replies: Vec<MockHttpReply>) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test server");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
         for reply in replies {

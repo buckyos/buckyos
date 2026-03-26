@@ -1382,10 +1382,19 @@ mod tests {
             exp: 2059412212,
             extra_info: HashMap::new(),
         };
-        let device_mini_jwt = device_mini_doc.to_jwt(&get_encoding_key(owner_key_pem)).unwrap();
+        let device_mini_jwt = device_mini_doc
+            .to_jwt(&get_encoding_key(owner_key_pem))
+            .unwrap();
         println!("device_mini_jwt: {}", device_mini_jwt);
-        let device_config = DeviceConfig::new_by_mini_config(&device_mini_jwt, &device_mini_doc, DID::new("web", "buckyos.ai"), DID::new("bns", "bucky"));
-        let device_config_jwt = device_config.encode(Some(&get_encoding_key(owner_key_pem))).unwrap();
+        let device_config = DeviceConfig::new_by_mini_config(
+            &device_mini_jwt,
+            &device_mini_doc,
+            DID::new("web", "buckyos.ai"),
+            DID::new("bns", "bucky"),
+        );
+        let device_config_jwt = device_config
+            .encode(Some(&get_encoding_key(owner_key_pem)))
+            .unwrap();
         println!("device_config_jwt: {}", device_config_jwt.to_string());
     }
 

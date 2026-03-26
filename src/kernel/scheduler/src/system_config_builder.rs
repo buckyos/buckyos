@@ -1008,7 +1008,10 @@ mod tests {
             "gpt-5-mini"
         );
         assert_eq!(settings["google"]["api_token"], "google-token");
-        assert_eq!(settings["google"]["alias_map"]["gemini-ops"], "gemini-2.5-flash");
+        assert_eq!(
+            settings["google"]["alias_map"]["gemini-ops"],
+            "gemini-2.5-flash"
+        );
         assert_eq!(
             settings["google"]["instances"][0]["provider_type"],
             "google-gimini"

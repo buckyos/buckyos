@@ -1,9 +1,11 @@
 system: |
   __OPENDAN_VAR(local_workspace_list, $local_workspace_list)
+  __OPENDAN_VAR(session_skill_list, $session_skill_list.$16)
   <<role>>
   __OPENDAN_CONTENT($agent_root/role.md)__
   __OPENDAN_CONTENT($agent_root/self.md)__
   <</role>>
+
 
   <<owner_info>>
   __OPENDAN_ENV($owner)__

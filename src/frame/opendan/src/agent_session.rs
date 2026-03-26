@@ -20,9 +20,13 @@ use tokio::sync::{Mutex, Notify, RwLock};
 pub use ::agent_tool::GetSessionTool;
 
 use crate::agent_tool::{sanitize_session_id_for_path, session_record_path, AgentToolError};
+use crate::behavior::config::BehaviorSkillMode;
 use crate::behavior::SessionRuntimeContext;
 use crate::step_record::{LLMStepPromptRenderOptions, LLMStepRecord, LLMStepRecordLog};
 use crate::worklog::{render_worklog_prompt_line, render_worklog_prompt_line_from_parts};
+use crate::workspace::agent_skill::{
+    move_skill_ref_to_front, normalize_unique_skill_refs, remove_skill_ref,
+};
 use crate::workspace::LocalWorkspaceManager;
 use crate::workspace_path::{
     resolve_agent_env_root, resolve_bound_workspace_root, WORKSHOP_WORKLOG_DB_REL_PATH,
@@ -104,6 +108,19 @@ impl Default for SessionInputItem {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSkillScope {
+    Behavior,
+    Session,
+}
+
+impl Default for SessionSkillScope {
+    fn default() -> Self {
+        Self::Behavior
+    }
+}
+
 //下面结构定义了会被序列化的状态
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -124,7 +141,12 @@ struct SessionRuntimeState {
     local_workspace_id: Option<String>,
     worklog: Vec<Json>,
 
-    loaded_skills: Vec<String>,
+    #[serde(alias = "loaded_skills")]
+    session_loaded_skills: Vec<String>,
+    behavior_loaded_skills: Vec<String>,
+    skill_recent_list: Vec<String>,
+    behavior_skill_mode: BehaviorSkillMode,
+    behavior_skill_behavior: Option<String>,
     allow_tools: Vec<String>,
     cost_trace: Json,
 }
@@ -142,7 +164,11 @@ impl Default for SessionRuntimeState {
             workspace_info: None,
             local_workspace_id: None,
             worklog: vec![],
-            loaded_skills: vec![],
+            session_loaded_skills: vec![],
+            behavior_loaded_skills: vec![],
+            skill_recent_list: vec![],
+            behavior_skill_mode: BehaviorSkillMode::Union,
+            behavior_skill_behavior: None,
             allow_tools: vec![],
             cost_trace: json!({}),
         }
@@ -179,7 +205,11 @@ pub struct AgentSession {
     pub local_workspace_id: Option<String>,
     pub worklog: Vec<Json>,
 
-    pub loaded_skills: Vec<String>,
+    pub session_loaded_skills: Vec<String>,
+    pub behavior_loaded_skills: Vec<String>,
+    pub skill_recent_list: Vec<String>,
+    pub behavior_skill_mode: BehaviorSkillMode,
+    pub behavior_skill_behavior: Option<String>,
     pub loaded_tools: Vec<String>,
     pub llm_step_records: LLMStepRecordLog,
 
@@ -262,6 +292,70 @@ impl AgentSession {
         resolve_workspace_worklog_db_path(self.workspace_info.as_ref(), &self.pwd)
     }
 
+    pub fn effective_loaded_skills(&self) -> Vec<String> {
+        match self.behavior_skill_mode {
+            BehaviorSkillMode::SessionOnly => {
+                normalize_unique_skill_refs(self.session_loaded_skills.clone())
+            }
+            BehaviorSkillMode::BehaviorOnly => {
+                normalize_unique_skill_refs(self.behavior_loaded_skills.clone())
+            }
+            BehaviorSkillMode::Union => {
+                let mut merged = self.session_loaded_skills.clone();
+                merged.extend(self.behavior_loaded_skills.clone());
+                normalize_unique_skill_refs(merged)
+            }
+        }
+    }
+
+    pub fn sync_behavior_skills(
+        &mut self,
+        behavior_name: &str,
+        mode: BehaviorSkillMode,
+        base_skills: &[String],
+    ) {
+        let behavior_name = behavior_name.trim();
+        let behavior_switched = self
+            .behavior_skill_behavior
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            != behavior_name;
+        if behavior_switched {
+            self.behavior_loaded_skills.clear();
+        }
+        self.behavior_skill_behavior =
+            (!behavior_name.is_empty()).then_some(behavior_name.to_string());
+        self.behavior_skill_mode = mode;
+        let mut merged = base_skills.to_vec();
+        merged.extend(self.behavior_loaded_skills.clone());
+        self.behavior_loaded_skills = normalize_unique_skill_refs(merged);
+        for skill_ref in self.effective_loaded_skills() {
+            move_skill_ref_to_front(&mut self.skill_recent_list, skill_ref.as_str());
+        }
+    }
+
+    pub fn load_skill_ref(&mut self, skill_ref: &str, scope: SessionSkillScope) {
+        match scope {
+            SessionSkillScope::Session => {
+                let mut items = self.session_loaded_skills.clone();
+                items.push(skill_ref.to_string());
+                self.session_loaded_skills = normalize_unique_skill_refs(items);
+            }
+            SessionSkillScope::Behavior => {
+                let mut items = self.behavior_loaded_skills.clone();
+                items.push(skill_ref.to_string());
+                self.behavior_loaded_skills = normalize_unique_skill_refs(items);
+            }
+        }
+        move_skill_ref_to_front(&mut self.skill_recent_list, skill_ref);
+    }
+
+    pub fn unload_skill_ref(&mut self, skill_ref: &str) {
+        remove_skill_ref(&mut self.session_loaded_skills, skill_ref);
+        remove_skill_ref(&mut self.behavior_loaded_skills, skill_ref);
+    }
+
     pub fn new(
         session_id: impl Into<String>,
         owner_agent: impl Into<String>,
@@ -293,7 +387,11 @@ impl AgentSession {
             workspace_info: None,
             local_workspace_id: None,
             worklog: vec![],
-            loaded_skills: vec![],
+            session_loaded_skills: vec![],
+            behavior_loaded_skills: vec![],
+            skill_recent_list: vec![],
+            behavior_skill_mode: BehaviorSkillMode::Union,
+            behavior_skill_behavior: None,
             loaded_tools: vec![],
             llm_step_records: LLMStepRecordLog::default(),
             cost_trace: json!({}),
@@ -352,7 +450,13 @@ impl AgentSession {
             workspace_info: runtime_meta.workspace_info,
             local_workspace_id: normalize_optional_string(runtime_meta.local_workspace_id),
             worklog: runtime_meta.worklog,
-            loaded_skills: runtime_meta.loaded_skills,
+            session_loaded_skills: runtime_meta.session_loaded_skills,
+            behavior_loaded_skills: runtime_meta.behavior_loaded_skills,
+            skill_recent_list: runtime_meta.skill_recent_list,
+            behavior_skill_mode: runtime_meta.behavior_skill_mode,
+            behavior_skill_behavior: normalize_optional_string(
+                runtime_meta.behavior_skill_behavior,
+            ),
             loaded_tools: runtime_meta.allow_tools,
             llm_step_records: LLMStepRecordLog::default(),
             cost_trace: normalize_json_object(runtime_meta.cost_trace),
@@ -416,7 +520,13 @@ impl AgentSession {
             workspace_info: self.workspace_info.clone(),
             local_workspace_id: self.local_workspace_id.clone(),
             worklog: self.worklog.clone(),
-            loaded_skills: self.loaded_skills.clone(),
+            session_loaded_skills: self.session_loaded_skills.clone(),
+            behavior_loaded_skills: self.behavior_loaded_skills.clone(),
+            skill_recent_list: self.skill_recent_list.clone(),
+            behavior_skill_mode: self.behavior_skill_mode.clone(),
+            behavior_skill_behavior: normalize_optional_string(
+                self.behavior_skill_behavior.clone(),
+            ),
             allow_tools: self.loaded_tools.clone(),
             cost_trace: normalize_json_object(self.cost_trace.clone()),
         }
@@ -579,6 +689,7 @@ impl AgentSession {
             "new_link_count": 0,
             "workspace_info": self.workspace_info,
             "local_workspace_id": self.local_workspace_id,
+            "loaded_skills": self.effective_loaded_skills(),
             "meta": self.meta,
         })
     }

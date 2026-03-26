@@ -39,6 +39,7 @@ use crate::behavior::{
     LLMBehaviorDeps, LLMComputeError, LLMTrackingInfo, SessionRuntimeContext, Tokenizer,
     WorklogSink,
 };
+use crate::skill_tool::{LoadSkillTool, UnloadSkillTool};
 use crate::step_record::LLMStepRecord;
 use crate::worklog::WorklogActionPayload;
 
@@ -399,6 +400,12 @@ impl AIAgent {
         tools
             .register_tool(GetSessionTool::new(session_store.clone()))
             .map_err(|err| anyhow!("register session tool failed: {err}"))?;
+        tools
+            .register_tool(LoadSkillTool::new(session_store.clone()))
+            .map_err(|err| anyhow!("register load_skill tool failed: {err}"))?;
+        tools
+            .register_tool(UnloadSkillTool::new(session_store.clone()))
+            .map_err(|err| anyhow!("register unload_skill tool failed: {err}"))?;
 
         let behavior_cfg_cache = Arc::new(RwLock::new(HashMap::new()));
         let policy = Arc::new(AgentPolicy::new(tools.clone(), behavior_cfg_cache.clone()));
@@ -1338,9 +1345,11 @@ impl AIAgent {
                 let current_step_index = guard.step_index;
                 let current_step_num = guard.step_num;
                 let session_id = guard.session_id.clone();
-                if guard.step_index == 0 {
-                    guard.loaded_skills.clear();
-                }
+                guard.sync_behavior_skills(
+                    behavior_name,
+                    behavior_cfg.skills.mode.clone(),
+                    &behavior_cfg.skills.load_skills,
+                );
                 guard.loaded_tools = match behavior_cfg.tools.mode {
                     crate::behavior::config::BehaviorToolMode::All => vec![],
                     crate::behavior::config::BehaviorToolMode::None => {

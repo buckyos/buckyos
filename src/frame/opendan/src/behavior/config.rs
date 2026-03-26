@@ -43,6 +43,7 @@ pub struct BehaviorConfig {
     pub name: String,
     pub system: String,
     pub tools: BehaviorToolsConfig,
+    pub skills: BehaviorSkillsConfig,
     pub memory: BehaviorMemoryConfig,
     pub input: String,
     pub output_protocol: BehaviorOutputProtocol,
@@ -65,6 +66,7 @@ impl Default for BehaviorConfig {
             step_limit: 0,
             output_protocol: BehaviorOutputProtocol::default(),
             tools: BehaviorToolsConfig::default(),
+            skills: BehaviorSkillsConfig::default(),
             llm: LLMBehaviorConfig::default(),
             limits: StepLimits::default(),
         }
@@ -226,6 +228,7 @@ impl BehaviorConfig {
         }
 
         cfg.tools.normalize();
+        cfg.skills.normalize();
         cfg.input = cfg.input.trim().to_string();
         cfg.output_protocol.normalize();
         cfg.faild_back = cfg
@@ -472,6 +475,42 @@ impl BehaviorToolsConfig {
 
     fn normalize(&mut self) {
         normalize_unique_string_list(&mut self.names);
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BehaviorSkillMode {
+    Union,
+    SessionOnly,
+    BehaviorOnly,
+}
+
+impl Default for BehaviorSkillMode {
+    fn default() -> Self {
+        Self::Union
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct BehaviorSkillsConfig {
+    pub mode: BehaviorSkillMode,
+    pub load_skills: Vec<String>,
+}
+
+impl Default for BehaviorSkillsConfig {
+    fn default() -> Self {
+        Self {
+            mode: BehaviorSkillMode::Union,
+            load_skills: vec![],
+        }
+    }
+}
+
+impl BehaviorSkillsConfig {
+    fn normalize(&mut self) {
+        normalize_unique_string_list(&mut self.load_skills);
     }
 }
 
@@ -884,8 +923,9 @@ tools:
         assert_eq!(cfg.llm.process_name, "opendan-llm-behavior");
         assert_eq!(cfg.limits.max_prompt_tokens, 200_000);
         assert!(cfg.llm.force_json);
-        assert_eq!(cfg.llm.output_mode, "behavior_llm_result");
-        assert!(cfg.llm.output_protocol.contains("<response>"));
+        assert!(matches!(cfg.output_protocol, BehaviorOutputProtocol::None));
+        assert_eq!(cfg.llm.output_mode, "auto");
+        assert!(cfg.llm.output_protocol.is_empty());
     }
 
     #[test]
@@ -999,6 +1039,48 @@ tools:
         .expect("parse behavior yaml");
         assert_eq!(cfg.tools.mode, BehaviorToolMode::AllowList);
         assert_eq!(cfg.tools.names, vec!["load_memory".to_string()]);
+    }
+
+    #[test]
+    fn behavior_config_skills_defaults_to_union_and_normalizes_load_skills() {
+        let path = Path::new("plan.yaml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+system: plan rule
+skills:
+  load_skills:
+    - planner
+    - planner
+    - chatonly
+"#,
+        )
+        .expect("parse behavior yaml");
+
+        assert_eq!(cfg.skills.mode, BehaviorSkillMode::Union);
+        assert_eq!(
+            cfg.skills.load_skills,
+            vec!["planner".to_string(), "chatonly".to_string()]
+        );
+    }
+
+    #[test]
+    fn behavior_config_skills_preserves_explicit_mode() {
+        let path = Path::new("execute.yaml");
+        let cfg = BehaviorConfig::parse_from_str(
+            path,
+            r#"
+system: execute rule
+skills:
+  mode: behavior_only
+  load_skills:
+    - coding/rust
+"#,
+        )
+        .expect("parse behavior yaml");
+
+        assert_eq!(cfg.skills.mode, BehaviorSkillMode::BehaviorOnly);
+        assert_eq!(cfg.skills.load_skills, vec!["coding/rust".to_string()]);
     }
 
     #[test]

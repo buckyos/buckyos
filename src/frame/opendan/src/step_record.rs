@@ -1158,8 +1158,10 @@ mod tests {
             &last_step_render_options(),
         );
 
-        assert!(rendered
-            .contains("<recive_msg from=\"alice.example.com\" time=\"1970-01-01 00:00:01\">"));
+        assert!(rendered.contains(&format!(
+            "<recive_msg from=\"alice.example.com\" time=\"{}\">",
+            format_local_timestamp(1000)
+        )));
         assert!(rendered.contains("line 1\n\nline 2\nline 3"));
         assert!(!rendered.contains("line 1 line 2 line 3"));
     }

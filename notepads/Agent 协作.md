@@ -1,5 +1,6 @@
 # 需求文档：基于 Workshop/Workspace 的协作型 Agent 系统（v0.2）
 
+> SubAgent的语义有更新
 > 本版（v0.2）是在 v0.1 基础上，根据你提供的 review 反馈进行修订：补齐了 **Session↔Workspace 绑定语义、并发最小策略、Todo 状态机定义、Router/Resolver 可解释性细化、SubAgent 生命周期、Worklog 粒度约束、Remote WorkspaceService 同步策略**，并新增了异常流程示例与术语力度统一。
 
 ## 1. 背景与目标

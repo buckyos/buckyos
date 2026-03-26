@@ -1,10 +1,12 @@
 mod common;
 
 use aicc::{
-    AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, Router,
-    TaskEventKind, TenantRouteConfig,
+    AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
+    Router, TaskEventKind, TenantRouteConfig,
 };
-use buckyos_api::{AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus};
+use buckyos_api::{
+    AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus,
+};
 use common::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -243,7 +245,15 @@ fn route_07_max_latency_filter() {
 fn route_08_tenant_mapping_override_global() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    setup_route_provider(&registry, &catalog, "p-a", "provider-a", "m-global", 0.01, 100);
+    setup_route_provider(
+        &registry,
+        &catalog,
+        "p-a",
+        "provider-a",
+        "m-global",
+        0.01,
+        100,
+    );
     catalog.set_tenant_mapping(
         "tenant-a",
         Capability::LlmRouter,
@@ -272,10 +282,25 @@ fn route_08_tenant_mapping_override_global() {
 async fn start_01_retryable_error_then_fallback_success() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-b", "m-b");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-b",
+        "m-b",
+    );
     let p1 = Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -283,7 +308,12 @@ async fn start_01_retryable_error_then_fallback_success() {
         vec![Err(ProviderError::retryable("temp"))],
     ));
     let p2 = Arc::new(MockProvider::new(
-        mock_instance("p-b", "provider-b", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-b",
+            "provider-b",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.02),
             estimated_latency_ms: Some(200),
@@ -308,10 +338,25 @@ async fn start_01_retryable_error_then_fallback_success() {
 async fn start_02_fatal_error_no_fallback() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-b", "m-b");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-b",
+        "m-b",
+    );
     let p1 = Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -319,7 +364,12 @@ async fn start_02_fatal_error_no_fallback() {
         vec![Err(ProviderError::fatal("bad request"))],
     ));
     let p2 = Arc::new(MockProvider::new(
-        mock_instance("p-b", "provider-b", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-b",
+            "provider-b",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.02),
             estimated_latency_ms: Some(200),
@@ -347,10 +397,25 @@ async fn start_02_fatal_error_no_fallback() {
 async fn start_03_started_must_stop_fallback() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-b", "m-b");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-b",
+        "m-b",
+    );
     let p1 = Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -358,7 +423,12 @@ async fn start_03_started_must_stop_fallback() {
         vec![Ok(ProviderStartResult::Started)],
     ));
     let p2 = Arc::new(MockProvider::new(
-        mock_instance("p-b", "provider-b", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-b",
+            "provider-b",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.02),
             estimated_latency_ms: Some(200),
@@ -383,10 +453,25 @@ async fn start_03_started_must_stop_fallback() {
 async fn start_04_queued_no_fallback() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-b", "m-b");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-b",
+        "m-b",
+    );
     let p1 = Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -394,7 +479,12 @@ async fn start_04_queued_no_fallback() {
         vec![Ok(ProviderStartResult::Queued { position: 2 })],
     ));
     let p2 = Arc::new(MockProvider::new(
-        mock_instance("p-b", "provider-b", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-b",
+            "provider-b",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.02),
             estimated_latency_ms: Some(200),
@@ -419,10 +509,25 @@ async fn start_04_queued_no_fallback() {
 async fn start_05_all_candidates_failed_provider_start_failed() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-b", "m-b");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-b",
+        "m-b",
+    );
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -430,7 +535,12 @@ async fn start_05_all_candidates_failed_provider_start_failed() {
         vec![Err(ProviderError::retryable("retry-a"))],
     )));
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-b", "provider-b", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-b",
+            "provider-b",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.02),
             estimated_latency_ms: Some(200),
@@ -493,9 +603,19 @@ async fn start_06_fallback_respects_limit() {
 async fn task_01_immediate_persists_completed() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -507,7 +627,10 @@ async fn task_01_immediate_persists_completed() {
     )));
     let center = center_with_taskmgr(registry, catalog);
 
-    let response = center.complete(base_request(), rpc_ctx_with_tenant(None)).await.unwrap();
+    let response = center
+        .complete(base_request(), rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(response.status, CompleteStatus::Succeeded, "assert_eq failed in task_01_immediate_persists_completed: expected left == right; check this scenario's routing/status/error-code branch.");
 
     let taskmgr = center.task_manager_client().expect("task manager");
@@ -518,7 +641,9 @@ async fn task_01_immediate_persists_completed() {
     let task = tasks
         .into_iter()
         .find(|t| {
-            t.data.pointer("/aicc/external_task_id").and_then(|v| v.as_str())
+            t.data
+                .pointer("/aicc/external_task_id")
+                .and_then(|v| v.as_str())
                 == Some(response.task_id.as_str())
         })
         .expect("task should exist");
@@ -530,9 +655,19 @@ async fn task_01_immediate_persists_completed() {
 async fn task_02_started_persists_running_and_binding() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     let provider = Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -548,7 +683,10 @@ async fn task_02_started_persists_running_and_binding() {
         .unwrap();
     assert_eq!(response.status, CompleteStatus::Running, "assert_eq failed in task_02_started_persists_running_and_binding: expected left == right; check this scenario's routing/status/error-code branch.");
     let cancel = center
-        .cancel(response.task_id.as_str(), rpc_ctx_with_tenant(Some("tenant-a")))
+        .cancel(
+            response.task_id.as_str(),
+            rpc_ctx_with_tenant(Some("tenant-a")),
+        )
         .await
         .unwrap();
     assert!(cancel.accepted, "assert failed in task_02_started_persists_running_and_binding: condition is false; check preconditions and expected branch outcome.");
@@ -560,9 +698,19 @@ async fn task_02_started_persists_running_and_binding() {
 async fn task_03_queued_persists_pending_and_position() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -571,7 +719,10 @@ async fn task_03_queued_persists_pending_and_position() {
     )));
     let center = center_with_taskmgr(registry, catalog);
 
-    let response = center.complete(base_request(), rpc_ctx_with_tenant(None)).await.unwrap();
+    let response = center
+        .complete(base_request(), rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
     let tasks = taskmgr
         .list_tasks(None::<TaskFilter>, None, None)
@@ -580,7 +731,9 @@ async fn task_03_queued_persists_pending_and_position() {
     let task = tasks
         .into_iter()
         .find(|t| {
-            t.data.pointer("/aicc/external_task_id").and_then(|v| v.as_str())
+            t.data
+                .pointer("/aicc/external_task_id")
+                .and_then(|v| v.as_str())
                 == Some(response.task_id.as_str())
         })
         .expect("task should exist");
@@ -602,7 +755,10 @@ async fn task_04_emit_error_event_with_code() {
 
     let mut req = base_request();
     req.model.alias = "   ".to_string();
-    let response = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let response = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(response.status, CompleteStatus::Failed, "assert_eq failed in task_04_emit_error_event_with_code: expected left == right; check this scenario's routing/status/error-code branch.");
     assert_eq!(extract_error_code(&sink.events_for(&response.task_id)).as_deref(), Some("bad_request"), "assert_eq failed in task_04_emit_error_event_with_code: expected left == right; check this scenario's routing/status/error-code branch.");
 }
@@ -612,9 +768,19 @@ async fn task_04_emit_error_event_with_code() {
 async fn sec_01_cancel_reject_cross_tenant() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -628,7 +794,10 @@ async fn sec_01_cancel_reject_cross_tenant() {
         .await
         .unwrap();
     let err = center
-        .cancel(start.task_id.as_str(), rpc_ctx_with_tenant(Some("tenant-bob")))
+        .cancel(
+            start.task_id.as_str(),
+            rpc_ctx_with_tenant(Some("tenant-bob")),
+        )
         .await
         .expect_err("cross tenant cancel must fail");
     assert!(err.to_string().contains("NoPermission") || err.to_string().contains("cross-tenant"), "assert failed in sec_01_cancel_reject_cross_tenant: condition is false; check preconditions and expected branch outcome.");
@@ -639,9 +808,19 @@ async fn sec_01_cancel_reject_cross_tenant() {
 async fn sec_02_cancel_accept_same_tenant() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -655,7 +834,10 @@ async fn sec_02_cancel_accept_same_tenant() {
         .await
         .unwrap();
     let resp = center
-        .cancel(start.task_id.as_str(), rpc_ctx_with_tenant(Some("tenant-alice")))
+        .cancel(
+            start.task_id.as_str(),
+            rpc_ctx_with_tenant(Some("tenant-alice")),
+        )
         .await
         .unwrap();
     assert!(resp.accepted, "assert failed in sec_02_cancel_accept_same_tenant: condition is false; check preconditions and expected branch outcome.");
@@ -666,7 +848,12 @@ async fn sec_02_cancel_accept_same_tenant() {
 async fn sec_03_resource_invalid_from_resolver() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     let sink = Arc::new(CollectingSinkFactory::new());
     let mut center = AIComputeCenter::new(registry, catalog);
     center.set_task_event_sink_factory(sink.clone());
@@ -674,18 +861,29 @@ async fn sec_03_resource_invalid_from_resolver() {
         message: "resolver denied".to_string(),
     }));
     center.registry().add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
         },
         vec![Ok(ProviderStartResult::Started)],
     )));
-    center
-        .model_catalog()
-        .set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    center.model_catalog().set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
 
-    let response = center.complete(base_request(), rpc_ctx_with_tenant(None)).await.unwrap();
+    let response = center
+        .complete(base_request(), rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(response.status, CompleteStatus::Failed, "assert_eq failed in sec_03_resource_invalid_from_resolver: expected left == right; check this scenario's routing/status/error-code branch.");
     assert_eq!(extract_error_code(&sink.events_for(&response.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in sec_03_resource_invalid_from_resolver: expected left == right; check this scenario's routing/status/error-code branch.");
 }
@@ -704,7 +902,10 @@ async fn sec_04_base64_policy_enforced() {
         mime: "audio/wav".to_string(),
         data_base64: openai_b64(&[1, 2, 3]),
     });
-    let response = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let response = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(response.status, CompleteStatus::Failed, "assert_eq failed in sec_04_base64_policy_enforced: expected left == right; check this scenario's routing/status/error-code branch.");
     assert_eq!(extract_error_code(&sink.events_for(&response.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in sec_04_base64_policy_enforced: expected left == right; check this scenario's routing/status/error-code branch.");
 }
@@ -721,7 +922,10 @@ async fn obs_01_error_code_mapping_consistent() {
     };
     let mut bad_req = base_request();
     bad_req.model.alias = "".to_string();
-    let bad_resp = center_bad.complete(bad_req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let bad_resp = center_bad
+        .complete(bad_req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(extract_error_code(&sink.events_for(&bad_resp.task_id)).as_deref(), Some("bad_request"), "assert_eq failed in obs_01_error_code_mapping_consistent: expected left == right; check this scenario's routing/status/error-code branch.");
 
     let center_no_provider = {
@@ -747,7 +951,10 @@ async fn obs_02_log_redaction_no_prompt_or_base64() {
         mime: "image/png".to_string(),
         data_base64: secret.to_string(),
     });
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     let events = sink.events_for(&resp.task_id);
     let msg = events
         .iter()
@@ -763,17 +970,30 @@ async fn obs_02_log_redaction_no_prompt_or_base64() {
 async fn conc_01_task_id_uniqueness_under_concurrency() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
         },
-        vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("ok".to_string()),
-            ..Default::default()
-        })); 128],
+        vec![
+            Ok(ProviderStartResult::Immediate(AiResponseSummary {
+                text: Some("ok".to_string()),
+                ..Default::default()
+            }));
+            128
+        ],
     )));
     let center = Arc::new(center_with_taskmgr(registry, catalog));
 
@@ -801,7 +1021,12 @@ async fn conc_01_task_id_uniqueness_under_concurrency() {
 async fn conc_02_registry_hot_update_route_consistency() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     let router = Router;
     let req = base_request();
 
@@ -845,7 +1070,10 @@ async fn proto_b64_06_invalid_mime_rejected() {
         mime: "image/gif".to_string(),
         data_base64: openai_b64(&[1, 2, 3]),
     });
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in proto_b64_06_invalid_mime_rejected: expected left == right; check this scenario's routing/status/error-code branch.");
 }
 
@@ -860,7 +1088,10 @@ async fn proto_b64_07_size_limit_exceeded_rejected() {
         mime: "image/png".to_string(),
         data_base64: openai_b64(&[1, 2, 3, 4]),
     });
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in proto_b64_07_size_limit_exceeded_rejected: expected left == right; check this scenario's routing/status/error-code branch.");
 }
 
@@ -874,7 +1105,10 @@ async fn proto_b64_08_malformed_base64_rejected() {
         mime: "image/png".to_string(),
         data_base64: "%%%not-base64%%%".to_string(),
     });
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in proto_b64_08_malformed_base64_rejected: expected left == right; check this scenario's routing/status/error-code branch.");
 }
 
@@ -888,7 +1122,10 @@ async fn proto_url_03_missing_scheme_rejected() {
         url: "example.com/image.png".to_string(),
         mime_hint: None,
     });
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in proto_url_03_missing_scheme_rejected: expected left == right; check this scenario's routing/status/error-code branch.");
 }
 
@@ -902,7 +1139,10 @@ async fn proto_url_04_empty_url_rejected() {
         url: " ".to_string(),
         mime_hint: None,
     });
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in proto_url_04_empty_url_rejected: expected left == right; check this scenario's routing/status/error-code branch.");
 }
 
@@ -911,9 +1151,19 @@ async fn proto_url_04_empty_url_rejected() {
 async fn proto_sec_04_idempotency_key_preserved() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -923,7 +1173,10 @@ async fn proto_sec_04_idempotency_key_preserved() {
     let center = center_with_taskmgr(registry, catalog);
     let req = base_request();
     let idem = req.idempotency_key.clone().expect("idem key");
-    let response = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let response = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
     let tasks = taskmgr
         .list_tasks(None::<TaskFilter>, None, None)
@@ -932,7 +1185,9 @@ async fn proto_sec_04_idempotency_key_preserved() {
     let task = tasks
         .into_iter()
         .find(|t| {
-            t.data.pointer("/aicc/external_task_id").and_then(|v| v.as_str())
+            t.data
+                .pointer("/aicc/external_task_id")
+                .and_then(|v| v.as_str())
                 == Some(response.task_id.as_str())
         })
         .expect("task should exist");
@@ -957,7 +1212,10 @@ async fn proto_url_06_resource_unreachable_simulated() {
         url: "https://example.com/1.png".to_string(),
         mime_hint: None,
     });
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in proto_url_06_resource_unreachable_simulated: expected left == right; check this scenario's routing/status/error-code branch.");
 }
 
@@ -966,9 +1224,19 @@ async fn proto_url_06_resource_unreachable_simulated() {
 async fn obs_01_provider_start_failed_code() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -978,7 +1246,10 @@ async fn obs_01_provider_start_failed_code() {
     let sink = Arc::new(CollectingSinkFactory::new());
     let mut center = center_with_taskmgr(registry, catalog);
     center.set_task_event_sink_factory(sink.clone());
-    let resp = center.complete(base_request(), rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(base_request(), rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_eq!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("provider_start_failed"), "assert_eq failed in obs_01_provider_start_failed_code: expected left == right; check this scenario's routing/status/error-code branch.");
 }
 
@@ -993,7 +1264,10 @@ async fn proto_url_01_https_valid() {
     let mut center = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
     let sink = Arc::new(CollectingSinkFactory::new());
     center.set_task_event_sink_factory(sink.clone());
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_ne!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_ne failed in proto_url_01_https_valid: expected left != right; check validation/policy branch and unexpected equality.");
 }
 
@@ -1008,7 +1282,10 @@ async fn proto_url_02_http_allowed() {
     let mut center = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
     let sink = Arc::new(CollectingSinkFactory::new());
     center.set_task_event_sink_factory(sink.clone());
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_ne!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_ne failed in proto_url_02_http_allowed: expected left != right; check validation/policy branch and unexpected equality.");
 }
 
@@ -1023,7 +1300,10 @@ async fn proto_b64_01_image_valid_png() {
     let mut center = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
     let sink = Arc::new(CollectingSinkFactory::new());
     center.set_task_event_sink_factory(sink.clone());
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_ne!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_ne failed in proto_b64_01_image_valid_png: expected left != right; check validation/policy branch and unexpected equality.");
 }
 
@@ -1038,7 +1318,10 @@ async fn proto_b64_02_image_valid_jpeg() {
     let mut center = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
     let sink = Arc::new(CollectingSinkFactory::new());
     center.set_task_event_sink_factory(sink.clone());
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_ne!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_ne failed in proto_b64_02_image_valid_jpeg: expected left != right; check validation/policy branch and unexpected equality.");
 }
 
@@ -1053,7 +1336,10 @@ async fn proto_b64_03_audio_valid_wav() {
     let mut center = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
     let sink = Arc::new(CollectingSinkFactory::new());
     center.set_task_event_sink_factory(sink.clone());
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_ne!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_ne failed in proto_b64_03_audio_valid_wav: expected left != right; check validation/policy branch and unexpected equality.");
 }
 
@@ -1068,7 +1354,10 @@ async fn proto_b64_04_audio_valid_mp3() {
     let mut center = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
     let sink = Arc::new(CollectingSinkFactory::new());
     center.set_task_event_sink_factory(sink.clone());
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_ne!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_ne failed in proto_b64_04_audio_valid_mp3: expected left != right; check validation/policy branch and unexpected equality.");
 }
 
@@ -1083,7 +1372,10 @@ async fn proto_b64_05_video_valid_mp4() {
     let mut center = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
     let sink = Arc::new(CollectingSinkFactory::new());
     center.set_task_event_sink_factory(sink.clone());
-    let resp = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let resp = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     assert_ne!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("resource_invalid"), "assert_ne failed in proto_b64_05_video_valid_mp4: expected left != right; check validation/policy branch and unexpected equality.");
 }
 
@@ -1095,7 +1387,10 @@ async fn task_04_emit_error_event_has_error_kind() {
     center.set_task_event_sink_factory(sink.clone());
     let mut req = base_request();
     req.model.alias = "".to_string();
-    let response = center.complete(req, rpc_ctx_with_tenant(None)).await.unwrap();
+    let response = center
+        .complete(req, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     let events = sink.events_for(&response.task_id);
     assert!(events.iter().any(|e| matches!(e.kind, TaskEventKind::Error)), "assert failed in task_04_emit_error_event_has_error_kind: condition is false; check preconditions and expected branch outcome.");
 }
@@ -1105,7 +1400,12 @@ async fn task_04_emit_error_event_has_error_kind() {
 async fn route_08_tenant_mapping_override_global_on_complete() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "global-model");
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "global-model",
+    );
     catalog.set_tenant_mapping(
         "tenant-x",
         Capability::LlmRouter,
@@ -1114,7 +1414,12 @@ async fn route_08_tenant_mapping_override_global_on_complete() {
         "tenant-model",
     );
     registry.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-a", "provider-a", vec![Capability::LlmRouter], vec!["plan".to_string()]),
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".to_string()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
@@ -1134,7 +1439,9 @@ async fn route_08_tenant_mapping_override_global_on_complete() {
     let task = tasks
         .into_iter()
         .find(|t| {
-            t.data.pointer("/aicc/external_task_id").and_then(|v| v.as_str())
+            t.data
+                .pointer("/aicc/external_task_id")
+                .and_then(|v| v.as_str())
                 == Some(response.task_id.as_str())
         })
         .expect("task should exist");

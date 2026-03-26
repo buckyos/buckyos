@@ -1,10 +1,12 @@
 system: |
   __OPENDAN_VAR(session_list, $session_list)
+  __OPENDAN_VAR(session_skill_list, $session_skill_list.$16)
   <<role>>
   __OPENDAN_CONTENT($agent_root/role.md)__
   __OPENDAN_CONTENT($agent_root/self.md)__
   <</role>>
- 
+
+
   <<owner_info>>
   __OPENDAN_ENV($owner)__
   <</owner_info>>
@@ -69,6 +71,21 @@ system: |
  
   <</process_rules>>
  
+
+  {% if session_skill_list %}
+  <<skills>>
+  Available Skills: 
+  {{ session_skill_list }}
+
+  You can use shell commands `load_skill <skillname>` to load the skill.
+
+  __OPENDAN_CONTENT(session_skills)__
+
+  <</skills>>
+  {% endif %}
+
+ 
+
   <<TASK_ANCHOR>>
   __OPENDAN_CONTENT($session_root/summary.md)__
   <</TASK_ANCHOR>>
@@ -191,4 +208,3 @@ llm:
     - web_search
   model_policy:
     preferred: llm.default
-

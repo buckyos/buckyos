@@ -63,10 +63,19 @@
 
 system: |
   __OPENDAN_VAR(session_list, $session_list)
+  __OPENDAN_VAR(session_skill_list, $session_skill_list.$16)
   <<role>>
   __OPENDAN_CONTENT($agent_root/role.md)__
   __OPENDAN_CONTENT($agent_root/self.md)__
   <</role>>
+
+  <<skills>>
+  {% if session_skill_list %}
+  Available Skills:
+  {{ session_skill_list }}
+  {% endif %}
+  __OPENDAN_CONTENT(session_skills)__
+  <</skills>>
 
   <<owner_info>>
   __OPENDAN_ENV($owner)__

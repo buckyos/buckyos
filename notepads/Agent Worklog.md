@@ -6,6 +6,8 @@
 
 在 OpenDAN Runtime 中，Agent 以 **Session 串行 + Behavior Step-loop** 的方式运行；每个 step 会产生推理、tool call、action 执行、对外回复、写入 workspace 等副作用。为保证 **可观测、可恢复、可审计、可协作**，需要有一套统一的工作记录体系。
 
+> Worklog通常不用在常规的LLM推理提示词里，更多的是观察Workspace的工作日志（审计）
+
 ### 1.2 定位：Worklog 是“事件流 + 步摘要”
 
 Worklog 不是只记录“每步总结”的文本日志，而是两层结构：
