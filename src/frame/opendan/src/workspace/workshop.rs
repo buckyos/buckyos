@@ -34,7 +34,7 @@ use crate::worklog::WorklogToolConfig;
 use ::agent_tool::resolve_path_under_root as resolve_path_in_agent_env;
 
 const DEFAULT_BASH_PATH: &str = "/bin/bash";
-const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 32 * 1024;
 const DEFAULT_MAX_DIFF_LINES: usize = 200;
 const DEFAULT_MAX_FILE_WRITE_BYTES: usize = 256 * 1024;
@@ -1095,6 +1095,12 @@ esac
             .parent()
             .map(|parent| parent.join("agent_tool").exists())
             .unwrap_or(false)
+    }
+
+    #[test]
+    fn workshop_default_exec_bash_timeout_is_30_seconds() {
+        let cfg = AgentWorkshopConfig::new("/tmp/workshop-default-timeout");
+        assert_eq!(cfg.default_timeout_ms, 30_000);
     }
 
     #[tokio::test]

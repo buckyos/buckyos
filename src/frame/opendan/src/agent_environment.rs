@@ -7,7 +7,7 @@ use std::sync::Arc;
 use buckyos_api::{
     get_buckyos_api_runtime, Contact, MsgRecord, OpenDanAgentSessionRecord, TaskManagerClient,
 };
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Utc};
 use log::{debug, warn};
 use name_lib::DID;
 use ndn_lib::MsgObject;
@@ -27,6 +27,9 @@ use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
 use crate::agent_tool::{
     get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
     AgentToolError, AgentToolManager,
+};
+use crate::prompt_time::{
+    format_local_compact_timestamp, format_local_timestamp, format_utc_datetime_as_local,
 };
 use crate::step_record::LLMStepPromptRenderOptions;
 use crate::workspace::{
@@ -1518,7 +1521,7 @@ async fn render_recent_sessions_from_disk(
             format!(
                 "{} | {}  ",
                 record.session_id,
-                format_compact_timestamp(activity_ms)
+                format_local_compact_timestamp(activity_ms)
             )
         })
         .collect::<Vec<_>>();
@@ -1842,7 +1845,7 @@ async fn render_new_msgs_from_kmsgqueue(messages: &[Message]) -> Option<String> 
                 if !content.is_empty() {
                     lines.push(format!(
                         "unknown [{}]\n{}",
-                        format_timestamp(message.created_at),
+                        format_local_timestamp(message.created_at),
                         content
                     ));
                     continue;
@@ -1909,7 +1912,7 @@ fn render_new_events_from_kmsgqueue(messages: &[Message]) -> Option<String> {
 
         let mut event = Map::<String, Json>::new();
         event.insert("eventid".to_string(), Json::String(event_id));
-        if let Some(event_data) = event_data {
+        if let Some(event_data) = event_data.and_then(enrich_event_data_for_prompt) {
             event.insert("eventdata".to_string(), event_data);
         }
 
@@ -1922,6 +1925,38 @@ fn render_new_events_from_kmsgqueue(messages: &[Message]) -> Option<String> {
         return None;
     }
     clean_optional_text(Some(lines.join("\n\n").as_str()))
+}
+
+fn enrich_event_data_for_prompt(event_data: Json) -> Option<Json> {
+    let mut object = event_data.as_object()?.clone();
+
+    if let Some(local_value) = render_event_time_field_as_local(object.get("current_time")) {
+        object.insert("current_time_local".to_string(), Json::String(local_value));
+    }
+    if let Some(local_value) = render_event_time_field_as_local_or_none(object.get("last_trigger_time"))
+    {
+        object.insert("last_trigger_time_local".to_string(), Json::String(local_value));
+    }
+
+    Some(Json::Object(object))
+}
+
+fn render_event_time_field_as_local(value: Option<&Json>) -> Option<String> {
+    let raw = value?.as_str()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|dt| format_utc_datetime_as_local(dt.with_timezone(&Utc)))
+}
+
+fn render_event_time_field_as_local_or_none(value: Option<&Json>) -> Option<String> {
+    match value {
+        Some(Json::Null) => Some("无".to_string()),
+        Some(_) => render_event_time_field_as_local(value),
+        None => None,
+    }
 }
 
 fn render_human_readable_msg_line(record: &MsgRecord, msg_obj: Option<&MsgObject>) -> String {
@@ -1946,29 +1981,7 @@ fn render_human_readable_msg_line(record: &MsgRecord, msg_obj: Option<&MsgObject
         .filter(|value| !value.is_empty())
         .map(normalize_multiline_text)
         .unwrap_or_else(|| format!("msg_id={} state={:?}", record.msg_id, record.state));
-    format!("{} [{}]\n{}", from, format_timestamp(time_ms), content)
-}
-
-fn format_timestamp(timestamp_ms: u64) -> String {
-    let secs = (timestamp_ms / 1000) as i64;
-    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
-    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
-fn format_compact_timestamp(timestamp_ms: u64) -> String {
-    let secs = (timestamp_ms / 1000) as i64;
-    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
-    let dt = DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now);
-    format!(
-        "{}-{}-{} {:02}:{:02}:{:02}",
-        dt.year(),
-        dt.month(),
-        dt.day(),
-        dt.hour(),
-        dt.minute(),
-        dt.second()
-    )
+    format!("{} [{}]\n{}", from, format_local_timestamp(time_ms), content)
 }
 
 fn normalize_multiline_text(input: &str) -> String {
@@ -2950,6 +2963,40 @@ mod tests {
         let parsed: Json = serde_json::from_str(&rendered).expect("parse rendered event json");
         assert_eq!(parsed["eventid"], Json::String("/taskmgr/ping".to_string()));
         assert!(parsed.get("eventdata").is_none(), "rendered={rendered}");
+    }
+
+    #[test]
+    fn render_new_event_adds_local_display_time_only_in_prompt_view() {
+        let payload = serde_json::to_vec(&SessionInputItem {
+            msg: None,
+            event_id: Some("timer_self_check_trigger".to_string()),
+            event_data: Some(json!({
+                "current_time": "2026-03-26T06:22:33Z",
+                "last_trigger_time": null
+            })),
+        })
+        .expect("serialize session input");
+        let rendered = render_new_events_from_kmsgqueue(&[Message {
+            index: 1,
+            payload,
+            created_at: 1_735_689_600_000u64,
+            headers: HashMap::new(),
+        }])
+        .expect("rendered event");
+
+        let parsed: Json = serde_json::from_str(&rendered).expect("parse rendered event json");
+        assert_eq!(
+            parsed["eventdata"]["current_time"],
+            Json::String("2026-03-26T06:22:33Z".to_string())
+        );
+        assert_eq!(
+            parsed["eventdata"]["current_time_local"],
+            Json::String("2026-03-25 23:22:33".to_string())
+        );
+        assert_eq!(
+            parsed["eventdata"]["last_trigger_time_local"],
+            Json::String("无".to_string())
+        );
     }
 
     #[tokio::test]

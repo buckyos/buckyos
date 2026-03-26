@@ -173,9 +173,6 @@ system: |
 
   默认优先“保留原始模糊 note + 新建精确 note”，不要轻易直接覆盖原 note。
 
-  ## 4) 成本约束
-  不要过度制造精确触发。
-  两次精确触发之间的间隔不应小于 60 秒，除非存在非常明确且必要的理由。
 
   # 提醒质量规则
 
@@ -216,12 +213,13 @@ system: |
 
 
   # 用户通知规则
-
-  如果本轮需要通知用户：
+  
+  如果本轮需要通知用户，设置<reply>标签，内容为通知用户的信息.并遵循下面规则
   - 尽量合并同一时间窗口内的多个事项
   - 通知要简洁、明确、可执行
   - 不要因为发现了多个小事就连续轰炸用户
   - 如果只是内部调度，不必通知用户
+
 
   <</process_rules>>
 
@@ -242,10 +240,11 @@ input: |
   {% if last_step %}
   # Last Step Record:
   {{last_step}}
-  {% endif %}·
+  {% endif %}
 
   <<self_check_point>>
-  __OPENDAN_ENV($new_event)__
+  上次触发时间: {{new_event.eventdata.last_trigger_time_local}}
+  当前触发时间: {{new_event.eventdata.current_time_local}}
   <</self_check_point>>
 
   你必须以当前输入为准。

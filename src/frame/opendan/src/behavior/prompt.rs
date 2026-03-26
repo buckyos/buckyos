@@ -19,6 +19,7 @@ use crate::agent_session::AgentSession;
 use crate::agent_tool::AgentMemory;
 use crate::behavior::config::BehaviorMemoryBucketConfig;
 use crate::behavior::BehaviorConfig;
+use crate::prompt_time::{format_local_date_ymd, format_local_hhmm};
 use crate::step_record::{
     load_records_from_path, render_prompt_text_from_records_with_tokenizer,
     LLMStepPromptRenderOptions,
@@ -841,19 +842,11 @@ fn render_history_msg_line(record: &MsgRecordWithObject, agent_did: Option<&str>
 }
 
 fn format_history_date(timestamp_ms: u64) -> String {
-    let dt = history_datetime_utc(timestamp_ms);
-    dt.format("%Y-%m-%d").to_string()
+    format_local_date_ymd(timestamp_ms)
 }
 
 fn format_history_time(timestamp_ms: u64) -> String {
-    let dt = history_datetime_utc(timestamp_ms);
-    dt.format("%H:%M").to_string()
-}
-
-fn history_datetime_utc(timestamp_ms: u64) -> DateTime<Utc> {
-    let secs = (timestamp_ms / 1000) as i64;
-    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
-    DateTime::<Utc>::from_timestamp(secs, nanos).unwrap_or_else(Utc::now)
+    format_local_hhmm(timestamp_ms)
 }
 
 fn render_history_sender(
