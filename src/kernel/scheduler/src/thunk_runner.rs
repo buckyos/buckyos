@@ -268,6 +268,7 @@ fn build_scheduling_hint(function_object: &FunctionObject) -> FunctionObjectSche
     let preferred_runner = match &function_object.func_type {
         FunctionType::ExecPkg => Some("package-runner".to_string()),
         FunctionType::Script(language) => Some(format!("script-runner:{language}")),
+        FunctionType::OPTask(language) => Some(format!("op-task-runner:{language}")),
         FunctionType::Operator => Some("operator-runner".to_string()),
     };
 
@@ -597,6 +598,7 @@ fn function_type_name(func_type: &FunctionType) -> &'static str {
     match func_type {
         FunctionType::ExecPkg => "exec_pkg",
         FunctionType::Script(_) => "script",
+        FunctionType::OPTask(_) => "op_task",
         FunctionType::Operator => "operator",
     }
 }
