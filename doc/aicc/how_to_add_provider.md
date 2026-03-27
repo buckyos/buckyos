@@ -26,7 +26,10 @@ AICC 的 Provider 接口定义在 `src/frame/aicc/src/aicc.rs`，核心约束是
 - 在 crate 对外导出模块：`src/frame/aicc/src/lib.rs`
 - 在服务入口注册 Provider：`src/frame/aicc/src/main.rs` 的 `apply_provider_settings()`
 - 增加 adapter 协议测试：`src/frame/aicc/tests/adapter_protocol_tests.rs`
+- 控制面板后端补 Provider 卡片/保存逻辑：`src/frame/control_panel/src/main.rs`
+- 控制面板 web mock/API 对齐：`src/frame/control_panel/web/src/api/index.ts`
 - （可选但建议）补系统默认配置生成：`src/kernel/scheduler/src/system_config_builder.rs`
+- （同次提交但非 Provider 接入必需）`src/rootfs/bin/buckyos_jarvis/behaviors/*.yaml`
 
 可直接把这套“落点清单”作为你新增 Provider 的 checklist。
 
@@ -129,6 +132,35 @@ Claude 就走了这条路线：`claude.rs` 调用 `claude_protocol::convert_comp
 
 Claude 在 `8d169271` 就是按这套补齐。
 
+## 步骤 9：补齐控制面板/UI 配置接入（建议）
+
+如果你希望“新增 Provider 后用户可在控制面板里查看、编辑、诊断”，需要同时接入 `control_panel`：
+
+- 控制面板后端 Provider 卡片：
+  - 文件：`src/frame/control_panel/src/main.rs`
+  - 在 `ai_provider_cards(...)` 中补 `<provider>` 对应的 card 生成逻辑（可参考 `ai_claude_provider_card` / `ai_minimax_provider_card`）
+  - 统一处理 `status`、`credentialConfigured`、`maskedApiKey`、`defaultModel`、`endpoint`
+- 控制面板保存逻辑：
+  - 文件：`src/frame/control_panel/src/main.rs`
+  - 在 `handle_ai_provider_set(...)` 中为你的 `provider_id` 增加写回分支，把用户修改落到 `services/aicc/settings`
+  - 建议同步维护 `provider_type`、`instances[0].base_url`、`instances[0].default_model`、`api_token/api_key` 兼容字段
+- 控制面板诊断/重载链路：
+  - 复用已有 `ai.provider.test` 与 `ai.reload` RPC（无需重复造接口）
+  - 确认新增 Provider 在 reload 后能被 `ai.provider.list` 正确反映
+- Web UI 页面与路由：
+  - 文件：`src/frame/control_panel/web/src/routes/router.tsx`、`src/frame/control_panel/web/src/ui/pages/*.tsx`
+  - 若已有 AI Provider 管理页，补展示字段与编辑表单；若无入口，需新增页面并挂路由
+  - API 层使用 `src/frame/control_panel/web/src/api/index.ts` 的 `fetchAiProviders` / `saveAiProvider` / `runAiProviderDiagnostic` / `reloadAiProviderSettings`
+- 文档同步：
+  - 同步更新 `doc/aicc/local_provider.md` 或 Provider 专属文档，明确“系统配置入口”和“控制面板入口”两条路径
+
+最小验收建议：
+
+1. 控制面板可看到新 Provider 卡片（状态、模型、endpoint 正确）
+2. 在 UI 修改默认模型/endpoint/API Key 后，`services/aicc/settings` 实际更新
+3. 点击 reload 后，AICC 路由能命中新 Provider（非仅 UI 假状态）
+4. 诊断接口能给出可读结果（成功或可定位错误码）
+
 ## 4. 推荐的 settings 模板
 
 下面是一个最小可用模板（以 `myprovider` 为例）：
@@ -169,6 +201,7 @@ Claude 在 `8d169271` 就是按这套补齐。
 - 把 4xx 都标 retryable：会导致无意义重试放大故障
 - `provider_type` 不一致（settings 和代码中不一致）：`ModelCatalog.resolve()` 命不中
 - 忘记在 `main.rs` 接入 `register_*`：Provider 文件存在但永远不会启用
+- 只改了 AICC 没改 control_panel：后端可用但 UI 不可配置/不可观测
 
 ## 6. 建议的开发顺序（最快闭环）
 
