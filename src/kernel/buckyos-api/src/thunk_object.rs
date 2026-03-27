@@ -9,6 +9,7 @@ use serde_json::Value;
 pub enum FunctionType {
     ExecPkg,// executable package
     Script(String),// script ,language type,content is the script content
+    OPTask(String),// OPScript,language type,content is the OPScript content
     Operator,
 }
 
@@ -71,6 +72,7 @@ pub struct FunctionObject {
     pub affinity_type: AffinityType,
 
     //param_name => param_type
+    //TODO 改成标准的json schema
     pub params_type: HashMap<String, FunctionParamType>,//参数类型
     pub result_type: FunctionResultType,
     

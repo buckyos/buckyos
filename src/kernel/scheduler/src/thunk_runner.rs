@@ -2,13 +2,12 @@ use ::kRPC::*;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_session_token_env_key, AffinityType, CreateTaskOptions, FunctionObject,
-    FunctionParamType, FunctionType, SchedulerDispatchReceipt, SchedulerRunThunkResponse,
-    SchedulerRunThunkStatus, SystemConfigClient, TaskManagerClient, ThunkObject,
+    get_session_token_env_key, AffinityType, FunctionObject, FunctionParamType, FunctionType,
+    SchedulerDispatchReceipt, SchedulerRunThunkResponse, SchedulerRunThunkStatus,
+    SystemConfigClient, ThunkObject,
     RESOURCE_TYPE_CPU, RESOURCE_TYPE_DISK_CACHE, RESOURCE_TYPE_DOWNLOAD, RESOURCE_TYPE_GPU,
     RESOURCE_TYPE_GPU_CORES, RESOURCE_TYPE_GPU_MEMORY, RESOURCE_TYPE_MEMORY,
-    RESOURCE_TYPE_UPLOAD, SCHEDULER_SERVICE_SERVICE_NAME, TASK_MANAGER_SERVICE_NAME,
-    TASK_MANAGER_SERVICE_PORT,
+    RESOURCE_TYPE_UPLOAD, SCHEDULER_SERVICE_SERVICE_NAME,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -62,6 +61,7 @@ pub trait ThunkDispatchBackend: Send + Sync {
     async fn dispatch(
         &self,
         node: &ThunkNodeCandidate,
+        task_id: i64,
         thunk_obj_id: &str,
         thunk: &ThunkObject,
         function_object: &FunctionObject,
@@ -122,75 +122,37 @@ impl ThunkNodeCatalog for SystemConfigBackedNodeCatalog {
     }
 }
 
-pub struct TaskManagerThunkDispatchBackend {
-    task_manager_url: String,
-    session_token: Option<String>,
-}
-
-impl Default for TaskManagerThunkDispatchBackend {
-    fn default() -> Self {
-        Self {
-            task_manager_url: env::var("TASK_MANAGER_URL").unwrap_or_else(|_| {
-                format!("http://127.0.0.1:{}/kapi/task-manager", TASK_MANAGER_SERVICE_PORT)
-            }),
-            session_token: load_task_manager_session_token(),
-        }
-    }
-}
+pub struct ExternalTaskThunkDispatchBackend;
 
 #[async_trait]
-impl ThunkDispatchBackend for TaskManagerThunkDispatchBackend {
+impl ThunkDispatchBackend for ExternalTaskThunkDispatchBackend {
     async fn dispatch(
         &self,
         node: &ThunkNodeCandidate,
+        task_id: i64,
         thunk_obj_id: &str,
         thunk: &ThunkObject,
         function_object: &FunctionObject,
         hint: &FunctionObjectSchedulingHint,
     ) -> Result<SchedulerDispatchReceipt> {
-        let task_name = format!("Dispatch thunk {}", thunk_obj_id);
-        let client = TaskManagerClient::new(kRPC::new(
-            self.task_manager_url.as_str(),
-            self.session_token.clone(),
-        ));
-        let task = client
-            .create_task(
-                task_name.as_str(),
-                "scheduler.dispatch_thunk",
-                Some(json!({
-                    "thunk_obj_id": thunk_obj_id,
-                    "node_id": node.node_id.clone(),
-                    "runner": node.runner.clone(),
-                    "fun_id": thunk.fun_id.to_string(),
-                    "function_object": function_object,
-                    "thunk": thunk,
-                    "affinity_type": hint.affinity_type.clone(),
-                    "affinity_selectors": hint.affinity_selectors.clone(),
-                    "available_resources": node.available_resources.clone(),
-                })),
-                "root",
-                SCHEDULER_SERVICE_SERVICE_NAME,
-                Some(CreateTaskOptions::default()),
-            )
-            .await
-            .context("create dispatch task failed")?;
-
         Ok(SchedulerDispatchReceipt {
             node_id: node.node_id.clone(),
-            dispatch_type: "task_manager".to_string(),
-            task_id: Some(task.id),
+            dispatch_type: "external_task".to_string(),
+            task_id: Some(task_id),
             runner: Some(node.runner.clone()),
             function_hint_source: Some(hint.source.clone()),
             details: json!({
-                "task_id": task.id,
-                "task_status": task.status.to_string(),
+                "task_id": task_id,
                 "thunk_obj_id": thunk_obj_id,
                 "fun_id": thunk.fun_id.to_string(),
                 "function_type": function_type_name(&function_object.func_type),
                 "node_id": node.node_id.clone(),
+                "runner": node.runner.clone(),
                 "network_zone": node.network_zone.clone(),
                 "affinity_type": hint.affinity_type.clone(),
                 "affinity_selectors": hint.affinity_selectors.clone(),
+                "available_resources": node.available_resources.clone(),
+                "next_step": "external dispatcher should bind task to runner/node",
             }),
         })
     }
@@ -207,7 +169,7 @@ impl Default for DefaultThunkRunner {
         Self {
             named_object_inspector: Arc::new(PlaceholderNamedObjectInspector),
             node_catalog: Arc::new(SystemConfigBackedNodeCatalog::default()),
-            dispatch_backend: Arc::new(TaskManagerThunkDispatchBackend::default()),
+            dispatch_backend: Arc::new(ExternalTaskThunkDispatchBackend),
         }
     }
 }
@@ -227,6 +189,7 @@ impl DefaultThunkRunner {
 
     pub async fn run_thunk(
         &self,
+        task_id: i64,
         thunk: ThunkObject,
         function_object: FunctionObject,
     ) -> Result<SchedulerRunThunkResponse> {
@@ -256,7 +219,14 @@ impl DefaultThunkRunner {
 
         let dispatch = self
             .dispatch_backend
-            .dispatch(node, &thunk_obj_id, &thunk, &function_object, &function_hint)
+            .dispatch(
+                node,
+                task_id,
+                &thunk_obj_id,
+                &thunk,
+                &function_object,
+                &function_hint,
+            )
             .await?;
 
         Ok(SchedulerRunThunkResponse {
@@ -616,13 +586,6 @@ fn load_scheduler_session_token() -> Option<String> {
         .or_else(|| env::var("SCHEDULER_SESSION_TOKEN").ok())
 }
 
-fn load_task_manager_session_token() -> Option<String> {
-    let key = get_session_token_env_key(TASK_MANAGER_SERVICE_NAME, false);
-    env::var(&key)
-        .ok()
-        .or_else(load_scheduler_session_token)
-}
-
 fn calc_thunk_obj_id(thunk: &ThunkObject) -> Result<String> {
     let bytes = serde_json::to_vec(thunk)?;
     let mut hasher = Sha256::new();
@@ -679,6 +642,7 @@ mod tests {
         async fn dispatch(
             &self,
             node: &ThunkNodeCandidate,
+            task_id: i64,
             thunk_obj_id: &str,
             _thunk: &ThunkObject,
             _function_object: &FunctionObject,
@@ -687,7 +651,7 @@ mod tests {
             Ok(SchedulerDispatchReceipt {
                 node_id: node.node_id.clone(),
                 dispatch_type: "mock".to_string(),
-                task_id: Some(42),
+                task_id: Some(task_id),
                 runner: Some(node.runner.clone()),
                 function_hint_source: Some(hint.source.clone()),
                 details: json!({
@@ -770,7 +734,7 @@ mod tests {
     async fn run_thunk_returns_dispatch_receipt() {
         let runner = mock_runner(vec![sample_node("node-a", 600, 1024)]);
         let response = runner
-            .run_thunk(sample_thunk(), sample_function_object())
+            .run_thunk(42, sample_thunk(), sample_function_object())
             .await
             .unwrap();
 
@@ -782,7 +746,7 @@ mod tests {
     async fn run_thunk_rejects_when_no_node_meets_requirements() {
         let runner = mock_runner(vec![sample_node("node-a", 50, 128)]);
         let response = runner
-            .run_thunk(sample_thunk(), sample_function_object())
+            .run_thunk(7, sample_thunk(), sample_function_object())
             .await
             .unwrap();
 

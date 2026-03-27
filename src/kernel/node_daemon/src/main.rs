@@ -9,6 +9,7 @@ mod frame_service_mgr; // support manager frame service (run in docker,run for a
 mod kernel_mgr; // support manager kernel service (run in native, run for system)
 mod local_app_mgr;
 mod node_daemon;
+mod node_exector;
 mod run_item;
 mod service_pkg;
 #[cfg(test)]

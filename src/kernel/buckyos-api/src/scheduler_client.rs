@@ -24,13 +24,15 @@ pub const RESOURCE_TYPE_TEMP: &str = RESOURCE_TYPE_GPU_CORES;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerRunThunkRequest {
+    pub task_id: i64,
     pub thunk: ThunkObject,
     pub function_object: FunctionObject,
 }
 
 impl SchedulerRunThunkRequest {
-    pub fn new(thunk: ThunkObject, function_object: FunctionObject) -> Self {
+    pub fn new(task_id: i64, thunk: ThunkObject, function_object: FunctionObject) -> Self {
         Self {
+            task_id,
             thunk,
             function_object,
         }
@@ -81,8 +83,9 @@ impl SchedulerClient {
         &self,
         thunk: ThunkObject,
         function_object: FunctionObject,
+        task_id: i64,
     ) -> Result<SchedulerRunThunkResponse> {
-        let req = SchedulerRunThunkRequest::new(thunk, function_object);
+        let req = SchedulerRunThunkRequest::new(task_id, thunk, function_object);
         let req_json = serde_json::to_value(&req).map_err(|err| {
             RPCErrors::ReasonError(format!("failed to serialize run_thunk request: {}", err))
         })?;
