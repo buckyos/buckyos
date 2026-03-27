@@ -65,7 +65,11 @@ fn claude_provider(base_url: String, timeout_ms: u64) -> ClaudeProvider {
 }
 
 #[tokio::test]
-// 意图：验证OpenAI 200 成功路径场景（adapter_openai_01_http_200_success）。预期start 成功，因为该输入会命中对应业务分支；不应被误分类为失败，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_openai_01_http_200_success` 用例，覆盖函数名对应的业务路径。
+// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：返回成功结果，关键字段与断言一致。
 async fn adapter_openai_01_http_200_success() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -87,7 +91,11 @@ async fn adapter_openai_01_http_200_success() {
 }
 
 #[tokio::test]
-// 意图：验证OpenAI 可重试错误分类场景（adapter_openai_02_http_429_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_openai_02_http_429_retryable` 用例，覆盖可重试错误分支、限流错误分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：错误被归类为可重试并触发对应策略。
 async fn adapter_openai_02_http_429_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 429,
@@ -110,7 +118,11 @@ async fn adapter_openai_02_http_429_retryable() {
 }
 
 #[tokio::test]
-// 意图：验证OpenAI 可重试错误分类场景（adapter_openai_03_http_503_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_openai_03_http_503_retryable` 用例，覆盖可重试错误分支、服务不可用错误分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：错误被归类为可重试并触发对应策略。
 async fn adapter_openai_03_http_503_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 503,
@@ -133,7 +145,11 @@ async fn adapter_openai_03_http_503_retryable() {
 }
 
 #[tokio::test]
-// 意图：验证OpenAI 致命错误分类场景（adapter_openai_04_http_400_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_openai_04_http_400_fatal` 用例，覆盖致命错误分支、参数错误分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：返回拒绝或致命错误，错误码/错误消息符合预期。
 async fn adapter_openai_04_http_400_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 400,
@@ -156,7 +172,11 @@ async fn adapter_openai_04_http_400_fatal() {
 }
 
 #[tokio::test]
-// 意图：验证OpenAI 致命错误分类场景（adapter_openai_05_invalid_json_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_openai_05_invalid_json_fatal` 用例，覆盖致命错误分支、非法 JSON 响应分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：返回成功结果，关键字段与断言一致；返回拒绝或致命错误，错误码/错误消息符合预期。
 async fn adapter_openai_05_invalid_json_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -179,7 +199,11 @@ async fn adapter_openai_05_invalid_json_fatal() {
 }
 
 #[tokio::test]
-// 意图：验证OpenAI 可重试错误分类场景（adapter_openai_06_timeout_or_network_error_classified）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_openai_06_timeout_or_network_error_classified` 用例，覆盖超时/网络异常分类。
+// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
 async fn adapter_openai_06_timeout_or_network_error_classified() {
     let provider = openai_provider("http://127.0.0.1:9".to_string(), 80);
     let err = provider
@@ -195,7 +219,11 @@ async fn adapter_openai_06_timeout_or_network_error_classified() {
 }
 
 #[tokio::test]
-// 意图：验证Gimini 200 成功路径场景（adapter_gimini_01_http_200_success）。预期start 成功，因为该输入会命中对应业务分支；不应被误分类为失败，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_gimini_01_http_200_success` 用例，覆盖函数名对应的业务路径。
+// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：返回成功结果，关键字段与断言一致。
 async fn adapter_gimini_01_http_200_success() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -217,7 +245,11 @@ async fn adapter_gimini_01_http_200_success() {
 }
 
 #[tokio::test]
-// 意图：验证Gimini 可重试错误分类场景（adapter_gimini_02_http_429_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_gimini_02_http_429_retryable` 用例，覆盖可重试错误分支、限流错误分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：错误被归类为可重试并触发对应策略。
 async fn adapter_gimini_02_http_429_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 429,
@@ -241,7 +273,11 @@ async fn adapter_gimini_02_http_429_retryable() {
 }
 
 #[tokio::test]
-// 意图：验证Claude 200 成功路径场景（adapter_claude_01_http_200_success）。预期start 成功，因为该输入会命中对应业务分支；不应被误分类为失败，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_claude_01_http_200_success` 用例，覆盖函数名对应的业务路径。
+// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：返回成功结果，关键字段与断言一致。
 async fn adapter_claude_01_http_200_success() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -263,7 +299,11 @@ async fn adapter_claude_01_http_200_success() {
 }
 
 #[tokio::test]
-// 意图：验证Claude 可重试错误分类场景（adapter_claude_02_http_429_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_claude_02_http_429_retryable` 用例，覆盖可重试错误分支、限流错误分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：错误被归类为可重试并触发对应策略。
 async fn adapter_claude_02_http_429_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 429,
@@ -286,7 +326,11 @@ async fn adapter_claude_02_http_429_retryable() {
 }
 
 #[tokio::test]
-// 意图：验证Claude 致命错误分类场景（adapter_claude_03_http_400_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_claude_03_http_400_fatal` 用例，覆盖致命错误分支、参数错误分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：返回拒绝或致命错误，错误码/错误消息符合预期。
 async fn adapter_claude_03_http_400_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 400,
@@ -309,7 +353,11 @@ async fn adapter_claude_03_http_400_fatal() {
 }
 
 #[tokio::test]
-// 意图：验证Claude 网络错误分类场景（adapter_claude_04_timeout_or_network_error_classified）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_claude_04_timeout_or_network_error_classified` 用例，覆盖超时/网络异常分类。
+// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
 async fn adapter_claude_04_timeout_or_network_error_classified() {
     let provider = claude_provider("http://127.0.0.1:9".to_string(), 80);
     let err = provider
@@ -325,7 +373,11 @@ async fn adapter_claude_04_timeout_or_network_error_classified() {
 }
 
 #[tokio::test]
-// 意图：验证Gimini 可重试错误分类场景（adapter_gimini_03_http_503_retryable）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_gimini_03_http_503_retryable` 用例，覆盖可重试错误分支、服务不可用错误分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：错误被归类为可重试并触发对应策略。
 async fn adapter_gimini_03_http_503_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 503,
@@ -348,7 +400,11 @@ async fn adapter_gimini_03_http_503_retryable() {
 }
 
 #[tokio::test]
-// 意图：验证Gimini 致命错误分类场景（adapter_gimini_04_http_400_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_gimini_04_http_400_fatal` 用例，覆盖致命错误分支、参数错误分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：返回拒绝或致命错误，错误码/错误消息符合预期。
 async fn adapter_gimini_04_http_400_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 400,
@@ -371,7 +427,11 @@ async fn adapter_gimini_04_http_400_fatal() {
 }
 
 #[tokio::test]
-// 意图：验证Gimini 致命错误分类场景（adapter_gimini_05_invalid_json_fatal）。预期标记 fatal，因为该输入会命中对应业务分支；不应进入自动重试，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_gimini_05_invalid_json_fatal` 用例，覆盖致命错误分支、非法 JSON 响应分类。
+// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：返回成功结果，关键字段与断言一致；返回拒绝或致命错误，错误码/错误消息符合预期。
 async fn adapter_gimini_05_invalid_json_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -394,7 +454,11 @@ async fn adapter_gimini_05_invalid_json_fatal() {
 }
 
 #[tokio::test]
-// 意图：验证Gimini 可重试错误分类场景（adapter_gimini_06_timeout_or_network_error_classified）。预期标记 retryable，因为该输入会命中对应业务分支；不应标记 fatal，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`adapter_gimini_06_timeout_or_network_error_classified` 用例，覆盖超时/网络异常分类。
+// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
+// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
+// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
 async fn adapter_gimini_06_timeout_or_network_error_classified() {
     let provider = gimini_provider("http://127.0.0.1:9".to_string(), 80);
     let err = provider
@@ -410,7 +474,11 @@ async fn adapter_gimini_06_timeout_or_network_error_classified() {
 }
 
 #[tokio::test]
-// 意图：验证文生图 prompt 优先级场景（proto_t2i_01_prompt_from_text）。预期优先使用 payload.text，因为该输入会命中对应业务分支；不应错误回退到其它字段，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`proto_t2i_01_prompt_from_text` 用例，覆盖函数名对应的业务路径。
+// - 输入参数：构造协议字段、资源引用或 base64/url 输入。
+// - 处理流程：走协议校验与任务执行路径，覆盖输入形态、资源处理与事件产出。
+// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
 async fn proto_t2i_01_prompt_from_text() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -436,7 +504,11 @@ async fn proto_t2i_01_prompt_from_text() {
 }
 
 #[tokio::test]
-// 意图：验证文生图产物结构场景（proto_t2i_04_artifact_url_format）。预期返回含有可用 URL 的 artifact，因为该输入会命中对应业务分支；不应返回空产物或非 URL 资源，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`proto_t2i_04_artifact_url_format` 用例，覆盖函数名对应的业务路径。
+// - 输入参数：构造协议字段、资源引用或 base64/url 输入。
+// - 处理流程：走协议校验与任务执行路径，覆盖输入形态、资源处理与事件产出。
+// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
 async fn proto_t2i_04_artifact_url_format() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -471,7 +543,11 @@ async fn proto_t2i_04_artifact_url_format() {
 }
 
 #[tokio::test]
-// 意图：验证文生图 prompt 次级提取场景（proto_t2i_03_prompt_from_options）。预期从 options.prompt 提取，因为该输入会命中对应业务分支；不应丢失 prompt 或直接失败，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`proto_t2i_03_prompt_from_options` 用例，覆盖函数名对应的业务路径。
+// - 输入参数：构造协议字段、资源引用或 base64/url 输入。
+// - 处理流程：走协议校验与任务执行路径，覆盖输入形态、资源处理与事件产出。
+// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
 async fn proto_t2i_03_prompt_from_options() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -496,7 +572,11 @@ async fn proto_t2i_03_prompt_from_options() {
 }
 
 #[tokio::test]
-// 意图：验证文生图 prompt 兜底提取场景（proto_t2i_02_prompt_from_messages）。预期从 messages 提取，因为该输入会命中对应业务分支；不应直接报缺参，否则说明路由、状态机或错误分类逻辑与契约不一致。
+// 用例说明：
+// - 验证场景：`proto_t2i_02_prompt_from_messages` 用例，覆盖函数名对应的业务路径。
+// - 输入参数：构造协议字段、资源引用或 base64/url 输入。
+// - 处理流程：走协议校验与任务执行路径，覆盖输入形态、资源处理与事件产出。
+// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
 async fn proto_t2i_02_prompt_from_messages() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
