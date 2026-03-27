@@ -1,4 +1,3 @@
-use buckyos_api::ThunkMetrics;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,7 +62,7 @@ pub struct WorkflowRun {
     #[serde(default)]
     pub activated_nodes: BTreeSet<String>,
     #[serde(default)]
-    pub metrics: BTreeMap<String, ThunkMetrics>,
+    pub metrics: BTreeMap<String, Value>,
     #[serde(default)]
     pub human_waiting_nodes: BTreeSet<String>,
     #[serde(default)]

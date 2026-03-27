@@ -47,6 +47,14 @@ pub enum FunctionResultType {
     },
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AffinityType {
+    Input,
+    Result,
+    Custom(Vec<String>),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionObject {
     pub func_type: FunctionType,
@@ -54,10 +62,13 @@ pub struct FunctionObject {
     pub is_pure: bool,
     pub timeout: Option<u64>,
     
-    // resource_type => resource_value
+    // resource_type => resource_value,0表示只要有就可以，没有最小值要求
+    // resourc_type也可以是一个自定义的资源路径，比如 /data/mydata 说明node需要持有这个路径的数据才可以（传统的tag系统），
+    //此时resource_value是0
     pub requirements: HashMap<String, u64>,
-    //是输入亲和还是结果亲和
-    //pub close_type: CloseType,
+    //如果有多个节点满足资源需求，则根据best_run_weight的资源权重来评分，选择得分最高的节点
+    pub best_run_weight: HashMap<String, u64>,
+    pub affinity_type: AffinityType,
 
     //param_name => param_type
     pub params_type: HashMap<String, FunctionParamType>,//参数类型

@@ -1,4 +1,4 @@
-use crate::error::{WorkflowError, WorkflowResult};
+use crate::error::WorkflowResult;
 use async_trait::async_trait;
 use buckyos_api::ThunkObject;
 use std::sync::Arc;
@@ -36,12 +36,6 @@ impl InMemoryThunkDispatcher {
 #[async_trait]
 impl ThunkDispatcher for InMemoryThunkDispatcher {
     async fn schedule_thunk(&self, thunk_obj_id: &str, thunk: &ThunkObject) -> WorkflowResult<()> {
-        if thunk_obj_id != thunk.thunk_obj_id {
-            return Err(WorkflowError::Dispatcher(format!(
-                "mismatched thunk id: arg={}, body={}",
-                thunk_obj_id, thunk.thunk_obj_id
-            )));
-        }
         self.scheduled.lock().await.push(ScheduledThunk {
             thunk_obj_id: thunk_obj_id.to_string(),
             thunk: thunk.clone(),

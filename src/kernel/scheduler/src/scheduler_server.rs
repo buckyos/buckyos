@@ -50,7 +50,7 @@ impl RPCHandler for SchedulerServer {
                     })?;
                 let response = self
                     .thunk_runner
-                    .run_thunk(run_req.thunk)
+                    .run_thunk(run_req.thunk, run_req.function_object)
                     .await
                     .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
                 RPCResult::Success(json!(response))

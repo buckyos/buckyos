@@ -1,46 +1,51 @@
-use anyhow::Result;
+use ::kRPC::*;
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    SchedulerDispatchReceipt, SchedulerRunThunkResponse, SchedulerRunThunkStatus, ThunkObject,
-    ThunkParamType,
+    get_session_token_env_key, AffinityType, CreateTaskOptions, FunctionObject,
+    FunctionParamType, FunctionType, SchedulerDispatchReceipt, SchedulerRunThunkResponse,
+    SchedulerRunThunkStatus, SystemConfigClient, TaskManagerClient, ThunkObject,
+    RESOURCE_TYPE_CPU, RESOURCE_TYPE_DISK_CACHE, RESOURCE_TYPE_DOWNLOAD, RESOURCE_TYPE_GPU,
+    RESOURCE_TYPE_GPU_CORES, RESOURCE_TYPE_GPU_MEMORY, RESOURCE_TYPE_MEMORY,
+    RESOURCE_TYPE_UPLOAD, SCHEDULER_SERVICE_SERVICE_NAME, TASK_MANAGER_SERVICE_NAME,
+    TASK_MANAGER_SERVICE_PORT,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::collections::HashMap;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+use crate::scheduler::{NodeItem, NodeState};
+use crate::system_config_agent::create_scheduler_by_system_config;
+
+const SYSTEM_CONFIG_URL: &str = "http://127.0.0.1:3200/kapi/system_config";
+
+#[derive(Debug, Clone, Default)]
 pub struct FunctionObjectSchedulingHint {
     pub source: String,
-    #[serde(default)]
     pub preferred_runner: Option<String>,
-    #[serde(default)]
-    pub required_labels: HashMap<String, String>,
-    #[serde(default)]
-    pub requires_gpu: Option<bool>,
+    pub affinity_selectors: Vec<String>,
+    pub affinity_type: String,
+    pub requires_gpu: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ThunkNodeCandidate {
     pub node_id: String,
     pub runner: String,
-    #[serde(default)]
     pub labels: HashMap<String, String>,
-    #[serde(default)]
+    pub label_set: HashSet<String>,
+    pub available_resources: HashMap<String, u64>,
+    pub total_resources: HashMap<String, u64>,
+    pub network_zone: String,
     pub has_gpu: bool,
-    #[serde(default)]
     pub score: i64,
 }
 
 #[async_trait]
 pub trait NamedObjectInspector: Send + Sync {
     async fn exists(&self, obj_id: &str) -> Result<bool>;
-}
-
-#[async_trait]
-pub trait FunctionObjectResolver: Send + Sync {
-    async fn resolve(&self, thunk: &ThunkObject) -> Result<FunctionObjectSchedulingHint>;
 }
 
 #[async_trait]
@@ -57,7 +62,9 @@ pub trait ThunkDispatchBackend: Send + Sync {
     async fn dispatch(
         &self,
         node: &ThunkNodeCandidate,
+        thunk_obj_id: &str,
         thunk: &ThunkObject,
+        function_object: &FunctionObject,
         hint: &FunctionObjectSchedulingHint,
     ) -> Result<SchedulerDispatchReceipt>;
 }
@@ -72,69 +79,118 @@ impl NamedObjectInspector for PlaceholderNamedObjectInspector {
     }
 }
 
-#[derive(Default)]
-pub struct PlaceholderFunctionObjectResolver;
+pub struct SystemConfigBackedNodeCatalog {
+    system_config_url: String,
+    session_token: Option<String>,
+}
 
-#[async_trait]
-impl FunctionObjectResolver for PlaceholderFunctionObjectResolver {
-    async fn resolve(&self, thunk: &ThunkObject) -> Result<FunctionObjectSchedulingHint> {
-        Ok(FunctionObjectSchedulingHint {
-            source: "placeholder_from_fun_id".to_string(),
-            preferred_runner: Some("local-placeholder-runner".to_string()),
-            required_labels: HashMap::new(),
-            requires_gpu: Some(thunk.resource_requirements.gpu_required),
-        })
+impl Default for SystemConfigBackedNodeCatalog {
+    fn default() -> Self {
+        Self {
+            system_config_url: env::var("SYSTEM_CONFIG_URL")
+                .unwrap_or_else(|_| SYSTEM_CONFIG_URL.to_string()),
+            session_token: load_scheduler_session_token(),
+        }
     }
 }
 
-#[derive(Default)]
-pub struct LocalThunkNodeCatalog;
-
 #[async_trait]
-impl ThunkNodeCatalog for LocalThunkNodeCatalog {
+impl ThunkNodeCatalog for SystemConfigBackedNodeCatalog {
     async fn list_candidates(
         &self,
         _thunk: &ThunkObject,
         hint: &FunctionObjectSchedulingHint,
     ) -> Result<Vec<ThunkNodeCandidate>> {
-        let node_id = env::var("SCHEDULER_LOCAL_NODE_ID")
-            .or_else(|_| env::var("HOSTNAME"))
-            .unwrap_or_else(|_| "scheduler-local".to_string());
-        let runner = hint
-            .preferred_runner
-            .clone()
-            .unwrap_or_else(|| "local-placeholder-runner".to_string());
+        let client = SystemConfigClient::new(
+            Some(self.system_config_url.as_str()),
+            self.session_token.as_deref(),
+        );
+        let dumped = client
+            .dump_configs_for_scheduler()
+            .await
+            .context("dump_configs_for_scheduler failed")?;
+        let input = parse_scheduler_config_dump(dumped)?;
+        let (scheduler, _) = create_scheduler_by_system_config(&input)
+            .context("create_scheduler_by_system_config failed")?;
 
-        Ok(vec![ThunkNodeCandidate {
-            node_id,
-            runner,
-            labels: HashMap::new(),
-            has_gpu: false,
-            score: 100,
-        }])
+        Ok(scheduler
+            .nodes
+            .values()
+            .filter(|node| matches!(&node.state, NodeState::Ready))
+            .map(|node| build_candidate_from_node(node, hint))
+            .collect())
     }
 }
 
-#[derive(Default)]
-pub struct PlaceholderThunkDispatchBackend;
+pub struct TaskManagerThunkDispatchBackend {
+    task_manager_url: String,
+    session_token: Option<String>,
+}
+
+impl Default for TaskManagerThunkDispatchBackend {
+    fn default() -> Self {
+        Self {
+            task_manager_url: env::var("TASK_MANAGER_URL").unwrap_or_else(|_| {
+                format!("http://127.0.0.1:{}/kapi/task-manager", TASK_MANAGER_SERVICE_PORT)
+            }),
+            session_token: load_task_manager_session_token(),
+        }
+    }
+}
 
 #[async_trait]
-impl ThunkDispatchBackend for PlaceholderThunkDispatchBackend {
+impl ThunkDispatchBackend for TaskManagerThunkDispatchBackend {
     async fn dispatch(
         &self,
         node: &ThunkNodeCandidate,
+        thunk_obj_id: &str,
         thunk: &ThunkObject,
+        function_object: &FunctionObject,
         hint: &FunctionObjectSchedulingHint,
     ) -> Result<SchedulerDispatchReceipt> {
+        let task_name = format!("Dispatch thunk {}", thunk_obj_id);
+        let client = TaskManagerClient::new(kRPC::new(
+            self.task_manager_url.as_str(),
+            self.session_token.clone(),
+        ));
+        let task = client
+            .create_task(
+                task_name.as_str(),
+                "scheduler.dispatch_thunk",
+                Some(json!({
+                    "thunk_obj_id": thunk_obj_id,
+                    "node_id": node.node_id.clone(),
+                    "runner": node.runner.clone(),
+                    "fun_id": thunk.fun_id.to_string(),
+                    "function_object": function_object,
+                    "thunk": thunk,
+                    "affinity_type": hint.affinity_type.clone(),
+                    "affinity_selectors": hint.affinity_selectors.clone(),
+                    "available_resources": node.available_resources.clone(),
+                })),
+                "root",
+                SCHEDULER_SERVICE_SERVICE_NAME,
+                Some(CreateTaskOptions::default()),
+            )
+            .await
+            .context("create dispatch task failed")?;
+
         Ok(SchedulerDispatchReceipt {
             node_id: node.node_id.clone(),
-            dispatch_type: "placeholder".to_string(),
+            dispatch_type: "task_manager".to_string(),
+            task_id: Some(task.id),
             runner: Some(node.runner.clone()),
             function_hint_source: Some(hint.source.clone()),
             details: json!({
-                "thunk_obj_id": thunk.thunk_obj_id,
-                "fun_id": thunk.fun_id,
-                "next_step": "wire real function_object resolution and executor dispatch"
+                "task_id": task.id,
+                "task_status": task.status.to_string(),
+                "thunk_obj_id": thunk_obj_id,
+                "fun_id": thunk.fun_id.to_string(),
+                "function_type": function_type_name(&function_object.func_type),
+                "node_id": node.node_id.clone(),
+                "network_zone": node.network_zone.clone(),
+                "affinity_type": hint.affinity_type.clone(),
+                "affinity_selectors": hint.affinity_selectors.clone(),
             }),
         })
     }
@@ -142,7 +198,6 @@ impl ThunkDispatchBackend for PlaceholderThunkDispatchBackend {
 
 pub struct DefaultThunkRunner {
     named_object_inspector: Arc<dyn NamedObjectInspector>,
-    function_resolver: Arc<dyn FunctionObjectResolver>,
     node_catalog: Arc<dyn ThunkNodeCatalog>,
     dispatch_backend: Arc<dyn ThunkDispatchBackend>,
 }
@@ -151,29 +206,48 @@ impl Default for DefaultThunkRunner {
     fn default() -> Self {
         Self {
             named_object_inspector: Arc::new(PlaceholderNamedObjectInspector),
-            function_resolver: Arc::new(PlaceholderFunctionObjectResolver),
-            node_catalog: Arc::new(LocalThunkNodeCatalog),
-            dispatch_backend: Arc::new(PlaceholderThunkDispatchBackend),
+            node_catalog: Arc::new(SystemConfigBackedNodeCatalog::default()),
+            dispatch_backend: Arc::new(TaskManagerThunkDispatchBackend::default()),
         }
     }
 }
 
 impl DefaultThunkRunner {
-    pub async fn run_thunk(&self, thunk: ThunkObject) -> Result<SchedulerRunThunkResponse> {
-        if !self.check_param_is_ready(&thunk).await? {
+    pub fn new(
+        named_object_inspector: Arc<dyn NamedObjectInspector>,
+        node_catalog: Arc<dyn ThunkNodeCatalog>,
+        dispatch_backend: Arc<dyn ThunkDispatchBackend>,
+    ) -> Self {
+        Self {
+            named_object_inspector,
+            node_catalog,
+            dispatch_backend,
+        }
+    }
+
+    pub async fn run_thunk(
+        &self,
+        thunk: ThunkObject,
+        function_object: FunctionObject,
+    ) -> Result<SchedulerRunThunkResponse> {
+        let thunk_obj_id = calc_thunk_obj_id(&thunk)?;
+        if !self
+            .check_param_is_ready(&thunk, &function_object)
+            .await?
+        {
             return Ok(SchedulerRunThunkResponse {
-                thunk_obj_id: thunk.thunk_obj_id,
+                thunk_obj_id,
                 status: SchedulerRunThunkStatus::Rejected,
                 reason: Some("params_not_ready".to_string()),
                 dispatch: None,
             });
         }
 
-        let function_hint = self.function_resolver.resolve(&thunk).await?;
+        let function_hint = build_scheduling_hint(&function_object);
         let candidates = self.node_catalog.list_candidates(&thunk, &function_hint).await?;
-        let Some(node) = select_best_node(&thunk, &function_hint, &candidates) else {
+        let Some(node) = select_best_node(&function_object, &function_hint, &candidates) else {
             return Ok(SchedulerRunThunkResponse {
-                thunk_obj_id: thunk.thunk_obj_id,
+                thunk_obj_id,
                 status: SchedulerRunThunkStatus::Rejected,
                 reason: Some("no_executor_node_available".to_string()),
                 dispatch: None,
@@ -182,104 +256,554 @@ impl DefaultThunkRunner {
 
         let dispatch = self
             .dispatch_backend
-            .dispatch(node, &thunk, &function_hint)
+            .dispatch(node, &thunk_obj_id, &thunk, &function_object, &function_hint)
             .await?;
 
         Ok(SchedulerRunThunkResponse {
-            thunk_obj_id: thunk.thunk_obj_id,
+            thunk_obj_id,
             status: SchedulerRunThunkStatus::Dispatched,
             reason: None,
             dispatch: Some(dispatch),
         })
     }
 
-    pub async fn check_param_is_ready(&self, thunk: &ThunkObject) -> Result<bool> {
-        match thunk.params.param_type {
-            ThunkParamType::CheckByRunner | ThunkParamType::Fixed => Ok(true),
-            ThunkParamType::Normal => {
-                for obj_ref in &thunk.params.obj_refs {
-                    if !self.named_object_inspector.exists(obj_ref).await? {
+    pub async fn check_param_is_ready(
+        &self,
+        thunk: &ThunkObject,
+        function_object: &FunctionObject,
+    ) -> Result<bool> {
+        for (param_name, param_type) in &function_object.params_type {
+            let Some(param_value) = thunk.params.get(param_name) else {
+                return Ok(false);
+            };
+
+            match param_type {
+                FunctionParamType::Fixed(_) | FunctionParamType::CheckByRunner(_) => {}
+                FunctionParamType::ObjId(_) => {
+                    let Some(obj_id) = param_value.as_str() else {
+                        return Ok(false);
+                    };
+                    if !self.named_object_inspector.exists(obj_id).await? {
                         return Ok(false);
                     }
                 }
-                Ok(true)
             }
         }
+
+        Ok(true)
+    }
+}
+
+fn build_scheduling_hint(function_object: &FunctionObject) -> FunctionObjectSchedulingHint {
+    let preferred_runner = match &function_object.func_type {
+        FunctionType::ExecPkg => Some("package-runner".to_string()),
+        FunctionType::Script(language) => Some(format!("script-runner:{language}")),
+        FunctionType::Operator => Some("operator-runner".to_string()),
+    };
+
+    let affinity_selectors = match &function_object.affinity_type {
+        AffinityType::Custom(selectors) => selectors.clone(),
+        _ => Vec::new(),
+    };
+
+    FunctionObjectSchedulingHint {
+        source: "provided_function_object".to_string(),
+        preferred_runner,
+        affinity_selectors,
+        affinity_type: affinity_type_name(&function_object.affinity_type).to_string(),
+        requires_gpu: function_requires_gpu(function_object),
     }
 }
 
 fn select_best_node<'a>(
-    thunk: &ThunkObject,
+    function_object: &FunctionObject,
     hint: &FunctionObjectSchedulingHint,
     candidates: &'a [ThunkNodeCandidate],
 ) -> Option<&'a ThunkNodeCandidate> {
     candidates
         .iter()
-        .filter(|node| node_satisfies_requirements(node, thunk, hint))
-        .max_by_key(|node| node.score)
+        .filter(|node| node_satisfies_requirements(node, function_object, hint))
+        .max_by_key(|node| score_node(node, function_object, hint))
 }
 
 fn node_satisfies_requirements(
     node: &ThunkNodeCandidate,
-    thunk: &ThunkObject,
+    function_object: &FunctionObject,
     hint: &FunctionObjectSchedulingHint,
 ) -> bool {
-    let requires_gpu = hint
-        .requires_gpu
-        .unwrap_or(thunk.resource_requirements.gpu_required);
-    if requires_gpu && !node.has_gpu {
+    if hint.requires_gpu && !node.has_gpu {
         return false;
     }
 
-    hint.required_labels
+    if !hint
+        .affinity_selectors
         .iter()
-        .all(|(key, expected)| node.labels.get(key) == Some(expected))
+        .all(|selector| node_matches_selector(node, selector))
+    {
+        return false;
+    }
+
+    for (resource_type, min_value) in &function_object.requirements {
+        if !resource_is_present(node, resource_type) {
+            return false;
+        }
+
+        if *min_value > 0 {
+            let available = available_resource(node, resource_type).unwrap_or_default();
+            if available < *min_value {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn score_node(
+    node: &ThunkNodeCandidate,
+    function_object: &FunctionObject,
+    hint: &FunctionObjectSchedulingHint,
+) -> i64 {
+    let mut score = node.score;
+
+    if function_object.best_run_weight.is_empty() {
+        return score;
+    }
+
+    for selector in &hint.affinity_selectors {
+        if node_matches_selector(node, selector) {
+            score += 500;
+        }
+    }
+
+    for (resource_type, weight) in &function_object.best_run_weight {
+        score += score_weighted_resource(
+            node,
+            resource_type,
+            *weight,
+            function_object.requirements.get(resource_type).copied(),
+        );
+    }
+
+    score
+}
+
+fn score_weighted_resource(
+    node: &ThunkNodeCandidate,
+    resource_type: &str,
+    weight: u64,
+    required_value: Option<u64>,
+) -> i64 {
+    if !resource_is_present(node, resource_type) {
+        return 0;
+    }
+
+    let weight = weight as i64;
+    if is_presence_selector(resource_type) {
+        return 1000 * weight;
+    }
+
+    let available = available_resource(node, resource_type).unwrap_or_default();
+    let total = total_resource(node, resource_type).unwrap_or(available).max(1);
+    let required = required_value.unwrap_or_default();
+
+    let normalized = if required > 0 {
+        let headroom = available.saturating_sub(required);
+        headroom.saturating_mul(1000) / total
+    } else {
+        available.saturating_mul(1000) / total
+    };
+
+    normalized as i64 * weight
+}
+
+fn function_requires_gpu(function_object: &FunctionObject) -> bool {
+    function_object.requirements.contains_key(RESOURCE_TYPE_GPU)
+        || function_object
+            .requirements
+            .contains_key(RESOURCE_TYPE_GPU_MEMORY)
+        || function_object
+            .requirements
+            .contains_key(RESOURCE_TYPE_GPU_CORES)
+}
+
+fn build_candidate_from_node(
+    node: &NodeItem,
+    hint: &FunctionObjectSchedulingHint,
+) -> ThunkNodeCandidate {
+    let (labels, label_set) = normalize_node_labels(&node.labels);
+    let (available_resources, total_resources) = build_resource_maps(node);
+    let has_gpu = total_resources
+        .get(RESOURCE_TYPE_GPU)
+        .copied()
+        .unwrap_or_default()
+        > 0
+        || total_resources
+            .get(RESOURCE_TYPE_GPU_MEMORY)
+            .copied()
+            .unwrap_or_default()
+            > 0
+        || total_resources
+            .get(RESOURCE_TYPE_GPU_CORES)
+            .copied()
+            .unwrap_or_default()
+            > 0;
+
+    ThunkNodeCandidate {
+        node_id: node.id.clone(),
+        runner: hint
+            .preferred_runner
+            .clone()
+            .unwrap_or_else(|| "function-runner".to_string()),
+        labels,
+        label_set,
+        score: default_capacity_score(&available_resources, &total_resources),
+        available_resources,
+        total_resources,
+        network_zone: node.network_zone.clone(),
+        has_gpu,
+    }
+}
+
+fn build_resource_maps(node: &NodeItem) -> (HashMap<String, u64>, HashMap<String, u64>) {
+    let mut available = HashMap::new();
+    let mut total = HashMap::new();
+
+    available.insert(RESOURCE_TYPE_CPU.to_string(), node.available_cpu_mhz as u64);
+    total.insert(RESOURCE_TYPE_CPU.to_string(), node.total_cpu_mhz as u64);
+
+    available.insert(RESOURCE_TYPE_MEMORY.to_string(), node.available_memory);
+    total.insert(RESOURCE_TYPE_MEMORY.to_string(), node.total_memory);
+
+    available.insert(
+        RESOURCE_TYPE_GPU_MEMORY.to_string(),
+        node.available_gpu_memory,
+    );
+    total.insert(RESOURCE_TYPE_GPU_MEMORY.to_string(), node.total_gpu_memory);
+
+    let gpu_tflops = node.gpu_tflops.max(0.0).round() as u64;
+    available.insert(RESOURCE_TYPE_GPU.to_string(), gpu_tflops);
+    total.insert(RESOURCE_TYPE_GPU.to_string(), gpu_tflops);
+
+    for (resource_name, resource) in &node.resources {
+        available.insert(
+            resource_name.clone(),
+            resource.total_capacity.saturating_sub(resource.used_capacity),
+        );
+        total.insert(resource_name.clone(), resource.total_capacity);
+    }
+
+    (available, total)
+}
+
+fn default_capacity_score(
+    available_resources: &HashMap<String, u64>,
+    total_resources: &HashMap<String, u64>,
+) -> i64 {
+    let mut score = 0;
+    for key in [
+        RESOURCE_TYPE_CPU,
+        RESOURCE_TYPE_MEMORY,
+        RESOURCE_TYPE_GPU_MEMORY,
+        RESOURCE_TYPE_GPU,
+    ] {
+        let total = total_resources.get(key).copied().unwrap_or_default();
+        if total == 0 {
+            continue;
+        }
+        let available = available_resources.get(key).copied().unwrap_or_default();
+        score += available.min(total).saturating_mul(100) as i64 / total as i64;
+    }
+    score.max(1)
+}
+
+fn normalize_node_labels(labels: &[String]) -> (HashMap<String, String>, HashSet<String>) {
+    let mut map = HashMap::new();
+    let mut set = HashSet::new();
+
+    for raw in labels {
+        set.insert(raw.clone());
+        if let Some((key, value)) = raw.split_once('=') {
+            map.insert(key.to_string(), value.to_string());
+            set.insert(key.to_string());
+            continue;
+        }
+        if !raw.starts_with('/') {
+            if let Some((key, value)) = raw.split_once(':') {
+                map.insert(key.to_string(), value.to_string());
+                set.insert(key.to_string());
+                continue;
+            }
+        }
+        map.entry(raw.clone()).or_insert_with(|| "true".to_string());
+    }
+
+    (map, set)
+}
+
+fn resource_is_present(node: &ThunkNodeCandidate, resource_type: &str) -> bool {
+    match resource_type {
+        RESOURCE_TYPE_CPU | RESOURCE_TYPE_MEMORY => true,
+        _ => total_resource(node, resource_type).unwrap_or_default() > 0
+            || available_resource(node, resource_type).unwrap_or_default() > 0
+            || node_matches_selector(node, resource_type),
+    }
+}
+
+fn available_resource(node: &ThunkNodeCandidate, resource_type: &str) -> Option<u64> {
+    node.available_resources
+        .get(resource_type)
+        .copied()
+        .or_else(|| node_matches_selector(node, resource_type).then_some(1))
+}
+
+fn total_resource(node: &ThunkNodeCandidate, resource_type: &str) -> Option<u64> {
+    node.total_resources
+        .get(resource_type)
+        .copied()
+        .or_else(|| node_matches_selector(node, resource_type).then_some(1))
+}
+
+fn node_matches_selector(node: &ThunkNodeCandidate, selector: &str) -> bool {
+    if let Some((key, expected)) = selector.split_once('=') {
+        return node.labels.get(key).map(|value| value.as_str()) == Some(expected);
+    }
+
+    if !selector.starts_with('/') {
+        if let Some((key, expected)) = selector.split_once(':') {
+            return node.labels.get(key).map(|value| value.as_str()) == Some(expected);
+        }
+    }
+
+    node.label_set.contains(selector)
+        || node.labels.contains_key(selector)
+        || node.available_resources.contains_key(selector)
+}
+
+fn is_presence_selector(resource_type: &str) -> bool {
+    !matches!(
+        resource_type,
+        RESOURCE_TYPE_CPU
+            | RESOURCE_TYPE_MEMORY
+            | RESOURCE_TYPE_GPU
+            | RESOURCE_TYPE_GPU_MEMORY
+            | RESOURCE_TYPE_GPU_CORES
+            | RESOURCE_TYPE_DISK_CACHE
+            | RESOURCE_TYPE_UPLOAD
+            | RESOURCE_TYPE_DOWNLOAD
+    )
+}
+
+fn parse_scheduler_config_dump(value: Value) -> Result<HashMap<String, String>> {
+    let Value::Object(map) = value else {
+        bail!("dump_configs_for_scheduler returned non-object payload");
+    };
+
+    let mut result = HashMap::new();
+    for (key, value) in map {
+        let Some(value) = value.as_str() else {
+            bail!("scheduler dump value for key {} is not a string", key);
+        };
+        result.insert(key, value.to_string());
+    }
+    Ok(result)
+}
+
+fn load_scheduler_session_token() -> Option<String> {
+    let key = get_session_token_env_key(SCHEDULER_SERVICE_SERVICE_NAME, false);
+    env::var(&key)
+        .ok()
+        .or_else(|| env::var("SCHEDULER_SESSION_TOKEN").ok())
+}
+
+fn load_task_manager_session_token() -> Option<String> {
+    let key = get_session_token_env_key(TASK_MANAGER_SERVICE_NAME, false);
+    env::var(&key)
+        .ok()
+        .or_else(load_scheduler_session_token)
+}
+
+fn calc_thunk_obj_id(thunk: &ThunkObject) -> Result<String> {
+    let bytes = serde_json::to_vec(thunk)?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("thunk:{}", hex::encode(hasher.finalize())))
+}
+
+fn function_type_name(func_type: &FunctionType) -> &'static str {
+    match func_type {
+        FunctionType::ExecPkg => "exec_pkg",
+        FunctionType::Script(_) => "script",
+        FunctionType::Operator => "operator",
+    }
+}
+
+fn affinity_type_name(affinity_type: &AffinityType) -> &'static str {
+    match affinity_type {
+        AffinityType::Input => "input",
+        AffinityType::Result => "result",
+        AffinityType::Custom(_) => "custom",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{ResourceRequirements, ThunkMetadata, ThunkObject, ThunkParams};
+    use buckyos_api::{
+        AffinityType, FunctionObject, FunctionParamType, FunctionResultType, FunctionType,
+        ThunkObject, RESOURCE_TYPE_CPU, RESOURCE_TYPE_MEMORY,
+    };
+    use ndn_lib::ObjId;
     use serde_json::json;
 
-    fn sample_thunk(param_type: ThunkParamType) -> ThunkObject {
-        ThunkObject {
-            thunk_obj_id: "thunk-1".to_string(),
-            fun_id: "fun-1".to_string(),
-            params: ThunkParams {
-                param_type,
-                values: json!({"hello": "world"}),
-                obj_refs: vec!["obj-1".to_string()],
-            },
-            is_pure: true,
-            resource_requirements: ResourceRequirements::default(),
-            metadata: ThunkMetadata {
-                run_id: "run-1".to_string(),
-                node_id: "node-1".to_string(),
-                attempt: 1,
-                shard: None,
-            },
+    struct MockNodeCatalog {
+        nodes: Vec<ThunkNodeCandidate>,
+    }
+
+    #[async_trait]
+    impl ThunkNodeCatalog for MockNodeCatalog {
+        async fn list_candidates(
+            &self,
+            _thunk: &ThunkObject,
+            _hint: &FunctionObjectSchedulingHint,
+        ) -> Result<Vec<ThunkNodeCandidate>> {
+            Ok(self.nodes.clone())
         }
+    }
+
+    #[derive(Default)]
+    struct MockDispatchBackend;
+
+    #[async_trait]
+    impl ThunkDispatchBackend for MockDispatchBackend {
+        async fn dispatch(
+            &self,
+            node: &ThunkNodeCandidate,
+            thunk_obj_id: &str,
+            _thunk: &ThunkObject,
+            _function_object: &FunctionObject,
+            hint: &FunctionObjectSchedulingHint,
+        ) -> Result<SchedulerDispatchReceipt> {
+            Ok(SchedulerDispatchReceipt {
+                node_id: node.node_id.clone(),
+                dispatch_type: "mock".to_string(),
+                task_id: Some(42),
+                runner: Some(node.runner.clone()),
+                function_hint_source: Some(hint.source.clone()),
+                details: json!({
+                    "thunk_obj_id": thunk_obj_id,
+                    "node_id": node.node_id.clone(),
+                }),
+            })
+        }
+    }
+
+    fn sample_thunk() -> ThunkObject {
+        ThunkObject {
+            fun_id: ObjId::new("func:1234567890").unwrap(),
+            params: HashMap::from([("input".to_string(), json!("obj:1234567890"))]),
+            metadata: json!({
+                "run_id": "run-1",
+                "attempt": 1
+            }),
+        }
+    }
+
+    fn sample_function_object() -> FunctionObject {
+        FunctionObject {
+            func_type: FunctionType::ExecPkg,
+            content: "pkg:test".to_string(),
+            is_pure: true,
+            timeout: None,
+            requirements: HashMap::from([
+                (RESOURCE_TYPE_CPU.to_string(), 100),
+                (RESOURCE_TYPE_MEMORY.to_string(), 256),
+            ]),
+            best_run_weight: HashMap::from([(RESOURCE_TYPE_CPU.to_string(), 2)]),
+            affinity_type: AffinityType::Input,
+            params_type: HashMap::from([(
+                "input".to_string(),
+                FunctionParamType::ObjId("named_object".to_string()),
+            )]),
+            result_type: FunctionResultType::Object("named_object".to_string()),
+        }
+    }
+
+    fn sample_node(node_id: &str, available_cpu: u64, available_memory: u64) -> ThunkNodeCandidate {
+        ThunkNodeCandidate {
+            node_id: node_id.to_string(),
+            runner: "package-runner".to_string(),
+            labels: HashMap::new(),
+            label_set: HashSet::new(),
+            available_resources: HashMap::from([
+                (RESOURCE_TYPE_CPU.to_string(), available_cpu),
+                (RESOURCE_TYPE_MEMORY.to_string(), available_memory),
+            ]),
+            total_resources: HashMap::from([
+                (RESOURCE_TYPE_CPU.to_string(), 1000),
+                (RESOURCE_TYPE_MEMORY.to_string(), 2048),
+            ]),
+            network_zone: "zone-a".to_string(),
+            has_gpu: false,
+            score: 100,
+        }
+    }
+
+    fn mock_runner(nodes: Vec<ThunkNodeCandidate>) -> DefaultThunkRunner {
+        DefaultThunkRunner::new(
+            Arc::new(PlaceholderNamedObjectInspector),
+            Arc::new(MockNodeCatalog { nodes }),
+            Arc::new(MockDispatchBackend),
+        )
     }
 
     #[tokio::test]
     async fn fixed_params_are_ready() {
-        let runner = DefaultThunkRunner::default();
+        let runner = mock_runner(vec![sample_node("node-a", 600, 1024)]);
         assert!(runner
-            .check_param_is_ready(&sample_thunk(ThunkParamType::Fixed))
+            .check_param_is_ready(&sample_thunk(), &sample_function_object())
             .await
             .unwrap());
     }
 
     #[tokio::test]
     async fn run_thunk_returns_dispatch_receipt() {
-        let runner = DefaultThunkRunner::default();
+        let runner = mock_runner(vec![sample_node("node-a", 600, 1024)]);
         let response = runner
-            .run_thunk(sample_thunk(ThunkParamType::Fixed))
+            .run_thunk(sample_thunk(), sample_function_object())
             .await
             .unwrap();
 
         assert_eq!(response.status, SchedulerRunThunkStatus::Dispatched);
-        assert!(response.dispatch.is_some());
+        assert_eq!(response.dispatch.unwrap().task_id, Some(42));
+    }
+
+    #[tokio::test]
+    async fn run_thunk_rejects_when_no_node_meets_requirements() {
+        let runner = mock_runner(vec![sample_node("node-a", 50, 128)]);
+        let response = runner
+            .run_thunk(sample_thunk(), sample_function_object())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, SchedulerRunThunkStatus::Rejected);
+        assert_eq!(response.reason.as_deref(), Some("no_executor_node_available"));
+    }
+
+    #[test]
+    fn custom_affinity_selector_matches_node_labels() {
+        let hint = FunctionObjectSchedulingHint {
+            affinity_selectors: vec!["/data/model-a".to_string(), "zone=public".to_string()],
+            ..Default::default()
+        };
+        let mut node = sample_node("node-a", 600, 1024);
+        node.label_set.insert("/data/model-a".to_string());
+        node.labels
+            .insert("zone".to_string(), "public".to_string());
+
+        assert!(hint
+            .affinity_selectors
+            .iter()
+            .all(|selector| node_matches_selector(&node, selector)));
     }
 }

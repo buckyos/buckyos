@@ -9,11 +9,9 @@ use crate::runtime::{
 };
 use crate::task_tracker::WorkflowTaskTracker;
 use crate::types::{AwaitKind, Expr, RetryPolicy, ValueTemplate};
-use buckyos_api::{
-    ResourceRequirements, ThunkExecutionResult, ThunkExecutionStatus, ThunkMetadata, ThunkObject,
-    ThunkParamType, ThunkParams,
-};
+use buckyos_api::{ThunkExecutionResult, ThunkExecutionStatus, ThunkObject};
 use chrono::Utc;
+use ndn_lib::ObjId;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -135,8 +133,8 @@ where
         let mut events = Vec::new();
         let pending = run
             .pending_thunks
-            .remove(&result.thunk_obj_id)
-            .ok_or_else(|| WorkflowError::MissingPendingThunk(result.thunk_obj_id.clone()))?;
+            .remove(result.thunk_obj_id.to_string().as_str())
+            .ok_or_else(|| WorkflowError::MissingPendingThunk(result.thunk_obj_id.to_string()))?;
         let node_id = pending.node_id;
         let compiled = workflow
             .nodes
@@ -144,17 +142,42 @@ where
             .ok_or_else(|| WorkflowError::NodeNotFound(node_id.clone()))?;
 
         match result.status {
+            ThunkExecutionStatus::Waiting | ThunkExecutionStatus::Dispatched => {
+                run.pending_thunks.insert(
+                    result.thunk_obj_id.to_string(),
+                    PendingThunk {
+                        node_id: node_id.clone(),
+                        thunk_obj_id: result.thunk_obj_id.to_string(),
+                        attempt: pending.attempt,
+                    },
+                );
+                events.push(self.emit_event(
+                    run,
+                    match result.status {
+                        ThunkExecutionStatus::Waiting => "step.waiting_dispatch",
+                        ThunkExecutionStatus::Dispatched => "step.dispatched",
+                        _ => unreachable!(),
+                    },
+                    Some(node_id),
+                    "engine",
+                    Some(json!({
+                        "task_id": result.task_id,
+                        "status": result.status,
+                    })),
+                ));
+            }
             ThunkExecutionStatus::Success => {
                 let output = if let Some(value) = result.result.clone() {
                     value
                 } else if let Some(result_obj_id) = result.result_obj_id.clone() {
+                    let result_obj_id_str = result_obj_id.to_string();
                     self.object_store
-                        .get_json(&result_obj_id)
+                        .get_json(&result_obj_id_str)
                         .await?
                         .ok_or_else(|| {
                             WorkflowError::ObjectStore(format!(
                                 "missing result object `{}`",
-                                result_obj_id
+                                result_obj_id_str
                             ))
                         })?
                 } else {
@@ -162,7 +185,7 @@ where
                 };
 
                 let output_id = if let Some(result_obj_id) = result.result_obj_id.clone() {
-                    result_obj_id
+                    result_obj_id.to_string()
                 } else {
                     self.object_store
                         .put_json("workflow_result", &output)
@@ -455,7 +478,7 @@ where
             *attempt += 1;
             *attempt
         };
-        let thunk = build_thunk(run, compiled, resolved_input, next_attempt)?;
+        let (thunk_obj_id, thunk) = build_thunk(run, compiled, resolved_input, next_attempt)?;
         self.object_store
             .put_json(
                 "workflow_thunk",
@@ -464,13 +487,13 @@ where
             )
             .await?;
         self.dispatcher
-            .schedule_thunk(&thunk.thunk_obj_id, &thunk)
+            .schedule_thunk(&thunk_obj_id, &thunk)
             .await?;
         run.pending_thunks.insert(
-            thunk.thunk_obj_id.clone(),
+            thunk_obj_id.clone(),
             PendingThunk {
                 node_id: compiled.id.clone(),
-                thunk_obj_id: thunk.thunk_obj_id.clone(),
+                thunk_obj_id,
                 attempt: next_attempt,
             },
         );
@@ -746,62 +769,43 @@ fn build_thunk(
     compiled: &CompiledNode,
     resolved_input: Value,
     attempt: u32,
-) -> WorkflowResult<ThunkObject> {
+) -> WorkflowResult<(String, ThunkObject)> {
     let Expr::Apply {
         fun_id,
-        idempotent,
-        guards,
+        idempotent: _,
+        guards: _,
         ..
     } = &compiled.expr
     else {
         return Err(WorkflowError::UnsupportedNode(compiled.id.clone()));
     };
-    let params = ThunkParams {
-        param_type: ThunkParamType::Fixed,
-        values: resolved_input,
-        obj_refs: vec![],
+    let params = match resolved_input {
+        Value::Object(map) => map.into_iter().collect(),
+        other => {
+            return Err(WorkflowError::Serialization(format!(
+                "resolved thunk params for node `{}` must be a JSON object, got {}",
+                compiled.id, other
+            )));
+        }
     };
-    let metadata = ThunkMetadata {
-        run_id: run.run_id.clone(),
-        node_id: compiled.id.clone(),
-        attempt,
-        shard: None,
-    };
+    let metadata = json!({
+        "run_id": run.run_id.clone(),
+        "node_id": compiled.id.clone(),
+        "attempt": attempt,
+    });
     let thunk_without_id = json!({
         "fun_id": fun_id,
         "params": params,
-        "idempotent": idempotent,
         "metadata": metadata,
     });
-    let thunk_obj_id = deterministic_object_id("workflow_thunk", &thunk_without_id)?;
+    let thunk_obj_id = deterministic_object_id("thunk", &thunk_without_id)?;
 
-    Ok(ThunkObject {
-        thunk_obj_id,
-        fun_id: fun_id.clone(),
+    Ok((thunk_obj_id, ThunkObject {
+        fun_id: ObjId::new(format!("func:{}", fun_id).as_str())
+            .map_err(|err| WorkflowError::Serialization(format!("invalid fun_id `{}`: {}", fun_id, err)))?,
         params,
-        is_pure: *idempotent,
-        resource_requirements: ResourceRequirements {
-            max_tokens: guards.budget.as_ref().and_then(|budget| budget.max_tokens),
-            max_duration: guards
-                .max_duration
-                .clone()
-                .or_else(|| {
-                    guards
-                        .budget
-                        .as_ref()
-                        .and_then(|budget| budget.max_duration.clone())
-                })
-                .or_else(|| guards.timeout.clone()),
-            gpu_required: false,
-            max_cost_usdb: guards.max_cost_usdb.or_else(|| {
-                guards
-                    .budget
-                    .as_ref()
-                    .and_then(|budget| budget.max_cost_usdb)
-            }),
-        },
         metadata,
-    })
+    }))
 }
 
 fn resolve_template_value(run: &WorkflowRun, value: &ValueTemplate) -> WorkflowResult<Value> {
@@ -889,6 +893,7 @@ mod tests {
     use crate::object_store::InMemoryObjectStore;
     use crate::task_tracker::NoopTaskTracker;
     use buckyos_api::{ThunkExecutionResult, ThunkExecutionStatus};
+    use ndn_lib::ObjId;
     use serde_json::json;
 
     fn sample_workflow() -> WorkflowDefinition {
@@ -1027,13 +1032,14 @@ mod tests {
                 &compiled,
                 &mut run,
                 ThunkExecutionResult {
-                    thunk_obj_id: thunk_id,
+                    thunk_obj_id: ObjId::new(thunk_id.as_str()).unwrap(),
+                    task_id: "task-1".to_string(),
                     status: ThunkExecutionStatus::Success,
                     result_obj_id: None,
                     result: Some(json!({"decision":"approved"})),
                     error: None,
-                    metrics: Default::default(),
-                    side_effect_receipt: None,
+                    result_url: None,
+                    metrics: Value::Null,
                 },
             )
             .await

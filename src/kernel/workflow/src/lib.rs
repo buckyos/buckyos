@@ -21,8 +21,8 @@ pub use object_store::{InMemoryObjectStore, NamedStoreObjectStore, WorkflowObjec
 pub use orchestrator::WorkflowOrchestrator;
 pub use runtime::*;
 pub use buckyos_api::{
-    ResourceRequirements, ThunkExecutionResult, ThunkExecutionStatus, ThunkMetadata, ThunkMetrics,
-    ThunkObject, ThunkParamType, ThunkParams,
+    FunctionObject, FunctionParamType, FunctionResultType, FunctionType, ResourceRequirements,
+    ThunkExecutionResult, ThunkExecutionStatus, ThunkObject,
 };
 pub use task_tracker::{NoopTaskTracker, TaskManagerTaskTracker, WorkflowTaskTracker};
 pub use types::*;

@@ -1,4 +1,4 @@
 pub use buckyos_api::{
-    ResourceRequirements, ThunkExecutionResult, ThunkExecutionStatus, ThunkMetadata, ThunkMetrics,
-    ThunkObject, ThunkParamType, ThunkParams,
+    FunctionObject, FunctionParamType, FunctionResultType, FunctionType, ResourceRequirements,
+    ThunkExecutionResult, ThunkExecutionStatus, ThunkObject,
 };
