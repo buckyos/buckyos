@@ -1,6 +1,6 @@
 use crate::error::{WorkflowError, WorkflowResult};
-use crate::types::ThunkObject;
 use async_trait::async_trait;
+use buckyos_api::ThunkObject;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 

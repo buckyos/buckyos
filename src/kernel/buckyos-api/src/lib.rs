@@ -11,6 +11,7 @@ mod scheduler_client;
 mod sn_client;
 mod system_config;
 mod task_mgr;
+mod thunk_object;
 mod verify_hub_client;
 mod zone_gateway;
 
@@ -36,6 +37,7 @@ pub use scheduler_client::*;
 pub use sn_client::*;
 pub use system_config::*;
 pub use task_mgr::*;
+pub use thunk_object::*;
 pub use verify_hub_client::*;
 pub use zone_gateway::*;
 

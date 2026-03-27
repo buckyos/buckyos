@@ -8,9 +8,10 @@ use crate::runtime::{
     WorkflowRun,
 };
 use crate::task_tracker::WorkflowTaskTracker;
-use crate::types::{
-    AwaitKind, Expr, ResourceRequirements, RetryPolicy, ThunkExecutionResult, ThunkExecutionStatus,
-    ThunkMetadata, ThunkObject, ThunkParamType, ThunkParams, ValueTemplate,
+use crate::types::{AwaitKind, Expr, RetryPolicy, ValueTemplate};
+use buckyos_api::{
+    ResourceRequirements, ThunkExecutionResult, ThunkExecutionStatus, ThunkMetadata, ThunkObject,
+    ThunkParamType, ThunkParams,
 };
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -887,7 +888,7 @@ mod tests {
     };
     use crate::object_store::InMemoryObjectStore;
     use crate::task_tracker::NoopTaskTracker;
-    use crate::types::{ThunkExecutionResult, ThunkExecutionStatus};
+    use buckyos_api::{ThunkExecutionResult, ThunkExecutionStatus};
     use serde_json::json;
 
     fn sample_workflow() -> WorkflowDefinition {
