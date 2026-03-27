@@ -779,7 +779,7 @@ fn build_thunk(
         thunk_obj_id,
         fun_id: fun_id.clone(),
         params,
-        idempotent: *idempotent,
+        is_pure: *idempotent,
         resource_requirements: ResourceRequirements {
             max_tokens: guards.budget.as_ref().and_then(|budget| budget.max_tokens),
             max_duration: guards

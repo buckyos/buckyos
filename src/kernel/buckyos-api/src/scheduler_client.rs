@@ -57,7 +57,7 @@ impl SchedulerClient {
         Self { rpc_client }
     }
 
-    pub async fn run_thunk(&self, thunk: ThunkObject) -> Result<SchedulerRunThunkResponse> {
+    pub async fn run_thunk(&self, thunk: ThunkObject,func_obj: FunctionObject) -> Result<SchedulerRunThunkResponse> {
         let req = SchedulerRunThunkRequest::new(thunk);
         let req_json = serde_json::to_value(&req).map_err(|err| {
             RPCErrors::ReasonError(format!("failed to serialize run_thunk request: {}", err))

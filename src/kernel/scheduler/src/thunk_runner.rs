@@ -251,7 +251,7 @@ mod tests {
                 values: json!({"hello": "world"}),
                 obj_refs: vec!["obj-1".to_string()],
             },
-            idempotent: true,
+            is_pure: true,
             resource_requirements: ResourceRequirements::default(),
             metadata: ThunkMetadata {
                 run_id: "run-1".to_string(),
