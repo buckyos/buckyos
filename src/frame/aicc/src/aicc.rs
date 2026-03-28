@@ -10,7 +10,7 @@ use buckyos_api::{
 };
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -23,6 +23,7 @@ const DEFAULT_BASE64_MAX_BYTES: usize = 8 * 1024 * 1024;
 const EWMA_ALPHA: f64 = 0.2;
 const AICC_TASK_TYPE: &str = "aicc.compute";
 const AICC_TASK_EVENT_RETENTION: usize = 64;
+const REDACTED_BASE64_PLACEHOLDER: &str = "[redacted_base64]";
 
 #[derive(Clone, Debug, Default)]
 pub struct InvokeCtx {
@@ -60,6 +61,31 @@ impl InvokeCtx {
             trace_id: ctx.trace_id.clone(),
         }
     }
+}
+
+fn redact_base64_fields(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                redact_base64_fields(item);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(data_base64) = map.get_mut("data_base64") {
+                *data_base64 = json!(REDACTED_BASE64_PLACEHOLDER);
+            }
+            for nested in map.values_mut() {
+                redact_base64_fields(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redacted_summary_value(summary: &AiResponseSummary) -> Value {
+    let mut value = serde_json::to_value(summary).unwrap_or_else(|_| json!({}));
+    redact_base64_fields(&mut value);
+    value
 }
 
 #[derive(Clone, Debug)]
@@ -1477,8 +1503,8 @@ impl AIComputeCenter {
                         .record_start_success(attempt.instance_id.as_str(), elapsed_ms);
                     match &start_result {
                         ProviderStartResult::Immediate(summary) => {
-                            let summary_log =
-                                serde_json::to_string(summary).unwrap_or_else(|err| {
+                            let summary_log = serde_json::to_string(&redacted_summary_value(summary))
+                                .unwrap_or_else(|err| {
                                     format!("{{\"serialize_error\":\"{}\"}}", err)
                                 });
                             debug!(
@@ -1583,6 +1609,21 @@ impl AIComputeCenter {
                         "resource url must include scheme",
                     ));
                 }
+                let parsed = reqwest::Url::parse(url).map_err(|_| {
+                    reason_error("resource_invalid", "resource url format is invalid")
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https") {
+                    return Err(reason_error(
+                        "resource_invalid",
+                        "resource url scheme must be http or https",
+                    ));
+                }
+                if parsed.host_str().is_none() {
+                    return Err(reason_error(
+                        "resource_invalid",
+                        "resource url host is missing",
+                    ));
+                }
                 Ok(())
             }
             ResourceRef::Base64 { mime, data_base64 } => {
@@ -1670,12 +1711,13 @@ impl AIComputeCenter {
         task_id: &str,
         summary: &AiResponseSummary,
     ) {
+        let summary_value = redacted_summary_value(summary);
         let event = TaskEvent {
             task_id: task_id.to_string(),
             kind: TaskEventKind::Final,
             timestamp_ms: now_ms(),
             data: Some(json!({
-                "summary": summary,
+                "summary": summary_value,
                 "finish_reason": summary.finish_reason.clone(),
                 "has_text": summary.text.as_ref().map(|text| !text.is_empty()).unwrap_or(false),
                 "artifact_count": summary.artifacts.len(),

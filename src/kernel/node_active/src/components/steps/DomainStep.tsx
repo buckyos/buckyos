@@ -178,8 +178,9 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
             InputProps={{ readOnly: true }}
           />
           <Alert severity="info">
-            {t("domain_username_locked") ||
-              "SN 用户名已在第一步创建，这里只展示最终访问域名。"}
+            {t("domain_username_locked", {
+              defaultValue: "SN 用户名已在第一步创建，这里只展示最终访问域名。",
+            })}
           </Alert>
         </Stack>
       ) : (

@@ -80,11 +80,18 @@ function getLanguageOption(lang?: string | null): LanguageOption | undefined {
   }
 
   const normalized = lang.toLowerCase();
-  return LANGUAGE_OPTIONS.find(
+
+  const exactMatch = LANGUAGE_OPTIONS.find(
     (option) =>
       option.code.toLowerCase() === normalized ||
-      option.aliases.some((alias) => alias === normalized) ||
-      normalized.startsWith(`${option.code.toLowerCase()}-`),
+      option.aliases.some((alias) => alias === normalized),
+  );
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  return LANGUAGE_OPTIONS.find((option) =>
+    normalized.startsWith(`${option.code.toLowerCase()}-`),
   );
 }
 

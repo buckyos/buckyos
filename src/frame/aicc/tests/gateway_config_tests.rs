@@ -6,7 +6,7 @@ use aicc::{
 };
 use buckyos_api::{AiResponseSummary, AiccServerHandler, Capability, CompleteStatus};
 use common::*;
-use kRPC::{RPCContext, RPCHandler, RPCRequest, RPCResult};
+use kRPC::{RPCContext, RPCHandler, RPCErrors, RPCRequest, RPCResult};
 use serde_json::json;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -149,7 +149,7 @@ async fn krpc_04_gateway_complete_invalid_sys_shape_returns_bad_request() {
         Registry::default(),
         ModelCatalog::default(),
     ));
-    let resp = h
+    let err = h
         .handle_rpc_call(
             RPCRequest {
                 method: "complete".into(),
@@ -161,9 +161,8 @@ async fn krpc_04_gateway_complete_invalid_sys_shape_returns_bad_request() {
             IpAddr::V4(Ipv4Addr::LOCALHOST),
         )
         .await
-        .unwrap();
-    let s = format!("{:?}", resp.result);
-    assert!(s.contains("bad_request") || s.contains("ParseRequestError") || s.contains("Failed"));
+        .unwrap_err();
+    assert!(matches!(err, RPCErrors::ParseRequestError(_)));
 }
 
 #[tokio::test]
@@ -206,7 +205,7 @@ async fn krpc_05_gateway_cancel_cross_tenant_rejected() {
             .to_string(),
         _ => String::new(),
     };
-    let cancel = h
+    let err = h
         .handle_rpc_call(
             RPCRequest {
                 method: "cancel".into(),
@@ -218,9 +217,8 @@ async fn krpc_05_gateway_cancel_cross_tenant_rejected() {
             IpAddr::V4(Ipv4Addr::LOCALHOST),
         )
         .await
-        .unwrap();
-    let s = format!("{:?}", cancel.result);
-    assert!(s.contains("NoPermission") || s.contains("no permission") || s.contains("Failed"));
+        .unwrap_err();
+    assert!(matches!(err, RPCErrors::NoPermission(_)));
 }
 
 #[tokio::test]
@@ -298,7 +296,7 @@ async fn krpc_07_gateway_reload_settings_aliases_compatible() {
         "service.reload_settings",
         "reaload_settings",
     ] {
-        let resp = h
+        let err = h
             .handle_rpc_call(
                 RPCRequest {
                     method: m.into(),
@@ -310,9 +308,8 @@ async fn krpc_07_gateway_reload_settings_aliases_compatible() {
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
             )
             .await
-            .unwrap();
-        let s = format!("{:?}", resp.result);
-        assert!(s.contains("Unknown method") || s.contains("not support") || s.contains("Failed"));
+            .unwrap_err();
+        assert!(matches!(err, RPCErrors::UnknownMethod(_)));
     }
 }
 

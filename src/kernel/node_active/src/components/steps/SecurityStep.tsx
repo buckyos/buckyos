@@ -268,8 +268,9 @@ const SecurityStep = ({
   return (
     <Stack spacing={3}>
       <Alert icon={<PersonRounded />} severity="info">
-        {t("create_sn_user_intro") ||
-          "先创建 SN 用户，再继续设置当前设备的访问方式和系统权限。"}
+        {t("create_sn_user_intro", {
+          defaultValue: "先创建 SN 用户，再继续设置当前设备的访问方式和系统权限。",
+        })}
       </Alert>
 
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 3 }}>
@@ -282,11 +283,12 @@ const SecurityStep = ({
           >
             <Box>
               <Typography fontWeight={700}>
-                {t("create_sn_user_title") || "创建 SN 用户"}
+                {t("create_sn_user_title", { defaultValue: "创建 SN 用户" })}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {t("create_sn_user_desc") ||
-                  "第一步先创建一个新的 SN 用户。后续步骤不再重复输入用户名和激活码。"}
+                {t("create_sn_user_desc", {
+                  defaultValue: "第一步先创建一个新的 SN 用户。后续步骤不再重复输入用户名和激活码。",
+                })}
               </Typography>
             </Box>
             {!isWalletRuntime ? (
@@ -296,14 +298,16 @@ const SecurityStep = ({
                 disabled
                 sx={{ minHeight: 44 }}
               >
-                {t("login_existing_sn_account") || "登录已有SN账号"}
+                {t("login_existing_sn_account", { defaultValue: "登录已有SN账号" })}
               </Button>
             ) : null}
           </Stack>
 
           {!isWalletRuntime ? (
             <Typography variant="caption" color="text.secondary">
-              {t("login_existing_sn_account_hint") || "该入口预留在这里，当前版本暂未实现。"}
+              {t("login_existing_sn_account_hint", {
+                defaultValue: "该入口预留在这里，当前版本暂未实现。",
+              })}
             </Typography>
           ) : null}
 
@@ -313,7 +317,9 @@ const SecurityStep = ({
             onChange={(e) => setUsername(e.target.value)}
             helperText={
               isWalletRuntime
-                ? t("wallet_bound_username") || "当前钱包已经绑定 SN 用户名。"
+                ? t("wallet_bound_username", {
+                    defaultValue: "当前钱包已经绑定 SN 用户名。",
+                  })
                 : username.trim()
                 ? `https://${username.trim().toLowerCase()}.${WEB3_BASE_HOST}`
                 : t("domain_format")
@@ -347,7 +353,9 @@ const SecurityStep = ({
             />
           ) : (
             <Alert icon={<CheckCircleRounded />} severity="success">
-              {t("wallet_bound_username") || "当前钱包已经绑定 SN 用户名。"}
+              {t("wallet_bound_username", {
+                defaultValue: "当前钱包已经绑定 SN 用户名。",
+              })}
             </Alert>
           )}
         </Stack>
