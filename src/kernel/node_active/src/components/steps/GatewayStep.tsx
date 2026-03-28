@@ -12,10 +12,9 @@ import {
   Typography,
 } from "@mui/material";
 import { CloudOutlined, CloudSyncRounded, LanRounded, WifiRounded } from "@mui/icons-material";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GatewayType, WizardData } from "../../types";
-import { SN_API_URL, WEB3_BASE_HOST, check_sn_active_code } from "../../../active_lib";
 
 type Props = {
   wizardData: WizardData;
@@ -27,66 +26,18 @@ type Props = {
 const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) => {
   const { t } = useTranslation();
   const [mode, setMode] = useState<GatewayType>(
-    wizardData.gatewy_type === GatewayType.WAN ? GatewayType.WAN : wizardData.gatewy_type || GatewayType.BuckyForward
+    wizardData.gatewy_type === GatewayType.WAN ? GatewayType.WAN : wizardData.gatewy_type || GatewayType.BuckyForward,
   );
-  const [vpsMode, setVpsMode] = useState(wizardData.gatewy_type === GatewayType.WAN);
-  const [inviteCode, setInviteCode] = useState(wizardData.sn_active_code || "");
-  const [checkingInvite, setCheckingInvite] = useState(false);
-  const [inviteValid, setInviteValid] = useState<boolean | null>(null);
   const [portMappingMode, setPortMappingMode] = useState<WizardData["port_mapping_mode"]>(
-    wizardData.port_mapping_mode || "full"
+    wizardData.port_mapping_mode || "full",
   );
   const [rtcpPort, setRtcpPort] = useState<string>((wizardData.rtcp_port ?? 2980).toString());
   const [formError, setFormError] = useState("");
 
-  useEffect(() => {
-    const needsInvite = !isWalletRuntime && !vpsMode;
-    if (!needsInvite) {
-      setInviteValid(true);
-      return;
-    }
-    if (inviteCode.length < 7) {
-      setInviteValid(null);
-      return;
-    }
-    let cancelled = false;
-    setCheckingInvite(true);
-    check_sn_active_code(inviteCode)
-      .then((ok) => {
-        if (!cancelled) {
-          setInviteValid(ok);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setInviteValid(false);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setCheckingInvite(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [inviteCode, vpsMode, isWalletRuntime]);
-
   const handleNext = () => {
     setFormError("");
 
-    const needsInvite = !isWalletRuntime && mode !== GatewayType.WAN;
-
-    if (needsInvite) {
-      if (!inviteCode || inviteCode.length < 8) {
-        setFormError(t("error_invite_code_too_short") || "Invitation code is required");
-        return;
-      }
-      if (inviteValid === false) {
-        setFormError(t("error_invite_code_invalid") || "Invitation code is invalid");
-        return;
-      }
-    } else if (mode !== GatewayType.WAN && portMappingMode === "rtcp_only") {
+    if (mode !== GatewayType.WAN && portMappingMode === "rtcp_only") {
       const port = parseInt(rtcpPort, 10);
       if (Number.isNaN(port) || port < 1 || port > 65535) {
         setFormError(t("error_invalid_port") || "Invalid port");
@@ -97,33 +48,32 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
     const port = parseInt(rtcpPort, 10);
     const finalPortMode = mode === GatewayType.WAN ? "full" : portMappingMode;
     const gatewayType = mode === GatewayType.WAN ? GatewayType.WAN : mode;
-    const nextData: Partial<WizardData> = {
+
+    onUpdate({
       gatewy_type: gatewayType,
-      sn_active_code: isWalletRuntime ? "" : inviteCode,
       port_mapping_mode: finalPortMode,
       rtcp_port: Number.isNaN(port) ? 2980 : port,
       is_wallet_runtime: isWalletRuntime,
-    };
-
-    //set_sn_api_url(SN_API_URL);
-    onUpdate(nextData);
+    });
     onNext();
   };
 
-  const renderCard = (title: "bucky" | "direct" | "vps", description: string, selected: boolean, icon: ReactNode) => (
+  const renderCard = (
+    title: "bucky" | "direct" | "vps",
+    description: string,
+    selected: boolean,
+    icon: ReactNode,
+  ) => (
     <Box
       onClick={() => {
         if (title === "bucky") {
           setMode(GatewayType.BuckyForward);
-          setVpsMode(false);
         } else if (title === "direct") {
           setMode(GatewayType.PortForward);
           setPortMappingMode("full");
-          setVpsMode(false);
         } else {
           setMode(GatewayType.WAN);
           setPortMappingMode("full");
-          setVpsMode(true);
         }
       }}
       sx={{
@@ -172,7 +122,6 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
     </Box>
   );
 
-
   const portHint = mode === GatewayType.WAN
     ? t("public_ip_hint")
     : portMappingMode === "rtcp_only"
@@ -187,7 +136,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
             "bucky",
             t("use_buckyos_sn"),
             mode === GatewayType.BuckyForward,
-            <CloudSyncRounded />
+            <CloudSyncRounded />,
           )}
         </Grid>
         <Grid item xs={12} md={4}>
@@ -195,7 +144,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
             "direct",
             t("direct_connect_label"),
             mode === GatewayType.PortForward,
-            <LanRounded />
+            <LanRounded />,
           )}
         </Grid>
         <Grid item xs={12} md={4}>
@@ -203,7 +152,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
             "vps",
             t("public_ip_option"),
             mode === GatewayType.WAN,
-            <CloudOutlined />
+            <CloudOutlined />,
           )}
         </Grid>
       </Grid>
@@ -213,52 +162,15 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
           <Typography variant="subtitle1" fontWeight={600}>
             {t("use_buckyos_sn")}
           </Typography>
-          {!isWalletRuntime && (
-            <TextField
-              label={t("invite_code_placeholder")}
-              value={inviteCode}
-              onChange={(e) => setInviteCode(e.target.value)}
-              error={inviteValid === false}
-              helperText={
-                checkingInvite
-                  ? t("invite_checking")
-                  : inviteValid === false
-                  ? t("error_invite_code_invalid")
-                  : inviteValid === true
-                  ? t("invite_valid")
-                  : t("bucky_forward_desc")
-              }
-              fullWidth
-              required
-            />
-          )}
+          <Alert severity="info">{t("bucky_forward_desc")}</Alert>
         </Stack>
       ) : (
         <Stack spacing={2}>
           <Typography variant="subtitle1" fontWeight={600}>
             {mode === GatewayType.WAN ? t("public_ip_desc") : t("direct_connect_desc")}
           </Typography>
-          {mode !== GatewayType.WAN && (
+          {mode !== GatewayType.WAN ? (
             <>
-              {!isWalletRuntime && (
-                <TextField
-                  label={t("invite_code_placeholder")}
-                  value={inviteCode}
-                  onChange={(e) => setInviteCode(e.target.value)}
-                  error={inviteValid === false}
-                  helperText={
-                    checkingInvite
-                      ? t("invite_checking")
-                      : inviteValid === false
-                      ? t("error_invite_code_invalid")
-                      : inviteValid === true
-                      ? t("invite_valid")
-                      : t("bucky_forward_desc")
-                  }
-                  fullWidth
-                  required
-                />
-              )}
               <FormControl fullWidth>
                 <InputLabel id="port-mode-label">{t("port_mapping_mode_label")}</InputLabel>
                 <Select
@@ -271,7 +183,7 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
                   <MenuItem value="rtcp_only">{t("port_mapping_rtcp_only")}</MenuItem>
                 </Select>
               </FormControl>
-              {portMappingMode === "rtcp_only" && (
+              {portMappingMode === "rtcp_only" ? (
                 <TextField
                   type="number"
                   label={t("rtcp_port_label")}
@@ -280,16 +192,16 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
                   helperText={t("rtcp_port_placeholder")}
                   fullWidth
                 />
-              )}
+              ) : null}
             </>
-          )}
+          ) : null}
           <Alert icon={<WifiRounded fontSize="small" />} severity="info">
             {portHint}
           </Alert>
         </Stack>
       )}
 
-      {formError && <Alert severity="error">{formError}</Alert>}
+      {formError ? <Alert severity="error">{formError}</Alert> : null}
       <Stack direction="row" justifyContent="flex-end" spacing={1.5} flexWrap="wrap" alignItems="center">
         <Button
           variant="contained"

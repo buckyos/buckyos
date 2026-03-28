@@ -3,9 +3,8 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
-  Paper,
   Grid,
+  Paper,
   Stack,
   TextField,
   Typography,
@@ -16,17 +15,14 @@ import {
   PublicRounded,
   VerifiedRounded,
 } from "@mui/icons-material";
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GatewayType, WalletUser, WizardData } from "../../types";
+import { GatewayType, WizardData } from "../../types";
 import {
-  check_bucky_username,
-  check_sn_active_code,
+  SN_BASE_HOST,
+  WEB3_BASE_HOST,
   isValidDomain,
   validate_bucky_username,
-  SN_BASE_HOST,
-  SN_API_URL,
-  WEB3_BASE_HOST,
 } from "../../../active_lib";
 
 type Props = {
@@ -34,154 +30,40 @@ type Props = {
   onUpdate: (data: Partial<WizardData>) => void;
   onNext: () => void;
   onBack: () => void;
-  isWalletRuntime: boolean;
-  walletUser?: WalletUser;
 };
 
-type NameStatus = "idle" | "checking" | "ok" | "taken" | "tooShort" | "invalid";
-
-const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, walletUser }: Props) => {
+const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
   const { t } = useTranslation();
   const [mode, setMode] = useState<"bucky" | "self">(wizardData.use_self_domain ? "self" : "bucky");
-  const [username, setUsername] = useState(wizardData.sn_user_name || walletUser?.user_name || "");
   const [domain, setDomain] = useState(wizardData.self_domain || "");
-  const [snCode, setSnCode] = useState(wizardData.sn_active_code || "");
-  const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
-  const [checkingSnCode, setCheckingSnCode] = useState(false);
-  const [snCodeValid, setSnCodeValid] = useState<boolean | null>(null);
-  const [generatingKeys, setGeneratingKeys] = useState(false);
   const [formError, setFormError] = useState("");
 
-  useEffect(() => {
-    if (isWalletRuntime && walletUser?.user_name) {
-      setUsername(walletUser.user_name);
-    }
-  }, [isWalletRuntime, walletUser]);
+  const username = wizardData.sn_user_name?.trim().toLowerCase() || "";
+  const previewDomain = useMemo(
+    () => (username ? `https://${username}.${WEB3_BASE_HOST}` : t("domain_format")),
+    [t, username],
+  );
 
-  useEffect(() => {
-    if (isWalletRuntime) {
-      setNameStatus("ok");
-      return;
-    }
-    if (mode !== "bucky" || username.trim().length <= 4) {
-      setNameStatus(username.trim().length > 0 && username.trim().length <= 4 ? "tooShort" : "idle");
-      return;
-    }
-    const validation = validate_bucky_username(username.trim());
-    if (!validation.valid) {
-      setNameStatus("invalid");
-      return;
-    }
-    let cancelled = false;
-    setNameStatus("checking");
-    check_bucky_username(username.trim())
-      .then((available) => {
-        if (!cancelled) {
-          setNameStatus(available ? "ok" : "taken");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setNameStatus("idle");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [mode, username]);
-
-  useEffect(() => {
-    if (isWalletRuntime) {
-      setSnCodeValid(true);
-      return;
-    }
-    
-    const needsSnCode = mode === "bucky";
-    if (!needsSnCode) {
-      setSnCodeValid(true);
-      return;
-    }
-    if (snCode.length < 7) {
-      setSnCodeValid(null);
-      return;
-    }
-    let cancelled = false;
-    setCheckingSnCode(true);
-    check_sn_active_code(snCode)
-      .then((ok) => {
-        if (!cancelled) {
-          setSnCodeValid(ok);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSnCodeValid(false);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setCheckingSnCode(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [snCode, mode, isWalletRuntime]);
-
-  useEffect(() => {
-    if (mode !== "bucky"  || username.trim().length <= 4) {
-      return;
-    }
-
-    let cancelled = false;
-    const snHost = (() => {
-      try {
-        return new URL(SN_API_URL).hostname;
-      } catch {
-        return "sn.buckyos.ai";
-      }
-    })();
-   
-    return () => {
-      cancelled = true;
-    };
-  }, [mode, username, SN_API_URL]);
-
-  const handleNext = async () => {
+  const handleNext = () => {
     setFormError("");
+
     if (mode === "bucky") {
-      if (username.trim().length <= 4) {
+      if (username.length <= 4) {
         setFormError(t("error_name_too_short") || "");
         return;
       }
-      const validation = validate_bucky_username(username.trim());
+
+      const validation = validate_bucky_username(username);
       if (!validation.valid) {
         setFormError(
           t("error_name_invalid") || "Only lowercase letters and numbers are supported.",
         );
         return;
       }
-      if (!isWalletRuntime && nameStatus === "taken") {
-        setFormError(t("error_name_taken") || "");
-        return;
-      }
-      // 当 isWalletRuntime 为 true 时，跳过所有邀请码检查
-      if (!isWalletRuntime) {
-        if (!snCode || snCode.length < 8) {
-          setFormError(t("error_invite_code_too_short") || "");
-          return;
-        }
-        if (snCodeValid === false) {
-          setFormError(t("error_invite_code_invalid") || "");
-          return;
-        }
-      }
+
       onUpdate({
         use_self_domain: false,
-        sn_user_name: username.trim().toLowerCase(),
-        owner_user_name: wizardData.is_wallet_runtime?wizardData.owner_user_name:username.trim().toLowerCase(),
         self_domain: "",
-        sn_active_code: snCode,
       });
       onNext();
       return;
@@ -195,38 +77,12 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
     onUpdate({
       use_self_domain: true,
       self_domain: domain.trim(),
-      sn_user_name: username.trim() || wizardData.sn_user_name,
-      sn_active_code: snCode,
     });
     onNext();
   };
 
-  const previewDomain = wizardData.self_domain
-    ? wizardData.self_domain
-    : `https://${username || "your-name"}.${WEB3_BASE_HOST}`;
-
-  const renderStatusChip = () => {
-    if (nameStatus === "checking") {
-      return <Chip size="small" label={t("username_checking")} icon={<CircularProgress size={14} />} />;
-    }
-    if (nameStatus === "ok") {
-      return <Chip size="small" color="success" label={t("username_available")} icon={<VerifiedRounded />} />;
-    }
-    if (nameStatus === "taken") {
-      return <Chip size="small" color="error" label={t("error_name_taken")} />;
-    }
-    if (nameStatus === "tooShort") {
-      return <Chip size="small" color="warning" label={t("error_name_too_short")} />;
-    }
-    if (nameStatus === "invalid") {
-      return <Chip size="small" color="error" label={t("error_name_invalid") || "Invalid name"} />;
-    }
-    return null;
-  };
-
   return (
     <Stack spacing={3}>
-
       <Grid container spacing={2}>
         <Grid item xs={12} md={6}>
           <Paper
@@ -256,13 +112,20 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
               >
                 <AutoAwesomeRounded />
               </Box>
-              <Box>
+              <Box sx={{ flex: 1 }}>
                 <Typography fontWeight={700}>{t("use_buckyos_domain")}</Typography>
                 <Typography variant="body2" color="text.secondary">
                   {t("domain_access_desc")}
                 </Typography>
               </Box>
-              {mode === "bucky" && renderStatusChip()}
+              {username ? (
+                <Chip
+                  size="small"
+                  color="success"
+                  label={t("username_available")}
+                  icon={<VerifiedRounded />}
+                />
+              ) : null}
             </Stack>
           </Paper>
         </Grid>
@@ -296,11 +159,9 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
               </Box>
               <Box>
                 <Typography fontWeight={700}>{t("use_own_domain")}</Typography>
-               
                 <Typography variant="body2" color="text.secondary">
                   {t("domain_provider_setup")}
                 </Typography>
-                
               </Box>
             </Stack>
           </Paper>
@@ -312,34 +173,14 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
           <TextField
             label={t("username_placeholder")}
             value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            helperText={isWalletRuntime ? t("wallet_bound_username", { defaultValue: "Wallet 已绑定用户名" }) || previewDomain : previewDomain}
+            helperText={previewDomain}
             required
-            InputProps={{
-              readOnly: isWalletRuntime,
-              endAdornment: renderStatusChip() ? <Box sx={{ pr: 1 }}>{renderStatusChip()}</Box> : undefined,
-            }}
+            InputProps={{ readOnly: true }}
           />
-          {!isWalletRuntime && (
-            <TextField
-              label={t("invite_code_placeholder")}
-              value={snCode}
-              onChange={(e) => setSnCode(e.target.value)}
-              error={snCodeValid === false}
-              helperText={
-                checkingSnCode
-                  ? t("invite_checking")
-                  : snCodeValid === false
-                  ? t("error_invite_code_invalid")
-                  : snCodeValid === true
-                  ? t("invite_valid")
-                  : t("invite_code_required")
-              }
-              fullWidth
-              required
-            />
-          )}
-    
+          <Alert severity="info">
+            {t("domain_username_locked") ||
+              "SN 用户名已在第一步创建，这里只展示最终访问域名。"}
+          </Alert>
         </Stack>
       ) : (
         <Stack spacing={2}>
@@ -350,15 +191,15 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack, isWalletRuntime, wal
             placeholder="example.com"
             required
           />
-          {wizardData.gatewy_type !== GatewayType.WAN && (
+          {wizardData.gatewy_type !== GatewayType.WAN ? (
             <Alert icon={<DnsRounded fontSize="small" />} severity="info">
               {t("dns_ns_record", { sn_host_base: SN_BASE_HOST })}
             </Alert>
-          )}
+          ) : null}
         </Stack>
       )}
 
-      {formError && <Alert severity="error">{formError}</Alert>}
+      {formError ? <Alert severity="error">{formError}</Alert> : null}
       <Stack direction="row" justifyContent="space-between" spacing={1.5} flexWrap="wrap" alignItems="center">
         <Button variant="text" onClick={onBack}>
           {t("back_button")}

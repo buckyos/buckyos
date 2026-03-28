@@ -1,6 +1,5 @@
 import {
   Alert,
-  Box,
   Button,
   Dialog,
   DialogActions,
@@ -18,17 +17,13 @@ import {
   AutoAwesomeRounded,
   CheckCircleRounded,
   LaunchRounded,
-  LockOpenRounded,
   VisibilityOffRounded,
   VisibilityRounded,
 } from "@mui/icons-material";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AIProviderConfig, WizardData } from "../../types";
-import {
-  AI_PROVIDER_TUTORIAL_URL,
-  check_sn_active_code,
-} from "../../../active_lib";
+import { AI_PROVIDER_TUTORIAL_URL } from "../../../active_lib";
 
 type Props = {
   wizardData: WizardData;
@@ -56,26 +51,22 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
     openrouter_api_token: false,
     glm_api_token: false,
   });
-  const [snDialogOpen, setSnDialogOpen] = useState(false);
-  const [snDialogValue, setSnDialogValue] = useState("");
-  const [snDialogError, setSnDialogError] = useState("");
-  const [snSubmitting, setSnSubmitting] = useState(false);
   const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
 
   const aiProviderConfig = wizardData.ai_provider_config;
   const hasAnyProviderToken = useMemo(
     () =>
       Object.values(aiProviderConfig).some(
-        (value) => typeof value === "string" && value.trim().length > 0
+        (value) => typeof value === "string" && value.trim().length > 0,
       ),
-    [aiProviderConfig]
+    [aiProviderConfig],
   );
   const hasActiveCode = Boolean(wizardData.sn_active_code?.trim());
   const primaryLabel =
     hasAnyProviderToken || hasActiveCode ? t("next_button") : t("skip_button");
 
   const normalizeProviderConfig = (
-    config: AIProviderConfig
+    config: AIProviderConfig,
   ): AIProviderConfig => ({
     openai_api_token: config.openai_api_token.trim(),
     claude_api_token: config.claude_api_token.trim(),
@@ -115,36 +106,6 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
   const handleConfirmSkip = () => {
     setSkipConfirmOpen(false);
     onNext();
-  };
-
-  const handleConfirmSnCode = async () => {
-    const value = snDialogValue.trim();
-    setSnDialogError("");
-
-    if (!value) {
-      setSnDialogError(t("error_invite_code_too_short") || "");
-      return;
-    }
-
-    setSnSubmitting(true);
-    try {
-      const ok = await check_sn_active_code(value);
-      if (!ok) {
-        setSnDialogError(t("error_invite_code_invalid") || "");
-        return;
-      }
-
-      onUpdate({ sn_active_code: value });
-      setSnDialogOpen(false);
-      setSnDialogValue("");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setSnDialogError(
-        `${t("error_invite_code_invalid") || "Invalid active code"} ${msg}`
-      );
-    } finally {
-      setSnSubmitting(false);
-    }
   };
 
   return (
@@ -222,43 +183,7 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
         <Alert icon={<CheckCircleRounded />} severity="success">
           {t("ai_provider_sn_included")}
         </Alert>
-      ) : (
-        <Paper
-          variant="outlined"
-          sx={{
-            p: 2,
-            borderRadius: 3,
-          }}
-        >
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={1.5}
-            justifyContent="space-between"
-            alignItems={{ xs: "flex-start", sm: "center" }}
-          >
-            <Box>
-              <Typography fontWeight={700}>
-                {t("ai_provider_sn_section_title")}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                {t("ai_provider_sn_section_desc")}
-              </Typography>
-            </Box>
-            <Button
-              variant="outlined"
-              startIcon={<LockOpenRounded />}
-              onClick={() => {
-                setSnDialogValue(wizardData.sn_active_code || "");
-                setSnDialogError("");
-                setSnDialogOpen(true);
-              }}
-              sx={{ minHeight: 44 }}
-            >
-              {t("ai_provider_fill_sn_code")}
-            </Button>
-          </Stack>
-        </Paper>
-      )}
+      ) : null}
 
       <Stack
         direction="row"
@@ -278,31 +203,6 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
           {primaryLabel}
         </Button>
       </Stack>
-
-      <Dialog open={snDialogOpen} onClose={() => !snSubmitting && setSnDialogOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>{t("ai_provider_sn_dialog_title")}</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ pt: 1 }}>
-            <TextField
-              label={t("sn_active_code_label")}
-              value={snDialogValue}
-              onChange={(event) => setSnDialogValue(event.target.value)}
-              error={Boolean(snDialogError)}
-              helperText={snDialogError || " "}
-              fullWidth
-              autoFocus
-            />
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setSnDialogOpen(false)} disabled={snSubmitting}>
-            {t("cancel_button")}
-          </Button>
-          <Button onClick={handleConfirmSnCode} disabled={snSubmitting} variant="contained">
-            {t("confirm_button")}
-          </Button>
-        </DialogActions>
-      </Dialog>
 
       <Dialog
         open={skipConfirmOpen}

@@ -12,18 +12,18 @@ import ReviewStep from "./steps/ReviewStep";
 import SuccessStep from "./steps/SuccessStep";
 
 const stepOrder: StepKey[] = [
+  "security",
   "gateway",
   "domain",
-  "security",
   "ai_provider",
   "jarvis_msg_tunnel",
   "review",
   "success",
 ];
 const visibleSteps: StepKey[] = [
+  "security",
   "gateway",
   "domain",
-  "security",
   "ai_provider",
   "jarvis_msg_tunnel",
   "review",
@@ -80,9 +80,9 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
 
   const stepTitles = useMemo(
     () => ({
-      gateway: t("title_step_1"),
-      domain: t("title_step_2"),
-      security: t("title_step_3"),
+      security: t("title_step_1"),
+      gateway: t("title_step_2"),
+      domain: t("title_step_3"),
       ai_provider: t("title_step_4"),
       jarvis_msg_tunnel: t("title_step_5"),
       review: t("title_step_6"),
@@ -126,6 +126,16 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     }
     
     switch (currentStepKey) {
+      case "security":
+        return (
+          <SecurityStep
+            wizardData={wizardData}
+            onUpdate={handleUpdate}
+            onNext={goNext}
+            isWalletRuntime={isWalletRuntime}
+            walletUser={walletUser}
+          />
+        );
       case "gateway":
         return (
           <GatewayStep
@@ -142,12 +152,8 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
             onUpdate={handleUpdate}
             onNext={goNext}
             onBack={goBack}
-            isWalletRuntime={isWalletRuntime}
-            walletUser={walletUser}
           />
         );
-      case "security":
-        return <SecurityStep wizardData={wizardData} onUpdate={handleUpdate} onNext={goNext} onBack={goBack} />;
       case "ai_provider":
         return (
           <AIProviderStep
