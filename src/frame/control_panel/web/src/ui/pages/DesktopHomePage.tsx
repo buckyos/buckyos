@@ -1131,7 +1131,6 @@ const DesktopHomePage = () => {
     ],
   )
 
-  const onNotificationsClick = useCallback(() => navigateTo('/notifications'), [navigateTo])
   const onOpenNetworkWindow = useCallback(() => openWindow('network'), [openWindow])
   const onOpenSettings = useCallback(() => openWindow('settings'), [openWindow])
   const onOpenSnSettings = useCallback(() => {
@@ -1142,21 +1141,6 @@ const DesktopHomePage = () => {
     await signOut()
     navigate('/login', { replace: true })
   }, [navigate, signOut])
-  const goDesktop = useCallback(() => {
-    if (mode === 'desktop') {
-      return
-    }
-    setWindows([])
-    setMode('desktop')
-  }, [mode])
-
-  const goJarvis = useCallback(() => {
-    if (mode === 'jarvis') {
-      return
-    }
-    setWindows([])
-    setMode('jarvis')
-  }, [mode])
   const profileFirstName = useMemo(() => {
     const raw = layout.profile.name
     const first = raw.split(' ')[0]
@@ -1183,7 +1167,6 @@ const DesktopHomePage = () => {
         prefersReducedMotion={prefersReducedMotion}
         rxRate={rxRate}
         txRate={txRate}
-        onNotificationsClick={onNotificationsClick}
         onNetworkClick={onOpenNetworkWindow}
         onSnModeClick={onOpenSnSettings}
         onSignOutClick={onSignOutClick}
@@ -1210,7 +1193,7 @@ const DesktopHomePage = () => {
         )}
       </main>
 
-      <DesktopDock mode={mode} onDesktopClick={goDesktop} onJarvisClick={goJarvis} />
+      <DesktopDock />
 
       <WindowLayer
         windows={windows}
@@ -1239,7 +1222,6 @@ type DesktopHeaderProps = {
   prefersReducedMotion: boolean
   rxRate: number
   txRate: number
-  onNotificationsClick: () => void
   onNetworkClick: () => void
   onSnModeClick: () => void
   onSignOutClick: () => void
@@ -1254,7 +1236,6 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
     prefersReducedMotion,
     rxRate,
     txRate,
-    onNotificationsClick,
     onNetworkClick,
     onSnModeClick,
     onSignOutClick,
@@ -1307,18 +1288,6 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
 
           <button
             type="button"
-            className="group relative inline-flex size-8 items-center justify-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
-            aria-label="Open notifications"
-            onClick={onNotificationsClick}
-          >
-            <span className="inline-flex size-6.5 items-center justify-center rounded-lg bg-white/10 ring-1 ring-white/15 transition group-hover:bg-white/15">
-              <Icon name="bell" className="size-4" />
-            </span>
-            <span className="absolute right-1 top-1 size-1.5 rounded-full bg-[var(--cp-accent)]" />
-          </button>
-
-          <button
-            type="button"
             onClick={onNetworkClick}
             className="hidden items-center gap-1.5 rounded-lg bg-white/10 px-2 py-1 ring-1 ring-white/15 transition hover:bg-white/15 md:flex"
           >
@@ -1359,13 +1328,7 @@ const DesktopHeader = memo((props: DesktopHeaderProps) => {
 })
 DesktopHeader.displayName = 'DesktopHeader'
 
-type DesktopDockProps = {
-  mode: DesktopMode
-  onDesktopClick: () => void
-  onJarvisClick: () => void
-}
-
-const DesktopDock = memo((_props: DesktopDockProps) => {
+const DesktopDock = memo(() => {
   return null
 })
 DesktopDock.displayName = 'DesktopDock'

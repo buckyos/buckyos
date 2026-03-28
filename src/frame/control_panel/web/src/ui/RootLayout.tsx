@@ -17,7 +17,6 @@ const navLabelKeyByPath: Record<string, string> = {
   '/users': 'nav.users',
   '/storage': 'nav.storage',
   '/dapps': 'nav.dapps',
-  '/notifications': 'nav.notifications',
   '/system-logs': 'nav.systemLogs',
   '/sign-out': 'nav.signOut',
 }

@@ -60,7 +60,6 @@ const mockLayoutData: RootLayoutData = {
     { label: 'dApp Store', icon: 'apps', path: '/dapps' },
   ],
   secondaryNav: [
-    { label: 'Recent Events', icon: 'bell', path: '/notifications', badge: '3' },
     { label: 'System Logs', icon: 'chart', path: '/system-logs' },
     { label: 'Sign Out', icon: 'signout', path: '/sign-out' },
   ],

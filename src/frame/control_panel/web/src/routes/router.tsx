@@ -13,10 +13,8 @@ import NetworkPage from '../ui/pages/NetworkPage'
 import PlaceholderPage from '../ui/pages/PlaceholderPage'
 import UserManagementPage from '../ui/pages/UserManagementPage'
 import DappStorePage from '../ui/pages/DappStorePage'
-import RecentEventsPage from '../ui/pages/RecentEventsPage'
 import SystemLogsPage from '../ui/pages/SystemLogsPage'
 import StoragePage from '../ui/pages/StoragePage'
-import WorkspaceLayout from '../ui/workspace/WorkspaceLayout'
 
 const router = createBrowserRouter([
   {
@@ -26,14 +24,6 @@ const router = createBrowserRouter([
   {
     path: '/sso/login',
     element: <SsoLoginPage />,
-  },
-  {
-    path: '/workspace',
-    element: (
-      <RequireAuth>
-        <WorkspaceLayout />
-      </RequireAuth>
-    ),
   },
   {
     path: '/',
@@ -78,10 +68,6 @@ const router = createBrowserRouter([
               {
                 path: 'dapps',
                 element: <DappStorePage />,
-              },
-              {
-                path: 'notifications',
-                element: <RecentEventsPage />,
               },
               {
                 path: 'system-logs',

@@ -7229,11 +7229,6 @@ impl RPCHandler for ControlPanelServer {
             "device.list" => self.handle_unimplemented(req, "List devices/clients").await,
             "device.block" => self.handle_unimplemented(req, "Block device").await,
             "device.unblock" => self.handle_unimplemented(req, "Unblock device").await,
-            // Notification
-            "notification.list" => {
-                self.handle_unimplemented(req, "List notifications/events")
-                    .await
-            }
             // Logs
             "log.system" => self.handle_unimplemented(req, "System logs").await,
             "log.access" => self.handle_unimplemented(req, "Access logs").await,
