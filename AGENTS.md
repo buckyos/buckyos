@@ -5,7 +5,8 @@
 - Rust workspace root: `src/` (Cargo workspace; most crates live here)
 - Control panel service (Rust + kRPC): `src/frame/control_panel/`
 - Control panel UI (React/Vite/Tailwind): `src/frame/control_panel/web/`
-- Control panel PRD + RPC spec: `doc/PRD/control_panel/control_panel.md`
+- Control panel canonical docs: `doc/control_panel/`
+- Control panel historical product docs: `product/control_panel/`
 - UI/UX skill rules: `src/frame/control_panel/SKILL.md` (treat as required)
 - Dev proxy: `/kapi/control-panel` -> `http://127.0.0.1:3180` (see `src/frame/control_panel/web/vite.config.ts`)
 
@@ -74,7 +75,7 @@
 - Errors in core logic: prefer `anyhow::Result` for helpers and `thiserror::Error` for typed enums.
 - Imports: follow the local file style; keep `std`/external/internal groups readable.
 - Naming: snake_case functions/vars, PascalCase types, SCREAMING_SNAKE_CASE consts.
-- Keep RPC responses aligned with `doc/PRD/control_panel/control_panel.md` field names.
+- Keep RPC responses aligned with `doc/control_panel/SPEC.context.md` field names.
 
 ## Web style (control_panel UI)
 - Stack: React + TypeScript + Vite + Tailwind.
@@ -119,7 +120,8 @@
 - Quick checks: verify 375/768/1024/1440 widths and visible focus states.
 
 ## RPC / docs references
-- RPC contract and endpoint list: `doc/PRD/control_panel/control_panel.md`.
+- RPC contract and endpoint list: `doc/control_panel/SPEC.context.md`.
+- Historical product intent and planning context: `product/control_panel/control_panel.md`.
 - HTTP entry: POST `/kapi/control-panel` with kRPC body (`method`, `params`, `id`).
 - Naming: `module.action` (UI uses `ui.*`); legacy aliases for `main/layout/dashboard`.
 - Versioning: add fields backwards-compatibly; breaking changes use new method name.

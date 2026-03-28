@@ -13,7 +13,7 @@
 - `Non-Obvious Implementation Facts`
 - `Known Gaps And Technical Debt`
 - `Safe Change Guidelines`
-- `Migration Classification From doc/PRD/control_panel`
+- `Migration Classification From Historical Product Docs`
 - `Historical Notes To Preserve`
 
 ## Naming And Terminology Rules
@@ -58,7 +58,7 @@
 - `src/frame/control_panel/src/main.rs` 过大，dispatch 与 domain logic 混杂。
 - Files/Share 真实表面是 HTTP，但历史文档里长期以 RPC 规划形式存在。
 - Files 当前实现和产品方向之间存在明显落差：代码还是 file-manager-first，但目标已经扩展到对话检索、知识图谱、版本恢复、备份可靠性和 Agent-based data curation。
-- `doc/PRD/control_panel/control_panel.md` 混合了产品愿景、接口规格、现状说明、路线图。
+- `product/control_panel/control_panel.md` 混合了产品愿景、接口规格、现状说明、路线图。
 - `src/frame/control_panel/src/share_content_mgr.rs` 的定位仍需进一步澄清。
 - `src/frame/control_panel/web/src/ui/pages/DesktopHomePage.tsx` 过大，desktop shell、window manager、window content 耦合在同一文件中。
 - Message Hub 当前已从 desktop subwindow 迁到独立 route surface；message-level realtime 仍由现有 control-panel-hosted wrapper 提供，后续再迁到 `msg-center` 自身边界。
@@ -124,9 +124,9 @@
 - 任何声称“视觉统一”的改动都应覆盖桌面端与移动端，而不是只修一个断点。
 - 改 Desktop 时，优先把代码按 `window` 语义拆分，而不是把 desktop 的 integrated experience 打散成互相不一致的碎页面。
 
-## Migration Classification From doc/PRD/control_panel
+## Migration Classification From Historical Product Docs
 
-### `doc/PRD/control_panel/README.md`
+### `product/control_panel/README.md`
 
 - `直接吸收`:
   - 控制面板是系统服务
@@ -138,18 +138,7 @@
 - `保留为历史记录`:
   - 旧页面命名如果尚未映射到当前路由，可先保留为 historical notes
 
-### `doc/PRD/control_panel/SSO.md`
-
-- `直接吸收`:
-  - session token / refresh token 的基本模型
-  - 兼容应用不要混用 service token 与 page token 的原则
-- `需要重写`:
-  - 当前 control panel 路由约定需要与现有前端路由和 auth 实现对齐
-  - SSO 说明需要拆成 contract-level 行为和 context-level 注意事项
-- `保留为历史记录`:
-  - 超级用户签名页等未完全落地部分
-
-### `doc/PRD/control_panel/app安装UI.md`
+### `product/control_panel/app安装UI.md`
 
 - `直接吸收`:
   - 安装流程阶段划分：确认、配置、进度、失败
@@ -160,16 +149,7 @@
 - `保留为历史记录`:
   - 远期商店/付费设想中未进入近期实现范围的部分
 
-### `doc/PRD/control_panel/系统的GC工作.md`
-
-- `直接吸收`:
-  - 数据分类和自动/手动清理的核心意图
-- `需要重写`:
-  - 需要扩写为生命周期、可见性、策略边界，而不是一句话需求
-- `保留为历史记录`:
-  - 无，内容太短，重写后旧文档可直接降级为 historical stub
-
-### `doc/PRD/control_panel/control_panel.md`
+### `product/control_panel/control_panel.md`
 
 - `直接吸收`:
   - 目标与边界

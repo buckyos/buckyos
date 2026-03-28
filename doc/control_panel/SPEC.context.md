@@ -419,7 +419,7 @@
 
 ## Planned Install, Share-App, And Publish Surfaces
 
-本节承接 `doc/PRD/control_panel/app安装UI.md`，但只以 `Planned` 语义进入 canonical spec。
+本节承接 `product/control_panel/app安装UI.md`，但只以 `Planned` 语义进入 canonical spec。
 
 ### Install Entry Surfaces
 
@@ -711,6 +711,6 @@
 
 ## Migration Status
 
-- `doc/PRD/control_panel/control_panel.md` 中的“命名约定”“通用字段约定”“版本策略”“模块与接口”“Files/Share 当前实现状态”主要迁移到这里。
-- `doc/PRD/control_panel/SSO.md` 中 contract-level 的 token 规则主要迁移到这里。
-- `doc/PRD/control_panel/app安装UI.md` 中与控制面板直接相关的 route/spec 仍可在后续以 `Planned` 形式纳入这里。
+- `product/control_panel/control_panel.md` 中的“命名约定”“通用字段约定”“版本策略”“模块与接口”“Files/Share 当前实现状态”主要迁移到这里。
+- `doc/sdk/SSO.md` 中 contract-level 的 token 规则主要迁移到这里。
+- `product/control_panel/app安装UI.md` 中与控制面板直接相关的 route/spec 仍可在后续以 `Planned` 形式纳入这里。

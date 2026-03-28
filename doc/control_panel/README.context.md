@@ -14,7 +14,7 @@
 - `ARCHITECTURE.context.md` 负责讲运行结构、模块边界、数据流、鉴权流。
 - `SPEC.context.md` 是主规格文件，负责讲路由、RPC、HTTP API、状态模型、实现与规划状态。
 - `CONTEXT.context.md` 负责记录命名约定、非显而易见事实、技术债、迁移说明、不可破坏的原则。
-- `doc/PRD/control_panel/` 在迁移期保留，但其角色降级为 historical input，而不是长期 canonical source。
+- `product/control_panel/` 在迁移期保留为 historical product input，而不是长期 canonical source。
 
 ## Source Of Truth Policy
 
@@ -143,6 +143,6 @@
 
 ## Migration Status
 
-- `doc/PRD/control_panel/README.md` 的产品定位、入口页意图主要迁移到这里。
-- `doc/PRD/control_panel/control_panel.md` 中的目标与边界、核心概念、角色模型、用户旅程、非功能性要求主要迁移到这里。
+- `product/control_panel/README.md` 的产品定位、入口页意图主要迁移到这里。
+- `product/control_panel/control_panel.md` 中的目标与边界、核心概念、角色模型、用户旅程、非功能性要求主要迁移到这里。
 - 路由、RPC、HTTP API、鉴权细节不在本文件定义，统一迁移到 `SPEC.context.md` 与 `ARCHITECTURE.context.md`。

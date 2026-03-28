@@ -293,5 +293,5 @@
 
 ## Migration Status
 
-- `doc/PRD/control_panel/control_panel.md` 中“信息架构与导航”“依赖与风险”“Files/Share 当前实现状态”应以重写后形式收敛到这里。
+- `product/control_panel/control_panel.md` 中“信息架构与导航”“依赖与风险”“Files/Share 当前实现状态”应以重写后形式收敛到这里。
 - 本文优先描述当前真实结构，不负责承载完整接口清单。

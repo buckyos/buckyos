@@ -224,6 +224,6 @@ doc/
 ## 12. 交付物清单
 
 - 规划文档（本文件）。
-- API 文档（待补）：`doc/PRD/bucky_file/bucky_file_api.md`。
-- 迁移文档（待补）：`doc/PRD/bucky_file/bucky_file_migration.md`。
+- API 文档（待补）：`product/bucky_file/bucky_file_api.md`。
+- 迁移文档（待补）：`product/bucky_file/bucky_file_migration.md`。
 - 代码骨架（后续阶段）。
