@@ -1,5 +1,8 @@
 # Project Templates
 
+> 该文档的目的，是总结系统里的常见开发任务的套路:
+> 先知道任务类型，再根据任务类型选择流程
+
 基本思路：保持Kernel的简洁
 能用app实现的功能就用app
 能用service实现的功能就用service
