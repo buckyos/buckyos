@@ -535,14 +535,14 @@ class Bootstrapper:
         print("\nNext steps:")
         if self.system == "Windows":
             print("- Reopen terminal to ensure winget-installed software is in PATH")
-            print("- `python -m venv venv`")
-            print("- `venv\\Scripts\\activate`")
-            print('- `python -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"`')
+            print("- Install `uv` if it is still missing")
+            print("- `cd buckyos`")
+            print("- `uv run src\\buckyos-build.py --no-build-web-apps`")
         else:
             print("- Reopen terminal to ensure rustup/cargo is in PATH")
-            print("- `python3 -m venv venv`")
-            print("- `source venv/bin/activate`")
-            print('- `python3 -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"`')
+            print("- Install `uv` if it is still missing")
+            print("- `cd buckyos`")
+            print("- `uv run src/buckyos-build.py --no-build-web-apps`")
 
 
 def parse_args() -> argparse.Namespace:

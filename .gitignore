@@ -1,9 +1,9 @@
 .vscode
 **/.idea
 .VSCodeCounter
-AGENT.md
-agents.local.md
-context.md
+
+**/*.local.*
+
 *.bkp
 *.exe
 package-lock.json

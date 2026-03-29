@@ -1,131 +1,165 @@
 # AGENTS
 
-## Scope
+## Commands
 
-- Rust workspace root: `src/` (Cargo workspace; most crates live here)
-- Control panel service (Rust + kRPC): `src/frame/control_panel/`
-- Control panel UI (React/Vite/Tailwind): `src/frame/control_panel/web/`
-- Control panel canonical docs: `doc/control_panel/`
-- Control panel historical product docs: `product/control_panel/`
-- UI/UX skill rules: `src/frame/control_panel/SKILL.md` (treat as required)
-- Dev proxy: `/kapi/control-panel` -> `http://127.0.0.1:3180` (see `src/frame/control_panel/web/vite.config.ts`)
+```bash
+cd src && cargo run -p control_panel
 
-## Control panel map
-### Rust service
-- Package manifest: `src/frame/control_panel/Cargo.toml` (package name `control_panel`)
-- Entry point + RPC router: `src/frame/control_panel/src/main.rs`
-- RPC handler type: `ControlPanelServer` implements `RPCHandler`
-- Implemented endpoints: `ui.main`, `ui.layout`, `ui.dashboard`, `system.overview`, `system.metrics`, `sys_config.*`, `apps.list`
-- Unimplemented endpoints return `Not implemented` via `handle_unimplemented`
+uv run src/buckyos-build.py
+uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install
 
-### Web UI
-- App entry: `src/frame/control_panel/web/src/main.tsx` and `src/frame/control_panel/web/src/App.tsx`
-- Router: `src/frame/control_panel/web/src/routes/router.tsx`
-- Layout: `src/frame/control_panel/web/src/ui/RootLayout.tsx`
-- Pages: `src/frame/control_panel/web/src/ui/pages/*.tsx`
-- API client + mocks: `src/frame/control_panel/web/src/api/index.ts`
-- Global types: `src/frame/control_panel/web/src/interface.d.ts`
-- Styling tokens + shared classes: `src/frame/control_panel/web/src/index.css`
 
-## Build / lint / test
-### Workspace / system
-- Install devkit (required for buckyos-build/install): `python3 -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"`
-- Build all apps (CI uses this from `src/`): `cd src && buckyos-build`
-- Build Rust only (skip web apps): `cd src && python3 build.py --no-build-web-apps`
-- Install rootfs (full): `cd src && buckyos-install --all`
-- Install rootfs (incremental): `cd src && buckyos-install`
-- Start local rootfs: `cd src && python3 start.py`
-- Cargo tests (CI when enabled): `cd src && cargo test -- --test-threads=1`
+uv run start.py 
+uv run start.py --reinstall <group_name>
+uv run start.py --all
 
-### Preferred deploy flow (local machine)
-- Activate env: `source /root/app/myenv/bin/activate`
-- Build control panel only: `cd src && buckyos-build -s control_panel control_panel_web`
-- Install to `/opt/buckyos`: `cd src && buckyos-install`
-- Restart services: `systemctl restart buckyos`
-- Note: `buckyos-build -s control-panel control-panel-web` may skip Rust modules in this repo; prefer underscore module ids above.
+uv run stop.py
 
-### Control panel service (Rust)
-- Run: `cd src && cargo run -p control_panel`
-- Build: `cd src && cargo build -p control_panel`
-- Test all: `cd src && cargo test -p control_panel`
-- Test single (name filter): `cd src && cargo test -p control_panel <test_name_substring>`
-- Test single integration file: `cd src && cargo test -p control_panel --test <test_file_name>`
-- Legacy docs mention `control_panel_service`; current crate name is `control_panel`
+```
 
-### Control panel UI (web)
-- Install deps (pnpm lockfile present): `cd src/frame/control_panel/web && pnpm install`
-- Dev server: `cd src/frame/control_panel/web && pnpm dev`
-- Build: `cd src/frame/control_panel/web && pnpm build`
-- Lint: `cd src/frame/control_panel/web && pnpm lint`
-- Preview build: `cd src/frame/control_panel/web && pnpm preview`
-- Tests: no test runner configured in `src/frame/control_panel/web/package.json`
+## 目录结构
 
-## Rust style (control_panel service)
-- Main entry is `src/frame/control_panel/src/main.rs`; keep related RPC logic together.
-- RPC routing lives in `handle_rpc_call`; add new methods there and group by module.
-- Prefer `ui.*` names for UI endpoints and keep legacy aliases (`main`, `layout`, `dashboard`) when touching routes.
-- Response shape: `RPCResponse::new(RPCResult::Success(json!(...)), req.id)`.
-- Errors: return `Result<RPCResponse, RPCErrors>`; use `RPCErrors::ReasonError` for user-visible errors.
-- Params: `param_str` for optional values, `require_param_str` for required values.
-- Auth: accept token from `req.token`, `params.session_token`, or env (see `get_session_token_env_key`).
-- Sys config: use `SystemConfigClient::{get,set,list}`; map errors to `RPCErrors`.
-- JSON: use `serde_json::json!` and `serde_json::Value` for dynamic payloads.
-- Async: use `tokio` for sleeps/IO; avoid blocking calls inside handlers.
-- Logging: use `log::info/warn/error`; avoid `println!`.
-- Errors in core logic: prefer `anyhow::Result` for helpers and `thiserror::Error` for typed enums.
-- Imports: follow the local file style; keep `std`/external/internal groups readable.
-- Naming: snake_case functions/vars, PascalCase types, SCREAMING_SNAKE_CASE consts.
-- Keep RPC responses aligned with `doc/control_panel/SPEC.context.md` field names.
+## 处理规则
 
-## Web style (control_panel UI)
-- Stack: React + TypeScript + Vite + Tailwind.
-- Component naming: PascalCase files/components (e.g., `DashboardPage.tsx`).
-- Pages live in `src/frame/control_panel/web/src/ui/pages/`.
-- Imports: type-only imports first, then React/third-party, then `@/` absolute, then relative.
-- Types: global UI types live in `src/frame/control_panel/web/src/interface.d.ts`.
-- Aliases: `@` resolves to `src` (see `tsconfig.app.json` and `vite.config.ts`).
-- Formatting: follow existing style (2-space indent, no semicolons, trailing commas).
-- API layer: use `buckyos.kRPCClient` in `src/frame/control_panel/web/src/api/index.ts`.
-- API return shape: `{ data, error }` and guard against invalid payloads.
-- Error handling: warn and fall back to mock data when backend is unavailable.
-- Mock data lives in `src/frame/control_panel/web/src/api/index.ts`; keep it in sync with types.
-- Routing: add pages in `src/frame/control_panel/web/src/routes/router.tsx`.
-- Nav items come from layout data; update `mockLayoutData` when adding nav.
-- Styling: prefer Tailwind utilities + CSS variables from `src/frame/control_panel/web/src/index.css`.
-- Reuse shared classes: `cp-panel`, `cp-card`, `cp-pill`, `cp-nav-link`, `cp-shell`.
-- Colors: use `var(--cp-*)` tokens instead of hard-coded hex unless adding tokens.
-- Icons: use `Icon` + `IconName` from `src/frame/control_panel/web/src/ui/icons.tsx`.
-- Add new icons by updating `IconName` union and `icons` map; no emoji icons.
-- Accessibility: keep focus states visible and respect `prefers-reduced-motion`.
-- State: include loading/empty/error states on data-driven pages.
+从proposal开始，到PR结束
 
-## UI/UX rules (from `src/frame/control_panel/SKILL.md`)
-- Priority: accessibility, interaction, layout, typography/color, motion.
-- Primary color: `#0f766e`.
-- Accent color: `#f59e0b`.
-- Fonts: Space Grotesk (headings), Work Sans (body).
-- Neutrals: `#0f172a` ink, `#52606d` muted, `#d7e1df` border, `#f4f8f7` surface-muted, `#ffffff` surface.
-- Radius scale: 8 / 12 / 18 / 24.
-- Shadow scale: soft / strong (avoid heavy blur).
-- Spacing scale: 4 / 8 / 12 / 16 / 24 / 32.
-- Typography: sizes 12 / 14 / 16 / 20 / 24 / 32; body line-height 1.5, heading 1.2.
-- Icon system: one SVG icon set only; sizes 16 / 20 / 24; no emoji icons.
-- Layout rules: max width 1280, sidebar 260, card gap 16-24, page padding 24 desktop / 16 mobile.
-- Interaction: touch targets >= 44x44px; no layout shift on hover.
-- Data density: default medium; keep line length <= 75 chars where possible.
-- States: loading skeleton/shimmer; empty state with explanation + next action; error with clear message + retry.
-- Charts: primary then accent; avoid low-contrast pairs; light gridlines and muted labels.
-- Motion: 150-300ms transitions; respect `prefers-reduced-motion`.
-- Workflow: define a design system before building components.
-- Quick checks: verify 375/768/1024/1440 widths and visible focus states.
+## 常见术语
 
-## RPC / docs references
-- RPC contract and endpoint list: `doc/control_panel/SPEC.context.md`.
-- Historical product intent and planning context: `product/control_panel/control_panel.md`.
-- HTTP entry: POST `/kapi/control-panel` with kRPC body (`method`, `params`, `id`).
-- Naming: `module.action` (UI uses `ui.*`); legacy aliases for `main/layout/dashboard`.
-- Versioning: add fields backwards-compatibly; breaking changes use new method name.
-- When adding RPC data: update backend handler, frontend types, and mock data.
+## 1. 文档目标
 
-## Cursor / Copilot rules
-- None found in `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md`.
+本文件不是项目百科，也不是实现现状清单。
+
+它只定义两件事：
+
+- AI / 人在本仓库中协作开发时，应该以什么信息作为输入
+- 一个任务在进入编码后，最低需要走完什么闭环才算完成
+
+具体实现细节、路由、RPC、页面、历史背景，尽量下沉到模块自己的 canonical 文档中，不在这里重复展开。
+
+
+## 3. 基本原则
+
+- Git / 文件系统优先：优先依据仓库中的代码、文档、脚本与目录结构工作，而不是外部平台语义。
+- 文档先于编码：没有足够清晰的文档输入时，不要直接扩写实现假设。
+- 测试属于任务本身：写完代码不等于完成任务，至少要补到可验证状态。
+- 组合优于发明：优先复用已有模块、类型、脚本、依赖和既有模式。
+- 边界优先：修改前先确认这个需求属于哪个模块，避免跨边界误改。
+
+## 4. 信息输入优先级
+
+处理任务时，默认按以下顺序建立上下文：
+
+1. 当前代码路径与可运行脚本
+2. 模块 canonical 文档
+3. 模块本地规则文件
+4. 历史文档
+
+## 6. AI 开发前的最小检查
+
+开始实现前，至少完成以下检查：
+
+- 任务属于哪个模块
+- 当前事实来源是哪份 canonical 文档
+- 关键入口文件是什么
+- 是否已有现成实现、类型、脚本或依赖可复用
+- 任务的完成标准是什么
+- 最低测试要求是什么
+
+如果这些问题答不出来，不要急着开始大改。
+
+## 7. Developer Loop 最小闭环
+
+任何默认开发任务，至少按下面的闭环推进：
+
+1. 读取任务相关文档与代码入口
+2. 确认最小改动面
+3. 实现
+4. 运行最相关的测试 / 构建 / lint / 验证脚本
+5. 失败则诊断并修复
+6. 输出结果与证据
+
+“完成”至少意味着：
+
+- 代码已改
+- 相关校验已执行，或明确说明为什么没法执行
+- 风险点已指出
+
+## 8. 测试与验证要求
+
+对本仓库中的任务，默认分三层看待：
+
+### 8.1 第一层：局部校验
+
+- Rust：`cargo test`、`cargo build`
+- Web：`pnpm build`、`pnpm lint`
+- 只要任务改动影响到该层，就优先跑最小相关校验
+
+### 8.2 第二层：单点 / 开发态验证
+
+如果任务影响运行时行为，优先补单点验证，例如：
+
+- 服务是否能启动
+- RPC 是否能跑通
+- 页面是否能加载
+- 关键 HTTP / Files 路径是否可用
+
+### 8.3 第三层：更高成本验证
+
+例如集成环境、跨节点环境、真实部署验证。
+
+这类验证当前在本文件中不强制展开；如果没执行，需要在结果中明确说明。
+
+## 9. control_panel 常用命令
+
+### 9.1 Workspace / system
+
+- `cd src && uv run ./buckyos-build.py`
+- `cd src && uv run ./buckyos-build.py --no-build-web-apps`
+- `cd src && uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install`
+- `cd src && cargo test -- --test-threads=1`
+
+### 9.2 control_panel backend
+
+- `cd src && cargo run -p control_panel`
+- `cd src && cargo build -p control_panel`
+- `cd src && cargo test -p control_panel`
+
+### 9.3 control_panel web
+
+- `cd src/frame/control_panel/web && pnpm install`
+- `cd src/frame/control_panel/web && pnpm dev`
+- `cd src/frame/control_panel/web && pnpm build`
+- `cd src/frame/control_panel/web && pnpm lint`
+
+### 9.4 本地部署流
+
+- `cd src && uv run ./buckyos-build.py -s control_panel control_panel_web`
+- `cd src && uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install`
+- `systemctl restart buckyos`
+
+## 10. 实施约束
+
+### 10.3 共享规则
+
+- 优先最小改动，不做无关重写
+- 不新增依赖，除非现有方案明显不够
+- 改协议、字段、命名时，必须检查前后端和文档是否联动
+
+## 11. 输出要求
+
+完成任务后，至少应能回答：
+
+- 改了什么
+- 为什么这样改
+- 跑了什么验证
+- 还有什么风险或未验证项
+
+如果是较大任务，还应说明：
+
+- 主要改动入口文件
+- 是否影响文档、协议、共享类型、依赖
+
+
+
+
+
