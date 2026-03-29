@@ -44,13 +44,11 @@ Installing from source is a good way to understand BuckyOS and the first step to
 git clone https://github.com/buckyos/buckyos.git
 ```
 
-After cloning, install `buckyos-devkit` first. It provides commands such as `buckyos-build` and `buckyos-install`. It is recommended to create and activate a virtual environment in the project directory before installing it:
+After cloning, install `uv` first. The repo now provides [`src/buckyos-build.py`](./src/buckyos-build.py), which resolves `buckyos-devkit` on demand, so you no longer need to create a project venv just to run `buckyos-build`:
 
 ```bash
 cd buckyos
-python3 -m venv venv
-source venv/bin/activate
-python3 -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+uv run src/buckyos-build.py --no-build-web-apps
 ```
 
 Before building, you can refer to `devenv.py` to prepare the environment. The main dependencies are the Rust toolchain, Node.js + pnpm, Python 3.12, and `docker.io`. Once those are ready, use the following steps.
@@ -63,8 +61,8 @@ BuckyOS currently depends on cyfs-gateway, so you need to build cyfs-gateway fro
 cd ~/
 git clone https://github.com/buckyos/cyfs-gateway.git
 cd cyfs-gateway/src
-buckyos-build
-buckyos-install --all
+uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-build
+uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install --all
 ```
 
 ### Step 2. Build buckyos
@@ -73,7 +71,7 @@ Return to the BuckyOS repository and run:
 
 ```bash
 cd buckyos/src
-buckyos-build
+uv run ./buckyos-build.py
 ```
 
 ### Step 3. Start buckyos
@@ -109,7 +107,7 @@ sudo /opt/buckyos/bin/node-daemon/node_daemon --enable_active
 
 ```bash
 cd src
-python3 build.py --no-build-web-apps
+uv run ./buckyos-build.py --no-build-web-apps
 ```
 
 - Update only the compiled artifacts and then start `/opt/buckyos`:
