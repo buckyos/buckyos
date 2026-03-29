@@ -275,6 +275,9 @@ struct LogFileRef {
     modified: std::time::SystemTime,
 }
 
+type LogCursorContext = (String, String);
+type ParsedLogEntry = (String, String, String, Option<LogCursorContext>);
+
 #[derive(Clone, Debug, Default)]
 struct NetworkStatsSnapshot {
     rx_bytes: u64,
@@ -493,7 +496,8 @@ impl ControlPanelServer {
                 proc_net_dev_stats = ControlPanelServer::read_proc_net_dev_stats();
 
                 disk_refresh_counter = disk_refresh_counter.saturating_add(1);
-                let refresh_disks = disk_refresh_counter % METRICS_DISK_REFRESH_INTERVAL_SECS == 0;
+                let refresh_disks =
+                    disk_refresh_counter.is_multiple_of(METRICS_DISK_REFRESH_INTERVAL_SECS);
                 if refresh_disks {
                     disks.refresh(true);
                 }
@@ -1172,16 +1176,16 @@ impl ControlPanelServer {
         .await
     }
 
-    fn require_chat_principal<'a>(
-        principal: Option<&'a RpcAuthPrincipal>,
-    ) -> Result<&'a RpcAuthPrincipal, RPCErrors> {
+    fn require_chat_principal(
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<&RpcAuthPrincipal, RPCErrors> {
         principal
             .ok_or_else(|| RPCErrors::InvalidToken("missing authenticated principal".to_string()))
     }
 
-    fn require_rpc_principal<'a>(
-        principal: Option<&'a RpcAuthPrincipal>,
-    ) -> Result<&'a RpcAuthPrincipal, RPCErrors> {
+    fn require_rpc_principal(
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<&RpcAuthPrincipal, RPCErrors> {
         principal
             .ok_or_else(|| RPCErrors::InvalidToken("missing authenticated principal".to_string()))
     }
@@ -1667,10 +1671,7 @@ impl ControlPanelServer {
         ("".to_string(), "unknown".to_string(), trimmed.to_string())
     }
 
-    fn extract_log_entry(
-        raw: &str,
-        context: Option<&(String, String)>,
-    ) -> Option<(String, String, String, Option<(String, String)>)> {
+    fn extract_log_entry(raw: &str, context: Option<&LogCursorContext>) -> Option<ParsedLogEntry> {
         let trimmed = raw.trim_end();
         if trimmed.is_empty() {
             return None;
@@ -1806,7 +1807,7 @@ impl ControlPanelServer {
     }
 
     fn format_log_service_label(name: &str) -> String {
-        name.split(|ch| ch == '_' || ch == '-')
+        name.split(['_', '-'])
             .filter(|part| !part.is_empty())
             .map(|part| {
                 let mut chars = part.chars();
@@ -1848,7 +1849,7 @@ impl ControlPanelServer {
             }
             let modified = std::fs::metadata(&path)
                 .and_then(|meta| meta.modified())
-                .unwrap_or_else(|_| std::time::SystemTime::UNIX_EPOCH);
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             files.push(LogFileRef {
                 service: service.to_string(),
                 name,
@@ -1986,7 +1987,7 @@ impl ControlPanelServer {
         let cpu_usage = system.global_cpu_usage() as f64;
         let cpu_brand = system
             .cpus()
-            .get(0)
+            .first()
             .map(|c| c.brand().to_string())
             .unwrap_or_else(|| "Unknown CPU".to_string());
         let cpu_cores = system.cpus().len() as u64;
@@ -2116,7 +2117,7 @@ impl ControlPanelServer {
 
         let cpu_brand = system
             .cpus()
-            .get(0)
+            .first()
             .map(|c| c.brand().to_string())
             .unwrap_or_else(|| "Unknown CPU".to_string());
 
@@ -3011,7 +3012,7 @@ impl ControlPanelServer {
                             RPCErrors::ReasonError(format!("Failed to read log file: {}", err))
                         })?;
                         let reader = BufReader::new(file_handle);
-                        for line in reader.lines().flatten() {
+                        for line in reader.lines().map_while(Result::ok) {
                             let (ts, level, message) = ControlPanelServer::split_log_line(&line);
                             if let Some(filter) = level_filter.as_ref() {
                                 if &level != filter {
@@ -3425,7 +3426,7 @@ impl ControlPanelServer {
                 };
                 let child_name = child
                     .split('/')
-                    .last()
+                    .next_back()
                     .unwrap_or(child.as_str())
                     .to_string();
                 let subtree = if depth > 1 {
@@ -5013,7 +5014,7 @@ impl ControlPanelServer {
 
         let release = candidates
             .into_iter()
-            .max_by(|lhs, rhs| Self::compare_repo_app_release(lhs, rhs))
+            .max_by(Self::compare_repo_app_release)
             .ok_or_else(|| {
                 let detail = requested_version
                     .map(|value| format!(" version `{value}`"))
@@ -5031,11 +5032,12 @@ impl ControlPanelServer {
     }
 
     fn build_default_install_config(app_id: &str, app_doc: &AppDoc) -> ServiceInstallConfig {
-        let mut install_config = ServiceInstallConfig::default();
-        install_config.local_cache_mount_point =
-            app_doc.install_config_tips.local_cache_mount_point.clone();
-        install_config.container_param = app_doc.install_config_tips.container_param.clone();
-        install_config.start_param = app_doc.install_config_tips.start_param.clone();
+        let mut install_config = ServiceInstallConfig {
+            local_cache_mount_point: app_doc.install_config_tips.local_cache_mount_point.clone(),
+            container_param: app_doc.install_config_tips.container_param.clone(),
+            start_param: app_doc.install_config_tips.start_param.clone(),
+            ..Default::default()
+        };
 
         for (service_name, service_port) in app_doc.install_config_tips.service_ports.iter() {
             let mut expose = ServiceExposeConfig::default();
@@ -5107,10 +5109,7 @@ impl ControlPanelServer {
 
         info!(
             "rpc app.publish app=`{}` version=`{}` type=`{}` local_dir=`{}`",
-            app_doc.name,
-            app_doc.version,
-            app_type.to_string(),
-            local_dir
+            app_doc.name, app_doc.version, app_type, local_dir
         );
         let obj_id = self
             .app_installer
@@ -5535,7 +5534,7 @@ impl ControlPanelServer {
             if ch == '\u{1b}' {
                 if matches!(chars.peek(), Some('[')) {
                     let _ = chars.next();
-                    while let Some(code) = chars.next() {
+                    for code in chars.by_ref() {
                         if ('@'..='~').contains(&code) {
                             break;
                         }
@@ -5569,7 +5568,7 @@ impl ControlPanelServer {
             .as_ref()
             .and_then(|meta| meta.modified().ok())
             .map(|time| DateTime::<Utc>::from(time).to_rfc3339())
-            .unwrap_or_else(|| "".to_string());
+            .unwrap_or_default();
 
         json!({
             "name": path.file_name().and_then(|value| value.to_str()).unwrap_or(""),

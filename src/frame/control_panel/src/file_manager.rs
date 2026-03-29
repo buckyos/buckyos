@@ -160,6 +160,19 @@ struct RecycleBinListResponse {
 }
 
 #[derive(Debug, Clone)]
+struct RecycleBinItemRecordInput {
+    owner: String,
+    item_id: String,
+    original_rel_path: String,
+    trashed_rel_path: String,
+    name: String,
+    is_dir: bool,
+    size: u64,
+    modified: u64,
+    deleted_at: u64,
+}
+
+#[derive(Debug, Clone)]
 struct ThumbnailTask {
     owner: String,
     rel_path: String,
@@ -742,8 +755,8 @@ impl BuckyFileServer {
                     RPCErrors::ReasonError(format!("remove stale metadata failed: {}", err))
                 })?
             } else {
-                let like_scope = BuckyFileServer::rel_path_scope_like(&scope_display_path)
-                    .unwrap_or_else(|| "".to_string());
+                let like_scope =
+                    BuckyFileServer::rel_path_scope_like(&scope_display_path).unwrap_or_default();
                 tx.execute(
                     "DELETE FROM file_entries
                      WHERE owner = ?1
@@ -853,8 +866,8 @@ impl BuckyFileServer {
             })?;
 
             let now = BuckyFileServer::now_unix().min(i64::MAX as u64) as i64;
-            let scope_like = BuckyFileServer::rel_path_scope_like(&scope_display_path)
-                .unwrap_or_else(|| "".to_string());
+            let scope_like =
+                BuckyFileServer::rel_path_scope_like(&scope_display_path).unwrap_or_default();
 
             let select_sql = if scope_display_path == "/" {
                 "SELECT rel_path, ext, size, modified FROM file_entries WHERE owner = ?1 AND is_dir = 0"
@@ -989,7 +1002,7 @@ impl BuckyFileServer {
                         THUMBNAIL_VARIANT_DEFAULT,
                         scope_display_path,
                         BuckyFileServer::rel_path_scope_like(&scope_display_path)
-                            .unwrap_or_else(|| "".to_string()),
+                            .unwrap_or_default(),
                     ],
                 )
             }
@@ -1714,22 +1727,9 @@ impl BuckyFileServer {
 
     async fn create_recycle_bin_item_record(
         &self,
-        owner: &str,
-        item_id: &str,
-        original_rel_path: &str,
-        trashed_rel_path: &str,
-        name: &str,
-        is_dir: bool,
-        size: u64,
-        modified: u64,
-        deleted_at: u64,
+        record: RecycleBinItemRecordInput,
     ) -> Result<(), RPCErrors> {
         let db_path = self.db_path();
-        let owner = owner.to_string();
-        let item_id = item_id.to_string();
-        let original_rel_path = original_rel_path.to_string();
-        let trashed_rel_path = trashed_rel_path.to_string();
-        let name = name.to_string();
         tokio::task::spawn_blocking(move || -> Result<(), RPCErrors> {
             let conn = Connection::open(db_path).map_err(|err| {
                 RPCErrors::ReasonError(format!("open recycle database failed: {}", err))
@@ -1740,15 +1740,15 @@ impl BuckyFileServer {
                     name, is_dir, size, modified, deleted_at
                  ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
-                    item_id,
-                    owner,
-                    original_rel_path,
-                    trashed_rel_path,
-                    name,
-                    if is_dir { 1i64 } else { 0i64 },
-                    size.min(i64::MAX as u64) as i64,
-                    modified.min(i64::MAX as u64) as i64,
-                    deleted_at.min(i64::MAX as u64) as i64,
+                    record.item_id,
+                    record.owner,
+                    record.original_rel_path,
+                    record.trashed_rel_path,
+                    record.name,
+                    if record.is_dir { 1i64 } else { 0i64 },
+                    record.size.min(i64::MAX as u64) as i64,
+                    record.modified.min(i64::MAX as u64) as i64,
+                    record.deleted_at.min(i64::MAX as u64) as i64,
                 ],
             )
             .map_err(|err| {
@@ -3398,6 +3398,7 @@ impl BuckyFileServer {
         let tmp_path = self.upload_tmp_path(&session.id);
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(&tmp_path)
             .await
@@ -4840,7 +4841,7 @@ impl BuckyFileServer {
                         name: base_rel_path
                             .file_name()
                             .map(|v| v.to_string_lossy().to_string())
-                            .unwrap_or_else(|| "".to_string()),
+                            .unwrap_or_default(),
                         path: BuckyFileServer::to_display_path(&base_rel_path),
                         is_dir: false,
                         size: search_root_meta.len(),
@@ -5603,21 +5604,21 @@ impl BuckyFileServer {
         let original_display_path = Self::to_display_path(rel_path);
         let recycle_display_path = Self::to_display_path(&recycle_rel_path);
         let deleted_at = Self::now_unix();
-        self.create_recycle_bin_item_record(
-            owner,
-            &item_id,
-            original_display_path.as_str(),
-            recycle_display_path.as_str(),
-            &name,
-            source_metadata.is_dir(),
-            if source_metadata.is_file() {
+        self.create_recycle_bin_item_record(RecycleBinItemRecordInput {
+            owner: owner.to_string(),
+            item_id: item_id.clone(),
+            original_rel_path: original_display_path,
+            trashed_rel_path: recycle_display_path,
+            name,
+            is_dir: source_metadata.is_dir(),
+            size: if source_metadata.is_file() {
                 source_metadata.len()
             } else {
                 0
             },
-            Self::unix_mtime(source_metadata),
+            modified: Self::unix_mtime(source_metadata),
             deleted_at,
-        )
+        })
         .await
         .map_err(|err| {
             server_err!(

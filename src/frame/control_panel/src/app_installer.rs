@@ -1214,15 +1214,15 @@ impl AppInstaller {
     /// 1. 校验 content_id 已在 RepoService 中 collected
     /// 2. 通过task_mgr创建一个可以跟踪的App Install Task
     /// 3. 返回install task_id
-    /// 下面流程在工作线程中执行，并会根据task_id更新状态
-    /// 3. 通过task_mgr::create_download_task下载app_pkg_meta(会自动下载所有的sub pkg)
-    /// 4. 等待下载完成，再次检查 app_pkg_meta 已经在named_store中ready
-    /// 5. 调用repo::pin(app_pkg_meta, download_action)将app_pkg_meta pin到RepoService中
-    /// 6. get_next_app_index() 分配 app_index，写入 spec
-    /// 7. 确定存储路径：users/{uid}/apps/{app}/spec 或 users/{uid}/agents/{app}/spec
-    /// 8. 写 spec（state=New）到 system_config
-    /// 9. repo.add_proof(install_action)
-
+    ///
+    /// 下面流程在工作线程中执行，并会根据task_id更新状态：
+    /// 4. 通过task_mgr::create_download_task下载app_pkg_meta(会自动下载所有的sub pkg)
+    /// 5. 等待下载完成，再次检查 app_pkg_meta 已经在named_store中ready
+    /// 6. 调用repo::pin(app_pkg_meta, download_action)将app_pkg_meta pin到RepoService中
+    /// 7. get_next_app_index() 分配 app_index，写入 spec
+    /// 8. 确定存储路径：users/{uid}/apps/{app}/spec 或 users/{uid}/agents/{app}/spec
+    /// 9. 写 spec（state=New）到 system_config
+    /// 10. repo.add_proof(install_action)
     pub async fn install_app(&self, spec: &AppServiceSpec) -> Result<u64, RPCErrors> {
         let content_id = Self::resolve_content_id(spec)?;
         let (task_mgr, task_id, root_id) = self
@@ -1518,8 +1518,7 @@ impl AppInstaller {
         if template_type != app_type {
             return Err(RPCErrors::ReasonError(format!(
                 "App type mismatch: template is `{}`, request is `{}`",
-                template_type.to_string(),
-                app_type.to_string()
+                template_type, app_type
             )));
         }
 
@@ -1748,7 +1747,7 @@ impl AppInstaller {
         info!(
             "begin publish app `{}` type `{}` from `{}`",
             app_doc_template.name,
-            app_type.to_string(),
+            app_type,
             local_dir.display()
         );
         let plan = self.scan_publish_sources(app_type, local_dir, app_doc_template)?;
