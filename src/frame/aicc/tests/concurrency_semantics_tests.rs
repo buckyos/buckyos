@@ -1,46 +1,9 @@
 mod common;
 
-use aicc::{
-    AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
-    Router, TaskEventKind, TenantRouteConfig,
-};
-use buckyos_api::{
-    AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus,
-};
+use aicc::{CostEstimate, ModelCatalog, ProviderStartResult, Registry, Router};
+use buckyos_api::{AiResponseSummary, Capability};
 use common::*;
-use std::collections::HashMap;
 use std::sync::Arc;
-
-fn setup_route_provider(
-    registry: &Registry,
-    catalog: &ModelCatalog,
-    instance_id: &str,
-    provider_type: &str,
-    model: &str,
-    cost: f64,
-    latency_ms: u64,
-) {
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        provider_type,
-        model,
-    );
-    let provider = Arc::new(MockProvider::new(
-        mock_instance(
-            instance_id,
-            provider_type,
-            vec![Capability::LlmRouter],
-            vec!["plan".to_string()],
-        ),
-        CostEstimate {
-            estimated_cost_usd: Some(cost),
-            estimated_latency_ms: Some(latency_ms),
-        },
-        vec![Ok(ProviderStartResult::Started)],
-    ));
-    registry.add_provider(provider);
-}
 
 #[tokio::test]
 // 用例说明：
@@ -94,7 +57,11 @@ async fn conc_01_task_id_uniqueness_under_concurrency() {
     }
     ids.sort();
     ids.dedup();
-    assert_eq!(ids.len(), 64, "assert_eq failed in conc_01_task_id_uniqueness_under_concurrency: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        ids.len(),
+        64,
+        "assert_eq failed in conc_01_task_id_uniqueness_under_concurrency: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]

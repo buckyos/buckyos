@@ -1,46 +1,9 @@
 mod common;
 
-use aicc::{
-    AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
-    Router, TaskEventKind, TenantRouteConfig,
-};
-use buckyos_api::{
-    AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus,
-};
+use aicc::{CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry};
+use buckyos_api::{Capability, CompleteStatus};
 use common::*;
-use std::collections::HashMap;
 use std::sync::Arc;
-
-fn setup_route_provider(
-    registry: &Registry,
-    catalog: &ModelCatalog,
-    instance_id: &str,
-    provider_type: &str,
-    model: &str,
-    cost: f64,
-    latency_ms: u64,
-) {
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        provider_type,
-        model,
-    );
-    let provider = Arc::new(MockProvider::new(
-        mock_instance(
-            instance_id,
-            provider_type,
-            vec![Capability::LlmRouter],
-            vec!["plan".to_string()],
-        ),
-        CostEstimate {
-            estimated_cost_usd: Some(cost),
-            estimated_latency_ms: Some(latency_ms),
-        },
-        vec![Ok(ProviderStartResult::Started)],
-    ));
-    registry.add_provider(provider);
-}
 
 #[tokio::test]
 // 用例说明：
@@ -97,9 +60,21 @@ async fn start_01_retryable_error_then_fallback_success() {
         .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-a")))
         .await
         .expect("complete should return");
-    assert_eq!(response.status, CompleteStatus::Running, "assert_eq failed in start_01_retryable_error_then_fallback_success: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(p1.start_calls(), 1, "assert_eq failed in start_01_retryable_error_then_fallback_success: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(p2.start_calls(), 1, "assert_eq failed in start_01_retryable_error_then_fallback_success: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        response.status,
+        CompleteStatus::Running,
+        "assert_eq failed in start_01_retryable_error_then_fallback_success: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        p1.start_calls(),
+        1,
+        "assert_eq failed in start_01_retryable_error_then_fallback_success: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        p2.start_calls(),
+        1,
+        "assert_eq failed in start_01_retryable_error_then_fallback_success: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -160,9 +135,21 @@ async fn start_02_fatal_error_no_fallback() {
         .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-a")))
         .await
         .expect("complete should return");
-    assert_eq!(response.status, CompleteStatus::Failed, "assert_eq failed in start_02_fatal_error_no_fallback: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(p1.start_calls(), 1, "assert_eq failed in start_02_fatal_error_no_fallback: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(p2.start_calls(), 0, "assert_eq failed in start_02_fatal_error_no_fallback: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        response.status,
+        CompleteStatus::Failed,
+        "assert_eq failed in start_02_fatal_error_no_fallback: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        p1.start_calls(),
+        1,
+        "assert_eq failed in start_02_fatal_error_no_fallback: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        p2.start_calls(),
+        0,
+        "assert_eq failed in start_02_fatal_error_no_fallback: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -220,9 +207,21 @@ async fn start_03_started_must_stop_fallback() {
         .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-a")))
         .await
         .expect("complete should return");
-    assert_eq!(response.status, CompleteStatus::Running, "assert_eq failed in start_03_started_must_stop_fallback: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(p1.start_calls(), 1, "assert_eq failed in start_03_started_must_stop_fallback: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(p2.start_calls(), 0, "assert_eq failed in start_03_started_must_stop_fallback: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        response.status,
+        CompleteStatus::Running,
+        "assert_eq failed in start_03_started_must_stop_fallback: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        p1.start_calls(),
+        1,
+        "assert_eq failed in start_03_started_must_stop_fallback: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        p2.start_calls(),
+        0,
+        "assert_eq failed in start_03_started_must_stop_fallback: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -280,9 +279,21 @@ async fn start_04_queued_no_fallback() {
         .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-a")))
         .await
         .expect("complete should return");
-    assert_eq!(response.status, CompleteStatus::Running, "assert_eq failed in start_04_queued_no_fallback: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(p1.start_calls(), 1, "assert_eq failed in start_04_queued_no_fallback: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(p2.start_calls(), 0, "assert_eq failed in start_04_queued_no_fallback: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        response.status,
+        CompleteStatus::Running,
+        "assert_eq failed in start_04_queued_no_fallback: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        p1.start_calls(),
+        1,
+        "assert_eq failed in start_04_queued_no_fallback: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        p2.start_calls(),
+        0,
+        "assert_eq failed in start_04_queued_no_fallback: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -341,8 +352,16 @@ async fn start_05_all_candidates_failed_provider_start_failed() {
         .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-a")))
         .await
         .expect("complete should return");
-    assert_eq!(response.status, CompleteStatus::Failed, "assert_eq failed in start_05_all_candidates_failed_provider_start_failed: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(extract_error_code(&sink.events_for(&response.task_id)).as_deref(), Some("provider_start_failed"), "assert_eq failed in start_05_all_candidates_failed_provider_start_failed: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        response.status,
+        CompleteStatus::Failed,
+        "assert_eq failed in start_05_all_candidates_failed_provider_start_failed: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        extract_error_code(&sink.events_for(&response.task_id)).as_deref(),
+        Some("provider_start_failed"),
+        "assert_eq failed in start_05_all_candidates_failed_provider_start_failed: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -383,6 +402,14 @@ async fn start_06_fallback_respects_limit() {
         .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-a")))
         .await
         .expect("complete should return");
-    assert_eq!(response.status, CompleteStatus::Failed, "assert_eq failed in start_06_fallback_respects_limit: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(extract_error_code(&sink.events_for(&response.task_id)).as_deref(), Some("provider_start_failed"), "assert_eq failed in start_06_fallback_respects_limit: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        response.status,
+        CompleteStatus::Failed,
+        "assert_eq failed in start_06_fallback_respects_limit: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        extract_error_code(&sink.events_for(&response.task_id)).as_deref(),
+        Some("provider_start_failed"),
+        "assert_eq failed in start_06_fallback_respects_limit: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }

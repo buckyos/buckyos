@@ -1,14 +1,9 @@
 mod common;
 
-use aicc::{
-    CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, RouteConfig,
-    RouteWeights, Router, TenantRouteConfig,
-};
-use buckyos_api::{AiResponseSummary, AiccServerHandler, Capability, CompleteStatus};
+use aicc::{CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry};
+use buckyos_api::{AiResponseSummary, Capability, CompleteStatus};
 use common::*;
-use kRPC::{RPCContext, RPCHandler, RPCRequest, RPCResult};
-use serde_json::json;
-use std::net::{IpAddr, Ipv4Addr};
+use kRPC::RPCContext;
 use std::sync::Arc;
 
 fn add_llm(

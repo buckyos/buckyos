@@ -13,7 +13,7 @@ impl LogTimeHelper {
 
     pub fn time_to_local_string(time: u64) -> String {
         let datetime: DateTime<Utc> =
-            DateTime::from_timestamp_millis(time as i64).unwrap_or(DateTime::default());
+            DateTime::from_timestamp_millis(time as i64).unwrap_or_default();
         let datetime: DateTime<Local> = DateTime::from(datetime);
 
         datetime.format("%Y-%m-%d_%H:%M:%S%.3f_%:z").to_string()

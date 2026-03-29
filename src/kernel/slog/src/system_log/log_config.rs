@@ -16,14 +16,8 @@ pub enum LogDebugInfoFlag {
     Env = 0x02,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LogDebugInfoFlags(u32);
-
-impl Default for LogDebugInfoFlags {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 impl LogDebugInfoFlags {
     pub fn new(flags: u32) -> Self {
@@ -49,9 +43,9 @@ impl LogDebugInfoFlags {
     }
 }
 
-impl Into<u32> for LogDebugInfoFlags {
-    fn into(self) -> u32 {
-        self.0
+impl From<LogDebugInfoFlags> for u32 {
+    fn from(value: LogDebugInfoFlags) -> Self {
+        value.0
     }
 }
 
@@ -104,11 +98,13 @@ impl LogModuleConfig {
     }
 
     pub fn set_level(&mut self, level: &str) {
-        self.level = LogLevel::from_str(level).expect(&format!("invalid level str: {}", level));
+        self.level =
+            LogLevel::from_str(level).unwrap_or_else(|_| panic!("invalid level str: {}", level));
     }
 
     pub fn set_console(&mut self, level: &str) {
-        self.console = LogLevel::from_str(level).expect(&format!("invalid level str: {}", level));
+        self.console =
+            LogLevel::from_str(level).unwrap_or_else(|_| panic!("invalid level str: {}", level));
     }
 
     pub fn set_file(&mut self, enable: bool) {
@@ -197,7 +193,7 @@ impl LogModuleConfig {
                     Err(e) => println!("decode log.toml file_max_count field error! {}", e),
                 },
 
-                v @ _ => {
+                v => {
                     println!("unknown module config field: {}", v);
                 }
             }
@@ -205,7 +201,7 @@ impl LogModuleConfig {
 
         // If only level is configured, but console is not configured, then console defaults to the configured level, not the code's built-in debug level
         if console.is_none() && level.is_some() {
-            console = level.clone();
+            console = level;
         }
 
         if let Some(v) = level {
@@ -297,7 +293,7 @@ impl LogConfig {
                     self.global.load(v);
                 }
 
-                key @ _ => {
+                key => {
                     self.load_mod(key, v);
                 }
             }

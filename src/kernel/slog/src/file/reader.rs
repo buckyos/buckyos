@@ -531,10 +531,10 @@ fn test_read() {
     }
 
     // Get current position
-    let pos = buf_reader.seek(std::io::SeekFrom::Current(0)).unwrap();
+    let pos = buf_reader.stream_position().unwrap();
     println!("current position: {}", pos);
 
-    let pos = file.seek(std::io::SeekFrom::Current(0)).unwrap();
+    let pos = file.stream_position().unwrap();
     println!("file current position: {}", pos);
 }
 

@@ -452,11 +452,10 @@ impl TaskManagerHandler for TaskManagerService {
             Ok(task) => task,
             Err(err) if unique_task_name_conflict(&err) => {
                 let scoped_tasks = self.list_download_tasks_for_request(&request_ctx).await?;
-                let existing_task = scoped_tasks
+                scoped_tasks
                     .into_iter()
                     .find(|task| task.name == task_name)
-                    .ok_or(err)?;
-                existing_task
+                    .ok_or(err)?
             }
             Err(err) => return Err(err),
         };

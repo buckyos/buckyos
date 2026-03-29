@@ -1503,10 +1503,11 @@ impl AIComputeCenter {
                         .record_start_success(attempt.instance_id.as_str(), elapsed_ms);
                     match &start_result {
                         ProviderStartResult::Immediate(summary) => {
-                            let summary_log = serde_json::to_string(&redacted_summary_value(summary))
-                                .unwrap_or_else(|err| {
-                                    format!("{{\"serialize_error\":\"{}\"}}", err)
-                                });
+                            let summary_log =
+                                serde_json::to_string(&redacted_summary_value(summary))
+                                    .unwrap_or_else(|err| {
+                                        format!("{{\"serialize_error\":\"{}\"}}", err)
+                                    });
                             debug!(
                                 "aicc.llm.output task_id={} tenant={} trace_id={:?} instance_id={} provider_model={} elapsed_ms={} summary={}",
                                 task_id,
@@ -2011,7 +2012,7 @@ mod tests {
     use super::*;
     use buckyos_api::{
         AiPayload, CompleteTaskOptions, CreateTaskOptions, ModelSpec, Requirements, Task,
-        TaskFilter, TaskManagerClient, TaskManagerHandler, TaskPermissions, TaskStatus,
+        TaskFilter, TaskManagerClient, TaskManagerHandler, TaskStatus,
     };
     use serde_json::json;
     use std::collections::{HashMap, VecDeque};
@@ -2054,7 +2055,7 @@ mod tests {
                 progress: 0.0,
                 message: None,
                 data: data.unwrap_or_else(|| json!({})),
-                permissions: opts.permissions.unwrap_or(TaskPermissions::default()),
+                permissions: opts.permissions.unwrap_or_default(),
                 created_at: now,
                 updated_at: now,
             };
@@ -2688,16 +2689,20 @@ mod tests {
 
         let center = center_with_taskmgr(registry, catalog);
 
-        let mut alice_ctx = RPCContext::default();
-        alice_ctx.token = Some("tenant-alice".to_string());
+        let alice_ctx = RPCContext {
+            token: Some("tenant-alice".to_string()),
+            ..Default::default()
+        };
         let start_response = center
             .handle_complete(base_request(), alice_ctx)
             .await
             .unwrap();
         assert_eq!(start_response.status, CompleteStatus::Running);
 
-        let mut bob_ctx = RPCContext::default();
-        bob_ctx.token = Some("tenant-bob".to_string());
+        let bob_ctx = RPCContext {
+            token: Some("tenant-bob".to_string()),
+            ..Default::default()
+        };
         let cancel_result = center
             .handle_cancel(start_response.task_id.as_str(), bob_ctx)
             .await;

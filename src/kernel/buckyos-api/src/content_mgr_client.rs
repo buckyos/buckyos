@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use name_lib::DID;
 use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::IpAddr;
 
 pub const CONTENT_MGR_SERVICE_UNIQUE_ID: &str = "publish-content-mgr";
@@ -1152,9 +1152,9 @@ mod tests {
             .await
             .unwrap();
         let item = client.get_item("home/docs/readme.md").await.unwrap();
-        assert_eq!(item.unwrap().enabled, true);
+        assert!(item.unwrap().enabled);
         let enabled = client.is_item_enabled("home/docs/readme.md").await.unwrap();
-        assert_eq!(enabled, true);
+        assert!(enabled);
 
         let stats = client
             .get_stats("home/docs/readme.md", 10, 20, Some(10))

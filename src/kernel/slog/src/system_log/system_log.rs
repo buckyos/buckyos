@@ -67,7 +67,7 @@ impl SystemLoggerBuilder {
     pub fn enable_file_with_upload(mut self) -> Result<Self, String> {
         // First check if SystemLogTarget of this service already exists
         for target in &self.targets {
-            if let Some(_) = target.as_any().downcast_ref::<FileLogTarget>() {
+            if target.as_any().downcast_ref::<FileLogTarget>().is_some() {
                 // Found existing FileLogTarget
                 return Ok(self);
             }
@@ -171,9 +171,9 @@ impl SystemLoggerBuilder {
     }
 }
 
-impl Into<Box<dyn Log>> for SystemLogger {
-    fn into(self) -> Box<dyn Log> {
-        Box::new(self.logger) as Box<dyn Log>
+impl From<SystemLogger> for Box<dyn Log> {
+    fn from(value: SystemLogger) -> Self {
+        Box::new(value.logger) as Box<dyn Log>
     }
 }
 

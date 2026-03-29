@@ -1,46 +1,11 @@
 mod common;
 
 use aicc::{
-    AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
-    Router, TaskEventKind, TenantRouteConfig,
+    AIComputeCenter, CostEstimate, ModelCatalog, ProviderStartResult, Registry, TaskEventKind,
 };
-use buckyos_api::{
-    AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus,
-};
+use buckyos_api::{AiResponseSummary, Capability, CompleteStatus, TaskFilter, TaskStatus};
 use common::*;
-use std::collections::HashMap;
 use std::sync::Arc;
-
-fn setup_route_provider(
-    registry: &Registry,
-    catalog: &ModelCatalog,
-    instance_id: &str,
-    provider_type: &str,
-    model: &str,
-    cost: f64,
-    latency_ms: u64,
-) {
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        provider_type,
-        model,
-    );
-    let provider = Arc::new(MockProvider::new(
-        mock_instance(
-            instance_id,
-            provider_type,
-            vec![Capability::LlmRouter],
-            vec!["plan".to_string()],
-        ),
-        CostEstimate {
-            estimated_cost_usd: Some(cost),
-            estimated_latency_ms: Some(latency_ms),
-        },
-        vec![Ok(ProviderStartResult::Started)],
-    ));
-    registry.add_provider(provider);
-}
 
 #[tokio::test]
 // 用例说明：
@@ -79,7 +44,11 @@ async fn task_01_immediate_persists_completed() {
         .complete(base_request(), rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    assert_eq!(response.status, CompleteStatus::Succeeded, "assert_eq failed in task_01_immediate_persists_completed: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        response.status,
+        CompleteStatus::Succeeded,
+        "assert_eq failed in task_01_immediate_persists_completed: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 
     let taskmgr = center.task_manager_client().expect("task manager");
     let tasks = taskmgr
@@ -95,7 +64,11 @@ async fn task_01_immediate_persists_completed() {
                 == Some(response.task_id.as_str())
         })
         .expect("task should exist");
-    assert_eq!(task.status, TaskStatus::Completed, "assert_eq failed in task_01_immediate_persists_completed: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        task.status,
+        TaskStatus::Completed,
+        "assert_eq failed in task_01_immediate_persists_completed: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -133,7 +106,11 @@ async fn task_02_started_persists_running_and_binding() {
         .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-a")))
         .await
         .unwrap();
-    assert_eq!(response.status, CompleteStatus::Running, "assert_eq failed in task_02_started_persists_running_and_binding: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        response.status,
+        CompleteStatus::Running,
+        "assert_eq failed in task_02_started_persists_running_and_binding: expected left == right; check this scenario's routing/status/error-code branch."
+    );
     let cancel = center
         .cancel(
             response.task_id.as_str(),
@@ -141,8 +118,15 @@ async fn task_02_started_persists_running_and_binding() {
         )
         .await
         .unwrap();
-    assert!(cancel.accepted, "assert failed in task_02_started_persists_running_and_binding: condition is false; check preconditions and expected branch outcome.");
-    assert_eq!(provider.canceled_tasks(), vec![response.task_id], "assert_eq failed in task_02_started_persists_running_and_binding: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert!(
+        cancel.accepted,
+        "assert failed in task_02_started_persists_running_and_binding: condition is false; check preconditions and expected branch outcome."
+    );
+    assert_eq!(
+        provider.canceled_tasks(),
+        vec![response.task_id],
+        "assert_eq failed in task_02_started_persists_running_and_binding: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -193,11 +177,18 @@ async fn task_03_queued_persists_pending_and_position() {
                 == Some(response.task_id.as_str())
         })
         .expect("task should exist");
-    assert_eq!(task.status, TaskStatus::Pending, "assert_eq failed in task_03_queued_persists_pending_and_position: expected left == right; check this scenario's routing/status/error-code branch.");
     assert_eq!(
-        task.data.pointer("/aicc/events/0/kind").and_then(|v| v.as_str()),
-        Some("queued")
-    , "assert_eq failed in task_03_queued_persists_pending_and_position: expected left == right; check this scenario's routing/status/error-code branch.");
+        task.status,
+        TaskStatus::Pending,
+        "assert_eq failed in task_03_queued_persists_pending_and_position: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        task.data
+            .pointer("/aicc/events/0/kind")
+            .and_then(|v| v.as_str()),
+        Some("queued"),
+        "assert_eq failed in task_03_queued_persists_pending_and_position: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -219,8 +210,16 @@ async fn task_04_emit_error_event_with_code() {
         .complete(req, rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    assert_eq!(response.status, CompleteStatus::Failed, "assert_eq failed in task_04_emit_error_event_with_code: expected left == right; check this scenario's routing/status/error-code branch.");
-    assert_eq!(extract_error_code(&sink.events_for(&response.task_id)).as_deref(), Some("bad_request"), "assert_eq failed in task_04_emit_error_event_with_code: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        response.status,
+        CompleteStatus::Failed,
+        "assert_eq failed in task_04_emit_error_event_with_code: expected left == right; check this scenario's routing/status/error-code branch."
+    );
+    assert_eq!(
+        extract_error_code(&sink.events_for(&response.task_id)).as_deref(),
+        Some("bad_request"),
+        "assert_eq failed in task_04_emit_error_event_with_code: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -240,5 +239,10 @@ async fn task_04_emit_error_event_has_error_kind() {
         .await
         .unwrap();
     let events = sink.events_for(&response.task_id);
-    assert!(events.iter().any(|e| matches!(e.kind, TaskEventKind::Error)), "assert failed in task_04_emit_error_event_has_error_kind: condition is false; check preconditions and expected branch outcome.");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e.kind, TaskEventKind::Error)),
+        "assert failed in task_04_emit_error_event_has_error_kind: condition is false; check preconditions and expected branch outcome."
+    );
 }

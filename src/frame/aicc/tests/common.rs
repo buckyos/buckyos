@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use aicc::{
     AIComputeCenter, CostEstimate, InvokeCtx, ModelCatalog, Provider, ProviderError,
     ProviderInstance, ProviderStartResult, Registry, ResolvedRequest, ResourceResolver,
@@ -6,12 +8,11 @@ use aicc::{
 use async_trait::async_trait;
 use base64::Engine as _;
 use buckyos_api::{
-    AiPayload, AiResponseSummary, Capability, CompleteRequest, CreateTaskOptions, ModelSpec,
-    Requirements, ResourceRef, Task, TaskFilter, TaskManagerClient, TaskManagerHandler,
-    TaskPermissions, TaskStatus,
+    AiPayload, Capability, CompleteRequest, CreateTaskOptions, ModelSpec, Requirements,
+    ResourceRef, Task, TaskFilter, TaskManagerClient, TaskManagerHandler, TaskStatus,
 };
 use kRPC::{RPCContext, RPCErrors};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -37,6 +38,7 @@ pub fn base_request() -> CompleteRequest {
     )
 }
 
+#[allow(dead_code)]
 pub fn request_with_resource(resource: ResourceRef) -> CompleteRequest {
     let mut req = base_request();
     req.payload.resources = vec![resource];
@@ -61,11 +63,13 @@ pub fn base_request_for(capability: Capability, alias: &str) -> CompleteRequest 
 }
 
 pub fn rpc_ctx_with_tenant(tenant: Option<&str>) -> RPCContext {
-    let mut ctx = RPCContext::default();
-    ctx.token = tenant.map(|v| v.to_string());
-    ctx
+    RPCContext {
+        token: tenant.map(|v| v.to_string()),
+        ..Default::default()
+    }
 }
 
+#[allow(dead_code)]
 pub fn mock_instance(
     instance_id: &str,
     provider_type: &str,
@@ -83,6 +87,7 @@ pub fn mock_instance(
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct MockProvider {
     instance: ProviderInstance,
     cost: CostEstimate,
@@ -92,6 +97,7 @@ pub struct MockProvider {
 }
 
 impl MockProvider {
+    #[allow(dead_code)]
     pub fn new(
         instance: ProviderInstance,
         cost: CostEstimate,
@@ -106,10 +112,12 @@ impl MockProvider {
         }
     }
 
+    #[allow(dead_code)]
     pub fn start_calls(&self) -> usize {
         self.start_calls.load(Ordering::Relaxed)
     }
 
+    #[allow(dead_code)]
     pub fn canceled_tasks(&self) -> Vec<String> {
         self.canceled.lock().expect("canceled lock").clone()
     }
@@ -215,6 +223,12 @@ impl MockTaskMgrHandler {
     }
 }
 
+impl Default for MockTaskMgrHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl TaskManagerHandler for MockTaskMgrHandler {
     async fn handle_create_task(
@@ -245,7 +259,7 @@ impl TaskManagerHandler for MockTaskMgrHandler {
             progress: 0.0,
             message: None,
             data: data.unwrap_or_else(|| json!({})),
-            permissions: opts.permissions.unwrap_or(TaskPermissions::default()),
+            permissions: opts.permissions.unwrap_or_default(),
             created_at: now,
             updated_at: now,
         };

@@ -1,10 +1,10 @@
 //TODO:
 //  add WATCH,and load cached value automatically when the value is changed.
 
-use ::kRPC::{kRPC, RPCContext};
+use ::kRPC::{RPCContext, kRPC};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use thiserror::Error;
 
 use std::collections::HashMap;
@@ -108,11 +108,8 @@ impl SystemConfigClient {
 
     async fn get_config_cache(&self, key: &str) -> Option<(String, u64)> {
         let cache_guard = self.config_cache.read().await;
-        let v = cache_guard.get(key);
-        if v.is_none() {
-            return None;
-        }
-        let (value, revision, cached_at) = v.unwrap();
+        let v = cache_guard.get(key)?;
+        let (value, revision, cached_at) = v;
         let now = buckyos_get_unix_timestamp();
         if *cached_at + CONFIG_CACHE_TIME < now {
             // 缓存过期，删除缓存项
@@ -153,12 +150,7 @@ impl SystemConfigClient {
     }
 
     pub fn new(service_url: Option<&str>, session_token: Option<&str>) -> Self {
-        let real_session_token: Option<String>;
-        if session_token.is_some() {
-            real_session_token = Some(session_token.unwrap().to_string());
-        } else {
-            real_session_token = None;
-        }
+        let real_session_token = session_token.map(|token| token.to_string());
         //let default_sys_config_url =
         let client = kRPC::new(
             service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),
@@ -176,7 +168,7 @@ impl SystemConfigClient {
         SystemConfigClient {
             client,
             session_token: RwLock::new(real_session_token),
-            cache_key_control: cache_key_control,
+            cache_key_control,
             config_cache: RwLock::new(HashMap::new()),
         }
     }
@@ -189,8 +181,10 @@ impl SystemConfigClient {
     pub async fn sync_session_token(&self, session_token: Option<&str>) -> SytemConfigResult<()> {
         let next_token = session_token.map(|value| value.to_string());
 
-        let mut context = RPCContext::default();
-        context.token = next_token.clone();
+        let context = RPCContext {
+            token: next_token.clone(),
+            ..Default::default()
+        };
         self.client.set_context(context).await;
 
         let mut current_token = self.session_token.write().await;

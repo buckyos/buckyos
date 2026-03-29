@@ -234,10 +234,9 @@ async fn get_my_krpc_token() -> Result<RPCSessionToken> {
         .clone();
 
     let my_rpc_token = MY_RPC_TOKEN.lock().await;
-    if my_rpc_token.is_some() {
-        let token = my_rpc_token.as_ref().unwrap();
-        if token.exp.is_some() {
-            if token.exp.unwrap() - 30 > now {
+    if let Some(token) = my_rpc_token.as_ref() {
+        if let Some(exp) = token.exp {
+            if exp - 30 > now {
                 return Ok(token.clone());
             }
         }
@@ -343,12 +342,7 @@ fn start_service_instance_reporter() {
 
 async fn load_token_from_cache(key: &str) -> Option<RPCSessionToken> {
     let cache = TOKEN_CACHE.lock().await;
-    let token = cache.get(key);
-    if token.is_none() {
-        return None;
-    } else {
-        return Some(token.unwrap().clone());
-    }
+    cache.get(key).cloned()
 }
 
 async fn cache_token(key: &str, token: RPCSessionToken) {
@@ -357,11 +351,7 @@ async fn cache_token(key: &str, token: RPCSessionToken) {
 
 async fn load_trustkey_from_cache(kid: &str) -> Option<DecodingKey> {
     let cache = TRUSTKEY_CACHE.lock().await;
-    let decoding_key = cache.get(kid);
-    if decoding_key.is_none() {
-        return None;
-    }
-    return Some(decoding_key.unwrap().clone());
+    cache.get(kid).cloned()
 }
 
 async fn cache_trustkey(kid: &str, key: DecodingKey) {
@@ -413,7 +403,7 @@ async fn load_trust_public_key_from_source(iss: &str) -> Result<DecodingKey> {
 
     //TODO: jwt iss by user is SUDO login, need to add new verify method for sudo login
 
-    cache_trustkey(&iss, result_key.clone()).await;
+    cache_trustkey(iss, result_key.clone()).await;
     Ok(result_key)
 }
 
@@ -809,7 +799,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
 
         // Step 8: Return account info with dual tokens
         let result_account_info = LoginByPasswordResponse {
-            user_info: user_info,
+            user_info,
             session_token: token_pair.session_token,
             refresh_token: token_pair.refresh_token,
         };
@@ -878,11 +868,10 @@ async fn load_service_config() -> Result<()> {
 
     //load verify-hub private key from system config service
     let private_key_str = system_config_client.get("system/verify-hub/key").await;
-    if private_key_str.is_ok() {
-        let private_key = private_key_str.unwrap().value;
+    if let Ok(private_key_str) = private_key_str {
+        let private_key = private_key_str.value;
         let private_key = EncodingKey::from_ed_pem(private_key.as_bytes());
-        if private_key.is_ok() {
-            let private_key = private_key.unwrap();
+        if let Ok(private_key) = private_key {
             let mut verify_hub_private_key = VERIFY_HUB_PRIVATE_KEY.write().await;
             *verify_hub_private_key = private_key;
         } else {
@@ -926,8 +915,8 @@ async fn load_service_config() -> Result<()> {
         .get_device_info(device_id.as_str())
         .await?;
     let new_service_config = VerifyServiceConfig {
-        zone_config: zone_config,
-        device_id: device_id,
+        zone_config,
+        device_id,
         node_did: device_info.id.clone(),
         start_time: buckyos_get_unix_timestamp(),
     };
@@ -971,7 +960,7 @@ async fn service_main() -> i32 {
     let runner = Runner::new(VERIFY_HUB_SERVICE_MAIN_PORT);
     let _ = runner.add_http_server("/kapi/verify-hub".to_string(), Arc::new(server));
     let _ = runner.run().await;
-    return 0;
+    0
 }
 
 #[tokio::main]

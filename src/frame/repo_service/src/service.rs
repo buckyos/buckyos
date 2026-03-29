@@ -31,10 +31,9 @@ use name_lib::decode_jwt_claim_without_verify;
 use named_store::{NamedLocalStore, NamedStoreMgr, StoreLayout, StoreTarget};
 use ndn_lib::{
     build_obj_id, load_named_object_from_obj_str, verify_named_object, ActionObject, ChunkId,
-    FileObject, InclusionProof, NamedObject, ObjId, StoreMode, ACTION_TYPE_DOWNLOAD,
-    ACTION_TYPE_INSTALLED, ACTION_TYPE_SHARED,
+    InclusionProof, NamedObject, ObjId, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,
+    ACTION_TYPE_SHARED,
 };
-use ndn_toolkit::{cacl_file_object, CheckMode};
 use serde_json::{json, Value};
 use server_runner::Runner;
 use tokio::fs;
@@ -1119,7 +1118,7 @@ fn validate_receipt(
         .or_else(|| receipt_value.get("seller"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .or_else(|| record.owner_did.as_deref())
+        .or(record.owner_did.as_deref())
         .ok_or_else(|| {
             RPCErrors::ReasonError("paid content receipt must include seller_did".to_string())
         })?
@@ -1189,6 +1188,8 @@ mod tests {
 
     use buckyos_api::{RepoClient, RepoListFilter};
     use name_lib::DID;
+    use ndn_lib::{FileObject, StoreMode};
+    use ndn_toolkit::{cacl_file_object, CheckMode};
     use package_lib::PackageMeta;
     use tempfile::TempDir;
 

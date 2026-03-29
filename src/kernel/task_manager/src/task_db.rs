@@ -120,7 +120,7 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let mut stmt = conn.prepare("SELECT * FROM task WHERE id = ?1")?;
-        let task_iter = stmt.query_map(params![id], |row| task_from_row(row))?;
+        let task_iter = stmt.query_map(params![id], task_from_row)?;
 
         let mut tasks: Vec<Task> = Vec::new();
         for task in task_iter {
@@ -138,7 +138,7 @@ impl TaskDb {
         let conn = self.conn.as_ref().unwrap();
         let conn = conn.lock().await;
         let mut stmt = conn.prepare("SELECT * FROM task ORDER BY created_at DESC")?;
-        let task_iter = stmt.query_map([], |row| task_from_row(row))?;
+        let task_iter = stmt.query_map([], task_from_row)?;
 
         let mut tasks = Vec::new();
         for task in task_iter {
@@ -412,8 +412,8 @@ fn task_from_row(row: &Row) -> rusqlite::Result<Task> {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| id.to_string());
 
-    let resolved_app_id = app_id.unwrap_or_else(|| "".to_string());
-    let resolved_user_id = user_id.unwrap_or_else(|| "".to_string());
+    let resolved_app_id = app_id.unwrap_or_default();
+    let resolved_user_id = user_id.unwrap_or_default();
 
     Ok(Task {
         id,

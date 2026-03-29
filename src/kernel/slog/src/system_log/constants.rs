@@ -7,28 +7,18 @@ use std::{
 };
 
 #[repr(usize)]
-#[derive(Copy, Eq, PartialEq, PartialOrd, Ord, Clone, Debug, Hash, Serialize, Deserialize)]
+#[derive(
+    Copy, Eq, PartialEq, PartialOrd, Ord, Clone, Debug, Hash, Serialize, Deserialize, Default,
+)]
 pub enum LogLevel {
     Off = 0,
     Error = 1,
     Warn = 2,
+    #[cfg_attr(not(debug_assertions), default)]
     Info = 3,
+    #[cfg_attr(debug_assertions, default)]
     Debug = 4,
     Trace = 5,
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        #[cfg(debug_assertions)]
-        {
-            Self::Debug
-        }
-
-        #[cfg(not(debug_assertions))]
-        {
-            Self::Info
-        }
-    }
 }
 
 impl TryFrom<u32> for LogLevel {
@@ -75,7 +65,7 @@ impl FromStr for LogLevel {
             "info" => Info,
             "warn" => Warn,
             "error" => Error,
-            v @ _ => {
+            v => {
                 let msg = format!("invalid log level: {}", v);
                 println!("{}", msg);
                 return Err(msg);
@@ -86,28 +76,28 @@ impl FromStr for LogLevel {
     }
 }
 
-impl Into<Duplicate> for LogLevel {
-    fn into(self) -> Duplicate {
-        match self {
-            Self::Trace => Duplicate::Trace,
-            Self::Debug => Duplicate::Debug,
-            Self::Info => Duplicate::Info,
-            Self::Warn => Duplicate::Warn,
-            Self::Error => Duplicate::Error,
-            Self::Off => Duplicate::None,
+impl From<LogLevel> for Duplicate {
+    fn from(value: LogLevel) -> Self {
+        match value {
+            LogLevel::Trace => Duplicate::Trace,
+            LogLevel::Debug => Duplicate::Debug,
+            LogLevel::Info => Duplicate::Info,
+            LogLevel::Warn => Duplicate::Warn,
+            LogLevel::Error => Duplicate::Error,
+            LogLevel::Off => Duplicate::None,
         }
     }
 }
 
-impl Into<LevelFilter> for LogLevel {
-    fn into(self) -> LevelFilter {
-        match self {
-            Self::Trace => LevelFilter::Trace,
-            Self::Debug => LevelFilter::Debug,
-            Self::Info => LevelFilter::Info,
-            Self::Warn => LevelFilter::Warn,
-            Self::Error => LevelFilter::Error,
-            Self::Off => LevelFilter::Off,
+impl From<LogLevel> for LevelFilter {
+    fn from(value: LogLevel) -> Self {
+        match value {
+            LogLevel::Trace => LevelFilter::Trace,
+            LogLevel::Debug => LevelFilter::Debug,
+            LogLevel::Info => LevelFilter::Info,
+            LogLevel::Warn => LevelFilter::Warn,
+            LogLevel::Error => LevelFilter::Error,
+            LogLevel::Off => LevelFilter::Off,
         }
     }
 }

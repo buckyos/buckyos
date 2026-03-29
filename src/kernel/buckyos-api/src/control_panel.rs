@@ -1,6 +1,6 @@
+use crate::KVAction;
 use crate::app_mgr::*;
 use crate::system_config::*;
-use crate::KVAction;
 use crate::{AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use log::*;
@@ -39,9 +39,9 @@ impl TryFrom<String> for UserState {
     }
 }
 
-impl Into<String> for UserState {
-    fn into(self) -> String {
-        match self {
+impl From<UserState> for String {
+    fn from(value: UserState) -> Self {
+        match value {
             UserState::Active => "active".to_string(),
             UserState::Suspended(reason) => format!("suspended:{}", reason),
             UserState::Deleted => "deleted".to_string(),
@@ -152,10 +152,7 @@ pub struct NodeConfig {
 
 impl NodeConfig {
     pub fn is_running(&self) -> bool {
-        match self.state {
-            NodeState::Running => true,
-            _ => false,
-        }
+        matches!(self.state, NodeState::Running)
     }
 }
 
@@ -195,7 +192,7 @@ impl ControlPanelClient {
             return Err(RPCErrors::ReasonError("rbac policy not found".to_string()));
         }
         let rbac_policy_result = rbac_policy_result.unwrap();
-        return Ok((rbac_model_result.value, rbac_policy_result.value));
+        Ok((rbac_model_result.value, rbac_policy_result.value))
     }
 
     pub async fn load_zone_config(&self) -> Result<ZoneConfig> {

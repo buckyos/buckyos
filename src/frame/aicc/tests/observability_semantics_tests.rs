@@ -1,46 +1,9 @@
 mod common;
 
-use aicc::{
-    AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
-    Router, TaskEventKind, TenantRouteConfig,
-};
-use buckyos_api::{
-    AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus,
-};
+use aicc::{AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, Registry};
+use buckyos_api::{Capability, ResourceRef};
 use common::*;
-use std::collections::HashMap;
 use std::sync::Arc;
-
-fn setup_route_provider(
-    registry: &Registry,
-    catalog: &ModelCatalog,
-    instance_id: &str,
-    provider_type: &str,
-    model: &str,
-    cost: f64,
-    latency_ms: u64,
-) {
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        provider_type,
-        model,
-    );
-    let provider = Arc::new(MockProvider::new(
-        mock_instance(
-            instance_id,
-            provider_type,
-            vec![Capability::LlmRouter],
-            vec!["plan".to_string()],
-        ),
-        CostEstimate {
-            estimated_cost_usd: Some(cost),
-            estimated_latency_ms: Some(latency_ms),
-        },
-        vec![Ok(ProviderStartResult::Started)],
-    ));
-    registry.add_provider(provider);
-}
 
 #[tokio::test]
 // 用例说明：
@@ -62,7 +25,11 @@ async fn obs_01_error_code_mapping_consistent() {
         .complete(bad_req, rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    assert_eq!(extract_error_code(&sink.events_for(&bad_resp.task_id)).as_deref(), Some("bad_request"), "assert_eq failed in obs_01_error_code_mapping_consistent: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        extract_error_code(&sink.events_for(&bad_resp.task_id)).as_deref(),
+        Some("bad_request"),
+        "assert_eq failed in obs_01_error_code_mapping_consistent: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 
     let center_no_provider = {
         let mut c = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
@@ -73,7 +40,11 @@ async fn obs_01_error_code_mapping_consistent() {
         .complete(base_request(), rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    assert_eq!(extract_error_code(&sink.events_for(&no_provider_resp.task_id)).as_deref(), Some("no_provider_available"), "assert_eq failed in obs_01_error_code_mapping_consistent: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        extract_error_code(&sink.events_for(&no_provider_resp.task_id)).as_deref(),
+        Some("no_provider_available"),
+        "assert_eq failed in obs_01_error_code_mapping_consistent: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }
 
 #[tokio::test]
@@ -102,7 +73,10 @@ async fn obs_02_log_redaction_no_prompt_or_base64() {
         .map(|v| v.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(!msg.contains(secret), "assert failed in obs_02_log_redaction_no_prompt_or_base64: condition is false; check preconditions and expected branch outcome.");
+    assert!(
+        !msg.contains(secret),
+        "assert failed in obs_02_log_redaction_no_prompt_or_base64: condition is false; check preconditions and expected branch outcome."
+    );
 }
 
 #[tokio::test]
@@ -140,5 +114,9 @@ async fn obs_01_provider_start_failed_code() {
         .complete(base_request(), rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    assert_eq!(extract_error_code(&sink.events_for(&resp.task_id)).as_deref(), Some("provider_start_failed"), "assert_eq failed in obs_01_provider_start_failed_code: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(
+        extract_error_code(&sink.events_for(&resp.task_id)).as_deref(),
+        Some("provider_start_failed"),
+        "assert_eq failed in obs_01_provider_start_failed_code: expected left == right; check this scenario's routing/status/error-code branch."
+    );
 }

@@ -4,7 +4,7 @@ use name_lib::DID;
 use ndn_lib::ObjId;
 use package_lib::{PackageId, PackageMeta};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, ops::Deref};
+use std::{collections::HashMap, fmt, ops::Deref};
 
 //buckyos 支持的应用类型,to_string后填写在app_doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,14 +29,15 @@ impl TryFrom<&str> for AppType {
     }
 }
 
-impl ToString for AppType {
-    fn to_string(&self) -> String {
-        match self {
-            AppType::Service => "service".to_string(),
-            AppType::AppService => "dapp".to_string(),
-            AppType::Web => "web".to_string(),
-            AppType::Agent => "agent".to_string(),
-        }
+impl fmt::Display for AppType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            AppType::Service => "service",
+            AppType::AppService => "dapp",
+            AppType::Web => "web",
+            AppType::Agent => "agent",
+        };
+        write!(f, "{}", value)
     }
 }
 
@@ -57,7 +58,7 @@ pub struct CustomServiceDesc {
     pub desc: HashMap<String, String>, //key: language_id, value: desc
 }
 //InstallConfigTips用来说明，该App有哪些在安装时需要配置的项目
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct ServiceInstallConfigTips {
     //系统允许多个不同的app实现同一个服务，但有不同的“路由方法”
     //比如 如果系统里app1 有配置 {"smb":445},app2有配置 {"smb":445}，此时系统选择使用app2作为smb服务提供者，则最终按如下流程完成访问
@@ -90,21 +91,6 @@ pub struct ServiceInstallConfigTips {
     pub custom_config: HashMap<String, serde_json::Value>,
 }
 
-impl Default for ServiceInstallConfigTips {
-    fn default() -> Self {
-        Self {
-            data_mount_point: vec![],
-            data_mount_recommend: HashMap::new(),
-            custom_service_desc: HashMap::new(),
-            local_cache_mount_point: vec![],
-            service_ports: HashMap::new(),
-            container_param: None,
-            start_param: None,
-            custom_config: HashMap::new(),
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct SubPkgDesc {
     pub pkg_id: String,
@@ -124,7 +110,7 @@ impl SubPkgDesc {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct SubPkgList {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amd64_docker_image: Option<SubPkgDesc>,
@@ -150,25 +136,6 @@ pub struct SubPkgList {
     pub agent_skills: Option<SubPkgDesc>,
     #[serde(flatten)]
     pub others: HashMap<String, SubPkgDesc>,
-}
-
-impl Default for SubPkgList {
-    fn default() -> Self {
-        Self {
-            amd64_docker_image: None,
-            aarch64_docker_image: None,
-            amd64_linux_app: None,
-            aarch64_linux_app: None,
-            amd64_win_app: None,
-            aarch64_win_app: None,
-            aarch64_apple_app: None,
-            amd64_apple_app: None,
-            web: None,
-            agent: None,
-            agent_skills: None,
-            others: HashMap::new(),
-        }
-    }
 }
 
 impl SubPkgList {
@@ -227,11 +194,9 @@ impl SubPkgList {
                     return Some(pkg_id);
                 }
             }
-        } else {
-            if let Some(pkg) = &self.amd64_docker_image {
-                if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
-                    return Some(pkg_id);
-                }
+        } else if let Some(pkg) = &self.amd64_docker_image {
+            if let Some(pkg_id) = pkg.get_pkg_id_with_objid() {
+                return Some(pkg_id);
             }
         }
 
@@ -296,20 +261,15 @@ impl SubPkgList {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(try_from = "String", into = "String")]
 pub enum SelectorType {
+    #[default]
     Single,
     Static, //no instance, only one static web page
     Random,
     ByEvent,        //由特定的时间触发运行
     Custom(String), //custom selector type, like "round_robin"
-}
-
-impl Default for SelectorType {
-    fn default() -> Self {
-        Self::Single
-    }
 }
 
 impl From<SelectorType> for String {
@@ -366,7 +326,7 @@ pub struct AppDoc {
 
 impl AppDoc {
     pub fn get_app_type(&self) -> AppType {
-        if self.categories.len() > 0 {
+        if !self.categories.is_empty() {
             let mut result = AppType::Service;
             if let Ok(app_type) = AppType::try_from(self.categories[0].as_str()) {
                 result = app_type;
@@ -1145,18 +1105,20 @@ mod tests {
 
     #[test]
     fn test_subpkg_list_get_and_iter_cover_all_known_keys() {
-        let mut pkg_list = SubPkgList::default();
-        pkg_list.amd64_docker_image = Some(SubPkgDesc::new("demo-img-amd64#0.1.0"));
-        pkg_list.aarch64_docker_image = Some(SubPkgDesc::new("demo-img-aarch64#0.1.0"));
-        pkg_list.amd64_linux_app = Some(SubPkgDesc::new("demo-linux-amd64#0.1.0"));
-        pkg_list.aarch64_linux_app = Some(SubPkgDesc::new("demo-linux-aarch64#0.1.0"));
-        pkg_list.amd64_win_app = Some(SubPkgDesc::new("demo-win-amd64#0.1.0"));
-        pkg_list.aarch64_win_app = Some(SubPkgDesc::new("demo-win-aarch64#0.1.0"));
-        pkg_list.amd64_apple_app = Some(SubPkgDesc::new("demo-mac-amd64#0.1.0"));
-        pkg_list.aarch64_apple_app = Some(SubPkgDesc::new("demo-mac-aarch64#0.1.0"));
-        pkg_list.web = Some(SubPkgDesc::new("demo-web#0.1.0"));
-        pkg_list.agent = Some(SubPkgDesc::new("demo-agent#0.1.0"));
-        pkg_list.agent_skills = Some(SubPkgDesc::new("demo-agent-skills#0.1.0"));
+        let mut pkg_list = SubPkgList {
+            amd64_docker_image: Some(SubPkgDesc::new("demo-img-amd64#0.1.0")),
+            aarch64_docker_image: Some(SubPkgDesc::new("demo-img-aarch64#0.1.0")),
+            amd64_linux_app: Some(SubPkgDesc::new("demo-linux-amd64#0.1.0")),
+            aarch64_linux_app: Some(SubPkgDesc::new("demo-linux-aarch64#0.1.0")),
+            amd64_win_app: Some(SubPkgDesc::new("demo-win-amd64#0.1.0")),
+            aarch64_win_app: Some(SubPkgDesc::new("demo-win-aarch64#0.1.0")),
+            aarch64_apple_app: Some(SubPkgDesc::new("demo-mac-aarch64#0.1.0")),
+            amd64_apple_app: Some(SubPkgDesc::new("demo-mac-amd64#0.1.0")),
+            web: Some(SubPkgDesc::new("demo-web#0.1.0")),
+            agent: Some(SubPkgDesc::new("demo-agent#0.1.0")),
+            agent_skills: Some(SubPkgDesc::new("demo-agent-skills#0.1.0")),
+            ..Default::default()
+        };
         pkg_list
             .others
             .insert("custom".to_string(), SubPkgDesc::new("demo-custom#0.1.0"));

@@ -30,12 +30,12 @@ async fn test() -> std::result::Result<(), String> {
 
     let owner_config = OwnerConfig::load_owner_config(&user_config_file).map_err(|e| {
         println!("Failed to load owner config: {}", e);
-        return e.to_string();
+        e.to_string()
     })?;
 
     let private_key = load_private_key(&user_private_key_file).map_err(|e| {
         println!("Failed to load private key: {}", e);
-        return e.to_string();
+        e.to_string()
     })?;
 
     let user_name = owner_config.name.clone();
@@ -49,7 +49,7 @@ async fn test() -> std::result::Result<(), String> {
         RPCSessionToken::generate_jwt_token(&user_name, "buckycli", None, &private_key).map_err(
             |e| {
                 println!("Failed to generate session token for admin + kernel: {}", e);
-                return e.to_string();
+                e.to_string()
             },
         )?;
 
@@ -66,7 +66,7 @@ async fn test() -> std::result::Result<(), String> {
         .await
         .map_err(|e| {
             println!("Failed to get system/rbac/policy via admin + kernel: {}", e);
-            return e.to_string();
+            e.to_string()
         })?;
 
     if result.is_null() {
@@ -88,7 +88,7 @@ async fn test() -> std::result::Result<(), String> {
                 "Failed to create system/test_rbac/set via admin + kernel: {}",
                 e
             );
-            return e.to_string();
+            e.to_string()
         });
     if _result.is_ok() {
         println!("test CREATE system/test_rbac/set via admin + kernel should failed");
@@ -110,7 +110,7 @@ async fn test() -> std::result::Result<(), String> {
                 "Failed to set system/test_rbac/set via admin + kernel: {}",
                 e
             );
-            return e.to_string();
+            e.to_string()
         });
     if _result.is_ok() {
         println!("test SET system/test_rbac/set via admin + kernel should failed");
@@ -127,7 +127,7 @@ async fn test() -> std::result::Result<(), String> {
                 "Failed to delete system/test_rbac/set via admin + kernel: {}",
                 e
             );
-            return e.to_string();
+            e.to_string()
         });
     if _result.is_ok() {
         println!("test DELETE system/test_rbac/set via admin + kernel should failed");
@@ -151,7 +151,7 @@ async fn test() -> std::result::Result<(), String> {
                 "Failed to set users/devtest/apps/sys-test/settings via admin + kernel: {}",
                 e
             );
-            return e.to_string();
+            e.to_string()
         })?;
     println!("<== test SET users/devtest/apps/sys-test/settings via admin + kernel, pass");
 
@@ -169,7 +169,7 @@ async fn test() -> std::result::Result<(), String> {
                 "Failed to get users/devtest/apps/sys-test/settings via admin + kernel: {}",
                 e
             );
-            return e.to_string();
+            e.to_string()
         })?;
     println!("<== test GET users/devtest/apps/sys-test/settings via admin + kernel, pass");
 
@@ -188,7 +188,7 @@ async fn test() -> std::result::Result<(), String> {
                     "Failed to generate session token: for admin + {} {}",
                     app_id, e
                 );
-                return e.to_string();
+                e.to_string()
             },
         )?;
     println!("generate session token for admin + {} success", app_id);
@@ -259,7 +259,7 @@ async fn test() -> std::result::Result<(), String> {
                 "Failed to set users/devtest/apps/{}/settings via admin + {}: {}",
                 app_id, app_id, e
             );
-            return e.to_string();
+            e.to_string()
         })?;
     println!(
         "<== test SET users/devtest/apps/{}/settings via admin + {}, pass",
@@ -281,7 +281,7 @@ async fn test() -> std::result::Result<(), String> {
                 "Failed to get users/devtest/apps/{}/settings via admin + {}: {}",
                 app_id, app_id, e
             );
-            return e.to_string();
+            e.to_string()
         })?;
     println!(
         "<== test GET users/devtest/apps/{}/settings via admin + {}, pass",
@@ -328,7 +328,7 @@ async fn test() -> std::result::Result<(), String> {
                 "Failed to set users/devtest/apps/{}/info via admin + {}: {}",
                 app_id, app_id, e
             );
-            return e.to_string();
+            e.to_string()
         })?;
     println!(
         "<== test SET users/devtest/apps/{}/info via admin + {}, pass",

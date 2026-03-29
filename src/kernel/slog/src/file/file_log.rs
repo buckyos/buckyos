@@ -589,14 +589,11 @@ impl FileLogTarget {
 
         // Get current pos of the file
         use std::io::Seek;
-        let pos = match file_info
-            .file
-            .seek(std::io::SeekFrom::Current(0))
-            .map_err(|e| {
-                let msg = format!("failed to seek to end of log file: {}", e);
-                error!("{}", msg);
-                msg
-            }) {
+        let pos = match file_info.file.stream_position().map_err(|e| {
+            let msg = format!("failed to seek to end of log file: {}", e);
+            error!("{}", msg);
+            msg
+        }) {
             Ok(pos) => pos,
             Err(e) => {
                 return FlushToFileResult {
@@ -609,14 +606,16 @@ impl FileLogTarget {
 
         let mut written_count = 0usize;
         let mut write_error: Option<String> = None;
-        for line_index in 0..lines.len() {
+        for (line_index, line) in lines.iter().enumerate() {
+            #[cfg(not(test))]
+            let _ = line_index;
+
             #[cfg(test)]
             if self.should_force_write_fail_at_record(line_index) {
                 write_error = Some(format!("forced write failure at record {}", line_index));
                 break;
             }
 
-            let line = &lines[line_index];
             match file_info.file.write_all(line.as_bytes()) {
                 Ok(_) => {
                     file_info.size += line.len() as u64;
@@ -631,7 +630,7 @@ impl FileLogTarget {
             }
         }
 
-        let new_pos = match file_info.file.seek(std::io::SeekFrom::Current(0)) {
+        let new_pos = match file_info.file.stream_position() {
             Ok(pos) => pos,
             Err(e) => {
                 let msg = format!("failed to seek log file after writing: {}", e);
@@ -656,13 +655,13 @@ impl FileLogTarget {
     #[cfg(test)]
     fn should_force_write_fail_at_record(&self, current_index: usize) -> bool {
         let mut fail_lock = self.inner.force_write_fail_at_record.lock().unwrap();
-        if let Some(target_index) = *fail_lock {
-            if target_index == current_index {
+        match *fail_lock {
+            Some(target_index) if target_index == current_index => {
                 *fail_lock = None;
-                return true;
+                true
             }
+            _ => false,
         }
-        false
     }
 
     #[cfg(test)]

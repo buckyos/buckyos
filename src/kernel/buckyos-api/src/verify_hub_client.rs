@@ -334,7 +334,7 @@ pub trait VerifyHubApiHandler: Send + Sync {
     ) -> Result<TokenPair>;
 
     async fn handle_verify_token(&self, session_token: &str, appid: Option<String>)
-        -> Result<bool>;
+    -> Result<bool>;
 
     async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair>;
 
@@ -558,7 +558,7 @@ mod tests {
             .verify_token("session-1", Some("kernel"))
             .await
             .unwrap();
-        assert_eq!(verify_result, true);
+        assert!(verify_result);
 
         let calls = calls.lock().unwrap();
         let (jwt, params) = calls.login_jwt.clone().unwrap();
@@ -606,7 +606,7 @@ mod tests {
         match verify_resp.result {
             RPCResult::Success(value) => {
                 let value: bool = serde_json::from_value(value).unwrap();
-                assert_eq!(value, true);
+                assert!(value);
             }
             _ => panic!("Expected success response"),
         }

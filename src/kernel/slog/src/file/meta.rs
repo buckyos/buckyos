@@ -118,7 +118,7 @@ impl LogMeta {
         conn.execute(
         "INSERT INTO LogFiles (name, create_time, write_index, is_sealed, read_index, is_read_complete) 
             VALUES (?1, strftime('%s','now'), 0, 0, 0, 0)",
-            &[file_name],
+            [file_name],
         )?;
 
         Ok(())
@@ -175,7 +175,7 @@ impl LogMeta {
             let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET write_index = ?1 WHERE id = ?2",
-                &[&(new_index as i64), &file.id],
+                [&(new_index as i64), &file.id],
             )?;
 
             Ok(())
@@ -193,7 +193,7 @@ impl LogMeta {
             let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET write_index = write_index + ?1 WHERE id = ?2",
-                &[&increment, &file.id],
+                [&increment, &file.id],
             )?;
 
             info!(
@@ -215,7 +215,7 @@ impl LogMeta {
             let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET is_sealed = 1 WHERE id = ?1",
-                &[&file.id],
+                [&file.id],
             )?;
 
             info!("Sealed log file: {}, {}", file.id, file.name);
@@ -257,7 +257,7 @@ impl LogMeta {
             let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET read_index = ?1 WHERE id = ?2",
-                &[&new_index, &file.id],
+                [&new_index, &file.id],
             )?;
 
             info!(
@@ -277,7 +277,7 @@ impl LogMeta {
         let conn = self.lock_conn()?;
         let ret = conn.execute(
             "UPDATE LogFiles SET read_index = ?1 WHERE id = ?2",
-            &[&new_index, &file_id],
+            [&new_index, &file_id],
         )?;
 
         if ret == 0 {
@@ -300,7 +300,7 @@ impl LogMeta {
             let conn = self.lock_conn()?;
             conn.execute(
                 "UPDATE LogFiles SET is_read_complete = 1 WHERE id = ?1",
-                &[&file.id],
+                [&file.id],
             )?;
 
             info!("Completed reading log file: {}, {}", file.id, file.name);
@@ -317,7 +317,7 @@ impl LogMeta {
         let conn = self.lock_conn()?;
         conn.execute(
             "UPDATE LogFiles SET is_read_complete = 1 WHERE id = ?1",
-            &[&file_id],
+            [&file_id],
         )?;
 
         info!("Marked log file read complete: {}", file_id);

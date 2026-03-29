@@ -95,7 +95,7 @@ impl FlexiModuleLogger {
 
                 if let Some(level) = level {
                     config.level = level.into();
-                    config.console = config.level.clone();
+                    config.console = config.level;
 
                     println!(
                         "use RUST_LOG env for module: {} = {}",
@@ -164,7 +164,7 @@ impl FlexiModuleLogger {
         }
 
         if config.console != LogLevel::Off {
-            logger = logger.duplicate_to_stderr(config.console.clone().into());
+            logger = logger.duplicate_to_stderr(config.console.into());
             logger = logger.format_for_stderr(console_format);
 
             //#[cfg(feature = "colors")]
@@ -274,7 +274,7 @@ impl Log for FlexiLogger {
 
     fn flush(&self) {
         self.global_logger.logger.flush();
-        for (_, mod_config) in &self.module_loggers {
+        for mod_config in self.module_loggers.values() {
             mod_config.logger.flush();
         }
     }
