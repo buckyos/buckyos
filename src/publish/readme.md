@@ -28,9 +28,9 @@ manifest 会固化：
 
 ### 准备 BUCKYOS_BUILD_ROOT
 0. 注意依赖，buckyos的local安装包依赖cyfs-gateway和BuckyOSApp,src目录结构固定。安装脚本不会去做git的任何操作
-1. cyfs-gateway使用buckyos-build/buckyos-install构建，构建目录在BUCKYOS_ROOT, BuckyOSApp使用pnpm run tauri build构建，构建目录在 `$RUST_BUILD/release/bundle/...`
-2. 用 `buckyos-build` 和 `buckyos-install` 准备好 `BUCKYOS_BUILD_ROOT` 下的发布目录。
-3. 运行 `make_config.py release --rootfs <staged_rootfs>` 生成发布配置。
+1. cyfs-gateway 使用 `buckyos-build` / `buckyos-install` 构建，构建目录在 `BUCKYOS_ROOT`，BuckyOSApp 使用 `pnpm run tauri build` 构建，构建目录在 `$RUST_BUILD/release/bundle/...`
+2. 在本仓库内用 `uv run ./src/buckyos-build.py` 和 `uv run buckyos-install` 准备好 `BUCKYOS_BUILD_ROOT` 下的发布目录。
+3. 运行 `uv run ./src/make_config.py release --rootfs <staged_rootfs>` 生成发布配置。
 ### 制作安装包
 4. 调用对应平台的 `make_local_*` 脚本执行 `build-pkg`。
 5. 如需校验，调用对应脚本的 `verify-pkg`。
@@ -46,7 +46,7 @@ manifest 会固化：
 macOS:
 
 ```bash
-python3 ./src/publish/make_local_osx_pkg.py build-pkg aarch64 0.5.1+build260115 \
+uv run ./src/publish/make_local_osx_pkg.py build-pkg aarch64 0.5.1+build260115 \
   --app-publish-dir /opt/buckyosci \
   --out-dir ./publish
 ```
@@ -62,7 +62,7 @@ python .\src\publish\make_local_win_installer.py build-pkg amd64 0.5.1+build2601
 Linux:
 
 ```bash
-python3 ./src/publish/make_local_deb.py build-pkg amd64 0.5.1+build260115 \
+uv run ./src/publish/make_local_deb.py build-pkg amd64 0.5.1+build260115 \
   --app-publish-dir /opt/buckyosci \
   --out-dir ./publish
 ```
@@ -77,7 +77,7 @@ python3 ./src/publish/make_local_deb.py build-pkg amd64 0.5.1+build260115 \
 
 - 清理并重建 `BUCKYOS_BUILD_ROOT`
 - 构建并安装 `cyfs-gateway`、`buckycli`、`buckyos`
-- 执行 `make_config.py release --rootfs <staged_rootfs>`
+- 执行 `uv run ./src/make_config.py release --rootfs <staged_rootfs>`
 - 按约定在 BuckyOS 同层目录查找并构建桌面端项目：
   `../cyfs-gateway`、`../BuckyOSApp`
 - 桌面端构建产物优先从用户环境变量 `RUST_BUILD` 读取；若未设置，则读取 `~/.cargo/config.toml` 的 `[build].target-dir`；再回退到 `/tmp/rust_build`
@@ -92,13 +92,13 @@ python3 ./src/publish/make_local_deb.py build-pkg amd64 0.5.1+build260115 \
 常用命令：
 
 ```bash
-python3 ./make_local_pkg.py prepare-root
-python3 ./make_local_pkg.py build-pkg
-python3 ./make_local_pkg.py build-pkg 0.6.0+build260317 --build-root /opt/buckyosci --out-dir ./publish
-python3 ./make_local_pkg.py show-manifest
-python3 ./make_local_pkg.py show-manifest --out /tmp/buckyos-pkg-manifest.json
-python3 ./make_local_pkg.py verify-pkg ./publish/<pkg-file>
-python3 ./make_local_pkg.py show-target
+uv run ./make_local_pkg.py prepare-root
+uv run ./make_local_pkg.py build-pkg
+uv run ./make_local_pkg.py build-pkg 0.6.0+build260317 --build-root /opt/buckyosci --out-dir ./publish
+uv run ./make_local_pkg.py show-manifest
+uv run ./make_local_pkg.py show-manifest --out /tmp/buckyos-pkg-manifest.json
+uv run ./make_local_pkg.py verify-pkg ./publish/<pkg-file>
+uv run ./make_local_pkg.py show-target
 ```
 
 说明：

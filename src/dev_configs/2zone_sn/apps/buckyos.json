@@ -12,8 +12,8 @@
         "echo 'MAKE sure you already build the linux version of buckyos (result store in rootfs/bin)'"
       ],
       "build_all": [
-        "python3 buckyos-install --all --app=buckyos",
-        "python3 make_config.py {{buckyos.node_group}}"
+        "uv run buckyos-install --all --app=buckyos",
+        "uv run ./make_config.py {{buckyos.node_group}}"
       ],
       "install": [
         "sudo chmod 777 -R /opt/buckyos/bin/"

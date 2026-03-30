@@ -12,7 +12,7 @@ It reads:
 - `publish.macos_pkg.apps.*` for macOS distribution package components.
 
 Before make pkg,make sure already build the latest buckyos-app, buckycli and buckyos.
-- buckyos-build && buckyos-install --all --target-rootfs=/opt/buckyosci/buckyos && python3 make_config.py --rootfs /opt/buckyosci/buckyos release
+- uv run ./src/buckyos-build.py && uv run buckyos-install --all --target-rootfs=/opt/buckyosci/buckyos && uv run ./src/make_config.py release --rootfs /opt/buckyosci/buckyos
 - copy BuckyOS.app to /opt/buckyosci/BuckyOSApp/BuckyOS.app
 """
 

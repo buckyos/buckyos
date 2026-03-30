@@ -371,7 +371,7 @@ cargo test -p aicc sched_
 
 ```bash
 cd src/frame/aicc
-python3 test_llm.py
+uv run ./test_llm.py
 ```
 
 可选环境变量：
