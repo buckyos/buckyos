@@ -710,7 +710,7 @@ class Bootstrapper:
         else:
             print("- Reopen terminal to ensure rustup/uv/deno are in PATH")
             print("- `cd buckyos`")
-            print("- `uv run src/buckyos-build.py --no-build-web-apps`")
+            print("- `uv run build.py`")
 
 
 def parse_args() -> argparse.Namespace:
