@@ -1,0 +1,71 @@
+# save to ~/.buckycli/buckyos_boot.toml
+# YOUR_TG_AccountId is look like user:xxxx
+
+"services/msg-center/settings" = """
+{
+    "telegram_tunnel": {
+        "tunnel_did":"did:web:tg-tunnel.test.buckyos.io",
+        "enabled": true,
+        "gateway": {
+            "mode": "bot_api"
+        },
+        "bindings": [
+            {
+                "owner_did": "did:web:jarvis.test.buckyos.io",
+                "bot_token": "$YOUR_BOT_TOKEN$",
+                "bot_account_id": "$ YOUR_BOT_ACCOUNT_ID"
+            }
+        ]
+    }
+}
+"""
+
+"services/aicc/settings" = """
+{
+    "openai": {
+        "enabled": true,
+        "api_token": "$OPEN_AI_API_TOKEN$",
+        "alias_map": {
+            "llm.default": "gpt-5.4"
+        },
+        "instances": [
+        {
+            "instance_id": "openai-default",
+            "provider_type": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "timeout_ms": 60000,
+            "models": ["gpt-5.4","gpt-5.4-pro","gpt-5.3-codex","gpt-5.2","gpt-5.2-codex","gpt-5.4-mini","gpt-5-mini"],
+            "default_model": "gpt-5.4",
+            "features": ["plan", "json_output", "tool_calling","web_search"],
+            "alias_map": {
+            "llm.chat.default": "gpt-5.4",
+            "llm.code.default":"gpt-5.4"
+            }
+        }
+        ]
+    }
+}
+"""
+
+"users/devtest/settings" = """
+{
+  "user_id": "devtest",
+  "type": "user",
+  "show_name": "$YOUR NAME",
+  "password": "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4=",
+  "state": "active",
+  "res_pool_id": "default",
+  "contact": {
+    "did": "did:bns:devtest",
+    "groups": ["zone_user"],
+    "bindings": [
+      {
+        "platform": "telegram",
+        "account_id": "$YOUR_TG_AccountId$",
+        "display_id": "$YOUR_TG_AccountName$",
+        "tunnel_id": "did:web:tg-tunnel.test.buckyos.io"
+      }
+    ]
+  }
+}
+"""

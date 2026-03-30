@@ -2,20 +2,36 @@
 
 ## Commands
 
+### 开发常用脚本
+
+**注意下面脚本都在src目录下运行**
+
 ```bash
-cd src && cargo run -p control_panel
+# 修改代码后重新构建buckyos
+uv run buckyos-build.py
+# 指定模块构建
+un run buckyos-build.py -s <module-name>
+# 跳过web UI构建
+uv run src/buckyos-build.py --skip-web
+# 重新构建cyfs-gateway 并安装
+cd ../../cyfs-gateway/src/ && uv run buckyos-build.py && uv run buckyos-install.py
 
-uv run src/buckyos-build.py
-uv run buckyos-install
+# 使用上一次build的结果（如果有)覆盖安装后,启动buckyos
+uv run start.py
+# 使用devtest环境，全新安装并启动. 
+uv run start.py --all
+# 使用生产环境，全新安装并启动（会进入待激活状态)
+uv run start.py --reinstall release
 
+# 检查当前buckyos的运行状态
+uv run check.py
 
-uv run src/start.py
-uv run src/start.py --reinstall <group_name>
-uv run src/start.py --all
-
-uv run src/stop.py
+# 停止bcukyos
+uv run stop.py
 
 ```
+
+
 
 ## 目录结构
 

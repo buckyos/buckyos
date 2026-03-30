@@ -467,7 +467,7 @@ class Bootstrapper:
             return
 
         if self.system == "Windows":
-            self.warnings.append("tmux is not installed automatically on native Windows; use WSL2 if you need tmux")
+            self.warnings.append("tmux is needed by OpenDAN Runtime; use WSL2 if you need tmux;Otherwise, you will not be able to debug and run Jarvis under Windows. You can only officially run Jarvis using Docker.")
             return
 
         if self.system == "Linux":

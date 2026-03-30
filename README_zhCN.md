@@ -31,6 +31,7 @@ Beta2 是 BuckyOS 在 AI 时代的一次大更新，主要新增功能如下：
 **加入我们的征程吧！欢迎随时提交 issue 或 pull request！让我们共同构建下一代分布式 Personal AI 操作系统！**
 
 Beta2 首个版本发布后，我们将进入快速迭代状态，期望每周都有带来用户体验改进的版本发布。
+
 内核方向，我们正在以“第一个商用级、Zero OP 的个人分布式私有云”为目标，推进数据可靠性和系统自恢复相关的工作。该版本规划为 Beta3，计划在 4 月底发布。
 
 ## 开始使用
@@ -74,7 +75,7 @@ uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" 
 ```bash
 cd buckyos/src
 uv run ./buckyos-build.py
-uv run buckyos-install --all
+uv run ./buckyos-install.py
 ```
 
 ### Step 3. 启动 buckyos
@@ -82,13 +83,13 @@ uv run buckyos-install --all
 首次安装：
 
 ```bash
-uv run ./start.py --reinstall release
+cd src && uv run ./start.py --reinstall release
 ```
 
 源码安装不会自动将 BuckyOS 加入自启服务。后续如需手工启动，请执行：
 
 ```bash
-uv run ./start.py
+cd src && uv run ./start.py
 ```
 
 **注意：千万不要再次执行上面的 `uv run ./start.py --reinstall release`，这会导致系统被 soft reset。**
