@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import glob
 import http.client
+import io
 import os
 import platform
 import re
@@ -36,6 +37,7 @@ import shutil
 import socket
 import subprocess
 import sys
+from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -122,8 +124,25 @@ def normalize_name(value: str) -> str:
 
 
 def resolve_buckyos_root() -> Path:
+    with io.StringIO() as buffer, redirect_stdout(buffer):
+        try:
+            from buckyos_devkit.buckyos_kit import get_buckyos_root as devkit_get_buckyos_root
+        except ImportError:
+            devkit_get_buckyos_root = None
+        if devkit_get_buckyos_root is not None:
+            raw = str(devkit_get_buckyos_root()).strip()
+            if raw:
+                return Path(raw).expanduser()
+
     raw = os.environ.get("BUCKYOS_ROOT", "").strip()
-    return Path(raw).expanduser() if raw else DEFAULT_BUCKYOS_ROOT
+    if raw:
+        return Path(raw).expanduser()
+
+    if platform.system() == "Windows":
+        user_data_dir = os.environ.get("APPDATA") or os.environ.get("USERPROFILE", ".")
+        return Path(user_data_dir).expanduser() / "buckyos"
+
+    return DEFAULT_BUCKYOS_ROOT
 
 
 def run_command(args: list[str]) -> subprocess.CompletedProcess[str] | None:
