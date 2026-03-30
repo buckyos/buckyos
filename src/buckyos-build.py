@@ -1,10 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git",
-# ]
-# ///
+#!/usr/bin/env -S uv run
 
 import os
 import shutil

@@ -44,7 +44,7 @@ Installing from source is a good way to understand BuckyOS and the first step to
 git clone https://github.com/buckyos/buckyos.git
 ```
 
-After cloning, install `uv` first. The repo now provides [`src/buckyos-build.py`](./src/buckyos-build.py), which resolves `buckyos-devkit` on demand, so you no longer need to create a project venv just to run `buckyos-build`:
+After cloning, install `uv` first. The repo now ships a root `pyproject.toml`, so `uv run` can resolve `buckyos-devkit` for the main development scripts without creating a separate venv first:
 
 ```bash
 cd buckyos
@@ -72,6 +72,7 @@ Return to the BuckyOS repository and run:
 ```bash
 cd buckyos/src
 uv run ./buckyos-build.py
+uv run buckyos-install --all
 ```
 
 ### Step 3. Start buckyos
@@ -79,16 +80,16 @@ uv run ./buckyos-build.py
 For the first installation:
 
 ```bash
-python3 start.py --reinstall release
+uv run ./start.py --reinstall release
 ```
 
 A source install does not automatically register BuckyOS as a startup service. For later manual starts, run:
 
 ```bash
-python3 start.py
+uv run ./start.py
 ```
 
-**Important: do not run `python3 start.py --reinstall release` again after the initial setup. It will soft-reset your system.**
+**Important: do not run `uv run ./start.py --reinstall release` again after the initial setup. It will soft-reset your system.**
 
 `start.py` ultimately runs the command below. You can add it to your system startup service list manually:
 
@@ -114,14 +115,14 @@ uv run ./buckyos-build.py --no-build-web-apps
 
 ```bash
 cd src
-python3 start.py
+uv run ./start.py
 ```
 
 - Reinstall BuckyOS using a specified config group:
 
 ```bash
 cd src
-python3 start.py --reinstall $group_name
+uv run ./start.py --reinstall $group_name
 ```
 
 If `group_name` is empty, BuckyOS starts with an empty config and enters the pending activation state.

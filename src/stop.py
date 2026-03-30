@@ -1,3 +1,5 @@
+#!/usr/bin/env -S uv run
+
 import os
 import platform
 import subprocess

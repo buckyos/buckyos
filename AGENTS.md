@@ -6,14 +6,14 @@
 cd src && cargo run -p control_panel
 
 uv run src/buckyos-build.py
-uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install
+uv run buckyos-install
 
 
-uv run start.py 
-uv run start.py --reinstall <group_name>
-uv run start.py --all
+uv run src/start.py
+uv run src/start.py --reinstall <group_name>
+uv run src/start.py --all
 
-uv run stop.py
+uv run src/stop.py
 
 ```
 
@@ -115,7 +115,7 @@ uv run stop.py
 
 - `cd src && uv run ./buckyos-build.py`
 - `cd src && uv run ./buckyos-build.py --no-build-web-apps`
-- `cd src && uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install`
+- `cd src && uv run buckyos-install`
 - `cd src && cargo test -- --test-threads=1`
 
 ### 9.2 control_panel backend
@@ -134,7 +134,7 @@ uv run stop.py
 ### 9.4 本地部署流
 
 - `cd src && uv run ./buckyos-build.py -s control_panel control_panel_web`
-- `cd src && uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install`
+- `cd src && uv run buckyos-install`
 - `systemctl restart buckyos`
 
 ## 10. 实施约束
@@ -158,7 +158,6 @@ uv run stop.py
 
 - 主要改动入口文件
 - 是否影响文档、协议、共享类型、依赖
-
 
 
 

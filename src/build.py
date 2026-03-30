@@ -1,3 +1,4 @@
+#!/usr/bin/env -S uv run
 
 import os
 import shutil
@@ -57,8 +58,8 @@ def main() -> int:
             return result
 
         print("buckyos-build not found in the current environment")
-        print("Install buckyos-devkit first, or use the uv script wrapper:")
-        print("  uv run ./buckyos-build.py [args]")
+        print("Install buckyos-devkit first, or use the repo uv runtime:")
+        print("  uv run src/buckyos-build.py [args]")
         print(f'  python3 -m pip install -U "{DEVKIT_SPEC}"')
         return 1
 

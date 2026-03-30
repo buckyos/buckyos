@@ -1,0 +1,11 @@
+[project]
+name = "buckyos-workspace"
+version = "0.1.0"
+description = "Workspace runtime dependencies for BuckyOS development scripts."
+requires-python = ">=3.12"
+dependencies = [
+    "buckyos-devkit",
+]
+
+[tool.uv.sources]
+buckyos-devkit = { git = "https://github.com/buckyos/buckyos-devkit.git" }

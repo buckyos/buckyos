@@ -1,3 +1,4 @@
+#!/usr/bin/env -S uv run
 
 import os
 import shutil
@@ -5,8 +6,11 @@ import subprocess
 import sys
 import platform
 from pathlib import Path
-import buckyos_devkit
+
 from make_config import make_config_by_group_name
+
+
+DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
 
 build_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -14,6 +18,38 @@ build_dir = os.path.dirname(os.path.abspath(__file__))
 # 1) killall process
 # 2) update files to /opt/buckyos (--all to update all files to /opt/buckyos)
 # 3) start the system (run /opt/buckyos/bin/node_daemon/node_daemon)
+
+
+def _command_names(command: str) -> list[str]:
+    if os.name == "nt":
+        return [f"{command}.exe", f"{command}.cmd", f"{command}.bat", command]
+    return [command]
+
+
+def _find_command(command: str) -> str | None:
+    for name in _command_names(command):
+        path = shutil.which(name)
+        if path is not None:
+            return path
+
+    bin_dir = Path(sys.executable).parent
+    for name in _command_names(command):
+        candidate = bin_dir / name
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
+
+def _run_command(command: str, args: list[str]) -> int:
+    executable = _find_command(command)
+    if executable is None:
+        print(f"{command} not found in the current uv runtime.")
+        print("Please re-run this script with `uv run src/start.py ...`")
+        print(f"or install `{DEVKIT_SPEC}`.")
+        return 127
+
+    return subprocess.run([executable] + args, env=os.environ.copy()).returncode
 
 
 def resolve_buckyos_root() -> Path:
@@ -51,28 +87,23 @@ def kill_all_processes():
 def update_files(install_all=False,config_group_name=None):
     """Update files to installation directory"""
     print("Updating files...")
-    
-    # Import and call install.py functions directly
 
     try:
-        install_cmd = ["buckyos-update", "--app=buckyos"]
+        install_args = ["--app=buckyos"]
         if install_all:
-            install_cmd.append("--all")
-        subprocess.run(install_cmd, env=os.environ.copy())
+            install_args.append("--all")
+
+        result = _run_command("buckyos-update", install_args)
+        if result != 0:
+            raise RuntimeError(f"buckyos-update failed with return code {result}")
 
         if config_group_name:
            target_root = resolve_buckyos_root()
            make_config_by_group_name(config_group_name, target_root, None, None, None)
         print("Files updated successfully")
-    except ImportError as e:
-        print(f"Failed to import install module: {e}")
-        sys.exit(1)
     except Exception as e:
         print(f"Failed to update files: {e}")
         sys.exit(1)
-    finally:
-        # Remove the added path
-        sys.path.pop(0)
 
 
     

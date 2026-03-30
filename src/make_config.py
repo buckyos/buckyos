@@ -1,3 +1,5 @@
+#!/usr/bin/env -S uv run
+
 # rootfs construction process
 # 1. After git clone, rootfs contains only "essential code files" (related config files also exist as code)
 # 2. After build, the rootfs/bin directory will be filled with correct build artifacts
@@ -44,7 +46,7 @@ BUCKYCLI_BIN =Path(get_execute_name(Path("~/buckycli/buckycli").expanduser()))
 
 if not BUCKYCLI_BIN.exists():
     print(f"buckycli binary missing at {BUCKYCLI_BIN}")
-    print("use 'python3 build.py' to build and install buckycli to your home directory" )
+    print("use `uv run src/build.py` to build and install buckycli to your home directory")
     raise FileNotFoundError(f"buckycli binary missing at {BUCKYCLI_BIN}")
 
 BUCKYCLI_DIR = BUCKYCLI_BIN.parent
