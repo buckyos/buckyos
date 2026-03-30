@@ -10,7 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from typing import Sequence
+from typing import Callable, Sequence
 
 if os.name != "nt":
     import grp
@@ -69,6 +69,30 @@ LINUX_PNPM_CHOICES = {
     "zypper": [["pnpm"]],
 }
 
+LINUX_UV_CHOICES = {
+    "apt-get": [["uv"]],
+    "dnf": [["uv"]],
+    "yum": [["uv"]],
+    "pacman": [["uv"]],
+    "zypper": [["uv"]],
+}
+
+LINUX_DENO_CHOICES = {
+    "apt-get": [["deno"]],
+    "dnf": [["deno"]],
+    "yum": [["deno"]],
+    "pacman": [["deno"]],
+    "zypper": [["deno"]],
+}
+
+LINUX_TMUX_CHOICES = {
+    "apt-get": [["tmux"]],
+    "dnf": [["tmux"]],
+    "yum": [["tmux"]],
+    "pacman": [["tmux"]],
+    "zypper": [["tmux"]],
+}
+
 LINUX_CROSS_PACKAGE_CHOICES = {
     "apt-get": [["musl-tools"], ["gcc-aarch64-linux-gnu"]],
     "dnf": [["musl-gcc"], ["gcc-aarch64-linux-gnu"]],
@@ -77,7 +101,7 @@ LINUX_CROSS_PACKAGE_CHOICES = {
     "zypper": [["musl"], ["gcc-aarch64-linux-gnu"], ["cross-aarch64-gcc13", "cross-aarch64-binutils"]],
 }
 
-BREW_FORMULAE = ["git", "wget", "pkgconf", "openssl@3", "python@3.12", "node", "pnpm", "rustup"]
+BREW_FORMULAE = ["git", "wget", "pkgconf", "openssl@3", "python@3.12", "node", "pnpm", "rustup", "uv", "deno", "tmux"]
 BREW_CASKS = ["docker"]
 
 WINGET_PACKAGE_CHOICES = {
@@ -86,6 +110,8 @@ WINGET_PACKAGE_CHOICES = {
     "node": [["OpenJS.NodeJS.LTS"], ["OpenJS.NodeJS"]],
     "pnpm": [["pnpm.pnpm"]],
     "rustup": [["Rustlang.Rustup"]],
+    "uv": [["astral-sh.uv"]],
+    "deno": [["DenoLand.Deno"]],
     "docker": [["Docker.DockerDesktop"]],
     "msvc": [["Microsoft.VisualStudio.2022.BuildTools"]],
 }
@@ -177,6 +203,33 @@ class Bootstrapper:
         if shutil.which("sudo"):
             return ["sudo", *command]
         raise BootstrapError("Please use administrator privileges or ensure sudo is available")
+
+    def run_as_invoking_user(self, command: Sequence[str]) -> list[str]:
+        if self.system == "Windows":
+            return list(command)
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            sudo_user = os.environ.get("SUDO_USER")
+            if sudo_user:
+                if shutil.which("sudo"):
+                    return ["sudo", "-H", "-u", sudo_user, *command]
+                raise BootstrapError("sudo is required to run user-level installers as the invoking user")
+
+        return list(command)
+
+    def invoking_user_home(self) -> Path:
+        if self.system != "Windows" and hasattr(os, "geteuid") and os.geteuid() == 0:
+            sudo_user = os.environ.get("SUDO_USER")
+            if sudo_user:
+                try:
+                    return Path(pwd.getpwnam(sudo_user).pw_dir)
+                except KeyError:
+                    pass
+
+        if self.system == "Windows":
+            return Path(os.environ.get("USERPROFILE", str(Path.home())))
+
+        return Path.home()
 
     def package_installed(self, package: str, kind: str = "package") -> bool:
         if self.package_manager == "apt-get":
@@ -315,12 +368,120 @@ class Bootstrapper:
             self.install_packages(missing, kind=kind)
         return packages
 
+    def ensure_unix_script_tool(self, description: str, script_url: str, locator: Callable[[], str | None]) -> None:
+        if locator():
+            return
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0 and not os.environ.get("SUDO_USER"):
+            self.warnings.append(
+                f"{description} will be installed into root's home directory because the script is running as root"
+            )
+
+        if shutil.which("curl"):
+            fetch_command = f"curl -LsSf {shlex.quote(script_url)} | sh"
+        elif shutil.which("wget"):
+            fetch_command = f"wget -qO- {shlex.quote(script_url)} | sh"
+        else:
+            raise BootstrapError(f"{description} installer requires curl or wget")
+
+        self.run(self.run_as_invoking_user(["sh", "-c", fetch_command]))
+
+        tool_path = locator()
+        if tool_path and not shutil.which(Path(tool_path).name):
+            self.notes.append(f"{description} was installed at {tool_path}; reopen the terminal if it is not yet in PATH")
+
+    def find_uv(self) -> str | None:
+        candidates = [
+            Path(self.invoking_user_home()) / ".local" / "bin" / "uv",
+            Path(self.invoking_user_home()) / ".cargo" / "bin" / "uv",
+            Path("/opt/homebrew/bin/uv"),
+            Path("/usr/local/bin/uv"),
+            Path("/home/linuxbrew/.linuxbrew/bin/uv"),
+        ]
+        return self.find_binary("uv", candidates)
+
+    def find_deno(self) -> str | None:
+        candidates = [
+            Path(self.invoking_user_home()) / ".deno" / "bin" / "deno",
+            Path("/opt/homebrew/bin/deno"),
+            Path("/usr/local/bin/deno"),
+            Path("/home/linuxbrew/.linuxbrew/bin/deno"),
+        ]
+        return self.find_binary("deno", candidates)
+
+    def find_binary(self, binary_name: str, candidates: Sequence[Path]) -> str | None:
+        if path := shutil.which(binary_name):
+            return path
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return None
+
+    def ensure_uv(self) -> None:
+        if self.find_uv():
+            return
+
+        if self.system == "Linux":
+            packages = self.resolve_package_set(LINUX_UV_CHOICES[self.package_manager])
+            if packages:
+                missing = [package for package in packages if not self.package_installed(package)]
+                if missing:
+                    self.install_packages(missing)
+            else:
+                self.ensure_unix_script_tool("uv", "https://astral.sh/uv/install.sh", self.find_uv)
+            return
+
+        if self.system == "Windows":
+            package_ids = self.resolve_package_set(WINGET_PACKAGE_CHOICES["uv"], kind="winget")
+            if not package_ids:
+                raise BootstrapError("winget could not find the package for uv")
+            package_id = package_ids[0]
+            if not self.package_installed(package_id, kind="winget"):
+                self.install_winget_package(package_id)
+
+    def ensure_deno(self) -> None:
+        if self.find_deno():
+            return
+
+        if self.system == "Linux":
+            packages = self.resolve_package_set(LINUX_DENO_CHOICES[self.package_manager])
+            if packages:
+                missing = [package for package in packages if not self.package_installed(package)]
+                if missing:
+                    self.install_packages(missing)
+            else:
+                self.ensure_unix_script_tool("Deno", "https://deno.land/install.sh", self.find_deno)
+            return
+
+        if self.system == "Windows":
+            package_ids = self.resolve_package_set(WINGET_PACKAGE_CHOICES["deno"], kind="winget")
+            if not package_ids:
+                raise BootstrapError("winget could not find the package for Deno")
+            package_id = package_ids[0]
+            if not self.package_installed(package_id, kind="winget"):
+                self.install_winget_package(package_id)
+
+    def ensure_tmux(self) -> None:
+        if shutil.which("tmux"):
+            return
+
+        if self.system == "Windows":
+            self.warnings.append("tmux is not installed automatically on native Windows; use WSL2 if you need tmux")
+            return
+
+        if self.system == "Linux":
+            self.install_first_resolved_set("tmux", LINUX_TMUX_CHOICES[self.package_manager])
+
     def install_linux_environment(self) -> None:
         self.update_package_index()
         self.install_packages(LINUX_CORE_PACKAGES[self.package_manager])
         self.install_first_resolved_set("Python 3", LINUX_PYTHON_CHOICES[self.package_manager])
         self.install_first_resolved_set("Node.js", LINUX_NODE_CHOICES[self.package_manager])
         self.install_first_resolved_set("rustup", LINUX_RUSTUP_CHOICES[self.package_manager])
+        self.ensure_uv()
+        self.ensure_deno()
+        self.ensure_tmux()
 
         if not self.args.skip_docker:
             self.install_first_resolved_set("Docker", LINUX_DOCKER_CHOICES[self.package_manager], optional=True)
@@ -364,6 +525,9 @@ class Bootstrapper:
             self.notes.append("Please manually start Docker Desktop at least once after installation")
 
         self.ensure_rust_toolchain()
+        self.ensure_uv()
+        self.ensure_deno()
+        self.ensure_tmux()
 
         if not self.args.skip_buckyos_dir:
             self.ensure_buckyos_directory()
@@ -375,13 +539,15 @@ class Bootstrapper:
     def install_windows_environment(self) -> None:
         self.update_package_index()
 
-        for feature in ("git", "python", "node", "pnpm", "rustup"):
+        for feature in ("git", "python", "node", "pnpm", "rustup", "uv", "deno"):
             package_ids = self.resolve_package_set(WINGET_PACKAGE_CHOICES[feature], kind="winget")
             if not package_ids:
                 raise BootstrapError(f"winget could not find the package for {feature}")
             package_id = package_ids[0]
             if not self.package_installed(package_id, kind="winget"):
                 self.install_winget_package(package_id)
+
+        self.ensure_tmux()
 
         if not self.args.skip_docker:
             package_ids = self.resolve_package_set(WINGET_PACKAGE_CHOICES["docker"], kind="winget")
@@ -515,6 +681,10 @@ class Bootstrapper:
         print("- Rust toolchain (stable)")
         print("- Node.js + pnpm")
         print("- Python 3")
+        print("- uv")
+        print("- Deno")
+        if self.system != "Windows":
+            print("- tmux")
         if not self.args.skip_docker:
             print("- Docker / Docker Desktop")
         if self.system == "Linux" and not self.args.skip_cross_tools:
@@ -535,12 +705,10 @@ class Bootstrapper:
         print("\nNext steps:")
         if self.system == "Windows":
             print("- Reopen terminal to ensure winget-installed software is in PATH")
-            print("- Install `uv` if it is still missing")
             print("- `cd buckyos`")
             print("- `uv run src\\buckyos-build.py --no-build-web-apps`")
         else:
-            print("- Reopen terminal to ensure rustup/cargo is in PATH")
-            print("- Install `uv` if it is still missing")
+            print("- Reopen terminal to ensure rustup/uv/deno are in PATH")
             print("- `cd buckyos`")
             print("- `uv run src/buckyos-build.py --no-build-web-apps`")
 

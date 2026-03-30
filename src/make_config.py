@@ -27,6 +27,7 @@ import os
 import platform
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -125,6 +126,25 @@ def write_text(path: Path, content: str) -> None:
     print(f"write content {path}")
 
 
+def ensure_sqlite_db_file_usable(path: Path) -> None:
+    """Reset a broken local sqlite file so buckycli can recreate its schema."""
+    ensure_dir(path.parent)
+    if path.exists():
+        conn = None
+        try:
+            conn = sqlite3.connect(path)
+            conn.execute("PRAGMA schema_version;").fetchone()
+            return
+        except sqlite3.DatabaseError as e:
+            print(f"reset invalid sqlite db {path}: {e}")
+            path.unlink()
+        finally:
+            if conn is not None:
+                conn.close()
+
+    path.touch(exist_ok=True)
+
+
 def get_workspace_version() -> str:
     cargo_toml = PROJECT_DIR / "Cargo.toml"
     version_match = re.search(
@@ -196,7 +216,7 @@ def seed_bin_pkg_meta_db(target_dir: Path) -> None:
     prefix = get_current_pkg_prefix()
     version = get_workspace_version()
     meta_db_path = ensure_dir(bin_dir / "pkgs") / "meta_index.db"
-    meta_db_path.touch(exist_ok=True)
+    ensure_sqlite_db_file_usable(meta_db_path)
 
     with tempfile.TemporaryDirectory(prefix="buckyos-bin-meta-") as temp_dir_str:
         temp_dir = Path(temp_dir_str)

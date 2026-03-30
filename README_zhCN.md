@@ -46,12 +46,14 @@ git clone https://github.com/buckyos/buckyos.git
 
 clone 完成后，先安装 `uv`。仓库现在提供 [`src/buckyos-build.py`](./src/buckyos-build.py)，它会在运行时按需拉起 `buckyos-devkit`，因此不再需要为了执行 `buckyos-build` 先创建项目 venv：
 
+如果本机还没准备好开发环境，可以先执行 `python3 devenv.py`。脚本会按当前平台安装 `uv`、`deno`、`tmux` 以及其他基础依赖。
+
 ```bash
 cd buckyos
 uv run src/buckyos-build.py --no-build-web-apps
 ```
 
-开始构建：构建前可以参考 `devenv.py` 搭建环境。我们主要依赖 `Rust 工具链、Node.js + pnpm、Python 3.12、docker.io`。安装成功后执行下面命令开始构建。
+开始构建：构建前可以参考 `devenv.py` 搭建环境。我们主要依赖 `Rust 工具链、Node.js + pnpm、Python 3.12、uv、Deno、tmux、docker.io`。安装成功后执行下面命令开始构建。
 
 ### Step 1. 构建 cyfs-gateway
 
