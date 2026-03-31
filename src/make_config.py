@@ -42,7 +42,7 @@ from buckyos_devkit import CertManager  # type: ignore
 
 PROJECT_DIR = Path(__file__).resolve().parent
 ROOTFS_DIR = Path(get_buckyos_root()) # rootfs is default target dir.
-BUCKYCLI_BIN =Path(get_execute_name(Path("~/buckycli/buckycli").expanduser()))
+BUCKYCLI_BIN = Path(get_execute_name(str(Path("~/buckycli/buckycli").expanduser())))
 
 if not BUCKYCLI_BIN.exists():
     print(f"buckycli binary missing at {BUCKYCLI_BIN}")

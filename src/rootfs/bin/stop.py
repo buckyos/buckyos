@@ -4,10 +4,21 @@ import subprocess
 
 system = platform.system()
 ext = ""
-killall_command = "killall"
 if system == "Windows":
     ext = ".exe"
-    killall_command = "taskkill /F /IM"
+
+
+def _windows_subprocess_kwargs() -> dict[str, object]:
+    if system != "Windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
 
 def kill_devtest_containers():
     if system == "Windows":
@@ -45,7 +56,21 @@ def kill_devtest_containers():
             print(f"{container_name} container killed")
 
 def kill_process(name):
-    if os.system(f"{killall_command} {name}{ext}") != 0:
+    if system == "Windows":
+        result = subprocess.run(
+            ["taskkill", "/F", "/IM", f"{name}{ext}"],
+            capture_output=True,
+            text=True,
+            **_windows_subprocess_kwargs(),
+        )
+    else:
+        result = subprocess.run(
+            ["killall", f"{name}{ext}"],
+            capture_output=True,
+            text=True,
+        )
+
+    if result.returncode != 0:
         print(f"{name} not running")
     else:
         print(f"{name} killed")
@@ -67,4 +92,10 @@ def kill_all():
     kill_process("repo_service")
     kill_devtest_containers()
 
-kill_all()
+
+def main():
+    kill_all()
+
+
+if __name__ == "__main__":
+    main()

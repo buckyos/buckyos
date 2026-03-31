@@ -10,10 +10,35 @@ ext = ""
 if system == "Windows":
     ext = ".exe"
 
+
+def _windows_subprocess_kwargs(detached: bool = False) -> dict[str, object]:
+    if system != "Windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+
+    creationflags = subprocess.CREATE_NO_WINDOW
+    if detached:
+        creationflags |= subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": creationflags,
+    }
+
+
+def _merge_creationflags(kwargs: dict[str, object], extra_flags: int) -> dict[str, object]:
+    merged = dict(kwargs)
+    merged["creationflags"] = int(merged.get("creationflags", 0)) | extra_flags
+    return merged
+
 def ensure_directory_accessible(directory_path):
     if not os.path.exists(directory_path):
         os.makedirs(directory_path, exist_ok=True)
-    os.system(f"chmod -R 777 {directory_path}")
+    if system != "Windows":
+        os.system(f"chmod -R 777 {directory_path}")
     
 # 获取系统默认编码
 def get_system_encoding():
@@ -96,11 +121,21 @@ def check_port(port) -> bool:
         return False
 
 def kill_process(name):
-    killall_command = "killall"
     if system == "Windows":
-        killall_command = "taskkill /F /IM"
+        result = subprocess.run(
+            ["taskkill", "/F", "/IM", f"{name}{ext}"],
+            capture_output=True,
+            text=True,
+            **_windows_subprocess_kwargs(),
+        )
+    else:
+        result = subprocess.run(
+            ["killall", f"{name}{ext}"],
+            capture_output=True,
+            text=True,
+        )
 
-    if os.system(f"{killall_command} {name}{ext}") != 0:
+    if result.returncode != 0:
         print(f"{name} not running")
     else:
         print(f"{name} killed")
@@ -111,19 +146,23 @@ def nohup_start(run_cmd, env_vars=None):
     if env_vars:
         env.update(env_vars)
 
+    split_posix = system != "Windows"
+    args = run_cmd if isinstance(run_cmd, (list, tuple)) else shlex.split(str(run_cmd), posix=split_posix)
+
     if system == "Windows":
-        cmd = f"start /min {run_cmd}"
-        creationflags = (
-            subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.CREATE_NO_WINDOW
+        print(f"will run cmd {args} on system {system}")
+        proc = subprocess.Popen(
+            list(args),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            env=env,
+            **_windows_subprocess_kwargs(detached=True),
         )
-        print(f"will run cmd {cmd} on system {system}")
-        subprocess.run(cmd, shell=True, creationflags=creationflags, env=env)
-        return None
+        return proc.pid
 
     # POSIX (macOS/Linux): detach from parent session/process group so parent exit won't affect child.
-    args = run_cmd if isinstance(run_cmd, (list, tuple)) else shlex.split(str(run_cmd))
     print(f"will run cmd {args} on system {system}")
     proc = subprocess.Popen(
         list(args),
@@ -152,22 +191,22 @@ def run_and_wait(run_cmd, timeout_secs=None, env_vars=None, cwd=None):
     if env_vars:
         env.update(env_vars)
 
-    args = run_cmd if isinstance(run_cmd, (list, tuple)) else shlex.split(str(run_cmd))
+    split_posix = system != "Windows"
+    args = run_cmd if isinstance(run_cmd, (list, tuple)) else shlex.split(str(run_cmd), posix=split_posix)
     print(f"will run cmd {args} on system {system}, timeout={timeout_secs}s")
 
     if system == "Windows":
         # Create a new process group so we can terminate the whole tree on timeout.
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
         proc = subprocess.Popen(
             list(args),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            creationflags=creationflags,
             cwd=cwd,
             env=env,
             text=True,
             errors="ignore",
+            **_merge_creationflags(_windows_subprocess_kwargs(), subprocess.CREATE_NEW_PROCESS_GROUP),
         )
         try:
             out, _ = proc.communicate(timeout=timeout_secs)
@@ -182,6 +221,7 @@ def run_and_wait(run_cmd, timeout_secs=None, env_vars=None, cwd=None):
                     ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    **_windows_subprocess_kwargs(),
                 )
             except Exception as e:
                 print(f"taskkill failed: {e}")

@@ -9,10 +9,29 @@ ext = ""
 if system == "Windows":
     ext = ".exe"
 
+
+def _windows_subprocess_kwargs(detached: bool = False) -> dict[str, object]:
+    if system != "Windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+
+    creationflags = subprocess.CREATE_NO_WINDOW
+    if detached:
+        creationflags |= subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": creationflags,
+    }
+
 def ensure_directory_accessible(directory_path):
     if not os.path.exists(directory_path):
         os.makedirs(directory_path, exist_ok=True)
-    os.system(f"chmod 777 -R {directory_path}")
+    if system != "Windows":
+        os.system(f"chmod 777 -R {directory_path}")
     
 # 获取系统默认编码
 def get_system_encoding():
@@ -95,11 +114,21 @@ def check_port(port) -> bool:
         return False
 
 def kill_process(name):
-    killall_command = "killall"
     if system == "Windows":
-        killall_command = "taskkill /F /IM"
+        result = subprocess.run(
+            ["taskkill", "/F", "/IM", f"{name}{ext}"],
+            capture_output=True,
+            text=True,
+            **_windows_subprocess_kwargs(),
+        )
+    else:
+        result = subprocess.run(
+            ["killall", f"{name}{ext}"],
+            capture_output=True,
+            text=True,
+        )
 
-    if os.system(f"{killall_command} {name}{ext}") != 0:
+    if result.returncode != 0:
         print(f"{name} not running")
     else:
         print(f"{name} killed")
@@ -114,19 +143,15 @@ def nohup_start(run_cmd, env_vars=None):
     args = run_cmd if isinstance(run_cmd, (list, tuple)) else shlex.split(str(run_cmd), posix=split_posix)
 
     if system == "Windows":
-        creationflags = (
-            subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.CREATE_NO_WINDOW
-        )
         print(f"will run cmd {args} on system {system}")
         proc = subprocess.Popen(
             list(args),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
+            close_fds=True,
             env=env,
+            **_windows_subprocess_kwargs(detached=True),
         )
         return proc.pid
 

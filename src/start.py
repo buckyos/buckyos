@@ -49,7 +49,54 @@ def _run_command(command: str, args: list[str]) -> int:
         print(f"or install `{DEVKIT_SPEC}`.")
         return 127
 
-    return subprocess.run([executable] + args, env=os.environ.copy()).returncode
+    return subprocess.run(
+        [executable] + args,
+        env=os.environ.copy(),
+        **_windows_subprocess_kwargs(),
+    ).returncode
+
+
+def _windows_subprocess_kwargs(detached: bool = False) -> dict[str, object]:
+    if platform.system() != "Windows":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+
+    creationflags = subprocess.CREATE_NO_WINDOW
+    if detached:
+        creationflags |= subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": creationflags,
+    }
+
+
+def _spawn_background(args: list[str], env: dict[str, str]) -> int:
+    if platform.system() == "Windows":
+        proc = subprocess.Popen(
+            args,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            **_windows_subprocess_kwargs(detached=True),
+        )
+        return proc.pid
+
+    proc = subprocess.Popen(
+        args,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        preexec_fn=os.setsid,
+        close_fds=True,
+    )
+    return proc.pid
 
 
 def resolve_buckyos_root() -> Path:
@@ -128,18 +175,10 @@ def start_system():
         # Start node_daemon in background with BUCKYOS_ROOT environment
         env = os.environ.copy()
         env['BUCKYOS_ROOT'] = buckyos_root
-        
-        if platform.system() == "Windows":
-            subprocess.Popen([node_daemon_path,"--enable_active"], 
-                           env=env,
-                           creationflags=subprocess.CREATE_NEW_CONSOLE)
-        else:
-            subprocess.Popen([node_daemon_path,"--enable_active"], 
-                           env=env,
-                           stdout=subprocess.DEVNULL, 
-                           stderr=subprocess.DEVNULL)
-        
+
+        pid = _spawn_background([node_daemon_path, "--enable_active"], env)
         print(f"BuckyOS system started: {node_daemon_path}")
+        print(f"node_daemon pid: {pid}")
         print("System is running in background...")
         
     except Exception as e:

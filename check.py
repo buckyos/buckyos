@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import csv
 import glob
 import http.client
 import io
@@ -120,7 +121,12 @@ class Diagnostic:
 
 
 def normalize_name(value: str) -> str:
-    return value.strip().lower().replace("_", "-")
+    normalized = value.strip().lower().replace("_", "-")
+    for suffix in (".exe", ".cmd", ".bat"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+    return normalized
 
 
 def resolve_buckyos_root() -> Path:
@@ -151,13 +157,50 @@ def run_command(args: list[str]) -> subprocess.CompletedProcess[str] | None:
             args,
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
         )
     except Exception:
         return None
 
 
+def run_powershell(script: str) -> subprocess.CompletedProcess[str] | None:
+    executable = shutil.which("powershell") or shutil.which("pwsh")
+    if executable is None:
+        return None
+    encoded_script = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "$OutputEncoding = [System.Text.Encoding]::UTF8; "
+        f"{script}"
+    )
+    return run_command([executable, "-NoProfile", "-Command", encoded_script])
+
+
 def collect_processes() -> list[ProcessInfo]:
+    if platform.system() == "Windows":
+        result = run_powershell(
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId, Name, CommandLine | "
+            "ConvertTo-Csv -NoTypeInformation"
+        )
+        if result is None or result.returncode != 0 or not result.stdout.strip():
+            return []
+
+        processes: list[ProcessInfo] = []
+        reader = csv.DictReader(io.StringIO(result.stdout))
+        for row in reader:
+            raw_pid = (row.get("ProcessId") or "").strip()
+            raw_name = (row.get("Name") or "").strip()
+            raw_command_line = (row.get("CommandLine") or "").strip()
+            if not raw_pid or not raw_name:
+                continue
+            try:
+                pid = int(raw_pid)
+            except ValueError:
+                continue
+            processes.append(ProcessInfo(pid=pid, command=raw_name, args=raw_command_line or raw_name))
+        return processes
+
     result = run_command(["ps", "-axo", "pid=,comm=,args="])
     if result is None or result.returncode != 0:
         return []
@@ -221,7 +264,45 @@ def probe_http(host: str, port: int, path: str = "/") -> tuple[bool, str]:
             pass
 
 
-def get_port_listener(port: int) -> str | None:
+def get_port_listener(port: int, processes: list[ProcessInfo] | None = None) -> str | None:
+    if platform.system() == "Windows":
+        result = run_powershell(
+            f"$conn = Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue | "
+            "Select-Object -First 1; "
+            "if ($null -ne $conn) { "
+            "$proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue; "
+            "[pscustomobject]@{ "
+            "LocalAddress = $conn.LocalAddress; "
+            "LocalPort = $conn.LocalPort; "
+            "OwningProcess = $conn.OwningProcess; "
+            "ProcessName = if ($null -ne $proc) { $proc.ProcessName } else { '' } "
+            "} | ConvertTo-Csv -NoTypeInformation }"
+        )
+        if result and result.returncode == 0 and result.stdout.strip():
+            rows = list(csv.DictReader(io.StringIO(result.stdout)))
+            if rows:
+                row = rows[0]
+                process_name = (row.get("ProcessName") or "").strip()
+                owning_process = (row.get("OwningProcess") or "").strip()
+                local_address = (row.get("LocalAddress") or "").strip()
+                local_port = (row.get("LocalPort") or "").strip()
+                if process_name or owning_process:
+                    process_label = process_name or f"pid={owning_process}"
+                    return f"{process_label} pid={owning_process} {local_address}:{local_port}"
+
+        result = run_command(["netstat", "-ano", "-p", "tcp"])
+        if result and result.returncode == 0:
+            process_map = {proc.pid: proc for proc in (processes or collect_processes())}
+            for line in result.stdout.splitlines():
+                match = re.search(rf"^\s*TCP\s+\S+:{port}\s+\S+\s+LISTENING\s+(\d+)\s*$", line, re.IGNORECASE)
+                if not match:
+                    continue
+                pid = int(match.group(1))
+                proc = process_map.get(pid)
+                process_name = normalize_name(proc.command) if proc else f"pid={pid}"
+                return f"{process_name} pid={pid}"
+        return None
+
     lsof = shutil.which("lsof")
     if lsof:
         result = run_command([lsof, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"])
@@ -467,11 +548,13 @@ def analyze_logs(log_root: Path) -> list[Diagnostic]:
 
 def cyfs_gateway_binary_exists(bin_root: Path) -> tuple[bool, list[Path]]:
     candidates: list[Path] = []
+    suffixes = [".exe", ""] if platform.system() == "Windows" else [""]
     for parent, binary in CYFS_GATEWAY_BIN_CANDIDATES:
-        path = bin_root / parent / binary
-        candidates.append(path)
-        if path.exists():
-            return True, candidates
+        for suffix in suffixes:
+            path = bin_root / parent / f"{binary}{suffix}"
+            candidates.append(path)
+            if path.exists():
+                return True, candidates
     return False, candidates
 
 
@@ -551,7 +634,7 @@ def main() -> int:
 
     if not activated:
         port_3182_open = probe_tcp("127.0.0.1", 3182)
-        listener_3182 = get_port_listener(3182)
+        listener_3182 = get_port_listener(3182, processes)
         http_ok, http_detail = probe_http("127.0.0.1", 3182)
 
         if port_3182_open:
@@ -589,7 +672,7 @@ def main() -> int:
         for port_name, port in ACTIVE_PORTS.items():
             is_open = probe_tcp("127.0.0.1", port)
             port_results[port] = is_open
-            listener = get_port_listener(port)
+            listener = get_port_listener(port, processes)
             aliases = PROCESS_ALIASES.get(port_name, PROCESS_ALIASES.get("cyfs_gateway", ()))
             expected_ok = port_owned_by(listener, aliases) if listener else False
             details = [f"Listener: {listener}"] if listener else []
