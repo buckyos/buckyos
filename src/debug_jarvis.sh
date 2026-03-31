@@ -57,7 +57,7 @@ cp -R "${SOURCE_ROOT}/behaviors/." "${TARGET_ROOT}/behaviors/"
 echo "[debug_jarvis] synced jarvis assets to ${TARGET_ROOT}"
 echo "[debug_jarvis] launching service_debug for ${APP_ID}/${OWNER_USER_ID}"
 
-exec deno run --allow-env --allow-read --allow-net --allow-run \
+exec deno run --quiet -A \
   "${SERVICE_DEBUG_SCRIPT}" \
   "${APP_ID}" \
   "${OWNER_USER_ID}" \

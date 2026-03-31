@@ -2,7 +2,7 @@
 
 ## 1. 文档目标
 
-本文从 [System Service Dev Loop.md](/Users/liuzhicong/project/buckyos/harness/System%20Service%20Dev%20Loop.md) 中抽取“哪些资产变更必须触发额外检查”的规则，作为系统服务任务的统一触发与升级审查说明。
+本文从 定义“哪些变更必须触发额外检查”的规则，作为系统服务任务的统一触发与升级审查说明。
 
 ---
 

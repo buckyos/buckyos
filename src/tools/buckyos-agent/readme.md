@@ -1,5 +1,7 @@
 # BuckyOS Agent
 
+> 待buckyos-web sdk文档后，基于TS 实现
+
 buckyos-agent tools 是用ts编写的，运行在nodejs环境下的buckycli工具。
 会默认打入opendan的docker镜像(paios/aios), 是opendan agent runtime为Agent提供的，访问buckyos的基础工具
 是用ts编写是方便开放源代码给Agent,Agent可以在此代码基础上，自行升级

@@ -2,7 +2,7 @@
 
 ## 1. 文档目标
 
-本文把 [System Service Dev Loop.md](/Users/liuzhicong/project/buckyos/harness/System%20Service%20Dev%20Loop.md) 的阶段性要求压缩成一份可执行清单，用于贡献者自检、模块负责人过门槛、AI Harness 输出结果。
+本文把 System Service Dev Loop.md 的阶段性要求压缩成一份可执行清单，用于贡献者自检、模块负责人过门槛、AI Harness 输出结果。
 
 ---
 
