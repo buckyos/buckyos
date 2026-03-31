@@ -4,7 +4,7 @@
 
 ### 开发常用脚本
 
-**注意下面脚本都在src目录下运行**
+**注意下面脚本都推荐在src目录下运行**
 
 ```bash
 # 修改代码后重新构建buckyos
@@ -35,9 +35,29 @@ uv run stop.py
 
 ## 目录结构
 
+本段只提供「从哪找什么」的地图，不替代各模块内的 canonical 文档。
+
+- **仓库根**：`pyproject.toml`、`uv.lock`（`uv run` 拉起 `buckyos-devkit`）、`devenv.py`（开发环境）、以及 `build.py`、`check.py` 等辅助脚本；与 **`src/`** 并列的协作与产品材料见下。
+- **`doc/`**：跨模块说明、CI、架构与各子域文档（如 `doc/arch`、`doc/control_panel`、`doc/sdk` 等）；具体协议与规范以子目录为准。
+- **`harness/`**：Harness Engineering 的规则、技能、任务模板与检查单。
+- **`product/`**：产品与界面规划类材料（图表、说明等），**不是**可运行源码的主承载。
+- **`proposals/`**：提案入口；流程上通常与「proposal → 实现 → PR」衔接。
+- **`test/`**：仓库级测试与脚本（与 `src/` 内的测试目录区分）。
+- **`src/`**：**日常开发、构建与安装命令的默认工作目录**（见上文 Commands）。
+  - **Rust workspace**：`Cargo.toml` / `Cargo.lock`，crate 为主要服务端与库代码的载体。
+  - **`kernel/`**：内核侧守护与服务（如 `node_daemon`、`scheduler`、`kmsg`、`task_manager` 等）。
+  - **`frame/`**：框架层业务与服务（如 `control_panel`、`opendan`、`repo_service`、`msg_center` 等），与 `kernel/` 分工协作。
+  - **`apps/`**：面向安装/交付的应用与系统测试应用（如 `control_panel` 应用侧、`sys_test`）。
+  - **脚本与配置**：`buckyos-build.py`、`buckyos-install.py`、`start.py`、`stop.py`、`make_config.py`；`bucky_project.yaml` 常作为构建模块清单入口。
+  - **`tools/`**：CLI、Agent、打包等开发与运维工具。
+  - **`rootfs/`、`dev_configs/`、`patches/`**：根文件系统相关、开发配置与补丁。
+
 ## 处理规则
 
 从proposal开始，到PR结束
+
+## py 开发支持脚本编写
+- 用buckyos-devkit 库来获得多平台支持
 
 ## 常见术语
 

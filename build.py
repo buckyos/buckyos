@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
 SRC_DIR = ROOT_DIR / "src"
-CHECK_SCRIPT = ROOT_DIR / "check.py"
+CHECK_SCRIPT = ROOT_DIR / "src" / "check.py"
 DEVENV_SCRIPT = ROOT_DIR / "devenv.py"
 BOOT_CONFIG = Path.home() / ".buckycli" / "buckyos_boot.toml"
 BOOT_CONFIG_SAMPLE = SRC_DIR / "rootfs" / "etc" / "scheduler" / "buckyos_boot.toml.sample"
