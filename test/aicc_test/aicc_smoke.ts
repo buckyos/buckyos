@@ -58,7 +58,7 @@ const AICC_MODEL_ALIAS =
   'llm.default'
 const AICC_TEST_INPUT =
   getEnv('AICC_TEST_INPUT') ??
-  '请用一句简短的话介绍 BuckyOS。'
+  '今天天气如何，我在sanjose'
 const AICC_WAIT_TIMEOUT_MS = Number(
   getEnv('AICC_WAIT_TIMEOUT_MS') ?? '90000',
 )
@@ -316,7 +316,7 @@ async function main(): Promise<void> {
       ],
       options: {
         temperature: 0.2,
-        max_tokens: 128,
+        max_tokens: 2560,
         session_id: runId,
         rootid: runId,
       },
