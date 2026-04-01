@@ -615,21 +615,11 @@ Simple Integration Test 通过意味着：
 
 为了让 AI Harness 真正可执行，本流程涉及的开发任务可使用下列 Skill：
 
-1. `design-krpc-protocol` OK 
-2. `design-durable-data-schema`
-3. `implement-system-service`
-4. `buckyos-intergate-service`
-5. `service-dv-test`
-
-
-每个 Skill 建议包含：
-
-- 适用场景；
-- 输入；
-- 输出；
-- 操作步骤；
-- 常见失败模式；
-- 通过标准。
+1. `design-krpc-protocol` 
+2. `design-durable-data-schema` 
+3. `implement-system-service` 
+4. `buckyos-intergate-service` 
+5. `service-dv-test` 
 
 ---
 
