@@ -59,6 +59,7 @@ Do NOT use this skill when:
 | Data Fetching | **SWR** |
 | Routing | **React Router DOM v7** |
 | State Management | React hooks + Context API |
+| Forms & Input Validation | **react-hook-form** + **Zod** |
 | Fonts | **Space Grotesk** (headings), **Work Sans** (body) |
 | i18n | BuckyOS custom i18n (`useI18n()` hook, `I18nProvider`) |
 
@@ -165,6 +166,31 @@ Mock 数据 MUST：
 3. 实现五种状态：正常、空、加载、错误、进度。
 4. 应用 BuckyOS 视觉风格（CSS Variables + 组件类）。
 5. 所有面向用户的文本通过 i18n：`const { t } = useI18n();`
+
+如果页面包含表单、筛选器、向导、配置面板或任何用户输入区域，MUST：
+
+1. 使用 `react-hook-form` 管理表单状态。
+2. 使用 `zod` 定义输入 schema，并通过 resolver 接入表单校验。
+3. 让输入 schema 成为 UI DataModel 中“输入模型”的单一事实来源，避免在组件内散落手写校验逻辑。
+4. 对默认值、必填项、枚举值、字符串长度、数值范围、跨字段约束给出明确限制。
+5. 将校验错误映射为可见、可本地化的 UI 文案，而不是仅依赖浏览器原生校验。
+
+推荐模式：
+
+```typescript
+const formSchema = z.object({
+  name: z.string().trim().min(1).max(64),
+  mode: z.enum(['auto', 'manual']),
+  retries: z.number().int().min(0).max(10),
+});
+
+type FormValues = z.infer<typeof formSchema>;
+
+const form = useForm<FormValues>({
+  resolver: zodResolver(formSchema),
+  defaultValues,
+});
+```
 
 ### Step 4: 双视图模式
 
@@ -351,6 +377,25 @@ export interface EntityName {
 }
 ```
 
+对“用户可编辑输入”类数据，除了展示/读取用的 TypeScript interface，还 MUST 提供对应的 Zod schema：
+
+```typescript
+export const entityInputSchema = z.object({
+  name: z.string().trim().min(1).max(64),
+  description: z.string().trim().max(280).optional(),
+  mode: z.enum(['auto', 'manual']),
+});
+
+export type EntityInput = z.infer<typeof entityInputSchema>;
+```
+
+要求：
+
+- 输入 schema 表达 UI 层真实约束，而不是后端 DTO 的机械镜像。
+- `react-hook-form` 表单字段类型从 Zod schema 推导，避免重复定义。
+- 在文档中区分“展示模型 / 查询结果模型”与“输入模型 / 编辑模型”。
+- 对可选字段、默认值、枚举、格式、范围、跨字段约束写清楚。
+
 ### 3. State Definitions
 
 每个数据获取点 MUST 定义：
@@ -392,6 +437,13 @@ export interface DataState<T> {
 ### 6. Mock Data Contract
 
 为每个 interface 提供样本 mock 对象，覆盖正常、空、错误、边界情况。
+
+对输入模型还应补充：
+
+- 合法输入样本。
+- 非法输入样本及预期校验错误。
+- 默认值样本。
+- 编辑态回填样本。
 
 ### 7. KRPC Mapping Notes（Optional）
 
