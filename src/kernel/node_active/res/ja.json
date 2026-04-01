@@ -135,6 +135,7 @@
     "error_generate_txt_records_failed": "TXT レコードの生成に失敗しました。もう一度お試しください",
     "generating_txt_records": "生成中...",
     "success_copied": "内容をクリップボードにコピーしました",
+    "error_copy_failed": "コピーに失敗しました。手動でコピーしてください。",
     "wallet_device_owner": "このデバイスの所有者: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "有効化の前に、次の 3 つの TXT レコードをドメインに追加してください",
     "language_label": "言語"

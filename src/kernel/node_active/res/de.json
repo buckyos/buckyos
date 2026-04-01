@@ -135,6 +135,7 @@
     "error_generate_txt_records_failed": "TXT-Eintraege konnten nicht generiert werden, bitte erneut versuchen",
     "generating_txt_records": "Wird generiert...",
     "success_copied": "Inhalt in die Zwischenablage kopiert",
+    "error_copy_failed": "Kopieren fehlgeschlagen. Bitte manuell kopieren.",
     "wallet_device_owner": "Das Geraet wird gehoeren zu: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "Bitte fuege vor der Aktivierung die folgenden 3 TXT-Eintraege zu deiner Domain hinzu",
     "language_label": "Sprache"

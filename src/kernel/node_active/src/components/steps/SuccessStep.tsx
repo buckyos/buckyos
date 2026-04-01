@@ -1,8 +1,10 @@
 import { CheckCircleOutlineRounded, ContentCopyRounded, LaunchRounded } from "@mui/icons-material";
-import { Button, Paper, Stack, Typography } from "@mui/material";
+import { Alert, Button, Paper, Snackbar, Stack, Typography } from "@mui/material";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { WizardData } from "../../types";
 import { WEB3_BASE_HOST } from "../../../active_lib";
+import { copyTextToClipboard } from "../../utils/clipboard";
 
 type Props = {
   wizardData: WizardData;
@@ -11,6 +13,15 @@ type Props = {
 
 const SuccessStep = ({ wizardData, targetUrl }: Props) => {
   const { t } = useTranslation();
+  const [copyFeedback, setCopyFeedback] = useState<{
+    open: boolean;
+    severity: "success" | "error";
+    message: string;
+  }>({
+    open: false,
+    severity: "success",
+    message: "",
+  });
   const url =
     targetUrl ||
     (wizardData.use_self_domain
@@ -23,10 +34,19 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
     }
   };
 
-  const copyUrl = () => {
-    if (url) {
-      navigator.clipboard?.writeText(url);
+  const copyUrl = async () => {
+    if (!url) {
+      return;
     }
+
+    const copied = await copyTextToClipboard(url);
+    setCopyFeedback({
+      open: true,
+      severity: copied ? "success" : "error",
+      message: copied
+        ? t("success_copied")
+        : t("error_copy_failed", "Copy failed. Please copy it manually."),
+    });
   };
 
   return (
@@ -59,6 +79,21 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
           </Button>
         </Stack>
       </Stack>
+      <Snackbar
+        open={copyFeedback.open}
+        autoHideDuration={2500}
+        onClose={() => setCopyFeedback((prev) => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          onClose={() => setCopyFeedback((prev) => ({ ...prev, open: false }))}
+          severity={copyFeedback.severity}
+          variant="filled"
+          sx={{ width: "100%" }}
+        >
+          {copyFeedback.message}
+        </Alert>
+      </Snackbar>
     </Paper>
   );
 };

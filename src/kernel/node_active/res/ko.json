@@ -135,6 +135,7 @@
     "error_generate_txt_records_failed": "TXT 레코드 생성에 실패했습니다. 다시 시도하세요",
     "generating_txt_records": "생성 중...",
     "success_copied": "클립보드에 복사되었습니다",
+    "error_copy_failed": "복사에 실패했습니다. 수동으로 복사해 주세요.",
     "wallet_device_owner": "이 장치의 소유자: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "활성화 전에 아래 3개의 TXT 레코드를 도메인에 추가하세요",
     "language_label": "언어"

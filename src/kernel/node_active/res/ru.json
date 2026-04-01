@@ -135,6 +135,7 @@
     "error_generate_txt_records_failed": "Не удалось сгенерировать TXT-записи, попробуйте еще раз",
     "generating_txt_records": "Генерация...",
     "success_copied": "Содержимое скопировано в буфер обмена",
+    "error_copy_failed": "Не удалось скопировать. Скопируйте вручную.",
     "wallet_device_owner": "Устройство будет принадлежать: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "Перед активацией добавьте следующие 3 TXT-записи в ваш домен",
     "language_label": "Язык"

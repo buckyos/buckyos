@@ -135,6 +135,7 @@
     "error_generate_txt_records_failed": "產生 TXT 記錄失敗，請重試",
     "generating_txt_records": "正在產生...",
     "success_copied": "內容已複製到剪貼簿",
+    "error_copy_failed": "複製失敗，請手動複製。",
     "wallet_device_owner": "裝置將屬於: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "請在啟用前將以下 3 條 TXT 記錄新增到您的網域",
     "language_label": "語言"

@@ -135,6 +135,7 @@
     "error_generate_txt_records_failed": "Echec de la generation des enregistrements TXT, veuillez reessayer",
     "generating_txt_records": "Generation...",
     "success_copied": "Contenu copie dans le presse-papiers",
+    "error_copy_failed": "La copie a échoué. Veuillez copier manuellement.",
     "wallet_device_owner": "L'appareil appartiendra a : {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "Veuillez ajouter les 3 enregistrements TXT suivants a votre domaine avant l'activation",
     "language_label": "Langue"

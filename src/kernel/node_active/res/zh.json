@@ -142,6 +142,7 @@
     "error_generate_txt_records_failed": "生成TXT记录失败,请重试",
     "generating_txt_records": "正在生成...",
     "success_copied": "内容已复制到剪贴板",
+    "error_copy_failed": "复制失败，请手动复制。",
     "wallet_device_owner": "设备将属于: {{user_name}} {{public_key}}",
     "dns_config_txt_tips":"请在激活前添加下面3条TXT记录到您的域名",
     "language_label": "语言"

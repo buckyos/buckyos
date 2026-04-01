@@ -5,6 +5,7 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  Snackbar,
   Stack,
   TextField,
   Typography,
@@ -14,6 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GatewayType, WizardData } from "../../types";
 import { do_active, do_active_by_wallet, generate_zone_txt_records, get_net_id_by_gateway_type, SN_BASE_HOST, SN_API_URL,SN_HOST, WEB3_BASE_HOST } from "../../../active_lib";
+import { copyTextToClipboard } from "../../utils/clipboard";
 
 type Props = {
   wizardData: WizardData;
@@ -36,6 +38,15 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
      []
   );
   const [dnsLoading, setDnsLoading] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<{
+    open: boolean;
+    severity: "success" | "error";
+    message: string;
+  }>({
+    open: false,
+    severity: "success",
+    message: "",
+  });
 
   useEffect(() => {
     setDnsReady(!requiresDnsTxt);
@@ -48,11 +59,20 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
 
   const targetUrl = targetHost ? `https://${targetHost}` : "";
 
-  const copyKey = () => {
+  const copyKey = async () => {
     const key = wizardData.owner_private_key as string;
-    if (key) {
-      navigator.clipboard?.writeText(key);
+    if (!key) {
+      return;
     }
+
+    const copied = await copyTextToClipboard(key);
+    setCopyFeedback({
+      open: true,
+      severity: copied ? "success" : "error",
+      message: copied
+        ? t("success_copied")
+        : t("error_copy_failed", "Copy failed. Please copy it manually."),
+    });
   };
 
   const handleActivate = async () => {
@@ -216,6 +236,21 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
           {loading ? <CircularProgress size={20} /> : t("activate_button")}
         </Button>
       </Stack>
+      <Snackbar
+        open={copyFeedback.open}
+        autoHideDuration={2500}
+        onClose={() => setCopyFeedback((prev) => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          onClose={() => setCopyFeedback((prev) => ({ ...prev, open: false }))}
+          severity={copyFeedback.severity}
+          variant="filled"
+          sx={{ width: "100%" }}
+        >
+          {copyFeedback.message}
+        </Alert>
+      </Snackbar>
 
     </Stack>
   );

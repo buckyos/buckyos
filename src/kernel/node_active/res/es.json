@@ -135,6 +135,7 @@
     "error_generate_txt_records_failed": "No se pudieron generar los registros TXT; vuelve a intentarlo",
     "generating_txt_records": "Generando...",
     "success_copied": "Contenido copiado al portapapeles",
+    "error_copy_failed": "La copia falló. Cópielo manualmente.",
     "wallet_device_owner": "El dispositivo pertenecera a: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "Agrega los siguientes 3 registros TXT a tu dominio antes de la activacion",
     "language_label": "Idioma"
