@@ -95,13 +95,12 @@ const GatewayStep = ({ wizardData, onUpdate, onNext, isWalletRuntime }: Props) =
       <Stack direction="row" spacing={1.5} alignItems="flex-start">
         <Box
           sx={{
-            width: 44,
-            height: 44,
-            borderRadius: "12px",
+            width: 28,
+            height: 28,
             display: "grid",
             placeItems: "center",
-            backgroundColor: selected ? "primary.main" : "action.hover",
-            color: selected ? "primary.contrastText" : "text.secondary",
+            flexShrink: 0,
+            color: selected ? "primary.main" : "text.secondary",
           }}
         >
           {icon}

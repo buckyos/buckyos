@@ -12,6 +12,7 @@ import {
 import {
   AutoAwesomeRounded,
   DnsRounded,
+  LockRounded,
   PublicRounded,
   VerifiedRounded,
 } from "@mui/icons-material";
@@ -165,22 +166,45 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
               </Box>
             </Stack>
           </Paper>
-        </Grid>
       </Grid>
+      </Grid>
+
+      <Stack spacing={1.5}>
+        <TextField
+          label={t("username_placeholder")}
+          value={username}
+          required
+          InputProps={{
+            readOnly: true,
+            startAdornment: (
+              <Box
+                component="span"
+                sx={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  color: "text.secondary",
+                  mr: 1,
+                }}
+              >
+                <LockRounded fontSize="small" />
+              </Box>
+            ),
+          }}
+          helperText={t("domain_username_locked", {
+            defaultValue: "SN 用户名已在第一步创建，这里只展示最终访问域名。",
+          })}
+          sx={{
+            "& .MuiInputBase-root": {
+              bgcolor: "action.hover",
+            },
+          }}
+        />
+      </Stack>
 
       {mode === "bucky" ? (
         <Stack spacing={2}>
-          <TextField
-            label={t("username_placeholder")}
-            value={username}
-            helperText={previewDomain}
-            required
-            InputProps={{ readOnly: true }}
-          />
           <Alert severity="info">
-            {t("domain_username_locked", {
-              defaultValue: "SN 用户名已在第一步创建，这里只展示最终访问域名。",
-            })}
+            {previewDomain}
           </Alert>
         </Stack>
       ) : (

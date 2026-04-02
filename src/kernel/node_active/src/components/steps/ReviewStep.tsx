@@ -155,11 +155,6 @@ const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props)
           label={wizardData.use_self_domain ? t("use_own_domain") : t("use_buckyos_domain")}
           color="secondary"
         />
-        <Chip
-          label={
-            wizardData.enable_guest_access ? t("enable_guest_mode") : (t("guest_mode_desc") || "Private access")
-          }
-        />
       </Stack>
 
       {wizardData.use_self_domain && wizardData.gatewy_type !== GatewayType.WAN && (

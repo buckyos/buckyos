@@ -12,10 +12,8 @@ import {
   Button,
   Chip,
   CircularProgress,
-  FormControlLabel,
   Paper,
   Stack,
-  Switch,
   TextField,
   Typography,
 } from "@mui/material";
@@ -54,8 +52,6 @@ const SecurityStep = ({
   const [snCode, setSnCode] = useState(wizardData.sn_active_code || "");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [friendCode, setFriendCode] = useState(wizardData.friend_passcode || "");
-  const [guestAccess, setGuestAccess] = useState(wizardData.enable_guest_access);
   const [nameStatus, setNameStatus] = useState<NameStatus>(isWalletRuntime ? "ok" : "idle");
   const [checkingSnCode, setCheckingSnCode] = useState(false);
   const [snCodeValid, setSnCodeValid] = useState<boolean | null>(isWalletRuntime ? true : null);
@@ -240,10 +236,6 @@ const SecurityStep = ({
       setError(t("error_password_mismatch") || "");
       return;
     }
-    if (friendCode && friendCode.length < 6) {
-      setError(t("error_friend_code_too_short") || "");
-      return;
-    }
 
     setLoading(true);
     try {
@@ -253,8 +245,8 @@ const SecurityStep = ({
         owner_user_name: isWalletRuntime ? wizardData.owner_user_name : normalizedUsername,
         sn_active_code: isWalletRuntime ? wizardData.sn_active_code : normalizedCode,
         admin_password_hash: hash,
-        friend_passcode: friendCode,
-        enable_guest_access: guestAccess,
+        friend_passcode: "",
+        enable_guest_access: false,
       });
       onNext();
     } catch (err) {
@@ -379,23 +371,6 @@ const SecurityStep = ({
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             required
-          />
-          <TextField
-            label={t("friend_code_placeholder")}
-            value={friendCode}
-            onChange={(e) => setFriendCode(e.target.value)}
-            helperText={t("friend_code_desc")}
-          />
-          <FormControlLabel
-            control={<Switch checked={guestAccess} onChange={(e) => setGuestAccess(e.target.checked)} />}
-            label={
-              <Box>
-                <Typography fontWeight={600}>{t("enable_guest_mode")}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {t("guest_mode_desc")}
-                </Typography>
-              </Box>
-            }
           />
         </Stack>
       </Paper>
