@@ -1,5 +1,6 @@
 import {buckyos} from 'buckyos'
 import { ensureSessionToken } from '@/auth/authManager'
+import { isMockRuntime, waitForMockLatency } from '@/config/runtime'
 
 const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
 
@@ -473,7 +474,19 @@ const normalizeAppItem = (item: DappCard | string): DappCard => {
   }
 }
 
+const mockSystemOverview: SystemOverview = {
+  name: 'Mock Node',
+  model: 'BuckyOS Desktop Validation',
+  os: 'Ubuntu 24.04 LTS',
+  version: 'mock-dev',
+  uptime_seconds: 345678,
+}
+
 export const fetchLayout = async (): Promise<{ data: RootLayoutData | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockLayoutData, error: null }
+  }
   try {
     const { data, error } = await callRpc<RootLayoutData>('ui.layout', {})
     if (!data) {
@@ -510,6 +523,10 @@ export const fetchDashboard = async (): Promise<{ data: DashboardState | null; e
 }
 
 export const fetchAppsList = async (): Promise<{ data: DappCard[] | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockDappStoreData, error: null }
+  }
   const { data, error } = await callRpc<AppsListResponse>('apps.list', {})
   if (!data || !Array.isArray(data.items)) {
     return { data: null, error }
@@ -520,6 +537,15 @@ export const fetchAppsList = async (): Promise<{ data: DappCard[] | null; error:
 export const fetchAppsVersionList = async (
   names: string[] = [],
 ): Promise<{ data: Record<string, string> | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    const versions = Object.fromEntries(
+      mockDappStoreData
+        .filter((item) => names.length === 0 || names.includes(item.name))
+        .map((item) => [item.name, item.version ?? '0.0.0']),
+    )
+    return { data: versions, error: null }
+  }
   const params = names.length > 0 ? { names } : {}
   const { data, error } = await callRpc<AppsVersionListResponse>('apps.version.list', params)
   if (!data || !Array.isArray(data.items)) {
@@ -544,7 +570,13 @@ export const fetchAppsVersionList = async (
 export const fetchSystemOverview = async (): Promise<{
   data: SystemOverview | null
   error: unknown
-}> => callRpc<SystemOverview>('system.overview', {})
+}> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockSystemOverview, error: null }
+  }
+  return callRpc<SystemOverview>('system.overview', {})
+}
 
 export const fetchSystemMetrics = async (
   options: { lite?: boolean } = {},
@@ -552,6 +584,11 @@ export const fetchSystemMetrics = async (
   data: SystemMetrics | null
   error: unknown
 }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    void options
+    return { data: mockSystemMetrics, error: null }
+  }
   const { data, error } = await callRpc<SystemMetrics>(
     'system.metrics',
     options.lite ? { lite: true } : {},
@@ -578,6 +615,10 @@ export const fetchNetworkOverview = async (): Promise<{
   data: NetworkOverview | null
   error: unknown
 }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockNetworkOverview, error: null }
+  }
   const { data, error } = await callRpc<NetworkOverview>('network.overview', {})
   if (!data) {
     return { data: mockNetworkOverview, error }
@@ -599,6 +640,10 @@ export const fetchSystemStatus = async (): Promise<{
   data: SystemStatusResponse | null
   error: unknown
 }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockSystemStatus, error: null }
+  }
   const { data, error } = await callRpc<SystemStatusResponse>('system.status', {})
   if (!data) {
     return { data: mockSystemStatus, error }
@@ -616,6 +661,10 @@ export const fetchGatewayOverview = async (): Promise<{
   data: GatewayOverview | null
   error: unknown
 }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockGatewayOverview, error: null }
+  }
   const { data, error } = await callRpc<GatewayOverview>('gateway.overview', {})
   if (!data) {
     return { data: mockGatewayOverview, error }
@@ -651,6 +700,10 @@ export const fetchZoneOverview = async (): Promise<{
   data: ZoneOverview | null
   error: unknown
 }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockZoneOverview, error: null }
+  }
   const { data, error } = await callRpc<ZoneOverview>('zone.overview', {})
   if (!data) {
     return { data: mockZoneOverview, error }
@@ -673,6 +726,10 @@ export const fetchContainerOverview = async (): Promise<{
   data: ContainerOverview | null
   error: unknown
 }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockContainerOverview, error: null }
+  }
   const { data, error } = await callRpc<ContainerOverview>('container.overview', {})
   if (!data) {
     return { data: mockContainerOverview, error }
@@ -734,6 +791,10 @@ export const fetchLogServices = async (): Promise<{
   data: SystemLogService[] | null
   error: unknown
 }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockLogServices, error: null }
+  }
   const { data, error } = await callRpc<{ services: SystemLogService[] }>('system.logs.list', {})
   if (!data?.services?.length) {
     return { data: mockLogServices, error }
@@ -744,6 +805,11 @@ export const fetchLogServices = async (): Promise<{
 export const querySystemLogs = async (
   params: LogQueryParams,
 ): Promise<{ data: SystemLogQueryResponse | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    void params
+    return { data: { entries: mockLogEntries }, error: null }
+  }
   const { data, error } = await callRpc<SystemLogQueryResponse>('system.logs.query', params)
   if (!data) {
     return { data: { entries: mockLogEntries }, error }
@@ -754,6 +820,11 @@ export const querySystemLogs = async (
 export const tailSystemLogs = async (
   params: LogTailParams,
 ): Promise<{ data: SystemLogQueryResponse | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    void params
+    return { data: { entries: mockLogEntries }, error: null }
+  }
   const { data, error } = await callRpc<SystemLogQueryResponse>('system.logs.tail', params)
   if (!data) {
     return { data: { entries: [] }, error }
@@ -1174,6 +1245,7 @@ export {
   mockLayoutData,
   mockDashboardData,
   mockDappStoreData,
+  mockSystemOverview,
   mockSystemMetrics,
   mockSystemStatus,
   mockNetworkOverview,

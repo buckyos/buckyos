@@ -1441,6 +1441,7 @@ const DesktopView = memo((props: DesktopViewProps) => {
               key={app.id}
               type="button"
               onClick={app.onClick}
+              data-testid={`desktop-shortcut-${app.id}`}
               className="group flex w-[104px] flex-col items-center gap-2 rounded-xl p-2 transition-colors hover:bg-white/10 focus-visible:bg-white/15 focus-visible:outline-none"
             >
               <div
@@ -1749,6 +1750,7 @@ const WindowFrame = memo((props: WindowFrameProps) => {
   return (
     <div
       className="pointer-events-auto fixed"
+      data-testid={`desktop-window-${win.id}`}
       style={{
         left: 0,
         top: 0,
@@ -1816,7 +1818,12 @@ const WindowFrame = memo((props: WindowFrameProps) => {
             </div>
             <div className="flex items-center gap-2">
               <Icon name={win.icon} className="size-4 text-[var(--cp-muted)]" />
-              <p className="text-sm font-semibold tracking-tight text-[var(--cp-ink)]">{win.title}</p>
+              <p
+                className="text-sm font-semibold tracking-tight text-[var(--cp-ink)]"
+                data-testid={`desktop-window-title-${win.id}`}
+              >
+                {win.title}
+              </p>
             </div>
           </div>
           {win.id === 'logs' || win.id === 'storage' ? (

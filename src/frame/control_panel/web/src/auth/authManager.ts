@@ -1,4 +1,12 @@
 import { buckyos } from 'buckyos'
+import {
+  CONTROL_PANEL_MOCK_REFRESH_TOKEN,
+  CONTROL_PANEL_MOCK_SESSION_TOKEN,
+  CONTROL_PANEL_MOCK_USER_ID,
+  CONTROL_PANEL_MOCK_USER_TYPE,
+  CONTROL_PANEL_MOCK_USERNAME,
+  isMockRuntime,
+} from '@/config/runtime'
 
 import {
   clearStoredSession,
@@ -75,7 +83,24 @@ const hasValidTokenPair = (accountInfo: StoredAccountInfo | null) =>
 const callAuthRpc = async <T>(method: string, params: Record<string, unknown>) =>
   authRpcClient.call<T, Record<string, unknown>>(method, params)
 
+const seedMockSession = (username = CONTROL_PANEL_MOCK_USERNAME) => {
+  saveStoredAccountInfo({
+    user_name: username,
+    user_id: CONTROL_PANEL_MOCK_USER_ID,
+    user_type: CONTROL_PANEL_MOCK_USER_TYPE,
+    session_token: CONTROL_PANEL_MOCK_SESSION_TOKEN,
+    refresh_token: CONTROL_PANEL_MOCK_REFRESH_TOKEN,
+  })
+  saveSsoSessionCookie(CONTROL_PANEL_MOCK_SESSION_TOKEN)
+  resetVerifyCache()
+}
+
 export const ensureAuthRuntime = async () => {
+  if (isMockRuntime()) {
+    seedMockSession()
+    return
+  }
+
   if (runtimeReady) {
     return
   }
@@ -177,6 +202,11 @@ type EnsureSessionOptions = {
 export const ensureSessionToken = async (options: EnsureSessionOptions = {}) => {
   await ensureAuthRuntime()
 
+  if (isMockRuntime()) {
+    seedMockSession()
+    return CONTROL_PANEL_MOCK_SESSION_TOKEN
+  }
+
   const forceRefresh = options.forceRefresh === true
   const stored = getStoredAccountInfo()
   if (!hasValidTokenPair(stored)) {
@@ -202,6 +232,19 @@ export const ensureSessionToken = async (options: EnsureSessionOptions = {}) => 
 }
 
 export const loginWithPassword = async (username: string, password: string, redirectUrl?: string | null) => {
+  if (isMockRuntime()) {
+    void password
+    void redirectUrl
+    seedMockSession(username.trim() || CONTROL_PANEL_MOCK_USERNAME)
+    return getStoredAccountInfo() ?? {
+      user_name: username.trim() || CONTROL_PANEL_MOCK_USERNAME,
+      user_id: CONTROL_PANEL_MOCK_USER_ID,
+      user_type: CONTROL_PANEL_MOCK_USER_TYPE,
+      session_token: CONTROL_PANEL_MOCK_SESSION_TOKEN,
+      refresh_token: CONTROL_PANEL_MOCK_REFRESH_TOKEN,
+    }
+  }
+
   await ensureAuthRuntime()
 
   const trimmedUsername = username.trim()
@@ -244,6 +287,12 @@ export const loginWithPassword = async (username: string, password: string, redi
 }
 
 export const issueSsoTokenForRedirect = async (redirectUrl: string) => {
+  if (isMockRuntime()) {
+    void redirectUrl
+    seedMockSession()
+    return CONTROL_PANEL_MOCK_SESSION_TOKEN
+  }
+
   await ensureAuthRuntime()
 
   const normalizedRedirectUrl = redirectUrl.trim()
@@ -270,6 +319,12 @@ export const issueSsoTokenForRedirect = async (redirectUrl: string) => {
 }
 
 export const signOutSession = async () => {
+  if (isMockRuntime()) {
+    clearStoredSession()
+    resetVerifyCache()
+    return
+  }
+
   try {
     await callAuthRpc('auth.logout', {})
   } catch {

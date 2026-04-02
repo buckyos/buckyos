@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { isMockRuntime } from '@/config/runtime'
 import { ensureAuthRuntime, ensureSessionToken, loginWithPassword, signOutSession } from './authManager'
 import { AuthContext, type AuthContextValue, type AuthStatus } from './authContext'
 
@@ -17,6 +18,10 @@ const AuthProvider = ({ children }: AuthProviderProps) => {
     setStatus('loading')
 
     try {
+      if (isMockRuntime()) {
+        setStatus('authenticated')
+        return
+      }
       await ensureAuthRuntime()
       const token = await ensureSessionToken()
       setStatus(token ? 'authenticated' : 'unauthenticated')
@@ -33,7 +38,6 @@ const AuthProvider = ({ children }: AuthProviderProps) => {
 
   const signInWithPasswordAction = useCallback(async (username: string, password: string, redirectUrl?: string | null) => {
     setInitError(null)
-    await ensureAuthRuntime()
     await loginWithPassword(username, password, redirectUrl)
     setStatus('authenticated')
   }, [])
