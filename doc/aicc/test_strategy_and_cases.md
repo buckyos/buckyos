@@ -311,6 +311,15 @@
 - `cfg_04_sys_config_write_without_permission_rejected`：输入无权限 token 的配置写请求，经过 RBAC 流程，最终应输出拒绝。
 - `cfg_05_sys_config_value_not_json_string_rejected`：输入非 JSON 字符串 `value` 的配置写请求，经过参数校验流程，最终应输出请求失败且错误可机读。
 
+### 4.16A kRPC 直连 AICC（绕过 gateway）（6）
+
+- `krpc_direct_01_complete_minimal_llm_success`：输入最小 `method=complete` kRPC 报文，直接调用 AICC 服务 kRPC handler（不经过 gateway），最终应输出合法 result 结构。
+- `krpc_direct_02_complete_with_sys_seq_token_trace_success`：输入完整 `sys=[seq,token,trace]` 报文，直接调用 AICC 服务链路，最终应输出成功且 trace 可追踪。
+- `krpc_direct_03_complete_invalid_sys_shape_returns_bad_request`：输入非法 `sys` 结构报文，经过参数校验流程，最终应输出 `bad_request`。
+- `krpc_direct_04_cancel_cross_tenant_rejected`：输入跨租户 cancel 报文，经过租户鉴权流程，最终应输出拒绝。
+- `krpc_direct_05_cancel_same_tenant_accepted_or_graceful_false`：输入同租户 cancel 报文，经过 cancel 流程，最终应输出 `accepted=true` 或受控 `false`。
+- `krpc_direct_06_reload_settings_aliases_compatible_and_effective`：输入 `reload_settings/service.reload_settings/reaload_settings` 报文，直接调用 AICC 服务链路，最终应输出热加载成功，且可用一次 `complete` 回归验证生效。
+
 ### 4.17 协议资源一致性补充（10）
 
 - `proto_res_01_named_object_passthrough_preserved`：输入 `ResourceRef::NamedObject`，经过协议转换流程，最终应输出对象引用不丢失、不改写。
@@ -394,6 +403,14 @@ kRPC + gateway 链路建议（远程）：
     - `sys_config` 写入后必须显式调用 `reload_settings`
     - `reload_settings` 后以一次 `complete` 做配置生效回归
 
+kRPC 直连 AICC 链路建议（不经过 gateway）：
+
+- 入口：直连 AICC 服务的 kRPC handler（service=`aicc`）
+- 关键校验点：
+    - 透传与校验 `sys` 数组语义：`[seq, token?, trace_id?]`
+    - `complete/cancel/reload_settings` 方法在直连路径均可达且行为与 gateway 路径一致
+    - `reload_settings` 后以一次 `complete` 做配置生效回归
+
 ---
 
 ## 6. 与其他模块的协作依赖（需联调验收）
@@ -436,6 +453,10 @@ kRPC + gateway 链路建议（远程）：
     - 事件顺序与 task data 快照一致
 - kRPC + gateway 证据：
     - `/kapi/aicc` 远程 `complete/cancel/reload_settings` 全链路成功
+    - `sys` 结构与可选 token/trace 组合均覆盖
+    - 错误路径（非法 `sys`、跨租户 cancel）可稳定复现
+- kRPC 直连 AICC 证据（不经过 gateway）：
+    - `complete/cancel/reload_settings` 直连调用链路成功
     - `sys` 结构与可选 token/trace 组合均覆盖
     - 错误路径（非法 `sys`、跨租户 cancel）可稳定复现
 - system_config 证据：
@@ -667,5 +688,6 @@ impl FakeArtifactStorage {
     - 监控告警演练通过
     - Bug 现场信息模板完整（请求参数、租户、trace_id、provider、错误码、日志片段）
     - kRPC + gateway 远程调用链路通过（含 system_config 更新与 reload 生效）
+    - kRPC 直连 AICC 远程调用链路通过（不经过 gateway，含 reload 生效）
 
 无证据按未实现处理，不建议发布。
