@@ -90,6 +90,13 @@ def kill_all():
     kill_process("smb_service")
     kill_process("repo-service")
     kill_process("repo_service")
+    kill_process("control-panel")
+    kill_process("control_panel")
+    kill_process("aicc")
+    kill_process("task_manager")
+    kill_process("kmsg")
+    kill_process("msg_center")
+    kill_process("opendan")
     kill_devtest_containers()
 
 
