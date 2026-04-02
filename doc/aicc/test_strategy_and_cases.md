@@ -102,9 +102,9 @@
 - 基于分配 URL 执行 smoke 脚本并产出日志
 - 监控告警链路可触发且可恢复
 - 缺陷记录包含现场上下文，可用于自动化复现
-- `POST /kapi/aicc` 的 kRPC 调用链路可用（`complete/cancel/reload_settings`）
+- `POST /kapi/aicc` 的 kRPC 调用链路可用（`complete/cancel`）
 - `POST /kapi/system_config` 的配置变更链路可用（`sys_config_get/set/set_by_json_path`）
-- `system_config` 更新后经 `reload_settings` 可在线生效且结果可回归验证
+- `system_config` 更新后可在线生效且结果可回归验证
 
 ---
 
@@ -296,7 +296,7 @@
 - `smoke_05_monitor_alarm_trigger_and_recovery`：输入可触发告警的受控异常，经过监控流程，最终应输出告警触发与恢复记录。
 - `smoke_06_bug_context_capture_template_complete`：输入故障样例请求，经过缺陷记录流程，最终应输出完整现场信息模板。
 
-### 4.16 kRPC + gateway 远程调用链路（12）
+### 4.16 kRPC + gateway 远程调用链路（11）
 
 - `krpc_01_gateway_complete_minimal_llm_success`：输入最小 `method=complete` kRPC 报文，经过 gateway `/kapi/aicc` 转发流程，最终应输出合法 result 结构。
 - `krpc_02_gateway_complete_with_sys_seq_token_trace_success`：输入完整 `sys=[seq,token,trace]` 报文，经过 kRPC 解析流程，最终应输出成功且 trace 可追踪。
@@ -304,21 +304,19 @@
 - `krpc_04_gateway_complete_invalid_sys_shape_returns_bad_request`：输入非法 `sys` 结构报文，经过参数校验流程，最终应输出 `bad_request`。
 - `krpc_05_gateway_cancel_cross_tenant_rejected`：输入跨租户 cancel 报文，经过租户鉴权流程，最终应输出拒绝。
 - `krpc_06_gateway_cancel_same_tenant_accepted_or_graceful_false`：输入同租户 cancel 报文，经过 cancel 流程，最终应输出 `accepted=true` 或受控 `false`。
-- `krpc_07_gateway_reload_settings_aliases_compatible`：输入 `reload_settings/service.reload_settings/reaload_settings` 报文，经过方法兼容流程，最终应输出热加载成功。
 - `cfg_01_sys_config_get_aicc_settings_success`：输入 `sys_config_get` 请求，经过 `/kapi/system_config` 流程，最终应输出 `services/aicc/settings` 当前值。
-- `cfg_02_sys_config_set_full_value_then_reload_effective`：输入 `sys_config_set` 全量配置，经过写入+`reload_settings` 流程，最终应输出新配置生效可被 complete 验证。
-- `cfg_03_sys_config_set_by_json_path_partial_update_then_reload_effective`：输入 `sys_config_set_by_json_path` 局部更新，经过局部写入+热加载流程，最终应输出增量配置生效。
+- `cfg_02_sys_config_set_full_value_effective`：输入 `sys_config_set` 全量配置，经过写入流程，最终应输出新配置生效可被 complete 验证。
+- `cfg_03_sys_config_set_by_json_path_partial_update_effective`：输入 `sys_config_set_by_json_path` 局部更新，经过局部写入流程，最终应输出增量配置生效。
 - `cfg_04_sys_config_write_without_permission_rejected`：输入无权限 token 的配置写请求，经过 RBAC 流程，最终应输出拒绝。
 - `cfg_05_sys_config_value_not_json_string_rejected`：输入非 JSON 字符串 `value` 的配置写请求，经过参数校验流程，最终应输出请求失败且错误可机读。
 
-### 4.16A kRPC 直连 AICC（绕过 gateway）（6）
+### 4.16A kRPC 直连 AICC（绕过 gateway）（5）
 
 - `krpc_direct_01_complete_minimal_llm_success`：输入最小 `method=complete` kRPC 报文，直接调用 AICC 服务 kRPC handler（不经过 gateway），最终应输出合法 result 结构。
 - `krpc_direct_02_complete_with_sys_seq_token_trace_success`：输入完整 `sys=[seq,token,trace]` 报文，直接调用 AICC 服务链路，最终应输出成功且 trace 可追踪。
 - `krpc_direct_03_complete_invalid_sys_shape_returns_bad_request`：输入非法 `sys` 结构报文，经过参数校验流程，最终应输出 `bad_request`。
 - `krpc_direct_04_cancel_cross_tenant_rejected`：输入跨租户 cancel 报文，经过租户鉴权流程，最终应输出拒绝。
 - `krpc_direct_05_cancel_same_tenant_accepted_or_graceful_false`：输入同租户 cancel 报文，经过 cancel 流程，最终应输出 `accepted=true` 或受控 `false`。
-- `krpc_direct_06_reload_settings_aliases_compatible_and_effective`：输入 `reload_settings/service.reload_settings/reaload_settings` 报文，直接调用 AICC 服务链路，最终应输出热加载成功，且可用一次 `complete` 回归验证生效。
 
 ### 4.17 协议资源一致性补充（10）
 
@@ -400,16 +398,16 @@ kRPC + gateway 链路建议（远程）：
 - 配置入口：`POST /kapi/system_config`
 - 关键校验点：
     - `sys` 数组语义：`[seq, token?, trace_id?]`
-    - `sys_config` 写入后必须显式调用 `reload_settings`
-    - `reload_settings` 后以一次 `complete` 做配置生效回归
+    - `sys_config` 写入后应通过一次 `complete` 回归验证配置生效
+    - 以一次 `complete` 做配置生效回归
 
 kRPC 直连 AICC 链路建议（不经过 gateway）：
 
 - 入口：直连 AICC 服务的 kRPC handler（service=`aicc`）
 - 关键校验点：
     - 透传与校验 `sys` 数组语义：`[seq, token?, trace_id?]`
-    - `complete/cancel/reload_settings` 方法在直连路径均可达且行为与 gateway 路径一致
-    - `reload_settings` 后以一次 `complete` 做配置生效回归
+    - `complete/cancel` 方法在直连路径均可达且行为与 gateway 路径一致
+    - 以一次 `complete` 做配置生效回归
 
 ---
 
@@ -452,16 +450,16 @@ kRPC 直连 AICC 链路建议（不经过 gateway）：
     - cancel 后增量停止且状态收敛
     - 事件顺序与 task data 快照一致
 - kRPC + gateway 证据：
-    - `/kapi/aicc` 远程 `complete/cancel/reload_settings` 全链路成功
+    - `/kapi/aicc` 远程 `complete/cancel` 全链路成功
     - `sys` 结构与可选 token/trace 组合均覆盖
     - 错误路径（非法 `sys`、跨租户 cancel）可稳定复现
 - kRPC 直连 AICC 证据（不经过 gateway）：
-    - `complete/cancel/reload_settings` 直连调用链路成功
+    - `complete/cancel` 直连调用链路成功
     - `sys` 结构与可选 token/trace 组合均覆盖
     - 错误路径（非法 `sys`、跨租户 cancel）可稳定复现
 - system_config 证据：
     - `sys_config_get/set/set_by_json_path` 覆盖并具备请求-响应记录
-    - 配置变更 + `reload_settings` + `complete` 回归三段证据齐全
+    - 配置变更 + `complete` 回归证据齐全
 - 正式环境证据：
     - 物理机部署记录（设备、系统、网络）
     - 基于分配 URL 的脚本化 smoke 报告
@@ -687,7 +685,7 @@ impl FakeArtifactStorage {
     - 物理机 smoke 全量通过
     - 监控告警演练通过
     - Bug 现场信息模板完整（请求参数、租户、trace_id、provider、错误码、日志片段）
-    - kRPC + gateway 远程调用链路通过（含 system_config 更新与 reload 生效）
-    - kRPC 直连 AICC 远程调用链路通过（不经过 gateway，含 reload 生效）
+    - kRPC + gateway 远程调用链路通过（含 system_config 更新后的生效验证）
+    - kRPC 直连 AICC 远程调用链路通过（不经过 gateway，含配置更新后的生效验证）
 
 无证据按未实现处理，不建议发布。

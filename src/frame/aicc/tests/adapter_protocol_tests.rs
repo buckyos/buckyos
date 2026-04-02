@@ -3,7 +3,7 @@ mod common;
 use aicc::claude::{ClaudeInstanceConfig, ClaudeProvider};
 use aicc::gimini::{GoogleGiminiInstanceConfig, GoogleGiminiProvider};
 use aicc::openai::{OpenAIInstanceConfig, OpenAIProvider};
-use aicc::{InvokeCtx, Provider, ResolvedRequest};
+use aicc::{InvokeCtx, Provider, ProviderStartResult, ResolvedRequest};
 use buckyos_api::Capability;
 use common::*;
 use std::collections::HashMap;
@@ -86,8 +86,15 @@ async fn adapter_openai_01_http_200_success() {
             ResolvedRequest::new(base_request()),
             Arc::new(NoopSink),
         )
-        .await;
-    assert!(result.is_ok(), "assert failed in adapter_openai_01_http_200_success: condition is false; check preconditions and expected branch outcome.");
+        .await
+        .expect("openai 200 should succeed");
+    match result {
+        ProviderStartResult::Immediate(summary) => {
+            assert_eq!(summary.text.as_deref(), Some("ok"));
+            assert_eq!(summary.usage.as_ref().and_then(|u| u.total_tokens), Some(2));
+        }
+        _ => panic!("expected immediate summary"),
+    }
 }
 
 #[tokio::test]
@@ -240,8 +247,15 @@ async fn adapter_gimini_01_http_200_success() {
             ResolvedRequest::new(base_request()),
             Arc::new(NoopSink),
         )
-        .await;
-    assert!(result.is_ok(), "assert failed in adapter_gimini_01_http_200_success: condition is false; check preconditions and expected branch outcome.");
+        .await
+        .expect("gimini 200 should succeed");
+    match result {
+        ProviderStartResult::Immediate(summary) => {
+            assert_eq!(summary.text.as_deref(), Some("ok"));
+            assert_eq!(summary.usage.as_ref().and_then(|u| u.total_tokens), Some(2));
+        }
+        _ => panic!("expected immediate summary"),
+    }
 }
 
 #[tokio::test]
@@ -294,8 +308,16 @@ async fn adapter_claude_01_http_200_success() {
             ResolvedRequest::new(base_request()),
             Arc::new(NoopSink),
         )
-        .await;
-    assert!(result.is_ok(), "assert failed in adapter_claude_01_http_200_success: condition is false; check preconditions and expected branch outcome.");
+        .await
+        .expect("claude 200 should succeed");
+    match result {
+        ProviderStartResult::Immediate(summary) => {
+            assert_eq!(summary.text.as_deref(), Some("ok"));
+            assert_eq!(summary.usage.as_ref().and_then(|u| u.input_tokens), Some(1));
+            assert_eq!(summary.usage.as_ref().and_then(|u| u.output_tokens), Some(1));
+        }
+        _ => panic!("expected immediate summary"),
+    }
 }
 
 #[tokio::test]
@@ -499,8 +521,20 @@ async fn proto_t2i_01_prompt_from_text() {
             ResolvedRequest::new(req),
             Arc::new(NoopSink),
         )
-        .await;
-    assert!(res.is_ok(), "assert failed in proto_t2i_01_prompt_from_text: condition is false; check preconditions and expected branch outcome.");
+        .await
+        .expect("text prompt should succeed");
+    match res {
+        aicc::ProviderStartResult::Immediate(summary) => {
+            assert_eq!(summary.artifacts.len(), 1);
+            match &summary.artifacts[0].resource {
+                buckyos_api::ResourceRef::Url { url, .. } => {
+                    assert_eq!(url, "https://example.com/a.png");
+                }
+                _ => panic!("expected url artifact"),
+            }
+        }
+        _ => panic!("expected immediate"),
+    }
 }
 
 #[tokio::test]
@@ -567,8 +601,20 @@ async fn proto_t2i_03_prompt_from_options() {
             ResolvedRequest::new(req),
             Arc::new(NoopSink),
         )
-        .await;
-    assert!(res.is_ok(), "assert failed in proto_t2i_03_prompt_from_options: condition is false; check preconditions and expected branch outcome.");
+        .await
+        .expect("options prompt should succeed");
+    match res {
+        aicc::ProviderStartResult::Immediate(summary) => {
+            assert_eq!(summary.artifacts.len(), 1);
+            match &summary.artifacts[0].resource {
+                buckyos_api::ResourceRef::Url { url, .. } => {
+                    assert_eq!(url, "https://example.com/a.png");
+                }
+                _ => panic!("expected url artifact"),
+            }
+        }
+        _ => panic!("expected immediate"),
+    }
 }
 
 #[tokio::test]
@@ -599,6 +645,18 @@ async fn proto_t2i_02_prompt_from_messages() {
             ResolvedRequest::new(req),
             Arc::new(NoopSink),
         )
-        .await;
-    assert!(res.is_ok(), "assert failed in proto_t2i_02_prompt_from_messages: condition is false; check preconditions and expected branch outcome.");
+        .await
+        .expect("message prompt should succeed");
+    match res {
+        aicc::ProviderStartResult::Immediate(summary) => {
+            assert_eq!(summary.artifacts.len(), 1);
+            match &summary.artifacts[0].resource {
+                buckyos_api::ResourceRef::Url { url, .. } => {
+                    assert_eq!(url, "https://example.com/a.png");
+                }
+                _ => panic!("expected url artifact"),
+            }
+        }
+        _ => panic!("expected immediate"),
+    }
 }

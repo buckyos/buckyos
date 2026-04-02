@@ -292,6 +292,77 @@ async fn proto_t2v_02_voice_param_respected() {
 }
 
 #[tokio::test]
+async fn proto_t2v_01_voice_param_format_valid() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    c.set_mapping(Capability::Text2Voice, "t2v.default", "a", "m");
+    r.add_provider(Arc::new(MockProvider::new(
+        mock_instance("p1", "a", vec![Capability::Text2Voice], vec!["plan".into()]),
+        CostEstimate {
+            estimated_cost_usd: Some(0.01),
+            estimated_latency_ms: Some(10),
+        },
+        vec![Ok(ProviderStartResult::Started)],
+    )));
+    let mut req = base_request_for(Capability::Text2Voice, "t2v.default");
+    req.payload.options = Some(json!({"voice":"alloy","model":"tts-1"}));
+    let center = center_with_taskmgr(r, c);
+    assert_eq!(
+        center
+            .complete(req, RPCContext::default())
+            .await
+            .unwrap()
+            .status,
+        CompleteStatus::Running
+    );
+}
+
+#[tokio::test]
+async fn proto_t2v_02_output_artifact_url_format() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    c.set_mapping(Capability::Text2Voice, "t2v.default", "a", "m");
+    r.add_provider(Arc::new(MockProvider::new(
+        mock_instance("p1", "a", vec![Capability::Text2Voice], vec!["plan".into()]),
+        CostEstimate {
+            estimated_cost_usd: Some(0.01),
+            estimated_latency_ms: Some(10),
+        },
+        vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
+            text: None,
+            tool_calls: vec![],
+            artifacts: vec![buckyos_api::AiArtifact {
+                name: "audio".into(),
+                resource: buckyos_api::ResourceRef::Url {
+                    url: "https://example.com/a.wav".into(),
+                    mime_hint: Some("audio/wav".into()),
+                },
+                mime: Some("audio/wav".into()),
+                metadata: None,
+            }],
+            usage: None,
+            cost: None,
+            finish_reason: Some("stop".into()),
+            provider_task_ref: None,
+            extra: None,
+        }))],
+    )));
+    let req = base_request_for(Capability::Text2Voice, "t2v.default");
+    let center = center_with_taskmgr(r, c);
+    let resp = center.complete(req, RPCContext::default()).await.unwrap();
+    assert_eq!(resp.status, CompleteStatus::Succeeded);
+    let artifact = resp
+        .result
+        .as_ref()
+        .and_then(|x| x.artifacts.first())
+        .expect("expected t2v artifact");
+    match &artifact.resource {
+        buckyos_api::ResourceRef::Url { url, .. } => assert!(url.starts_with("http")),
+        _ => panic!("expected url artifact"),
+    }
+}
+
+#[tokio::test]
 // 用例说明：
 // - 验证场景：`proto_mix_01_text_plus_resource_valid` 用例，覆盖函数名对应的业务路径。
 // - 输入参数：构造协议字段、资源引用或 base64/url 输入。
@@ -415,6 +486,113 @@ async fn proto_mix_04_resource_order_stable() {
             .and_then(|v| v.as_str()),
         Some("url")
     );
+}
+
+#[tokio::test]
+async fn proto_mix_01_url_and_base64_in_same_task() {
+    let sink = Arc::new(CollectingSinkFactory::new());
+    let mut center = aicc::AIComputeCenter::new(Registry::default(), ModelCatalog::default());
+    center.set_task_event_sink_factory(sink.clone());
+    let mut req = base_request();
+    req.payload.resources = vec![
+        buckyos_api::ResourceRef::Url {
+            url: "https://example.com/1.png".into(),
+            mime_hint: Some("image/png".into()),
+        },
+        buckyos_api::ResourceRef::Base64 {
+            mime: "image/png".into(),
+            data_base64: openai_b64(&[1, 2, 3]),
+        },
+    ];
+    let resp = center.complete(req, RPCContext::default()).await.unwrap();
+    assert_ne!(
+        extract_error_code(&sink.events_for(&resp.task_id)).as_deref(),
+        Some("resource_invalid")
+    );
+}
+
+#[tokio::test]
+async fn proto_mix_02_multiple_images_mixed() {
+    let sink = Arc::new(CollectingSinkFactory::new());
+    let mut center = aicc::AIComputeCenter::new(Registry::default(), ModelCatalog::default());
+    center.set_task_event_sink_factory(sink.clone());
+    let mut req = base_request();
+    req.payload.resources = vec![
+        buckyos_api::ResourceRef::Url {
+            url: "https://example.com/1.png".into(),
+            mime_hint: Some("image/png".into()),
+        },
+        buckyos_api::ResourceRef::Url {
+            url: "http://example.com/2.jpg".into(),
+            mime_hint: Some("image/jpeg".into()),
+        },
+        buckyos_api::ResourceRef::Base64 {
+            mime: "image/jpeg".into(),
+            data_base64: openai_b64(&[1, 2, 3]),
+        },
+    ];
+    let resp = center.complete(req, RPCContext::default()).await.unwrap();
+    assert_ne!(
+        extract_error_code(&sink.events_for(&resp.task_id)).as_deref(),
+        Some("resource_invalid")
+    );
+}
+
+#[tokio::test]
+async fn proto_mix_03_workflow_mixed_resource_modes() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    add_llm(
+        &r,
+        &c,
+        "p1",
+        "a",
+        0.01,
+        10,
+        Ok(ProviderStartResult::Started),
+    );
+    let center = center_with_taskmgr(r, c);
+    let mut req = base_request();
+    req.payload.resources = vec![
+        buckyos_api::ResourceRef::Url {
+            url: "https://example.com/1.png".into(),
+            mime_hint: Some("image/png".into()),
+        },
+        buckyos_api::ResourceRef::Base64 {
+            mime: "audio/wav".into(),
+            data_base64: openai_b64(&[1, 2, 3]),
+        },
+    ];
+    let resp = center.complete(req, RPCContext::default()).await.unwrap();
+    assert_eq!(resp.status, CompleteStatus::Running);
+}
+
+#[tokio::test]
+async fn proto_mix_04_cross_capability_resource_passthrough() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    c.set_mapping(Capability::Image2Text, "i2t.default", "a", "m");
+    r.add_provider(Arc::new(MockProvider::new(
+        mock_instance(
+            "p1",
+            "a",
+            vec![Capability::Image2Text],
+            vec!["plan".into(), "vision".into()],
+        ),
+        CostEstimate {
+            estimated_cost_usd: Some(0.01),
+            estimated_latency_ms: Some(10),
+        },
+        vec![Ok(ProviderStartResult::Started)],
+    )));
+    let center = center_with_taskmgr(r, c);
+    let mut req = base_request_for(Capability::Image2Text, "i2t.default");
+    req.payload.resources = vec![buckyos_api::ResourceRef::Url {
+        url: "https://example.com/1.png".into(),
+        mime_hint: Some("image/png".into()),
+    }];
+    let resp = center.complete(req, RPCContext::default()).await.unwrap();
+    assert_eq!(resp.status, CompleteStatus::Running);
 }
 
 #[tokio::test]

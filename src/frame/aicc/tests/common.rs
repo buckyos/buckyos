@@ -11,7 +11,7 @@ use buckyos_api::{
     AiPayload, Capability, CompleteRequest, CreateTaskOptions, ModelSpec, Requirements,
     ResourceRef, Task, TaskFilter, TaskManagerClient, TaskManagerHandler, TaskStatus,
 };
-use kRPC::{RPCContext, RPCErrors};
+use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::oneshot;
 use tokio::net::TcpListener;
 
 pub fn base_request() -> CompleteRequest {
@@ -525,4 +526,196 @@ pub fn localhost_ctx_from_request() -> RPCContext {
         trace_id: None,
     };
     RPCContext::from_request(&req, IpAddr::V4(Ipv4Addr::LOCALHOST))
+}
+
+pub struct RpcHttpTestServer {
+    pub endpoint: String,
+    shutdown: Option<oneshot::Sender<()>>,
+}
+
+impl Drop for RpcHttpTestServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+pub async fn spawn_rpc_http_server(handler: Arc<dyn RPCHandler + Send + Sync>) -> RpcHttpTestServer {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind rpc test server");
+    let addr = listener.local_addr().expect("rpc test server local addr");
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => {
+                    break;
+                }
+                accepted = listener.accept() => {
+                    let (mut socket, peer_addr) = match accepted {
+                        Ok(pair) => pair,
+                        Err(_) => break,
+                    };
+                    let handler = handler.clone();
+                    tokio::spawn(async move {
+                        let mut buffer = vec![0u8; 16384];
+                        let mut total = 0usize;
+                        let mut header_end = None;
+                        loop {
+                            if total >= buffer.len() {
+                                break;
+                            }
+                            let n = match socket.read(&mut buffer[total..]).await {
+                                Ok(n) => n,
+                                Err(_) => return,
+                            };
+                            if n == 0 {
+                                return;
+                            }
+                            total += n;
+                            if let Some(pos) = find_header_end(&buffer[..total]) {
+                                header_end = Some(pos);
+                                break;
+                            }
+                        }
+
+                        let Some(header_end) = header_end else {
+                            return;
+                        };
+
+                        let header_bytes = &buffer[..header_end];
+                        let headers_text = String::from_utf8_lossy(header_bytes);
+                        let mut content_length = 0usize;
+                        for line in headers_text.lines() {
+                            let lower = line.to_ascii_lowercase();
+                            if let Some(v) = lower.strip_prefix("content-length:") {
+                                content_length = v.trim().parse::<usize>().unwrap_or(0);
+                            }
+                        }
+
+                        let body_start = header_end + 4;
+                        let body_end = body_start.saturating_add(content_length);
+                        if body_end > buffer.len() {
+                            buffer.resize(body_end, 0);
+                        }
+                        while total < body_end {
+                            let n = match socket.read(&mut buffer[total..]).await {
+                                Ok(n) => n,
+                                Err(_) => return,
+                            };
+                            if n == 0 {
+                                return;
+                            }
+                            total += n;
+                        }
+                        let body = &buffer[body_start..body_end];
+
+                        let parsed_req: std::result::Result<RPCRequest, _> =
+                            serde_json::from_slice(body);
+                        let response_body = match parsed_req {
+                            Ok(req) => match handler.handle_rpc_call(req, peer_addr.ip()).await {
+                                Ok(resp) => serde_json::to_string(&resp)
+                                    .unwrap_or_else(|e| format!("{{\"error\":\"{}\"}}", e)),
+                                Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+                            },
+                            Err(e) => serde_json::json!({"error": format!("invalid rpc request json: {}", e)}).to_string(),
+                        };
+
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            response_body.len(),
+                            response_body
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                        let _ = socket.shutdown().await;
+                    });
+                }
+            }
+        }
+    });
+
+    RpcHttpTestServer {
+        endpoint: format!("http://{}/kapi/aicc", addr),
+        shutdown: Some(shutdown_tx),
+    }
+}
+
+pub struct RpcTestEndpoint {
+    pub endpoint: String,
+    _local_server: Option<RpcHttpTestServer>,
+}
+
+impl RpcTestEndpoint {
+    pub fn from_remote(endpoint: String) -> Self {
+        Self {
+            endpoint,
+            _local_server: None,
+        }
+    }
+
+    pub fn from_local(server: RpcHttpTestServer) -> Self {
+        Self {
+            endpoint: server.endpoint.clone(),
+            _local_server: Some(server),
+        }
+    }
+}
+
+pub async fn resolve_rpc_test_endpoint(
+    handler: Arc<dyn RPCHandler + Send + Sync>,
+) -> RpcTestEndpoint {
+    if let Ok(endpoint) = std::env::var("AICC_RPC_TEST_ENDPOINT") {
+        let endpoint = endpoint.trim().to_string();
+        if !endpoint.is_empty() {
+            return RpcTestEndpoint::from_remote(endpoint);
+        }
+    }
+
+    let server = spawn_rpc_http_server(handler).await;
+    RpcTestEndpoint::from_local(server)
+}
+
+pub async fn resolve_rpc_gateway_test_endpoint(
+    handler: Arc<dyn RPCHandler + Send + Sync>,
+) -> RpcTestEndpoint {
+    if let Ok(endpoint) = std::env::var("AICC_GATEWAY_RPC_TEST_ENDPOINT") {
+        let endpoint = endpoint.trim().to_string();
+        if !endpoint.is_empty() {
+            return RpcTestEndpoint::from_remote(endpoint);
+        }
+    }
+    resolve_rpc_test_endpoint(handler).await
+}
+
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+pub async fn post_rpc_over_http(
+    endpoint: &str,
+    req: &RPCRequest,
+) -> std::result::Result<RPCResponse, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(endpoint)
+        .json(req)
+        .send()
+        .await
+        .map_err(|e| format!("http request failed: {}", e))?;
+
+    let status = resp.status();
+    let value: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("decode response json failed: {}", e))?;
+    if !status.is_success() {
+        return Err(format!("http status {} body {}", status, value));
+    }
+    if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
+        return Err(err.to_string());
+    }
+    serde_json::from_value(value).map_err(|e| format!("parse rpc response failed: {}", e))
 }

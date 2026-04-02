@@ -1063,6 +1063,7 @@ pub struct AIComputeCenter {
     task_id_seq: AtomicU64,
     base64_max_bytes: usize,
     base64_mime_allowlist: HashSet<String>,
+    url_scheme_allowlist: HashSet<String>,
 }
 
 impl Default for AIComputeCenter {
@@ -1087,6 +1088,10 @@ impl AIComputeCenter {
         .into_iter()
         .map(|item| item.to_string())
         .collect::<HashSet<_>>();
+        let url_scheme_allowlist = ["http", "https"]
+            .into_iter()
+            .map(|item| item.to_string())
+            .collect::<HashSet<_>>();
 
         Self {
             registry,
@@ -1100,6 +1105,7 @@ impl AIComputeCenter {
             task_id_seq: AtomicU64::new(1),
             base64_max_bytes: DEFAULT_BASE64_MAX_BYTES,
             base64_mime_allowlist,
+            url_scheme_allowlist,
         }
     }
 
@@ -1136,6 +1142,10 @@ impl AIComputeCenter {
     pub fn set_base64_policy(&mut self, max_bytes: usize, mime_allowlist: HashSet<String>) {
         self.base64_max_bytes = max_bytes;
         self.base64_mime_allowlist = mime_allowlist;
+    }
+
+    pub fn set_url_scheme_allowlist(&mut self, scheme_allowlist: HashSet<String>) {
+        self.url_scheme_allowlist = scheme_allowlist;
     }
 
     pub async fn complete(
@@ -1613,10 +1623,10 @@ impl AIComputeCenter {
                 let parsed = reqwest::Url::parse(url).map_err(|_| {
                     reason_error("resource_invalid", "resource url format is invalid")
                 })?;
-                if !matches!(parsed.scheme(), "http" | "https") {
+                if !self.url_scheme_allowlist.contains(parsed.scheme()) {
                     return Err(reason_error(
                         "resource_invalid",
-                        "resource url scheme must be http or https",
+                        "resource url scheme is not allowed",
                     ));
                 }
                 if parsed.host_str().is_none() {

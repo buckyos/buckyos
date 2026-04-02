@@ -107,7 +107,10 @@ async fn conc_02_registry_hot_update_route_consistency() {
             &default_route_cfg(),
             &catalog,
         );
-        assert!(result.is_ok(), "route should stay stable during updates");
+        let decision = result.expect("route should stay stable during updates");
+        assert_eq!(decision.primary_instance_id, id);
+        assert_eq!(decision.provider_model, "m-a");
+        assert!(decision.fallback_instance_ids.is_empty());
         registry.remove_instance(id.as_str());
     }
 }

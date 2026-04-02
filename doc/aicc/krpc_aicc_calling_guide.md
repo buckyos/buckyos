@@ -21,13 +21,6 @@ AICC 当前对外业务方法：
 - `complete`
 - `cancel`
 
-此外还有运维热加载方法：
-
-- `reload_settings`
-- `service.reload_settings`
-- `reaload_settings`（兼容拼写）
-- `service.reaload_settings`（兼容拼写）
-
 ## 3. kRPC 报文结构（重点）
 
 AICC 使用 kRPC 协议，不是 JSON-RPC 的 `id` 字段。
@@ -228,7 +221,7 @@ AICC(MiniMax) 会调用：
 
 - `openai.enabled` 默认可开启；`minimax.enabled` 默认是 `false`，要显式置 `true`
 - `gimini` 同时兼容 `gemini/google_gimini/google` 键名
-- 配置更新后可调用 `reload_settings` 生效
+- 配置更新后由服务端配置机制生效，无需额外调用 AICC 热加载方法
 
 ## 9. 快速联调建议
 

@@ -426,3 +426,337 @@ fn sched_08_alias_mapping_under_strategy() {
         "p1"
     );
 }
+
+#[test]
+fn sched_01_effect_priority_prefers_higher_quality_when_budget_allows() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    add_llm(
+        &r,
+        &c,
+        "hq",
+        "a",
+        0.10,
+        10,
+        Ok(ProviderStartResult::Started),
+    );
+    add_llm(
+        &r,
+        &c,
+        "lq",
+        "b",
+        0.05,
+        100,
+        Ok(ProviderStartResult::Started),
+    );
+    let mut cfg = RouteConfig::default();
+    cfg.global_weights = RouteWeights {
+        w_cost: 0.0,
+        w_latency: 1.0,
+        w_load: 0.0,
+        w_error: 0.0,
+    };
+    let selected = Router
+        .route(
+            "tenant-a",
+            &base_request(),
+            &r.snapshot(Capability::LlmRouter),
+            &r,
+            &cfg,
+            &c,
+        )
+        .unwrap();
+    assert_eq!(selected.primary_instance_id, "hq");
+}
+
+#[test]
+fn sched_02_cost_priority_prefers_lower_cost_under_same_capability() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    add_llm(
+        &r,
+        &c,
+        "cheap",
+        "a",
+        0.01,
+        100,
+        Ok(ProviderStartResult::Started),
+    );
+    add_llm(
+        &r,
+        &c,
+        "expensive",
+        "b",
+        0.20,
+        20,
+        Ok(ProviderStartResult::Started),
+    );
+    let mut cfg = RouteConfig::default();
+    cfg.global_weights = RouteWeights {
+        w_cost: 1.0,
+        w_latency: 0.0,
+        w_load: 0.0,
+        w_error: 0.0,
+    };
+    let selected = Router
+        .route(
+            "tenant-a",
+            &base_request(),
+            &r.snapshot(Capability::LlmRouter),
+            &r,
+            &cfg,
+            &c,
+        )
+        .unwrap();
+    assert_eq!(selected.primary_instance_id, "cheap");
+}
+
+#[test]
+fn sched_03_free_quota_priority_prefers_quota_provider_first() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    add_llm(
+        &r,
+        &c,
+        "quota",
+        "a",
+        0.0,
+        50,
+        Ok(ProviderStartResult::Started),
+    );
+    add_llm(
+        &r,
+        &c,
+        "paid",
+        "b",
+        0.05,
+        10,
+        Ok(ProviderStartResult::Started),
+    );
+    let mut cfg = RouteConfig::default();
+    cfg.global_weights = RouteWeights {
+        w_cost: 1.0,
+        w_latency: 0.0,
+        w_load: 0.0,
+        w_error: 0.0,
+    };
+    let selected = Router
+        .route(
+            "tenant-a",
+            &base_request(),
+            &r.snapshot(Capability::LlmRouter),
+            &r,
+            &cfg,
+            &c,
+        )
+        .unwrap();
+    assert_eq!(selected.primary_instance_id, "quota");
+}
+
+#[test]
+fn sched_04_agent_tier_policy_routes_to_expected_provider_group() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    add_llm(
+        &r,
+        &c,
+        "tier-a",
+        "tier_a",
+        0.01,
+        10,
+        Ok(ProviderStartResult::Started),
+    );
+    add_llm(
+        &r,
+        &c,
+        "tier-b",
+        "tier_b",
+        0.01,
+        10,
+        Ok(ProviderStartResult::Started),
+    );
+    let mut cfg = RouteConfig::default();
+    cfg.tenant_overrides.insert(
+        "tenant-a".into(),
+        TenantRouteConfig {
+            allow_provider_types: Some(vec!["tier_b".into()]),
+            deny_provider_types: None,
+            weights: None,
+        },
+    );
+    let selected = Router
+        .route(
+            "tenant-a",
+            &base_request(),
+            &r.snapshot(Capability::LlmRouter),
+            &r,
+            &cfg,
+            &c,
+        )
+        .unwrap();
+    assert_eq!(selected.primary_instance_id, "tier-b");
+}
+
+#[test]
+fn sched_05_master_feature_local_required_filters_non_local() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    c.set_mapping(Capability::LlmRouter, "llm.plan.default", "local", "m");
+    c.set_mapping(Capability::LlmRouter, "llm.plan.default", "remote", "m");
+    r.add_provider(Arc::new(MockProvider::new(
+        mock_instance("p-local", "local", vec![Capability::LlmRouter], vec!["local".into()]),
+        CostEstimate {
+            estimated_cost_usd: Some(0.01),
+            estimated_latency_ms: Some(10),
+        },
+        vec![Ok(ProviderStartResult::Started)],
+    )));
+    r.add_provider(Arc::new(MockProvider::new(
+        mock_instance("p-remote", "remote", vec![Capability::LlmRouter], vec!["plan".into()]),
+        CostEstimate {
+            estimated_cost_usd: Some(0.01),
+            estimated_latency_ms: Some(10),
+        },
+        vec![Ok(ProviderStartResult::Started)],
+    )));
+    let mut req = base_request();
+    req.requirements.must_features = vec!["local".into()];
+    let selected = Router
+        .route(
+            "tenant-a",
+            &req,
+            &r.snapshot(Capability::LlmRouter),
+            &r,
+            &RouteConfig::default(),
+            &c,
+        )
+        .unwrap();
+    assert_eq!(selected.primary_instance_id, "p-local");
+}
+
+#[test]
+fn sched_06_optional_features_do_not_break_primary_selection() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    add_llm(
+        &r,
+        &c,
+        "stable",
+        "a",
+        0.01,
+        10,
+        Ok(ProviderStartResult::Started),
+    );
+    add_llm(
+        &r,
+        &c,
+        "backup",
+        "b",
+        0.05,
+        10,
+        Ok(ProviderStartResult::Started),
+    );
+    let mut req = base_request();
+    req.requirements.must_features = vec![];
+    let selected = Router
+        .route(
+            "tenant-a",
+            &req,
+            &r.snapshot(Capability::LlmRouter),
+            &r,
+            &RouteConfig::default(),
+            &c,
+        )
+        .unwrap();
+    assert_eq!(selected.primary_instance_id, "stable");
+}
+
+#[test]
+fn sched_07_multi_provider_same_model_priority_stable() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    add_llm(
+        &r,
+        &c,
+        "p1",
+        "a",
+        0.01,
+        30,
+        Ok(ProviderStartResult::Started),
+    );
+    add_llm(
+        &r,
+        &c,
+        "p2",
+        "b",
+        0.01,
+        10,
+        Ok(ProviderStartResult::Started),
+    );
+    let selected = Router
+        .route(
+            "tenant-a",
+            &base_request(),
+            &r.snapshot(Capability::LlmRouter),
+            &r,
+            &RouteConfig::default(),
+            &c,
+        )
+        .unwrap();
+    assert_eq!(selected.primary_instance_id, "p2");
+}
+
+#[test]
+fn sched_08_tenant_policy_overrides_global_strategy() {
+    let r = Registry::default();
+    let c = ModelCatalog::default();
+    add_llm(
+        &r,
+        &c,
+        "cost-first",
+        "a",
+        0.01,
+        100,
+        Ok(ProviderStartResult::Started),
+    );
+    add_llm(
+        &r,
+        &c,
+        "latency-first",
+        "b",
+        0.20,
+        10,
+        Ok(ProviderStartResult::Started),
+    );
+    let mut cfg = RouteConfig::default();
+    cfg.global_weights = RouteWeights {
+        w_cost: 1.0,
+        w_latency: 0.0,
+        w_load: 0.0,
+        w_error: 0.0,
+    };
+    cfg.tenant_overrides.insert(
+        "tenant-a".into(),
+        TenantRouteConfig {
+            allow_provider_types: None,
+            deny_provider_types: None,
+            weights: Some(RouteWeights {
+                w_cost: 0.0,
+                w_latency: 1.0,
+                w_load: 0.0,
+                w_error: 0.0,
+            }),
+        },
+    );
+    let selected = Router
+        .route(
+            "tenant-a",
+            &base_request(),
+            &r.snapshot(Capability::LlmRouter),
+            &r,
+            &cfg,
+            &c,
+        )
+        .unwrap();
+    assert_eq!(selected.primary_instance_id, "latency-first");
+}

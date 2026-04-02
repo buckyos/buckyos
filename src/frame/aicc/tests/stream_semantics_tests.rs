@@ -2,7 +2,7 @@ mod common;
 
 use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, RouteConfig,
-    RouteWeights, Router, TenantRouteConfig,
+    RouteWeights, Router, TaskEventKind, TenantRouteConfig,
 };
 use buckyos_api::{AiResponseSummary, AiccServerHandler, Capability, CompleteStatus};
 use common::*;
@@ -87,9 +87,21 @@ async fn stream_02_incremental_chunks_are_append_only() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
+    assert_eq!(resp.status, CompleteStatus::Running);
     let e1 = s.events_for(&resp.task_id);
+    assert_eq!(e1.len(), 1, "started response should emit one event");
+    assert!(matches!(e1[0].kind, TaskEventKind::Started));
+    assert_eq!(e1[0].task_id, resp.task_id);
     let e2 = s.events_for(&resp.task_id);
-    assert!(e2.len() >= e1.len());
+    assert_eq!(e2.len(), e1.len(), "event list should not shrink or reorder");
+    assert!(e2
+        .iter()
+        .zip(e1.iter())
+        .all(|(after, before)| after.task_id == before.task_id
+            && matches!(
+                (&after.kind, &before.kind),
+                (TaskEventKind::Started, TaskEventKind::Started)
+            )));
 }
 
 #[tokio::test]
@@ -286,10 +298,32 @@ async fn stream_08_stream_final_snapshot_consistent_with_chunks() {
             extra: Some(json!({"chunks":["a","b","c"]})),
         })),
     );
-    let center = center_with_taskmgr(r, c);
+    let s = Arc::new(CollectingSinkFactory::new());
+    let mut center = center_with_taskmgr(r, c);
+    center.set_task_event_sink_factory(s.clone());
     let resp = center
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
     assert_eq!(resp.status, CompleteStatus::Succeeded);
+    let summary = resp
+        .result
+        .as_ref()
+        .expect("immediate result should include final summary");
+    assert_eq!(summary.text.as_deref(), Some("abc"));
+    let chunks = summary
+        .extra
+        .as_ref()
+        .and_then(|value| value.get("chunks"))
+        .and_then(|value| value.as_array())
+        .expect("summary.extra.chunks should be an array");
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks[0].as_str(), Some("a"));
+    assert_eq!(chunks[1].as_str(), Some("b"));
+    assert_eq!(chunks[2].as_str(), Some("c"));
+
+    let events = s.events_for(&resp.task_id);
+    assert_eq!(events.len(), 2, "immediate response should emit started + final");
+    assert!(matches!(events[0].kind, TaskEventKind::Started));
+    assert!(matches!(events[1].kind, TaskEventKind::Final));
 }
