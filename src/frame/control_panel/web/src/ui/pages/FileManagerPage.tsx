@@ -3865,7 +3865,10 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
 
   if (publicShareId) {
     return (
-      <main className="bucky-file-app min-h-screen bg-[radial-gradient(circle_at_top,#d7ece8,transparent_55%),#f4f8f7] px-4 py-6 md:px-8">
+      <main
+        className="bucky-file-app min-h-screen bg-[radial-gradient(circle_at_top,#d7ece8,transparent_55%),#f4f8f7] px-4 py-6 md:px-8"
+        data-testid="public-share-root"
+      >
         <section className="mx-auto w-full max-w-4xl rounded-3xl border border-slate-200 bg-white shadow-sm">
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
             <div>
@@ -4234,6 +4237,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
       className={`bucky-file-app relative bg-[radial-gradient(circle_at_top,#d9eeea,transparent_58%),#f4f8f7] px-3 py-4 md:px-6 md:py-6 ${
         embedded ? 'h-full min-h-0' : 'min-h-screen'
       }`}
+      data-testid="files-root"
     >
       <div
         className={`mx-auto w-full ${
@@ -4267,6 +4271,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                 <button
                   type="button"
                   onClick={() => navigateToMainTab('files')}
+                  data-testid="files-tab-files"
                   className={`border-b-2 px-1 py-2 text-sm font-semibold transition ${
                     mainTab === 'files'
                       ? 'border-primary text-primary'
@@ -4281,6 +4286,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                 <button
                   type="button"
                   onClick={() => navigateToMainTab('shares')}
+                  data-testid="files-tab-shares"
                   className={`border-b-2 px-1 py-2 text-sm font-semibold transition ${
                     mainTab === 'shares'
                       ? 'border-primary text-primary'
@@ -4306,6 +4312,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                       key={scope.key}
                       type="button"
                       onClick={() => setFilesScope(scope.key)}
+                      data-testid={`files-scope-${scope.key}`}
                       className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${
                         filesScope === scope.key
                           ? 'border-primary bg-primary text-white'
@@ -4456,6 +4463,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                   <input
                     value={searchKeyword}
                     onChange={(event) => setSearchKeyword(event.target.value)}
+                    data-testid="files-search-input"
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') {
                         event.preventDefault()
@@ -4470,6 +4478,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                       type="button"
                       onClick={() => void onSearch()}
                       disabled={searchLoading && filesScope === 'browse'}
+                      data-testid="files-search-button"
                       className={compactPrimaryToolbarButtonClass}
                       aria-label={searchLoading && filesScope === 'browse' ? t('files.searching', 'Searching...') : t('files.search', 'Search')}
                     >
@@ -4481,6 +4490,7 @@ const FileManagerPage = ({ embedded = false }: FileManagerPageProps) => {
                       <button
                         type="button"
                         onClick={onClearSearch}
+                        data-testid="files-search-clear"
                         className={compactSecondaryToolbarButtonClass}
                         aria-label={t('files.clearSearch', 'Clear search')}
                       >

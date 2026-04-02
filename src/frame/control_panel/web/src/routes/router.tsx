@@ -33,6 +33,9 @@ const router = createBrowserRouter([
         element: <RequireAuth />,
         children: [
           { index: true, element: <DesktopHomePage /> },
+          { path: 'files', element: <FileManagerPage /> },
+          { path: 'files/shares', element: <FileManagerPage /> },
+          { path: 'files/editor', element: <FileManagerPage /> },
           { path: 'files/detail', element: <FileDetailPage /> },
           { path: 'index', element: <Navigate to="/monitor" replace /> },
           { path: 'index.html', element: <Navigate to="/monitor" replace /> },
