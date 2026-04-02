@@ -1,0 +1,312 @@
+<mxfile host="65bd71144e" pages="4">
+    <diagram id="pb_DjmoPRe-goRKu5sm9" name="Web Desktop iOS">
+        <mxGraphModel dx="2114" dy="-140" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="xhysh0F-g87BYx1c72p--1" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.phone2;strokeColor=#c0c0c0;" vertex="1" parent="1">
+                    <mxGeometry x="-370" y="1320" width="241.03" height="470" as="geometry"/>
+                </mxCell>
+                <mxCell id="-VXOMkykjgsclgVf84K5-1" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-359.48" y="1364" width="220" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="-VXOMkykjgsclgVf84K5-2" value="App Title&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=top;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="-279.48" y="1361" width="60" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="-VXOMkykjgsclgVf84K5-3" value="tips" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=light-dark(#616161, #ededed);" vertex="1" parent="1">
+                    <mxGeometry x="-279.48" y="1375" width="60" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="-VXOMkykjgsclgVf84K5-4" value="几个示范性的运行环境：&lt;div&gt;1)&amp;nbsp; &amp;nbsp;Web Desktop PC&lt;/div&gt;&lt;div&gt;2）Web Desktop 手机(iOS)&lt;/div&gt;&lt;div&gt;3)&amp;nbsp; &amp;nbsp;移动App&lt;/div&gt;&lt;div&gt;4）桌面App&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;每个环境有2个页面：桌面+打开的兼容App的模式&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="-620" y="1140" width="300" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="-VXOMkykjgsclgVf84K5-5" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.phone2;strokeColor=#c0c0c0;" vertex="1" parent="1">
+                    <mxGeometry x="-760" y="1320" width="241.03" height="470" as="geometry"/>
+                </mxCell>
+                <mxCell id="-VXOMkykjgsclgVf84K5-7" value="Fix Panel1" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-739.48" y="1393" width="200" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="-VXOMkykjgsclgVf84K5-8" value="Fix Panel2" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-739.48" y="1468" width="200" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="qs3Q-g8kywMPhCm0373b-2" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-739.48" y="1543" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="qs3Q-g8kywMPhCm0373b-3" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-689.48" y="1543" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="qs3Q-g8kywMPhCm0373b-4" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-635.48" y="1543" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="qs3Q-g8kywMPhCm0373b-5" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-584.48" y="1543" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="aX7p0DGKVW2AwgKcj6UA-1" value="Status Bar" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-750" y="1363" width="220" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="aX7p0DGKVW2AwgKcj6UA-2" value="&lt;i&gt;BuckyOS&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CCCCCC;" vertex="1" parent="1">
+                    <mxGeometry x="-748" y="1363" width="60" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="wv6oJ_jSm3eug91dsApC-1" value="多App并行的几种需求&lt;div&gt;1)&amp;nbsp; 可以随意在运行中的App中切换&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp;浏览器: 通过多标签管理切换&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &lt;b&gt;&amp;nbsp;App: 除了iOS手机，都可以用更操作系统的多任务方法来切换已经打开的app。iOS怎么办？&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp; Desktop App: 每个App一个窗口&lt;br&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp;&lt;/div&gt;&lt;div&gt;2）可以在同一个窗口中，同时看到2个App的运行&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; 浏览器:通过WebDesktop的窗口容器实现&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp;移动端App：没这个需求？&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp;Desktop App:每个App一个窗口，通过系统的多窗口&amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp;实现&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3）随时切换会桌面/使用系统功能&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; 浏览器：通过多标签管理切换，但当Desktop的Tab关闭后，如何快速打开？&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp; &amp;nbsp;App: 参考微信小程序的最小化？ 或则提供可变底栏（对全屏App不友好）&lt;/div&gt;&lt;div&gt;&amp;nbsp; &amp;nbsp;&amp;nbsp;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="-748" y="1900" width="300" height="250" as="geometry"/>
+                </mxCell>
+                <mxCell id="C5vrE4g1DldMqDkBBnUj-1" value="App的几种显示模式&lt;div&gt;1）窗口模式&lt;/div&gt;&lt;div&gt;2）窗口最大化 （移动端默认）&lt;/div&gt;&lt;div&gt;3）全屏显示 / 浏览器全屏显示&lt;/div&gt;&lt;div&gt;4）最小化和退出的区别，在于还能不能被快速的切换到&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;两种窗口化模式都应易于切换回Desktop&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="-370" y="1890" width="300" height="250" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="JlBPkjQz4Hs1OqfeKBuK" name="Web Desktop">
+        <mxGraphModel dx="1011" dy="768" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="JqQ6LoTgXi9RhzD8BGIM-1" value="" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.browserWindow;rSize=0;strokeColor=#666666;strokeColor2=#008cff;strokeColor3=#c4c4c4;mainText=,;recursiveResize=0;" vertex="1" parent="1">
+                    <mxGeometry x="60" y="50" width="730" height="510" as="geometry"/>
+                </mxCell>
+                <mxCell id="JqQ6LoTgXi9RhzD8BGIM-2" value="Page 1" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.anchor;fontSize=17;fontColor=#666666;align=left;whiteSpace=wrap;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="60" y="12" width="110" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="JqQ6LoTgXi9RhzD8BGIM-3" value="https://test.buckyos.io" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.anchor;rSize=0;fontSize=17;fontColor=#666666;align=left;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="130" y="60" width="250" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="EjbIDob9c3Dp_OAJVKnE-2" value="Fix Panel1" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="513" y="139" width="200" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="EjbIDob9c3Dp_OAJVKnE-3" value="Fix Panel2" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="513" y="219" width="200" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="VaCQZE-EuP3S0z7MlR-O-1" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="20" y="137.5" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="VaCQZE-EuP3S0z7MlR-O-2" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="20" y="210" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="hUONYmP1ytx0wWIzSmkc-1" value="Jarvis" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.window;align=left;verticalAlign=top;spacingLeft=8;strokeColor2=#008cff;strokeColor3=#c4c4c4;fontColor=#666666;mainText=;fontSize=17;labelBackgroundColor=none;whiteSpace=wrap;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="190" y="160" width="370" height="300" as="geometry"/>
+                </mxCell>
+                <mxCell id="hUONYmP1ytx0wWIzSmkc-2" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="250" y="200" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="hUONYmP1ytx0wWIzSmkc-3" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="210" y="201" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="hUONYmP1ytx0wWIzSmkc-4" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="210" y="275" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="hUONYmP1ytx0wWIzSmkc-5" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="250" y="275" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="hUONYmP1ytx0wWIzSmkc-6" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="420" y="350" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="hUONYmP1ytx0wWIzSmkc-7" value="Input" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="190" y="440" width="370" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="hUONYmP1ytx0wWIzSmkc-8" value="Status Bar" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry y="110" width="730" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="hUONYmP1ytx0wWIzSmkc-11" value="&lt;i&gt;BuckyOS&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CCCCCC;" vertex="1" parent="JqQ6LoTgXi9RhzD8BGIM-1">
+                    <mxGeometry x="2" y="110" width="60" height="20" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="Y_q6OeScVPXAxLhrluky" name="Android App">
+        <mxGraphModel dx="1670" dy="-477" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="bk4A0e91TO5OZBTompyg-1" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.phone2;strokeColor=#c0c0c0;" vertex="1" parent="1">
+                    <mxGeometry x="-760" y="1320" width="241.03" height="470" as="geometry"/>
+                </mxCell>
+                <mxCell id="bk4A0e91TO5OZBTompyg-2" value="Feeds" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-748.86" y="1710" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="bk4A0e91TO5OZBTompyg-3" value="Chats" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-692.86" y="1710" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="bk4A0e91TO5OZBTompyg-4" value="Settings" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-580.11" y="1710" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="bk4A0e91TO5OZBTompyg-5" value="Desktop" style="rounded=1;whiteSpace=wrap;html=1;fillColor=light-dark(#878787, #ededed);" vertex="1" parent="1">
+                    <mxGeometry x="-634.86" y="1710" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="IFXCVwgss_Eu-L_xdfiG-1" value="Fix Panel1" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-740" y="1384" width="200" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="IFXCVwgss_Eu-L_xdfiG-2" value="Fix Panel2" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-740" y="1456" width="200" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="IFXCVwgss_Eu-L_xdfiG-3" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-740" y="1531" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="IFXCVwgss_Eu-L_xdfiG-4" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-690" y="1531" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="IFXCVwgss_Eu-L_xdfiG-5" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-636" y="1531" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="IFXCVwgss_Eu-L_xdfiG-6" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-585" y="1531" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="PLngo45PbOj_hIJo4RTc-1" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.phone2;strokeColor=#c0c0c0;" vertex="1" parent="1">
+                    <mxGeometry x="-290" y="1312.5" width="241.03" height="470" as="geometry"/>
+                </mxCell>
+                <mxCell id="PLngo45PbOj_hIJo4RTc-2" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-279.48" y="1356.5" width="220" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="PLngo45PbOj_hIJo4RTc-3" value="App Title&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=top;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="-199.48000000000002" y="1353.5" width="60" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="PLngo45PbOj_hIJo4RTc-4" value="tips" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=light-dark(#616161, #ededed);" vertex="1" parent="1">
+                    <mxGeometry x="-199.48000000000002" y="1367.5" width="60" height="20" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="MSeMhzDFqooEfekjfhUh" name="Windows App">
+        <mxGraphModel dx="2536" dy="180" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-1" value="BuckyOS App&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.window;align=left;verticalAlign=top;spacingLeft=8;strokeColor2=#008cff;strokeColor3=#c4c4c4;fontColor=#666666;mainText=;fontSize=17;labelBackgroundColor=none;whiteSpace=wrap;" vertex="1" parent="1">
+                    <mxGeometry x="-262" y="1189" width="229" height="410" as="geometry"/>
+                </mxCell>
+                <mxCell id="Ny6ez8_1e9PZKrbnwXfh-2" value="Feeds" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-258.86" y="1560" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="Ny6ez8_1e9PZKrbnwXfh-3" value="Chats" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-202.86" y="1560" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="Ny6ez8_1e9PZKrbnwXfh-4" value="Settings" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-90.11000000000001" y="1560" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="Ny6ez8_1e9PZKrbnwXfh-5" value="Desktop" style="rounded=1;whiteSpace=wrap;html=1;fillColor=light-dark(#878787, #ededed);" vertex="1" parent="1">
+                    <mxGeometry x="-144.86" y="1560" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="Ny6ez8_1e9PZKrbnwXfh-8" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-247.5" y="1250" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="Ny6ez8_1e9PZKrbnwXfh-9" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-197.86" y="1250" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="Ny6ez8_1e9PZKrbnwXfh-10" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-143.5" y="1250" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="Ny6ez8_1e9PZKrbnwXfh-11" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-92.5" y="1250" width="45" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-2" value="常用" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="-247.5" y="1220" width="60" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-7" value="Agents" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="-247" y="1291" width="60" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-8" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-247.5" y="1320" width="87" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-9" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-153.36" y="1320" width="87" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-10" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-60.5" y="1320" width="87" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-11" value="My App Service" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="-247" y="1380" width="97" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-12" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-210" y="1410" width="170" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-13" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-210" y="1450" width="170" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-14" value="Local App" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="-247" y="1480" width="97" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-16" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-210" y="1510" width="170" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-18" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+                    <mxGeometry x="-247.5" y="1410" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-19" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+                    <mxGeometry x="-247.5" y="1450" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-20" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+                    <mxGeometry x="-247" y="1510" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-21" value="Jarvis" style="strokeWidth=1;shadow=0;dashed=0;align=center;html=1;shape=mxgraph.mockup.containers.window;align=left;verticalAlign=top;spacingLeft=8;strokeColor2=#008cff;strokeColor3=#c4c4c4;fontColor=#666666;mainText=;fontSize=17;labelBackgroundColor=none;whiteSpace=wrap;" vertex="1" parent="1">
+                    <mxGeometry x="-770" y="1220" width="370" height="300" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-22" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-710" y="1260" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-24" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+                    <mxGeometry x="-750" y="1261" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-25" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" vertex="1" parent="1">
+                    <mxGeometry x="-750" y="1335" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-26" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-710" y="1335" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-29" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-540" y="1410" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="GO8gKZyDQwz3_WHO7TbM-30" value="Input" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="-770" y="1500" width="370" height="20" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="poCRoMaMtJivDPvIYpZL" name="集成App">
+        <mxGraphModel dx="1693" dy="-460" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-1" value="" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-788.45" y="1220" width="219.49" height="304" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-2" value="Fix Panel1" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-768.45" y="1240" width="180" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-3" value="Fix Panel2" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-766.45" y="1317" width="178" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-4" value="Grid Item Panel1 (Auto fit)" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-768.45" y="1390" width="180" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-5" value="" style="verticalLabelPosition=bottom;verticalAlign=top;html=1;shadow=0;dashed=0;strokeWidth=1;shape=mxgraph.android.phone2;strokeColor=#c0c0c0;" parent="1" vertex="1">
+                    <mxGeometry x="-800" y="1134" width="241.03" height="470" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-6" value="Home" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-790" y="1534" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-7" value="Apps" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-734" y="1534" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-8" value="Account" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-621.25" y="1534" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-9" value="Library" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-676" y="1534" width="50" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-10" value="" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-789.49" y="1180" width="220" height="44" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-11" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" parent="1" vertex="1">
+                    <mxGeometry x="-656" y="1184" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="aWqPe7GMfxNNm7gmSUtc-12" value="链接Zone" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="-738.5" y="1620" width="115" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="MOF3Lz-BO3rMu0JPJ_NY-1" value="&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;- zone内需要有app管理器对外提供App信息的接口&lt;/span&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;- 与本地App的交互（判断安装，扫描文件夹 or 扫描端口？）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;- App的打开方式&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;a. 每个App单独进程（独立AppRuntime）&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;b. App共享AppRuntime&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;c.本地与远程app打开方式的区别&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;&lt;span style=&quot;white-space: pre;&quot;&gt;&#x9;&lt;/span&gt;d.是否由钱包负责拉起&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;gateway有独立的服务控制器负责拉起&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;判断安装：通过配置（写拉起方式）&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;color: rgb(0, 0, 0); text-align: center;&quot;&gt;&lt;br&gt;&lt;/span&gt;&lt;/div&gt;" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=14;" parent="1" vertex="1">
+                    <mxGeometry x="-480" y="1150" width="380" height="430" as="geometry"/>
+                </mxCell>
+                <mxCell id="_IhugL3r2hAv5E5na_P0-1" value="1.desktop_daemon 管理自动升级和服务拉起&amp;nbsp; lzc&lt;div&gt;2.钱包&amp;nbsp; song&amp;nbsp; xinle&lt;/div&gt;&lt;div&gt;3.backup&lt;/div&gt;&lt;div&gt;4.service&amp;nbsp; qiushi&lt;/div&gt;&lt;div&gt;5.App runtime song&amp;nbsp; xinle&lt;/div&gt;&lt;div&gt;6.集成&amp;nbsp; qiushi song&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="-750" y="1700" width="360" height="110" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

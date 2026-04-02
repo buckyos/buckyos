@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e" pages="7">
     <diagram id="qtnyyWBofrqY8sT3Uczt" name="BuckyOS Desktop 安装">
-        <mxGraphModel dx="1447" dy="888" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1517" dy="1152" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -109,7 +109,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="CFBse39zD2X4QC_X_UTC" name="Page-8">
-        <mxGraphModel dx="1447" dy="888" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0" adaptiveColors="auto">
+        <mxGraphModel dx="1517" dy="1152" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0" adaptiveColors="auto">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -282,7 +282,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="RZdW4h8mW8Q3h_B0Vpwn" name="UI Frame">
-        <mxGraphModel dx="2274" dy="2057" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+        <mxGraphModel dx="2344" dy="2321" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -428,7 +428,7 @@
                     <mxGeometry x="-269.49" y="1750" width="220" height="44" as="geometry"/>
                 </mxCell>
                 <mxCell id="I_DkyAX16VAMbG26nA5m-40" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;" parent="1" vertex="1">
-                    <mxGeometry x="-136.00000000000003" y="1754" width="30" height="30" as="geometry"/>
+                    <mxGeometry x="-96.00000000000003" y="1757" width="30" height="30" as="geometry"/>
                 </mxCell>
                 <mxCell id="hZOK2PdYXNLCYLNJ0Ecz-1" value="BuckyOS Desktop / App的主要UI流程" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=15;" parent="1" vertex="1">
                     <mxGeometry x="-774.44" y="-1130" width="320" height="30" as="geometry"/>
@@ -743,7 +743,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="EODSEoyB2uT6aeYZcXwd" name="Account Home">
-        <mxGraphModel dx="1447" dy="1988" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1517" dy="2252" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -994,7 +994,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="zeFkYOji6RzFuGIM00UL" name="Setting">
-        <mxGraphModel dx="1447" dy="2057" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+        <mxGraphModel dx="1517" dy="2321" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -1032,7 +1032,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="Bwazp7gAqggCu4c5TZTF" name="backup-suite">
-        <mxGraphModel dx="2274" dy="888" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+        <mxGraphModel dx="2344" dy="1152" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -1327,7 +1327,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="4TF5g4WhKZ7YWotk5-yJ" name="智能网关">
-        <mxGraphModel dx="2274" dy="888" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+        <mxGraphModel dx="2344" dy="1152" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -1393,7 +1393,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="nN4GZXFRq2xmKyLFASYg" name="tray-contorl">
-        <mxGraphModel dx="1447" dy="888" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+        <mxGraphModel dx="1517" dy="1152" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
