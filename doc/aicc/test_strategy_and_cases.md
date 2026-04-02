@@ -62,25 +62,25 @@
 覆盖各 capability 的输入输出协议规范：
 
 - **LLM（llm_router）**
-  - `payload.text/messages/input_json/options` 组合规则
-  - tool calling 字段合法性（`tool_specs`）
-  - temperature/top_p/max_tokens 参数边界
+    - `payload.text/messages/input_json/options` 组合规则
+    - tool calling 字段合法性（`tool_specs`）
+    - temperature/top_p/max_tokens 参数边界
 - **Text2Image（text2image）**
-  - prompt 来源优先级（text/messages/input_json/options）
-  - 图片输出 artifact 引用格式（URL/Base64）
-  - size/quality/style 参数映射
+    - prompt 来源优先级（text/messages/input_json/options）
+    - 图片输出 artifact 引用格式（URL/Base64）
+    - size/quality/style 参数映射
 - **Voice2Text / Video2Text / Image2Text（voice2text / video2text / image2text）**
-  - `ResourceRef::Base64`：mime 白名单 + 大小上限 + 可解码
-  - `ResourceRef::Url`：scheme 必须存在 + URL 合法性
-  - language/hotword 等配置参数
+    - `ResourceRef::Base64`：mime 白名单 + 大小上限 + 可解码
+    - `ResourceRef::Url`：scheme 必须存在 + URL 合法性
+    - language/hotword 等配置参数
 - **Text2Voice（text2voice）**
-  - 文本输入长度限制
-  - voice/model 配置参数格式
-  - 音频输出格式（URL 引用）
+    - 文本输入长度限制
+    - voice/model 配置参数格式
+    - 音频输出格式（URL 引用）
 - **通用协议规范**
-  - 敏感字段不落日志（prompt/base64 原文）
-  - `idempotency_key` 透传
-  - `session_token` 与 tenant 绑定
+    - 敏感字段不落日志（prompt/base64 原文）
+    - `idempotency_key` 透传
+    - `session_token` 与 tenant 绑定
 
 ### L4：稳定性层（建议）
 
@@ -113,22 +113,22 @@
 ### 3.1 组件构成
 
 1. `MockProvider`（脚本化）
-   - 输入：预置 `VecDeque<Result<ProviderStartResult, ProviderError>>`
-   - 输出：按序返回 `Immediate/Started/Queued/retryable/fatal`
-   - 记录：start 调用次数、cancel 记录
+    - 输入：预置 `VecDeque<Result<ProviderStartResult, ProviderError>>`
+    - 输出：按序返回 `Immediate/Started/Queued/retryable/fatal`
+    - 记录：start 调用次数、cancel 记录
 
 2. `MockTaskMgrHandler`（内存任务管理）
-   - 已存在基础实现，可继续扩展断言字段（status/progress/data/events）
+    - 已存在基础实现，可继续扩展断言字段（status/progress/data/events）
 
 3. `FakeResourceResolver`
-   - 可配置成功、权限失败、解析失败、超时
+    - 可配置成功、权限失败、解析失败、超时
 
 4. `TaskEventSink`（内存事件收集）
-   - 用于断言事件序列：Queued -> Started -> Final/Error/CancelRequested
+    - 用于断言事件序列：Queued -> Started -> Final/Error/CancelRequested
 
 5. `Fake HTTP Server`（用于 adapter 测试）
-   - 返回可编排 HTTP 响应：200/400/429/503/无效JSON/超时
-   - 不访问外部 API，无模型成本
+    - 返回可编排 HTTP 响应：200/400/429/503/无效JSON/超时
+    - 不访问外部 API，无模型成本
 
 ### 3.2 环境原则
 
@@ -228,22 +228,26 @@
 ### 4.10 协议规范层 - 各模型特定格式（10）
 
 **LLM 特定：**
+
 - `proto_llm_01_messages_format_valid`：输入标准 messages 结构，经过请求构建流程，最终应输出可被 provider 正确接受的报文。
 - `proto_llm_02_input_json_format_valid`：输入 `input_json` 结构，经过协议转换流程，最终应输出字段映射正确的请求体。
 - `proto_llm_03_tool_specs_format_valid`：输入 `tool_specs` 配置，经过工具参数转换流程，最终应输出合法 tool calling 字段。
 - `proto_llm_04_temperature_boundary_valid`：输入边界温度参数，经过参数约束流程，最终应输出边界值处理正确结果。
 
 **Text2Image 特定：**
+
 - `proto_t2i_01_prompt_from_text`：输入 `payload.text`，经过 prompt 提取优先级流程，最终应输出以 text 为 prompt 的请求。
 - `proto_t2i_02_prompt_from_messages`：输入 `messages` 且无 text，经过 prompt 回退流程，最终应输出以 messages 内容为 prompt。
 - `proto_t2i_03_prompt_from_options`：输入 `options.prompt` 且无 text/messages，经过 prompt 回退流程，最终应输出以 options.prompt 为 prompt。
 - `proto_t2i_04_artifact_url_format`：输入文生图成功响应，经过产物转换流程，最终应输出 URL 型 artifact。
 
 **Voice2Text/Video2Text 特定：**
+
 - `proto_v2t_01_language_param_respected`：输入带 language 参数请求，经过参数透传流程，最终应输出 language 被正确保留。
 - `proto_v2t_02_hotword_param_respected`：输入带 hotword 参数请求，经过参数透传流程，最终应输出 hotword 被正确保留。
 
 **Text2Voice 特定：**
+
 - `proto_t2v_01_voice_param_format_valid`：输入语音角色与模型参数，经过参数校验流程，最终应输出合法 TTS 请求。
 - `proto_t2v_02_output_artifact_url_format`：输入 TTS 成功响应，经过结果归一化流程，最终应输出 URL 型音频 artifact。
 
@@ -386,29 +390,29 @@ kRPC + gateway 链路建议（远程）：
 - 网关入口：`POST /kapi/aicc`
 - 配置入口：`POST /kapi/system_config`
 - 关键校验点：
-  - `sys` 数组语义：`[seq, token?, trace_id?]`
-  - `sys_config` 写入后必须显式调用 `reload_settings`
-  - `reload_settings` 后以一次 `complete` 做配置生效回归
+    - `sys` 数组语义：`[seq, token?, trace_id?]`
+    - `sys_config` 写入后必须显式调用 `reload_settings`
+    - `reload_settings` 后以一次 `complete` 做配置生效回归
 
 ---
 
 ## 6. 与其他模块的协作依赖（需联调验收）
 
 1. TaskMgr
-   - 任务状态机语义一致（Pending/Running/Completed/Canceled/Failed）
-   - task data 字段持久化一致
+    - 任务状态机语义一致（Pending/Running/Completed/Canceled/Failed）
+    - task data 字段持久化一致
 
 2. 事件通道（TaskMgr/MsgQueue）
-   - 事件 schema 和顺序语义对齐（Started/Queued/Final/Error/CancelRequested）
+    - 事件 schema 和顺序语义对齐（Started/Queued/Final/Error/CancelRequested）
 
 3. IAM/Auth
-   - tenant 身份来源可信，跨租户校验可生效
+    - tenant 身份来源可信，跨租户校验可生效
 
 4. Resource 服务
-   - 资源权限校验与审计落地
+    - 资源权限校验与审计落地
 
 5. 配置中心
-   - alias 映射与策略更新原子性，避免漂移窗口
+    - alias 映射与策略更新原子性，避免漂移窗口
 
 ---
 
@@ -419,71 +423,34 @@ kRPC + gateway 链路建议（远程）：
 - 测试清单与风险映射表（case -> risk）
 - `cargo test -p aicc` 全量通过结果
 - 安全场景通过证据：
-  - 跨租户 cancel 拒绝
-  - base64 超限/非法 mime 拒绝
+    - 跨租户 cancel 拒绝
+    - base64 超限/非法 mime 拒绝
 - 协议测试证据：
-  - openai/gimini 各至少 6 条
+    - openai/gimini 各至少 6 条
 - 失败路径证据：
-  - `model_alias_not_mapped`
-  - `provider_start_failed`
+    - `model_alias_not_mapped`
+    - `provider_start_failed`
 - Streaming 证据：
-  - `Started` 后可轮询增量输出
-  - cancel 后增量停止且状态收敛
-  - 事件顺序与 task data 快照一致
+    - `Started` 后可轮询增量输出
+    - cancel 后增量停止且状态收敛
+    - 事件顺序与 task data 快照一致
 - kRPC + gateway 证据：
-  - `/kapi/aicc` 远程 `complete/cancel/reload_settings` 全链路成功
-  - `sys` 结构与可选 token/trace 组合均覆盖
-  - 错误路径（非法 `sys`、跨租户 cancel）可稳定复现
+    - `/kapi/aicc` 远程 `complete/cancel/reload_settings` 全链路成功
+    - `sys` 结构与可选 token/trace 组合均覆盖
+    - 错误路径（非法 `sys`、跨租户 cancel）可稳定复现
 - system_config 证据：
-  - `sys_config_get/set/set_by_json_path` 覆盖并具备请求-响应记录
-  - 配置变更 + `reload_settings` + `complete` 回归三段证据齐全
+    - `sys_config_get/set/set_by_json_path` 覆盖并具备请求-响应记录
+    - 配置变更 + `reload_settings` + `complete` 回归三段证据齐全
 - 正式环境证据：
-  - 物理机部署记录（设备、系统、网络）
-  - 基于分配 URL 的脚本化 smoke 报告
-  - 监控告警触发与恢复记录
+    - 物理机部署记录（设备、系统、网络）
+    - 基于分配 URL 的脚本化 smoke 报告
+    - 监控告警触发与恢复记录
 
 无证据按未实现处理，不建议发布。
 
----
+## 8. 复杂任务规划提示词示例（生产可用版）
 
-## 8. 当前代码基线观察（便于增量实现）
-
-当前基线（2026-03）：
-
-- `src/frame/aicc/tests/core_semantics_tests.rs` 已覆盖 route/start/task/sec/obs/conc 的主要语义用例
-- `src/frame/aicc/tests/adapter_protocol_tests.rs` 已覆盖 OpenAI/Gimini 各 6 条 adapter 场景与部分 T2I 协议场景
-- `src/frame/aicc/src/openai_protocol.rs`、`src/frame/aicc/src/claude_protocol.rs`、`src/frame/aicc/src/openai.rs` 已有协议转换与参数映射单测
-
-当前相对本方案的关键缺口（优先补齐）：
-
-- Streaming 用例簇（`stream_*`）尚未成体系
-- L3 缺口：`proto_llm_*`、`proto_v2t_*`、`proto_t2v_*`、`proto_mix_*`、`proto_sec_01~03`
-- L5 缺口：`workflow_*` 与 `sched_*` 组合策略用例
-- 资源语义缺口：`proto_res_*`（NamedObject/cyfs:///跨模式等价与转换）用例
-- 正式环境 smoke 与监控告警验收尚未并入统一发布 gate
-
-为避免“总清单有、实现缺口看不见”，补充一组按当前实现差异追踪的目标用例（本轮新增）：
-
-- Streaming：`stream_01~stream_08`
-- URL 规范：`proto_url_05_invalid_url_format_rejected`
-- V2T 参数透传：`proto_v2t_01`、`proto_v2t_02`
-- T2V 协议：`proto_t2v_01`、`proto_t2v_02`
-- 混合资源：`proto_mix_01~proto_mix_04`
-- 安全脱敏：`proto_sec_03_no_artifact_bytes_in_events`
-- LLM 格式：`proto_llm_01~proto_llm_04`
-- 调度策略：`sched_01~sched_08`
-- 编排策略：`workflow_01~workflow_08`
-- kRPC/gateway：`krpc_01~krpc_07`
-- system_config：`cfg_01~cfg_05`
-- 正式环境 smoke：`smoke_04~smoke_06`（`smoke_01~03` 已有脚本基础）
-
-建议在当前基础上优先补齐 `L0/L3/L6`，再完善 `L5`。
-
----
-
-## 9. 复杂任务规划提示词示例（生产可用版）
-
-### 9.1 Planner 系统提示词
+### 8.1 Planner 系统提示词
 
 ```
 你是任务编排规划器。请把用户目标拆解为可执行子任务图（DAG），并严格输出 JSON。
@@ -504,57 +471,53 @@ kRPC + gateway 链路建议（远程）：
 7. 输出仅 JSON，不要解释文字。
 ```
 
-### 9.2 Planner 输出 JSON Schema
+### 8.2 Planner 输出 JSON Schema
 
 ```json
 {
-  "plan_id": "string",
-  "goal": "string",
-  "max_replan_rounds": 3,
-  "steps": [
-    {
-      "id": "step_1",
-      "title": "string",
-      "capability": "llm_router | text2image | text2voice | image2text | voice2text | video2text",
-      "model_alias": "string",
-      "must_features": ["string"],
-      "inputs": {
-        "key": "${step_x.output.key}"
-      },
-      "depends_on": ["step_x"],
-      "parallel_group": "group_a",
-      "resource_mode": "url | base64",
-      "retry_policy": {
-        "max_retries": 2,
-        "backoff_ms": 1000,
-        "fallback_alias": "string"
-      },
-      "acceptance_criteria": [
-        "score >= 0.8",
-        "output contains 'xyz'"
-      ],
-      "replan_trigger": {
-        "condition": "score < 0.6",
-        "target_step": "step_1"
-      }
-    }
-  ],
-  "global_acceptance": [
-    "all_steps_completed",
-    "total_cost < 1.0"
-  ]
+    "plan_id": "string",
+    "goal": "string",
+    "max_replan_rounds": 3,
+    "steps": [
+        {
+            "id": "step_1",
+            "title": "string",
+            "capability": "llm_router | text2image | text2voice | image2text | voice2text | video2text",
+            "model_alias": "string",
+            "must_features": ["string"],
+            "inputs": {
+                "key": "${step_x.output.key}"
+            },
+            "depends_on": ["step_x"],
+            "parallel_group": "group_a",
+            "resource_mode": "url | base64",
+            "retry_policy": {
+                "max_retries": 2,
+                "backoff_ms": 1000,
+                "fallback_alias": "string"
+            },
+            "acceptance_criteria": ["score >= 0.8", "output contains 'xyz'"],
+            "replan_trigger": {
+                "condition": "score < 0.6",
+                "target_step": "step_1"
+            }
+        }
+    ],
+    "global_acceptance": ["all_steps_completed", "total_cost < 1.0"]
 }
 ```
 
-### 9.3 典型复杂任务示例：产品发布多媒体包
+### 8.3 典型复杂任务示例：产品发布多媒体包
 
 **输入：**
+
 - 产品 PRD 文档（文本）
 - 演示视频文件（video）
 - 采访音频文件（audio）
 - 截图素材（images）
 
 **目标产出：**
+
 - 发布文案（LLM）
 - 1 张主视觉海报（T2I）
 - 30 秒旁白（T2Voice）
@@ -563,19 +526,20 @@ kRPC + gateway 链路建议（远程）：
 
 **拆解后的 DAG：**
 
-| Step | Capability | Model Alias | Mode | Depends On | Parallel Group |
-|------|------------|-------------|------|------------|----------------|
-| S1 | llm_router | llm.plan.default | - | - | - |
-| S2 | video2text | v2t.default | url | - | group_input |
-| S3 | voice2text | asr.default | base64 | - | group_input |
-| S4 | image2text | i2t.default | url | - | group_input |
-| S5 | llm_router | llm.default | - | S2,S3,S4 | - |
-| S6 | text2image | t2i.default | - | S5 | - |
-| S7 | text2voice | t2v.default | - | S5 | - |
-| S8 | llm_router | llm.default | - | S5 | group_qa |
-| S9 | llm_router | llm.qa.default | - | S8 | - |
+| Step | Capability | Model Alias      | Mode   | Depends On | Parallel Group |
+| ---- | ---------- | ---------------- | ------ | ---------- | -------------- |
+| S1   | llm_router | llm.plan.default | -      | -          | -              |
+| S2   | video2text | v2t.default      | url    | -          | group_input    |
+| S3   | voice2text | asr.default      | base64 | -          | group_input    |
+| S4   | image2text | i2t.default      | url    | -          | group_input    |
+| S5   | llm_router | llm.default      | -      | S2,S3,S4   | -              |
+| S6   | text2image | t2i.default      | -      | S5         | -              |
+| S7   | text2voice | t2v.default      | -      | S5         | -              |
+| S8   | llm_router | llm.default      | -      | S5         | group_qa       |
+| S9   | llm_router | llm.qa.default   | -      | S8         | -              |
 
 **特点：**
+
 - 并行：S2/S3/S4 同时处理输入媒体
 - 串行：S5 依赖所有输入处理完成
 - 并行：S6/S7/S8 依赖 S5 结果
@@ -583,9 +547,9 @@ kRPC + gateway 链路建议（远程）：
 
 ---
 
-## 10. 模拟环境增强：协议校验器
+## 9. 模拟环境增强：协议校验器
 
-### 10.1 SimProvider 协议校验模式
+### 9.1 SimProvider 协议校验模式
 
 ```rust
 enum ProtocolMode {
@@ -601,7 +565,7 @@ struct SimProvider {
 }
 ```
 
-### 10.2 协议校验器示例
+### 9.2 协议校验器示例
 
 ```rust
 // Base64 校验器
@@ -632,7 +596,7 @@ fn base64_validator(mime_whitelist: &[&str], max_bytes: usize) -> impl Fn(&Compl
 }
 ```
 
-### 10.3 模拟资源解析器
+### 9.3 模拟资源解析器
 
 ```rust
 enum ResourceResolverMode {
@@ -650,7 +614,7 @@ struct FakeResourceResolver {
 }
 ```
 
-### 10.4 模拟存储（用于 artifact URL）
+### 9.4 模拟存储（用于 artifact URL）
 
 ```rust
 struct FakeArtifactStorage {
@@ -673,46 +637,35 @@ impl FakeArtifactStorage {
 
 ---
 
-## 11. PR 验收证据要求（发布卡点）- 更新版
+## 10. PR 验收证据要求（发布卡点）- 更新版
 
 提交实现时需附：
 
 - 测试清单与风险映射表（case -> risk）
 - `cargo test -p aicc` 全量通过结果
 - 安全场景通过证据：
-  - 跨租户 cancel 拒绝
-  - base64 超限/非法 mime 拒绝
-  - URL 无 scheme 拒绝
+    - 跨租户 cancel 拒绝
+    - base64 超限/非法 mime 拒绝
+    - URL 无 scheme 拒绝
 - 协议测试证据：
-  - openai/gimini 各至少 6 条
-  - Base64 协议测试至少 8 条
-  - URL 协议测试至少 6 条
-  - 各模型特定格式测试至少 10 条
-  - Streaming 协议测试至少 8 条
+    - openai/gimini 各至少 6 条
+    - Base64 协议测试至少 8 条
+    - URL 协议测试至少 6 条
+    - 各模型特定格式测试至少 10 条
+    - Streaming 协议测试至少 8 条
 - 失败路径证据：
-  - `model_alias_not_mapped`
-  - `provider_start_failed`
-  - `resource_invalid` 各场景
+    - `model_alias_not_mapped`
+    - `provider_start_failed`
+    - `resource_invalid` 各场景
 - 复杂任务编排证据（如实现）：
-  - DAG 生成与解析正常
-  - 并行步骤确实并发执行
-  - 串行步骤正确阻塞
-  - 循环重规划触发正常
+    - DAG 生成与解析正常
+    - 并行步骤确实并发执行
+    - 串行步骤正确阻塞
+    - 循环重规划触发正常
 - 正式环境发布证据：
-  - 物理机 smoke 全量通过
-  - 监控告警演练通过
-  - Bug 现场信息模板完整（请求参数、租户、trace_id、provider、错误码、日志片段）
-  - kRPC + gateway 远程调用链路通过（含 system_config 更新与 reload 生效）
+    - 物理机 smoke 全量通过
+    - 监控告警演练通过
+    - Bug 现场信息模板完整（请求参数、租户、trace_id、provider、错误码、日志片段）
+    - kRPC + gateway 远程调用链路通过（含 system_config 更新与 reload 生效）
 
 无证据按未实现处理，不建议发布。
-
----
-
-## 12. 本次修改内容概要
-
-1. 将会议纪要中的关键风险纳入测试分层：新增 `L0 Streaming` 与 `L6 正式环境`。
-2. 扩展测试用例清单：新增 `stream_*`、`sched_*`、`smoke_*` 三组用例。
-3. 补充执行与验收闭环：在 `cargo test` 外增加物理机 `test_llm.py` smoke 建议与环境变量说明。
-4. 更新 PR 验收标准：新增 Streaming 证据与正式环境发布证据要求。
-5. 修正“约 7 条基础单测”的过时描述，改为当前基线与缺口列表，便于后续增量补齐。
-6. 新增 kRPC + gateway 远程调用与 system_config 在线更新链路测试方案与验收证据。
