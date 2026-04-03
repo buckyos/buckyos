@@ -172,6 +172,14 @@ export type SnLoginResult = JsonValue & {
     need_bind_owner_key?: boolean;
 };
 
+export type SnBindOwnerKeyResult = JsonValue & {
+    code: number;
+};
+
+export type SnBindZoneConfigResult = JsonValue & {
+    code: number;
+};
+
 export async function register_sn_user(user_name:string,active_code:string,public_key:string,zone_config_jwt:string,user_domain:string|null) : Promise<boolean> {
     let rpc_client = create_sn_rpc_client(SN_BNS_API_URL);
     let params:JsonValue = {
@@ -197,6 +205,31 @@ export async function login(user_name:string,pwd_hash:string,active_code:string)
         active_code:active_code
     });
     return result as SnLoginResult;
+}
+
+export async function login_by_password_and_activecode(user_name:string,pwd_hash:string,active_code:string):Promise<SnLoginResult> {
+    return login(user_name, pwd_hash, active_code);
+}
+
+export async function bind_owner_key(access_token:string, public_key:JsonValue|string):Promise<SnBindOwnerKeyResult> {
+    let rpc_client = create_sn_rpc_client(SN_BNS_API_URL, access_token);
+    let result: JsonValue = await rpc_client.call("user.bind_owner_key",{
+        public_key:public_key
+    });
+    return result as SnBindOwnerKeyResult;
+}
+
+export async function bind_sn_zone_config(user_name:string, zone_config_jwt:string, user_domain:string|null):Promise<SnBindZoneConfigResult> {
+    let rpc_client = create_sn_rpc_client(SN_BNS_API_URL);
+    let params:JsonValue = {
+        user_name:user_name,
+        zone_config:zone_config_jwt,
+    };
+    if (user_domain != null) {
+        params["user_domain"] = user_domain;
+    }
+    let result: JsonValue = await rpc_client.call("zone.bind_config", params);
+    return result as SnBindZoneConfigResult;
 }
 
 
@@ -422,10 +455,10 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
     let need_sn = is_need_sn(data);
     let net_id = get_net_id_by_gateway_type(data.gatewy_type,data.port_mapping_mode);
     let sn_url = null;
-    // register sn user
+    // bind final zone config before device activation
     if (need_sn) {
         let user_domain = null;
-        if (data.sn_user_name == null || data.sn_user_name == "" || data.sn_active_code == null || data.sn_active_code == "") {
+        if (data.sn_user_name == null || data.sn_user_name == "") {
             return false;
         }
         const validation = validate_bucky_username(data.sn_user_name);
@@ -453,15 +486,13 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
             return false;
         }
         let zone_config_jwt = records_result["BOOT"];
-        
-        let register_sn_user_result = await register_sn_user(
+
+        let bind_zone_result = await bind_sn_zone_config(
             data.sn_user_name,
-            data.sn_active_code,
-            JSON.stringify(data.owner_public_key),
             zone_config_jwt,
             user_domain);
 
-        if (!register_sn_user_result) {
+        if (bind_zone_result["code"] != 0) {
             return false;
         }
     }

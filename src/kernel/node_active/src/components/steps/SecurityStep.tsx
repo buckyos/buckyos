@@ -21,9 +21,14 @@ import { buckyos } from "buckyos";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  WEB3_BASE_HOST,
+  bind_owner_key,
   check_bucky_username,
   check_sn_active_code,
+  generate_zone_txt_records,
+  login_by_password_and_activecode,
+  register_sn_user,
+  SN_HOST,
+  WEB3_BASE_HOST,
   validate_bucky_username,
 } from "../../../active_lib";
 import { WalletUser, WizardData } from "../../types";
@@ -202,30 +207,16 @@ const SecurityStep = ({
     }
 
     if (!isWalletRuntime) {
-      if (nameStatus === "checking") {
-        setError(t("username_checking") || "Checking availability…");
-        return;
-      }
-      if (nameStatus !== "ok") {
-        setError(t("error_name_taken") || "");
+      if (nameStatus === "invalid" || nameStatus === "tooShort") {
+        setError(t("error_name_invalid") || "Invalid name");
         return;
       }
     }
 
     const normalizedCode = snCode.trim();
-    if (!isWalletRuntime) {
-      if (!normalizedCode || normalizedCode.length < 8) {
-        setError(t("error_invite_code_too_short") || "");
-        return;
-      }
-      if (checkingSnCode) {
-        setError(t("invite_checking") || "Checking invitation code…");
-        return;
-      }
-      if (snCodeValid !== true) {
-        setError(t("error_invite_code_invalid") || "");
-        return;
-      }
+    if (!isWalletRuntime && (!normalizedCode || normalizedCode.length < 8)) {
+      setError(t("error_invite_code_too_short") || "");
+      return;
     }
 
     if (password.length < 8) {
@@ -240,6 +231,72 @@ const SecurityStep = ({
     setLoading(true);
     try {
       const hash = await buckyos.hashPassword(normalizedUsername, password);
+      if (!isWalletRuntime) {
+        const activeCodeReady = await check_sn_active_code(normalizedCode);
+        if (!activeCodeReady) {
+          setError(t("error_invite_code_invalid") || "");
+          return;
+        }
+
+        const isUsernameAvailable = await check_bucky_username(normalizedUsername);
+        if (isUsernameAvailable) {
+          if (!wizardData.owner_private_key) {
+            setError(t("error_private_key_not_ready") || "Private key missing");
+            return;
+          }
+
+          const tempZoneRecords = await generate_zone_txt_records(
+            SN_HOST,
+            wizardData.owner_public_key,
+            wizardData.owner_private_key,
+            wizardData.device_public_key,
+            null,
+            wizardData.rtcp_port,
+            false,
+          );
+          const tempZoneConfigJwt =
+            tempZoneRecords && typeof tempZoneRecords["BOOT"] === "string"
+              ? tempZoneRecords["BOOT"]
+              : null;
+          if (!tempZoneConfigJwt) {
+            setError(
+              t("error_generate_txt_records_failed") || "Failed to prepare SN registration config",
+            );
+            return;
+          }
+
+          const registerOk = await register_sn_user(
+            normalizedUsername,
+            normalizedCode,
+            JSON.stringify(wizardData.owner_public_key),
+            tempZoneConfigJwt,
+            null,
+          );
+          if (!registerOk) {
+            setError(
+              t("error_activation_failed") || "Failed to register SN user",
+            );
+            return;
+          }
+        } else {
+          const loginResult = await login_by_password_and_activecode(
+            normalizedUsername,
+            hash,
+            normalizedCode,
+          );
+          const bindOwnerResult = await bind_owner_key(
+            loginResult.access_token,
+            wizardData.owner_public_key,
+          );
+          if (bindOwnerResult.code !== 0) {
+            setError(
+              t("error_activation_failed") || "Failed to bind owner key",
+            );
+            return;
+          }
+        }
+      }
+
       onUpdate({
         sn_user_name: normalizedUsername,
         owner_user_name: isWalletRuntime ? wizardData.owner_user_name : normalizedUsername,
@@ -275,30 +332,29 @@ const SecurityStep = ({
           >
             <Box>
               <Typography fontWeight={700}>
-                {t("create_sn_user_title", { defaultValue: "创建 SN 用户" })}
+                {t("create_or_login_sn_user_title", { defaultValue: "创建或登录 SN 用户" })}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {t("create_sn_user_desc", {
-                  defaultValue: "第一步先创建一个新的 SN 用户。后续步骤不再重复输入用户名和激活码。",
+                {t("create_or_login_sn_user_desc", {
+                  defaultValue: "第一步会自动判断用户名是否已存在：不存在就注册，已存在就直接登录并绑定 owner key。",
                 })}
               </Typography>
             </Box>
             {!isWalletRuntime ? (
-              <Button
-                variant="outlined"
-                startIcon={<LoginRounded />}
-                disabled
-                sx={{ minHeight: 44 }}
-              >
-                {t("login_existing_sn_account", { defaultValue: "登录已有SN账号" })}
-              </Button>
+              <Chip
+                color="info"
+                icon={<LoginRounded />}
+                label={t("auto_login_when_username_exists", {
+                  defaultValue: "用户名已存在时自动登录",
+                })}
+              />
             ) : null}
           </Stack>
 
           {!isWalletRuntime ? (
             <Typography variant="caption" color="text.secondary">
               {t("login_existing_sn_account_hint", {
-                defaultValue: "该入口预留在这里，当前版本暂未实现。",
+                defaultValue: "点 Next 时会直接尝试注册或登录，失败则不能进入下一步。",
               })}
             </Typography>
           ) : null}

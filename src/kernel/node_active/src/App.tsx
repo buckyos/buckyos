@@ -19,6 +19,37 @@ import LanguageSwitch from "./components/LanguageSwitch";
 import ThemeToggle from "./components/ThemeToggle";
 import { WalletUser } from "./types";
 
+function normalizeWalletPublicKey(value: unknown) {
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === "object") {
+    return value as WalletUser["public_key"];
+  }
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function normalizeWalletPasswordHash(user: Record<string, unknown>): string {
+  const candidates = [
+    user.user_password_hash,
+    user.password_hash,
+    user.pwd_hash,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return "";
+}
+
 const App = () => {
   const { t, i18n } = useTranslation();
   const prefersDark = useMediaQuery("(prefers-color-scheme: dark)");
@@ -62,12 +93,17 @@ const App = () => {
           return;
         }
 
+        const normalizedUser = user as Record<string, unknown>;
+
         if (cancelled) return;
         setWalletUser({
-          user_name: (user.user_name || user.username || "").toLowerCase(),
-          user_id: user.did,
-          public_key: user.public_key || user.owner_public_key,
-          sn_username: (user.sn_username || "").toLowerCase(),
+          user_name: String(normalizedUser.user_name || normalizedUser.username || "").toLowerCase(),
+          user_id: typeof normalizedUser.did === "string" ? normalizedUser.did : undefined,
+          public_key: normalizeWalletPublicKey(
+            normalizedUser.owner_public_key || normalizedUser.public_key || normalizedUser.user_owner_key,
+          ),
+          sn_username: String(normalizedUser.sn_username || "").toLowerCase(),
+          password_hash: normalizeWalletPasswordHash(normalizedUser),
         });
         setIsWalletRuntime(true);
       } catch (err: any) {

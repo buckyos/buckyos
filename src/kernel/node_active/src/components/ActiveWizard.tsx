@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Box, LinearProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, LinearProgress, Stack, Typography } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { StepKey, WalletUser, WizardData, ActiveWizzardData } from "../types";
 import { createInitialWizardData, WEB3_BASE_HOST } from "../../active_lib";
@@ -11,24 +11,6 @@ import JarvisMsgTunnelStep from "./steps/JarvisMsgTunnelStep";
 import ReviewStep from "./steps/ReviewStep";
 import SuccessStep from "./steps/SuccessStep";
 
-const stepOrder: StepKey[] = [
-  "security",
-  "gateway",
-  "domain",
-  "ai_provider",
-  "jarvis_msg_tunnel",
-  "review",
-  "success",
-];
-const visibleSteps: StepKey[] = [
-  "security",
-  "gateway",
-  "domain",
-  "ai_provider",
-  "jarvis_msg_tunnel",
-  "review",
-];
-
 type Props = {
   isWalletRuntime: boolean;
   walletUser?: WalletUser;
@@ -39,6 +21,20 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const [wizardData, setWizardData] = useState<ActiveWizzardData | null>(null);
   const [activeStep, setActiveStep] = useState(0);
   const [completedUrl, setCompletedUrl] = useState("");
+  const walletInfoReady =
+    !isWalletRuntime ||
+    (!!walletUser?.sn_username && !!walletUser?.public_key && !!walletUser?.password_hash);
+  const stepOrder = useMemo<StepKey[]>(
+    () =>
+      isWalletRuntime
+        ? ["gateway", "domain", "ai_provider", "jarvis_msg_tunnel", "review", "success"]
+        : ["security", "gateway", "domain", "ai_provider", "jarvis_msg_tunnel", "review", "success"],
+    [isWalletRuntime]
+  );
+  const visibleSteps = useMemo(
+    () => stepOrder.filter((step) => step !== "success"),
+    [stepOrder]
+  );
 
   // 异步初始化 wizardData（必须等 walletUser 就绪，避免初始化路径错误）
   useEffect(() => {
@@ -59,6 +55,8 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
             owner_user_name: (walletUser.user_name || "").toLowerCase(),
             owner_public_key: walletUser.public_key,
             sn_user_name: (walletUser.sn_username || "").toLowerCase(),
+            sn_active_code: null,
+            admin_password_hash: walletUser.password_hash || "",
           });
           if (!cancelled) setWizardData(data);
           return;
@@ -119,6 +117,15 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
             {t("loading") || "Loading..."}
           </Typography>
         </Box>
+      );
+    }
+    if (isWalletRuntime && !walletInfoReady) {
+      return (
+        <Alert severity="error">
+          {t("wallet_info_incomplete", {
+            defaultValue: "Wallet user info is incomplete. Missing SN username, owner key, or password hash.",
+          })}
+        </Alert>
       );
     }
     if (!wizardData) {
@@ -195,13 +202,18 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     currentStepKey === "success"
       ? 100
       : Math.min((stepNumber / totalSteps) * 100, 100);
+  const rawStepTitle = stepTitles[currentStepKey];
+  const displayStepTitle =
+    currentStepKey === "success"
+      ? rawStepTitle
+      : rawStepTitle.replace(/^\d+\.\s*/, `${stepNumber}. `);
 
   return (
     <Box>
       <Stack spacing={1} mb={2}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Typography variant="h6" fontWeight={700}>
-            {stepTitles[currentStepKey]}
+            {displayStepTitle}
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {stepNumber}/{totalSteps}

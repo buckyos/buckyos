@@ -5,6 +5,7 @@ export type WalletUser = {
   user_id?: string;
   public_key?:  JsonValue;
   sn_username?: string;
+  password_hash?: string;
 };
 
 
