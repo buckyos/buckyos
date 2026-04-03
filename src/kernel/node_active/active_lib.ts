@@ -5,6 +5,8 @@ import { ActiveConfig, ActiveWizzardData, GatewayType, JsonValue } from "./src/t
 export let SN_BASE_HOST:string = "buckyos.ai";
 export let SN_HOST:string = "sn." + SN_BASE_HOST;
 export let SN_API_URL:string = "https://sn." + SN_BASE_HOST + "/kapi/sn";
+export let SN_AUTH_API_URL:string = SN_API_URL + "/auth";
+export let SN_BNS_API_URL:string = SN_API_URL + "/bns";
 export let WEB3_BASE_HOST:string = "web3." + SN_BASE_HOST;
 export let AI_PROVIDER_TUTORIAL_URL:string = "https://buckyos.ai";
 export let TELEGRAM_BOT_API_TOKEN_TUTORIAL_URL:string = "https://core.telegram.org/bots/tutorial";
@@ -32,6 +34,8 @@ export async function init_active_lib(config: ActiveConfig) {
     SN_BASE_HOST = config.sn_base_host;
     SN_HOST = "sn." + SN_BASE_HOST;
     SN_API_URL = config.http_schema + "://sn." + SN_BASE_HOST + "/kapi/sn";
+    SN_AUTH_API_URL = SN_API_URL + "/auth";
+    SN_BNS_API_URL = SN_API_URL + "/bns";
     WEB3_BASE_HOST = "web3." + SN_BASE_HOST;
     AI_PROVIDER_TUTORIAL_URL =
         config.ai_provider_tutorial_url || AI_PROVIDER_TUTORIAL_URL;
@@ -158,9 +162,18 @@ function create_device_mini_config(device_public_key:JsonValue,rtcp_port:number)
     return device_mini_config;
 }
 
+function create_sn_rpc_client(api_url:string, sessionToken?:string) {
+    return new buckyos.kRPCClient(api_url, sessionToken);
+}
+
+export type SnLoginResult = JsonValue & {
+    access_token: string;
+    refresh_token?: string;
+    need_bind_owner_key?: boolean;
+};
 
 export async function register_sn_user(user_name:string,active_code:string,public_key:string,zone_config_jwt:string,user_domain:string|null) : Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient(SN_API_URL);
+    let rpc_client = create_sn_rpc_client(SN_BNS_API_URL);
     let params:JsonValue = {
         user_name:user_name,
         active_code:active_code,
@@ -171,16 +184,26 @@ export async function register_sn_user(user_name:string,active_code:string,publi
         params["user_domain"] = user_domain;
     }
     console.log("register_sn_user params",params);
-    let result: JsonValue = await rpc_client.call("register_user",params);
+    let result: JsonValue = await rpc_client.call("user.register_by_public_key",params);
     let code = result["code"];
     return code == 0;
+}
+
+export async function login(user_name:string,pwd_hash:string,active_code:string):Promise<SnLoginResult> {
+    let rpc_client = create_sn_rpc_client(SN_AUTH_API_URL);
+    let result: JsonValue = await rpc_client.call("auth.login",{
+        name:user_name,
+        pwd_hash:pwd_hash,
+        active_code:active_code
+    });
+    return result as SnLoginResult;
 }
 
 
 
 export async function register_sn_main_ood (user_name:string,device_name:string,device_did:string,mini_config_jwt:string,device_ip:string,device_info:string) : Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient(SN_API_URL);
-    let result: JsonValue = await rpc_client.call("register",{
+    let rpc_client = create_sn_rpc_client(SN_BNS_API_URL);
+    let result: JsonValue = await rpc_client.call("device.register",{
         user_name:user_name,
         device_name:device_name,
         device_did:device_did,
@@ -196,8 +219,8 @@ export async function register_sn_main_ood (user_name:string,device_name:string,
 }
 
 export async function check_sn_active_code(sn_active_code:string) : Promise<boolean> {
-    let rpc_client = new buckyos.kRPCClient(SN_API_URL);
-    let result: JsonValue = await rpc_client.call("check_active_code",{active_code:sn_active_code});
+    let rpc_client = create_sn_rpc_client(SN_AUTH_API_URL);
+    let result: JsonValue = await rpc_client.call("auth.check_active_code",{active_code:sn_active_code});
     let valid = result["valid"];
     return valid;
 }
@@ -207,8 +230,8 @@ export async function check_bucky_username(check_bucky_username:string) : Promis
     if (!validation.valid) {
         return false;
     }
-    let rpc_client = new buckyos.kRPCClient(SN_API_URL);
-    let result: JsonValue = await rpc_client.call("check_username",{username:check_bucky_username});
+    let rpc_client = create_sn_rpc_client(SN_AUTH_API_URL);
+    let result: JsonValue = await rpc_client.call("auth.check_username",{username:check_bucky_username});
     let valid = result["valid"];
     return valid;
 }

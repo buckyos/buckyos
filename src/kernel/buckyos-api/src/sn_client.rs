@@ -7,6 +7,36 @@ use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::result::Result;
 
+const SN_ROOT_PATH: &str = "/kapi/sn";
+const SN_BNS_PATH: &str = "/kapi/sn/bns";
+
+#[derive(Clone, Copy)]
+enum SnRpcTarget {
+    Root,
+    Bns,
+}
+
+fn normalize_sn_url(sn_url: &str, target: SnRpcTarget) -> String {
+    let path = match target {
+        SnRpcTarget::Root => SN_ROOT_PATH,
+        SnRpcTarget::Bns => SN_BNS_PATH,
+    };
+
+    let trimmed = sn_url.trim_end_matches('/');
+    for known_suffix in [SN_BNS_PATH, SN_ROOT_PATH] {
+        if let Some(base) = trimmed.strip_suffix(known_suffix) {
+            return format!("{}{}", base, path);
+        }
+    }
+
+    format!("{}{}", trimmed, path)
+}
+
+fn new_sn_krpc(sn_url: &str, session_token: Option<String>, target: SnRpcTarget) -> Box<kRPC> {
+    let endpoint = normalize_sn_url(sn_url, target);
+    Box::new(kRPC::new(endpoint.as_str(), session_token))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnBindZoneConfigReq {
     pub zone_config: String,
@@ -178,7 +208,7 @@ impl SnClient {
                         e
                     ))
                 })?;
-                client.call("bind_zone_config", req_json).await?;
+                client.call("zone.bind_config", req_json).await?;
                 Ok(())
             }
         }
@@ -208,7 +238,7 @@ impl SnClient {
                         e
                     ))
                 })?;
-                client.call("update", req_json).await?;
+                client.call("device.update", req_json).await?;
                 Ok(())
             }
         }
@@ -226,7 +256,7 @@ impl SnClient {
                 let req_json = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to serialize SnGetDeviceInfoReq: {}", e))
                 })?;
-                let result = client.call("get", req_json).await?;
+                let result = client.call("device.get", req_json).await?;
                 serde_json::from_value(result).map_err(|e| {
                     RPCErrors::ParserResponseError(format!(
                         "Failed to deserialize DeviceInfo response: {}",
@@ -274,7 +304,7 @@ impl SnClient {
                         e
                     ))
                 })?;
-                client.call("register", req_json).await?;
+                client.call("device.register", req_json).await?;
                 Ok(())
             }
         }
@@ -306,7 +336,7 @@ impl SnClient {
                         e
                     ))
                 })?;
-                client.call("set_user_did_document", req_json).await?;
+                client.call("did.set_document", req_json).await?;
                 Ok(())
             }
         }
@@ -373,7 +403,7 @@ impl<T: SnHandler> RPCHandler for SnServerHandler<T> {
         let trace_id = req.trace_id.clone();
 
         let result = match req.method.as_str() {
-            "bind_zone_config" => {
+            "bind_zone_config" | "zone.bind_config" => {
                 let bind_req = SnBindZoneConfigReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -385,7 +415,7 @@ impl<T: SnHandler> RPCHandler for SnServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            "update" => {
+            "update" | "device.update" => {
                 let update_req = SnUpdateDeviceInfoReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -397,7 +427,7 @@ impl<T: SnHandler> RPCHandler for SnServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            "get" => {
+            "get" | "device.get" => {
                 let get_req = SnGetDeviceInfoReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -405,7 +435,7 @@ impl<T: SnHandler> RPCHandler for SnServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            "register" => {
+            "register" | "device.register" => {
                 let register_req = SnRegisterDeviceReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -420,7 +450,7 @@ impl<T: SnHandler> RPCHandler for SnServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            "set_user_did_document" => {
+            "set_user_did_document" | "did.set_document" => {
                 let set_req = SnSetUserDidDocumentReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -451,7 +481,7 @@ pub async fn sn_bind_zone_config(
     zone_config_jwt: &str,
     user_domain: Option<String>,
 ) -> Result<(), RPCErrors> {
-    let client = SnClient::new_krpc(Box::new(kRPC::new(sn_url, session_token)));
+    let client = SnClient::new_krpc(new_sn_krpc(sn_url, session_token, SnRpcTarget::Bns));
 
     let real_username = username.to_lowercase();
     let req = SnBindZoneConfigReq::new(zone_config_jwt.to_string(), real_username, user_domain);
@@ -474,7 +504,7 @@ pub async fn sn_update_device_info(
     device_id: &str,
     device_info: &DeviceInfo,
 ) -> Result<(), RPCErrors> {
-    let client = SnClient::new_krpc(Box::new(kRPC::new(sn_url, session_token)));
+    let client = SnClient::new_krpc(new_sn_krpc(sn_url, session_token, SnRpcTarget::Bns));
 
     info!(
         "update device info to sn {} for {}_{}",
@@ -492,7 +522,7 @@ pub async fn sn_get_device_info(
     owner_id: &str,
     device_id: &str,
 ) -> Result<DeviceInfo, RPCErrors> {
-    let client = SnClient::new_krpc(Box::new(kRPC::new(sn_url, session_token)));
+    let client = SnClient::new_krpc(new_sn_krpc(sn_url, session_token, SnRpcTarget::Root));
 
     //TODO: result must be DeviceConfig@JWT?
     let device_info = client.get_device_info(owner_id, device_id).await?;
@@ -509,7 +539,7 @@ pub async fn sn_register_device(
     device_info: &str,
     mini_config_jwt: &str,
 ) -> Result<(), RPCErrors> {
-    let client = SnClient::new_krpc(Box::new(kRPC::new(sn_url, session_token)));
+    let client = SnClient::new_krpc(new_sn_krpc(sn_url, session_token, SnRpcTarget::Bns));
 
     client
         .register_device(
@@ -532,7 +562,7 @@ pub async fn sn_set_user_did_document(
     did_document: &Value,
     doc_type: Option<&str>,
 ) -> Result<(), RPCErrors> {
-    let client = SnClient::new_krpc(Box::new(kRPC::new(sn_url, session_token)));
+    let client = SnClient::new_krpc(new_sn_krpc(sn_url, session_token, SnRpcTarget::Root));
 
     client
         .set_user_did_document(owner_user, obj_name, did_document, doc_type)

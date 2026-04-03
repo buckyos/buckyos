@@ -15,7 +15,7 @@ fi
 
 PAYLOAD="$(jq -n \
   --arg pk "$PUBLIC_KEY_JWK" \
-  '{method:"get_by_pk", params:{public_key:$pk}, sys:[1]}')"
+  '{method:"device.get_by_pk", params:{public_key:$pk}, sys:[1]}')"
 
 echo "Request payload:"
 echo "$PAYLOAD"
@@ -28,4 +28,3 @@ curl --fail -sS https://sn.buckyos.ai/kapi/sn \
     echo "Failed to parse response as JSON; raw response shown above if any." >&2
     exit 1
   }
-
