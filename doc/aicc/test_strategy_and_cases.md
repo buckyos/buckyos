@@ -387,10 +387,65 @@ uv run ./test_llm.py
 
 可选环境变量：
 
-- `AICC_URL`：正式环境 URL（例如 `http://<ip>:4040/kapi/aicc`）
+- `AICC_HOST`：统一主机地址（必填），例如 `http://127.0.0.1:4040`
+  - 自动拼接固定 path：
+  - AICC RPC：`/kapi/aicc`
+  - system_config：`/kapi/system_config`
+  - verify_hub：`/kapi/verify_hub`
 - `AICC_MODEL_ALIAS`：用于 smoke 的默认模型别名
-- `AICC_RPC_TOKEN`：鉴权 token
 - `AICC_TIMEOUT_SECONDS`：超时时间
+- `AICC_LOGIN_USERNAME`：自动登录获取 token 的用户名
+- `AICC_LOGIN_PASSWORD`：自动登录获取 token 的密码
+- `AICC_LOGIN_APPID`：`login_by_password` 的 `appid` 参数，不设置时默认 `aicc-tests`
+- `AICC_RPC_TOKEN`：显式指定 RPC token（最高优先级）
+- `AICC_REMOTE_MOCK_OPENAI_HOST`：远程 mock OpenAI 主机地址（可选），自动拼 `/v1`
+- `AICC_REMOTE_MOCK_ADVERTISE_HOST`：自动启动本地 mock 时对远端设备宣告的可达主机地址（例如本机局域网 IP）
+- `AICC_REMOTE_MOCK_BIND_ADDR`：自动启动本地 mock 的监听地址（默认 `0.0.0.0:0`）
+
+mock 模型固定值（不可通过环境变量覆盖）：
+
+- `model`: `mock-chat`
+- `api_token`: `mock-token`
+- `provider_type`: `openai-mock`
+- `instance_id`: `openai-mock-remote`
+- `timeout_ms`: `5000`
+
+token 获取优先级：
+
+1. 若设置 `AICC_RPC_TOKEN`，直接使用该 token。
+2. 否则若同时设置 `AICC_LOGIN_USERNAME` 与 `AICC_LOGIN_PASSWORD`，在第一次远程请求前自动调用 `login_by_password` 获取 `session_token`，并在当前测试进程复用。
+3. 都未设置则无 token 请求（是否可用取决于目标环境鉴权策略）。
+
+示例 1：smoke（自动登录）
+
+```bash
+export AICC_HOST="http://10.10.10.23:4040"
+export AICC_LOGIN_USERNAME="alice"
+export AICC_LOGIN_PASSWORD="your-password"
+export AICC_LOGIN_APPID="aicc-tests"
+
+cargo test -p aicc --test smoke_formal_env_tests -- --nocapture
+```
+
+示例 2：kRPC direct + gateway（自动登录）
+
+```bash
+export AICC_HOST="http://10.10.10.23:4040"
+export AICC_LOGIN_USERNAME="alice"
+export AICC_LOGIN_PASSWORD="your-password"
+
+cargo test -p aicc --test krpc_direct_tests -- --nocapture
+cargo test -p aicc --test gateway_config_tests -- --nocapture
+```
+
+示例 3：固定 token（跳过登录）
+
+```bash
+export AICC_HOST="http://10.10.10.23:4040"
+export AICC_RPC_TOKEN="<your-token>"
+
+cargo test -p aicc --test smoke_formal_env_tests -- --nocapture
+```
 
 kRPC + gateway 链路建议（远程）：
 

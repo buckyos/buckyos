@@ -13,13 +13,14 @@ use buckyos_api::{
 };
 use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::oneshot;
+use tokio::sync::{OnceCell, oneshot};
 use tokio::net::TcpListener;
 
 pub fn base_request() -> CompleteRequest {
@@ -645,6 +646,7 @@ pub async fn spawn_rpc_http_server(handler: Arc<dyn RPCHandler + Send + Sync>) -
 
 pub struct RpcTestEndpoint {
     pub endpoint: String,
+    pub is_remote: bool,
     _local_server: Option<RpcHttpTestServer>,
 }
 
@@ -652,6 +654,7 @@ impl RpcTestEndpoint {
     pub fn from_remote(endpoint: String) -> Self {
         Self {
             endpoint,
+            is_remote: true,
             _local_server: None,
         }
     }
@@ -659,6 +662,7 @@ impl RpcTestEndpoint {
     pub fn from_local(server: RpcHttpTestServer) -> Self {
         Self {
             endpoint: server.endpoint.clone(),
+            is_remote: false,
             _local_server: Some(server),
         }
     }
@@ -667,11 +671,11 @@ impl RpcTestEndpoint {
 pub async fn resolve_rpc_test_endpoint(
     handler: Arc<dyn RPCHandler + Send + Sync>,
 ) -> RpcTestEndpoint {
-    if let Ok(endpoint) = std::env::var("AICC_RPC_TEST_ENDPOINT") {
-        let endpoint = endpoint.trim().to_string();
-        if !endpoint.is_empty() {
-            return RpcTestEndpoint::from_remote(endpoint);
-        }
+    if let Some(endpoint) = resolve_endpoint_from_env(&[], &["AICC_HOST"], "/kapi/aicc") {
+        ensure_remote_mock_provider_bootstrapped(&endpoint)
+            .await
+            .expect("bootstrap remote mock provider");
+        return RpcTestEndpoint::from_remote(endpoint);
     }
 
     let server = spawn_rpc_http_server(handler).await;
@@ -681,11 +685,11 @@ pub async fn resolve_rpc_test_endpoint(
 pub async fn resolve_rpc_gateway_test_endpoint(
     handler: Arc<dyn RPCHandler + Send + Sync>,
 ) -> RpcTestEndpoint {
-    if let Ok(endpoint) = std::env::var("AICC_GATEWAY_RPC_TEST_ENDPOINT") {
-        let endpoint = endpoint.trim().to_string();
-        if !endpoint.is_empty() {
-            return RpcTestEndpoint::from_remote(endpoint);
-        }
+    if let Some(endpoint) = resolve_endpoint_from_env(&[], &["AICC_HOST"], "/kapi/aicc") {
+        ensure_remote_mock_provider_bootstrapped(&endpoint)
+            .await
+            .expect("bootstrap remote mock provider");
+        return RpcTestEndpoint::from_remote(endpoint);
     }
     resolve_rpc_test_endpoint(handler).await
 }
@@ -718,4 +722,423 @@ pub async fn post_rpc_over_http(
         return Err(err.to_string());
     }
     serde_json::from_value(value).map_err(|e| format!("parse rpc response failed: {}", e))
+}
+
+static REMOTE_TEST_TOKEN: OnceCell<std::result::Result<Option<String>, String>> =
+    OnceCell::const_new();
+static REMOTE_MOCK_BOOTSTRAP: OnceCell<std::result::Result<(), String>> = OnceCell::const_new();
+static REMOTE_AUTO_OPENAI_MOCK_BASE_URL: OnceCell<std::result::Result<String, String>> =
+    OnceCell::const_new();
+
+fn first_non_empty_env(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn endpoint_from_host(host: &str, path: &str) -> Option<String> {
+    let mut parsed = reqwest::Url::parse(host.trim()).ok()?;
+    parsed.set_path(path);
+    parsed.set_query(None);
+    Some(parsed.to_string())
+}
+
+pub fn resolve_endpoint_from_env(
+    endpoint_keys: &[&str],
+    host_keys: &[&str],
+    path: &str,
+) -> Option<String> {
+    if let Some(endpoint) = first_non_empty_env(endpoint_keys) {
+        return Some(endpoint);
+    }
+    first_non_empty_env(host_keys).and_then(|host| endpoint_from_host(&host, path))
+}
+
+fn derive_verify_hub_endpoint(url: &str) -> Option<String> {
+    derive_verify_hub_endpoint_with_path(url, "/kapi/verify-hub")
+}
+
+fn derive_verify_hub_endpoint_with_path(url: &str, path: &str) -> Option<String> {
+    let mut parsed = reqwest::Url::parse(url).ok()?;
+    parsed.set_path(path);
+    parsed.set_query(None);
+    Some(parsed.to_string())
+}
+
+fn derive_system_config_endpoint(url: &str) -> Option<String> {
+    let mut parsed = reqwest::Url::parse(url).ok()?;
+    parsed.set_path("/kapi/system_config");
+    parsed.set_query(None);
+    Some(parsed.to_string())
+}
+
+fn parse_http_request_path(header_text: &str) -> Option<String> {
+    let request_line = header_text.lines().next()?;
+    let mut parts = request_line.split_whitespace();
+    let _method = parts.next()?;
+    let path = parts.next()?.trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_string())
+    }
+}
+
+fn build_http_json_response(status_code: u16, value: Value) -> String {
+    let body = value.to_string();
+    let reason = if status_code == 200 { "OK" } else { "ERR" };
+    format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status_code,
+        reason,
+        body.len(),
+        body
+    )
+}
+
+fn resolve_auto_mock_advertise_host(aicc_endpoint: &str) -> std::result::Result<String, String> {
+    if let Some(value) = first_non_empty_env(&["AICC_REMOTE_MOCK_ADVERTISE_HOST"]) {
+        return Ok(value);
+    }
+
+    let parsed =
+        reqwest::Url::parse(aicc_endpoint).map_err(|e| format!("invalid aicc endpoint: {}", e))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("aicc endpoint host is missing: {}", aicc_endpoint))?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let udp = std::net::UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| format!("bind udp for mock advertise ip failed: {}", e))?;
+    udp.connect((host, port))
+        .map_err(|e| format!("connect udp for mock advertise ip failed: {}", e))?;
+    let local_ip = udp
+        .local_addr()
+        .map_err(|e| format!("get local udp addr for mock advertise ip failed: {}", e))?
+        .ip();
+    Ok(local_ip.to_string())
+}
+
+async fn start_auto_openai_mock_server(aicc_endpoint: &str) -> std::result::Result<String, String> {
+    let bind_addr = first_non_empty_env(&["AICC_REMOTE_MOCK_BIND_ADDR"])
+        .unwrap_or_else(|| "0.0.0.0:0".to_string());
+    let listener = TcpListener::bind(bind_addr.as_str())
+        .await
+        .map_err(|e| format!("bind auto openai mock server failed: {}", e))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("get auto openai mock server addr failed: {}", e))?;
+
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => break,
+            };
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 16384];
+                let mut total = 0usize;
+                let mut header_end = None;
+                loop {
+                    if total >= buffer.len() {
+                        break;
+                    }
+                    let n = match socket.read(&mut buffer[total..]).await {
+                        Ok(n) => n,
+                        Err(_) => return,
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    total += n;
+                    if let Some(pos) = find_header_end(&buffer[..total]) {
+                        header_end = Some(pos);
+                        break;
+                    }
+                }
+
+                let Some(header_end) = header_end else {
+                    return;
+                };
+                let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                let path = parse_http_request_path(header_text.as_str()).unwrap_or_default();
+
+                let body = if path.ends_with("/responses") {
+                    json!({
+                        "id": "mock-response-1",
+                        "status": "completed",
+                        "output_text": "mock-ok",
+                        "usage": {
+                            "input_tokens": 1,
+                            "output_tokens": 1,
+                            "total_tokens": 2
+                        }
+                    })
+                } else if path.ends_with("/images/generations") {
+                    json!({
+                        "id": "mock-image-1",
+                        "data": [{
+                            "url": "https://example.invalid/mock-image.png",
+                            "revised_prompt": "mock image"
+                        }]
+                    })
+                } else {
+                    json!({
+                        "error": {
+                            "message": format!("mock openai unsupported path: {}", path),
+                            "code": "mock_unsupported_path"
+                        }
+                    })
+                };
+                let status = if path.ends_with("/responses") || path.ends_with("/images/generations")
+                {
+                    200
+                } else {
+                    404
+                };
+                let response = build_http_json_response(status, body);
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+
+    let advertise_host = resolve_auto_mock_advertise_host(aicc_endpoint)?;
+    Ok(format!("http://{}:{}/v1", advertise_host, addr.port()))
+}
+
+async fn resolve_mock_openai_base_url(aicc_endpoint: &str) -> std::result::Result<String, String> {
+    if let Some(value) =
+        resolve_endpoint_from_env(&[], &["AICC_REMOTE_MOCK_OPENAI_HOST"], "/v1")
+    {
+        return Ok(value);
+    }
+
+    let result = REMOTE_AUTO_OPENAI_MOCK_BASE_URL
+        .get_or_init(|| async { start_auto_openai_mock_server(aicc_endpoint).await })
+        .await;
+    result.clone()
+}
+
+async fn build_remote_mock_openai_settings(
+    aicc_endpoint: &str,
+) -> std::result::Result<Value, String> {
+    let base_url = resolve_mock_openai_base_url(aicc_endpoint).await?;
+    let api_token = "mock-token".to_string();
+    let model = "mock-chat".to_string();
+    let provider_type = "openai-mock".to_string();
+    let instance_id = "openai-mock-remote".to_string();
+    let timeout_ms = 5000_u64;
+
+    Ok(json!({
+        "openai": {
+            "enabled": true,
+            "api_token": api_token,
+            "instances": [{
+                "instance_id": instance_id,
+                "provider_type": provider_type,
+                "base_url": base_url,
+                "timeout_ms": timeout_ms,
+                "models": [model.clone()],
+                "default_model": model.clone(),
+                "features": ["plan"]
+            }],
+            "alias_map": {
+                "llm.default": model.clone(),
+                "llm.chat.default": model.clone(),
+                "llm.plan.default": model.clone(),
+                "llm.code.default": model
+            }
+        }
+    }))
+}
+
+async fn bootstrap_remote_mock_provider_once(aicc_endpoint: &str) -> std::result::Result<(), String> {
+    let settings = build_remote_mock_openai_settings(aicc_endpoint).await?;
+
+    let sys_endpoint = derive_system_config_endpoint(aicc_endpoint).ok_or_else(|| {
+        format!(
+            "cannot derive system_config endpoint from aicc endpoint {}",
+            aicc_endpoint
+        )
+    })?;
+
+    let token = resolve_remote_sys_config_token(Some(&sys_endpoint)).await?;
+    let seq = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    post_rpc_over_http(
+        &sys_endpoint,
+        &RPCRequest {
+            method: "sys_config_set".to_string(),
+            params: json!({
+                "key": "services/aicc/settings",
+                "value": settings.to_string()
+            }),
+            seq,
+            token: token.clone(),
+            trace_id: Some("aicc-tests-bootstrap-settings".to_string()),
+        },
+    )
+    .await
+    .map_err(|err| format!("bootstrap sys_config_set failed via {}: {}", sys_endpoint, err))?;
+
+    post_rpc_over_http(
+        aicc_endpoint,
+        &RPCRequest {
+            method: "service.reload_settings".to_string(),
+            params: json!({}),
+            seq: seq.saturating_add(1),
+            token,
+            trace_id: Some("aicc-tests-bootstrap-reload".to_string()),
+        },
+    )
+    .await
+    .map_err(|err| format!("bootstrap reload_settings failed via {}: {}", aicc_endpoint, err))?;
+
+    Ok(())
+}
+
+async fn ensure_remote_mock_provider_bootstrapped(
+    aicc_endpoint: &str,
+) -> std::result::Result<(), String> {
+    let result = REMOTE_MOCK_BOOTSTRAP
+        .get_or_init(|| async { bootstrap_remote_mock_provider_once(aicc_endpoint).await })
+        .await;
+    result.clone()
+}
+
+fn derive_login_password_hash(username: &str, password: &str, login_nonce: u64) -> String {
+    let stage1 = {
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{}{}.buckyos", password, username).as_bytes());
+        base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
+    };
+
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{}{}", stage1, login_nonce).as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
+}
+
+fn resolve_login_endpoint(endpoint_hint: Option<&str>) -> std::result::Result<String, String> {
+    if let Some(login_url) = resolve_endpoint_from_env(&["AICC_VERIFY_HUB_URL"], &[], "") {
+        return Ok(login_url);
+    }
+
+    if let Some(login_url) = resolve_endpoint_from_env(&[], &["AICC_HOST"], "/kapi/verify-hub") {
+        return Ok(login_url);
+    }
+
+    if let Some(login_url) = resolve_endpoint_from_env(&[], &["AICC_HOST"], "/kapi/verify_hub") {
+        return Ok(login_url);
+    }
+
+    if let Some(endpoint) = endpoint_hint.and_then(|value| derive_verify_hub_endpoint(value.trim())) {
+        return Ok(endpoint);
+    }
+
+    if let Some(endpoint) = endpoint_hint
+        .and_then(|value| derive_verify_hub_endpoint_with_path(value.trim(), "/kapi/verify_hub"))
+    {
+        return Ok(endpoint);
+    }
+
+    if let Some(endpoint_seed) = first_non_empty_env(&["AICC_HOST"]) {
+        if let Some(endpoint) = derive_verify_hub_endpoint(&endpoint_seed) {
+            return Ok(endpoint);
+        }
+        if let Some(endpoint) =
+            derive_verify_hub_endpoint_with_path(&endpoint_seed, "/kapi/verify_hub")
+        {
+            return Ok(endpoint);
+        }
+    }
+
+    Err("cannot resolve verify-hub login endpoint; set AICC_HOST".to_string())
+}
+
+async fn resolve_remote_sys_config_token(
+    endpoint_hint: Option<&str>,
+) -> std::result::Result<Option<String>, String> {
+    if let Some(token) = first_non_empty_env(&["AICC_SYS_CONFIG_RPC_TOKEN"]) {
+        return Ok(Some(token));
+    }
+    resolve_remote_test_token(endpoint_hint).await
+}
+
+async fn login_remote_token_once(
+    endpoint_hint: Option<&str>,
+) -> std::result::Result<Option<String>, String> {
+    if let Some(token) = first_non_empty_env(&["AICC_RPC_TOKEN"]) {
+        return Ok(Some(token));
+    }
+
+    let username = match first_non_empty_env(&["AICC_LOGIN_USERNAME"]) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let password = match first_non_empty_env(&["AICC_LOGIN_PASSWORD"]) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+
+    let appid = first_non_empty_env(&["AICC_LOGIN_APPID"]).unwrap_or_else(|| "aicc-tests".into());
+    let login_endpoint = resolve_login_endpoint(endpoint_hint)?;
+    let seq = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let login_nonce = seq;
+    let password_hash = derive_login_password_hash(&username, &password, login_nonce);
+
+    let login_resp = post_rpc_over_http(
+        &login_endpoint,
+        &RPCRequest {
+            method: "login_by_password".to_string(),
+            params: json!({
+                "type": "password",
+                "username": username,
+                "password": password_hash,
+                "appid": appid,
+                "login_nonce": login_nonce,
+            }),
+            seq,
+            token: None,
+            trace_id: Some("aicc-tests-login".to_string()),
+        },
+    )
+    .await
+    .map_err(|err| format!("login_by_password failed via {}: {}", login_endpoint, err))?;
+
+    let payload = match login_resp.result {
+        kRPC::RPCResult::Success(value) => value,
+        other => {
+            return Err(format!(
+                "login_by_password failed, unexpected rpc result: {:?}",
+                other
+            ))
+        }
+    };
+
+    let token = payload
+        .get("session_token")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| format!("login_by_password response missing session_token: {}", payload))?;
+
+    Ok(Some(token.to_string()))
+}
+
+pub async fn resolve_remote_test_token(
+    endpoint_hint: Option<&str>,
+) -> std::result::Result<Option<String>, String> {
+    let result = REMOTE_TEST_TOKEN
+        .get_or_init(|| async { login_remote_token_once(endpoint_hint).await })
+        .await;
+    result.clone()
 }

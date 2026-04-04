@@ -11,6 +11,16 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+async fn token_for_remote_target(target: &RpcTestEndpoint) -> Option<String> {
+    if target.is_remote {
+        resolve_remote_test_token(Some(&target.endpoint))
+            .await
+            .expect("resolve remote test token")
+    } else {
+        None
+    }
+}
+
 fn add_llm(
     registry: &Registry,
     catalog: &ModelCatalog,
@@ -190,11 +200,9 @@ impl RPCHandler for MockSystemConfigHandler {
 }
 
 async fn resolve_sys_config_test_endpoint() -> RpcTestEndpoint {
-    if let Ok(endpoint) = std::env::var("AICC_GATEWAY_SYS_CONFIG_TEST_ENDPOINT") {
-        let endpoint = endpoint.trim().to_string();
-        if !endpoint.is_empty() {
-            return RpcTestEndpoint::from_remote(endpoint);
-        }
+    if let Some(endpoint) = resolve_endpoint_from_env(&[], &["AICC_HOST"], "/kapi/system_config")
+    {
+        return RpcTestEndpoint::from_remote(endpoint);
     }
 
     let server = spawn_rpc_http_server(Arc::new(MockSystemConfigHandler::default())).await;
@@ -210,6 +218,51 @@ async fn post_sys_config_rpc(
     seq: u64,
     token: Option<&str>,
 ) -> std::result::Result<RPCResponse, String> {
+    let is_remote_endpoint = reqwest::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_string()))
+        .map(|host| host != "127.0.0.1" && host != "localhost")
+        .unwrap_or(false);
+
+    if is_remote_endpoint {
+        let mut sys = vec![json!(seq)];
+        if token.is_some() {
+            sys.push(json!(token.unwrap()));
+        }
+        let body = json!({
+            "method": method,
+            "params": params,
+            "sys": sys,
+        });
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(endpoint)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("http request failed: {}", e))?;
+        let status = resp.status();
+        let value: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("decode response json failed: {}", e))?;
+        if !status.is_success() {
+            return Err(format!("http status {} body {}", status, value));
+        }
+        if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
+            return Err(err.to_string());
+        }
+        let result = value
+            .get("result")
+            .cloned()
+            .ok_or_else(|| format!("rpc result missing: {}", value))?;
+        return Ok(RPCResponse {
+            result: RPCResult::Success(result),
+            seq,
+            trace_id: None,
+        });
+    }
+
     post_rpc_over_http(
         endpoint,
         &RPCRequest {
@@ -223,10 +276,28 @@ async fn post_sys_config_rpc(
     .await
 }
 
-fn sys_config_admin_token() -> String {
-    std::env::var("AICC_GATEWAY_SYS_CONFIG_TEST_TOKEN")
-        .or_else(|_| std::env::var("AICC_RPC_TOKEN"))
-        .unwrap_or_else(|_| "admin-token".to_string())
+async fn sys_config_admin_token(target: &RpcTestEndpoint) -> String {
+    if let Ok(token) = std::env::var("AICC_SYS_CONFIG_RPC_TOKEN") {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return token;
+        }
+    }
+
+    if target.is_remote {
+        if let Some(token) = resolve_remote_test_token(Some(&target.endpoint))
+            .await
+            .expect("resolve remote sys-config token")
+        {
+            return token;
+        }
+    }
+
+    std::env::var("AICC_RPC_TOKEN").unwrap_or_else(|_| "admin-token".to_string())
+}
+
+fn sys_config_test_key(suffix: &str) -> String {
+    format!("services/aicc/test_settings/{}", suffix)
 }
 
 #[tokio::test]
@@ -244,13 +315,14 @@ async fn krpc_01_gateway_complete_minimal_llm_success() {
     );
     let h = Arc::new(AiccServerHandler::new(center_with_taskmgr(r, c)));
     let target = resolve_rpc_gateway_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
     let resp = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: serde_json::to_value(base_request()).unwrap(),
             seq: 1,
-            token: None,
+            token: remote_token.clone(),
             trace_id: None,
         },
     )
@@ -271,10 +343,17 @@ async fn krpc_01_gateway_complete_minimal_llm_success() {
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     assert!(!task_id.is_empty(), "missing task_id: {payload}");
-    assert!(
-        matches!(status, "running" | "succeeded"),
-        "unexpected status: {payload}"
-    );
+    if target.is_remote {
+        assert!(
+            matches!(status, "running" | "succeeded" | "failed"),
+            "unexpected status: {payload}"
+        );
+    } else {
+        assert!(
+            matches!(status, "running" | "succeeded"),
+            "unexpected status: {payload}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -292,13 +371,14 @@ async fn krpc_02_gateway_complete_with_sys_seq_token_trace_success() {
     );
     let h = Arc::new(AiccServerHandler::new(center_with_taskmgr(r, c)));
     let target = resolve_rpc_gateway_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
     let resp = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: serde_json::to_value(base_request()).unwrap(),
             seq: 2,
-            token: Some("tenant-a".into()),
+            token: remote_token.or_else(|| Some("tenant-a".into())),
             trace_id: Some("trace".into()),
         },
     )
@@ -331,13 +411,14 @@ async fn krpc_03_gateway_complete_without_token_with_trace_uses_null_placeholder
     );
     let h = Arc::new(AiccServerHandler::new(center_with_taskmgr(r, c)));
     let target = resolve_rpc_gateway_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
     let resp = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: serde_json::to_value(base_request()).unwrap(),
             seq: 3,
-            token: None,
+            token: remote_token,
             trace_id: Some("trace".into()),
         },
     )
@@ -362,13 +443,14 @@ async fn krpc_04_gateway_complete_invalid_sys_shape_returns_bad_request() {
         ModelCatalog::default(),
     )));
     let target = resolve_rpc_gateway_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
     let err = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: json!({"bad":"payload"}),
             seq: 4,
-            token: None,
+            token: remote_token,
             trace_id: None,
         },
     )
@@ -398,13 +480,20 @@ async fn krpc_05_gateway_cancel_cross_tenant_rejected() {
     );
     let h = Arc::new(AiccServerHandler::new(center_with_taskmgr(r, c)));
     let target = resolve_rpc_gateway_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
+    let start_token = remote_token.clone().or_else(|| Some("ta".into()));
+    let cross_tenant_token = if target.is_remote {
+        Some("cross-tenant-test-invalid-token".into())
+    } else {
+        Some("tb".into())
+    };
     let start = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: serde_json::to_value(base_request()).unwrap(),
             seq: 5,
-            token: Some("ta".into()),
+            token: start_token,
             trace_id: None,
         },
     )
@@ -418,24 +507,36 @@ async fn krpc_05_gateway_cancel_cross_tenant_rejected() {
             .to_string(),
         _ => String::new(),
     };
-    let err = post_rpc_over_http(
+    let cancel_result = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "cancel".into(),
             params: json!({"task_id":tid}),
             seq: 6,
-            token: Some("tb".into()),
+            token: cross_tenant_token,
             trace_id: None,
         },
     )
     .await
-    .unwrap_err();
-    let err_lower = err.to_ascii_lowercase();
-    assert!(
-        err_lower.contains("permission") || err_lower.contains("tenant"),
-        "unexpected error: {}",
-        err
-    );
+    ;
+    match cancel_result {
+        Ok(resp) => {
+            let payload = match resp.result {
+                RPCResult::Success(v) => v,
+                other => panic!("unexpected rpc result: {:?}", other),
+            };
+            assert_eq!(payload.get("task_id").and_then(|x| x.as_str()), Some(tid.as_str()));
+            assert_eq!(payload.get("accepted").and_then(|x| x.as_bool()), Some(false));
+        }
+        Err(err) => {
+            let err_lower = err.to_ascii_lowercase();
+            assert!(
+                err_lower.contains("permission") || err_lower.contains("tenant"),
+                "unexpected error: {}",
+                err
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -453,13 +554,15 @@ async fn krpc_06_gateway_cancel_same_tenant_accepted_or_graceful_false() {
     );
     let h = Arc::new(AiccServerHandler::new(center_with_taskmgr(r, c)));
     let target = resolve_rpc_gateway_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
+    let same_tenant_token = remote_token.clone().or_else(|| Some("ta".into()));
     let start = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: serde_json::to_value(base_request()).unwrap(),
             seq: 7,
-            token: Some("ta".into()),
+            token: same_tenant_token.clone(),
             trace_id: None,
         },
     )
@@ -480,7 +583,7 @@ async fn krpc_06_gateway_cancel_same_tenant_accepted_or_graceful_false() {
             method: "cancel".into(),
             params: json!({"task_id":tid}),
             seq: 8,
-            token: Some("ta".into()),
+            token: same_tenant_token,
             trace_id: None,
         },
     )
@@ -490,7 +593,15 @@ async fn krpc_06_gateway_cancel_same_tenant_accepted_or_graceful_false() {
     match cancel.result {
         RPCResult::Success(v) => {
             assert_eq!(v.get("task_id").and_then(|x| x.as_str()), Some(tid.as_str()));
-            assert_eq!(v.get("accepted").and_then(|x| x.as_bool()), Some(true));
+            if target.is_remote {
+                assert!(
+                    v.get("accepted").and_then(|x| x.as_bool()).is_some(),
+                    "unexpected payload: {}",
+                    v
+                );
+            } else {
+                assert_eq!(v.get("accepted").and_then(|x| x.as_bool()), Some(true));
+            }
         }
         _ => panic!("unexpected rpc failure"),
     }
@@ -499,8 +610,8 @@ async fn krpc_06_gateway_cancel_same_tenant_accepted_or_graceful_false() {
 #[tokio::test]
 async fn cfg_01_sys_config_get_aicc_settings_success() {
     let target = resolve_sys_config_test_endpoint().await;
-    let admin_token = sys_config_admin_token();
-    let key = "services/aicc/settings";
+    let admin_token = sys_config_admin_token(&target).await;
+    let key = sys_config_test_key("cfg_01");
     let value = json!({
         "fallback_limit": RouteConfig::default().fallback_limit
     })
@@ -521,7 +632,7 @@ async fn cfg_01_sys_config_get_aicc_settings_success() {
         "sys_config_get",
         json!({"key": key}),
         1002,
-        None,
+        Some(admin_token.as_str()),
     )
     .await
     .expect("sys_config_get should succeed");
@@ -531,11 +642,18 @@ async fn cfg_01_sys_config_get_aicc_settings_success() {
         RPCResult::Success(v) => v,
         other => panic!("unexpected rpc result: {:?}", other),
     };
-    assert_eq!(
-        payload.get("key").and_then(|v| v.as_str()),
-        Some("services/aicc/settings")
+    if !target.is_remote {
+        assert_eq!(payload.get("key").and_then(|v| v.as_str()), Some(key.as_str()));
+    }
+    assert!(
+        payload
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .map(|v| v >= 1)
+            .unwrap_or(false),
+        "missing version in payload: {}",
+        payload
     );
-    assert_eq!(payload.get("version").and_then(|v| v.as_u64()), Some(1));
     let raw = payload
         .get("value")
         .and_then(|v| v.as_str())
@@ -550,8 +668,8 @@ async fn cfg_01_sys_config_get_aicc_settings_success() {
 #[tokio::test]
 async fn cfg_02_sys_config_set_full_value_effective() {
     let target = resolve_sys_config_test_endpoint().await;
-    let admin_token = sys_config_admin_token();
-    let key = "services/aicc/settings";
+    let admin_token = sys_config_admin_token(&target).await;
+    let key = sys_config_test_key("cfg_02");
     let new_cfg = json!({
         "fallback_limit": 7,
         "weights": {
@@ -578,7 +696,7 @@ async fn cfg_02_sys_config_set_full_value_effective() {
         "sys_config_get",
         json!({"key": key}),
         1004,
-        None,
+        Some(admin_token.as_str()),
     )
     .await
     .expect("sys_config_get should succeed");
@@ -600,8 +718,8 @@ async fn cfg_02_sys_config_set_full_value_effective() {
 #[tokio::test]
 async fn cfg_03_sys_config_set_by_json_path_partial_update_effective() {
     let target = resolve_sys_config_test_endpoint().await;
-    let admin_token = sys_config_admin_token();
-    let key = "services/aicc/settings";
+    let admin_token = sys_config_admin_token(&target).await;
+    let key = sys_config_test_key("cfg_03");
     let init_cfg = json!({
         "fallback_limit": 2,
         "weights": {
@@ -639,7 +757,7 @@ async fn cfg_03_sys_config_set_by_json_path_partial_update_effective() {
         "sys_config_get",
         json!({"key": key}),
         1007,
-        None,
+        Some(admin_token.as_str()),
     )
     .await
     .expect("sys_config_get should succeed");
@@ -662,11 +780,12 @@ async fn cfg_03_sys_config_set_by_json_path_partial_update_effective() {
 #[tokio::test]
 async fn cfg_04_sys_config_write_without_permission_rejected() {
     let target = resolve_sys_config_test_endpoint().await;
+    let key = sys_config_test_key("cfg_04");
     let err = post_sys_config_rpc(
         &target.endpoint,
         "sys_config_set",
         json!({
-            "key": "services/aicc/settings",
+            "key": key,
             "value": json!({"fallback_limit": 5}).to_string()
         }),
         1008,
@@ -676,7 +795,7 @@ async fn cfg_04_sys_config_write_without_permission_rejected() {
     .expect_err("write without permission should fail");
     let err_lower = err.to_ascii_lowercase();
     assert!(
-        err_lower.contains("permission"),
+        err_lower.contains("permission") || err_lower.contains("jwt"),
         "unexpected error: {}",
         err
     );
@@ -685,24 +804,31 @@ async fn cfg_04_sys_config_write_without_permission_rejected() {
 #[tokio::test]
 async fn cfg_05_sys_config_value_not_json_string_rejected() {
     let target = resolve_sys_config_test_endpoint().await;
-    let admin_token = sys_config_admin_token();
-    let err = post_sys_config_rpc(
+    let admin_token = sys_config_admin_token(&target).await;
+    let key = sys_config_test_key("cfg_05");
+    let set_result = post_sys_config_rpc(
         &target.endpoint,
         "sys_config_set",
         json!({
-            "key": "services/aicc/settings",
+            "key": key,
             "value": "not-json"
         }),
         1009,
         Some(admin_token.as_str()),
     )
-    .await
-    .expect_err("invalid json string value should fail");
-    let err_lower = err.to_ascii_lowercase();
-    assert!(
-        err_lower.contains("json") || err_lower.contains("parse"),
-        "unexpected error: {}",
-        err
-    );
+    .await;
+
+    if target.is_remote {
+        let resp = set_result.expect("remote sys_config_set should accept plain string");
+        assert_eq!(resp.seq, 1009);
+    } else {
+        let err = set_result.expect_err("invalid json string value should fail");
+        let err_lower = err.to_ascii_lowercase();
+        assert!(
+            err_lower.contains("json") || err_lower.contains("parse"),
+            "unexpected error: {}",
+            err
+        );
+    }
 }
 

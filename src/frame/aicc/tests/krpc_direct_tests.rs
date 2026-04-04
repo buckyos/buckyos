@@ -7,6 +7,16 @@ use kRPC::{RPCRequest, RPCResult};
 use serde_json::json;
 use std::sync::Arc;
 
+async fn token_for_remote_target(target: &RpcTestEndpoint) -> Option<String> {
+    if target.is_remote {
+        resolve_remote_test_token(Some(&target.endpoint))
+            .await
+            .expect("resolve remote test token")
+    } else {
+        None
+    }
+}
+
 fn add_llm(
     registry: &Registry,
     catalog: &ModelCatalog,
@@ -44,13 +54,14 @@ async fn krpc_direct_01_complete_minimal_llm_success() {
     );
     let h = Arc::new(AiccServerHandler::new(center_with_taskmgr(r, c)));
     let target = resolve_rpc_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
     let resp = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: serde_json::to_value(base_request()).unwrap(),
             seq: 201,
-            token: None,
+            token: remote_token.clone(),
             trace_id: None,
         },
     )
@@ -91,13 +102,14 @@ async fn krpc_direct_02_complete_with_sys_seq_token_trace_success() {
     );
     let h = Arc::new(AiccServerHandler::new(center_with_taskmgr(r, c)));
     let target = resolve_rpc_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
     let resp = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: serde_json::to_value(base_request()).unwrap(),
             seq: 202,
-            token: Some("tenant-a".into()),
+            token: remote_token.or_else(|| Some("tenant-a".into())),
             trace_id: Some("trace-a".into()),
         },
     )
@@ -114,13 +126,14 @@ async fn krpc_direct_03_complete_invalid_sys_shape_returns_bad_request() {
         ModelCatalog::default(),
     )));
     let target = resolve_rpc_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
     let err = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: json!({"bad":"payload"}),
             seq: 203,
-            token: None,
+            token: remote_token,
             trace_id: None,
         },
     )
@@ -150,13 +163,20 @@ async fn krpc_direct_04_cancel_cross_tenant_rejected() {
     );
     let h = Arc::new(AiccServerHandler::new(center_with_taskmgr(r, c)));
     let target = resolve_rpc_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
+    let start_token = remote_token.clone().or_else(|| Some("ta".into()));
+    let cross_tenant_token = if target.is_remote {
+        Some("cross-tenant-test-invalid-token".into())
+    } else {
+        Some("tb".into())
+    };
     let start = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: serde_json::to_value(base_request()).unwrap(),
             seq: 204,
-            token: Some("ta".into()),
+            token: start_token,
             trace_id: None,
         },
     )
@@ -176,7 +196,7 @@ async fn krpc_direct_04_cancel_cross_tenant_rejected() {
             method: "cancel".into(),
             params: json!({"task_id":tid}),
             seq: 205,
-            token: Some("tb".into()),
+            token: cross_tenant_token,
             trace_id: None,
         },
     )
@@ -205,13 +225,15 @@ async fn krpc_direct_05_cancel_same_tenant_accepted_or_graceful_false() {
     );
     let h = Arc::new(AiccServerHandler::new(center_with_taskmgr(r, c)));
     let target = resolve_rpc_test_endpoint(h).await;
+    let remote_token = token_for_remote_target(&target).await;
+    let same_tenant_token = remote_token.clone().or_else(|| Some("ta".into()));
     let start = post_rpc_over_http(
         &target.endpoint,
         &RPCRequest {
             method: "complete".into(),
             params: serde_json::to_value(base_request()).unwrap(),
             seq: 206,
-            token: Some("ta".into()),
+            token: same_tenant_token.clone(),
             trace_id: None,
         },
     )
@@ -232,7 +254,7 @@ async fn krpc_direct_05_cancel_same_tenant_accepted_or_graceful_false() {
             method: "cancel".into(),
             params: json!({"task_id":tid}),
             seq: 207,
-            token: Some("ta".into()),
+            token: same_tenant_token,
             trace_id: None,
         },
     )

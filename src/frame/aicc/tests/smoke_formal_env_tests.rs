@@ -45,9 +45,9 @@ enum SmokeClient {
 }
 
 impl SmokeClient {
-    fn from_env_or_local() -> Self {
-        match env::var("AICC_URL") {
-            Ok(url) if !url.trim().is_empty() => {
+    async fn from_env_or_local() -> Self {
+        match resolve_endpoint_from_env(&[], &["AICC_HOST"], "/kapi/aicc") {
+            Some(url) => {
                 let timeout = env::var("AICC_TIMEOUT_SECONDS")
                     .ok()
                     .and_then(|v| v.parse::<u64>().ok())
@@ -56,13 +56,16 @@ impl SmokeClient {
                     .timeout(Duration::from_secs(timeout))
                     .build()
                     .expect("build reqwest client");
+                let token = resolve_remote_test_token(Some(&url))
+                    .await
+                    .expect("resolve remote test token");
                 Self::Remote {
                     client,
                     url,
-                    token: env::var("AICC_RPC_TOKEN").ok(),
+                    token,
                 }
             }
-            _ => {
+            None => {
                 let registry = Registry::default();
                 let catalog = ModelCatalog::default();
                 add_llm(
@@ -218,7 +221,7 @@ fn complete_params_with_alias(alias: &str, prompt: &str, options: Value) -> Valu
 
 #[tokio::test]
 async fn smoke_01_complete_basic_succeeds_on_assigned_url() {
-    let client = SmokeClient::from_env_or_local();
+    let client = SmokeClient::from_env_or_local().await;
     let result = client
         .call_rpc(
             "complete",
@@ -244,7 +247,7 @@ async fn smoke_01_complete_basic_succeeds_on_assigned_url() {
 
 #[tokio::test]
 async fn smoke_02_json_output_path_succeeds_on_assigned_url() {
-    let client = SmokeClient::from_env_or_local();
+    let client = SmokeClient::from_env_or_local().await;
     let must_features = if client.is_remote() {
         vec!["json_output"]
     } else {
@@ -285,7 +288,7 @@ async fn smoke_02_json_output_path_succeeds_on_assigned_url() {
 
 #[tokio::test]
 async fn smoke_03_cancel_endpoint_reachable_on_assigned_url() {
-    let client = SmokeClient::from_env_or_local();
+    let client = SmokeClient::from_env_or_local().await;
     let cancel_result = client
         .call_rpc(
             "cancel",
@@ -309,7 +312,7 @@ async fn smoke_03_cancel_endpoint_reachable_on_assigned_url() {
 
 #[tokio::test]
 async fn smoke_04_stream_poll_basic_path_on_assigned_url() {
-    let client = SmokeClient::from_env_or_local();
+    let client = SmokeClient::from_env_or_local().await;
     let result = client
         .call_rpc(
             "complete",
@@ -340,7 +343,7 @@ async fn smoke_04_stream_poll_basic_path_on_assigned_url() {
 
 #[tokio::test]
 async fn smoke_05_monitor_alarm_trigger_and_recovery() {
-    let client = SmokeClient::from_env_or_local();
+    let client = SmokeClient::from_env_or_local().await;
 
     // Trigger phase: force a routing/config failure with an unknown alias.
     let trigger = client
@@ -403,7 +406,7 @@ async fn smoke_05_monitor_alarm_trigger_and_recovery() {
 
 #[tokio::test]
 async fn smoke_06_bug_context_capture_template_complete() {
-    let client = SmokeClient::from_env_or_local();
+    let client = SmokeClient::from_env_or_local().await;
     let trace_id = "smoke-06-trace";
     let req_params = complete_params_with_alias(
         "smoke.invalid.alias",
