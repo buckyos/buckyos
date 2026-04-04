@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import hashlib
 import os
 from pathlib import Path
 import platform
@@ -10,7 +11,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import tarfile
 from typing import Callable, Sequence
+from urllib.request import urlopen
 
 if os.name != "nt":
     import grp
@@ -37,13 +41,8 @@ LINUX_PYTHON_CHOICES = {
     "zypper": [["python312", "python312-pip"], ["python311", "python311-pip"], ["python3", "python3-pip"]],
 }
 
-LINUX_NODE_CHOICES = {
-    "apt-get": [["nodejs", "npm"]],
-    "dnf": [["nodejs", "npm"], ["nodejs"]],
-    "yum": [["nodejs", "npm"], ["nodejs"]],
-    "pacman": [["nodejs", "npm"]],
-    "zypper": [["nodejs22", "npm-default"], ["nodejs20", "npm-default"], ["nodejs", "npm-default"], ["nodejs", "npm"]],
-}
+NODEJS_LINUX_LTS_MAJOR = 24
+NODEJS_DIST_BASE_URL = "https://nodejs.org/dist"
 
 LINUX_RUSTUP_CHOICES = {
     "apt-get": [["rustup"]],
@@ -185,6 +184,9 @@ class Bootstrapper:
         if os.name == "nt":
             return subprocess.list2cmdline(list(command))
         return shlex.join(list(command))
+
+    def print_command(self, command: Sequence[str]) -> None:
+        print(f"> {self.format_command(command)}")
 
     def require_privilege(self, command: Sequence[str]) -> list[str]:
         if self.package_manager in {"apt-get", "dnf", "yum", "pacman", "zypper"}:
@@ -409,6 +411,15 @@ class Bootstrapper:
         ]
         return self.find_binary("deno", candidates)
 
+    def find_corepack(self) -> str | None:
+        candidates = [
+            Path("/usr/bin/corepack"),
+            Path("/usr/local/bin/corepack"),
+            Path("/opt/homebrew/bin/corepack"),
+            Path("/home/linuxbrew/.linuxbrew/bin/corepack"),
+        ]
+        return self.find_binary("corepack", candidates)
+
     def find_binary(self, binary_name: str, candidates: Sequence[Path]) -> str | None:
         if path := shutil.which(binary_name):
             return path
@@ -473,11 +484,150 @@ class Bootstrapper:
         if self.system == "Linux":
             self.install_first_resolved_set("tmux", LINUX_TMUX_CHOICES[self.package_manager])
 
+    def installed_node_version(self) -> str | None:
+        node_path = shutil.which("node")
+        if not node_path:
+            return None
+        version = self.capture_text([node_path, "--version"])
+        return version or None
+
+    def resolve_linux_node_arch(self) -> str:
+        machine = platform.machine().lower()
+        mapping = {
+            "x86_64": "x64",
+            "amd64": "x64",
+            "aarch64": "arm64",
+            "arm64": "arm64",
+            "armv7l": "armv7l",
+        }
+        arch = mapping.get(machine)
+        if not arch:
+            raise BootstrapError(f"Unsupported Linux architecture for Node.js binary install: {machine}")
+        return arch
+
+    def fetch_text(self, url: str) -> str:
+        with urlopen(url) as response:
+            return response.read().decode("utf-8")
+
+    def download_file(self, url: str, target: Path) -> None:
+        with urlopen(url) as response, target.open("wb") as output:
+            shutil.copyfileobj(response, output)
+
+    def ensure_linux_node(self) -> None:
+        installed_version = self.installed_node_version()
+        if installed_version is not None:
+            self.notes.append(f"Using existing Node.js installation: {installed_version}")
+            return
+
+        target_major = NODEJS_LINUX_LTS_MAJOR
+        arch = self.resolve_linux_node_arch()
+        base_url = f"{NODEJS_DIST_BASE_URL}/latest-v{target_major}.x"
+        shasums_url = f"{base_url}/SHASUMS256.txt"
+
+        if self.args.dry_run:
+            self.print_command(["curl", "-fsSL", shasums_url])
+            self.print_command(["curl", "-fsSLO", f"{base_url}/node-<version>-linux-{arch}.tar.xz"])
+            self.print_command(["sudo", "tar", "-xJf", "node-<version>-linux-<arch>.tar.xz", "-C", "/usr/local/lib/nodejs"])
+            self.print_command(["sudo", "ln", "-sfn", "/usr/local/lib/nodejs/node-<version>-linux-<arch>/bin/node", "/usr/local/bin/node"])
+            self.print_command(["sudo", "ln", "-sfn", "/usr/local/lib/nodejs/node-<version>-linux-<arch>/bin/npm", "/usr/local/bin/npm"])
+            self.print_command(["sudo", "ln", "-sfn", "/usr/local/lib/nodejs/node-<version>-linux-<arch>/bin/npx", "/usr/local/bin/npx"])
+            self.print_command(["sudo", "ln", "-sfn", "/usr/local/lib/nodejs/node-<version>-linux-<arch>/bin/corepack", "/usr/local/bin/corepack"])
+            self.print_command(["sudo", "corepack", "enable", "pnpm"])
+            return
+
+        try:
+            shasums_text = self.fetch_text(shasums_url)
+        except Exception as error:
+            raise BootstrapError(f"Failed to query Node.js release metadata from {shasums_url}: {error}") from error
+
+        archive_name = None
+        expected_sha256 = None
+        archive_suffix = f"linux-{arch}.tar.xz"
+        for line in shasums_text.splitlines():
+            parts = line.strip().split()
+            if len(parts) != 2:
+                continue
+            sha256, filename = parts
+            if filename.endswith(archive_suffix):
+                archive_name = filename
+                expected_sha256 = sha256
+                break
+
+        if not archive_name or not expected_sha256:
+            raise BootstrapError(f"Could not find a Linux Node.js archive for architecture {arch} at {shasums_url}")
+
+        with tempfile.TemporaryDirectory(prefix="buckyos-node-") as temp_dir:
+            temp_path = Path(temp_dir)
+            archive_path = temp_path / archive_name
+            extract_root = temp_path / "extract"
+            extract_root.mkdir(parents=True, exist_ok=True)
+
+            archive_url = f"{base_url}/{archive_name}"
+            try:
+                self.download_file(archive_url, archive_path)
+            except Exception as error:
+                raise BootstrapError(f"Failed to download Node.js archive from {archive_url}: {error}") from error
+
+            file_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            if file_sha256 != expected_sha256:
+                raise BootstrapError(
+                    f"Downloaded Node.js archive checksum mismatch for {archive_name}: expected {expected_sha256}, got {file_sha256}"
+                )
+
+            try:
+                with tarfile.open(archive_path, "r:xz") as archive:
+                    archive.extractall(extract_root)
+            except Exception as error:
+                raise BootstrapError(f"Failed to extract Node.js archive {archive_name}: {error}") from error
+
+            extracted_dirs = [path for path in extract_root.iterdir() if path.is_dir()]
+            if len(extracted_dirs) != 1:
+                raise BootstrapError(f"Unexpected Node.js archive layout in {archive_name}")
+
+            extracted_dir = extracted_dirs[0]
+            install_root = Path("/usr/local/lib/nodejs")
+            install_dir = install_root / extracted_dir.name
+
+            self.run(self.require_unix_privilege(["mkdir", "-p", str(install_root)]))
+            if not install_dir.exists():
+                self.run(self.require_unix_privilege(["mv", str(extracted_dir), str(install_dir)]))
+
+            for binary in ("node", "npm", "npx", "corepack"):
+                self.run(
+                    self.require_unix_privilege(
+                        ["ln", "-sfn", str(install_dir / "bin" / binary), f"/usr/local/bin/{binary}"]
+                    )
+                )
+
+            self.notes.append(f"Installed Node.js from official binaries at {install_dir}")
+
+    def try_enable_pnpm_via_corepack(self) -> bool:
+        corepack = self.find_corepack()
+        if not corepack:
+            return False
+
+        command = [corepack, "enable", "pnpm"]
+        if self.system == "Linux":
+            command = self.require_unix_privilege(command)
+
+        result = self.run(command, check=False, capture_output=True)
+        if result.returncode == 0:
+            if not shutil.which("pnpm"):
+                self.notes.append("pnpm was enabled via corepack; reopen the terminal if it is not yet in PATH")
+            return True
+
+        detail = ((result.stderr or "").strip() or (result.stdout or "").strip())
+        if detail:
+            self.warnings.append(f"Failed to enable pnpm via corepack: {detail}")
+        else:
+            self.warnings.append("Failed to enable pnpm via corepack")
+        return False
+
     def install_linux_environment(self) -> None:
         self.update_package_index()
         self.install_packages(LINUX_CORE_PACKAGES[self.package_manager])
         self.install_first_resolved_set("Python 3", LINUX_PYTHON_CHOICES[self.package_manager])
-        self.install_first_resolved_set("Node.js", LINUX_NODE_CHOICES[self.package_manager])
+        self.ensure_linux_node()
         self.install_first_resolved_set("rustup", LINUX_RUSTUP_CHOICES[self.package_manager])
         self.ensure_uv()
         self.ensure_deno()
@@ -487,15 +637,20 @@ class Bootstrapper:
             self.install_first_resolved_set("Docker", LINUX_DOCKER_CHOICES[self.package_manager], optional=True)
 
         if not shutil.which("pnpm"):
-            package_set = self.install_first_resolved_set(
-                "pnpm",
-                LINUX_PNPM_CHOICES[self.package_manager],
-                optional=True,
-            )
-            if package_set is None and shutil.which("npm"):
-                self.run(self.require_privilege(["npm", "install", "-g", "pnpm"]))
-            elif package_set is None:
-                self.warnings.append("Node.js is installed but pnpm was not found; please install manually")
+            if self.try_enable_pnpm_via_corepack():
+                pass
+            else:
+                package_set = self.install_first_resolved_set(
+                    "pnpm",
+                    LINUX_PNPM_CHOICES[self.package_manager],
+                    optional=True,
+                )
+                if package_set is not None:
+                    pass
+                elif shutil.which("npm"):
+                    self.run(self.require_privilege(["npm", "install", "-g", "pnpm"]))
+                else:
+                    self.warnings.append("Node.js is installed but neither corepack, pnpm package, nor npm was available; please install pnpm manually")
 
         self.ensure_rust_toolchain()
 
