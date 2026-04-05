@@ -742,3 +742,9 @@ impl FakeArtifactStorage {
     - kRPC 直连 AICC 远程调用链路通过（不经过 gateway，含配置更新后的生效验证）
 
 无证据按未实现处理，不建议发布。
+
+## 11. 远程调用用例实现位置
+
+- kRPC 直连 AICC 用例：`src/kernel/buckyos-api/tests/aicc_krpc_remote_tests.rs`
+- gateway 路径用例：`src/kernel/buckyos-api/tests/aicc_gateway_remote_tests.rs`
+- 公共测试辅助（mock RPC server、请求构造、endpoint 解析）：`src/kernel/buckyos-api/tests/aicc_remote_common.rs`
