@@ -200,8 +200,7 @@ impl RPCHandler for MockSystemConfigHandler {
 }
 
 async fn resolve_sys_config_test_endpoint() -> RpcTestEndpoint {
-    if let Some(endpoint) = resolve_endpoint_from_env(&[], &["AICC_HOST"], "/kapi/system_config")
-    {
+    if let Some(endpoint) = resolve_gateway_system_config_endpoint_from_env() {
         return RpcTestEndpoint::from_remote(endpoint);
     }
 

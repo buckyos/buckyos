@@ -387,11 +387,8 @@ uv run ./test_llm.py
 
 可选环境变量：
 
-- `AICC_HOST`：统一主机地址（必填），例如 `http://127.0.0.1:4040`
-  - 自动拼接固定 path：
-  - AICC RPC：`/kapi/aicc`
-  - system_config：`/kapi/system_config`
-  - verify_hub：`/kapi/verify_hub`
+- `AICC_KRPC_HOST`：kRPC direct host（可选），自动拼接 `/kapi/aicc`
+- `AICC_GATEWAY_HOST`：gateway host（可选），自动拼接 `/kapi/aicc`
 - `AICC_MODEL_ALIAS`：用于 smoke 的默认模型别名
 - `AICC_TIMEOUT_SECONDS`：超时时间
 - `AICC_LOGIN_USERNAME`：自动登录获取 token 的用户名
@@ -419,7 +416,7 @@ token 获取优先级：
 示例 1：smoke（自动登录）
 
 ```bash
-export AICC_HOST="http://10.10.10.23:4040"
+export AICC_GATEWAY_HOST="http://10.10.10.23:4040"
 export AICC_LOGIN_USERNAME="alice"
 export AICC_LOGIN_PASSWORD="your-password"
 export AICC_LOGIN_APPID="aicc-tests"
@@ -430,7 +427,8 @@ cargo test -p aicc --test smoke_formal_env_tests -- --nocapture
 示例 2：kRPC direct + gateway（自动登录）
 
 ```bash
-export AICC_HOST="http://10.10.10.23:4040"
+export AICC_KRPC_HOST="http://10.10.10.23:4040"
+export AICC_GATEWAY_HOST="http://10.10.10.23:4040"
 export AICC_LOGIN_USERNAME="alice"
 export AICC_LOGIN_PASSWORD="your-password"
 
@@ -441,7 +439,7 @@ cargo test -p aicc --test gateway_config_tests -- --nocapture
 示例 3：固定 token（跳过登录）
 
 ```bash
-export AICC_HOST="http://10.10.10.23:4040"
+export AICC_GATEWAY_HOST="http://10.10.10.23:4040"
 export AICC_RPC_TOKEN="<your-token>"
 
 cargo test -p aicc --test smoke_formal_env_tests -- --nocapture
