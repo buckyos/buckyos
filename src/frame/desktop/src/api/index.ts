@@ -1,0 +1,1262 @@
+import {buckyos} from 'buckyos'
+import { ensureSessionToken } from '@/auth/authManager'
+import { isMockRuntime, waitForMockLatency } from '@/config/runtime'
+
+const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
+
+const isAuthError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('401') ||
+    normalized.includes('403') ||
+    normalized.includes('invalid token') ||
+    normalized.includes('permission denied') ||
+    normalized.includes('no permission') ||
+    normalized.includes('token')
+  )
+}
+
+const callRpc = async <T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<{ data: T | null; error: unknown }> => {
+  try {
+    const sessionToken = await ensureSessionToken()
+    rpcClient.setSessionToken(sessionToken)
+
+    const result = await rpcClient.call(method, params)
+    if (!result || typeof result !== 'object') {
+      throw new Error(`Invalid ${method} response`)
+    }
+    return { data: result as T, error: null }
+  } catch (error) {
+    if (isAuthError(error)) {
+      try {
+        const refreshedToken = await ensureSessionToken({ forceRefresh: true })
+        rpcClient.setSessionToken(refreshedToken)
+
+        const retried = await rpcClient.call(method, params)
+        if (!retried || typeof retried !== 'object') {
+          throw new Error(`Invalid ${method} response`)
+        }
+        return { data: retried as T, error: null }
+      } catch (retryError) {
+        return { data: null, error: retryError }
+      }
+    }
+
+    return { data: null, error }
+  }
+}
+
+const mockLayoutData: RootLayoutData = {
+  primaryNav: [
+    { label: 'Desktop', icon: 'desktop', path: '/' },
+    { label: 'Monitor', icon: 'dashboard', path: '/monitor' },
+    { label: 'Network', icon: 'network', path: '/network' },
+    { label: 'Containers', icon: 'container', path: '/containers' },
+    { label: 'User Management', icon: 'users', path: '/users' },
+    { label: 'Storage', icon: 'storage', path: '/storage' },
+    { label: 'dApp Store', icon: 'apps', path: '/dapps' },
+  ],
+  secondaryNav: [
+    { label: 'System Logs', icon: 'chart', path: '/system-logs' },
+    { label: 'Sign Out', icon: 'signout', path: '/sign-out' },
+  ],
+  profile: {
+    name: 'Admin User',
+    email: 'admin@buckyos.io',
+    avatar: 'https://i.pravatar.cc/64?img=12',
+  },
+  systemStatus: {
+    label: 'System Online',
+    state: 'online',
+    networkPeers: 847,
+    activeSessions: 23,
+  },
+}
+
+const mockDashboardData: DashboardState = {
+  recentEvents: [
+    { title: 'System backup completed', subtitle: '2 mins ago', tone: 'success' },
+    { title: 'High memory usage detected', subtitle: '15 mins ago', tone: 'warning' },
+    { title: 'New device connected: iPhone 15', subtitle: '1 hour ago', tone: 'info' },
+    { title: 'dApp "FileSync" updated successfully', subtitle: '2 hours ago', tone: 'success' },
+    { title: 'New admin policy applied', subtitle: 'Yesterday', tone: 'info' },
+  ],
+  dapps: [
+    { name: 'FileSync', icon: 'package', status: 'running' },
+    { name: 'SecureChat', icon: 'package', status: 'stopped' },
+    { name: 'CloudBridge', icon: 'package', status: 'stopped' },
+    { name: 'PhotoVault', icon: 'package', status: 'running' },
+    { name: 'DataAnalyzer', icon: 'package', status: 'running' },
+    { name: 'WebPortal', icon: 'package', status: 'running' },
+  ],
+  quickActions: [
+    { label: 'Manage Users', icon: 'users', to: '/users' },
+    { label: 'Storage Settings', icon: 'storage', to: '/storage' },
+    { label: 'Network Config', icon: 'network', to: '/network' },
+    { label: 'System Logs', icon: 'chart', to: '/system-logs' },
+  ],
+  resourceTimeline: [
+    { time: '00:00', cpu: 52, memory: 68 },
+    { time: '00:05', cpu: 62, memory: 70 },
+    { time: '00:10', cpu: 58, memory: 72 },
+    { time: '00:15', cpu: 54, memory: 74 },
+    { time: '00:20', cpu: 57, memory: 75 },
+    { time: '00:25', cpu: 60, memory: 76 },
+  ],
+  storageSlices: [
+    { label: 'Apps', value: 28, color: '#1d4ed8' },
+    { label: 'System', value: 22, color: '#6b7280' },
+    { label: 'Photos', value: 18, color: '#22c55e' },
+    { label: 'Documents', value: 12, color: '#facc15' },
+    { label: 'Other', value: 20, color: '#38bdf8' },
+  ],
+  storageCapacityGb: 4000,
+  storageUsedGb: 2400,
+  devices: [
+    { name: 'Mock Node', role: 'server', status: 'online', uptimeHours: 120, cpu: 45, memory: 62 },
+  ],
+  cpu: {
+    usagePercent: 58,
+    model: 'Mock CPU 8-Core',
+    cores: 8,
+  },
+  memory: {
+    totalGb: 32,
+    usedGb: 19,
+    usagePercent: 59,
+  },
+  disks: [
+    { label: '/dev/sda1', mount: '/', totalGb: 512, usedGb: 310, fs: 'ext4', usagePercent: 60 },
+    { label: '/dev/sdb1', mount: '/data', totalGb: 1024, usedGb: 640, fs: 'ext4', usagePercent: 63 },
+  ],
+}
+
+const mockSystemMetrics: SystemMetrics = {
+  cpu: {
+    usagePercent: 58,
+    model: 'Mock CPU 8-Core',
+    cores: 8,
+  },
+  memory: {
+    totalGb: 32,
+    usedGb: 19,
+    usagePercent: 59,
+  },
+  disk: {
+    totalGb: 1536,
+    usedGb: 950,
+    usagePercent: 62,
+    disks: [
+      { label: '/dev/sda1', mount: '/', totalGb: 512, usedGb: 310, fs: 'ext4', usagePercent: 60 },
+      { label: '/dev/sdb1', mount: '/data', totalGb: 1024, usedGb: 640, fs: 'ext4', usagePercent: 63 },
+    ],
+  },
+  network: {
+    rxBytes: 580_245_000,
+    txBytes: 240_900_000,
+    rxPerSec: 2_200_000,
+    txPerSec: 1_200_000,
+  },
+  swap: {
+    totalGb: 4,
+    usedGb: 1.2,
+    usagePercent: 30,
+  },
+  loadAverage: {
+    one: 0.62,
+    five: 0.55,
+    fifteen: 0.51,
+  },
+  processCount: 186,
+  uptimeSeconds: 345678,
+}
+
+const mockSystemStatus: SystemStatusResponse = {
+  state: 'online',
+  warnings: [],
+  services: [
+    { name: 'control-panel', status: 'running' },
+    { name: 'repo-service', status: 'running' },
+    { name: 'cyfs-gateway', status: 'running' },
+  ],
+}
+
+const mockNetworkOverview: NetworkOverview = {
+  summary: {
+    rxBytes: mockSystemMetrics.network.rxBytes,
+    txBytes: mockSystemMetrics.network.txBytes,
+    rxPerSec: mockSystemMetrics.network.rxPerSec,
+    txPerSec: mockSystemMetrics.network.txPerSec,
+    rxErrors: 0,
+    txErrors: 0,
+    rxDrops: 0,
+    txDrops: 0,
+    interfaceCount: 2,
+  },
+  timeline: [
+    { time: '00:00:00', rx: 1800000, tx: 1000000, errors: 0, drops: 0 },
+    { time: '00:00:01', rx: 2200000, tx: 1200000, errors: 0, drops: 0 },
+    { time: '00:00:02', rx: 2100000, tx: 1180000, errors: 0, drops: 0 },
+    { time: '00:00:03', rx: 2600000, tx: 1410000, errors: 0, drops: 0 },
+    { time: '00:00:04', rx: 2300000, tx: 1300000, errors: 0, drops: 0 },
+    { time: '00:00:05', rx: 2400000, tx: 1350000, errors: 0, drops: 0 },
+  ],
+  perInterface: [
+    {
+      name: 'eth0',
+      rxBytes: 480000000,
+      txBytes: 220000000,
+      rxPerSec: 2000000,
+      txPerSec: 1100000,
+      rxErrors: 0,
+      txErrors: 0,
+      rxDrops: 0,
+      txDrops: 0,
+    },
+    {
+      name: 'wlan0',
+      rxBytes: 100000000,
+      txBytes: 20900000,
+      rxPerSec: 200000,
+      txPerSec: 100000,
+      rxErrors: 0,
+      txErrors: 0,
+      rxDrops: 0,
+      txDrops: 0,
+    },
+  ],
+}
+
+const mockGatewayOverview: GatewayOverview = {
+  mode: 'sn',
+  etcDir: '/opt/buckyos/etc',
+  files: [
+    {
+      name: 'cyfs_gateway.json',
+      path: '/opt/buckyos/etc/cyfs_gateway.json',
+      exists: true,
+      sizeBytes: 186,
+      modifiedAt: '',
+    },
+    {
+      name: 'boot_gateway.yaml',
+      path: '/opt/buckyos/etc/boot_gateway.yaml',
+      exists: true,
+      sizeBytes: 2048,
+      modifiedAt: '',
+    },
+    {
+      name: 'node_gateway.json',
+      path: '/opt/buckyos/etc/node_gateway.json',
+      exists: true,
+      sizeBytes: 4096,
+      modifiedAt: '',
+    },
+  ],
+  includes: ['user_gateway.yaml', 'boot_gateway.yaml', 'node_gateway.json', 'post_gateway.yaml'],
+  stacks: [
+    { name: 'zone_gateway_http', id: 'zone_gateway_http', protocol: 'tcp', bind: '0.0.0.0:80' },
+    { name: 'node_gateway_http', id: 'node_gateway_http', protocol: 'tcp', bind: '0.0.0.0:3180' },
+  ],
+  tlsDomains: ['*.meteor101.web3.buckyos.ai', 'meteor101.web3.buckyos.ai'],
+  routes: [
+    {
+      kind: 'path',
+      matcher: '/kapi/control-panel/*',
+      action: 'forward http://127.0.0.1:4020',
+      raw: 'match ${REQ.path} "/kapi/control-panel/*" && return "forward http://127.0.0.1:4020"',
+    },
+    {
+      kind: 'host',
+      matcher: 'sys-*',
+      action: 'forward http://127.0.0.1:4020/',
+      raw: 'match ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/"',
+    },
+  ],
+  routePreview:
+    'match ${REQ.path} "/kapi/control-panel/*" && return "forward http://127.0.0.1:4020"\nmatch ${REQ.host} "sys-*" && return "forward http://127.0.0.1:4020/"',
+  customOverrides: [],
+  notes: [
+    'Gateway config loaded from /opt/buckyos/etc.',
+    'No user override rules detected in user_gateway.yaml/post_gateway.yaml.',
+  ],
+}
+
+const mockZoneOverview: ZoneOverview = {
+  etcDir: '/opt/buckyos/etc',
+  zone: {
+    name: 'meteor101',
+    domain: 'meteor101.web3.buckyos.ai',
+    did: 'did:bns:meteor101',
+    ownerDid: 'did:bns:meteor101',
+    userName: 'meteor101',
+    zoneIat: 1770361152,
+  },
+  device: {
+    name: 'ood1',
+    did: 'did:dev:jocxyR8Ceskn6rjgDfDYmMQ5HXJDhw_TEyJj7sqCPZA',
+    type: 'ood',
+    netId: 'nat',
+  },
+  sn: {
+    url: 'http://sn.buckyos.ai/kapi/sn',
+    username: 'meteor101',
+    host: 'sn.buckyos.ai',
+    ip: '207.246.96.13',
+    dnsARecords: ['207.246.96.13'],
+    dnsTxtRecords: ['PKX=...', 'DEV=...'],
+    digError: '',
+    selfCertState: true,
+    selfCertStateSource: '/opt/buckyos/data/cyfs_gateway/sn_dns/self_cert_state.json',
+  },
+  files: [
+    {
+      name: 'start_config.json',
+      path: '/opt/buckyos/etc/start_config.json',
+      exists: true,
+      sizeBytes: 1024,
+      modifiedAt: '',
+    },
+    {
+      name: 'node_device_config.json',
+      path: '/opt/buckyos/etc/node_device_config.json',
+      exists: true,
+      sizeBytes: 1024,
+      modifiedAt: '',
+    },
+    {
+      name: 'node_identity.json',
+      path: '/opt/buckyos/etc/node_identity.json',
+      exists: true,
+      sizeBytes: 1024,
+      modifiedAt: '',
+    },
+  ],
+  notes: [],
+}
+
+const mockContainerOverview: ContainerOverview = {
+  available: true,
+  daemonRunning: true,
+  server: {
+    name: 'docker-host',
+    version: '25.0.3',
+    apiVersion: '1.44',
+    os: 'Ubuntu 24.04 LTS',
+    kernel: '6.8.0',
+    driver: 'overlay2',
+    cgroupDriver: 'systemd',
+    cpuCount: 8,
+    memTotalBytes: 34_359_738_368,
+  },
+  summary: {
+    total: 4,
+    running: 2,
+    paused: 0,
+    exited: 2,
+    restarting: 0,
+    dead: 0,
+  },
+  containers: [
+    {
+      id: 'd8b7f2c9f4aa',
+      name: 'control-panel-dev',
+      image: 'buckyos/control-panel:nightly',
+      state: 'running',
+      status: 'Up 3 hours',
+      ports: '0.0.0.0:4020->4020/tcp',
+      networks: 'bridge',
+      createdAt: '2026-02-11 09:12:10 +0800 CST',
+      runningFor: '3 hours ago',
+      command: '"/bin/control_panel"',
+    },
+    {
+      id: '9ac721bc10f4',
+      name: 'repo-service-dev',
+      image: 'buckyos/repo-service:nightly',
+      state: 'running',
+      status: 'Up 3 hours',
+      ports: '0.0.0.0:3000->3000/tcp',
+      networks: 'bridge',
+      createdAt: '2026-02-11 09:12:10 +0800 CST',
+      runningFor: '3 hours ago',
+      command: '"/bin/repo_service"',
+    },
+  ],
+  notes: [],
+}
+
+const mockLogServices: SystemLogService[] = [
+  { id: 'control-panel', label: 'Control Panel', path: '/opt/buckyos/logs/control-panel' },
+  { id: 'cyfs_gateway', label: 'Cyfs Gateway', path: '/opt/buckyos/logs/cyfs_gateway' },
+  { id: 'node_daemon', label: 'Node Daemon', path: '/opt/buckyos/logs/node_daemon' },
+  { id: 'repo_service', label: 'Repo Service', path: '/opt/buckyos/logs/repo_service' },
+  { id: 'scheduler', label: 'Scheduler', path: '/opt/buckyos/logs/scheduler' },
+  {
+    id: 'system_config_service',
+    label: 'System Config',
+    path: '/opt/buckyos/logs/system_config_service',
+  },
+  { id: 'verify_hub', label: 'Verify Hub', path: '/opt/buckyos/logs/verify_hub' },
+]
+
+const mockLogEntries: SystemLogEntry[] = [
+  {
+    timestamp: '01-29 08:34:18.943',
+    level: 'info',
+    message: 'server-runner listening on 0.0.0.0:4020',
+    raw: '01-29 08:34:18.943 [INFO] server-runner listening on 0.0.0.0:4020',
+    service: 'control-panel',
+    file: 'control-panel_217501.log',
+  },
+  {
+    timestamp: '01-29 08:34:29.142',
+    level: 'info',
+    message: 'recv http request:remote 127.0.0.1:54438 method POST host sys.meteor002.web3.buckyos.ai path /kapi/control-panel',
+    raw: '01-29 08:34:29.142 [INFO] recv http request:remote 127.0.0.1:54438 method POST host sys.meteor002.web3.buckyos.ai path /kapi/control-panel',
+    service: 'control-panel',
+    file: 'control-panel_217501.log',
+  },
+  {
+    timestamp: '01-29 08:32:50.642',
+    level: 'info',
+    message: 'update ood1 info to system_config success!',
+    raw: '01-29 08:32:50.642 [INFO] update ood1 info to system_config success!',
+    service: 'node_daemon',
+    file: 'node_daemon_215894.log',
+  },
+  {
+    timestamp: '01-29 08:32:50.555',
+    level: 'warning',
+    message: 'system config client is created,service_url:http://127.0.0.1:3200/kapi/system_config',
+    raw: '01-29 08:32:50.555 [WARN] system config client is created,service_url:http://127.0.0.1:3200/kapi/system_config',
+    service: 'system_config_service',
+    file: 'system_config_service_215996.log',
+  },
+]
+
+const mockDappStoreData: DappCard[] = [
+  { name: 'FileSync', icon: 'package', category: 'Storage', status: 'installed', version: '1.4.2' },
+  { name: 'SecureChat', icon: 'package', category: 'Communication', status: 'available', version: '2.1.0' },
+  { name: 'CloudBridge', icon: 'package', category: 'Networking', status: 'available', version: '0.9.5' },
+  { name: 'PhotoVault', icon: 'package', category: 'Media', status: 'installed', version: '1.2.0' },
+  { name: 'DataAnalyzer', icon: 'package', category: 'Analytics', status: 'installed', version: '3.0.1' },
+  { name: 'WebPortal', icon: 'package', category: 'Web', status: 'available', version: '1.0.0' },
+]
+
+const defaultDappCard = (name: string): DappCard => ({
+  name,
+  icon: 'package',
+  category: 'Service',
+  status: 'installed',
+  version: '0.0.0',
+})
+
+const normalizeAppStatus = (value: unknown): DappCard['status'] =>
+  value === 'available' ? 'available' : 'installed'
+
+const normalizeAppItem = (item: DappCard | string): DappCard => {
+  if (typeof item === 'string') {
+    return defaultDappCard(item)
+  }
+  const app = item as Partial<DappCard>
+  return {
+    name: typeof app.name === 'string' ? app.name : 'Unknown',
+    icon: app.icon ?? 'package',
+    category: typeof app.category === 'string' ? app.category : 'Service',
+    status: normalizeAppStatus(app.status),
+    version: typeof app.version === 'string' ? app.version : '0.0.0',
+    settings: app.settings,
+  }
+}
+
+const mockSystemOverview: SystemOverview = {
+  name: 'Mock Node',
+  model: 'BuckyOS Desktop Validation',
+  os: 'Ubuntu 24.04 LTS',
+  version: 'mock-dev',
+  uptime_seconds: 345678,
+}
+
+export const fetchLayout = async (): Promise<{ data: RootLayoutData | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockLayoutData, error: null }
+  }
+  try {
+    const { data, error } = await callRpc<RootLayoutData>('ui.layout', {})
+    if (!data) {
+      throw new Error('Invalid layout response')
+    }
+    const merged: RootLayoutData = {
+      ...mockLayoutData,
+      ...(data as Record<string, unknown>),
+      primaryNav: mockLayoutData.primaryNav,
+      secondaryNav: mockLayoutData.secondaryNav,
+    }
+    console.log('fetchLayout', merged)
+    return { data: merged, error }
+  } catch (error) {
+    return { data: null, error }
+  }
+}
+
+export const fetchDashboard = async (): Promise<{ data: DashboardState | null; error: unknown }> => {
+  try {
+    const { data, error } = await callRpc<DashboardState>('ui.dashboard', {})
+    if (!data) {
+      throw new Error('Invalid dashboard response')
+    }
+    const merged: DashboardState = {
+      ...mockDashboardData,
+      ...(data as Record<string, unknown>),
+      quickActions: mockDashboardData.quickActions,
+    }
+    return { data: merged, error }
+  } catch (error) {
+    return { data: null, error }
+  }
+}
+
+export const fetchAppsList = async (): Promise<{ data: DappCard[] | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockDappStoreData, error: null }
+  }
+  const { data, error } = await callRpc<AppsListResponse>('apps.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: null, error }
+  }
+  return { data: data.items.map((item) => normalizeAppItem(item)), error }
+}
+
+export const fetchAppsVersionList = async (
+  names: string[] = [],
+): Promise<{ data: Record<string, string> | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    const versions = Object.fromEntries(
+      mockDappStoreData
+        .filter((item) => names.length === 0 || names.includes(item.name))
+        .map((item) => [item.name, item.version ?? '0.0.0']),
+    )
+    return { data: versions, error: null }
+  }
+  const params = names.length > 0 ? { names } : {}
+  const { data, error } = await callRpc<AppsVersionListResponse>('apps.version.list', params)
+  if (!data || !Array.isArray(data.items)) {
+    return { data: null, error }
+  }
+
+  const versions: Record<string, string> = {}
+  for (const item of data.items) {
+    if (!item || typeof item.name !== 'string' || typeof item.version !== 'string') {
+      continue
+    }
+    const name = item.name.trim()
+    if (!name) {
+      continue
+    }
+    versions[name] = item.version
+  }
+
+  return { data: versions, error }
+}
+
+export const fetchSystemOverview = async (): Promise<{
+  data: SystemOverview | null
+  error: unknown
+}> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockSystemOverview, error: null }
+  }
+  return callRpc<SystemOverview>('system.overview', {})
+}
+
+export const fetchSystemMetrics = async (
+  options: { lite?: boolean } = {},
+): Promise<{
+  data: SystemMetrics | null
+  error: unknown
+}> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    void options
+    return { data: mockSystemMetrics, error: null }
+  }
+  const { data, error } = await callRpc<SystemMetrics>(
+    'system.metrics',
+    options.lite ? { lite: true } : {},
+  )
+  if (!data) {
+    return { data: mockSystemMetrics, error }
+  }
+  const merged: SystemMetrics = {
+    ...mockSystemMetrics,
+    ...(data as Record<string, unknown>),
+    cpu: { ...mockSystemMetrics.cpu, ...(data.cpu ?? {}) },
+    memory: { ...mockSystemMetrics.memory, ...(data.memory ?? {}) },
+    disk: { ...mockSystemMetrics.disk, ...(data.disk ?? {}) },
+    network: { ...mockSystemMetrics.network, ...(data.network ?? {}) },
+    swap: data.swap ?? mockSystemMetrics.swap,
+    loadAverage: data.loadAverage ?? mockSystemMetrics.loadAverage,
+    processCount: data.processCount ?? mockSystemMetrics.processCount,
+    uptimeSeconds: data.uptimeSeconds ?? mockSystemMetrics.uptimeSeconds,
+  }
+  return { data: merged, error }
+}
+
+export const fetchNetworkOverview = async (): Promise<{
+  data: NetworkOverview | null
+  error: unknown
+}> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockNetworkOverview, error: null }
+  }
+  const { data, error } = await callRpc<NetworkOverview>('network.overview', {})
+  if (!data) {
+    return { data: mockNetworkOverview, error }
+  }
+
+  const merged: NetworkOverview = {
+    ...mockNetworkOverview,
+    ...(data as Record<string, unknown>),
+    summary: { ...mockNetworkOverview.summary, ...(data.summary ?? {}) },
+    timeline: Array.isArray(data.timeline) ? data.timeline : mockNetworkOverview.timeline,
+    perInterface: Array.isArray(data.perInterface)
+      ? data.perInterface
+      : mockNetworkOverview.perInterface,
+  }
+  return { data: merged, error }
+}
+
+export const fetchSystemStatus = async (): Promise<{
+  data: SystemStatusResponse | null
+  error: unknown
+}> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockSystemStatus, error: null }
+  }
+  const { data, error } = await callRpc<SystemStatusResponse>('system.status', {})
+  if (!data) {
+    return { data: mockSystemStatus, error }
+  }
+  const merged: SystemStatusResponse = {
+    ...mockSystemStatus,
+    ...(data as Record<string, unknown>),
+    warnings: Array.isArray(data.warnings) ? data.warnings : mockSystemStatus.warnings,
+    services: Array.isArray(data.services) ? data.services : mockSystemStatus.services,
+  }
+  return { data: merged, error }
+}
+
+export const fetchGatewayOverview = async (): Promise<{
+  data: GatewayOverview | null
+  error: unknown
+}> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockGatewayOverview, error: null }
+  }
+  const { data, error } = await callRpc<GatewayOverview>('gateway.overview', {})
+  if (!data) {
+    return { data: mockGatewayOverview, error }
+  }
+
+  const merged: GatewayOverview = {
+    ...mockGatewayOverview,
+    ...(data as Record<string, unknown>),
+    files: Array.isArray(data.files) ? data.files : mockGatewayOverview.files,
+    includes: Array.isArray(data.includes) ? data.includes : mockGatewayOverview.includes,
+    stacks: Array.isArray(data.stacks) ? data.stacks : mockGatewayOverview.stacks,
+    tlsDomains: Array.isArray(data.tlsDomains) ? data.tlsDomains : mockGatewayOverview.tlsDomains,
+    routes: Array.isArray(data.routes) ? data.routes : mockGatewayOverview.routes,
+    customOverrides: Array.isArray(data.customOverrides)
+      ? data.customOverrides
+      : mockGatewayOverview.customOverrides,
+    notes: Array.isArray(data.notes) ? data.notes : mockGatewayOverview.notes,
+  }
+  return { data: merged, error }
+}
+
+export const fetchGatewayFile = async (
+  name: string,
+): Promise<{ data: GatewayFileContent | null; error: unknown }> => {
+  const { data, error } = await callRpc<GatewayFileContent>('gateway.file.get', { name })
+  if (!data || typeof data.content !== 'string') {
+    return { data: null, error }
+  }
+  return { data, error }
+}
+
+export const fetchZoneOverview = async (): Promise<{
+  data: ZoneOverview | null
+  error: unknown
+}> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockZoneOverview, error: null }
+  }
+  const { data, error } = await callRpc<ZoneOverview>('zone.overview', {})
+  if (!data) {
+    return { data: mockZoneOverview, error }
+  }
+
+  const merged: ZoneOverview = {
+    ...mockZoneOverview,
+    ...(data as Record<string, unknown>),
+    zone: { ...mockZoneOverview.zone, ...(data.zone ?? {}) },
+    device: { ...mockZoneOverview.device, ...(data.device ?? {}) },
+    sn: { ...mockZoneOverview.sn, ...(data.sn ?? {}) },
+    files: Array.isArray(data.files) ? data.files : mockZoneOverview.files,
+    notes: Array.isArray(data.notes) ? data.notes : mockZoneOverview.notes,
+  }
+
+  return { data: merged, error }
+}
+
+export const fetchContainerOverview = async (): Promise<{
+  data: ContainerOverview | null
+  error: unknown
+}> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockContainerOverview, error: null }
+  }
+  const { data, error } = await callRpc<ContainerOverview>('container.overview', {})
+  if (!data) {
+    return { data: mockContainerOverview, error }
+  }
+
+  const merged: ContainerOverview = {
+    ...mockContainerOverview,
+    ...(data as Record<string, unknown>),
+    server: { ...mockContainerOverview.server, ...(data.server ?? {}) },
+    summary: { ...mockContainerOverview.summary, ...(data.summary ?? {}) },
+    containers: Array.isArray(data.containers) ? data.containers : mockContainerOverview.containers,
+    notes: Array.isArray(data.notes) ? data.notes : mockContainerOverview.notes,
+  }
+
+  return { data: merged, error }
+}
+
+export const runContainerAction = async (
+  id: string,
+  action: 'start' | 'stop' | 'restart',
+): Promise<{ data: ContainerActionResponse | null; error: unknown }> =>
+  callRpc<ContainerActionResponse>('container.action', { id, action })
+
+type LogQueryParams = {
+  services?: string[]
+  service?: string
+  file?: string
+  level?: SystemLogLevel
+  keyword?: string
+  since?: string
+  until?: string
+  limit?: number
+  cursor?: string
+  direction?: 'forward' | 'backward'
+}
+
+type LogTailParams = {
+  services?: string[]
+  service?: string
+  file?: string
+  level?: SystemLogLevel
+  keyword?: string
+  limit?: number
+  cursor?: string
+  from?: 'start' | 'end'
+}
+
+type LogDownloadParams = {
+  services: string[]
+  mode: 'filtered' | 'full'
+  level?: SystemLogLevel
+  keyword?: string
+  since?: string
+  until?: string
+  file?: string
+}
+
+export const fetchLogServices = async (): Promise<{
+  data: SystemLogService[] | null
+  error: unknown
+}> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    return { data: mockLogServices, error: null }
+  }
+  const { data, error } = await callRpc<{ services: SystemLogService[] }>('system.logs.list', {})
+  if (!data?.services?.length) {
+    return { data: mockLogServices, error }
+  }
+  return { data: data.services, error }
+}
+
+export const querySystemLogs = async (
+  params: LogQueryParams,
+): Promise<{ data: SystemLogQueryResponse | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    void params
+    return { data: { entries: mockLogEntries }, error: null }
+  }
+  const { data, error } = await callRpc<SystemLogQueryResponse>('system.logs.query', params)
+  if (!data) {
+    return { data: { entries: mockLogEntries }, error }
+  }
+  return { data, error }
+}
+
+export const tailSystemLogs = async (
+  params: LogTailParams,
+): Promise<{ data: SystemLogQueryResponse | null; error: unknown }> => {
+  if (isMockRuntime()) {
+    await waitForMockLatency()
+    void params
+    return { data: { entries: mockLogEntries }, error: null }
+  }
+  const { data, error } = await callRpc<SystemLogQueryResponse>('system.logs.tail', params)
+  if (!data) {
+    return { data: { entries: [] }, error }
+  }
+  return { data, error }
+}
+
+export const downloadSystemLogs = async (
+  params: LogDownloadParams,
+): Promise<{ data: SystemLogDownloadResponse | null; error: unknown }> =>
+  callRpc<SystemLogDownloadResponse>('system.logs.download', params)
+
+export const fetchSysConfigTree = async (
+  key: string,
+  depth = 2,
+): Promise<{ data: SysConfigTreeResponse | null; error: unknown }> =>
+  callRpc<SysConfigTreeResponse>('sys_config.tree', { key, depth })
+
+export type ControlPanelLocale = 'en' | 'zh-CN'
+
+type ControlPanelLocaleResponse = {
+  key: string
+  locale: ControlPanelLocale
+  ok?: boolean
+}
+
+export const fetchControlPanelLocale = async (): Promise<{
+  data: ControlPanelLocaleResponse | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<Partial<ControlPanelLocaleResponse>>('ui.locale.get', {})
+  const locale = data?.locale === 'zh-CN' ? 'zh-CN' : 'en'
+  return {
+    data: {
+      key: data?.key ?? 'services/control_panel/settings/locale',
+      locale,
+      ok: true,
+    },
+    error,
+  }
+}
+
+export const saveControlPanelLocale = async (
+  locale: ControlPanelLocale,
+): Promise<{ data: ControlPanelLocaleResponse | null; error: unknown }> => {
+  const { data, error } = await callRpc<Partial<ControlPanelLocaleResponse>>('ui.locale.set', { locale })
+  const normalized = data?.locale === 'zh-CN' ? 'zh-CN' : locale === 'zh-CN' ? 'zh-CN' : 'en'
+  return {
+    data: {
+      key: data?.key ?? 'services/control_panel/settings/locale',
+      locale: normalized,
+      ok: data?.ok ?? !error,
+    },
+    error,
+  }
+}
+
+export type AiModelOverview = {
+  providersOnline: number
+  providersTotal: number
+  defaultReplyModel: string
+  defaultSummaryModel: string
+  defaultTaskExtractModel: string
+  defaultAgentModel: string
+  avgLatencyMs: number
+  estimatedDailyCostUsd: number
+  lastDiagnosticsAt: string
+}
+
+export type AiProviderCard = {
+  id: string
+  displayName: string
+  providerType: string
+  status: 'healthy' | 'needs_setup' | 'degraded' | 'planned'
+  endpoint: string
+  authMode: string
+  credentialConfigured?: boolean
+  maskedApiKey?: string
+  availableModels?: string[]
+  capabilities: string[]
+  defaultModel: string
+  note: string
+}
+
+export type AiModelCatalogEntry = {
+  alias: string
+  providerId: string
+  providerModel: string
+  capabilities: string[]
+  features: string[]
+  useCases: string[]
+}
+
+export type AiPolicyEntry = {
+  id: string
+  label: string
+  primaryModel: string
+  fallbackModels: string[]
+  objective: string
+  status: 'active' | 'review' | 'planned'
+}
+
+export type AiDiagnosticEntry = {
+  id: string
+  title: string
+  status: 'pass' | 'warn' | 'pending'
+  detail: string
+  actionLabel: string
+}
+
+const mockAiModelsOverview: AiModelOverview = {
+  providersOnline: 3,
+  providersTotal: 5,
+  defaultReplyModel: 'gpt-fast',
+  defaultSummaryModel: 'gpt-fast',
+  defaultTaskExtractModel: 'gemini-ops',
+  defaultAgentModel: 'minimax-code-plan',
+  avgLatencyMs: 840,
+  estimatedDailyCostUsd: 2.37,
+  lastDiagnosticsAt: 'Today 13:40',
+}
+
+const mockAiProviders: AiProviderCard[] = [
+  {
+    id: 'openai-main',
+    displayName: 'OpenAI Main',
+    providerType: 'OpenAI',
+    status: 'healthy',
+    endpoint: 'https://api.openai.com/v1',
+    authMode: 'Bearer token',
+    credentialConfigured: true,
+    maskedApiKey: 'sk-a***demo',
+    availableModels: ['gpt-4.1-mini', 'gpt-4.1'],
+    capabilities: ['Reply', 'Summary', 'Tool calling'],
+    defaultModel: 'gpt-fast',
+    note: 'Primary cloud provider for Message Hub reply and summary flows.',
+  },
+  {
+    id: 'google-main',
+    displayName: 'Google Gemini',
+    providerType: 'Google',
+    status: 'healthy',
+    endpoint: 'https://generativelanguage.googleapis.com',
+    authMode: 'API key',
+    credentialConfigured: true,
+    maskedApiKey: 'AIza***demo',
+    availableModels: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+    capabilities: ['Task extract', 'Multimodal', 'JSON output'],
+    defaultModel: 'gemini-ops',
+    note: 'Secondary provider used for extraction-heavy workflows and fallback coverage.',
+  },
+  {
+    id: 'minimax-main',
+    displayName: 'MiniMax',
+    providerType: 'MiniMax',
+    status: 'needs_setup',
+    endpoint: 'https://api.minimaxi.com/v1',
+    authMode: 'API key',
+    credentialConfigured: false,
+    maskedApiKey: undefined,
+    availableModels: [
+      'MiniMax-M2.5',
+      'MiniMax-M2.5-highspeed',
+      'MiniMax-M2.1',
+      'MiniMax-M2.1-highspeed',
+      'MiniMax-M2',
+    ],
+    capabilities: ['Code plan', 'API mode'],
+    defaultModel: 'MiniMax-M2.5',
+    note: 'Prepared for MiniMax code-planning and API-oriented workflows inside control_panel.',
+  },
+  {
+    id: 'claude-main',
+    displayName: 'Claude',
+    providerType: 'Anthropic',
+    status: 'healthy',
+    endpoint: 'https://api.anthropic.com/v1',
+    authMode: 'X-API-Key',
+    credentialConfigured: true,
+    maskedApiKey: 'sk-a***demo',
+    availableModels: ['claude-3-7-sonnet-20250219', 'claude-3-5-haiku-20241022'],
+    capabilities: ['Long-form reasoning', 'Tool calling'],
+    defaultModel: 'claude-3-7-sonnet-20250219',
+    note: 'Native Anthropic Claude runtime for reasoning-heavy and tool-calling workloads.',
+  },
+  {
+    id: 'openai-compatible',
+    displayName: 'OpenAI-Compatible Gateway',
+    providerType: 'Compatible',
+    status: 'needs_setup',
+    endpoint: 'http://127.0.0.1:11434/v1',
+    authMode: 'Optional token',
+    credentialConfigured: false,
+    maskedApiKey: undefined,
+    availableModels: ['custom'],
+    capabilities: ['Local LLM', 'Low-cost fallback'],
+    defaultModel: 'Not assigned',
+    note: 'Reserved for local or self-hosted models once the backend management flow is connected.',
+  },
+]
+
+const mockAiModelCatalog: AiModelCatalogEntry[] = [
+  {
+    alias: 'minimax-code-plan',
+    providerId: 'minimax-main',
+    providerModel: 'MiniMax-Code-Plan',
+    capabilities: ['llm_router'],
+    features: ['plan', 'tool_calling', 'code'],
+    useCases: ['agent.plan', 'message_hub.reply'],
+  },
+  {
+    alias: 'minimax-api',
+    providerId: 'minimax-main',
+    providerModel: 'MiniMax-API',
+    capabilities: ['llm_router'],
+    features: ['json_output', 'tool_calling', 'api'],
+    useCases: ['message_hub.task_extract', 'agent.raw_explain'],
+  },
+  {
+    alias: 'gpt-fast',
+    providerId: 'openai-main',
+    providerModel: 'gpt-4.1-mini',
+    capabilities: ['llm_router'],
+    features: ['json_output', 'tool_calling'],
+    useCases: ['message_hub.reply', 'message_hub.summary'],
+  },
+  {
+    alias: 'gpt-plan',
+    providerId: 'openai-main',
+    providerModel: 'gpt-4.1',
+    capabilities: ['llm_router'],
+    features: ['plan', 'tool_calling', 'json_output'],
+    useCases: ['agent.plan', 'agent.raw_explain'],
+  },
+  {
+    alias: 'gemini-ops',
+    providerId: 'google-main',
+    providerModel: 'gemini-2.0-flash',
+    capabilities: ['llm_router'],
+    features: ['json_output', 'vision'],
+    useCases: ['message_hub.task_extract', 'message_hub.priority_rank'],
+  },
+  {
+    alias: 'claude-reasoning',
+    providerId: 'claude-main',
+    providerModel: 'claude-3-7-sonnet-20250219',
+    capabilities: ['llm_router'],
+    features: ['plan', 'tool_calling', 'json_output'],
+    useCases: ['agent.reasoning', 'message_hub.summary'],
+  },
+]
+
+const mockAiPolicies: AiPolicyEntry[] = [
+  {
+    id: 'message_hub.reply',
+    label: 'Message Hub Reply',
+    primaryModel: 'gpt-fast',
+    fallbackModels: ['gemini-ops'],
+    objective: 'Fast reply drafting with safe structured output when needed.',
+    status: 'active',
+  },
+  {
+    id: 'message_hub.summary',
+    label: 'Message Hub Summary',
+    primaryModel: 'gpt-fast',
+    fallbackModels: ['gpt-plan'],
+    objective: 'Summarize cross-thread context into compact inbox cards and digest blocks.',
+    status: 'active',
+  },
+  {
+    id: 'message_hub.task_extract',
+    label: 'Task Extraction',
+    primaryModel: 'gemini-ops',
+    fallbackModels: ['minimax-api', 'gpt-fast'],
+    objective: 'Convert commitments and deadlines into follow-up objects connected to the source thread.',
+    status: 'review',
+  },
+  {
+    id: 'agent.plan',
+    label: 'Agent Plan',
+    primaryModel: 'minimax-code-plan',
+    fallbackModels: ['gpt-plan'],
+    objective: 'Use MiniMax code-planning mode for task decomposition and multi-step execution guidance.',
+    status: 'review',
+  },
+  {
+    id: 'agent.raw_explain',
+    label: 'Agent RAW Explain',
+    primaryModel: 'minimax-api',
+    fallbackModels: ['gpt-plan', 'gpt-fast'],
+    objective: 'Use MiniMax API mode for structured explanation of agent-to-agent raw records.',
+    status: 'planned',
+  },
+]
+
+const mockAiDiagnostics: AiDiagnosticEntry[] = [
+  {
+    id: 'diag-openai',
+    title: 'OpenAI round-trip test',
+    status: 'pass',
+    detail: 'The latest test prompt returned a valid JSON response in 780ms.',
+    actionLabel: 'Run again',
+  },
+  {
+    id: 'diag-google',
+    title: 'Gemini extraction profile',
+    status: 'pass',
+    detail: 'The task extraction profile is available and tagged for Message Hub use cases.',
+    actionLabel: 'Inspect model',
+  },
+  {
+    id: 'diag-local',
+    title: 'Local LLM gateway',
+    status: 'pending',
+    detail: 'Reserved for a future OpenAI-compatible or local endpoint once backend wiring is allowed.',
+    actionLabel: 'Plan setup',
+  },
+]
+
+export const fetchAiModelsOverview = async (): Promise<{ data: AiModelOverview | null; error: unknown }> => {
+  const { data, error } = await callRpc<AiModelOverview>('ai.overview', {})
+  if (!data) {
+    return { data: mockAiModelsOverview, error }
+  }
+  return {
+    data: {
+      ...mockAiModelsOverview,
+      ...(data as Record<string, unknown>),
+    } as AiModelOverview,
+    error,
+  }
+}
+
+export const fetchAiProviders = async (): Promise<{ data: AiProviderCard[] | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ items?: AiProviderCard[] }>('ai.provider.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: mockAiProviders, error }
+  }
+  return { data: data.items, error }
+}
+
+export const fetchAiModelCatalog = async (): Promise<{ data: AiModelCatalogEntry[] | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ items?: AiModelCatalogEntry[] }>('ai.model.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: mockAiModelCatalog, error }
+  }
+  return { data: data.items, error }
+}
+
+export const fetchAiPolicies = async (): Promise<{ data: AiPolicyEntry[] | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ items?: AiPolicyEntry[] }>('ai.policy.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: mockAiPolicies, error }
+  }
+  return { data: data.items, error }
+}
+
+export const fetchAiDiagnostics = async (): Promise<{ data: AiDiagnosticEntry[] | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ items?: AiDiagnosticEntry[] }>('ai.diagnostics.list', {})
+  if (!data || !Array.isArray(data.items)) {
+    return { data: mockAiDiagnostics, error }
+  }
+  return { data: data.items, error }
+}
+
+export const runAiProviderDiagnostic = async (
+  providerId: string,
+): Promise<{
+  data: { providerId: string; ok: boolean; status: AiDiagnosticEntry['status']; detail: string; taskId?: string } | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<{
+    providerId: string
+    ok: boolean
+    status: AiDiagnosticEntry['status']
+    detail: string
+    taskId?: string
+  }>('ai.provider.test', { provider_id: providerId })
+
+  return { data, error }
+}
+
+export const reloadAiProviderSettings = async (): Promise<{
+  data: { ok: boolean; result?: { ok?: boolean; providers_registered?: number } } | null
+  error: unknown
+}> => {
+  const { data, error } = await callRpc<{ ok: boolean; result?: { ok?: boolean; providers_registered?: number } }>('ai.reload', {})
+  return { data, error }
+}
+
+export const saveAiProvider = async (
+  provider: AiProviderCard,
+  apiKey?: string,
+): Promise<{ data: AiProviderCard | null; error: unknown }> => {
+  const params: Record<string, unknown> = { provider }
+  if (apiKey && apiKey.trim()) {
+    params.api_key = apiKey.trim()
+  }
+  const { data, error } = await callRpc<{ provider?: AiProviderCard }>('ai.provider.set', params)
+  return { data: data?.provider ?? null, error }
+}
+
+export const saveAiModelCatalogEntry = async (
+  model: AiModelCatalogEntry,
+): Promise<{ data: AiModelCatalogEntry | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ model?: AiModelCatalogEntry }>('ai.model.set', { model })
+  return { data: data?.model ?? null, error }
+}
+
+export const saveAiPolicy = async (
+  policy: AiPolicyEntry,
+): Promise<{ data: AiPolicyEntry | null; error: unknown }> => {
+  const { data, error } = await callRpc<{ policy?: AiPolicyEntry }>('ai.policy.set', { policy })
+  return { data: data?.policy ?? null, error }
+}
+
+export {
+  mockLayoutData,
+  mockDashboardData,
+  mockDappStoreData,
+  mockSystemOverview,
+  mockSystemMetrics,
+  mockSystemStatus,
+  mockNetworkOverview,
+  mockGatewayOverview,
+  mockZoneOverview,
+  mockContainerOverview,
+  mockLogServices,
+  mockLogEntries,
+  mockAiModelsOverview,
+  mockAiProviders,
+  mockAiModelCatalog,
+  mockAiPolicies,
+  mockAiDiagnostics,
+}

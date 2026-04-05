@@ -24,13 +24,8 @@ import GridLayoutBase, {
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Pagination } from 'swiper/modules'
 import { Swiper, SwiperSlide } from 'swiper/react'
-import useSWR from 'swr'
 import { globalSettingsStore } from '../app/settings/mock/store'
-import {
-  findDesktopAppById,
-  resolveDesktopApps,
-} from '../app/registry'
-import type { DesktopAppItem } from '../app/types'
+import { findDesktopAppById } from '../app/registry'
 import {
   AppIcon,
 } from '../components/DesktopVisuals'
@@ -43,136 +38,51 @@ import { SystemSidebar } from './SystemSidebar'
 import { DesktopWidgetRenderer } from './widgets/WidgetRenderer'
 import { DesktopWindowLayer } from './windows/DesktopWindowLayer'
 import {
-  getDesktopWindowPositionBounds,
   getDesktopWindowWorkspaceBounds,
 } from './windows/geometry'
 import { MobileNavProvider } from './windows/MobileNavContext'
 import { MobileWindowSheet } from './windows/MobileWindowSheet'
 import {
-  createDesktopWindowLayerDataModel,
-  createWindowRecord,
-  resolveDesktopWindowSizing,
-} from './windows/model'
-import {
   mobileStatusBarMode,
   shellStatusBarHeight,
   type ConnectionState,
-  type StatusTip,
-  type StatusTrayState,
 } from './shell'
 import { useI18n } from '../i18n/provider'
-import { defaultDeadZone } from '../mock/data'
-import { fetchDesktopPayload } from '../mock/provider'
-import {
-  defaultWindowAppearancePreferences,
-  isLauncherApp,
-  supportedLocales,
-  windowAppearancePreferencesSchema,
-} from '../models/ui'
 import type {
   AppDefinition,
-  DesktopPageState,
   FormFactor,
   LayoutItem,
-  LayoutState,
   MockScenario,
   SupportedLocale,
-  SystemSidebarAppItem,
-  SystemSidebarDataModel,
   SystemPreferencesInput,
-  ThemeMode,
-  WindowAppearancePreferences,
-  WindowRecord,
 } from '../models/ui'
+import { supportedLocales } from '../models/ui'
 import { useThemeMode } from '../theme/provider'
 
-const runtimeStorageKey = 'buckyos.prototype.runtime.v1'
-const windowGeometryStorageKey = 'buckyos.window-geometry.desktop.v1'
-const windowAppearanceStorageKey = 'buckyos.window-appearance.v1'
-const desktopMinCanvasSize = { width: 960, height: 720 }
+// --- New unified store ---
+import {
+  useDesktopUIStore,
+  useDesktopUISnapshot,
+} from '../models/DesktopUIDataModel'
+import {
+  columnsForWidth,
+  GRID_GAP,
+  rowsForHeight,
+  stretchedRowHeight,
+  densityRowHeight,
+  desktopMinCanvasSize,
+  mapPageToGrid,
+  normalizeViewportProgress,
+  getPageIndex,
+  type GridDensity,
+} from '../models/layout'
 
-type WindowGeometry = Pick<WindowRecord, 'x' | 'y' | 'width' | 'height'>
-type WindowGeometryMap = Record<string, WindowGeometry>
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
-function sanitizeWindowGeometryMap(
-  input: unknown,
-): WindowGeometryMap {
-  if (!input || typeof input !== 'object') {
-    return {}
-  }
-
-  return Object.fromEntries(
-    Object.entries(input).flatMap(([appId, geometry]) => {
-      if (
-        !geometry ||
-        typeof geometry !== 'object' ||
-        !isFiniteNumber((geometry as WindowGeometry).x) ||
-        !isFiniteNumber((geometry as WindowGeometry).y) ||
-        !isFiniteNumber((geometry as WindowGeometry).width) ||
-        !isFiniteNumber((geometry as WindowGeometry).height)
-      ) {
-        return []
-      }
-
-      return [[appId, geometry as WindowGeometry]]
-    }),
-  )
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max)
-}
-
-function normalizeWindowGeometryForViewport(
-  app: AppDefinition,
-  geometry: Partial<WindowGeometry> | undefined,
-  index: number,
-  viewportBounds: ReturnType<typeof getDesktopWindowWorkspaceBounds>,
-) {
-  const sizing = resolveDesktopWindowSizing(app)
-  const minWidth = Math.min(sizing.minWidth, viewportBounds.maxWidth)
-  const minHeight = Math.min(sizing.minHeight, viewportBounds.maxHeight)
-  const width = clamp(
-    geometry?.width ?? sizing.width,
-    minWidth,
-    viewportBounds.maxWidth,
-  )
-  const height = clamp(
-    geometry?.height ?? sizing.height,
-    minHeight,
-    viewportBounds.maxHeight,
-  )
-  const defaultX = viewportBounds.minX + 24 + (index % 4) * 36
-  const defaultY = viewportBounds.minY + 18 + (index % 3) * 32
-  const positionBounds = getDesktopWindowPositionBounds(viewportBounds, {
-    width,
-    height,
-  })
-
-  return {
-    width,
-    height,
-    x: clamp(geometry?.x ?? defaultX, positionBounds.minX, positionBounds.maxX),
-    y: clamp(geometry?.y ?? defaultY, positionBounds.minY, positionBounds.maxY),
-  }
-}
-
-function sameWindowGeometry(left: WindowGeometry | undefined, right: WindowGeometry) {
-  return (
-    left?.x === right.x &&
-    left?.y === right.y &&
-    left?.width === right.width &&
-    left?.height === right.height
-  )
-}
+// ---------------------------------------------------------------------------
+// Hooks that remain in the view layer (DOM / browser APIs)
+// ---------------------------------------------------------------------------
 
 /**
  * Reads env(safe-area-inset-*) values for immersive fullscreen on mobile.
- * Requires viewport-fit=cover on the viewport meta tag.
  */
 function useSafeAreaInsets() {
   const [insets, setInsets] = useState({ top: 0, bottom: 0, left: 0, right: 0 })
@@ -216,62 +126,6 @@ function useSafeAreaInsets() {
   return insets
 }
 
-/** Density tier for the grid slot system. */
-export type GridDensity = 'small' | 'medium' | 'large'
-
-const densityRowHeight: Record<GridDensity, number> = {
-  small: 92,
-  medium: 108,
-  large: 124,
-}
-
-const GRID_GAP = 2
-
-/**
- * Maximum width (px) a single grid cell may occupy on desktop.
- * When the container is wide enough that cells would exceed this,
- * more columns are added to keep cells compact.
- */
-const MAX_CELL_WIDTH = 110
-
-/** Minimum columns on desktop so the grid never looks too sparse. */
-const MIN_DESKTOP_COLS = 6
-
-/** Compute column count so that each cell stays within MAX_CELL_WIDTH. */
-function columnsForWidth(width: number): number {
-  const cols = Math.ceil((width + GRID_GAP) / (MAX_CELL_WIDTH + GRID_GAP))
-  return Math.max(MIN_DESKTOP_COLS, cols)
-}
-
-/**
- * Minimum row height on desktop — more compact than the density value
- * so that more rows fit and the grid fully utilises vertical space.
- * icon-padding-top(10) + icon(48) + label-padding(4) + 1 line(16) = 78
- */
-const DESKTOP_MIN_ROW_HEIGHT = 78
-
-/**
- * Compute how many rows fit in the available height.
- * On desktop uses a compact minimum; on mobile uses the density value.
- */
-function rowsForHeight(
-  height: number,
-  density: GridDensity,
-  isMobile: boolean,
-): number {
-  const slotH = isMobile ? densityRowHeight[density] : DESKTOP_MIN_ROW_HEIGHT
-  return Math.max(1, Math.floor((height + GRID_GAP) / (slotH + GRID_GAP)))
-}
-
-/**
- * Given the number of rows that fit, compute the actual row height
- * so that the grid fills the entire container height evenly.
- */
-function stretchedRowHeight(height: number, rows: number): number {
-  if (rows <= 0) return densityRowHeight.medium
-  return (height - (rows - 1) * GRID_GAP) / rows
-}
-
 function useGridSpec(
   containerRef: { current: HTMLElement | null },
   density: GridDensity,
@@ -292,7 +146,6 @@ function useGridSpec(
       const nextCols = isMobile ? 4 : columnsForWidth(w)
       setCols(nextCols)
       setContainerHeight(h)
-      // Sync CSS variable for any pure-CSS consumers
       el.style.setProperty('--grid-columns', String(nextCols))
     })
 
@@ -314,20 +167,15 @@ function useConnectionState(runtimeContainer: string): ConnectionState {
   useEffect(() => {
     const handleOnline = () => setIsNavigatorOnline(true)
     const handleOffline = () => setIsNavigatorOnline(false)
-
     window.addEventListener('online', handleOnline)
     window.addEventListener('offline', handleOffline)
-
     return () => {
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
     }
   }, [])
 
-  if (!isNavigatorOnline) {
-    return 'offline'
-  }
-
+  if (!isNavigatorOnline) return 'offline'
   return runtimeContainer === 'browser' ? 'degraded' : 'online'
 }
 
@@ -336,426 +184,13 @@ function nextSupportedLocale(locale: SupportedLocale) {
   return supportedLocales[(currentIndex + 1) % supportedLocales.length]
 }
 
-function normalizeViewportProgress(progress: number, pageCount: number) {
-  if (!Number.isFinite(progress) || pageCount <= 1) {
-    return 0
-  }
-
-  return Math.min(Math.max(progress, 0), 1)
-}
-
-function readJson<T>(key: string) {
-  const raw = window.localStorage.getItem(key)
-  if (!raw) {
-    return null
-  }
-
-  try {
-    return JSON.parse(raw) as T
-  } catch {
-    return null
-  }
-}
-
-function writeJson<T>(key: string, value: T) {
-  window.localStorage.setItem(key, JSON.stringify(value))
-}
-
-function readWindowAppearancePreferences() {
-  const parsed = windowAppearancePreferencesSchema.safeParse(
-    readJson(windowAppearanceStorageKey),
-  )
-
-  return parsed.success
-    ? parsed.data
-    : { ...defaultWindowAppearancePreferences }
-}
-
-function layoutStorageKey(formFactor: FormFactor) {
-  return `buckyos.layout.${formFactor}.v1`
-}
-
-function legacyDeadZone(formFactor: FormFactor) {
-  return formFactor === 'desktop'
-    ? { top: 64, bottom: 24, left: 20, right: 20 }
-    : { top: 52, bottom: 20, left: 12, right: 12 }
-}
-
-function matchesDeadZone(
-  target: LayoutState['deadZone'] | undefined,
-  expected: LayoutState['deadZone'],
-) {
-  return (
-    target?.top === expected.top &&
-    target?.bottom === expected.bottom &&
-    target?.left === expected.left &&
-    target?.right === expected.right
-  )
-}
-
-function migrateDeadZone(layout: LayoutState, formFactor: FormFactor) {
-  if (!matchesDeadZone(layout.deadZone, legacyDeadZone(formFactor))) {
-    return layout
-  }
-
-  return {
-    ...layout,
-    deadZone: { ...defaultDeadZone },
-  }
-}
-
-const systemSidebarSystemAppIds = new Set(['settings', 'diagnostics'])
-
-function createSystemSidebarDataModel(
-  apps: DesktopAppItem[],
-  windows: WindowRecord[],
-  currentAppId?: string,
-): SystemSidebarDataModel {
-  const appMap = new Map(apps.map((app) => [app.id, app]))
-  const toSidebarApp = (
-    app: DesktopAppItem | undefined,
-  ): SystemSidebarAppItem | null =>
-    app
-      ? {
-          appId: app.id,
-          iconKey: app.iconKey,
-          labelKey: app.labelKey,
-        }
-      : null
-
-  const seenSwitchApps = new Set<string>()
-  const switchApps = windows
-    .filter(
-      (windowItem) =>
-        windowItem.state === 'minimized' &&
-        windowItem.minimizedOrder !== null &&
-        !systemSidebarSystemAppIds.has(windowItem.appId),
-    )
-    .sort((a, b) => (a.minimizedOrder ?? 0) - (b.minimizedOrder ?? 0))
-    .map((windowItem) => {
-      const app = appMap.get(windowItem.appId)
-
-      if (
-        !app ||
-        windowItem.minimizedOrder === null ||
-        seenSwitchApps.has(app.id)
-      ) {
-        return null
-      }
-
-      seenSwitchApps.add(app.id)
-
-      return {
-        appId: app.id,
-        iconKey: app.iconKey,
-        labelKey: app.labelKey,
-        minimizedOrder: windowItem.minimizedOrder,
-      }
-    })
-    .filter((app): app is SystemSidebarDataModel['switchApps'][number] => Boolean(app))
-
-  const systemApps = ['settings', 'diagnostics', 'users-agents']
-    .map((appId) => toSidebarApp(appMap.get(appId)))
-    .filter((app): app is SystemSidebarAppItem => Boolean(app))
-
-  return {
-    currentAppId,
-    runningAppCount: windows.filter((windowItem) => windowItem.state !== 'minimized')
-      .length,
-    switchApps,
-    systemApps,
-  }
-}
-
-function getPageIndex(layoutState: LayoutState, itemId: string) {
-  return layoutState.pages.findIndex((page) =>
-    page.items.some((item) => item.id === itemId),
-  )
-}
-
-function fits(
-  page: DesktopPageState,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  cols: number,
-  rows: number,
-  excludeId?: string,
-) {
-  if (x + w > cols || y + h > rows) {
-    return false
-  }
-
-  return !page.items.some((item) => {
-    if (item.id === excludeId) {
-      return false
-    }
-
-    if (item.x === undefined || item.y === undefined) {
-      return false
-    }
-
-    return !(
-      x + w <= item.x ||
-      item.x + item.w <= x ||
-      y + h <= item.y ||
-      item.y + item.h <= y
-    )
-  })
-}
-
-/**
- * Scan order for placing items in the grid.
- * - 'row-major': left→right, then top→bottom (mobile)
- * - 'col-major': top→bottom, then left→right (desktop)
- */
-type ScanOrder = 'row-major' | 'col-major'
-
-/**
- * Find a slot at the tail of the page (after the last positioned content).
- * Unlike `findNextSlot` which scans from (0,0) and fills gaps,
- * this only places items after the last content, preserving manual layout.
- *
- * @param scanOrder 'col-major' scans top→bottom per column (desktop),
- *                  'row-major' scans left→right per row (mobile).
- */
-function findTailSlot(
-  page: DesktopPageState,
-  w: number,
-  h: number,
-  cols: number,
-  rows: number,
-  scanOrder: ScanOrder = 'row-major',
-): { x: number; y: number } | null {
-  if (scanOrder === 'col-major') {
-    return findTailSlotColMajor(page, w, h, cols, rows)
-  }
-
-  // --- row-major (mobile) ---
-  let maxLinearEnd = 0
-  for (const item of page.items) {
-    if (item.x === undefined || item.y === undefined) continue
-    for (let row = item.y; row < item.y + item.h; row++) {
-      const linearEnd = row * cols + (item.x + item.w)
-      maxLinearEnd = Math.max(maxLinearEnd, linearEnd)
-    }
-  }
-
-  const startRow = Math.floor(maxLinearEnd / cols)
-  const startCol = maxLinearEnd % cols
-
-  for (let y = startRow; y + h <= rows; y++) {
-    const sx = y === startRow ? startCol : 0
-    for (let x = sx; x + w <= cols; x++) {
-      if (fits(page, x, y, w, h, cols, rows)) {
-        return { x, y }
-      }
-    }
-  }
-
-  return null
-}
-
-/**
- * Column-major tail placement: scan top→bottom within each column,
- * then move to the next column. Position 0 = (0,0), 1 = (0,1), …
- */
-function findTailSlotColMajor(
-  page: DesktopPageState,
-  w: number,
-  h: number,
-  cols: number,
-  rows: number,
-): { x: number; y: number } | null {
-  // Compute the column-major linear end of all positioned items
-  let maxLinearEnd = 0
-  for (const item of page.items) {
-    if (item.x === undefined || item.y === undefined) continue
-    for (let col = item.x; col < item.x + item.w; col++) {
-      const linearEnd = col * rows + (item.y + item.h)
-      maxLinearEnd = Math.max(maxLinearEnd, linearEnd)
-    }
-  }
-
-  const startCol = Math.floor(maxLinearEnd / rows)
-  const startRow = maxLinearEnd % rows
-
-  for (let x = startCol; x + w <= cols; x++) {
-    const sy = x === startCol ? startRow : 0
-    for (let y = sy; y + h <= rows; y++) {
-      if (fits(page, x, y, w, h, cols, rows)) {
-        return { x, y }
-      }
-    }
-  }
-
-  return null
-}
-
-/**
- * Mark positioned items as unpositioned when their position exceeds
- * the current grid bounds (e.g. after a resize).
- */
-function invalidatePositions(
-  layout: LayoutState,
-  cols: number,
-  rows: number,
-): LayoutState {
-  let anyChanged = false
-  const pages = layout.pages.map((page) => {
-    let pageChanged = false
-    const items = page.items.map((item) => {
-      if (item.x === undefined || item.y === undefined) return item
-      if (item.x + item.w > cols || item.y + item.h > rows) {
-        pageChanged = true
-        return { ...item, x: undefined, y: undefined }
-      }
-      return item
-    })
-    if (pageChanged) anyChanged = true
-    return pageChanged ? { ...page, items } : page
-  })
-  return anyChanged ? { ...layout, pages } : layout
-}
-
-/**
- * Resolve all unpositioned items by placing them at the tail of each page.
- * Returns a fully-positioned layout suitable for rendering.
- *
- * @param scanOrder 'col-major' for desktop (top→bottom per column),
- *                  'row-major' for mobile (left→right per row).
- */
-function resolveLayout(
-  layout: LayoutState,
-  cols: number,
-  rows: number,
-  scanOrder: ScanOrder = 'row-major',
-): LayoutState {
-  const unpositioned: LayoutItem[] = []
-  const resolvedPages: DesktopPageState[] = layout.pages.map((page) => ({
-    ...page,
-    items: page.items.filter((item) => {
-      if (item.x === undefined || item.y === undefined) {
-        unpositioned.push(item)
-        return false
-      }
-      return true
-    }),
-  }))
-
-  if (unpositioned.length === 0) {
-    return layout
-  }
-
-  for (const item of unpositioned) {
-    let placed = false
-    for (const page of resolvedPages) {
-      const slot = findTailSlot(page, item.w, item.h, cols, rows, scanOrder)
-      if (slot) {
-        page.items.push({ ...item, x: slot.x, y: slot.y })
-        placed = true
-        break
-      }
-    }
-    if (!placed) {
-      resolvedPages.push({
-        id: `${layout.formFactor}-page-${resolvedPages.length + 1}`,
-        items: [{ ...item, x: 0, y: 0 }],
-      })
-    }
-  }
-
-  return { ...layout, pages: resolvedPages }
-}
-
-function mapPageToGrid(page: DesktopPageState): GridLayoutItem[] {
-  return page.items
-    .filter(
-      (item): item is LayoutItem & { x: number; y: number } =>
-        item.x !== undefined && item.y !== undefined,
-    )
-    .map((item) => ({
-      i: item.id,
-      x: item.x,
-      y: item.y,
-      w: item.w,
-      h: item.h,
-      static: false,
-    }))
-}
-
-function sanitizeLayoutForApps(
-  layout: LayoutState,
-  apps: DesktopAppItem[],
-) {
-  const launcherAppIds = new Set(
-    apps
-      .filter((app) => isLauncherApp(app))
-      .map((app) => app.id),
-  )
-
-  return {
-    ...layout,
-    pages: layout.pages.map((page) => ({
-      ...page,
-      items: page.items.filter(
-        (item) => item.type === 'widget' || launcherAppIds.has(item.appId),
-      ),
-    })),
-  }
-}
-
-function reconcileLayoutWithDefaultApps(
-  layout: LayoutState,
-  defaultLayout: LayoutState,
-  apps: DesktopAppItem[],
-  formFactor: FormFactor,
-) {
-  const sanitizedLayout = sanitizeLayoutForApps(layout, apps)
-  const launcherAppIds = new Set(
-    apps
-      .filter((app) => isLauncherApp(app))
-      .map((app) => app.id),
-  )
-  const existingAppIds = new Set(
-    sanitizedLayout.pages.flatMap((page) =>
-      page.items.flatMap((item) => (item.type === 'app' ? [item.appId] : [])),
-    ),
-  )
-
-  const newItems: LayoutItem[] = []
-  defaultLayout.pages.forEach((defaultPage) => {
-    defaultPage.items.forEach((item) => {
-      if (
-        item.type !== 'app' ||
-        !launcherAppIds.has(item.appId) ||
-        existingAppIds.has(item.appId)
-      ) {
-        return
-      }
-      newItems.push({ ...item, x: undefined, y: undefined })
-      existingAppIds.add(item.appId)
-    })
-  })
-
-  if (newItems.length === 0) {
-    return sanitizedLayout
-  }
-
-  const pages = sanitizedLayout.pages.map((page) => ({
-    ...page,
-    items: [...page.items],
-  }))
-  if (pages.length === 0) {
-    pages.push({ id: `${formFactor}-page-1`, items: [] })
-  }
-  pages[pages.length - 1].items.push(...newItems)
-
-  return { ...sanitizedLayout, pages }
-}
+// ---------------------------------------------------------------------------
+// DesktopRoute — now a thin view that delegates to the unified store
+// ---------------------------------------------------------------------------
 
 export function DesktopRoute() {
+  const store = useDesktopUIStore()
+  const snap = useDesktopUISnapshot()
   const { resetBackground, setBackground } = useDesktopBackground()
   const { locale, setLocale, t } = useI18n()
   const { themeMode, setThemeMode } = useThemeMode()
@@ -766,86 +201,48 @@ export function DesktopRoute() {
   const initialScenario =
     (searchParams.get('scenario') as MockScenario | null) ?? 'normal'
   const [scenario] = useState<MockScenario>(initialScenario)
-  const [layoutState, setLayoutState] = useState<LayoutState | null>(null)
-  const [windows, setWindows] = useState<WindowRecord[]>([])
-  const [snackbar, setSnackbar] = useState<string | null>(null)
-  const [activityLog, setActivityLog] = useState<string[]>([])
-  const [isSystemSidebarOpen, setIsSystemSidebarOpen] = useState(false)
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
-  const [viewportProgress, setViewportProgress] = useState(0)
-  const nextMinimizedOrderRef = useRef(1)
-  const [runtimeContainer, setRuntimeContainer] = useState(() => {
-    return (
-      (window.localStorage.getItem(runtimeStorageKey) as
-        | 'browser'
-        | 'desktop-app'
-        | 'mobile-app'
-        | null) ?? 'browser'
-    )
-  })
-  const [windowAppearance, setWindowAppearance] = useState<WindowAppearancePreferences>(
-    () => readWindowAppearancePreferences(),
-  )
-  const [contextMenu, setContextMenu] = useState<{
-    itemId: string
-    mouseX: number
-    mouseY: number
-  } | null>(null)
-  const windowGeometryByAppRef = useRef<WindowGeometryMap>(
-    sanitizeWindowGeometryMap(readJson(windowGeometryStorageKey)),
-  )
+
+  // Refs for drag suppression (view-only concern)
   const suppressOpenItemId = useRef<string | null>(null)
   const draggedOpenBlockItemId = useRef<string | null>(null)
   const draggedOpenBlockTimeoutId = useRef<number | null>(null)
   const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const gridContainerRef = useRef<HTMLDivElement | null>(null)
+
   const [viewportSize, setViewportSize] = useState(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
   }))
   const [workspaceSize, setWorkspaceSize] = useState({ width: 960, height: 720 })
-  const settingsSnap = useSyncExternalStore(globalSettingsStore.subscribe, globalSettingsStore.getSnapshot)
+
+  const settingsSnap = useSyncExternalStore(
+    globalSettingsStore.subscribe,
+    globalSettingsStore.getSnapshot,
+  )
   const density = (settingsSnap.session.appearance.fontSize ?? 'medium') as GridDensity
-  const gridContainerRef = useRef<HTMLDivElement | null>(null)
-
-  const { data, error, isLoading, mutate } = useSWR(
-    ['desktop-payload', formFactor, scenario],
-    ([, nextFormFactor, nextScenario]) =>
-      fetchDesktopPayload({
-        formFactor: nextFormFactor as FormFactor,
-        scenario: nextScenario as MockScenario,
-      }),
-  )
-
-  const apps = useMemo(
-    () => resolveDesktopApps(data?.apps ?? [], formFactor),
-    [data?.apps, formFactor],
-  )
-  const connectionState = useConnectionState(runtimeContainer)
   const gridSpec = useGridSpec(gridContainerRef, density, isMobile)
-  const currentSpec = gridSpec
-  const resetViewportState = () => {
-    setWindows([])
-  }
-  const applyResolvedLayout = (nextLayout: LayoutState, defaultLayout: LayoutState) => {
-    setLayoutState(
-      reconcileLayoutWithDefaultApps(nextLayout, defaultLayout, apps, formFactor),
-    )
-  }
 
+  // Sync grid spec into store
   useEffect(() => {
-    resetViewportState()
-    setIsSystemSidebarOpen(false)
-    setViewportProgress(0)
-  }, [formFactor])
+    store.setGridSpec(gridSpec.cols, gridSpec.rows, gridSpec.rowHeight)
+  }, [store, gridSpec.cols, gridSpec.rows, gridSpec.rowHeight])
 
+  // Init store on mount / formFactor change
   useEffect(() => {
-    window.localStorage.setItem(runtimeStorageKey, runtimeContainer)
-  }, [runtimeContainer])
+    void store.init(formFactor, scenario)
+  }, [store, formFactor, scenario])
 
+  // Sync scenario to URL
   useEffect(() => {
-    writeJson(windowAppearanceStorageKey, windowAppearance)
-  }, [windowAppearance])
+    const current = searchParams.get('scenario') ?? 'normal'
+    if (current === scenario) return
+    const params = new URLSearchParams(searchParams)
+    params.set('scenario', scenario)
+    setSearchParams(params, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenario])
 
+  // Cleanup drag timeout
   useEffect(() => {
     return () => {
       if (draggedOpenBlockTimeoutId.current) {
@@ -854,85 +251,67 @@ export function DesktopRoute() {
     }
   }, [])
 
+  // Observe workspace size
   useEffect(() => {
-    const current = searchParams.get('scenario') ?? 'normal'
-    if (current === scenario) {
-      return
-    }
-
-    const params = new URLSearchParams(searchParams)
-    params.set('scenario', scenario)
-    setSearchParams(params, { replace: true })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenario])
-
-  useEffect(() => {
-    if (!data) {
-      return
-    }
-
-    if (scenario === 'normal') {
-      const stored = readJson<LayoutState>(layoutStorageKey(formFactor))
-      applyResolvedLayout(
-        stored ? migrateDeadZone(stored, formFactor) : data.layout,
-        data.layout,
-      )
-      return
-    }
-    applyResolvedLayout(data.layout, data.layout)
-  }, [apps, data, formFactor, scenario])
-
-  useEffect(() => {
-    if (!layoutState || scenario !== 'normal') {
-      return
-    }
-
-    writeJson(layoutStorageKey(formFactor), layoutState)
-  }, [formFactor, layoutState, scenario])
-
-  // When the grid spec changes, mark out-of-bounds items as unpositioned
-  useEffect(() => {
-    setLayoutState((prev) => {
-      if (!prev) return prev
-      const next = invalidatePositions(prev, currentSpec.cols, currentSpec.rows)
-      return next !== prev ? next : prev
-    })
-  }, [currentSpec.cols, currentSpec.rows])
-
-  // Compute a fully-positioned layout for rendering (fills in auto-positions)
-  const resolvedLayout = useMemo(() => {
-    if (!layoutState) return null
-    const scanOrder: ScanOrder = isMobile ? 'row-major' : 'col-major'
-    return resolveLayout(layoutState, currentSpec.cols, currentSpec.rows, scanOrder)
-  }, [layoutState, currentSpec.cols, currentSpec.rows, isMobile])
-
-  useEffect(() => {
-    if (!workspaceRef.current) {
-      return
-    }
-
+    if (!workspaceRef.current) return
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0]
-
-      if (!entry) {
-        return
-      }
-
+      if (!entry) return
       setWorkspaceSize({
         width: entry.contentRect.width,
         height: entry.contentRect.height,
       })
     })
-
     resizeObserver.observe(workspaceRef.current)
-
     return () => resizeObserver.disconnect()
   }, [])
 
-  const resolvedDeadZone = useMemo(
-    () => layoutState?.deadZone ?? data?.layout.deadZone ?? { top: 0, bottom: 0, left: 0, right: 0 },
-    [layoutState?.deadZone, data?.layout.deadZone],
+  // Viewport resize → normalise window positions
+  const normalizeOpenWindowsForViewport = useCallback(
+    (nextViewportSize: { width: number; height: number }) => {
+      store.normalizeOpenWindowsForViewport(nextViewportSize)
+    },
+    [store],
   )
+
+  useEffect(() => {
+    const updateViewportSize = () => {
+      const nextViewportSize = {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      }
+      setViewportSize(nextViewportSize)
+      if (formFactor === 'desktop') {
+        normalizeOpenWindowsForViewport(nextViewportSize)
+      }
+    }
+    window.addEventListener('resize', updateViewportSize)
+    window.addEventListener('orientationchange', updateViewportSize)
+    return () => {
+      window.removeEventListener('resize', updateViewportSize)
+      window.removeEventListener('orientationchange', updateViewportSize)
+    }
+  }, [formFactor, normalizeOpenWindowsForViewport])
+
+  // Read from snapshot — grouped by data tier
+  const { status, error: loadError, apps, resolvedLayout } = snap
+  const { appearance } = snap.syncData
+  const { runtimeContainer, windowAppearance } = appearance
+  const {
+    windows,
+    activityLog,
+    snackbar,
+    isSystemSidebarOpen,
+    selectedItemId,
+    viewportProgress,
+    contextMenu,
+  } = snap.runtime
+
+  const isLoading = status === 'loading'
+  const hasError = status === 'error'
+  const connectionState = useConnectionState(runtimeContainer)
+
+  const resolvedDeadZone = store.getResolvedDeadZone()
   const safeArea = useSafeAreaInsets()
   const desktopWorkspaceTopInset =
     safeArea.top + resolvedDeadZone.top + shellStatusBarHeight('desktop')
@@ -943,119 +322,23 @@ export function DesktopRoute() {
     viewportSize,
   })
   const workspaceInnerWidth = Math.max(
-    workspaceSize.width
-      - resolvedDeadZone.left - resolvedDeadZone.right
-      - safeArea.left - safeArea.right,
+    workspaceSize.width -
+      resolvedDeadZone.left -
+      resolvedDeadZone.right -
+      safeArea.left -
+      safeArea.right,
     320,
   )
 
-  const logActivity = (message: string) => {
-    const stamp = new Intl.DateTimeFormat(locale, {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    }).format(new Date())
+  // ---------------------------------------------------------------------------
+  // Action handlers (thin wrappers around store)
+  // ---------------------------------------------------------------------------
 
-    setActivityLog((prev) => [`${stamp} · ${message}`, ...prev].slice(0, 8))
-  }
-
-  const persistWindowGeometry = useCallback((appId: string, geometry: WindowGeometry) => {
-    if (sameWindowGeometry(windowGeometryByAppRef.current[appId], geometry)) {
-      return
-    }
-
-    windowGeometryByAppRef.current = {
-      ...windowGeometryByAppRef.current,
-      [appId]: geometry,
-    }
-    writeJson(windowGeometryStorageKey, windowGeometryByAppRef.current)
-  }, [])
-
-  const normalizeOpenWindowsForViewport = useCallback((
-    nextViewportSize: { width: number; height: number },
-    nextDeadZone = resolvedDeadZone,
-    nextSafeArea = safeArea,
-  ) => {
-    const nextBounds = getDesktopWindowWorkspaceBounds({
-      deadZone: nextDeadZone,
-      safeArea: nextSafeArea,
-      topInset:
-        nextSafeArea.top + nextDeadZone.top + shellStatusBarHeight('desktop'),
-      viewportSize: nextViewportSize,
-    })
-
-    setWindows((prev) => {
-      let changed = false
-      const next = prev.map((windowItem, index) => {
-        const app = findDesktopAppById(apps, windowItem.appId)
-
-        if (!app) {
-          return windowItem
-        }
-
-        const geometry = normalizeWindowGeometryForViewport(
-          app,
-          windowItem,
-          index,
-          nextBounds,
-        )
-
-        if (sameWindowGeometry(windowItem, geometry)) {
-          return windowItem
-        }
-
-        changed = true
-        persistWindowGeometry(windowItem.appId, geometry)
-        return {
-          ...windowItem,
-          ...geometry,
-        }
-      })
-
-      return changed ? next : prev
-    })
-  }, [apps, persistWindowGeometry, resolvedDeadZone, safeArea])
-
-  useEffect(() => {
-    const updateViewportSize = () => {
-      const nextViewportSize = {
-        width: window.innerWidth,
-        height: window.innerHeight,
-      }
-
-      setViewportSize(nextViewportSize)
-      if (formFactor === 'desktop') {
-        normalizeOpenWindowsForViewport(nextViewportSize)
-      }
-    }
-
-    window.addEventListener('resize', updateViewportSize)
-    window.addEventListener('orientationchange', updateViewportSize)
-
-    return () => {
-      window.removeEventListener('resize', updateViewportSize)
-      window.removeEventListener('orientationchange', updateViewportSize)
-    }
-  }, [formFactor, normalizeOpenWindowsForViewport])
-
-  const restoreDefaults = () => {
-    if (!data) {
-      return
-    }
-
-    window.localStorage.removeItem(layoutStorageKey(formFactor))
-    window.localStorage.removeItem(windowGeometryStorageKey)
-    setLayoutState(structuredClone(data.layout))
-    setWindows([])
-    windowGeometryByAppRef.current = {}
-  }
+  const logActivity = (message: string) => store.logActivity(message, locale)
 
   const handleOpenApp = (appId: string) => {
     const app = findDesktopAppById(apps, appId)
-
-    if (!app) {
-      return
-    }
+    if (!app) return
 
     if (isMobile && app.manifest.mobileRedirectPath) {
       navigate(app.manifest.mobileRedirectPath)
@@ -1063,43 +346,20 @@ export function DesktopRoute() {
     }
 
     if (app.manifest.placement === 'new-container' || app.tier === 'external') {
-      const message = t('activity.external', 'Requested new-container launch for {{name}}', {
-        name: t(app.labelKey, app.id),
-      })
-      logActivity(message)
-      setSnackbar(t('external.body'))
+      logActivity(
+        t('activity.external', 'Requested new-container launch for {{name}}', {
+          name: t(app.labelKey, app.id),
+        }),
+      )
+      store.setSnackbar(t('external.body'))
       return
     }
 
-    setWindows((prev) => {
-      const existing = prev.find((windowItem) => windowItem.appId === appId)
-
-      if (existing) {
-        return prev.map((windowItem, index) =>
-          windowItem.id === existing.id
-            ? {
-                ...windowItem,
-                state:
-                  app.manifest.defaultMode === 'windowed'
-                    ? 'windowed'
-                    : 'maximized',
-                minimizedOrder: null,
-                zIndex: prev.length + 10,
-              }
-            : { ...windowItem, zIndex: 10 + index },
-        )
-      }
-
-      const preferredGeometry =
-        scenario === 'normal' ? windowGeometryByAppRef.current[app.id] : undefined
-      const normalizedGeometry = normalizeWindowGeometryForViewport(
-        app,
-        preferredGeometry,
-        prev.length,
-        desktopViewportBounds,
-      )
-
-      return [...prev, createWindowRecord(app, prev.length, normalizedGeometry)]
+    store.openApp(appId, {
+      isMobile,
+      navigate,
+      logActivity,
+      viewportBounds: desktopViewportBounds,
     })
     logActivity(
       t('activity.opened', 'Opened {{name}}', { name: t(app.labelKey, app.id) }),
@@ -1107,118 +367,76 @@ export function DesktopRoute() {
   }
 
   const handleCloseWindow = (windowId: string) => {
-    const closing = windows.find((windowItem) => windowItem.id === windowId)
+    const closing = windows.find((w) => w.id === windowId)
     if (closing) {
       const app = findDesktopAppById(apps, closing.appId)
-      persistWindowGeometry(closing.appId, {
-        x: closing.x,
-        y: closing.y,
-        width: closing.width,
-        height: closing.height,
-      })
       logActivity(
         t('activity.closed', 'Closed {{name}}', {
           name: t(app?.labelKey ?? closing.titleKey),
         }),
       )
     }
-
-    setWindows((prev) => prev.filter((windowItem) => windowItem.id !== windowId))
-  }
-
-  const updateWindowGeometry = (
-    windowId: string,
-    geometry: Partial<WindowGeometry>,
-  ) => {
-    setWindows((prev) =>
-      prev.map((windowItem) => {
-        if (windowItem.id !== windowId) {
-          return windowItem
-        }
-
-        const nextWindow = { ...windowItem, ...geometry }
-        persistWindowGeometry(windowItem.appId, {
-          x: nextWindow.x,
-          y: nextWindow.y,
-          width: nextWindow.width,
-          height: nextWindow.height,
-        })
-        return nextWindow
-      }),
-    )
-  }
-
-  const focusWindow = (windowId: string) => {
-    setWindows((prev) => {
-      const top = prev.length + 12
-      return prev.map((windowItem, index) =>
-        windowItem.id === windowId
-          ? { ...windowItem, zIndex: top }
-          : { ...windowItem, zIndex: 10 + index },
-      )
-    })
-  }
-
-  const toggleMaximizeWindow = (windowId: string) => {
-    const target = windows.find((windowItem) => windowItem.id === windowId)
-    if (!target) {
-      return
-    }
-
-    const app = findDesktopAppById(apps, target.appId)
-    logActivity(
-      t('activity.maximized', 'Toggled maximize for {{name}}', {
-        name: t(app?.labelKey ?? target.titleKey),
-      }),
-    )
-    setWindows((prev) =>
-      prev.map((windowItem) =>
-        windowItem.id === windowId
-          ? {
-              ...windowItem,
-              state:
-                windowItem.state === 'maximized' ? 'windowed' : 'maximized',
-            }
-          : windowItem,
-      ),
-    )
+    store.closeWindow(windowId)
   }
 
   const minimizeWindow = (windowId: string) => {
-    const target = windows.find((windowItem) => windowItem.id === windowId)
-    if (!target) {
-      return
+    const target = windows.find((w) => w.id === windowId)
+    if (target) {
+      const app = findDesktopAppById(apps, target.appId)
+      logActivity(
+        t('activity.minimized', 'Minimized {{name}}', {
+          name: t(app?.labelKey ?? target.titleKey),
+        }),
+      )
     }
-
-    const app = findDesktopAppById(apps, target.appId)
-    logActivity(
-      t('activity.minimized', 'Minimized {{name}}', {
-        name: t(app?.labelKey ?? target.titleKey),
-      }),
-    )
-
-    const minimizedOrder = nextMinimizedOrderRef.current++
-
-    setWindows((prev) =>
-      prev.map((windowItem) =>
-        windowItem.id === windowId
-          ? { ...windowItem, state: 'minimized', minimizedOrder }
-          : windowItem,
-      ),
-    )
+    store.minimizeWindow(windowId)
   }
 
-  // Layout changes are driven by drag handlers and resolveLayout;
-  // we intentionally skip the react-grid-layout onLayoutChange callback
-  // so that auto-positioned items keep their undefined stored position.
-  const handleLayoutChange = (_pageId: string, _nextLayout: Layout) => {}
+  const toggleMaximizeWindow = (windowId: string) => {
+    const target = windows.find((w) => w.id === windowId)
+    if (target) {
+      const app = findDesktopAppById(apps, target.appId)
+      logActivity(
+        t('activity.maximized', 'Toggled maximize for {{name}}', {
+          name: t(app?.labelKey ?? target.titleKey),
+        }),
+      )
+    }
+    store.toggleMaximizeWindow(windowId)
+  }
+
+  const focusWindow = (windowId: string) => store.focusWindow(windowId)
+  const updateWindowGeometry = (
+    windowId: string,
+    geometry: Partial<Pick<import('../models/ui').WindowRecord, 'x' | 'y' | 'width' | 'height'>>,
+  ) => store.updateWindowGeometry(windowId, geometry)
+
+  const applySettings = (values: SystemPreferencesInput) => {
+    store.applySettings(values, { setLocale, setThemeMode, viewportSize })
+    logActivity(t('activity.saved'))
+  }
+
+  const restoreDefaults = () => store.restoreDefaults()
+  const handleReturnDesktop = () => store.returnToDesktop()
+
+  const toggleSidebar = () => store.toggleSystemSidebar()
+  const closeSidebar = () => store.closeSystemSidebar()
+  const handleSelectSidebarApp = (appId: string) => {
+    handleOpenApp(appId)
+    closeSidebar()
+  }
+  const handleCycleLocale = () => setLocale(nextSupportedLocale(locale))
+  const handleToggleTheme = () =>
+    setThemeMode(themeMode === 'light' ? 'dark' : 'light')
+
+  // ---------------------------------------------------------------------------
+  // Drag suppression helpers (view-layer only)
+  // ---------------------------------------------------------------------------
 
   const suppressNextOpen = (itemId: string) => {
     suppressOpenItemId.current = itemId
     window.setTimeout(() => {
-      if (suppressOpenItemId.current === itemId) {
-        suppressOpenItemId.current = null
-      }
+      if (suppressOpenItemId.current === itemId) suppressOpenItemId.current = null
     }, 180)
   }
 
@@ -1228,9 +446,7 @@ export function DesktopRoute() {
       window.clearTimeout(draggedOpenBlockTimeoutId.current)
     }
     draggedOpenBlockTimeoutId.current = window.setTimeout(() => {
-      if (draggedOpenBlockItemId.current === itemId) {
-        draggedOpenBlockItemId.current = null
-      }
+      if (draggedOpenBlockItemId.current === itemId) draggedOpenBlockItemId.current = null
       draggedOpenBlockTimeoutId.current = null
     }, 240)
   }
@@ -1244,12 +460,10 @@ export function DesktopRoute() {
       }
       return true
     }
-
     if (suppressOpenItemId.current === itemId) {
       suppressOpenItemId.current = null
       return true
     }
-
     return false
   }
 
@@ -1259,10 +473,7 @@ export function DesktopRoute() {
     newItem: GridLayoutItem | null,
   ) => {
     const itemId = newItem?.i ?? oldItem?.i
-    if (!itemId) {
-      return
-    }
-
+    if (!itemId) return
     blockOpenAfterDrag(itemId)
     suppressNextOpen(itemId)
   }
@@ -1277,177 +488,24 @@ export function DesktopRoute() {
       blockOpenAfterDrag(itemId)
       suppressNextOpen(itemId)
     }
-
-    if (!newItem) {
-      return
-    }
-
-    const positionChanged =
-      !oldItem ||
-      oldItem.x !== newItem.x ||
-      oldItem.y !== newItem.y ||
-      oldItem.w !== newItem.w ||
-      oldItem.h !== newItem.h
-
-    if (!positionChanged) {
-      return
-    }
-
-    // Give the dragged item an explicit position.
-    // Any explicitly-positioned item it overlaps becomes unpositioned
-    // and will be auto-placed at the page tail by resolveLayout.
-    setLayoutState((prev) => {
-      if (!prev) {
-        return prev
-      }
-
-      return {
-        ...prev,
-        pages: prev.pages.map((page) => {
-          if (page.id !== pageId) return page
-          return {
-            ...page,
-            items: page.items.map((item) => {
-              if (item.id === newItem.i) {
-                return { ...item, x: newItem.x, y: newItem.y }
-              }
-              // Displace overlapping explicitly-positioned items
-              if (item.x !== undefined && item.y !== undefined) {
-                const overlaps = !(
-                  newItem.x + newItem.w <= item.x ||
-                  item.x + item.w <= newItem.x ||
-                  newItem.y + newItem.h <= item.y ||
-                  item.y + item.h <= newItem.y
-                )
-                if (overlaps) {
-                  return { ...item, x: undefined, y: undefined }
-                }
-              }
-              return item
-            }),
-          }
-        }),
-      }
-    })
+    if (!newItem) return
+    store.handleGridDragStop(pageId, oldItem, newItem)
   }
 
-  const moveItemBetweenPages = (itemId: string, direction: -1 | 1) => {
-    if (!resolvedLayout) return
+  const handleLayoutChange = (_pageId: string, _nextLayout: Layout) => {}
 
-    // Use the resolved layout to determine which page the user sees the item on
-    const resolvedPageIndex = getPageIndex(resolvedLayout, itemId)
-    if (resolvedPageIndex < 0) return
-
-    setLayoutState((prev) => {
-      if (!prev) {
-        return prev
-      }
-
-      // Find and remove from current page in layoutState
-      const currentPageIndex = getPageIndex(prev, itemId)
-      if (currentPageIndex < 0) return prev
-
-      const item = prev.pages[currentPageIndex].items.find((entry) => entry.id === itemId)
-      if (!item) return prev
-
-      const targetPageIndex = resolvedPageIndex + direction
-      if (targetPageIndex < 0) return prev
-
-      const nextPages = prev.pages.map((page) => ({
-        ...page,
-        items: [...page.items],
-      }))
-
-      if (targetPageIndex >= nextPages.length) {
-        nextPages.push({
-          id: `${formFactor}-page-${nextPages.length + 1}`,
-          items: [],
-        })
-      }
-
-      nextPages[currentPageIndex].items = nextPages[currentPageIndex].items.filter(
-        (entry) => entry.id !== itemId,
-      )
-      // Add to target page with undefined position (auto-placed at tail)
-      nextPages[targetPageIndex].items.push({ ...item, x: undefined, y: undefined })
-
-      return {
-        ...prev,
-        pages: nextPages,
-      }
-    })
-    setContextMenu(null)
-  }
-
-  const updateWidgetNote = (itemId: string, content: string) => {
-    setLayoutState((prev) => {
-      if (!prev) {
-        return prev
-      }
-
-      return {
-        ...prev,
-        pages: prev.pages.map((page) => ({
-          ...page,
-          items: page.items.map((item) =>
-            item.id === itemId && item.type === 'widget'
-              ? {
-                  ...item,
-                  config: {
-                    ...item.config,
-                    content,
-                  },
-                }
-              : item,
-          ),
-        })),
-      }
-    })
-  }
-
-  const applySettings = (values: SystemPreferencesInput) => {
-    const nextDeadZone = {
-      top: values.deadZoneTop,
-      bottom: values.deadZoneBottom,
-      left: values.deadZoneLeft,
-      right: values.deadZoneRight,
-    }
-    const nextWindowAppearance = {
-      titleBarOpacity: values.titleBarOpacity,
-      backgroundOpacity: values.backgroundOpacity,
-    }
-
-    setLocale(values.locale)
-    setThemeMode(values.theme as ThemeMode)
-    setRuntimeContainer(values.runtimeContainer)
-    setWindowAppearance(nextWindowAppearance)
-    setLayoutState((prev) => {
-      if (!prev) {
-        return prev
-      }
-
-      return {
-        ...prev,
-        deadZone: nextDeadZone,
-      }
-    })
-    if (formFactor === 'desktop') {
-      normalizeOpenWindowsForViewport(viewportSize, nextDeadZone)
-    }
-
-    logActivity(t('activity.saved'))
-    setSnackbar(t('activity.saved'))
-  }
+  // ---------------------------------------------------------------------------
+  // Derived data
+  // ---------------------------------------------------------------------------
 
   const windowLayerModel = useMemo(
-    () => createDesktopWindowLayerDataModel(apps, windows),
+    () => store.getWindowLayerModel(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [apps, windows],
   )
   const topMobileWindow = windowLayerModel.topWindow
   const activeMobileApp =
-    formFactor === 'mobile' && topMobileWindow
-      ? topMobileWindow.app
-      : undefined
+    formFactor === 'mobile' && topMobileWindow ? topMobileWindow.app : undefined
   const shellBarHeight = shellStatusBarHeight(formFactor, activeMobileApp)
   const mobileSheetTopInset =
     activeMobileApp && mobileStatusBarMode(activeMobileApp) === 'standard'
@@ -1458,153 +516,113 @@ export function DesktopRoute() {
       ? safeArea.top + resolvedDeadZone.top
       : desktopWorkspaceTopInset
   const workspaceInnerHeight = Math.max(
-    workspaceSize.height - workspaceTopPadding - resolvedDeadZone.bottom - safeArea.bottom,
+    workspaceSize.height -
+      workspaceTopPadding -
+      resolvedDeadZone.bottom -
+      safeArea.bottom,
     360,
   )
   const shouldLockDesktopViewport =
     formFactor === 'desktop' &&
     viewportSize.width >= desktopMinCanvasSize.width &&
     viewportSize.height >= desktopMinCanvasSize.height
-  const trayState = useMemo<StatusTrayState>(
-    () => {
-      const statusTips: StatusTip[] = [
-        {
-          id: 'recent-shell-action',
-          tone: 'success',
-          taskLabel: t('tips.task.shell'),
-          title: t('tips.card.recent.title'),
-          body: activityLog[0] ?? t('tips.card.recent.body'),
-          statusLabel: t('tips.status.completed'),
-          timeLabel: t('tips.time.justNow'),
-        },
-        {
-          id: 'mobile-touch-audit',
-          tone: 'error',
-          taskLabel: t('tips.task.mobile'),
-          title: t('tips.card.touch.title'),
-          body: t('tips.card.touch.body'),
-          statusLabel: t('tips.status.failed'),
-          timeLabel: t('tips.time.twoMinutes'),
-        },
-        {
-          id: 'diagnostics-export',
-          tone: 'progress',
-          taskLabel: t('tips.task.report'),
-          title: t('tips.card.report.title'),
-          body: t('tips.card.report.body'),
-          statusLabel: t('tips.status.running'),
-          timeLabel: t('tips.time.queue'),
-        },
-        {
-          id: 'runtime-cache-warmed',
-          tone: 'success',
-          taskLabel: t('tips.task.runtime'),
-          title: t('tips.card.cache.title'),
-          body: t('tips.card.cache.body'),
-          statusLabel: t('tips.status.completed'),
-          timeLabel: '5m',
-        },
-        {
-          id: 'notes-sync-retry',
-          tone: 'error',
-          taskLabel: t('tips.task.sync'),
-          title: t('tips.card.sync.title'),
-          body: t('tips.card.sync.body'),
-          statusLabel: t('tips.status.failed'),
-          timeLabel: '9m',
-        },
-        {
-          id: 'docs-index-refresh',
-          tone: 'progress',
-          taskLabel: t('tips.task.index'),
-          title: t('tips.card.index.title'),
-          body: t('tips.card.index.body'),
-          statusLabel: t('tips.status.running'),
-          timeLabel: '12m',
-        },
-        {
-          id: 'launcher-metrics-pushed',
-          tone: 'success',
-          taskLabel: t('tips.task.metrics'),
-          title: t('tips.card.metrics.title'),
-          body: t('tips.card.metrics.body'),
-          statusLabel: t('tips.status.completed'),
-          timeLabel: '18m',
-        },
-        {
-          id: 'widget-layout-reflow',
-          tone: 'progress',
-          taskLabel: t('tips.task.layout'),
-          title: t('tips.card.layout.title'),
-          body: t('tips.card.layout.body'),
-          statusLabel: t('tips.status.running'),
-          timeLabel: '24m',
-        },
-      ]
+  const systemSidebarModel = store.getSystemSidebarDataModel(activeMobileApp?.id)
 
-      return {
-        backupActive: windows.some(
-          (windowItem) =>
-            windowItem.appId === 'files' && windowItem.state !== 'minimized',
-        ),
-        messageCount: Math.min(
-          windows.filter((windowItem) => windowItem.state !== 'minimized').length,
-          3,
-        ),
-        notificationCount: Math.min(statusTips.length, 9),
-        tips: statusTips,
-      }
-    },
-    [activityLog, t, windows],
-  )
+  const trayState = useMemo(() => {
+    const statusTips = [
+      {
+        id: 'recent-shell-action',
+        tone: 'success' as const,
+        taskLabel: t('tips.task.shell'),
+        title: t('tips.card.recent.title'),
+        body: activityLog[0] ?? t('tips.card.recent.body'),
+        statusLabel: t('tips.status.completed'),
+        timeLabel: t('tips.time.justNow'),
+      },
+      {
+        id: 'mobile-touch-audit',
+        tone: 'error' as const,
+        taskLabel: t('tips.task.mobile'),
+        title: t('tips.card.touch.title'),
+        body: t('tips.card.touch.body'),
+        statusLabel: t('tips.status.failed'),
+        timeLabel: t('tips.time.twoMinutes'),
+      },
+      {
+        id: 'diagnostics-export',
+        tone: 'progress' as const,
+        taskLabel: t('tips.task.report'),
+        title: t('tips.card.report.title'),
+        body: t('tips.card.report.body'),
+        statusLabel: t('tips.status.running'),
+        timeLabel: t('tips.time.queue'),
+      },
+      {
+        id: 'runtime-cache-warmed',
+        tone: 'success' as const,
+        taskLabel: t('tips.task.runtime'),
+        title: t('tips.card.cache.title'),
+        body: t('tips.card.cache.body'),
+        statusLabel: t('tips.status.completed'),
+        timeLabel: '5m',
+      },
+      {
+        id: 'notes-sync-retry',
+        tone: 'error' as const,
+        taskLabel: t('tips.task.sync'),
+        title: t('tips.card.sync.title'),
+        body: t('tips.card.sync.body'),
+        statusLabel: t('tips.status.failed'),
+        timeLabel: '9m',
+      },
+      {
+        id: 'docs-index-refresh',
+        tone: 'progress' as const,
+        taskLabel: t('tips.task.index'),
+        title: t('tips.card.index.title'),
+        body: t('tips.card.index.body'),
+        statusLabel: t('tips.status.running'),
+        timeLabel: '12m',
+      },
+      {
+        id: 'launcher-metrics-pushed',
+        tone: 'success' as const,
+        taskLabel: t('tips.task.metrics'),
+        title: t('tips.card.metrics.title'),
+        body: t('tips.card.metrics.body'),
+        statusLabel: t('tips.status.completed'),
+        timeLabel: '18m',
+      },
+      {
+        id: 'widget-layout-reflow',
+        tone: 'progress' as const,
+        taskLabel: t('tips.task.layout'),
+        title: t('tips.card.layout.title'),
+        body: t('tips.card.layout.body'),
+        statusLabel: t('tips.status.running'),
+        timeLabel: '24m',
+      },
+    ]
 
-  const toggleSidebar = () => setIsSystemSidebarOpen((prev) => !prev)
-  const closeSidebar = () => setIsSystemSidebarOpen(false)
-  const handleReturnDesktop = () => {
-    setWindows((prev) => {
-      const visibleWindowIds = [...prev]
-        .filter((windowItem) => windowItem.state !== 'minimized')
-        .sort((a, b) => a.zIndex - b.zIndex)
-        .map((windowItem) => windowItem.id)
-      const minimizedOrderMap = new Map(
-        visibleWindowIds.map((windowId, index) => [
-          windowId,
-          nextMinimizedOrderRef.current + index,
-        ]),
-      )
+    return {
+      backupActive: windows.some(
+        (w) => w.appId === 'files' && w.state !== 'minimized',
+      ),
+      messageCount: Math.min(
+        windows.filter((w) => w.state !== 'minimized').length,
+        3,
+      ),
+      notificationCount: Math.min(statusTips.length, 9),
+      tips: statusTips,
+    }
+  }, [activityLog, t, windows])
 
-      nextMinimizedOrderRef.current += visibleWindowIds.length
-
-      return prev.map((windowItem) =>
-        windowItem.state === 'minimized'
-          ? windowItem
-          : {
-              ...windowItem,
-              state: 'minimized',
-              minimizedOrder: minimizedOrderMap.get(windowItem.id) ?? null,
-            },
-      )
-    })
-    closeSidebar()
-  }
-  const handleSelectSidebarApp = (appId: string) => {
-    handleOpenApp(appId)
-    closeSidebar()
-  }
-  const handleCycleLocale = () => setLocale(nextSupportedLocale(locale))
-  const handleToggleTheme = () =>
-    setThemeMode(themeMode === 'light' ? 'dark' : 'light')
-  const systemSidebarModel = createSystemSidebarDataModel(
-    apps,
-    windows,
-    activeMobileApp?.id,
-  )
-
+  // Background
   const backgroundWallpaper = useMemo(
-    () => data?.wallpaper ?? { mode: 'infinite' as const },
-    [data?.wallpaper],
+    () => appearance.wallpaper ?? { mode: 'infinite' as const },
+    [appearance.wallpaper],
   )
-  const backgroundPageCount = resolvedLayout?.pages.length ?? data?.layout.pages.length ?? 1
+  const backgroundPageCount = resolvedLayout?.pages.length ?? 1
 
   useEffect(() => {
     setBackground({
@@ -1612,47 +630,33 @@ export function DesktopRoute() {
       pageCount: backgroundPageCount,
       viewportProgress,
     })
-  }, [
-    backgroundPageCount,
-    backgroundWallpaper,
-    setBackground,
-    viewportProgress,
-  ])
+  }, [backgroundPageCount, backgroundWallpaper, setBackground, viewportProgress])
 
   useEffect(() => resetBackground, [resetBackground])
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
 
   return (
     <main
       className="relative isolate bg-[color:var(--cp-bg)]"
       style={
         shouldLockDesktopViewport
-          ? {
-              height: '100dvh',
-              overflow: 'hidden',
-            }
-          : {
-              minHeight: '100dvh',
-            }
+          ? { height: '100dvh', overflow: 'hidden' }
+          : { minHeight: '100dvh' }
       }
     >
       <section
         className="relative z-10"
         style={
           shouldLockDesktopViewport
-            ? {
-                height: '100%',
-                overflow: 'hidden',
-              }
-            : {
-                minHeight: '100dvh',
-              }
+            ? { height: '100%', overflow: 'hidden' }
+            : { minHeight: '100dvh' }
         }
       >
-        <div
-          ref={workspaceRef}
-          className="relative h-dvh min-h-dvh"
-        >
-          {!isLoading && !error && resolvedLayout ? (
+        <div ref={workspaceRef} className="relative h-dvh min-h-dvh">
+          {!isLoading && !hasError && resolvedLayout ? (
             <MobileNavProvider>
               <SystemSidebar
                 connectionState={connectionState}
@@ -1709,18 +713,27 @@ export function DesktopRoute() {
                     className="h-full"
                     style={{ height: workspaceInnerHeight }}
                     onSwiper={(swiper) =>
-                      setViewportProgress(
-                        normalizeViewportProgress(swiper.progress, resolvedLayout.pages.length),
+                      store.setViewportProgress(
+                        normalizeViewportProgress(
+                          swiper.progress,
+                          resolvedLayout.pages.length,
+                        ),
                       )
                     }
                     onProgress={(swiper) =>
-                      setViewportProgress(
-                        normalizeViewportProgress(swiper.progress, resolvedLayout.pages.length),
+                      store.setViewportProgress(
+                        normalizeViewportProgress(
+                          swiper.progress,
+                          resolvedLayout.pages.length,
+                        ),
                       )
                     }
                     onSlideChange={(swiper) =>
-                      setViewportProgress(
-                        normalizeViewportProgress(swiper.progress, resolvedLayout.pages.length),
+                      store.setViewportProgress(
+                        normalizeViewportProgress(
+                          swiper.progress,
+                          resolvedLayout.pages.length,
+                        ),
                       )
                     }
                   >
@@ -1730,11 +743,11 @@ export function DesktopRoute() {
                           <GridLayoutBase
                             className="layout h-full"
                             gridConfig={{
-                              cols: currentSpec.cols,
-                              rowHeight: currentSpec.rowHeight,
+                              cols: gridSpec.cols,
+                              rowHeight: gridSpec.rowHeight,
                               margin: [GRID_GAP, GRID_GAP],
                               containerPadding: [0, 0],
-                              maxRows: currentSpec.rows,
+                              maxRows: gridSpec.rows,
                             }}
                             layout={mapPageToGrid(page)}
                             width={workspaceInnerWidth - (isMobile ? 32 : 48)}
@@ -1772,18 +785,20 @@ export function DesktopRoute() {
                                       ? consumeOpenBlock(item.id)
                                         ? undefined
                                         : handleOpenApp(item.appId)
-                                      : setSelectedItemId(item.id)
+                                      : store.setSelectedItemId(item.id)
                                   }
                                   onOpenContextMenu={(event) => {
                                     event.preventDefault()
-                                    setSelectedItemId(item.id)
-                                    setContextMenu({
+                                    store.setSelectedItemId(item.id)
+                                    store.setContextMenu({
                                       itemId: item.id,
                                       mouseX: event.clientX + 2,
                                       mouseY: event.clientY - 6,
                                     })
                                   }}
-                                  onSaveNote={updateWidgetNote}
+                                  onSaveNote={(itemId, content) =>
+                                    store.updateWidgetNote(itemId, content)
+                                  }
                                 />
                               </div>
                             ))}
@@ -1836,13 +851,17 @@ export function DesktopRoute() {
           ) : null}
 
           {isLoading ? <LoadingState /> : null}
-          {error ? <ErrorState onRetry={() => void mutate()} /> : null}
+          {hasError ? (
+            <ErrorState
+              onRetry={() => void store.init(formFactor, scenario)}
+            />
+          ) : null}
         </div>
       </section>
 
       <Menu
         open={Boolean(contextMenu)}
-        onClose={() => setContextMenu(null)}
+        onClose={() => store.setContextMenu(null)}
         anchorReference="anchorPosition"
         anchorPosition={
           contextMenu
@@ -1852,25 +871,43 @@ export function DesktopRoute() {
       >
         <MenuItem
           onClick={() => {
-            const pageIndex = contextMenu && resolvedLayout ? getPageIndex(resolvedLayout, contextMenu.itemId) : -1
-            const item = pageIndex >= 0 ? resolvedLayout?.pages[pageIndex].items.find((entry) => entry.id === contextMenu?.itemId) : null
+            const pageIndex =
+              contextMenu && resolvedLayout
+                ? getPageIndex(resolvedLayout, contextMenu.itemId)
+                : -1
+            const item =
+              pageIndex >= 0
+                ? resolvedLayout?.pages[pageIndex].items.find(
+                    (entry) => entry.id === contextMenu?.itemId,
+                  )
+                : null
             if (item?.type === 'app') {
               handleOpenApp(item.appId)
             }
-            setContextMenu(null)
+            store.setContextMenu(null)
           }}
         >
           {t('common.open')}
         </MenuItem>
         <MenuItem
-          disabled={!contextMenu || !resolvedLayout || getPageIndex(resolvedLayout, contextMenu.itemId) <= 0}
-          onClick={() => contextMenu && moveItemBetweenPages(contextMenu.itemId, -1)}
+          disabled={
+            !contextMenu ||
+            !resolvedLayout ||
+            getPageIndex(resolvedLayout, contextMenu.itemId) <= 0
+          }
+          onClick={() =>
+            contextMenu &&
+            store.moveItemBetweenPages(contextMenu.itemId, -1)
+          }
         >
           {t('common.movePrev')}
         </MenuItem>
         <MenuItem
           disabled={!contextMenu || !resolvedLayout}
-          onClick={() => contextMenu && moveItemBetweenPages(contextMenu.itemId, 1)}
+          onClick={() =>
+            contextMenu &&
+            store.moveItemBetweenPages(contextMenu.itemId, 1)
+          }
         >
           {t('common.moveNext')}
         </MenuItem>
@@ -1878,7 +915,7 @@ export function DesktopRoute() {
 
       <Alert
         severity="success"
-        onClose={() => setSnackbar(null)}
+        onClose={() => store.setSnackbar(null)}
         sx={{
           display: snackbar ? 'flex' : 'none',
           position: 'fixed',
@@ -1894,6 +931,10 @@ export function DesktopRoute() {
     </main>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Sub-components (unchanged)
+// ---------------------------------------------------------------------------
 
 function LoadingState() {
   const { t } = useI18n()
@@ -1921,7 +962,9 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
     <div className="absolute inset-0 flex items-center justify-center bg-[color:var(--cp-surface)]/78 backdrop-blur-xl">
       <div className="shell-panel max-w-lg px-7 py-8 text-center">
         <p className="shell-kicker">Recovery</p>
-        <p className="mt-2 font-display text-2xl font-semibold">{t('states.errorTitle')}</p>
+        <p className="mt-2 font-display text-2xl font-semibold">
+          {t('states.errorTitle')}
+        </p>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[color:var(--cp-muted)]">
           {t('states.errorBody')}
         </p>
@@ -1939,7 +982,9 @@ function EmptyState({ onRestore }: { onRestore: () => void }) {
     <div className="flex h-full items-center justify-center px-4">
       <div className="shell-panel max-w-lg border-dashed px-7 py-8 text-center">
         <p className="shell-kicker">Layout</p>
-        <p className="mt-2 font-display text-2xl font-semibold">{t('states.emptyTitle')}</p>
+        <p className="mt-2 font-display text-2xl font-semibold">
+          {t('states.emptyTitle')}
+        </p>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[color:var(--cp-muted)]">
           {t('states.emptyBody')}
         </p>
@@ -1969,7 +1014,11 @@ function DesktopTile({
   onSaveNote: (itemId: string, content: string) => void
 }) {
   const { t } = useI18n()
-  const touchStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null)
+  const touchStartRef = useRef<{
+    x: number
+    y: number
+    pointerId: number
+  } | null>(null)
   const releaseAppPointerRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
@@ -1991,28 +1040,18 @@ function DesktopTile({
     clientY: number,
     pointerType: string,
   ) => {
-    if (isDesktop || pointerType === 'mouse') {
-      return
-    }
-
+    if (isDesktop || pointerType === 'mouse') return
     const start = touchStartRef.current
     clearAppPointer()
-
-    if (!start || start.pointerId !== pointerId) {
-      return
-    }
-
+    if (!start || start.pointerId !== pointerId) return
     const distance = Math.hypot(clientX - start.x, clientY - start.y)
-    if (distance <= 12) {
-      onOpen()
-    }
+    if (distance <= 12) onOpen()
   }
 
-  const handleAppPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (isDesktop || event.pointerType === 'mouse') {
-      return
-    }
-
+  const handleAppPointerDown = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (isDesktop || event.pointerType === 'mouse') return
     clearAppPointer()
     touchStartRef.current = {
       x: event.clientX,
@@ -2043,8 +1082,15 @@ function DesktopTile({
     }
   }
 
-  const handleAppPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    completeAppPointer(event.pointerId, event.clientX, event.clientY, event.pointerType)
+  const handleAppPointerUp = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    completeAppPointer(
+      event.pointerId,
+      event.clientX,
+      event.clientY,
+      event.pointerType,
+    )
   }
 
   return (
@@ -2078,16 +1124,16 @@ function DesktopTile({
           )}
           style={{ paddingTop: 'var(--icon-padding-top)' }}
         >
-            <span
-              className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
-              style={{
-                width: 'var(--icon-size)',
-                height: 'var(--icon-size)',
-                ...appIconSurfaceStyle(app.accent),
-              }}
-            >
-              <AppIcon iconKey={app.iconKey} className="text-white" />
-            </span>
+          <span
+            className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
+            style={{
+              width: 'var(--icon-size)',
+              height: 'var(--icon-size)',
+              ...appIconSurfaceStyle(app.accent),
+            }}
+          >
+            <AppIcon iconKey={app.iconKey} className="text-white" />
+          </span>
           <span
             className="max-w-full overflow-hidden px-0.5 font-display font-semibold text-[color:var(--cp-text)]"
             style={{
