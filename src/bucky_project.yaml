@@ -49,10 +49,14 @@ modules:
   agent_tool:
     type: rust
     name: agent_tool
-  control_panel_web:
+  # control_panel_web:
+  #   type: web
+  #   name: control_panel
+  #   src_dir: frame/control_panel/web/
+  desktop:
     type: web
-    name: control_panel
-    src_dir: frame/control_panel/web/
+    name: desktop
+    src_dir: frame/desktop/  
   buckyos_systest:
     type: web
     name: sys_test
@@ -76,7 +80,7 @@ apps:
       task_manager: bin/task-manager/
       kmsg: bin/kmsg/
       control_panel: bin/control-panel/
-      control_panel_web: bin/control-panel/web/
+      #control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
       repo_service: bin/repo-service/
       buckycli: bin/buckycli/
@@ -91,7 +95,7 @@ apps:
       util.py: bin/util.py
       stop.py: bin/stop.py
       buckyos_jarvis: bin/buckyos_jarvis/
-
+      desktop: bin/control-panel/web/
 
     # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标(覆盖安装逻辑)
     data_paths: 

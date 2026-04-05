@@ -1,0 +1,51 @@
+{
+  "name": "buckyos-web-desktop",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "check": "tsc -b",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@hookform/resolvers": "^5.2.2",
+    "@mui/material": "^7.3.9",
+    "@svar-ui/react-filemanager": "^2.5.0",
+    "@tanstack/react-virtual": "^3.13.23",
+    "autoprefixer": "^10.4.27",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.7.0",
+    "postcss": "^8.5.8",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-grid-layout": "^2.2.3",
+    "react-hook-form": "^7.72.0",
+    "react-router-dom": "^7.13.2",
+    "swiper": "^12.1.3",
+    "swr": "^2.4.1",
+    "tailwindcss": "^3.4.19",
+    "winbox": "^0.2.82",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^24.12.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.57.0",
+    "vite": "^8.0.1"
+  }
+}

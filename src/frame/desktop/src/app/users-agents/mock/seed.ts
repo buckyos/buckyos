@@ -1,0 +1,297 @@
+/* ── Users & Agents – mock data ── */
+
+import type {
+  SelfEntity,
+  AgentEntity,
+  LocalUserEntity,
+  ContactEntity,
+  EntityGroupEntity,
+  Collection,
+} from './types'
+
+// ── Self ──
+
+export const mockSelf: SelfEntity = {
+  id: 'self-001',
+  kind: 'self',
+  displayName: 'Alice',
+  avatarUrl: undefined,
+  did: 'did:bns:alice',
+  bindings: [
+    { id: 'b-1', platform: 'telegram', accountId: '@alice_bucky', displayId: '@alice_bucky', status: 'active', lastSyncAt: '2026-04-03T10:00:00Z' },
+    { id: 'b-2', platform: 'email', accountId: 'alice@example.com', displayId: 'alice@example.com', status: 'active', lastSyncAt: '2026-04-02T08:00:00Z' },
+  ],
+  bio: 'BuckyOS enthusiast & builder.',
+  email: 'alice@example.com',
+  phone: '+1-555-0100',
+  info: {
+    nickname: 'Alice',
+    location: 'San Francisco',
+    website: 'https://alice.example.com',
+  },
+  didDocument: {
+    '@context': 'https://www.w3.org/ns/did/v1',
+    id: 'did:bns:alice',
+    verificationMethod: [{ id: '#key-1', type: 'Ed25519VerificationKey2020', controller: 'did:bns:alice' }],
+  },
+  twoFactorEnabled: false,
+  lastLogin: '2026-04-04T09:30:00Z',
+  createdAt: '2025-06-01T00:00:00Z',
+}
+
+// ── Agent ──
+
+export const mockAgent: AgentEntity = {
+  id: 'agent-001',
+  kind: 'agent',
+  displayName: 'BuckyOS Assistant',
+  avatarUrl: undefined,
+  did: 'did:bns:assistant.alice',
+  agentType: 'General Assistant',
+  version: '1.2.0',
+  status: 'running',
+  capabilities: ['chat', 'file-search', 'code-review', 'scheduling'],
+  bindings: [
+    { id: 'b-3', platform: 'telegram', accountId: '@bucky_bot', displayId: '@bucky_bot', status: 'active', lastSyncAt: '2026-04-04T08:00:00Z' },
+  ],
+  info: {
+    description: 'Your personal AI assistant on BuckyOS.',
+    model: 'Claude Opus 4.6',
+  },
+  didDocument: {
+    '@context': 'https://www.w3.org/ns/did/v1',
+    id: 'did:bns:assistant.alice',
+  },
+  runtime: {
+    uptime: '12d 4h 32m',
+    memoryUsage: '256 MB',
+    cpuUsage: '3.2%',
+    lastActive: '2026-04-04T09:28:00Z',
+    uiSessions: 2,
+    workSessions: 5,
+    workspaces: 3,
+  },
+  createdAt: '2025-08-15T00:00:00Z',
+}
+
+// ── Local users ──
+
+export const mockLocalUsers: LocalUserEntity[] = [
+  {
+    id: 'lu-001',
+    kind: 'local-user',
+    displayName: 'Bob.Alice',
+    did: 'did:bns:bob.alice',
+    bindings: [],
+    role: 'member',
+    storageUsed: '4.2 GB',
+    storageQuota: '20 GB',
+    lastActive: '2026-04-03T18:00:00Z',
+    isOnline: true,
+    availableApps: ['files', 'messagehub', 'homestation'],
+    defaultGroup: 'family',
+    createdAt: '2025-10-01T00:00:00Z',
+  },
+  {
+    id: 'lu-002',
+    kind: 'local-user',
+    displayName: 'Carol.Alice',
+    did: 'did:bns:carol.alice',
+    bindings: [],
+    role: 'member',
+    storageUsed: '1.8 GB',
+    storageQuota: '20 GB',
+    lastActive: '2026-03-28T12:00:00Z',
+    isOnline: false,
+    availableApps: ['files', 'messagehub'],
+    defaultGroup: 'family',
+    createdAt: '2025-11-15T00:00:00Z',
+  },
+  {
+    id: 'lu-003',
+    kind: 'local-user',
+    displayName: 'Dave.Alice',
+    did: 'did:bns:dave.alice',
+    bindings: [],
+    role: 'guest',
+    storageUsed: '0.3 GB',
+    storageQuota: '5 GB',
+    lastActive: '2026-04-01T09:00:00Z',
+    isOnline: false,
+    availableApps: ['files'],
+    defaultGroup: 'guests',
+    createdAt: '2026-01-10T00:00:00Z',
+  },
+]
+
+// ── Contacts ──
+
+export const mockContacts: ContactEntity[] = [
+  {
+    id: 'ct-001',
+    kind: 'contact',
+    displayName: 'Eve',
+    did: 'did:bns:eve',
+    bindings: [{ id: 'b-10', platform: 'telegram', accountId: '@eve_t', displayId: '@eve_t', status: 'active' }],
+    source: 'manual',
+    isVerified: true,
+    tags: ['friend', 'developer'],
+    notes: 'Met at BuckyOS Meetup 2025',
+    lastInteraction: '2026-04-02T14:00:00Z',
+    createdAt: '2025-09-10T00:00:00Z',
+  },
+  {
+    id: 'ct-002',
+    kind: 'contact',
+    displayName: 'Frank',
+    did: 'did:bns:frank',
+    bindings: [],
+    source: 'manual',
+    isVerified: true,
+    tags: ['colleague'],
+    createdAt: '2025-10-20T00:00:00Z',
+  },
+  {
+    id: 'ct-003',
+    kind: 'contact',
+    displayName: 'Grace.telegram',
+    sourceLabel: 'Grace.telegram',
+    bindings: [{ id: 'b-11', platform: 'telegram', accountId: '@grace_g', displayId: '@grace_g', status: 'active' }],
+    source: 'telegram',
+    isVerified: false,
+    tags: ['imported'],
+    createdAt: '2026-01-05T00:00:00Z',
+  },
+  {
+    id: 'ct-004',
+    kind: 'contact',
+    displayName: 'Heidi',
+    did: 'did:bns:heidi',
+    bindings: [{ id: 'b-12', platform: 'email', accountId: 'heidi@mail.com', displayId: 'heidi@mail.com', status: 'active' }],
+    source: 'imported',
+    sourceLabel: 'Heidi.imported',
+    isVerified: false,
+    tags: ['business'],
+    notes: 'Imported from CSV on 2026-01-15',
+    createdAt: '2026-01-15T00:00:00Z',
+  },
+  {
+    id: 'ct-005',
+    kind: 'contact',
+    displayName: 'Ivan',
+    bindings: [],
+    source: 'manual',
+    isVerified: true,
+    tags: ['friend', 'neighbor'],
+    lastInteraction: '2026-03-20T10:00:00Z',
+    createdAt: '2025-12-01T00:00:00Z',
+  },
+  {
+    id: 'ct-006',
+    kind: 'contact',
+    displayName: 'Judy.telegram',
+    sourceLabel: 'Judy.telegram',
+    bindings: [{ id: 'b-13', platform: 'telegram', accountId: '@judy_j', displayId: '@judy_j', status: 'pending' }],
+    source: 'telegram',
+    isVerified: false,
+    tags: ['imported'],
+    createdAt: '2026-02-10T00:00:00Z',
+  },
+  {
+    id: 'ct-007',
+    kind: 'contact',
+    displayName: 'Kevin',
+    did: 'did:bns:kevin',
+    bindings: [],
+    source: 'discovered',
+    isVerified: false,
+    tags: ['discovered'],
+    createdAt: '2026-03-01T00:00:00Z',
+  },
+  {
+    id: 'ct-008',
+    kind: 'contact',
+    displayName: 'Lily',
+    did: 'did:bns:lily',
+    bindings: [{ id: 'b-14', platform: 'email', accountId: 'lily@work.com', displayId: 'lily@work.com', status: 'active' }],
+    source: 'manual',
+    isVerified: true,
+    tags: ['colleague', 'project-alpha'],
+    lastInteraction: '2026-04-01T16:00:00Z',
+    createdAt: '2025-07-20T00:00:00Z',
+  },
+]
+
+// ── Entity groups ──
+
+export const mockEntityGroups: EntityGroupEntity[] = [
+  {
+    id: 'eg-001',
+    kind: 'entity-group',
+    displayName: 'Family Space',
+    did: 'did:bns:family.alice',
+    bindings: [],
+    description: 'Family members sharing the space.',
+    memberCount: 3,
+    memberIds: ['self-001', 'lu-001', 'lu-002'],
+    ownerName: 'Alice',
+    isHostedBySelf: true,
+    canMessage: true,
+    createdAt: '2025-06-15T00:00:00Z',
+  },
+  {
+    id: 'eg-002',
+    kind: 'entity-group',
+    displayName: 'Project Alpha',
+    did: 'did:bns:proj-alpha',
+    bindings: [],
+    description: 'Cross-team project collaboration group.',
+    memberCount: 5,
+    memberIds: ['self-001', 'ct-001', 'ct-002', 'ct-008', 'ct-005'],
+    ownerName: 'Alice',
+    isHostedBySelf: true,
+    canMessage: true,
+    createdAt: '2025-11-01T00:00:00Z',
+  },
+  {
+    id: 'eg-003',
+    kind: 'entity-group',
+    displayName: 'BuckyOS Community',
+    bindings: [],
+    description: 'Open community for BuckyOS users.',
+    memberCount: 128,
+    memberIds: ['self-001'],
+    isHostedBySelf: false,
+    canMessage: true,
+    createdAt: '2025-03-01T00:00:00Z',
+  },
+]
+
+// ── Collections ──
+
+export const mockCollections: Collection[] = [
+  {
+    id: 'col-friends',
+    name: 'My Friends',
+    type: 'friends',
+    isBuiltIn: true,
+    entityIds: ['ct-001', 'ct-002', 'ct-003', 'ct-004', 'ct-005', 'ct-006', 'ct-007', 'ct-008'],
+    createdAt: '2025-06-01T00:00:00Z',
+  },
+  {
+    id: 'col-groups',
+    name: 'My Groups',
+    type: 'groups',
+    isBuiltIn: true,
+    entityIds: ['eg-001', 'eg-002', 'eg-003'],
+    createdAt: '2025-06-01T00:00:00Z',
+  },
+  {
+    id: 'col-custom-1',
+    name: 'Project Alpha Team',
+    type: 'custom',
+    isBuiltIn: false,
+    entityIds: ['ct-001', 'ct-002', 'ct-008'],
+    createdAt: '2026-01-20T00:00:00Z',
+  },
+]

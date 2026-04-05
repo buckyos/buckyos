@@ -473,6 +473,35 @@ class Bootstrapper:
             if not self.package_installed(package_id, kind="winget"):
                 self.install_winget_package(package_id)
 
+    def ensure_linux_rustup(self) -> None:
+        if self.find_rustup():
+            return
+
+        packages = self.resolve_package_set(LINUX_RUSTUP_CHOICES[self.package_manager])
+        if packages:
+            missing = [package for package in packages if not self.package_installed(package)]
+            if missing:
+                self.install_packages(missing)
+            return
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0 and not os.environ.get("SUDO_USER"):
+            self.warnings.append(
+                "rustup will be installed into root's home directory because the script is running as root"
+            )
+
+        if shutil.which("curl"):
+            fetch_command = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+        elif shutil.which("wget"):
+            fetch_command = "wget -qO- https://sh.rustup.rs | sh -s -- -y"
+        else:
+            raise BootstrapError("rustup installer requires curl or wget")
+
+        self.run(self.run_as_invoking_user(["sh", "-c", fetch_command]))
+
+        rustup_path = self.find_rustup()
+        if rustup_path and not shutil.which(Path(rustup_path).name):
+            self.notes.append(f"rustup was installed at {rustup_path}; reopen the terminal if it is not yet in PATH")
+
     def ensure_tmux(self) -> None:
         if shutil.which("tmux"):
             return
@@ -628,7 +657,7 @@ class Bootstrapper:
         self.install_packages(LINUX_CORE_PACKAGES[self.package_manager])
         self.install_first_resolved_set("Python 3", LINUX_PYTHON_CHOICES[self.package_manager])
         self.ensure_linux_node()
-        self.install_first_resolved_set("rustup", LINUX_RUSTUP_CHOICES[self.package_manager])
+        self.ensure_linux_rustup()
         self.ensure_uv()
         self.ensure_deno()
         self.ensure_tmux()
@@ -770,6 +799,8 @@ class Bootstrapper:
             return path
 
         candidates = [
+            self.invoking_user_home() / ".cargo" / "bin" / "rustup",
+            self.invoking_user_home() / ".cargo" / "bin" / "rustup.exe",
             Path.home() / ".cargo" / "bin" / "rustup",
             Path.home() / ".cargo" / "bin" / "rustup.exe",
             Path("/opt/homebrew/bin/rustup"),
