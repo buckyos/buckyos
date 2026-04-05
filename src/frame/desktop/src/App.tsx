@@ -7,7 +7,6 @@ import {
 import { I18nProvider } from './i18n/provider'
 import { PrototypeThemeProvider } from './theme/provider'
 import { DesktopRoute } from './desktop/DesktopRoute'
-import { FilesRoute } from './app/files/FilesRoute'
 import { HomeStationRoute } from './app/homestation/HomeStationRoute'
 import { MessageHubRoute } from './app/messagehub/MessageHubRoute'
 import { TaskCenterRoute } from './app/task-center/TaskCenterRoute'
@@ -17,11 +16,7 @@ const router = createBrowserRouter([
     path: '/',
     element: <DesktopRoute />,
   },
-  {
-    path: '/files',
-    element: <FilesRoute />,
-  },
-  {
+{
     path: '/homestation',
     element: <HomeStationRoute />,
   },

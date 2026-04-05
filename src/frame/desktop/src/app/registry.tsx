@@ -3,7 +3,6 @@ import { AppServiceAppPanel } from './app-service/AppServiceAppPanel'
 import { CodeAssistantAppPanel } from './codeassistant/CodeAssistantAppPanel'
 import { DemosAppPanel } from './demos/DemosAppPanel'
 import { DiagnosticsAppPanel } from './diagnostics/DiagnosticsAppPanel'
-import { FilesAppPanel } from './files/FilesAppPanel'
 import { HomeStationAppPanel } from './homestation/HomeStationAppPanel'
 import { MarketAppPanel } from './market/MarketAppPanel'
 import { MessageHubAppPanel } from './messagehub/MessageHubAppPanel'
@@ -23,7 +22,6 @@ const appLoaders = {
   'ai-center': AICenterAppPanel,
   'app-service': AppServiceAppPanel,
   settings: SettingsAppPanel,
-  files: FilesAppPanel,
   studio: StudioAppPanel,
   market: MarketAppPanel,
   diagnostics: DiagnosticsAppPanel,
