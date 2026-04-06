@@ -43,6 +43,7 @@ hyper = "1.8.1"
 zip = { workspace = true }
 image = { version = "0.25.5", default-features = false, features = ["jpeg", "png", "webp"] }
 base64 = { workspace = true }
+rand = { workspace = true }
 uuid = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }

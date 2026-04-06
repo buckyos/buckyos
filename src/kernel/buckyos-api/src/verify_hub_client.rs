@@ -259,6 +259,19 @@ impl VerifyHubClient {
         }
     }
 
+    pub async fn logout(&self, refresh_jwt: &str) -> Result<bool> {
+        match self {
+            Self::InProcess(handler) => handler.handle_logout(refresh_jwt).await,
+            Self::KRPC(client) => {
+                let params = RefreshTokenRequest::new(refresh_jwt.to_string()).to_json()?;
+                let result = client.call("logout", params).await?;
+                let ok: bool = serde_json::from_value(result)
+                    .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?;
+                Ok(ok)
+            }
+        }
+    }
+
     pub async fn login_by_jwt(&self, jwt: &str, login_params: Option<Value>) -> Result<TokenPair> {
         match self {
             Self::InProcess(handler) => handler.handle_login_by_jwt(jwt, login_params).await,
@@ -334,9 +347,11 @@ pub trait VerifyHubApiHandler: Send + Sync {
     ) -> Result<TokenPair>;
 
     async fn handle_verify_token(&self, session_token: &str, appid: Option<String>)
-    -> Result<bool>;
+        -> Result<bool>;
 
     async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair>;
+
+    async fn handle_logout(&self, refresh_jwt: &str) -> Result<bool>;
 
     async fn handle_login_by_password(
         &self,
@@ -400,6 +415,14 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                         .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
                 )
             }
+            "logout" => {
+                let refresh_jwt = RefreshTokenRequest::from_json(req.params)?;
+                let ok = self.0.handle_logout(&refresh_jwt.refresh_token).await?;
+                RPCResult::Success(
+                    serde_json::to_value(ok)
+                        .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
+                )
+            }
             "verify_token" => {
                 let verify_req = VerifyTokenRequest::from_json(req.params)?;
                 let value = self
@@ -459,6 +482,7 @@ mod tests {
         login_password: Option<(String, String, String, u64)>,
         verify_token: Option<(String, Option<String>)>,
         refresh_token: Option<String>,
+        logout: Option<String>,
     }
 
     #[derive(Clone)]
@@ -516,6 +540,12 @@ mod tests {
             })
         }
 
+        async fn handle_logout(&self, refresh_jwt: &str) -> Result<bool> {
+            let mut calls = self.calls.lock().unwrap();
+            calls.logout = Some(refresh_jwt.to_string());
+            Ok(true)
+        }
+
         async fn handle_verify_token(
             &self,
             session_token: &str,
@@ -560,6 +590,9 @@ mod tests {
             .unwrap();
         assert!(verify_result);
 
+        let logout_result = client.logout("refresh-1").await.unwrap();
+        assert!(logout_result);
+
         let calls = calls.lock().unwrap();
         let (jwt, params) = calls.login_jwt.clone().unwrap();
         assert_eq!(jwt, "jwt-1");
@@ -567,6 +600,7 @@ mod tests {
         let (session_token, appid) = calls.verify_token.clone().unwrap();
         assert_eq!(session_token, "session-1");
         assert_eq!(appid, Some("kernel".to_string()));
+        assert_eq!(calls.logout.as_deref(), Some("refresh-1"));
     }
 
     #[tokio::test]
@@ -611,6 +645,22 @@ mod tests {
             _ => panic!("Expected success response"),
         }
 
+        let logout_req = RPCRequest {
+            method: "logout".to_string(),
+            params: json!({"refresh_token": "refresh-2"}),
+            seq: 9,
+            token: None,
+            trace_id: None,
+        };
+        let logout_resp = rpc_handler.handle_rpc_call(logout_req, ip).await.unwrap();
+        match logout_resp.result {
+            RPCResult::Success(value) => {
+                let value: bool = serde_json::from_value(value).unwrap();
+                assert!(value);
+            }
+            _ => panic!("Expected success response"),
+        }
+
         let calls = calls.lock().unwrap();
         let (jwt, params) = calls.login_jwt.clone().unwrap();
         assert_eq!(jwt, "jwt-2");
@@ -618,5 +668,6 @@ mod tests {
         let (session_token, appid) = calls.verify_token.clone().unwrap();
         assert_eq!(session_token, "session-1");
         assert_eq!(appid, Some("kernel".to_string()));
+        assert_eq!(calls.logout.as_deref(), Some("refresh-2"));
     }
 }

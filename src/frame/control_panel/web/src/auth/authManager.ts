@@ -325,8 +325,10 @@ export const signOutSession = async () => {
     return
   }
 
+  const refreshToken = getStoredRefreshToken()
+
   try {
-    await callAuthRpc('auth.logout', {})
+    await callAuthRpc('auth.logout', refreshToken ? { refresh_token: refreshToken } : {})
   } catch {
     // ignore logout RPC failures and continue local cleanup
   }

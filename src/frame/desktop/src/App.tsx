@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { Navigate, RouterProvider, createBrowserRouter } from 'react-router-dom'
 import { DesktopBackground } from './desktop/DesktopBackground'
 import {
@@ -11,10 +12,20 @@ import { HomeStationRoute } from './app/homestation/HomeStationRoute'
 import { MessageHubRoute } from './app/messagehub/MessageHubRoute'
 import { TaskCenterRoute } from './app/task-center/TaskCenterRoute'
 
+const LoginPage = lazy(() => import('./auth/LoginPage'))
+
 const router = createBrowserRouter([
   {
     path: '/',
     element: <DesktopRoute />,
+  },
+  {
+    path: '/login',
+    element: (
+      <Suspense fallback={null}>
+        <LoginPage />
+      </Suspense>
+    ),
   },
 {
     path: '/homestation',

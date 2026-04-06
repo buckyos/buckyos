@@ -34,6 +34,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock};
@@ -370,6 +371,7 @@ struct RepoAppReleaseCandidate {
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
+    pending_sso_logins: Arc<Mutex<HashMap<u64, sys_auth_backend::PendingSsoLogin>>>,
     file_manager: Arc<file_manager::BuckyFileServer>,
     app_installer: app_installer::AppInstaller,
 }
@@ -396,6 +398,7 @@ impl ControlPanelServer {
         ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
             metrics_snapshot,
+            pending_sso_logins: Arc::new(Mutex::new(HashMap::new())),
             file_manager,
             app_installer: app_installer::AppInstaller::new(),
         }
@@ -6721,6 +6724,187 @@ impl ControlPanelServer {
             req.method, purpose
         )))
     }
+
+    fn request_host_from_http_request(
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> Option<String> {
+        req.headers()
+            .get(http::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.trim().to_ascii_lowercase())
+            .and_then(|value| {
+                let host = value.rsplit_once(':').map(|(host, port)| {
+                    if port.chars().all(|ch| ch.is_ascii_digit()) {
+                        host.to_string()
+                    } else {
+                        value.clone()
+                    }
+                });
+                host.or(Some(value))
+            })
+            .and_then(|value| {
+                let trimmed = value
+                    .trim()
+                    .trim_matches('.')
+                    .trim_matches('[')
+                    .trim_matches(']');
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+    }
+
+    async fn serve_rpc_with_req_host(
+        &self,
+        req: http::Request<BoxBody<Bytes, ServerError>>,
+        info: StreamInfo,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if req.method() != Method::POST {
+            return Ok(http::Response::builder()
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .body(Self::boxed_http_body(b"Method Not Allowed".to_vec()))
+                .map_err(|error| {
+                    server_err!(
+                        ServerErrorCode::BadRequest,
+                        "Failed to build response: {}",
+                        error
+                    )
+                })?);
+        }
+
+        let req_host = Self::request_host_from_http_request(&req);
+        let client_ip = match info.src_addr.as_ref() {
+            Some(addr) => match addr.parse::<SocketAddr>() {
+                Ok(socket_addr) => socket_addr.ip(),
+                Err(error) => {
+                    return Ok(http::Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Self::boxed_http_body(
+                            format!("Bad Request: invalid client ip: {}", error).into_bytes(),
+                        ))
+                        .map_err(|build_error| {
+                            server_err!(
+                                ServerErrorCode::BadRequest,
+                                "Failed to build response: {}",
+                                build_error
+                            )
+                        })?);
+                }
+            },
+            None => {
+                return Ok(http::Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Self::boxed_http_body(b"Bad Request".to_vec()))
+                    .map_err(|error| {
+                        server_err!(
+                            ServerErrorCode::BadRequest,
+                            "Failed to build response: {}",
+                            error
+                        )
+                    })?);
+            }
+        };
+
+        let body_bytes = match req.collect().await {
+            Ok(data) => data.to_bytes(),
+            Err(error) => {
+                return Ok(http::Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Self::boxed_http_body(
+                        format!("Failed to read body: {:?}", error).into_bytes(),
+                    ))
+                    .map_err(|build_error| {
+                        server_err!(
+                            ServerErrorCode::BadRequest,
+                            "Failed to build response: {}",
+                            build_error
+                        )
+                    })?);
+            }
+        };
+
+        let body_str = match String::from_utf8(body_bytes.to_vec()) {
+            Ok(body) => body,
+            Err(error) => {
+                return Ok(http::Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Self::boxed_http_body(
+                        format!("Failed to convert body to string: {}", error).into_bytes(),
+                    ))
+                    .map_err(|build_error| {
+                        server_err!(
+                            ServerErrorCode::BadRequest,
+                            "Failed to build response: {}",
+                            build_error
+                        )
+                    })?);
+            }
+        };
+
+        let mut rpc_request: RPCRequest = match serde_json::from_str(body_str.as_str()) {
+            Ok(rpc_request) => rpc_request,
+            Err(error) => {
+                return Ok(http::Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Self::boxed_http_body(
+                        format!("Failed to parse request body to RPCRequest: {}", error)
+                            .into_bytes(),
+                    ))
+                    .map_err(|build_error| {
+                        server_err!(
+                            ServerErrorCode::BadRequest,
+                            "Failed to build response: {}",
+                            build_error
+                        )
+                    })?);
+            }
+        };
+
+        if let Some(req_host) = req_host {
+            if let Some(params) = rpc_request.params.as_object_mut() {
+                params.insert("x_req_host".to_string(), Value::String(req_host));
+            }
+        }
+
+        let response = match self.handle_rpc_call(rpc_request, client_ip).await {
+            Ok(response) => response,
+            Err(error) => {
+                return Ok(http::Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Self::boxed_http_body(
+                        format!("Failed to handle rpc call: {}", error).into_bytes(),
+                    ))
+                    .map_err(|build_error| {
+                        server_err!(
+                            ServerErrorCode::InvalidData,
+                            "Failed to build response: {}",
+                            build_error
+                        )
+                    })?);
+            }
+        };
+
+        let body_json = serde_json::to_vec(&response).map_err(|error| {
+            server_err!(
+                ServerErrorCode::EncodeError,
+                "Failed to encode rpc response: {}",
+                error
+            )
+        })?;
+
+        Ok(http::Response::builder()
+            .header(CONTENT_TYPE, "application/json")
+            .body(Self::boxed_http_body(body_json))
+            .map_err(|error| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "Failed to build response: {}",
+                    error
+                )
+            })?)
+    }
 }
 
 #[async_trait]
@@ -6753,10 +6937,10 @@ impl RPCHandler for ControlPanelServer {
             "ui.locale.set" => self.handle_ui_locale_set(req).await,
             // Auth
             "auth.login" => self.handle_auth_login(req).await,
-            "auth.issue_sso_token" => self.handle_auth_issue_sso_token(req).await,
-            "auth.logout" => self.handle_auth_logout(req).await,
-            "auth.refresh" => self.handle_auth_refresh(req).await,
-            "auth.verify" => self.handle_auth_verify(req).await,
+            //"auth.issue_sso_token" => self.handle_auth_issue_sso_token(req).await,
+           // "auth.logout" => self.handle_auth_logout(req).await,
+            //"auth.refresh" => self.handle_auth_refresh(req).await,
+            //"auth.verify" => self.handle_auth_verify(req).await,
             // User & Role
             "user.list" => self.handle_unimplemented(req, "List users").await,
             "user.get" => self.handle_unimplemented(req, "Get user detail").await,
@@ -7155,6 +7339,16 @@ impl HttpServer for ControlPanelServer {
         let method = req.method().clone();
         let path = req.uri().path().to_string();
 
+        if method == Method::GET && path == "/sso_callback" {
+            return self.serve_sso_callback(req, info).await;
+        }
+        if method == Method::POST && path == "/sso_refresh" {
+            return self.serve_sso_refresh(req, info).await;
+        }
+        if method == Method::POST && path == "/sso_logout" {
+            return self.serve_sso_logout(req, info).await;
+        }
+
         if path == "/api" || path.starts_with("/api/") {
             return self.file_manager.serve_request(req, info).await;
         }
@@ -7169,7 +7363,7 @@ impl HttpServer for ControlPanelServer {
         if method == Method::POST
             && (path.starts_with("/kapi/control-panel") || path.starts_with("/kapi/message-hub"))
         {
-            return serve_http_by_rpc_handler(req, info, self).await;
+            return self.serve_rpc_with_req_host(req, info).await;
         }
         if method == Method::GET {
             if let Some(token) = path.strip_prefix("/kapi/control-panel/logs/download/") {
@@ -7233,6 +7427,18 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     // 添加 RPC 服务
     let _ = runner.add_http_server(
         "/kapi/control-panel".to_string(),
+        control_panel_server.clone(),
+    );
+    let _ = runner.add_http_server(
+        "/sso_callback".to_string(),
+        control_panel_server.clone(),
+    );
+    let _ = runner.add_http_server(
+        "/sso_refresh".to_string(),
+        control_panel_server.clone(),
+    );
+    let _ = runner.add_http_server(
+        "/sso_logout".to_string(),
         control_panel_server.clone(),
     );
     // File manager API exposed by control-panel.
