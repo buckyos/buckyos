@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOCKERFILE_DIR="$ROOT_DIR/publish/script_service"
+IMAGE_NAME="${IMAGE_NAME:-buckyos/script-service}"
+VERSION_FILE="$ROOT_DIR/src/VERSION"
+VERSION_TAG="${VERSION_TAG:-}"
+PLATFORMS=("amd64" "aarch64")
+PUSH=0
+
+usage() {
+  cat <<'EOF'
+Usage: ./build_script_service [--push] [--image <name>] [--tag <tag>]
+
+Builds the BuckyOS Script Service Docker image for:
+  - amd64   (linux/amd64)
+  - aarch64 (linux/arm64)
+
+The image provides Python (uv) and TypeScript (Deno) runtimes for
+running HostScript applications inside Docker containers.
+
+Options:
+  --push          Push arch-specific images and create multi-arch manifests
+  --image <name>  Override image name, default: buckyos/script-service
+  --tag <tag>     Override version tag, default: src/VERSION
+  -h, --help      Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --push)
+      PUSH=1
+      shift
+      ;;
+    --image)
+      IMAGE_NAME="$2"
+      shift 2
+      ;;
+    --tag)
+      VERSION_TAG="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+log() {
+  printf '[build_script_service] %s\n' "$*"
+}
+
+resolve_version_tag() {
+  if [[ -n "$VERSION_TAG" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$VERSION_FILE" ]]; then
+    echo "Missing version file: $VERSION_FILE" >&2
+    exit 1
+  fi
+
+  VERSION_TAG="$(tr -d '[:space:]' < "$VERSION_FILE")"
+
+  if [[ -z "$VERSION_TAG" ]]; then
+    echo "Version file is empty: $VERSION_FILE" >&2
+    exit 1
+  fi
+}
+
+docker_platform_for_arch() {
+  case "$1" in
+    amd64)   echo "linux/amd64" ;;
+    aarch64) echo "linux/arm64" ;;
+    *)
+      echo "Unsupported arch: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+build_image() {
+  local arch="$1"
+  local platform
+  platform="$(docker_platform_for_arch "$arch")"
+  local version_arch_tag="$IMAGE_NAME:$VERSION_TAG-$arch"
+  local latest_arch_tag="$IMAGE_NAME:latest-$arch"
+
+  log "Building $version_arch_tag (platform=$platform)"
+
+  if [[ "$PUSH" -eq 1 ]]; then
+    docker buildx build \
+      --platform "$platform" \
+      --build-arg TARGET_ARCH="$arch" \
+      --tag "$version_arch_tag" \
+      --tag "$latest_arch_tag" \
+      --push \
+      "$DOCKERFILE_DIR"
+  else
+    docker buildx build \
+      --platform "$platform" \
+      --build-arg TARGET_ARCH="$arch" \
+      --tag "$version_arch_tag" \
+      --tag "$latest_arch_tag" \
+      --load \
+      "$DOCKERFILE_DIR"
+  fi
+}
+
+publish_manifests() {
+  log "Publishing multi-arch manifests for $IMAGE_NAME"
+  docker buildx imagetools create \
+    --tag "$IMAGE_NAME:$VERSION_TAG" \
+    "$IMAGE_NAME:$VERSION_TAG-amd64" \
+    "$IMAGE_NAME:$VERSION_TAG-aarch64"
+
+  docker buildx imagetools create \
+    --tag "$IMAGE_NAME:latest" \
+    "$IMAGE_NAME:latest-amd64" \
+    "$IMAGE_NAME:latest-aarch64"
+}
+
+main() {
+  resolve_version_tag
+  log "Version tag: $VERSION_TAG"
+  log "Image name:  $IMAGE_NAME"
+
+  for arch in "${PLATFORMS[@]}"; do
+    build_image "$arch"
+  done
+
+  if [[ "$PUSH" -eq 1 ]]; then
+    publish_manifests
+    log "Pushed: $IMAGE_NAME:$VERSION_TAG and $IMAGE_NAME:latest"
+  else
+    log "Loaded local images:"
+    for arch in "${PLATFORMS[@]}"; do
+      log "  $IMAGE_NAME:$VERSION_TAG-$arch"
+      log "  $IMAGE_NAME:latest-$arch"
+    done
+  fi
+
+  log "Completed"
+}
+
+main
