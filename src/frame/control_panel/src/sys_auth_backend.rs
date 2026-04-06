@@ -1,5 +1,5 @@
 use crate::{ControlPanelServer, RpcAuthPrincipal, GATEWAY_ETC_DIR};
-use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken, RPCSessionTokenType};
+use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use buckyos_api::{
     get_buckyos_api_runtime, LoginByPasswordResponse, UserInfo, UserSettings, UserState, UserType,
 };
@@ -9,17 +9,15 @@ use cyfs_gateway_lib::{server_err, ServerError, ServerErrorCode, ServerResult, S
 use http::header::{HOST, LOCATION, SET_COOKIE};
 use http_body_util::combinators::BoxBody;
 use log::{info, warn};
-use name_lib::{load_private_key, DID};
+use name_lib::DID;
 use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::Path;
-use uuid::Uuid;
 
 const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
-const CONTROL_PANEL_SSO_TOKEN_EXPIRE_SECONDS: u64 = 15 * 60;
 const GATEWAY_SSO_SESSION_COOKIE: &str = "buckyos_session_token";
 const GATEWAY_SSO_REFRESH_COOKIE: &str = "buckyos_session_token";
 const PENDING_SSO_LOGIN_TTL_SECS: u64 = 60;
@@ -34,7 +32,6 @@ struct AuthLoginResponse {
 
 #[derive(Clone, Debug)]
 pub(super) struct PendingSsoLogin {
-    pub session_token: String,
     pub refresh_token: String,
     pub created_at: u64,
 }
@@ -95,7 +92,6 @@ impl ControlPanelServer {
             self.store_pending_sso_login(
                 nonce,
                 PendingSsoLogin {
-                    session_token: login_result.session_token.clone(),
                     refresh_token: login_result.refresh_token.clone(),
                     created_at: buckyos_get_unix_timestamp(),
                 },
@@ -229,9 +225,6 @@ impl ControlPanelServer {
         let mut response = http::Response::builder()
             .status(http::StatusCode::FOUND)
             .header(LOCATION, redirect_url.as_str());
-        // for cookie in Self::build_session_cookie_headers(&req, pending.session_token.as_str())? {
-        //     response = response.header(SET_COOKIE, cookie);
-        // }
         response = response.header(SET_COOKIE, refresh_cookie);
 
         response
@@ -406,101 +399,6 @@ impl ControlPanelServer {
             )
         })
     }
-
-    // pub(super) async fn handle_auth_issue_sso_token(
-    //     &self,
-    //     req: RPCRequest,
-    // ) -> Result<RPCResponse, RPCErrors> {
-    //     let redirect_url = Self::require_param_str(&req, "redirect_url")?;
-    //     let session_token = Self::extract_rpc_session_token(&req)
-    //         .ok_or_else(|| RPCErrors::ParseRequestError("Missing session_token".to_string()))?;
-
-    //     let runtime = get_buckyos_api_runtime()?;
-    //     let verify_hub_client = runtime.get_verify_hub_client().await?;
-    //     let verified = verify_hub_client
-    //         .verify_token(session_token.as_str(), Some(CONTROL_PANEL_AUTH_APPID))
-    //         .await?;
-    //     if !verified {
-    //         return Err(RPCErrors::InvalidToken(
-    //             "Invalid control-panel session token".to_string(),
-    //         ));
-    //     }
-
-    //     let target_appid = Self::resolve_sso_target_appid(
-    //         Some(redirect_url.as_str()),
-    //         runtime.zone_id.to_host_name().as_str(),
-    //     )?
-    //     .ok_or_else(|| RPCErrors::ParseRequestError("Missing redirect_url".to_string()))?;
-    //     let session_token = RPCSessionToken::from_string(session_token.as_str())?;
-    //     let user_id = session_token
-    //         .sub
-    //         .map(|value| value.trim().to_string())
-    //         .filter(|value| !value.is_empty())
-    //         .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
-    //     let issuer = Self::resolve_local_device_name(runtime)?;
-    //     let sso_token = Self::issue_gateway_sso_token(
-    //         issuer.as_str(),
-    //         user_id.as_str(),
-    //         target_appid.as_str(),
-    //     )?;
-
-    //     Ok(RPCResponse::new(
-    //         RPCResult::Success(json!({ "sso_token": sso_token })),
-    //         req.seq,
-    //     ))
-    // }
-
-    // pub(super) async fn handle_auth_refresh(
-    //     &self,
-    //     req: RPCRequest,
-    // ) -> Result<RPCResponse, RPCErrors> {
-    //     let refresh_token = Self::require_param_str(&req, "refresh_token")?;
-    //     let token_pair = self.refresh_auth_tokens(refresh_token.as_str()).await?;
-
-    //     Ok(RPCResponse::new(
-    //         RPCResult::Success(json!(token_pair)),
-    //         req.seq,
-    //     ))
-    // }
-
-    // pub(super) async fn handle_auth_verify(
-    //     &self,
-    //     req: RPCRequest,
-    // ) -> Result<RPCResponse, RPCErrors> {
-    //     let session_token = Self::extract_rpc_session_token(&req)
-    //         .ok_or_else(|| RPCErrors::ParseRequestError("Missing session_token".to_string()))?;
-    //     let appid = Self::param_str(&req, "appid");
-
-    //     let runtime = get_buckyos_api_runtime()?;
-    //     let verify_hub_client = runtime.get_verify_hub_client().await?;
-    //     let verified = verify_hub_client
-    //         .verify_token(session_token.as_str(), appid.as_deref())
-    //         .await?;
-
-    //     Ok(RPCResponse::new(
-    //         RPCResult::Success(json!(verified)),
-    //         req.seq,
-    //     ))
-    // }
-
-    // pub(super) async fn handle_auth_logout(
-    //     &self,
-    //     req: RPCRequest,
-    // ) -> Result<RPCResponse, RPCErrors> {
-    //     if let Some(refresh_token) = Self::param_str(&req, "refresh_token")
-    //         .map(|value| value.trim().to_string())
-    //         .filter(|value| !value.is_empty())
-    //     {
-    //         let runtime = get_buckyos_api_runtime()?;
-    //         let verify_hub_client = runtime.get_verify_hub_client().await?;
-    //         let _ = verify_hub_client.logout(refresh_token.as_str()).await?;
-    //     }
-
-    //     Ok(RPCResponse::new(
-    //         RPCResult::Success(json!({ "ok": true })),
-    //         req.seq,
-    //     ))
-    // }
 
     pub(super) fn normalize_session_token(token: Option<String>) -> Option<String> {
         token
@@ -864,17 +762,6 @@ impl ControlPanelServer {
         )
     }
 
-    fn resolve_local_device_name(
-        runtime: &buckyos_api::BuckyOSRuntime,
-    ) -> Result<String, RPCErrors> {
-        runtime
-            .device_config
-            .as_ref()
-            .map(|value| value.name.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| RPCErrors::ReasonError("missing local device name".to_string()))
-    }
-
     fn resolve_sso_target_appid(
         redirect_url: Option<&str>,
         zone_host: &str,
@@ -927,62 +814,6 @@ impl ControlPanelServer {
         Self::lookup_gateway_appid(app_key.as_str()).map(Some)
     }
 
-    fn resolve_login_appid(&self, req: &RPCRequest) -> Result<Option<String>, RPCErrors> {
-        let req_host = Self::param_str(req, "x_req_host")
-            .map(|value| value.trim().trim_matches('.').to_ascii_lowercase())
-            .filter(|value| !value.is_empty());
-        let req_host = match req_host {
-            Some(req_host) => req_host,
-            None => return Ok(None),
-        };
-
-        let runtime = get_buckyos_api_runtime()?;
-        let zone_host = runtime.zone_id.to_host_name();
-        Self::resolve_gateway_appid_from_host(req_host.as_str(), zone_host.as_str())
-    }
-
-    fn resolve_gateway_appid_from_host(
-        req_host: &str,
-        zone_host: &str,
-    ) -> Result<Option<String>, RPCErrors> {
-        let req_host = req_host.trim().trim_matches('.').to_ascii_lowercase();
-        if req_host.is_empty() {
-            return Ok(None);
-        }
-
-        let zone_host = zone_host.trim().trim_matches('.').to_ascii_lowercase();
-        if zone_host.is_empty() {
-            return Err(RPCErrors::ReasonError("missing zone host".to_string()));
-        }
-
-        let app_key = if req_host == zone_host {
-            "_".to_string()
-        } else {
-            let suffix = format!(".{}", zone_host);
-            let prefix = match req_host.strip_suffix(suffix.as_str()) {
-                Some(prefix) => prefix,
-                None => return Ok(None),
-            };
-            prefix
-                .split(['.', '-'])
-                .next()
-                .map(|value| value.trim().to_string())
-                .filter(|value| {
-                    !value.is_empty()
-                        && value
-                            .chars()
-                            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-                })
-                .ok_or_else(|| {
-                    RPCErrors::ParseRequestError(
-                        "request host does not resolve to an app".to_string(),
-                    )
-                })?
-        };
-
-        Self::lookup_gateway_appid(app_key.as_str()).map(Some)
-    }
-
     fn lookup_gateway_appid(app_key: &str) -> Result<String, RPCErrors> {
         let gateway_info_path = Path::new(GATEWAY_ETC_DIR).join("node_gateway_info.json");
         let content = std::fs::read_to_string(gateway_info_path.as_path()).map_err(|error| {
@@ -1013,31 +844,6 @@ impl ControlPanelServer {
                     app_key
                 ))
             })
-    }
-
-    fn issue_gateway_sso_token(
-        issuer: &str,
-        user_id: &str,
-        appid: &str,
-    ) -> Result<String, RPCErrors> {
-        let key_path = Path::new(GATEWAY_ETC_DIR).join("node_private_key.pem");
-        let private_key = load_private_key(key_path.as_path()).map_err(|error| {
-            RPCErrors::ReasonError(format!("load node private key failed: {}", error))
-        })?;
-        let session_token = RPCSessionToken {
-            token_type: RPCSessionTokenType::JWT,
-            token: None,
-            aud: None,
-            exp: Some(buckyos_get_unix_timestamp() + CONTROL_PANEL_SSO_TOKEN_EXPIRE_SECONDS),
-            iss: Some(issuer.to_string()),
-            jti: Some(Uuid::new_v4().to_string()),
-            session: None,
-            sub: Some(user_id.to_string()),
-            appid: Some(appid.to_string()),
-            extra: HashMap::new(),
-        };
-
-        session_token.generate_jwt(None, &private_key)
     }
 
     pub(super) fn extract_rpc_session_token(req: &RPCRequest) -> Option<String> {
