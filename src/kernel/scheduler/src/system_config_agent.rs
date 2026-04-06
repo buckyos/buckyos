@@ -797,10 +797,15 @@ fn build_app_host_entry(
     }?;
 
     let port = select_gateway_port(&pick_instance.service_ports, service_name)?;
+    let access_mode = if app_spec.install_config.allow_public_access {
+        NodeGatewayAccessMode::Public
+    } else {
+        NodeGatewayAccessMode::Private
+    };
     Some(NodeGatewayAppInfoEntry {
         app_id: app_spec.app_id().to_string(),
         sdk_version: parse_sdk_version(app_spec),
-        access_mode: NodeGatewayAccessMode::Private,
+        access_mode,
         node_id: Some(pick_instance.node_id.clone()),
         port: Some(port),
         dir_pkg_id: None,
@@ -832,10 +837,15 @@ fn build_app_host_entry_from_persisted_service_info(
         .min_by(|left, right| left.0.cmp(right.0))?;
 
     let port = select_gateway_port(&node_info.service_port, service_name)?;
+    let access_mode = if app_spec.install_config.allow_public_access {
+        NodeGatewayAccessMode::Public
+    } else {
+        NodeGatewayAccessMode::Private
+    };
     Some(NodeGatewayAppInfoEntry {
         app_id: app_spec.app_id().to_string(),
         sdk_version: parse_sdk_version(app_spec),
-        access_mode: NodeGatewayAccessMode::Private,
+        access_mode,
         node_id: Some(node_id.clone()),
         port: Some(port),
         dir_pkg_id: None,

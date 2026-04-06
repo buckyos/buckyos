@@ -118,6 +118,8 @@ pub struct ServiceInstallConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_param: Option<String>,
     pub res_pool_id: String,
+    #[serde(default)]
+    pub allow_public_access: bool,
 }
 
 impl Default for ServiceInstallConfig {
@@ -131,6 +133,7 @@ impl Default for ServiceInstallConfig {
             container_param: None,
             start_param: None,
             res_pool_id: "default".to_string(),
+            allow_public_access: false,
         }
     }
 }
