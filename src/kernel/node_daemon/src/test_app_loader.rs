@@ -432,58 +432,7 @@ fn agent_requires_container_support() {
 }
 
 #[test]
-fn service_local_runtime_matches_windows_host_script_preview() {
-    let config = LocalAppInstanceConfig {
-        target_state: ServiceInstanceState::Started,
-        enable: true,
-        app_doc: build_local_service_doc(),
-        user_id: "alice".to_string(),
-        install_config: ServiceInstallConfig::default(),
-    };
-    let loader = AppLoader::new_for_local("desktop-tool", config)
-        .with_platform(PlatformTarget::new(
-            PlatformOs::Windows,
-            PlatformArch::Amd64,
-        ))
-        .with_container_support_override(false);
-
-    let preview = loader.preview_operation(ControlOperation::Start).unwrap();
-    assert_eq!(preview.runtime, RuntimeType::HostScript);
-    assert_eq!(preview.commands.len(), 1);
-    assert_eq!(preview.commands[0].program, "python");
-    assert_eq!(
-        preview.commands[0].args,
-        vec!["<app_pkg>/start", "desktop-tool", "alice"]
-    );
-}
-
-#[test]
-fn service_local_runtime_matches_macos_host_script_preview() {
-    let config = LocalAppInstanceConfig {
-        target_state: ServiceInstanceState::Started,
-        enable: true,
-        app_doc: build_local_service_doc(),
-        user_id: "alice".to_string(),
-        install_config: ServiceInstallConfig::default(),
-    };
-    let loader = AppLoader::new_for_local("desktop-tool", config)
-        .with_platform(PlatformTarget::new(
-            PlatformOs::Macos,
-            PlatformArch::Aarch64,
-        ))
-        .with_container_support_override(false);
-
-    let preview = loader.preview_operation(ControlOperation::Start).unwrap();
-    assert_eq!(preview.runtime, RuntimeType::HostScript);
-    assert_eq!(preview.commands[0].program, "python3");
-    assert_eq!(
-        preview.commands[0].args,
-        vec!["<app_pkg>/start", "desktop-tool", "alice"]
-    );
-}
-
-#[test]
-fn service_local_runtime_matches_linux_host_script_preview() {
+fn host_script_start_preview_uses_docker_with_script_service_image() {
     let config = LocalAppInstanceConfig {
         target_state: ServiceInstanceState::Started,
         enable: true,
@@ -497,11 +446,84 @@ fn service_local_runtime_matches_linux_host_script_preview() {
 
     let preview = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(preview.runtime, RuntimeType::HostScript);
-    assert_eq!(preview.commands[0].program, "python3");
+    assert_eq!(preview.commands.len(), 2);
+    assert_eq!(preview.commands[0].program, "docker");
     assert_eq!(
         preview.commands[0].args,
-        vec!["<app_pkg>/start", "desktop-tool", "alice"]
+        vec!["rm", "-f", "alice-desktop-tool"]
     );
+    assert_eq!(preview.commands[1].program, "docker");
+    assert!(preview.commands[1].args.contains(&"run".to_string()));
+    assert!(preview.commands[1].args.contains(&"alice-desktop-tool".to_string()));
+    assert!(preview.commands[1]
+        .args
+        .iter()
+        .any(|a| a.contains("buckyos/script-service:")));
+}
+
+#[test]
+fn host_script_stop_preview_uses_docker_rm() {
+    let config = LocalAppInstanceConfig {
+        target_state: ServiceInstanceState::Started,
+        enable: true,
+        app_doc: build_local_service_doc(),
+        user_id: "alice".to_string(),
+        install_config: ServiceInstallConfig::default(),
+    };
+    let loader = AppLoader::new_for_local("desktop-tool", config)
+        .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+        .with_container_support_override(false);
+
+    let preview = loader.preview_operation(ControlOperation::Stop).unwrap();
+    assert_eq!(preview.runtime, RuntimeType::HostScript);
+    assert_eq!(preview.commands.len(), 1);
+    assert_eq!(preview.commands[0].program, "docker");
+    assert_eq!(
+        preview.commands[0].args,
+        vec!["rm", "-f", "alice-desktop-tool"]
+    );
+}
+
+#[test]
+fn host_script_deploy_preview_includes_pkg_install_and_image_pull() {
+    let config = LocalAppInstanceConfig {
+        target_state: ServiceInstanceState::Started,
+        enable: true,
+        app_doc: build_local_service_doc(),
+        user_id: "alice".to_string(),
+        install_config: ServiceInstallConfig::default(),
+    };
+    let loader = AppLoader::new_for_local("desktop-tool", config)
+        .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+        .with_container_support_override(false);
+
+    let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
+    assert_eq!(preview.runtime, RuntimeType::HostScript);
+    assert_eq!(preview.commands.len(), 2);
+    assert_eq!(preview.commands[0].program, "pkg-install");
+    assert_eq!(preview.commands[1].program, "docker");
+    assert_eq!(preview.commands[1].args[0], "pull");
+    assert!(preview.commands[1].args[1].contains("buckyos/script-service:"));
+}
+
+#[test]
+fn host_script_aarch64_uses_correct_image_tag() {
+    let config = LocalAppInstanceConfig {
+        target_state: ServiceInstanceState::Started,
+        enable: true,
+        app_doc: build_local_service_doc(),
+        user_id: "alice".to_string(),
+        install_config: ServiceInstallConfig::default(),
+    };
+    let loader = AppLoader::new_for_local("desktop-tool", config)
+        .with_platform(PlatformTarget::new(
+            PlatformOs::Linux,
+            PlatformArch::Aarch64,
+        ))
+        .with_container_support_override(false);
+
+    let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
+    assert_eq!(preview.commands[1].args[1], "buckyos/script-service:latest-aarch64");
 }
 
 #[test]

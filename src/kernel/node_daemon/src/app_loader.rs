@@ -28,6 +28,9 @@ const AGENT_CONTAINER_FUSE_DEVICE: &str = "/dev/fuse";
 const AGENT_CONTAINER_LOG_ROOT: &str = "/opt/buckyos/logs";
 const AGENT_CONTAINER_STORAGE_ROOT: &str = "/opt/buckyos/storage";
 const AGENT_CONTAINER_OPENDAN_BIN: &str = "/opt/buckyos/bin/opendan/opendan";
+const SCRIPT_SERVICE_IMAGE_REPO: &str = "buckyos/script-service";
+const SCRIPT_CONTAINER_PACKAGE_ROOT: &str = "/opt/script/package";
+const SCRIPT_CONTAINER_DATA_ROOT: &str = "/opt/script/data";
 pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
 pub(crate) const DOCKER_LABEL_OWNER_USER_ID: &str = "buckyos.owner_user_id";
 pub(crate) const DOCKER_LABEL_FULL_APPID: &str = "buckyos.full_appid";
@@ -203,6 +206,7 @@ impl AppLoader {
                     .host_app_pkg_id()
                     .ok_or_else(|| self.pkg_not_found("host app package"))?;
                 self.ensure_pkg_installed(pkg_id.as_str()).await?;
+                self.prepare_script_service_image().await?;
             }
             RuntimeType::Agent => {
                 let pkg_id = self
@@ -290,19 +294,19 @@ impl AppLoader {
             }
             (RuntimeType::Docker, ControlOperation::Status) => self.preview_docker_status(),
             (RuntimeType::HostScript, ControlOperation::Deploy) => {
-                let pkg_id = self
-                    .host_app_pkg_id()
-                    .ok_or_else(|| self.pkg_not_found("host app package"))?;
-                vec![CommandSpec::new("pkg-install", [pkg_id])]
+                self.preview_host_script_deploy()?
             }
             (RuntimeType::HostScript, ControlOperation::Start) => {
-                vec![self.preview_host_script_command("start")]
+                self.preview_host_script_start()?
             }
             (RuntimeType::HostScript, ControlOperation::Stop) => {
-                vec![self.preview_host_script_command("stop")]
+                vec![CommandSpec::new(
+                    "docker",
+                    ["rm", "-f", self.full_appid().as_str()],
+                )]
             }
             (RuntimeType::HostScript, ControlOperation::Status) => {
-                vec![self.preview_host_script_command("status")]
+                self.preview_host_script_status()
             }
             (RuntimeType::Agent, ControlOperation::Deploy) => self.preview_agent_deploy()?,
             (RuntimeType::Agent, ControlOperation::Start) => self.preview_agent_start()?,
@@ -745,36 +749,111 @@ impl AppLoader {
         let pkg_id = self
             .host_app_pkg_id()
             .ok_or_else(|| self.pkg_not_found("host app package"))?;
-        self.ensure_pkg_installed(pkg_id.as_str()).await?;
-        let env_vars = self.build_runtime_env(PackageRole::HostApp).await?;
-        let output = self
-            .run_host_script("start", PackageRole::HostApp, &env_vars)
-            .await?;
-        ensure_success("host start", &output)?;
+        let media_info = self.ensure_pkg_installed(pkg_id.as_str()).await?;
+        let package_root = media_info.full_path.clone();
+        if !package_root.exists() {
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "start".to_string(),
+                format!(
+                    "host script package root {} not found",
+                    package_root.display()
+                ),
+            ));
+        }
+
+        self.stop_host_script().await?;
+
+        let env_vars = self.build_script_runtime_env().await?;
+        let image_name = self.script_service_image_name();
+        let container_name = self.full_appid();
+        let volume_name = self.script_data_volume_name();
+
+        info!(
+            "starting host script app {} in container image={} package_root={}",
+            container_name,
+            image_name,
+            package_root.display()
+        );
+
+        let mut args = vec![
+            "run".to_string(),
+            "--rm".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            container_name.clone(),
+            "--add-host".to_string(),
+            format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"),
+        ];
+
+        for (service_name, instance_port) in self.service_ports_config() {
+            if let Some(container_port) = self
+                .app_doc()
+                .install_config_tips
+                .service_ports
+                .get(service_name.as_str())
+                .copied()
+            {
+                args.push("-p".to_string());
+                args.push(format!("{instance_port}:{container_port}"));
+            }
+        }
+
+        args.push("-v".to_string());
+        args.push(format!(
+            "{}:{}:ro",
+            canonicalize_mount_path(package_root.as_path()).to_string_lossy(),
+            SCRIPT_CONTAINER_PACKAGE_ROOT,
+        ));
+        args.push("-v".to_string());
+        args.push(format!("{volume_name}:{SCRIPT_CONTAINER_DATA_ROOT}:rw"));
+
+        for (container_path, host_path, permission) in self.build_volume_mounts()? {
+            if container_path == SCRIPT_CONTAINER_PACKAGE_ROOT
+                || container_path == SCRIPT_CONTAINER_DATA_ROOT
+            {
+                continue;
+            }
+            args.push("-v".to_string());
+            args.push(format!(
+                "{}:{}:{}",
+                host_path.to_string_lossy(),
+                container_path,
+                permission
+            ));
+        }
+
+        for (key, value) in env_vars.iter() {
+            args.push("-e".to_string());
+            args.push(format!("{key}={value}"));
+        }
+
+        if let Some(desc) = self.host_app_desc() {
+            for (key, value) in self.docker_runtime_labels(desc) {
+                args.push("--label".to_string());
+                args.push(format!("{key}={value}"));
+            }
+        }
+
+        if let Some(container_param) = &self.install_config().container_param {
+            args.extend(split_shell_words(container_param.as_str())?);
+        }
+
+        args.push(image_name.clone());
+
+        let output = run_command("docker", &args, None, None).await?;
+        ensure_success("docker run (script-service)", &output)?;
+        info!(
+            "host script container {} started for app {} with image {}",
+            container_name, self.app_id, image_name
+        );
         Ok(())
     }
 
     async fn stop_host_script(&self) -> Result<()> {
-        let pkg_id = match self.host_app_pkg_id() {
-            Some(pkg_id) => pkg_id,
-            None => return Ok(()),
-        };
-        if self.try_load_pkg(pkg_id.as_str()).await.is_none() {
-            return Ok(());
+        for container_id in self.find_docker_container_ids().await? {
+            self.remove_docker_container(container_id.as_str()).await?;
         }
-
-        let env_vars = self.build_runtime_env(PackageRole::HostApp).await?;
-        let output = self
-            .run_host_script("stop", PackageRole::HostApp, &env_vars)
-            .await?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(ControlRuntItemErrors::ExecuteError(
-                "stop".to_string(),
-                format_command_failure("host stop", &output),
-            ))
-        }
+        Ok(())
     }
 
     async fn status_host_script(&self) -> Result<ServiceInstanceState> {
@@ -786,14 +865,24 @@ impl AppLoader {
             return Ok(ServiceInstanceState::NotExist);
         }
 
-        let env_vars = self.build_runtime_env(PackageRole::HostApp).await?;
-        let output = self
-            .run_host_script("status", PackageRole::HostApp, &env_vars)
-            .await?;
-        if output.status.success() {
-            Ok(ServiceInstanceState::Started)
-        } else {
+        for container_id in self.find_docker_container_ids().await? {
+            let Some(runtime) = self.inspect_docker_container(container_id.as_str()).await? else {
+                continue;
+            };
+            if runtime.running {
+                return Ok(ServiceInstanceState::Started);
+            }
+            return Ok(ServiceInstanceState::Exited);
+        }
+
+        let image_name = self.script_service_image_name();
+        if self
+            .check_docker_image_exists(image_name.as_str(), None)
+            .await?
+        {
             Ok(ServiceInstanceState::Stopped)
+        } else {
+            Ok(ServiceInstanceState::NotExist)
         }
     }
 
@@ -928,38 +1017,6 @@ impl AppLoader {
         } else {
             Ok(ServiceInstanceState::NotExist)
         }
-    }
-
-    async fn run_host_script(
-        &self,
-        operation: &str,
-        role: PackageRole,
-        env_vars: &HashMap<String, String>,
-    ) -> Result<CommandOutput> {
-        let media_info = self
-            .package_media_info(role)
-            .await?
-            .ok_or_else(|| self.pkg_not_found("host app package"))?;
-        let script_path = media_info.full_path.join(operation);
-        if !script_path.exists() {
-            return Err(ControlRuntItemErrors::ExecuteError(
-                operation.to_string(),
-                format!("script {} not found", script_path.display()),
-            ));
-        }
-
-        let python = self.platform.python_program();
-        run_command(
-            python,
-            &[
-                script_path.to_string_lossy().to_string(),
-                self.app_id.clone(),
-                self.owner_user_id.clone(),
-            ],
-            Some(env_vars),
-            Some(media_info.full_path.as_path()),
-        )
-        .await
     }
 
     async fn package_media_info(&self, role: PackageRole) -> Result<Option<MediaInfo>> {
@@ -1440,6 +1497,63 @@ impl AppLoader {
         format!("{AGENT_RUNTIME_IMAGE_REPO}:{arch_tag}")
     }
 
+    fn script_service_image_name(&self) -> String {
+        let arch_tag = match self.platform.arch {
+            PlatformArch::Aarch64 => "latest-aarch64",
+            PlatformArch::Amd64 => "latest-amd64",
+        };
+        format!("{SCRIPT_SERVICE_IMAGE_REPO}:{arch_tag}")
+    }
+
+    fn script_data_volume_name(&self) -> String {
+        format!("buckyos-script-{}", self.full_appid())
+    }
+
+    async fn prepare_script_service_image(&self) -> Result<()> {
+        let image_name = self.script_service_image_name();
+        if self
+            .check_docker_image_exists(image_name.as_str(), None)
+            .await?
+        {
+            return Ok(());
+        }
+
+        info!(
+            "script-service image {} missing for app {}, pulling now",
+            image_name, self.app_id
+        );
+        self.pull_docker_image(image_name.as_str(), None).await?;
+
+        if !self
+            .check_docker_image_exists(image_name.as_str(), None)
+            .await?
+        {
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "deploy".to_string(),
+                format!(
+                    "script-service image {} prepared but validation failed",
+                    image_name
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn build_script_runtime_env(&self) -> Result<HashMap<String, String>> {
+        let mut env_vars = self.build_runtime_env(PackageRole::HostApp).await?;
+        env_vars.insert("SCRIPT_APP_ID".to_string(), self.app_id.clone());
+        env_vars.insert(
+            "SCRIPT_PACKAGE_ROOT".to_string(),
+            SCRIPT_CONTAINER_PACKAGE_ROOT.to_string(),
+        );
+        env_vars.insert(
+            "SCRIPT_DATA_ROOT".to_string(),
+            SCRIPT_CONTAINER_DATA_ROOT.to_string(),
+        );
+        Ok(env_vars)
+    }
+
     fn build_agent_runtime_bootstrap_script(&self, service_port: u16) -> String {
         let app_id = shell_quote(self.app_id.as_str());
         let package_root = shell_quote(AGENT_CONTAINER_PACKAGE_ROOT);
@@ -1852,16 +1966,67 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
         ]
     }
 
-    fn preview_host_script_command(&self, operation: &str) -> CommandSpec {
-        let python = self.platform.python_program();
-        CommandSpec::new(
-            python,
-            [
-                format!("<app_pkg>/{operation}"),
-                self.app_id.clone(),
-                self.owner_user_id.clone(),
-            ],
-        )
+    fn preview_host_script_deploy(&self) -> Result<Vec<CommandSpec>> {
+        let pkg_id = self
+            .host_app_pkg_id()
+            .ok_or_else(|| self.pkg_not_found("host app package"))?;
+        let mut commands = vec![CommandSpec::new("pkg-install", [pkg_id])];
+        commands.push(CommandSpec::new(
+            "docker",
+            ["pull", self.script_service_image_name().as_str()],
+        ));
+        Ok(commands)
+    }
+
+    fn preview_host_script_start(&self) -> Result<Vec<CommandSpec>> {
+        let image_name = self.script_service_image_name();
+        let volume_name = self.script_data_volume_name();
+        let mut docker_run_args = vec![
+            "run".to_string(),
+            "--rm".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            self.full_appid(),
+            "--add-host".to_string(),
+            format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"),
+            "-v".to_string(),
+            format!("<app_pkg>:{}:ro", SCRIPT_CONTAINER_PACKAGE_ROOT),
+            "-v".to_string(),
+            format!("{volume_name}:{}:rw", SCRIPT_CONTAINER_DATA_ROOT),
+        ];
+
+        for env_key in self.preview_env_keys(PackageRole::HostApp) {
+            docker_run_args.push("-e".to_string());
+            docker_run_args.push(format!("{env_key}=<value>"));
+        }
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!("SCRIPT_APP_ID={}", self.app_id));
+
+        if let Some(desc) = self.host_app_desc() {
+            for (key, value) in self.docker_runtime_labels(desc) {
+                docker_run_args.push("--label".to_string());
+                docker_run_args.push(format!("{key}={value}"));
+            }
+        }
+
+        docker_run_args.push(image_name);
+
+        Ok(vec![
+            CommandSpec::new("docker", ["rm", "-f", self.full_appid().as_str()]),
+            CommandSpec::new("docker", docker_run_args),
+        ])
+    }
+
+    fn preview_host_script_status(&self) -> Vec<CommandSpec> {
+        let filter = format!("name=^{}$", self.full_appid());
+        vec![
+            CommandSpec::new("docker", ["ps", "-q", "-f", filter.as_str()]),
+            CommandSpec::new("docker", ["ps", "-aq", "-f", filter.as_str()]),
+            CommandSpec::new(
+                "docker",
+                ["images", "-q", self.script_service_image_name().as_str()],
+            ),
+        ]
     }
 
     fn preview_agent_deploy(&self) -> Result<Vec<CommandSpec>> {
