@@ -1,6 +1,6 @@
 import {buckyos} from 'buckyos'
 import { ensureSessionToken } from '@/auth/authManager'
-import { isMockRuntime, waitForMockLatency } from '@/config/runtime'
+import { isMockRuntime, waitForMockLatency } from '@/runtime'
 
 const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
 

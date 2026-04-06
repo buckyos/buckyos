@@ -5,7 +5,6 @@
  * dead-zone migration, and position management.
  */
 import type {
-  AppDefinition,
   DeadZone,
   DesktopPageState,
   FormFactor,
@@ -13,7 +12,6 @@ import type {
   LayoutState,
   WindowAppearancePreferences,
   WindowGeometry,
-  WindowRecord,
 } from './ui'
 import {
   defaultWindowAppearancePreferences,

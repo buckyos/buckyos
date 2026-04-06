@@ -294,7 +294,7 @@ export function DesktopRoute() {
   }, [formFactor, normalizeOpenWindowsForViewport])
 
   // Read from snapshot — grouped by data tier
-  const { status, error: loadError, apps, resolvedLayout } = snap
+  const { status, apps, resolvedLayout } = snap
   const { appearance } = snap.syncData
   const { runtimeContainer, windowAppearance } = appearance
   const {

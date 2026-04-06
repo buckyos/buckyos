@@ -50,6 +50,7 @@ import type {
   LayoutState,
   MockScenario,
   RuntimeContainer,
+  SupportedLocale,
   SystemPreferencesInput,
   SystemSidebarAppItem,
   SystemSidebarDataModel,
@@ -61,7 +62,6 @@ import type {
   WindowLayoutSettings,
   WindowRecord,
 } from './ui'
-import { defaultWindowAppearancePreferences, isLauncherApp } from './ui'
 import {
   clamp,
   invalidatePositions,
@@ -77,7 +77,6 @@ import {
   windowAppearanceStorageKey,
   windowGeometryStorageKey,
   writeJson,
-  type GridDensity,
   type ScanOrder,
   type WindowGeometryMap,
 } from './layout'
@@ -181,7 +180,7 @@ function extractWidgetLayout(layout: LayoutState): WidgetLayoutSettings {
 /**
  * 将 Group 4 + Group 5 合并回 LayoutState。
  */
-function mergeToLayoutState(
+export function mergeToLayoutState(
   formFactor: FormFactor,
   deadZone: DeadZone,
   appItemLayout: AppItemLayoutSettings,
@@ -855,7 +854,7 @@ export class DesktopUIStore {
   applySettings(
     values: SystemPreferencesInput,
     callbacks: {
-      setLocale: (locale: string) => void
+      setLocale: (locale: SupportedLocale) => void
       setThemeMode: (mode: ThemeMode) => void
       viewportSize: { width: number; height: number }
     },
