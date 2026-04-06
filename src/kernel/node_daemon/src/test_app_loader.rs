@@ -85,6 +85,21 @@ fn build_local_service_doc() -> AppDoc {
     doc
 }
 
+fn build_script_service_doc() -> AppDoc {
+    let owner = DID::from_str("did:bns:test").unwrap();
+    AppDoc::builder(
+        AppType::Service,
+        "systest",
+        "0.1.0",
+        "did:bns:test",
+        &owner,
+    )
+    .script_pkg(SubPkgDesc::new("systest-script#0.1.0"))
+    .service_port("www", 3000)
+    .build()
+    .unwrap()
+}
+
 fn build_service_loader(
     app_doc: AppDoc,
     service_ports_config: HashMap<String, u16>,
@@ -524,6 +539,46 @@ fn host_script_aarch64_uses_correct_image_tag() {
 
     let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(preview.commands[1].args[1], "buckyos/script-service:latest-aarch64");
+}
+
+#[test]
+fn script_pkg_field_routes_service_app_to_host_script() {
+    let loader = build_service_loader(
+        build_script_service_doc(),
+        HashMap::from([("www".to_string(), 18080)]),
+        PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64),
+        true,
+    );
+
+    let preview = loader.preview_operation(ControlOperation::Start).unwrap();
+    assert_eq!(preview.runtime, RuntimeType::HostScript);
+    assert_eq!(preview.commands.len(), 2);
+    assert_eq!(preview.commands[1].program, "docker");
+    assert!(preview.commands[1]
+        .args
+        .iter()
+        .any(|a| a.contains("buckyos/script-service:")));
+}
+
+#[test]
+fn script_pkg_field_works_on_any_platform() {
+    for (os, arch) in [
+        (PlatformOs::Linux, PlatformArch::Amd64),
+        (PlatformOs::Linux, PlatformArch::Aarch64),
+        (PlatformOs::Macos, PlatformArch::Aarch64),
+        (PlatformOs::Windows, PlatformArch::Amd64),
+    ] {
+        let loader = build_service_loader(
+            build_script_service_doc(),
+            HashMap::from([("www".to_string(), 18080)]),
+            PlatformTarget::new(os, arch),
+            true,
+        );
+        let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
+        assert_eq!(preview.runtime, RuntimeType::HostScript);
+        assert_eq!(preview.commands[0].program, "pkg-install");
+        assert_eq!(preview.commands[0].args, vec!["systest-script"]);
+    }
 }
 
 #[test]

@@ -81,11 +81,15 @@
                 "author": "did:web:buckyos.ai",
                 "owner": "did:web:buckyos.ai",
                 "show_name": "BuckyOS System Test",
-                "selector_type": "static",
-                "install_config_tips": {},
+                "selector_type": "single",
+                "install_config_tips": {
+                    "service_ports": {
+                        "www": 3000
+                    }
+                },
                 "pkg_list": {
-                    "web": {
-                        "pkg_id": "nightly-linux-amd64.buckyos_systest#0.5.1"
+                    "script": {
+                        "pkg_id": "nightly.buckyos_systest#0.5.1"
                     }
                 }
             },
