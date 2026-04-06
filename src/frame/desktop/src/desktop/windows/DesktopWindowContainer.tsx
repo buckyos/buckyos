@@ -81,7 +81,7 @@ function WindowChromeButton({
       type="button"
       aria-label={ariaLabel}
       className={clsx(
-        'flex h-6 w-6 items-center justify-center border-0 bg-transparent text-[color:var(--cp-muted)] transition-colors duration-150 hover:bg-[color:color-mix(in_srgb,var(--cp-text)_8%,transparent)] hover:text-[color:var(--cp-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--cp-accent)]',
+        'flex h-6 w-6 items-center justify-center border-0 bg-transparent text-[color:var(--cp-muted)] transition-colors duration-150 hover:[background:linear-gradient(to_top,color-mix(in_srgb,var(--cp-text)_8%,transparent),transparent)] hover:text-[color:var(--cp-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--cp-accent)]',
         className,
       )}
       onPointerDown={(event) => event.stopPropagation()}
@@ -184,7 +184,7 @@ export function DesktopWindowContainer({
   const titleTextColor = isFront ? activeTitleTextColor : inactiveTitleTextColor
   const activeChromeButtonClass =
     themeMode === 'light'
-      ? 'text-[color:color-mix(in_srgb,var(--cp-text)_82%,black)] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_10%,transparent)] hover:text-[color:color-mix(in_srgb,var(--cp-text)_96%,black)]'
+      ? 'text-[color:color-mix(in_srgb,var(--cp-text)_82%,black)] hover:[background:linear-gradient(to_top,color-mix(in_srgb,var(--cp-text)_10%,transparent),transparent)] hover:text-[color:color-mix(in_srgb,var(--cp-text)_96%,black)]'
       : 'text-[color:color-mix(in_srgb,var(--cp-text)_82%,var(--cp-muted))]'
 
   return (
