@@ -203,8 +203,8 @@ impl AppLoader {
             }
             RuntimeType::HostScript => {
                 let pkg_id = self
-                    .host_app_pkg_id()
-                    .ok_or_else(|| self.pkg_not_found("host app package"))?;
+                    .host_script_pkg_id()
+                    .ok_or_else(|| self.pkg_not_found("script or host app package"))?;
                 self.ensure_pkg_installed(pkg_id.as_str()).await?;
                 self.prepare_script_service_image().await?;
             }
@@ -375,7 +375,7 @@ impl AppLoader {
     fn resolve_runtime(&self) -> Result<RuntimeType> {
         let app_type = self.effective_app_type();
         let has_docker = self.docker_image_desc().is_some();
-        let has_host_pkg = self.host_app_pkg_id().is_some();
+        let has_host_script = self.host_script_pkg_id().is_some();
         let has_agent_pkg = self.agent_pkg_id().is_some();
 
         if app_type == AppType::Agent || has_agent_pkg {
@@ -392,11 +392,11 @@ impl AppLoader {
         }
 
         if self.is_local_app() {
-            if has_host_pkg {
+            if has_host_script {
                 return Ok(RuntimeType::HostScript);
             }
             return Err(ControlRuntItemErrors::NotSupport(format!(
-                "local app {} has no native host package for current platform",
+                "local app {} has no script or native host package for current platform",
                 self.app_id
             )));
         }
@@ -405,7 +405,7 @@ impl AppLoader {
             return Ok(RuntimeType::Docker);
         }
 
-        if has_host_pkg {
+        if has_host_script {
             return Ok(RuntimeType::HostScript);
         }
 
@@ -483,6 +483,27 @@ impl AppLoader {
     fn host_app_pkg_id(&self) -> Option<String> {
         self.host_app_desc()
             .and_then(SubPkgDesc::get_pkg_id_with_objid)
+    }
+
+    fn script_desc(&self) -> Option<&SubPkgDesc> {
+        self.app_doc().pkg_list.script.as_ref()
+    }
+
+    fn script_pkg_id(&self) -> Option<String> {
+        self.script_desc()
+            .and_then(SubPkgDesc::get_pkg_id_with_objid)
+    }
+
+    /// Returns the package ID for the HostScript runtime.
+    /// Prefers the platform-independent `script` field; falls back to
+    /// platform-specific host app fields for native binaries.
+    fn host_script_pkg_id(&self) -> Option<String> {
+        self.script_pkg_id().or_else(|| self.host_app_pkg_id())
+    }
+
+    /// Returns the SubPkgDesc used for HostScript labels.
+    fn host_script_desc(&self) -> Option<&SubPkgDesc> {
+        self.script_desc().or_else(|| self.host_app_desc())
     }
 
     fn agent_pkg_id(&self) -> Option<String> {
@@ -747,8 +768,8 @@ impl AppLoader {
 
     async fn start_host_script(&self) -> Result<()> {
         let pkg_id = self
-            .host_app_pkg_id()
-            .ok_or_else(|| self.pkg_not_found("host app package"))?;
+            .host_script_pkg_id()
+            .ok_or_else(|| self.pkg_not_found("script or host app package"))?;
         let media_info = self.ensure_pkg_installed(pkg_id.as_str()).await?;
         let package_root = media_info.full_path.clone();
         if !package_root.exists() {
@@ -827,7 +848,7 @@ impl AppLoader {
             args.push(format!("{key}={value}"));
         }
 
-        if let Some(desc) = self.host_app_desc() {
+        if let Some(desc) = self.host_script_desc() {
             for (key, value) in self.docker_runtime_labels(desc) {
                 args.push("--label".to_string());
                 args.push(format!("{key}={value}"));
@@ -857,7 +878,7 @@ impl AppLoader {
     }
 
     async fn status_host_script(&self) -> Result<ServiceInstanceState> {
-        let pkg_id = match self.host_app_pkg_id() {
+        let pkg_id = match self.host_script_pkg_id() {
             Some(pkg_id) => pkg_id,
             None => return Ok(ServiceInstanceState::NotExist),
         };
@@ -1024,7 +1045,7 @@ impl AppLoader {
             PackageRole::DockerImage => self
                 .docker_image_desc()
                 .and_then(|desc| desc.get_pkg_id_with_objid()),
-            PackageRole::HostApp => self.host_app_pkg_id(),
+            PackageRole::HostApp => self.host_script_pkg_id(),
             PackageRole::AgentPkg => self.agent_pkg_id(),
         };
 
@@ -1141,7 +1162,7 @@ impl AppLoader {
             PackageRole::DockerImage => self
                 .docker_image_desc()
                 .and_then(SubPkgDesc::get_pkg_id_with_objid),
-            PackageRole::HostApp => self.host_app_pkg_id(),
+            PackageRole::HostApp => self.host_script_pkg_id(),
             PackageRole::AgentPkg => self.agent_pkg_id(),
         }
     }
@@ -1968,8 +1989,8 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
 
     fn preview_host_script_deploy(&self) -> Result<Vec<CommandSpec>> {
         let pkg_id = self
-            .host_app_pkg_id()
-            .ok_or_else(|| self.pkg_not_found("host app package"))?;
+            .host_script_pkg_id()
+            .ok_or_else(|| self.pkg_not_found("script or host app package"))?;
         let mut commands = vec![CommandSpec::new("pkg-install", [pkg_id])];
         commands.push(CommandSpec::new(
             "docker",
@@ -2002,7 +2023,7 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
         docker_run_args.push("-e".to_string());
         docker_run_args.push(format!("SCRIPT_APP_ID={}", self.app_id));
 
-        if let Some(desc) = self.host_app_desc() {
+        if let Some(desc) = self.host_script_desc() {
             for (key, value) in self.docker_runtime_labels(desc) {
                 docker_run_args.push("--label".to_string());
                 docker_run_args.push(format!("{key}={value}"));

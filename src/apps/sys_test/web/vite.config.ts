@@ -8,6 +8,8 @@ export default defineConfig({
     exclude: ['@mapbox/node-pre-gyp', 'mock-aws-s3', 'aws-sdk', 'nock']
   },
   build: {
+    outDir: resolve(__dirname, "../dist"),
+    emptyOutDir: true,
     minify: 'terser',
     sourcemap: true,
     rollupOptions: {
