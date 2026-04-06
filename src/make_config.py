@@ -56,6 +56,7 @@ DEFAULT_PKG_AUTHOR = "did:bns:buckyos"
 DEFAULT_PKG_OWNER = "did:bns:buckyos"
 BIN_META_SEED_PACKAGES = {
     "aicc",
+    "buckyos_systest",
     "control-panel",
     "kmsg",
     "msg-center",

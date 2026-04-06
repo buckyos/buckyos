@@ -57,10 +57,10 @@ modules:
     type: web
     name: desktop
     src_dir: frame/desktop/  
-  buckyos_systest:
+  buckyos_systest_web:
     type: web
-    name: sys_test
-    src_dir: apps/sys_test/
+    name: sys_test_web
+    src_dir: apps/sys_test/web
 
 apps:
   buckyos:
@@ -85,6 +85,7 @@ apps:
       repo_service: bin/repo-service/
       buckycli: bin/buckycli/
       node_active: bin/node-active/
+      buckyos_systest_web: bin/buckyos_systest/dist/
       buckyos_systest: bin/buckyos_systest/
       aicc: bin/aicc/
       msg_center: bin/msg-center/

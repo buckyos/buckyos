@@ -27,11 +27,11 @@ src/rootfs/bin/smb-service/smb_service
 src/rootfs/bin/buckycli/buckycli
 /src/rootfs/bin/control-panel/control_panel
 /src/rootfs/bin/control-panel/web/
-/src/rootfs/bin/sys-test/
+/src/rootfs/bin/sys-test/dist/
 src/rootfs/logs
 src/rootfs/tmp
 src/apps/control_panel/src/dist/
-src/apps/sys_test/dist/
+src/apps/sys_test/web/dist/
 src/frame/desktop/dist/
 
 src/web3_bridge/cyfs_gateway
@@ -54,6 +54,9 @@ src/rootfs/bin/sys_test/
 publish/*
 !publish/aios/
 !publish/aios/Dockerfile
+!publish/script_service/
+!publish/script_service/Dockerfile
+!publish/script_service/entrypoint.sh
 src/rootfs/bin/buckyos_systest/
 src/rootfs/bin/aicc/aicc
 src/rootfs/bin/kmsg/kmsg
@@ -64,3 +67,5 @@ src/rootfs/bin/opendan/opendan*
 src/rootfs/bin/bucky-file/
 src/publish/win_pkg/scripts/seed_defaults.ps1
 src/rootfs/bin/opendan/agent_tool
+src/apps/sys_test/dist/index.d.ts
+src/apps/sys_test/dist/

@@ -89,7 +89,7 @@
                 },
                 "pkg_list": {
                     "script": {
-                        "pkg_id": "nightly.buckyos_systest#0.5.1"
+                        "pkg_id": "buckyos_systest"
                     }
                 }
             },
