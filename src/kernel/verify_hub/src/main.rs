@@ -78,6 +78,7 @@ async fn generate_session_token(
     jti: u64,
     session: u64,
     duration: u64,
+    aud: Option<String>,
 ) -> Result<RPCSessionToken> {
     let now = buckyos_get_unix_timestamp();
     let exp = now + duration;
@@ -86,7 +87,7 @@ async fn generate_session_token(
         token_type: RPCSessionTokenType::Normal,
         appid: Some(appid.to_string()),
         jti: Some(jti.to_string()),
-        aud: Some(appid.to_string()),
+        aud: aud,
         sub: Some(userid.to_string()),
         token: None,
         session: Some(session),
@@ -163,6 +164,7 @@ async fn generate_token_pair(
         session_jti,
         session_id,
         SESSION_TOKEN_EXPIRE_SECONDS,
+        None,
     )
     .await?;
 

@@ -1,7 +1,8 @@
 use crate::app_loader::{
     command_matches_agent_process, command_matches_exact_agent_process,
-    docker_desc_requires_exact_match, docker_image_tar_candidates_for_arch, docker_missing_text,
-    docker_runtime_matches_target, normalize_digest, AppLoader, CommandSpec, ControlOperation,
+    container_list_contains_name, docker_desc_requires_exact_match,
+    docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_target,
+    normalize_digest, parse_docker_container_inspect, AppLoader, CommandSpec, ControlOperation,
     DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
     DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_OBJID,
 };
@@ -184,6 +185,48 @@ fn docker_missing_text_matches_lowercase_runtime_errors() {
     assert!(docker_missing_text("Error response from daemon: No such container: demo"));
     assert!(docker_missing_text("no such image: repo/demo:latest"));
     assert!(!docker_missing_text("permission denied while trying to connect to docker daemon"));
+}
+
+#[test]
+fn parse_docker_container_inspect_extracts_state_labels_and_image() {
+    let inspect = parse_docker_container_inspect(
+        r#"{
+            "State": {"Running": true},
+            "Config": {
+                "Labels": {
+                    "buckyos.full_appid": "alice-demo",
+                    "buckyos.pkg_objid": "pkg:1234567890"
+                }
+            },
+            "Image": "sha256:deadbeef"
+        }"#,
+    )
+    .unwrap();
+
+    assert!(inspect.state.running);
+    assert_eq!(inspect.image.as_deref(), Some("sha256:deadbeef"));
+    assert_eq!(
+        inspect
+            .config
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get("buckyos.full_appid"))
+            .map(String::as_str),
+        Some("alice-demo")
+    );
+}
+
+#[test]
+fn container_list_contains_name_only_matches_exact_container_name() {
+    let names = "devtest-buckyos_filebrowser\nfoo-devtest-buckyos_filebrowser-old\n";
+    assert!(container_list_contains_name(
+        names,
+        "devtest-buckyos_filebrowser"
+    ));
+    assert!(!container_list_contains_name(
+        names,
+        "buckyos_filebrowser"
+    ));
 }
 
 #[test]

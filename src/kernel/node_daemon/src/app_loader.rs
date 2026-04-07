@@ -9,6 +9,7 @@ use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, info, warn};
 use ndn_lib::{load_named_object_from_obj_str, ObjId};
 use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use shlex::Shlex;
 use std::collections::{HashMap, HashSet};
@@ -136,6 +137,28 @@ pub(crate) struct DockerRuntimeIdentity {
 struct DockerContainerRuntime {
     running: bool,
     identity: DockerRuntimeIdentity,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct DockerInspectState {
+    #[serde(rename = "Running", default)]
+    pub(crate) running: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct DockerInspectConfig {
+    #[serde(rename = "Labels", default)]
+    pub(crate) labels: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct DockerContainerInspectDoc {
+    #[serde(rename = "State", default)]
+    pub(crate) state: DockerInspectState,
+    #[serde(rename = "Config", default)]
+    pub(crate) config: DockerInspectConfig,
+    #[serde(rename = "Image", default)]
+    pub(crate) image: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -720,11 +743,7 @@ impl AppLoader {
     }
 
     async fn stop_docker(&self) -> Result<()> {
-        let container_ids = self.find_docker_container_ids().await?;
-        for container_id in container_ids {
-            self.remove_docker_container(container_id.as_str()).await?;
-        }
-        Ok(())
+        self.remove_current_docker_container().await
     }
 
     async fn status_docker(&self) -> Result<ServiceInstanceState> {
@@ -732,21 +751,15 @@ impl AppLoader {
             .docker_image_desc()
             .ok_or_else(|| self.pkg_not_found("docker image"))?;
         let exact_match_required = docker_desc_requires_exact_match(desc);
-        let mut exact_exited = false;
-        for container_id in self.find_docker_container_ids().await? {
-            let Some(runtime) = self.inspect_docker_container(container_id.as_str()).await? else {
-                continue;
-            };
+        if let Some(runtime) = self.inspect_current_docker_container().await? {
             if exact_match_required && !docker_runtime_matches_target(&runtime.identity, desc) {
-                continue;
-            }
-            if runtime.running {
+                // A stale container with the current name exists but does not match the target package.
+                // Treat it as stopped and let the subsequent start path replace it.
+            } else if runtime.running {
                 return Ok(ServiceInstanceState::Started);
+            } else {
+                return Ok(ServiceInstanceState::Exited);
             }
-            exact_exited = true;
-        }
-        if exact_exited {
-            return Ok(ServiceInstanceState::Exited);
         }
 
         let image_name = desc.docker_image_name.clone().ok_or_else(|| {
@@ -871,10 +884,7 @@ impl AppLoader {
     }
 
     async fn stop_host_script(&self) -> Result<()> {
-        for container_id in self.find_docker_container_ids().await? {
-            self.remove_docker_container(container_id.as_str()).await?;
-        }
-        Ok(())
+        self.remove_current_docker_container().await
     }
 
     async fn status_host_script(&self) -> Result<ServiceInstanceState> {
@@ -886,10 +896,7 @@ impl AppLoader {
             return Ok(ServiceInstanceState::NotExist);
         }
 
-        for container_id in self.find_docker_container_ids().await? {
-            let Some(runtime) = self.inspect_docker_container(container_id.as_str()).await? else {
-                continue;
-            };
+        if let Some(runtime) = self.inspect_current_docker_container().await? {
             if runtime.running {
                 return Ok(ServiceInstanceState::Started);
             }
@@ -993,10 +1000,7 @@ impl AppLoader {
     }
 
     async fn stop_agent(&self) -> Result<()> {
-        for container_id in self.find_docker_container_ids().await? {
-            self.remove_docker_container(container_id.as_str()).await?;
-        }
-        Ok(())
+        self.remove_current_docker_container().await
     }
 
     async fn status_agent(&self) -> Result<ServiceInstanceState> {
@@ -1013,21 +1017,15 @@ impl AppLoader {
         }
 
         let exact_match_required = desc.pkg_objid.is_some();
-        let mut exact_exited = false;
-        for container_id in self.find_docker_container_ids().await? {
-            let Some(runtime) = self.inspect_docker_container(container_id.as_str()).await? else {
-                continue;
-            };
+        if let Some(runtime) = self.inspect_current_docker_container().await? {
             if exact_match_required && !docker_runtime_matches_target(&runtime.identity, desc) {
-                continue;
-            }
-            if runtime.running {
+                // An old generation container is still occupying the canonical name.
+                // Leave it to the start path to replace it.
+            } else if runtime.running {
                 return Ok(ServiceInstanceState::Started);
+            } else {
+                return Ok(ServiceInstanceState::Exited);
             }
-            exact_exited = true;
-        }
-        if exact_exited {
-            return Ok(ServiceInstanceState::Exited);
         }
 
         if self
@@ -1320,22 +1318,24 @@ impl AppLoader {
         Ok(false)
     }
 
-    async fn remove_docker_container(&self, container_name: &str) -> Result<()> {
+    async fn remove_current_docker_container(&self) -> Result<()> {
+        let container_name = self.full_appid();
         let output = run_command(
             "docker",
             &[
                 "rm".to_string(),
                 "-f".to_string(),
-                container_name.to_string(),
+                container_name.clone(),
             ],
             None,
             None,
         )
         .await?;
-        if output.status.success()
-            || output.stderr.contains("No such container")
-            || output.stdout.contains("No such container")
-        {
+        if output.status.success() {
+            return Ok(());
+        }
+
+        if matches!(self.has_current_docker_container_name().await, Ok(false)) {
             return Ok(());
         }
 
@@ -1679,116 +1679,64 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
         labels
     }
 
-    async fn find_docker_container_ids(&self) -> Result<Vec<String>> {
-        let mut ids = HashSet::new();
-        let full_appid = self.full_appid();
-        for filter in [
-            format!("label={}={}", DOCKER_LABEL_FULL_APPID, full_appid),
-            format!("name=^{}$", full_appid),
-        ] {
-            for container_id in self.list_docker_container_ids(filter.as_str()).await? {
-                ids.insert(container_id);
-            }
-        }
-        let mut containers = ids.into_iter().collect::<Vec<_>>();
-        containers.sort();
-        Ok(containers)
-    }
-
-    async fn list_docker_container_ids(&self, filter: &str) -> Result<Vec<String>> {
+    async fn has_current_docker_container_name(&self) -> Result<bool> {
+        let container_name = self.full_appid();
         let output = run_command(
             "docker",
             &[
-                "ps".to_string(),
-                "-aq".to_string(),
-                "-f".to_string(),
-                filter.to_string(),
+                "container".to_string(),
+                "ls".to_string(),
+                "-a".to_string(),
+                "--format".to_string(),
+                "{{.Names}}".to_string(),
+                "--filter".to_string(),
+                format!("name={container_name}"),
             ],
             None,
             None,
         )
         .await?;
-        ensure_success("docker ps -a", &output)?;
-        Ok(output
-            .stdout
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(str::to_string)
-            .collect())
+        ensure_success("docker container ls -a", &output)?;
+        Ok(container_list_contains_name(output.stdout.as_str(), container_name.as_str()))
     }
 
-    async fn inspect_docker_container(
-        &self,
-        container_id: &str,
-    ) -> Result<Option<DockerContainerRuntime>> {
-        let state_output = run_command(
+    async fn inspect_current_docker_container(&self) -> Result<Option<DockerContainerRuntime>> {
+        let container_name = self.full_appid();
+        let inspect_output = run_command(
             "docker",
             &[
+                "container".to_string(),
                 "inspect".to_string(),
-                "--format={{json .State.Running}}".to_string(),
-                container_id.to_string(),
+                "--format={{json .}}".to_string(),
+                container_name.clone(),
             ],
             None,
             None,
         )
         .await?;
-        if docker_object_missing(&state_output) {
-            return Ok(None);
+        if !inspect_output.status.success() {
+            if matches!(self.has_current_docker_container_name().await, Ok(false)) {
+                return Ok(None);
+            }
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "docker container inspect".to_string(),
+                format_command_failure("docker container inspect", &inspect_output),
+            ));
         }
-        ensure_success("docker inspect state", &state_output)?;
-        let running =
-            serde_json::from_str::<bool>(state_output.stdout.trim()).map_err(|error| {
-                ControlRuntItemErrors::ExecuteError(
-                    "docker inspect state".to_string(),
-                    format!("parse docker state for {} failed: {}", container_id, error),
-                )
-            })?;
 
-        let labels_output = run_command(
-            "docker",
-            &[
-                "inspect".to_string(),
-                "--format={{json .Config.Labels}}".to_string(),
-                container_id.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
-        if docker_object_missing(&labels_output) {
-            return Ok(None);
-        }
-        ensure_success("docker inspect labels", &labels_output)?;
-        let labels = parse_docker_labels(labels_output.stdout.trim())?;
-
-        let image_id_output = run_command(
-            "docker",
-            &[
-                "inspect".to_string(),
-                "--format={{.Image}}".to_string(),
-                container_id.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
-        if docker_object_missing(&image_id_output) {
-            return Ok(None);
-        }
-        ensure_success("docker inspect image", &image_id_output)?;
-        let image_id = trim_to_option(image_id_output.stdout.trim());
+        let inspect_doc = parse_docker_container_inspect(inspect_output.stdout.trim())?;
+        let image_id = inspect_doc.image.as_deref().and_then(trim_to_option);
         let repo_digests = match image_id.as_deref() {
             Some(image_id) => self.inspect_docker_image_repo_digests(image_id).await?,
             None => Vec::new(),
         };
 
         Ok(Some(DockerContainerRuntime {
-            running,
+            running: inspect_doc.state.running,
             identity: DockerRuntimeIdentity {
                 image_id,
                 repo_digests,
-                labels,
+                labels: inspect_doc.config.labels.unwrap_or_default(),
             },
         }))
     }
@@ -2548,17 +2496,17 @@ fn docker_object_missing(output: &CommandOutput) -> bool {
     docker_missing_text(&output.stderr) || docker_missing_text(&output.stdout)
 }
 
-fn parse_docker_labels(raw: &str) -> Result<HashMap<String, String>> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed == "null" {
-        return Ok(HashMap::new());
-    }
-    serde_json::from_str::<HashMap<String, String>>(trimmed).map_err(|error| {
+pub(crate) fn parse_docker_container_inspect(raw: &str) -> Result<DockerContainerInspectDoc> {
+    serde_json::from_str::<DockerContainerInspectDoc>(raw).map_err(|error| {
         ControlRuntItemErrors::ExecuteError(
-            "docker inspect labels".to_string(),
-            format!("parse docker labels failed: {}", error),
+            "docker container inspect".to_string(),
+            format!("parse docker inspect result failed: {}", error),
         )
     })
+}
+
+pub(crate) fn container_list_contains_name(raw: &str, expected_name: &str) -> bool {
+    raw.lines().map(str::trim).any(|name| name == expected_name)
 }
 
 fn docker_image_id_matches_digest(image_id: &str, expected_digest: &str) -> bool {

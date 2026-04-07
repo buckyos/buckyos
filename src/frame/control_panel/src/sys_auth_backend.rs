@@ -238,7 +238,7 @@ impl ControlPanelServer {
             })
     }
 
-    //handle sso_refresh ，这个是标准的krpc/post方法
+    //handle sso_refresh
     // cooke中必然有refresh_token, 刷新refresh_token+返回access_token+用户信息
     pub(super) async fn serve_sso_refresh(
         &self,
@@ -306,9 +306,9 @@ impl ControlPanelServer {
                     refresh_cookie_parts.push("Secure".to_string());
                 }
                 response = response.header(SET_COOKIE, refresh_cookie_parts.join("; "));
+                
                 let body = serde_json::to_vec(&json!({
                     "session_token": token_pair.session_token,
-                    "refresh_token": token_pair.refresh_token,
                     "user_info": user_info,
                 }))
                 .map_err(|error| {
