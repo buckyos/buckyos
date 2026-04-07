@@ -1,6 +1,6 @@
 use crate::app_loader::{
     command_matches_agent_process, command_matches_exact_agent_process,
-    docker_desc_requires_exact_match, docker_image_tar_candidates_for_arch,
+    docker_desc_requires_exact_match, docker_image_tar_candidates_for_arch, docker_missing_text,
     docker_runtime_matches_target, normalize_digest, AppLoader, CommandSpec, ControlOperation,
     DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
     DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_OBJID,
@@ -176,6 +176,14 @@ fn helper_functions_keep_expected_normalization() {
     assert_eq!(normalize_digest(Some("sha256:def")), Some("sha256:def"));
     assert_eq!(normalize_digest(Some("   ")), None);
     assert_eq!(normalize_digest(None), None);
+}
+
+#[test]
+fn docker_missing_text_matches_lowercase_runtime_errors() {
+    assert!(docker_missing_text("error: no such object: 732418f568ce"));
+    assert!(docker_missing_text("Error response from daemon: No such container: demo"));
+    assert!(docker_missing_text("no such image: repo/demo:latest"));
+    assert!(!docker_missing_text("permission denied while trying to connect to docker daemon"));
 }
 
 #[test]

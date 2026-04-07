@@ -1756,6 +1756,9 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
             None,
         )
         .await?;
+        if docker_object_missing(&labels_output) {
+            return Ok(None);
+        }
         ensure_success("docker inspect labels", &labels_output)?;
         let labels = parse_docker_labels(labels_output.stdout.trim())?;
 
@@ -1770,6 +1773,9 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
             None,
         )
         .await?;
+        if docker_object_missing(&image_id_output) {
+            return Ok(None);
+        }
         ensure_success("docker inspect image", &image_id_output)?;
         let image_id = trim_to_option(image_id_output.stdout.trim());
         let repo_digests = match image_id.as_deref() {
@@ -2531,13 +2537,15 @@ fn trim_to_option(value: &str) -> Option<String> {
     }
 }
 
+pub(crate) fn docker_missing_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("no such object")
+        || lower.contains("no such image")
+        || lower.contains("no such container")
+}
+
 fn docker_object_missing(output: &CommandOutput) -> bool {
-    output.stderr.contains("No such object")
-        || output.stderr.contains("No such image")
-        || output.stderr.contains("No such container")
-        || output.stdout.contains("No such object")
-        || output.stdout.contains("No such image")
-        || output.stdout.contains("No such container")
+    docker_missing_text(&output.stderr) || docker_missing_text(&output.stdout)
 }
 
 fn parse_docker_labels(raw: &str) -> Result<HashMap<String, String>> {
