@@ -442,6 +442,7 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         }
         signed_results = signResult.signatures;
         wallet_pwd_hash = signResult.pwd_hash;
+        console.log("wallet activation pwd_hash", wallet_pwd_hash);
         if (!wallet_pwd_hash) {
             throw new Error("missing password hash");
         }
