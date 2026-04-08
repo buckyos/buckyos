@@ -1,33 +1,28 @@
 mod common;
 
-use common::{
-    resolve_gateway_aicc_endpoint_from_env, resolve_gateway_system_config_endpoint_from_env,
-    resolve_remote_test_token,
-};
-use reqwest::Client;
+use aicc::openai::register_openai_llm_providers;
+use aicc::{AIComputeCenter, ModelCatalog, Registry, TaskEvent};
+use buckyos_api::{AiccHandler, CompleteRequest};
+use common::{center_with_taskmgr, rpc_ctx_with_tenant, CollectingSinkFactory};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
-const ENV_AICC_TIMEOUT_SECONDS: &str = "AICC_TIMEOUT_SECONDS";
 const ENV_AICC_MODEL_ALIAS: &str = "AICC_MODEL_ALIAS";
 
-const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
 const DEFAULT_MODEL_ALIAS: &str = "llm.plan.default";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
 
-const SETTINGS_KEY_AICC: &str = "services/aicc/settings";
 const OPENAI_INSTANCE_ID: &str = "openai-real-workflow";
 const OPENAI_PROVIDER_TYPE: &str = "openai";
 
-const TRACE_SETUP_SETTINGS: &str = "workflow-real-setup-settings";
-const TRACE_SETUP_RELOAD: &str = "workflow-real-setup-reload";
-const TRACE_COMPLEX_DAG: &str = "workflow-real-complex-dag";
-const TRACE_JSON_OUTPUT: &str = "workflow-real-json-output";
-const TRACE_STREAM_OUTPUT: &str = "workflow-real-stream-output";
+const TRACE_COMPLEX_DAG: &str = "workflow-real-complex-dag-local";
+const TRACE_JSON_OUTPUT: &str = "workflow-real-json-output-local";
+const TRACE_STREAM_OUTPUT: &str = "workflow-real-stream-output-local";
 
 const MIN_EXPECTED_STEPS: usize = 6;
 const MAX_TOKENS_COMPLEX_DAG: u64 = 1800;
@@ -62,13 +57,6 @@ fn now_seq() -> u64 {
         .as_millis() as u64
 }
 
-fn env_u64(key: &str, default: u64) -> u64 {
-    env::var(key)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(default)
-}
-
 fn required_env(key: &str) -> String {
     env::var(key)
         .ok()
@@ -77,97 +65,25 @@ fn required_env(key: &str) -> String {
         .unwrap_or_else(|| panic!("missing required env '{}'", key))
 }
 
-fn build_sys(seq: u64, token: Option<&str>, trace_id: &str) -> Value {
-    let mut arr = vec![json!(seq)];
-    arr.push(token.map(Value::from).unwrap_or(Value::Null));
-    arr.push(json!(trace_id));
-    Value::Array(arr)
-}
-
-struct RemoteCtx {
-    client: Client,
-    aicc_endpoint: String,
-    system_config_endpoint: String,
-    token: Option<String>,
-}
-
-async fn build_remote_ctx() -> RemoteCtx {
-    let aicc_endpoint = resolve_gateway_aicc_endpoint_from_env()
-        .expect("missing gateway endpoint: set AICC_GATEWAY_HOST or AICC_HOST");
-    let system_config_endpoint = resolve_gateway_system_config_endpoint_from_env()
-        .expect("missing gateway system_config endpoint: set AICC_GATEWAY_HOST or AICC_HOST");
-    let token = resolve_remote_test_token(Some(aicc_endpoint.as_str()))
-        .await
-        .expect("resolve remote rpc token");
-    let timeout = env_u64(ENV_AICC_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS);
-    let client = Client::builder()
-        .timeout(Duration::from_secs(timeout))
-        .build()
-        .expect("build reqwest client");
-
-    RemoteCtx {
-        client,
-        aicc_endpoint,
-        system_config_endpoint,
-        token,
-    }
-}
-
-async fn rpc_call(
-    client: &Client,
-    endpoint: &str,
-    method: &str,
-    params: Value,
-    seq: u64,
-    token: Option<&str>,
-    trace_id: &str,
-) -> Result<Value, String> {
-    let req = json!({
-        "method": method,
-        "params": params,
-        "sys": build_sys(seq, token, trace_id),
-    });
-
-    let resp = client
-        .post(endpoint)
-        .json(&req)
-        .send()
-        .await
-        .map_err(|err| format!("http request failed: {}", err))?;
-    let status = resp.status();
-    let payload: Value = resp
-        .json()
-        .await
-        .map_err(|err| format!("invalid rpc json response: {}", err))?;
-
-    if !status.is_success() {
-        return Err(format!("http status {} payload={}", status, payload));
-    }
-    if let Some(err) = payload.get("error") {
-        return Err(format!("rpc error payload={}", err));
-    }
-    payload
-        .get("result")
-        .cloned()
-        .ok_or_else(|| format!("rpc result missing: {}", payload))
-}
-
-async fn configure_real_openai_provider(ctx: &RemoteCtx) {
-    let api_key = required_env(ENV_OPENAI_API_KEY);
-    let alias = env::var(ENV_AICC_MODEL_ALIAS)
+fn model_alias_from_env() -> String {
+    env::var(ENV_AICC_MODEL_ALIAS)
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_MODEL_ALIAS.to_string());
+        .unwrap_or_else(|| DEFAULT_MODEL_ALIAS.to_string())
+}
+
+fn build_local_openai_settings(model_alias: &str) -> Value {
+    let api_key = required_env(ENV_OPENAI_API_KEY);
 
     let mut alias_map = serde_json::Map::<String, Value>::new();
     alias_map.insert("llm.default".to_string(), json!(DEFAULT_OPENAI_MODEL));
     alias_map.insert("llm.chat.default".to_string(), json!(DEFAULT_OPENAI_MODEL));
     alias_map.insert("llm.plan.default".to_string(), json!(DEFAULT_OPENAI_MODEL));
     alias_map.insert("llm.code.default".to_string(), json!(DEFAULT_OPENAI_MODEL));
-    alias_map.insert(alias, json!(DEFAULT_OPENAI_MODEL));
+    alias_map.insert(model_alias.to_string(), json!(DEFAULT_OPENAI_MODEL));
 
-    let settings = json!({
+    json!({
         "openai": {
             "enabled": true,
             "api_token": api_key,
@@ -175,49 +91,30 @@ async fn configure_real_openai_provider(ctx: &RemoteCtx) {
                 "instance_id": OPENAI_INSTANCE_ID,
                 "provider_type": OPENAI_PROVIDER_TYPE,
                 "base_url": DEFAULT_OPENAI_BASE_URL,
-                "timeout_ms": Duration::from_secs(DEFAULT_TIMEOUT_SECONDS).as_millis() as u64,
+                "timeout_ms": 120000_u64,
                 "models": [DEFAULT_OPENAI_MODEL],
                 "default_model": DEFAULT_OPENAI_MODEL,
                 "features": ["plan", "json_output", "tool_calling", "web_search"],
             }],
             "alias_map": Value::Object(alias_map),
         }
-    });
-
-    rpc_call(
-        &ctx.client,
-        ctx.system_config_endpoint.as_str(),
-        "sys_config_set",
-        json!({
-            "key": SETTINGS_KEY_AICC,
-            "value": settings.to_string(),
-        }),
-        now_seq(),
-        ctx.token.as_deref(),
-        TRACE_SETUP_SETTINGS,
-    )
-    .await
-    .expect("sys_config_set services/aicc/settings failed");
-
-    rpc_call(
-        &ctx.client,
-        ctx.aicc_endpoint.as_str(),
-        "service.reload_settings",
-        json!({}),
-        now_seq(),
-        ctx.token.as_deref(),
-        TRACE_SETUP_RELOAD,
-    )
-    .await
-    .expect("service.reload_settings failed");
+    })
 }
 
-fn complete_params(
-    prompt: &str,
-    must_features: Vec<&str>,
-    options: Value,
-    model_alias: &str,
-) -> Value {
+fn setup_local_center() -> (AIComputeCenter, Arc<CollectingSinkFactory>, String) {
+    let registry = Registry::default();
+    let catalog = ModelCatalog::default();
+    let mut center = center_with_taskmgr(registry, catalog);
+    let sink = Arc::new(CollectingSinkFactory::new());
+    center.set_task_event_sink_factory(sink.clone());
+
+    let model_alias = model_alias_from_env();
+    let settings = build_local_openai_settings(model_alias.as_str());
+    register_openai_llm_providers(&center, &settings).expect("register openai provider");
+    (center, sink, model_alias)
+}
+
+fn complete_params(prompt: &str, must_features: Vec<&str>, options: Value, model_alias: &str) -> Value {
     json!({
         "capability": "llm_router",
         "model": { "alias": model_alias },
@@ -229,25 +126,24 @@ fn complete_params(
             }],
             "options": options
         },
-        "idempotency_key": format!("workflow-real-{}", now_seq())
+        "idempotency_key": format!("workflow-local-{}", now_seq())
     })
 }
 
 async fn complete_call(
-    ctx: &RemoteCtx,
+    center: &AIComputeCenter,
     trace_id: &str,
     params: Value,
 ) -> Result<Value, String> {
-    rpc_call(
-        &ctx.client,
-        ctx.aicc_endpoint.as_str(),
-        "complete",
-        params,
-        now_seq(),
-        ctx.token.as_deref(),
-        trace_id,
-    )
-    .await
+    let req: CompleteRequest =
+        serde_json::from_value(params).map_err(|err| format!("invalid complete params: {}", err))?;
+    let mut ctx = rpc_ctx_with_tenant(None);
+    ctx.trace_id = Some(trace_id.to_string());
+    let resp = center
+        .handle_complete(req, ctx)
+        .await
+        .map_err(|err| format!("local complete failed: {}", err))?;
+    serde_json::to_value(resp).map_err(|err| format!("serialize complete result failed: {}", err))
 }
 
 fn strip_markdown_fence(raw: &str) -> String {
@@ -340,19 +236,37 @@ fn validate_complex_plan(plan: &Value, min_steps: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn format_task_error(sink: &CollectingSinkFactory, task_id: &str) -> String {
+    let events = sink.events_for(task_id);
+    if events.is_empty() {
+        return "events=[]".to_string();
+    }
+    let last_error = events.iter().rev().find_map(|event| extract_error_message(event));
+    let encoded_events =
+        serde_json::to_string(&events).unwrap_or_else(|err| format!("event_serialize_failed:{err}"));
+    match last_error {
+        Some(msg) => format!("last_error={msg} events={encoded_events}"),
+        None => format!("events={encoded_events}"),
+    }
+}
+
+fn extract_error_message(event: &TaskEvent) -> Option<String> {
+    let data = event.data.as_ref()?;
+    let code = data.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let message = data
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    Some(format!("code={} message={}", code, message))
+}
+
 #[tokio::test]
-#[ignore = "requires target gateway and OPENAI_API_KEY"]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn workflow_real_01_gateway_complex_scenario_protocol_mix() {
-    let ctx = build_remote_ctx().await;
-    configure_real_openai_provider(&ctx).await;
-    let model_alias = env::var(ENV_AICC_MODEL_ALIAS)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_MODEL_ALIAS.to_string());
+    let (center, sink, model_alias) = setup_local_center();
 
     let complex_result = complete_call(
-        &ctx,
+        &center,
         TRACE_COMPLEX_DAG,
         complete_params(
             COMPLEX_DAG_PROMPT,
@@ -366,16 +280,23 @@ async fn workflow_real_01_gateway_complex_scenario_protocol_mix() {
         ),
     )
     .await
-    .expect("complex dag rpc failed");
+    .expect("complex dag local call failed");
 
     let complex_status = complex_result
         .get("status")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
+    let complex_task_id = complex_result
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     assert_eq!(
-        complex_status, "succeeded",
-        "complex dag status={} result={}",
-        complex_status, complex_result
+        complex_status,
+        "succeeded",
+        "complex dag status={} result={} detail={}",
+        complex_status,
+        complex_result,
+        format_task_error(&sink, complex_task_id)
     );
     let complex_text = complex_result
         .pointer("/result/text")
@@ -390,7 +311,7 @@ async fn workflow_real_01_gateway_complex_scenario_protocol_mix() {
     });
 
     let json_result = complete_call(
-        &ctx,
+        &center,
         TRACE_JSON_OUTPUT,
         complete_params(
             JSON_OUTPUT_PROMPT,
@@ -404,15 +325,22 @@ async fn workflow_real_01_gateway_complex_scenario_protocol_mix() {
         ),
     )
     .await
-    .expect("json-output rpc failed");
+    .expect("json-output local call failed");
     let json_status = json_result
         .get("status")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
+    let json_task_id = json_result
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     assert_eq!(
-        json_status, "succeeded",
-        "json-output status={} result={}",
-        json_status, json_result
+        json_status,
+        "succeeded",
+        "json-output status={} result={} detail={}",
+        json_status,
+        json_result,
+        format_task_error(&sink, json_task_id)
     );
     let json_text = json_result
         .pointer("/result/text")
@@ -430,7 +358,7 @@ async fn workflow_real_01_gateway_complex_scenario_protocol_mix() {
     );
 
     let stream_result = complete_call(
-        &ctx,
+        &center,
         TRACE_STREAM_OUTPUT,
         complete_params(
             STREAM_PROMPT,
@@ -444,15 +372,20 @@ async fn workflow_real_01_gateway_complex_scenario_protocol_mix() {
         ),
     )
     .await
-    .expect("stream rpc failed");
+    .expect("stream local call failed");
     let stream_status = stream_result
         .get("status")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
+    let stream_task_id = stream_result
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     assert!(
         matches!(stream_status, "running" | "succeeded"),
-        "stream status={} result={}",
+        "stream status={} result={} detail={}",
         stream_status,
-        stream_result
+        stream_result,
+        format_task_error(&sink, stream_task_id)
     );
 }
