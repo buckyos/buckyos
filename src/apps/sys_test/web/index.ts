@@ -19,7 +19,7 @@ import { buckyos } from 'buckyos'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
 
 const APP_ID = 'buckyos_systest'
-const SELFTEST_URL = '/sdk/appservice/selftest'
+const SELFTEST_BASE_URL = '/sdk/appservice/selftest'
 
 type CaseResult = {
   name: string
@@ -154,10 +154,14 @@ interface SelftestResponse {
 }
 
 async function runGroupOnServer(group: TestGroup): Promise<CaseResult[]> {
-  const response = await fetch(SELFTEST_URL, {
+  // Each group has its own backend endpoint, e.g.
+  //   POST /sdk/appservice/selftest/system_config
+  // See main.ts for the route table.
+  const url = `${SELFTEST_BASE_URL}/${group.id}`
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ group: group.id }),
+    body: '{}',
   })
   const text = await response.text()
   let payload: SelftestResponse
@@ -165,7 +169,7 @@ async function runGroupOnServer(group: TestGroup): Promise<CaseResult[]> {
     payload = JSON.parse(text) as SelftestResponse
   } catch {
     throw new Error(
-      `non-json response from ${SELFTEST_URL} (status=${response.status}): ${text.slice(0, 200)}`,
+      `non-json response from ${url} (status=${response.status}): ${text.slice(0, 200)}`,
     )
   }
   if (!response.ok && (!payload || !Array.isArray(payload.results))) {

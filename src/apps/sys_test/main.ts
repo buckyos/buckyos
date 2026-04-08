@@ -435,31 +435,93 @@ function appServiceUnavailableResponse(): Response {
   );
 }
 
+function summarizeHeaders(req: Request): Record<string, string> {
+  const interesting = [
+    "host",
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "x-forwarded-uri",
+    "x-real-ip",
+    "user-agent",
+    "content-type",
+    "content-length",
+    "origin",
+    "referer",
+  ];
+  const out: Record<string, string> = {};
+  for (const name of interesting) {
+    const value = req.headers.get(name);
+    if (value !== null) out[name] = value;
+  }
+  return out;
+}
+
+let requestSeq = 0;
+
 Deno.serve({
   port,
   hostname: "0.0.0.0",
   onListen: ({ hostname, port }) => {
     console.log(`[sys_test] listening on http://${hostname}:${port}`);
+    console.log(`[sys_test] mounted routes:`);
+    console.log(`  GET  ${sdkRoutePrefix}/healthz`);
+    console.log(`  GET  ${sdkRoutePrefix}/runtime`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest             (run all groups)`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest/system_config`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest/app_settings`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest/task_manager`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest/verify_hub`);
+    console.log(`  GET  *                                       (static dist/)`);
   },
 }, async (req: Request) => {
+  const reqId = ++requestSeq;
+  const startedAt = Date.now();
+  let url: URL;
   try {
-    const url = new URL(req.url);
+    url = new URL(req.url);
+  } catch (error) {
+    console.warn(
+      `[sys_test][req#${reqId}] failed to parse req.url=${JSON.stringify(req.url)}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return jsonResponse({ ok: false, error: "invalid request URL" }, 400);
+  }
+
+  console.log(
+    `[sys_test][req#${reqId}] -> ${req.method} ${url.pathname}${url.search} headers=${
+      JSON.stringify(summarizeHeaders(req))
+    }`,
+  );
+
+  const log = (status: number, route: string) => {
+    console.log(
+      `[sys_test][req#${reqId}] <- ${status} ${route} (${Date.now() - startedAt}ms)`,
+    );
+  };
+  const tap = (route: string, response: Response): Response => {
+    log(response.status, route);
+    return response;
+  };
+
+  try {
 
     if (req.method === "GET" && url.pathname === `${sdkRoutePrefix}/healthz`) {
-      return jsonResponse({
+      return tap("healthz", jsonResponse({
         ok: bootstrapState.kind === "ready",
         appId: APP_ID,
         bootstrap: bootstrapState.kind,
-      });
+      }));
     }
 
     if (req.method === "GET" && url.pathname === `${sdkRoutePrefix}/runtime`) {
       if (bootstrapState.kind !== "ready") {
-        return appServiceUnavailableResponse();
+        return tap("runtime[unavail]", appServiceUnavailableResponse());
       }
       const { sdk, identity } = bootstrapState;
       const accountInfo = await sdk.buckyos.getAccountInfo();
-      return jsonResponse({
+      return tap("runtime", jsonResponse({
         ok: true,
         mode: "app-service",
         appId: identity.appId,
@@ -479,56 +541,104 @@ Deno.serve({
           }
           : null,
         tokenClaims: sdk.parseSessionTokenClaims(accountInfo?.session_token ?? null),
-      });
+      }));
     }
 
-    if (req.method === "POST" && url.pathname === `${sdkRoutePrefix}/selftest`) {
+    // Per-group selftest endpoint, e.g.
+    //   POST /sdk/appservice/selftest/system_config
+    //   POST /sdk/appservice/selftest/app_settings
+    //   POST /sdk/appservice/selftest/task_manager
+    //   POST /sdk/appservice/selftest/verify_hub
+    //
+    // Each test group on the frontend gets its own URL so the routing in
+    // cyfs-gateway / static servers in front of this process can express
+    // per-endpoint policies, and so logs are easy to grep per group.
+    if (
+      req.method === "POST" &&
+      url.pathname.startsWith(`${sdkRoutePrefix}/selftest/`)
+    ) {
       if (!groupRunners || bootstrapState.kind !== "ready") {
-        return appServiceUnavailableResponse();
+        return tap("selftest[unavail]", appServiceUnavailableResponse());
       }
-      const body = await readJsonBody(req);
-      const requestedGroup = typeof body.group === "string" ? (body.group as GroupId) : null;
-      const groupsToRun: GroupId[] = requestedGroup
-        ? [requestedGroup]
-        : (Object.keys(groupRunners) as GroupId[]);
-
-      const results: SelftestCaseResult[] = [];
-      for (const groupId of groupsToRun) {
-        const runner = groupRunners[groupId];
-        if (!runner) {
-          results.push({
-            name: `unknown group: ${groupId}`,
-            ok: false,
-            durationMs: 0,
-            error: `no such group: ${groupId}`,
-          });
-          continue;
-        }
-        const groupResults = await runner();
-        results.push(...groupResults);
+      const groupId = url.pathname.slice(`${sdkRoutePrefix}/selftest/`.length) as GroupId;
+      const runner = groupRunners[groupId];
+      if (!runner) {
+        return tap(
+          `selftest/${groupId}[unknown]`,
+          jsonResponse(
+            {
+              ok: false,
+              group: groupId,
+              error: `no such group: ${groupId}`,
+              availableGroups: Object.keys(groupRunners),
+            },
+            404,
+          ),
+        );
       }
-
+      const results = await runner();
       const ok = results.every((result) => result.ok);
-      return jsonResponse(
-        {
-          ok,
-          group: requestedGroup ?? "all",
-          appId: bootstrapState.identity.appId,
-          ownerUserId: bootstrapState.identity.ownerUserId,
-          results,
-        },
-        ok ? 200 : 500,
+      return tap(
+        `selftest/${groupId}`,
+        jsonResponse(
+          {
+            ok,
+            group: groupId,
+            appId: bootstrapState.identity.appId,
+            ownerUserId: bootstrapState.identity.ownerUserId,
+            results,
+          },
+          ok ? 200 : 500,
+        ),
       );
     }
 
-    return serveDir(req, {
+    // Convenience endpoint that runs every group at once. The body is
+    // optional and ignored — kept around so that the systest jest harness
+    // (tests/app-service/integration/app_service_test.ts) and any
+    // command-line callers can still trigger the full sweep with one call.
+    if (req.method === "POST" && url.pathname === `${sdkRoutePrefix}/selftest`) {
+      if (!groupRunners || bootstrapState.kind !== "ready") {
+        return tap("selftest[unavail]", appServiceUnavailableResponse());
+      }
+      const results: SelftestCaseResult[] = [];
+      for (const groupId of Object.keys(groupRunners) as GroupId[]) {
+        const groupResults = await groupRunners[groupId]();
+        results.push(...groupResults);
+      }
+      const ok = results.every((result) => result.ok);
+      return tap(
+        "selftest[all]",
+        jsonResponse(
+          {
+            ok,
+            group: "all",
+            appId: bootstrapState.identity.appId,
+            ownerUserId: bootstrapState.identity.ownerUserId,
+            results,
+          },
+          ok ? 200 : 500,
+        ),
+      );
+    }
+
+    const staticResponse = await serveDir(req, {
       fsRoot: staticRoot,
       quiet: true,
     });
+    return tap("static", staticResponse);
   } catch (error) {
-    return jsonResponse(
-      { ok: false, error: error instanceof Error ? error.message : String(error) },
-      500,
+    console.error(
+      `[sys_test][req#${reqId}] !! handler threw: ${
+        error instanceof Error ? (error.stack ?? error.message) : String(error)
+      }`,
+    );
+    return tap(
+      "error",
+      jsonResponse(
+        { ok: false, error: error instanceof Error ? error.message : String(error) },
+        500,
+      ),
     );
   }
 });
