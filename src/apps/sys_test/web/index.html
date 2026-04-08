@@ -1,16 +1,33 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BuckyOS Test Panel</title>
+    <title>BuckyOS sys_test 系统功能检测</title>
+    <link rel="stylesheet" href="./src/styles.css">
 </head>
 <body>
+    <header class="topbar">
+        <h1>BuckyOS sys_test</h1>
+        <div class="auth">
+            <span id="auth-status" class="auth-status">未初始化</span>
+            <button id="btn-login" class="btn primary" disabled>Login</button>
+            <button id="btn-logout" class="btn" disabled>Logout</button>
+        </div>
+    </header>
 
-    <div id="user_info">userinfo</div>
-    <div id="background">
-        <button id="btn-login">Login </button>
-    </div>    
+    <main>
+        <section class="overview">
+            <p>面向开发者的系统功能快速检测工具。每个测试组提供两个按钮：</p>
+            <ul>
+                <li><strong>在页面中运行检测</strong>：使用当前浏览器内的 SDK 直接调用各 ServiceClient。</li>
+                <li><strong>在后台服务中运行检测</strong>：通过 <code>POST /sdk/appservice/selftest</code> 触发 sys_test 的 AppService 进程在服务端运行同一组用例。</li>
+            </ul>
+            <p>后续每个 service 还会在下方提供手动调用分组（占位）。</p>
+        </section>
+
+        <section id="groups"></section>
+    </main>
 
     <script type="module" src="./index.ts"></script>
 </body>
