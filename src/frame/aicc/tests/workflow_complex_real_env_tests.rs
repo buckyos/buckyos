@@ -27,10 +27,10 @@ const TRACE_STREAM_OUTPUT: &str = "workflow-real-stream-output-local";
 const MIN_EXPECTED_STEPS: usize = 6;
 const MAX_TOKENS_COMPLEX_DAG: u64 = 1800;
 const MAX_TOKENS_JSON_OUTPUT: u64 = 320;
-const MAX_TOKENS_STREAM_OUTPUT: u64 = 256;
+const MAX_TOKENS_STREAM_OUTPUT: u64 = 1024;
 const TEMP_COMPLEX_DAG: f64 = 0.1;
 const TEMP_JSON_OUTPUT: f64 = 0.0;
-const TEMP_STREAM_OUTPUT: f64 = 0.2;
+const TEMP_STREAM_OUTPUT: f64 = 0.0;
 
 const COMPLEX_DAG_PROMPT: &str = r#"You are a workflow planner.
 Return JSON only (no markdown).
