@@ -12,6 +12,7 @@ log = { workspace = true }
 simplelog = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ndn-lib = { workspace = true }
 url = { workspace = true }
 tokio = { workspace = true }
 lazy_static = { workspace = true }
@@ -21,6 +22,8 @@ toml = { workspace = true }
 upon = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 # rocksdb = "*"
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }

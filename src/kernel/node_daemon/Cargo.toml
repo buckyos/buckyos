@@ -38,6 +38,8 @@ named_store = { workspace = true }
 #package-installer = { path = "../../components/package-installer" }
 buckyos-api = { path = "../buckyos-api" }
 anyhow = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 server-runner = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
