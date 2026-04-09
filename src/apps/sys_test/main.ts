@@ -3,7 +3,7 @@
  *
  * Two responsibilities:
  *
- *   1) Serve the static web bundle from ./dist for the in-page tester.
+ *   1) Serve the static web bundle for the in-page tester.
  *   2) Run the same selftest cases inside an AppService runtime, exposed via
  *      `POST /sdk/appservice/selftest`. The frontend calls this endpoint to
  *      execute the cases on the server side ("在后台服务中运行检测").
@@ -90,7 +90,6 @@ type BootstrapState =
   | { kind: "failed"; reason: string };
 
 const port = Number.parseInt(Deno.env.get("PORT") ?? "3000", 10);
-const staticRoot = new URL("./dist", import.meta.url).pathname;
 const sdkRoutePrefix = "/sdk/appservice";
 
 function getEnv(name: string): string | null {
@@ -109,6 +108,22 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function resolveStaticRoot(): Promise<string> {
+  const candidates = [
+    new URL("./web", import.meta.url).pathname,
+    new URL("./dist/web", import.meta.url).pathname,
+    new URL("./dist", import.meta.url).pathname,
+  ];
+
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`failed to find sys_test static root, tried: ${candidates.join(", ")}`);
 }
 
 function parseAppInstanceIdentity(appInstanceConfig: string): AppInstanceIdentity {
@@ -142,6 +157,8 @@ async function resolveWebSdkRoot(): Promise<string> {
   const explicit = getEnv("BUCKYOS_WEBSDK_ROOT");
   const candidates = [
     explicit,
+    new URL("./buckyos-websdk", import.meta.url).pathname,
+    new URL("./dist/buckyos-websdk", import.meta.url).pathname,
     new URL("../../../../../buckyos-websdk", import.meta.url).pathname,
     "/Users/liuzhicong/project/buckyos-websdk",
   ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
@@ -402,6 +419,7 @@ function buildGroupRunners(
 }
 
 const bootstrapState = await bootstrapSdk();
+const staticRoot = await resolveStaticRoot();
 const groupRunners = bootstrapState.kind === "ready"
   ? buildGroupRunners(bootstrapState)
   : null;

@@ -16,6 +16,6 @@
     "vite": "^5.4.8"
   },
   "dependencies": {
-    "buckyos": "file:../../../../../buckyos-websdk"
+    "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
   }
 }

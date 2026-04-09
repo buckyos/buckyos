@@ -2,7 +2,7 @@
   "lock": false,
   "tasks": {
     "start": "deno run --allow-net --allow-read --allow-env main.ts",
-    "build": "cd web && npm install && npm run build"
+    "build": "pnpm build"
   },
   "imports": {
     "@std/http": "jsr:@std/http@^1"

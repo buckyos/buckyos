@@ -1,0 +1,12 @@
+{
+  "name": "buckyos_systest",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
+  },
+  "scripts": {
+    "build:web": "pnpm --dir web install --frozen-lockfile && pnpm --dir web run build",
+    "build": "pnpm run build:web && node build.mjs"
+  }
+}
