@@ -15,6 +15,7 @@ use buckyos_api::{
     Capability, CompleteRequest, Feature, ResourceRef,
 };
 use log::{info, warn};
+use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -684,6 +685,106 @@ impl OpenAIProvider {
         request_obj.remove(param).is_some()
     }
 
+    fn process_sse_event_payload(
+        payload: &str,
+        final_response: &mut Option<Value>,
+        accumulated_text: &mut String,
+    ) -> Result<(), String> {
+        let trimmed = payload.trim();
+        if trimmed.is_empty() || trimmed == "[DONE]" {
+            return Ok(());
+        }
+
+        let event: Value = serde_json::from_str(trimmed)
+            .map_err(|err| format!("invalid sse event json: {}; payload={}", err, trimmed))?;
+
+        if let Some(response) = event.get("response") {
+            if response.is_object() {
+                *final_response = Some(response.clone());
+            }
+        }
+
+        let event_type = event
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if (event_type == "response.output_text.delta"
+            || event_type.ends_with("output_text.delta"))
+            && event
+                .get("delta")
+                .and_then(|value| value.as_str())
+                .is_some()
+        {
+            accumulated_text.push_str(
+                event
+                    .get("delta")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default(),
+            );
+        }
+        Ok(())
+    }
+
+    fn parse_sse_response_body(raw: &str) -> Result<Value, String> {
+        let mut final_response: Option<Value> = None;
+        let mut accumulated_text = String::new();
+        let mut pending_data_lines: Vec<String> = vec![];
+
+        for line in raw.lines() {
+            let normalized = line.trim_end_matches('\r');
+            if normalized.is_empty() {
+                if !pending_data_lines.is_empty() {
+                    let payload = pending_data_lines.join("\n");
+                    Self::process_sse_event_payload(
+                        payload.as_str(),
+                        &mut final_response,
+                        &mut accumulated_text,
+                    )?;
+                    pending_data_lines.clear();
+                }
+                continue;
+            }
+
+            if let Some(data) = normalized.strip_prefix("data:") {
+                pending_data_lines.push(data.trim_start().to_string());
+            }
+        }
+
+        if !pending_data_lines.is_empty() {
+            let payload = pending_data_lines.join("\n");
+            Self::process_sse_event_payload(
+                payload.as_str(),
+                &mut final_response,
+                &mut accumulated_text,
+            )?;
+        }
+
+        if let Some(mut response) = final_response {
+            if !accumulated_text.is_empty()
+                && response
+                    .get("output_text")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true)
+            {
+                if let Some(obj) = response.as_object_mut() {
+                    obj.insert("output_text".to_string(), Value::String(accumulated_text));
+                }
+            }
+            return Ok(response);
+        }
+
+        if !accumulated_text.is_empty() {
+            return Ok(json!({
+                "status": "completed",
+                "output_text": accumulated_text,
+                "output": []
+            }));
+        }
+
+        Err("sse stream ended without response payload".to_string())
+    }
+
     fn extract_text2image_prompt(req: &CompleteRequest) -> Option<String> {
         if let Some(text) = req
             .payload
@@ -879,7 +980,48 @@ impl OpenAIProvider {
         let latency_ms = started_at.elapsed().as_millis() as u64;
 
         let status = response.status();
-        let body: Value = response.json().await.map_err(|err| {
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let content_encoding = response
+            .headers()
+            .get(CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let raw_body = response.text().await.map_err(|err| {
+            let decode_err = format!(
+                "failed to decode openai response body: {}; status={} content_type={} content_encoding={}",
+                err,
+                status.as_u16(),
+                content_type,
+                if content_encoding.is_empty() {
+                    "<none>"
+                } else {
+                    content_encoding.as_str()
+                }
+            );
+            if status.as_u16() == 429 || status.is_server_error() {
+                ProviderError::retryable(decode_err)
+            } else {
+                ProviderError::fatal(decode_err)
+            }
+        })?;
+        let body_parse_result = if content_type.contains("text/event-stream") {
+            Self::parse_sse_response_body(raw_body.as_str())
+        } else {
+            serde_json::from_str::<Value>(raw_body.as_str()).map_err(|err| {
+                format!(
+                    "invalid json response: {}; body_head={}",
+                    err,
+                    raw_body.chars().take(320).collect::<String>()
+                )
+            })
+        };
+        let body: Value = body_parse_result.map_err(|err| {
             if status.as_u16() == 429 || status.is_server_error() {
                 ProviderError::retryable(format!("failed to parse openai response body: {}", err))
             } else {
@@ -1879,6 +2021,54 @@ mod tests {
         assert!(removed);
         assert!(!request_obj.contains_key("temperature"));
         assert_eq!(request_obj.get("model"), Some(&json!("gpt-5.2-codex")));
+    }
+
+    #[test]
+    fn parse_sse_response_body_uses_completed_response_payload() {
+        let raw = r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hel"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"lo"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output_text":"hello"}}
+
+data: [DONE]
+"#;
+
+        let parsed = OpenAIProvider::parse_sse_response_body(raw).expect("sse should parse");
+        assert_eq!(
+            parsed.get("status").and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
+            parsed.get("output_text").and_then(|value| value.as_str()),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn parse_sse_response_body_falls_back_to_accumulated_deltas() {
+        let raw = r#"data: {"type":"response.output_text.delta","delta":"foo"}
+
+data: {"type":"response.output_text.delta","delta":"bar"}
+
+data: [DONE]
+"#;
+
+        let parsed = OpenAIProvider::parse_sse_response_body(raw).expect("sse should parse");
+        assert_eq!(
+            parsed.get("status").and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
+            parsed.get("output_text").and_then(|value| value.as_str()),
+            Some("foobar")
+        );
     }
 
     #[test]
