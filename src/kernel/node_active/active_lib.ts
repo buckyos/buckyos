@@ -51,9 +51,10 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
     let [device_public_key,device_private_key] = await generate_key_pair();
     let owner_public_key:JsonValue = {};
     let owner_private_key:string = "";
+    let access_token:string = "";
     if (!initial?.is_wallet_runtime ) {
         console.log("generate_key_pair for owner");
-        [owner_public_key,owner_private_key] = await generate_key_pair();
+        [owner_public_key,owner_private_key,access_token] = await generate_key_pair();
     }  else {
         owner_public_key = initial?.owner_public_key as JsonValue;
     }
@@ -77,6 +78,7 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         enable_guest_access: false,
         owner_private_key: owner_private_key,
         owner_public_key: owner_public_key,
+        owner_access_token: access_token,
         port_mapping_mode: "full",
         rtcp_port: 2980,
         is_wallet_runtime: false,
@@ -219,8 +221,8 @@ export async function bind_owner_key(access_token:string, public_key:JsonValue|s
     return result as SnBindOwnerKeyResult;
 }
 
-export async function bind_sn_zone_config(user_name:string, zone_config_jwt:string, user_domain:string|null):Promise<SnBindZoneConfigResult> {
-    let rpc_client = create_sn_rpc_client(SN_BNS_API_URL);
+export async function bind_sn_zone_config(user_name:string, zone_config_jwt:string, access_token:string, user_domain:string|null):Promise<SnBindZoneConfigResult> {
+    let rpc_client = create_sn_rpc_client(SN_BNS_API_URL, access_token);
     let params:JsonValue = {
         user_name:user_name,
         zone_config:zone_config_jwt,
@@ -283,12 +285,13 @@ export function validate_bucky_username(username:string):{valid:boolean; reason?
     return {valid:true};
 }
 
-export async function generate_key_pair():Promise<[JsonValue,string]> {
+export async function generate_key_pair():Promise<[JsonValue,string,string]> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     let result: JsonValue = await rpc_client.call("generate_key_pair",{});
     let public_key = result["public_key"]
     let private_key = result["private_key"]
-    return [public_key,private_key];
+    let access_token = result["access_token"]
+    return [public_key,private_key,access_token];
 }
 
 function normalizeWalletSignResult(
@@ -527,11 +530,13 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
             return false;
         }
         let zone_config_jwt = records_result["BOOT"];
-
+        console.log("zone_config_jwt",zone_config_jwt);
         let bind_zone_result = await bind_sn_zone_config(
             data.sn_user_name,
             zone_config_jwt,
+            data.owner_access_token as string,
             user_domain);
+        console.log("bind_zone_result",bind_zone_result);
 
         if (bind_zone_result["code"] != 0) {
             return false;

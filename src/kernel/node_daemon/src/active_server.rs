@@ -719,10 +719,37 @@ impl ActiveServer {
     async fn handle_generate_key_pair(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let (private_key, public_key) = generate_ed25519_key_pair();
         let public_key_str = public_key.to_string();
+        let private_key_pem = EncodingKey::from_ed_pem(private_key.as_bytes()).map_err(|e| {
+            warn!("Failed to parse generated private key: {}", e);
+            RPCErrors::ReasonError("Failed to parse generated private key".to_string())
+        })?;
+        let now = buckyos_get_unix_timestamp();
+        let key_id = public_key
+            .get("x")
+            .and_then(Value::as_str)
+            .unwrap_or(public_key_str.as_str())
+            .to_string();
+        let rpc_token = ::kRPC::RPCSessionToken {
+            token_type: ::kRPC::RPCSessionTokenType::Normal,
+            appid: Some("active_service".to_string()),
+            jti: Some(now.to_string()),
+            session: Some(now),
+            sub: Some("$owner".to_string()),
+            aud: None,
+            exp: Some(now + 60 * 15),
+            iss: None,
+            token: None,
+            extra: HashMap::new(),
+        };
+        let access_token = rpc_token.generate_jwt(None, &private_key_pem).map_err(|e| {
+            warn!("Failed to generate access token for key pair: {}", e);
+            RPCErrors::ReasonError("Failed to generate access token".to_string())
+        })?;
         return Ok(RPCResponse::new(
             RPCResult::Success(json!({
                 "private_key":private_key,
-                "public_key":public_key
+                "public_key":public_key,
+                "access_token":access_token
             })),
             req.seq,
         ));
