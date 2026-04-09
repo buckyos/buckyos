@@ -644,6 +644,7 @@ fn build_zone_user_contact_settings(
 }
 
 fn build_aicc_settings(config: &StartConfigSummary) -> Value {
+    const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
     let mut settings = serde_json::Map::new();
     let mut openai_alias_map = serde_json::Map::new();
     let mut openai_instances = Vec::<Value>::new();
@@ -657,7 +658,7 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
             "instance_id": "openai-default",
             "provider_type": "openai",
             "base_url": "https://api.openai.com/v1",
-            "timeout_ms": 300000,
+            "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
             "models": ["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"],
             "default_model": "gpt-5-mini",
             "image_models": ["dall-e-3", "dall-e-2"],
@@ -684,7 +685,7 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
             "instance_id": "sn-openai-default",
             "provider_type": "sn-openai",
             "base_url": "https://sn.buckyos.ai/api/v1/ai/chat/completions",
-            "timeout_ms": 300000,
+            "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
             "models": ["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"],
             "default_model": "gpt-5-mini",
             "image_models": ["dall-e-3", "dall-e-2"],
@@ -720,7 +721,7 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
                         "instance_id": "google-gimini-default",
                         "provider_type": "google-gimini",
                         "base_url": "https://generativelanguage.googleapis.com/v1beta",
-                        "timeout_ms": 60000,
+                        "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
                         "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
                         "default_model": "gemini-2.5-flash",
                         "image_models": [
@@ -749,7 +750,7 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
                         "instance_id": "claude-default",
                         "provider_type": "claude",
                         "base_url": "https://api.anthropic.com/v1",
-                        "timeout_ms": 60000,
+                        "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
                         "models": ["claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022"],
                         "default_model": "claude-3-7-sonnet-20250219",
                         "features": ["plan", "json_output", "tool_calling"]
@@ -1047,6 +1048,7 @@ mod tests {
             settings["openai"]["instances"][0]["default_model"],
             "gpt-5-mini"
         );
+        assert_eq!(settings["openai"]["instances"][0]["timeout_ms"], 600000);
         assert_eq!(settings["google"]["api_token"], "google-token");
         assert_eq!(
             settings["google"]["alias_map"]["gemini-ops"],
@@ -1056,6 +1058,7 @@ mod tests {
             settings["google"]["instances"][0]["provider_type"],
             "google-gimini"
         );
+        assert_eq!(settings["google"]["instances"][0]["timeout_ms"], 600000);
         assert_eq!(settings["claude"]["api_token"], "claude-token");
         assert_eq!(
             settings["claude"]["alias_map"]["claude-reasoning"],
