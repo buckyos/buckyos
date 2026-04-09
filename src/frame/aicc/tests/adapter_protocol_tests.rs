@@ -10,21 +10,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
-    OpenAIProvider::new(
-        OpenAIInstanceConfig {
-            instance_id: "openai-test".to_string(),
-            provider_type: "openai".to_string(),
-            base_url,
-            timeout_ms,
-            models: vec!["gpt-4o-mini".to_string()],
-            default_model: Some("gpt-4o-mini".to_string()),
-            image_models: vec!["dall-e-3".to_string()],
-            default_image_model: Some("dall-e-3".to_string()),
-            features: vec!["plan".to_string()],
-            alias_map: HashMap::new(),
-        },
-        "token".to_string(),
-    )
+    OpenAIProvider::new(OpenAIInstanceConfig {
+        instance_id: "openai-test".to_string(),
+        provider_type: "openai".to_string(),
+        base_url,
+        auth_mode: "bearer".to_string(),
+        api_token: Some("token".to_string()),
+        auth_subject: None,
+        auth_appid: None,
+        auth_private_key_path: None,
+        timeout_ms,
+        models: vec!["gpt-4o-mini".to_string()],
+        default_model: Some("gpt-4o-mini".to_string()),
+        image_models: vec!["dall-e-3".to_string()],
+        default_image_model: Some("dall-e-3".to_string()),
+        features: vec!["plan".to_string()],
+        alias_map: HashMap::new(),
+    })
     .expect("openai provider")
 }
 
@@ -314,7 +316,10 @@ async fn adapter_claude_01_http_200_success() {
         ProviderStartResult::Immediate(summary) => {
             assert_eq!(summary.text.as_deref(), Some("ok"));
             assert_eq!(summary.usage.as_ref().and_then(|u| u.input_tokens), Some(1));
-            assert_eq!(summary.usage.as_ref().and_then(|u| u.output_tokens), Some(1));
+            assert_eq!(
+                summary.usage.as_ref().and_then(|u| u.output_tokens),
+                Some(1)
+            );
         }
         _ => panic!("expected immediate summary"),
     }

@@ -62,6 +62,8 @@ pub struct StartConfigSummary {
     pub public_key: Jwk,
     pub zone_name: String, //zone hostname
     #[serde(default)]
+    pub sn_active_code: String,
+    #[serde(default)]
     pub ood_jwt: Option<String>,
     #[serde(default)]
     pub ai_provider_config: AIProviderConfigSummary,
@@ -643,30 +645,63 @@ fn build_zone_user_contact_settings(
 
 fn build_aicc_settings(config: &StartConfigSummary) -> Value {
     let mut settings = serde_json::Map::new();
+    let mut openai_alias_map = serde_json::Map::new();
+    let mut openai_instances = Vec::<Value>::new();
+    let openai_api_token =
+        trim_to_option(config.ai_provider_config.openai_api_token.as_str()).unwrap_or_default();
 
-    if let Some(api_token) = trim_to_option(config.ai_provider_config.openai_api_token.as_str()) {
+    if !openai_api_token.is_empty() {
+        openai_alias_map.insert("gpt-fast".to_string(), json!("gpt-5-mini"));
+        openai_alias_map.insert("gpt-plan".to_string(), json!("gpt-5"));
+        openai_instances.push(json!({
+            "instance_id": "openai-default",
+            "provider_type": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "timeout_ms": 300000,
+            "models": ["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"],
+            "default_model": "gpt-5-mini",
+            "image_models": ["dall-e-3", "dall-e-2"],
+            "default_image_model": "dall-e-3",
+            "features": ["plan", "json_output", "tool_calling", "web_search"]
+        }));
+    }
+
+    if trim_to_option(config.sn_active_code.as_str()).is_some() {
+        if !openai_alias_map.contains_key("llm.default") {
+            openai_alias_map.insert("llm.default".to_string(), json!("gpt-5-mini"));
+        }
+        if !openai_alias_map.contains_key("llm.chat.default") {
+            openai_alias_map.insert("llm.chat.default".to_string(), json!("gpt-5-mini"));
+        }
+        if !openai_alias_map.contains_key("llm.plan.default") {
+            openai_alias_map.insert("llm.plan.default".to_string(), json!("gpt-5"));
+        }
+        if !openai_alias_map.contains_key("llm.code.default") {
+            openai_alias_map.insert("llm.code.default".to_string(), json!("gpt-5-mini"));
+        }
+
+        openai_instances.push(json!({
+            "instance_id": "sn-openai-default",
+            "provider_type": "sn-openai",
+            "base_url": "https://sn.buckyos.ai/api/v1/ai/chat/completions",
+            "timeout_ms": 300000,
+            "models": ["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"],
+            "default_model": "gpt-5-mini",
+            "image_models": ["dall-e-3", "dall-e-2"],
+            "default_image_model": "dall-e-3",
+            "features": ["plan", "json_output", "tool_calling", "web_search"],
+            "auth_mode": "device_jwt"
+        }));
+    }
+
+    if !openai_instances.is_empty() {
         settings.insert(
             "openai".to_string(),
             json!({
                 "enabled": true,
-                "api_token": api_token,
-                "alias_map": {
-                    "gpt-fast": "gpt-5-mini",
-                    "gpt-plan": "gpt-5"
-                },
-                "instances": [
-                    {
-                        "instance_id": "openai-default",
-                        "provider_type": "openai",
-                        "base_url": "https://api.openai.com/v1",
-                        "timeout_ms": 300000,
-                        "models": ["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"],
-                        "default_model": "gpt-5-mini",
-                        "image_models": ["dall-e-3", "dall-e-2"],
-                        "default_image_model": "dall-e-3",
-                        "features": ["plan", "json_output", "tool_calling", "web_search"]
-                    }
-                ]
+                "api_token": openai_api_token,
+                "alias_map": Value::Object(openai_alias_map),
+                "instances": openai_instances
             }),
         );
     }
@@ -888,6 +923,11 @@ impl TryFrom<&Value> for StartConfigSummary {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("start_config.json missing zone_name"))?
                 .to_string(),
+            sn_active_code: value
+                .get("sn_active_code")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
 
             ood_jwt: value
                 .get("ood_jwt")
@@ -1025,6 +1065,43 @@ mod tests {
             settings["claude"]["instances"][0]["default_model"],
             "claude-3-7-sonnet-20250219"
         );
+    }
+
+    #[test]
+    fn build_aicc_settings_adds_sn_provider_when_active_code_present() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com",
+            "sn_active_code": "invite-code-001"
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let settings = build_aicc_settings(&summary);
+
+        assert_eq!(settings["openai"]["enabled"], true);
+        assert_eq!(
+            settings["openai"]["instances"][0]["instance_id"],
+            "sn-openai-default"
+        );
+        assert_eq!(
+            settings["openai"]["instances"][0]["provider_type"],
+            "sn-openai"
+        );
+        assert_eq!(
+            settings["openai"]["instances"][0]["base_url"],
+            "https://sn.buckyos.ai/api/v1/ai/chat/completions"
+        );
+        assert_eq!(
+            settings["openai"]["instances"][0]["auth_mode"],
+            "device_jwt"
+        );
+        assert_eq!(settings["openai"]["alias_map"]["llm.plan.default"], "gpt-5");
     }
 
     #[test]

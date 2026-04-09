@@ -479,6 +479,7 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         friend_passcode: data.friend_passcode,
         ai_provider_config: data.ai_provider_config,
         jarvis_msg_tunnel_config: data.jarvis_msg_tunnel_config,
+        sn_active_code: data.sn_active_code,
 
         sn_url: SN_API_URL,
         sn_username: data.sn_user_name,
@@ -566,6 +567,7 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
         device_rtcp_port:data.rtcp_port,
         ai_provider_config:data.ai_provider_config,
         jarvis_msg_tunnel_config:data.jarvis_msg_tunnel_config,
+        sn_active_code:data.sn_active_code,
         sn_username:data.sn_user_name,
         sn_url:sn_url
     });

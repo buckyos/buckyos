@@ -21,4 +21,5 @@ cyfs-gateway-lib = { workspace = true }
 server-runner = { workspace = true }
 reqwest = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
+name-lib = { workspace = true }
 sha2 = { workspace = true }
