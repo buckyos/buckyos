@@ -16,12 +16,13 @@ use buckyos_api::{
     Capability, CompleteRequest, Feature, ResourceRef,
 };
 use buckyos_kit::get_buckyos_system_etc_dir;
-use log::{info, warn};
+use log::{error, info, warn};
 use name_lib::load_private_key;
 use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::error::Error as _;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -97,6 +98,16 @@ enum OpenAIAuthMode {
 }
 
 impl OpenAIProvider {
+    fn format_error_chain(err: &reqwest::Error) -> String {
+        let mut segments = vec![err.to_string()];
+        let mut source = err.source();
+        while let Some(cause) = source {
+            segments.push(cause.to_string());
+            source = cause.source();
+        }
+        segments.join(" | caused_by: ")
+    }
+
     pub fn new(cfg: OpenAIInstanceConfig) -> Result<Self> {
         let timeout_ms = if cfg.timeout_ms == 0 {
             DEFAULT_OPENAI_TIMEOUT_MS
@@ -1160,6 +1171,29 @@ impl OpenAIProvider {
             .send()
             .await
             .map_err(|err| {
+                let retryable = err.is_timeout() || err.is_connect();
+                error!(
+                    "aicc.openai.http_send_failed instance_id={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err_chain={}",
+                    self.instance.instance_id,
+                    self.instance.provider_type,
+                    url,
+                    retryable,
+                    err.is_timeout(),
+                    err.is_connect(),
+                    err.status(),
+                    Self::format_error_chain(&err)
+                );
+                eprintln!(
+                    "aicc.openai.http_send_failed instance_id={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err_chain={}",
+                    self.instance.instance_id,
+                    self.instance.provider_type,
+                    url,
+                    retryable,
+                    err.is_timeout(),
+                    err.is_connect(),
+                    err.status(),
+                    Self::format_error_chain(&err)
+                );
                 if err.is_timeout() || err.is_connect() {
                     ProviderError::retryable(format!("openai request failed: {}", err))
                 } else {
@@ -1182,6 +1216,20 @@ impl OpenAIProvider {
             .unwrap_or_default()
             .to_ascii_lowercase();
         let raw_body = response.text().await.map_err(|err| {
+            error!(
+                "aicc.openai.response_decode_failed instance_id={} provider_type={} url={} status={} content_type={} content_encoding={} err={}",
+                self.instance.instance_id,
+                self.instance.provider_type,
+                url,
+                status.as_u16(),
+                content_type,
+                if content_encoding.is_empty() {
+                    "<none>"
+                } else {
+                    content_encoding.as_str()
+                },
+                err
+            );
             let decode_err = format!(
                 "failed to decode openai response body: {}; status={} content_type={} content_encoding={}",
                 err,
@@ -1211,6 +1259,14 @@ impl OpenAIProvider {
             })
         };
         let body: Value = body_parse_result.map_err(|err| {
+            error!(
+                "aicc.openai.response_parse_failed instance_id={} provider_type={} url={} status={} err={}",
+                self.instance.instance_id,
+                self.instance.provider_type,
+                url,
+                status.as_u16(),
+                err
+            );
             if status.as_u16() == 429 || status.is_server_error() {
                 ProviderError::retryable(format!("failed to parse openai response body: {}", err))
             } else {

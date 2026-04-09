@@ -8,7 +8,7 @@ use buckyos_api::{
     CompleteStatus, CreateTaskOptions, Feature, ResourceRef, TaskManagerClient, TaskStatus,
     AICC_SERVICE_SERVICE_NAME,
 };
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cmp::Ordering;
@@ -1580,6 +1580,14 @@ impl AIComputeCenter {
         let reason = last_err
             .map(|error| format!("provider start failed for task {}: {}", task_id, error))
             .unwrap_or_else(|| format!("provider start failed for task {}: no candidate", task_id));
+        error!(
+            "aicc.provider.start_failed.final task_id={} tenant={} trace_id={:?} reason={}",
+            task_id, ctx.tenant_id, ctx.trace_id, reason
+        );
+        eprintln!(
+            "aicc.provider.start_failed.final task_id={} tenant={} trace_id={:?} reason={}",
+            task_id, ctx.tenant_id, ctx.trace_id, reason
+        );
         Err(reason_error("provider_start_failed", reason))
     }
 

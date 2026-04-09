@@ -39,3 +39,6 @@ cyfs-gateway-lib = { workspace = true }
 ndn-lib = { workspace = true }
 named_store = { workspace = true }
 ndn-toolkit = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }

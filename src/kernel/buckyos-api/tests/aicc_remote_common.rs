@@ -2,14 +2,17 @@
 
 use ::kRPC::*;
 use async_trait::async_trait;
+use base64::Engine;
 use buckyos_api::{
     AiMessage, AiPayload, AiccClient, AiccHandler, AiccServerHandler, CancelResponse, Capability,
-    CompleteRequest, CompleteResponse, CompleteStatus, ModelSpec, Requirements,
+    CompleteRequest, CompleteResponse, CompleteStatus, ModelSpec, Requirements, VerifyHubClient,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -288,10 +291,113 @@ pub fn resolve_gateway_system_config_endpoint_from_env() -> Option<String> {
     })
 }
 
+fn verify_hub_endpoints_from_hint(endpoint_hint: Option<&str>) -> Vec<String> {
+    let mut endpoints = vec![];
+
+    if let Some(hint) = endpoint_hint {
+        if let Ok(mut url) = reqwest::Url::parse(hint.trim()) {
+            for path in ["/kapi/verify_hub", "/kapi/verify-hub"] {
+                url.set_path(path);
+                url.set_query(None);
+                let endpoint = url.to_string();
+                if !endpoints.contains(&endpoint) {
+                    endpoints.push(endpoint);
+                }
+            }
+        }
+    }
+
+    for env_key in ["AICC_GATEWAY_HOST", "AICC_HOST"] {
+        if let Some(host) = first_non_empty_env(&[env_key]) {
+            for path in ["/kapi/verify_hub", "/kapi/verify-hub"] {
+                if let Some(endpoint) = endpoint_from_host(host.as_str(), path) {
+                    if !endpoints.contains(&endpoint) {
+                        endpoints.push(endpoint);
+                    }
+                }
+            }
+        }
+    }
+
+    endpoints
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn derive_login_password_hash(username: &str, password: &str, login_nonce: u64) -> String {
+    let stage1 = {
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{}{}.buckyos", password, username).as_bytes());
+        base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
+    };
+
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{}{}", stage1, login_nonce).as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
+}
+
 pub async fn resolve_remote_test_token(
-    _endpoint_hint: Option<&str>,
+    endpoint_hint: Option<&str>,
 ) -> std::result::Result<Option<String>, String> {
-    Ok(first_non_empty_env(&["AICC_RPC_TOKEN"]))
+    if let Some(token) = first_non_empty_env(&["AICC_RPC_TOKEN"]) {
+        return Ok(Some(token));
+    }
+
+    let username = first_non_empty_env(&[
+        "AICC_RPC_USERNAME",
+        "AICC_LOGIN_USERNAME",
+        "BUCKYOS_USERNAME",
+    ]);
+    let password = first_non_empty_env(&[
+        "AICC_RPC_PASSWORD",
+        "AICC_LOGIN_PASSWORD",
+        "BUCKYOS_PASSWORD",
+    ]);
+    let appid = first_non_empty_env(&["AICC_RPC_APPID", "AICC_LOGIN_APPID"])
+        .unwrap_or_else(|| "aicc".to_string());
+    let (Some(username), Some(password)) = (username, password) else {
+        return Ok(None);
+    };
+
+    let endpoints = verify_hub_endpoints_from_hint(endpoint_hint);
+    if endpoints.is_empty() {
+        return Err("cannot resolve verify-hub endpoint for password login".to_string());
+    }
+
+    let mut errs = vec![];
+    for endpoint in endpoints {
+        let login_nonce = now_millis();
+        let password_hash = derive_login_password_hash(&username, &password, login_nonce);
+        let client = VerifyHubClient::new(kRPC::new(endpoint.as_str(), None));
+        match client
+            .login_by_password(
+                username.clone(),
+                password_hash,
+                appid.clone(),
+                Some(login_nonce),
+            )
+            .await
+        {
+            Ok(resp) => {
+                let token = resp.session_token.trim().to_string();
+                if !token.is_empty() {
+                    return Ok(Some(token));
+                }
+                errs.push(format!("{} => empty session_token", endpoint));
+            }
+            Err(err) => errs.push(format!("{} => {}", endpoint, err)),
+        }
+    }
+
+    Err(format!(
+        "failed to resolve remote token by password login, tried endpoints: {}",
+        errs.join(" | ")
+    ))
 }
 
 pub async fn resolve_krpc_target() -> RpcTestEndpoint {
