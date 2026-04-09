@@ -24,10 +24,8 @@ import {
   bind_owner_key,
   check_bucky_username,
   check_sn_active_code,
-  generate_zone_txt_records,
   login_by_password_and_activecode,
   register_sn_user,
-  SN_HOST,
   WEB3_BASE_HOST,
   validate_bucky_username,
 } from "../../../active_lib";
@@ -114,6 +112,12 @@ const SecurityStep = ({
       return;
     }
 
+    if (nameStatus === "taken") {
+      setCheckingSnCode(false);
+      setSnCodeValid(null);
+      return;
+    }
+
     const trimmedCode = snCode.trim();
     if (trimmedCode.length < 7) {
       setSnCodeValid(null);
@@ -142,7 +146,7 @@ const SecurityStep = ({
     return () => {
       cancelled = true;
     };
-  }, [isWalletRuntime, snCode]);
+  }, [isWalletRuntime, nameStatus, snCode]);
 
   const renderStatusChip = () => {
     if (nameStatus === "checking") {
@@ -193,34 +197,23 @@ const SecurityStep = ({
       .trim()
       .toLowerCase();
 
-    if (!normalizedUsername || normalizedUsername.length <= 4) {
-      setError(t("error_name_too_short") || "");
+    if (!normalizedUsername) {
+      setError(t("username_placeholder", { defaultValue: "Please enter username" }));
       return;
     }
 
-    const usernameValidation = validate_bucky_username(normalizedUsername);
-    if (!usernameValidation.valid) {
+    const normalizedCode = snCode.trim();
+    if (!isWalletRuntime && !normalizedCode) {
       setError(
-        t("error_name_invalid") || "Only lowercase letters and numbers are supported.",
+        t("invite_code_placeholder", { defaultValue: "Please enter invitation code" }),
       );
       return;
     }
 
-    if (!isWalletRuntime) {
-      if (nameStatus === "invalid" || nameStatus === "tooShort") {
-        setError(t("error_name_invalid") || "Invalid name");
-        return;
-      }
-    }
-
-    const normalizedCode = snCode.trim();
-    if (!isWalletRuntime && (!normalizedCode || normalizedCode.length < 8)) {
-      setError(t("error_invite_code_too_short") || "");
-      return;
-    }
-
-    if (password.length < 8) {
-      setError(t("error_password_too_short") || "");
+    if (!password.trim() || !confirm.trim()) {
+      setError(
+        t("admin_password_placeholder", { defaultValue: "Please enter admin password" }),
+      );
       return;
     }
     if (password !== confirm) {
@@ -231,48 +224,24 @@ const SecurityStep = ({
     setLoading(true);
     try {
       const hash = await buckyos.hashPassword(normalizedUsername, password);
+      let nextOwnerAccessToken: string | null = wizardData.owner_access_token;
+      let authAccessToken = "";
       if (!isWalletRuntime) {
-        const activeCodeReady = await check_sn_active_code(normalizedCode);
-        if (!activeCodeReady) {
-          setError(t("error_invite_code_invalid") || "");
-          return;
-        }
-
-        const isUsernameAvailable = await check_bucky_username(normalizedUsername);
+        const isUsernameAvailable =
+          nameStatus === "ok"
+            ? true
+            : nameStatus === "taken"
+            ? false
+            : await check_bucky_username(normalizedUsername);
         if (isUsernameAvailable) {
-          if (!wizardData.owner_private_key) {
-            setError(t("error_private_key_not_ready") || "Private key missing");
-            return;
-          }
-
-          const tempZoneRecords = await generate_zone_txt_records(
-            SN_HOST,
-            wizardData.owner_public_key,
-            wizardData.owner_private_key,
-            wizardData.device_public_key,
-            null,
-            wizardData.rtcp_port,
-            false,
-          );
-          const tempZoneConfigJwt =
-            tempZoneRecords && typeof tempZoneRecords["BOOT"] === "string"
-              ? tempZoneRecords["BOOT"]
-              : null;
-          if (!tempZoneConfigJwt) {
-            setError(
-              t("error_generate_txt_records_failed") || "Failed to prepare SN registration config",
-            );
-            return;
-          }
-
-          const registerOk = await register_sn_user(
+          const registerResult = await register_sn_user(
             normalizedUsername,
+            hash,
             normalizedCode,
-            JSON.stringify(wizardData.owner_public_key),
-            tempZoneConfigJwt,
-            null,
           );
-          if (!registerOk) {
+          authAccessToken = registerResult.access_token || "";
+          nextOwnerAccessToken = authAccessToken || null;
+          if (!authAccessToken) {
             setError(
               t("error_activation_failed") || "Failed to register SN user",
             );
@@ -284,16 +253,26 @@ const SecurityStep = ({
             hash,
             normalizedCode,
           );
-          const bindOwnerResult = await bind_owner_key(
-            loginResult.access_token,
-            wizardData.owner_public_key,
+          authAccessToken = loginResult.access_token || "";
+          nextOwnerAccessToken = authAccessToken || null;
+        }
+
+        if (!authAccessToken) {
+          setError(
+            t("error_activation_failed") || "Failed to authenticate SN user",
           );
-          if (bindOwnerResult.code !== 0) {
-            setError(
-              t("error_activation_failed") || "Failed to bind owner key",
-            );
-            return;
-          }
+          return;
+        }
+
+        const bindOwnerResult = await bind_owner_key(
+          authAccessToken,
+          wizardData.owner_public_key,
+        );
+        if (bindOwnerResult.code !== 0) {
+          setError(
+            t("error_activation_failed") || "Failed to bind owner key",
+          );
+          return;
         }
       }
 
@@ -302,6 +281,7 @@ const SecurityStep = ({
         owner_user_name: isWalletRuntime ? wizardData.owner_user_name : normalizedUsername,
         sn_active_code: isWalletRuntime ? wizardData.sn_active_code : normalizedCode,
         admin_password_hash: hash,
+        owner_access_token: nextOwnerAccessToken,
         friend_passcode: "",
         enable_guest_access: false,
       });
