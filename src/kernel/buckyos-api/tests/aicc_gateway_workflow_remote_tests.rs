@@ -24,7 +24,7 @@ const DEFAULT_MODEL_ALIAS: &str = "llm.plan.default";
 const FIXED_SN_MODEL_ALIAS: &str = "llm.plan.default";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const FIXED_SN_OPENAI_BASE_URL: &str = "https://sn.buckyos.ai/api/v1/ai/chat/completions";
-const DEFAULT_OPENAI_MODEL: &str = "gpt-5";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-5.4";
 
 const MIN_EXPECTED_STEPS: usize = 6;
 const MAX_TOKENS_COMPLEX_DAG: u64 = 1800;

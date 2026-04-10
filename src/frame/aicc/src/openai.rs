@@ -506,6 +506,68 @@ impl OpenAIProvider {
             .contains("/chat/completions")
     }
 
+    fn convert_text_format_to_chat_response_format(format: Value) -> Value {
+        let Some(format_obj) = format.as_object() else {
+            return format;
+        };
+        let Some(format_type) = format_obj.get("type").and_then(|value| value.as_str()) else {
+            return Value::Object(format_obj.clone());
+        };
+
+        if format_type != "json_schema" {
+            return Value::Object(format_obj.clone());
+        }
+
+        let schema = format_obj
+            .get("schema")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        let name = format_obj
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("aicc_response");
+        let strict = format_obj
+            .get("strict")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+
+        json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": name,
+                "schema": schema,
+                "strict": strict
+            }
+        })
+    }
+
+    fn normalize_chat_completions_request(request_obj: &mut Map<String, Value>) {
+        if let Some(text_format) = request_obj
+            .get("text")
+            .and_then(|value| value.as_object())
+            .and_then(|text_obj| text_obj.get("format"))
+            .cloned()
+        {
+            if !request_obj.contains_key("response_format") {
+                request_obj.insert(
+                    "response_format".to_string(),
+                    Self::convert_text_format_to_chat_response_format(text_format),
+                );
+            }
+            request_obj.remove("text");
+        }
+
+        if let Some(max_output_tokens) = request_obj.remove("max_output_tokens") {
+            if !request_obj.contains_key("max_tokens")
+                && !request_obj.contains_key("max_completion_tokens")
+            {
+                request_obj.insert("max_tokens".to_string(), max_output_tokens);
+            }
+        }
+    }
+
     fn extract_legacy_message_text(choice_message: &Value) -> Option<String> {
         let content = choice_message.get("content")?;
         if let Some(text) = content.as_str() {
@@ -929,6 +991,18 @@ impl OpenAIProvider {
                     .unwrap_or_default(),
             );
         }
+
+        if let Some(choices) = event.get("choices").and_then(|value| value.as_array()) {
+            for choice in choices {
+                if let Some(text) = choice
+                    .get("delta")
+                    .and_then(|value| value.get("content"))
+                    .and_then(|value| value.as_str())
+                {
+                    accumulated_text.push_str(text);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1314,6 +1388,9 @@ impl OpenAIProvider {
         merge_requirements_response_format(&mut request_obj, req);
         merge_tool_calls(&mut request_obj, req.payload.tool_specs.as_slice())?;
         Self::merge_requirements_tools(&mut request_obj, req)?;
+        if self.use_chat_completions_endpoint() {
+            Self::normalize_chat_completions_request(&mut request_obj);
+        }
         if !ignored_options.is_empty() {
             warn!(
                 "aicc.openai ignored unsupported llm options: instance_id={} model={} trace_id={:?} ignored={:?}",
@@ -2366,6 +2443,28 @@ data: [DONE]
     }
 
     #[test]
+    fn parse_sse_response_body_supports_chat_completions_stream_chunks() {
+        let raw = r#"data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"foo"},"index":0}]}
+
+data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"bar"},"index":0}]}
+
+data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop","index":0}]}
+
+data: [DONE]
+"#;
+
+        let parsed = OpenAIProvider::parse_sse_response_body(raw).expect("sse should parse");
+        assert_eq!(
+            parsed.get("status").and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
+            parsed.get("output_text").and_then(|value| value.as_str()),
+            Some("foobar")
+        );
+    }
+
+    #[test]
     fn default_features_include_web_search() {
         let all_features = default_features();
         assert!(
@@ -2472,6 +2571,88 @@ data: [DONE]
         })
         .expect("provider should be built");
         assert!(provider.use_chat_completions_endpoint());
+    }
+
+    #[test]
+    fn normalize_chat_completions_request_moves_text_and_max_tokens() {
+        let mut request = json!({
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_output_tokens": 320,
+            "text": {
+                "format": {
+                    "type": "json_object"
+                }
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("request object");
+
+        OpenAIProvider::normalize_chat_completions_request(&mut request);
+
+        assert!(!request.contains_key("text"));
+        assert!(!request.contains_key("max_output_tokens"));
+        assert_eq!(request.get("max_tokens"), Some(&json!(320)));
+        assert_eq!(
+            request.get("response_format"),
+            Some(&json!({
+                "type": "json_object"
+            }))
+        );
+    }
+
+    #[test]
+    fn normalize_chat_completions_request_converts_json_schema_shape() {
+        let mut request = json!({
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hello"}],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "plan_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {"type": "string"}
+                        },
+                        "required": ["plan_id"]
+                    },
+                    "strict": true
+                }
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("request object");
+
+        OpenAIProvider::normalize_chat_completions_request(&mut request);
+        let request_value = Value::Object(request);
+
+        assert_eq!(
+            request_value
+                .pointer("/response_format/type")
+                .and_then(|v| v.as_str()),
+            Some("json_schema")
+        );
+        assert_eq!(
+            request_value
+                .pointer("/response_format/json_schema/name")
+                .and_then(|v| v.as_str()),
+            Some("plan_schema")
+        );
+        assert_eq!(
+            request_value
+                .pointer("/response_format/json_schema/strict")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            request_value
+                .pointer("/response_format/json_schema/schema/required/0")
+                .and_then(|v| v.as_str()),
+            Some("plan_id")
+        );
     }
 
     #[test]
