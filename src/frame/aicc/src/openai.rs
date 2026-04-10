@@ -6,7 +6,7 @@ use crate::openai_protocol::{
     merge_options, merge_requirements_response_format, merge_tool_calls,
     strip_incompatible_sampling_options,
 };
-use ::kRPC::RPCSessionToken;
+use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use base64::engine::general_purpose;
@@ -15,7 +15,7 @@ use buckyos_api::{
     features, value_to_object_map, AiArtifact, AiCost, AiResponseSummary, AiToolCall, AiUsage,
     Capability, CompleteRequest, Feature, ResourceRef,
 };
-use buckyos_kit::get_buckyos_system_etc_dir;
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use log::{error, info, warn};
 use name_lib::load_private_key;
 use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
@@ -223,13 +223,21 @@ impl OpenAIProvider {
                         err
                     ))
                 })?;
-                let (jwt, _) = RPCSessionToken::generate_jwt_token(
-                    subject.as_str(),
-                    appid.as_str(),
-                    None,
-                    &private_key,
-                )
-                .map_err(|err| {
+                let now = buckyos_get_unix_timestamp();
+                let claims = RPCSessionToken {
+                    token_type: RPCSessionTokenType::JWT,
+                    token: None,
+                    aud: None,
+                    exp: Some(now + 60 * 15),
+                    // SN expects issuer to be device name, while subject/appid are caller identity.
+                    iss: Some(Self::read_default_device_subject()),
+                    jti: None,
+                    session: None,
+                    sub: Some(subject.to_string()),
+                    appid: Some(appid.to_string()),
+                    extra: HashMap::new(),
+                };
+                let jwt = claims.generate_jwt(None, &private_key).map_err(|err| {
                     ProviderError::fatal(format!("openai device_jwt auth failed: {}", err))
                 })?;
                 Ok(jwt)

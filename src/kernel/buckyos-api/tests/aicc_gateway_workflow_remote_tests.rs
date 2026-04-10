@@ -1,11 +1,11 @@
 mod aicc_remote_common;
 
+use ::kRPC::{kRPC as KRpcClient, RPCContext, RPCRequest, RPCResult};
 use aicc_remote_common::*;
 use buckyos_api::{
     AiMessage, AiPayload, AiccClient, Capability, CompleteRequest, CompleteStatus, ModelSpec,
     Requirements,
 };
-use ::kRPC::{kRPC as KRpcClient, RPCContext, RPCRequest, RPCResult};
 use reqwest::Url;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -17,11 +17,14 @@ const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
 const ENV_AICC_OPENAI_BASE_URL: &str = "AICC_OPENAI_BASE_URL";
 const ENV_AICC_SN_OPENAI_BASE_URL: &str = "AICC_SN_OPENAI_BASE_URL";
 const ENV_AICC_OPENAI_MODEL: &str = "AICC_OPENAI_MODEL";
+const ENV_AICC_SN_AUTH_SUBJECT: &str = "AICC_SN_AUTH_SUBJECT";
+const ENV_AICC_SN_AUTH_APPID: &str = "AICC_SN_AUTH_APPID";
+const ENV_AICC_SN_AUTH_PRIVATE_KEY_PATH: &str = "AICC_SN_AUTH_PRIVATE_KEY_PATH";
 const DEFAULT_MODEL_ALIAS: &str = "llm.plan.default";
 const FIXED_SN_MODEL_ALIAS: &str = "llm.plan.default";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const FIXED_SN_OPENAI_BASE_URL: &str = "https://sn.buckyos.ai/api/v1/ai/chat/completions";
-const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-5";
 
 const MIN_EXPECTED_STEPS: usize = 6;
 const MAX_TOKENS_COMPLEX_DAG: u64 = 1800;
@@ -82,7 +85,12 @@ fn sn_openai_base_url_from_env() -> String {
         .unwrap_or_else(|| FIXED_SN_OPENAI_BASE_URL.to_string())
 }
 
-fn complete_request(prompt: &str, must_features: Vec<&str>, options: Value, model_alias: &str) -> CompleteRequest {
+fn complete_request(
+    prompt: &str,
+    must_features: Vec<&str>,
+    options: Value,
+    model_alias: &str,
+) -> CompleteRequest {
     let messages = vec![AiMessage::new("user".to_string(), prompt.to_string())];
     CompleteRequest::new(
         Capability::LlmRouter,
@@ -263,21 +271,35 @@ async fn ensure_provider_configured_for_remote(
             "device_jwt".to_string(),
         ),
     };
-    let model = optional_env(ENV_AICC_OPENAI_MODEL).unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
+    let model =
+        optional_env(ENV_AICC_OPENAI_MODEL).unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
+
+    let mut instance_settings = json!({
+        "instance_id": "workflow-openai-remote",
+        "provider_type": provider_type,
+        "base_url": base_url,
+        "auth_mode": auth_mode,
+        "timeout_ms": 120000,
+        "models": [model.clone()],
+        "default_model": model,
+        "features": ["plan", "json_output", "tool_calling", "web_search"]
+    });
+    if matches!(mode, ProviderBootstrapMode::SnOpenAiJwt) {
+        if let Some(subject) = optional_env(ENV_AICC_SN_AUTH_SUBJECT) {
+            instance_settings["auth_subject"] = json!(subject);
+        }
+        if let Some(appid) = optional_env(ENV_AICC_SN_AUTH_APPID) {
+            instance_settings["auth_appid"] = json!(appid);
+        }
+        if let Some(private_key_path) = optional_env(ENV_AICC_SN_AUTH_PRIVATE_KEY_PATH) {
+            instance_settings["auth_private_key_path"] = json!(private_key_path);
+        }
+    }
 
     let openai_settings = json!({
         "enabled": true,
         "api_token": api_token,
-        "instances": [{
-            "instance_id": "workflow-openai-remote",
-            "provider_type": provider_type,
-            "base_url": base_url,
-            "auth_mode": auth_mode,
-            "timeout_ms": 120000,
-            "models": [model.clone()],
-            "default_model": model,
-            "features": ["plan", "json_output", "tool_calling", "web_search"]
-        }]
+        "instances": [instance_settings]
     });
 
     let set_result = post_rpc_over_http(
