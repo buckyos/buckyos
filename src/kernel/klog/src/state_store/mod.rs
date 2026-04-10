@@ -1,7 +1,7 @@
 mod memory;
 mod rocksdb;
-mod sqlite;
+mod store;
 
 pub use memory::*;
 pub use rocksdb::*;
-pub use sqlite::*;
+pub use store::*;

@@ -1,16 +1,31 @@
-use super::request::{RaftRequest, RaftResponse};
+use super::request::{
+    KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLOG_TRACE_ID_HEADER, KLogAppendRequest,
+    KLogAppendResponse, KLogDataRequestType, KLogMetaDeleteRequest, KLogMetaDeleteResponse,
+    KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest, KLogMetaQueryResponse,
+    KLogQueryRequest, KLogQueryResponse, RaftRequest, RaftResponse,
+};
+use crate::error::{KLogErrorCode, KLogServiceError, parse_error_envelope_json};
 use crate::{KNode, KNodeId, KTypeConfig};
 use openraft::error::{
-    InstallSnapshotError, NetworkError, RPCError, RaftError, Timeout, Unreachable,
+    InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Timeout, Unreachable,
 };
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     VoteRequest, VoteResponse,
 };
+use std::time::Duration;
+
+const DEFAULT_DATA_RPC_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct KNetworkFactory {
     local: KNodeId,
+}
+
+impl KNetworkFactory {
+    pub fn new(local: KNodeId) -> Self {
+        Self { local }
+    }
 }
 
 impl RaftNetworkFactory<KTypeConfig> for KNetworkFactory {
@@ -26,6 +41,403 @@ pub struct KNetworkClient {
     local: KNodeId,
     target: KNodeId,
     node: KNode,
+}
+
+#[derive(Clone)]
+pub struct KDataClient {
+    client: reqwest::Client,
+    timeout: Duration,
+}
+
+impl Default for KDataClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KDataClient {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            timeout: DEFAULT_DATA_RPC_TIMEOUT,
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub async fn append_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogAppendRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogAppendResponse, KLogServiceError> {
+        let path = KLogDataRequestType::Append.klog_path();
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let response = self
+            .client
+            .post(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward data append send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, endpoint_port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward data append failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, endpoint_port, url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response.json::<KLogAppendResponse>().await.map_err(|e| {
+            let msg = format!(
+                "forward data append decode failed: target={}({}:{}), url={}, err={}",
+                target.id, target.addr, endpoint_port, url, e
+            );
+            KLogServiceError::new(
+                reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                KLogErrorCode::Unavailable,
+                msg,
+                trace_id.to_string(),
+            )
+        })
+    }
+
+    pub async fn query_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogQueryRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogQueryResponse, KLogServiceError> {
+        let path = KLogDataRequestType::Query.klog_path();
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let response = self
+            .client
+            .get(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
+            .query(req)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward data query send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, endpoint_port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward data query failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, endpoint_port, url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response.json::<KLogQueryResponse>().await.map_err(|e| {
+            let msg = format!(
+                "forward data query decode failed: target={}({}:{}), url={}, err={}",
+                target.id, target.addr, endpoint_port, url, e
+            );
+            KLogServiceError::new(
+                reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                KLogErrorCode::Unavailable,
+                msg,
+                trace_id.to_string(),
+            )
+        })
+    }
+
+    pub async fn put_meta_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogMetaPutRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogMetaPutResponse, KLogServiceError> {
+        let path = KLogDataRequestType::MetaPut.klog_path();
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let response = self
+            .client
+            .post(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward meta put send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, endpoint_port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward meta put failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, endpoint_port, url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response.json::<KLogMetaPutResponse>().await.map_err(|e| {
+            let msg = format!(
+                "forward meta put decode failed: target={}({}:{}), url={}, err={}",
+                target.id, target.addr, endpoint_port, url, e
+            );
+            KLogServiceError::new(
+                reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                KLogErrorCode::Unavailable,
+                msg,
+                trace_id.to_string(),
+            )
+        })
+    }
+
+    pub async fn delete_meta_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogMetaDeleteRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogMetaDeleteResponse, KLogServiceError> {
+        let path = KLogDataRequestType::MetaDelete.klog_path();
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let response = self
+            .client
+            .post(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward meta delete send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, endpoint_port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward meta delete failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, endpoint_port, url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response
+            .json::<KLogMetaDeleteResponse>()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward meta delete decode failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, endpoint_port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })
+    }
+
+    pub async fn query_meta_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogMetaQueryRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogMetaQueryResponse, KLogServiceError> {
+        let path = KLogDataRequestType::MetaQuery.klog_path();
+        let endpoint_port = Self::inter_node_port(target);
+        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let response = self
+            .client
+            .get(&url)
+            .timeout(self.timeout)
+            .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+            .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+            .header(KLOG_TRACE_ID_HEADER, trace_id)
+            .query(req)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward meta query send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, endpoint_port, url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward meta query failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, endpoint_port, url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response.json::<KLogMetaQueryResponse>().await.map_err(|e| {
+            let msg = format!(
+                "forward meta query decode failed: target={}({}:{}), url={}, err={}",
+                target.id, target.addr, endpoint_port, url, e
+            );
+            KLogServiceError::new(
+                reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                KLogErrorCode::Unavailable,
+                msg,
+                trace_id.to_string(),
+            )
+        })
+    }
+
+    fn inter_node_port(target: &KNode) -> u16 {
+        if target.inter_port > 0 {
+            target.inter_port
+        } else {
+            target.port
+        }
+    }
 }
 
 impl KNetworkClient {
@@ -57,6 +469,7 @@ impl KNetworkClient {
         let resp = self
             .client
             .post(&url)
+            .timeout(option.soft_ttl())
             .header("Content-Type", "application/octet-stream")
             .body(body)
             .send()
@@ -81,10 +494,24 @@ impl KNetworkClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let msg = format!("Request to {} failed with status: {}", url, status);
+            let msg = format!(
+                "Request to {} failed with status: {} (rpc={:?})",
+                url,
+                status,
+                req.rpc_type()
+            );
             error!("{}", msg);
             if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
-                return Err(RPCError::PayloadTooLarge(req.payload_too_large()));
+                if let Some(payload_too_large) = req.payload_too_large() {
+                    return Err(RPCError::PayloadTooLarge(payload_too_large));
+                }
+
+                return Err(RPCError::Network(NetworkError::new(
+                    &std::io::Error::other(format!(
+                        "Payload too large for unsupported rpc type: {}",
+                        req.rpc_type()
+                    )),
+                )));
             } else if status.is_client_error() {
                 return Err(RPCError::Unreachable(Unreachable::new(
                     &std::io::Error::new(std::io::ErrorKind::Other, msg),
@@ -117,6 +544,23 @@ impl KNetworkClient {
         Ok(raft_response)
     }
 
+    fn unexpected_response_type<Err>(
+        &self,
+        rpc: &'static str,
+        response: &RaftResponse,
+    ) -> RPCError<KNodeId, KNode, Err>
+    where
+        Err: std::error::Error + 'static + Clone,
+    {
+        let msg = format!(
+            "Unexpected response type for {} from node {}: {:?}",
+            rpc, self.target, response
+        );
+        error!("{}", msg);
+        let io_err = std::io::Error::other(msg);
+        RPCError::Network(NetworkError::new(&io_err))
+    }
+
     fn get_request_url(&self, req: &RaftRequest) -> String {
         format!(
             "http://{}:{}/klog/{}",
@@ -141,9 +585,10 @@ impl RaftNetwork<KTypeConfig> for KNetworkClient {
             .await
         {
             Ok(RaftResponse::AppendEntries(resp)) => Ok(resp),
-            Ok(other) => {
-                unreachable!("Unexpected response type: {:?}", other);
-            }
+            Ok(RaftResponse::AppendEntriesError(err)) => Err(RPCError::RemoteError(
+                RemoteError::new_with_node(self.target, self.node.clone(), err),
+            )),
+            Ok(other) => Err(self.unexpected_response_type("append_entries", &other)),
             Err(e) => Err(e),
         }
     }
@@ -164,9 +609,10 @@ impl RaftNetwork<KTypeConfig> for KNetworkClient {
             .await
         {
             Ok(RaftResponse::InstallSnapshot(resp)) => Ok(resp),
-            Ok(other) => {
-                unreachable!("Unexpected response type: {:?}", other);
-            }
+            Ok(RaftResponse::InstallSnapshotError(err)) => Err(RPCError::RemoteError(
+                RemoteError::new_with_node(self.target, self.node.clone(), err),
+            )),
+            Ok(other) => Err(self.unexpected_response_type("install_snapshot", &other)),
             Err(e) => Err(e),
         }
     }
@@ -182,9 +628,10 @@ impl RaftNetwork<KTypeConfig> for KNetworkClient {
             .await
         {
             Ok(RaftResponse::Vote(resp)) => Ok(resp),
-            Ok(other) => {
-                unreachable!("Unexpected response type: {:?}", other);
-            }
+            Ok(RaftResponse::VoteError(err)) => Err(RPCError::RemoteError(
+                RemoteError::new_with_node(self.target, self.node.clone(), err),
+            )),
+            Ok(other) => Err(self.unexpected_response_type("vote", &other)),
             Err(e) => Err(e),
         }
     }

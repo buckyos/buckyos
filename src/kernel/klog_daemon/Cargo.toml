@@ -1,0 +1,19 @@
+[package]
+name = "klog_daemon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+klog = { path = "../klog" }
+buckyos-kit = { workspace = true }
+openraft = { version = "0.9", features = ["serde", "storage-v2", "anyhow"] }
+tokio = { workspace = true }
+log = { workspace = true }
+simplelog = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+reqwest = { workspace = true }
+rand = { workspace = true }
