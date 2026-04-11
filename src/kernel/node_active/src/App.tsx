@@ -53,6 +53,7 @@ function normalizeWalletPasswordHash(user: Record<string, unknown>): string {
 const App = () => {
   const { t, i18n } = useTranslation();
   const prefersDark = useMediaQuery("(prefers-color-scheme: dark)");
+  const isMobile = useMediaQuery("(max-width:600px)");
   const [mode, setMode] = useState<PaletteMode>(prefersDark ? "dark" : "light");
   const [isWalletRuntime, setIsWalletRuntime] = useState(false);
   const [walletUser, setWalletUser] = useState<WalletUser | null>(null);
@@ -166,20 +167,27 @@ const App = () => {
         sx={{
           minHeight: "100vh",
           display: "flex",
-          alignItems: "center",
-          py: { xs: 3, md: 6 },
+          alignItems: { xs: "flex-start", md: "center" },
+          py: { xs: 2, md: 6 },
           position: "relative",
         }}
       >
-        <Container maxWidth="lg">
+        <Container
+          maxWidth="lg"
+          disableGutters={isMobile}
+          sx={{
+            px: { xs: 2, sm: 3 },
+          }}
+        >
           <Paper
             elevation={0}
             sx={{
-              p: { xs: 2.5, md: 4 },
-              borderRadius: 4,
-              border: `1px solid ${theme.palette.divider}`,
-              boxShadow: "0 30px 90px rgba(0,0,0,0.15)",
-              backdropFilter: "blur(10px)",
+              p: { xs: 0, sm: 2.5, md: 4 },
+              borderRadius: { xs: 0, sm: 4 },
+              border: { xs: "none", sm: `1px solid ${theme.palette.divider}` },
+              boxShadow: { xs: "none", sm: "0 30px 90px rgba(0,0,0,0.15)" },
+              backdropFilter: { xs: "none", sm: "blur(10px)" },
+              backgroundColor: { xs: "transparent", sm: theme.palette.background.paper },
             }}
           >
             <Stack
