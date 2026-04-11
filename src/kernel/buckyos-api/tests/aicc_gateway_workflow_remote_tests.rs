@@ -20,6 +20,7 @@ const ENV_AICC_OPENAI_MODEL: &str = "AICC_OPENAI_MODEL";
 const ENV_AICC_SN_AUTH_SUBJECT: &str = "AICC_SN_AUTH_SUBJECT";
 const ENV_AICC_SN_AUTH_APPID: &str = "AICC_SN_AUTH_APPID";
 const ENV_AICC_SN_AUTH_PRIVATE_KEY_PATH: &str = "AICC_SN_AUTH_PRIVATE_KEY_PATH";
+const ENV_AICC_SN_REGISTER_PROVIDER: &str = "AICC_SN_REGISTER_PROVIDER";
 const DEFAULT_MODEL_ALIAS: &str = "llm.plan.default";
 const FIXED_SN_MODEL_ALIAS: &str = "llm.plan.default";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -77,6 +78,10 @@ fn optional_env(key: &str) -> Option<String> {
 
 fn model_alias_from_env() -> String {
     optional_env(ENV_AICC_MODEL_ALIAS).unwrap_or_else(|| DEFAULT_MODEL_ALIAS.to_string())
+}
+
+fn env_enabled_1(key: &str) -> bool {
+    matches!(optional_env(key).as_deref(), Some("1"))
 }
 
 fn sn_openai_base_url_from_env() -> String {
@@ -357,9 +362,18 @@ async fn ensure_provider_configured_for_remote(
     Some(token)
 }
 
-async fn run_remote_workflow_suite(model_alias: &str, trace_id: &str, mode: ProviderBootstrapMode) {
+async fn run_remote_workflow_suite(
+    model_alias: &str,
+    trace_id: &str,
+    mode: ProviderBootstrapMode,
+    bootstrap_provider: bool,
+) {
     let target = require_remote_target();
-    let bootstrap_token = ensure_provider_configured_for_remote(&target, mode).await;
+    let bootstrap_token = if bootstrap_provider {
+        ensure_provider_configured_for_remote(&target, mode).await
+    } else {
+        None
+    };
     let token = if bootstrap_token.is_some() {
         bootstrap_token
     } else {
@@ -489,6 +503,7 @@ async fn workflow_remote_01_gateway_complex_scenario_protocol_mix() {
         model_alias.as_str(),
         "workflow-real-openai-remote",
         ProviderBootstrapMode::OpenAiEnv,
+        true,
     )
     .await;
 }
@@ -496,10 +511,12 @@ async fn workflow_remote_01_gateway_complex_scenario_protocol_mix() {
 #[tokio::test]
 #[ignore = "requires real gateway(AICC_GATEWAY_HOST) and valid auth(AICC_RPC_TOKEN or username/password)"]
 async fn workflow_remote_02_sn_openai_complex_scenario_protocol_mix() {
+    let register_provider = env_enabled_1(ENV_AICC_SN_REGISTER_PROVIDER);
     run_remote_workflow_suite(
         FIXED_SN_MODEL_ALIAS,
         "workflow-real-sn-openai-remote",
         ProviderBootstrapMode::SnOpenAiJwt,
+        register_provider,
     )
     .await;
 }

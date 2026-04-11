@@ -976,53 +976,31 @@ fn read_default_device_subject() -> String {
 fn extract_model_ids_from_response(payload: &Value) -> Vec<String> {
     let mut result = Vec::<String>::new();
 
-    if let Some(array) = payload.as_array() {
-        collect_model_ids(array, &mut result);
+    if let Some(items) = payload.get("items").and_then(|value| value.as_array()) {
+        for item in items {
+            if let Some(model_id) = item
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                result.push(model_id.to_string());
+            }
+        }
     }
-    if let Some(array) = payload.get("models").and_then(|value| value.as_array()) {
-        collect_model_ids(array, &mut result);
-    }
-    if let Some(array) = payload.get("data").and_then(|value| value.as_array()) {
-        collect_model_ids(array, &mut result);
-    }
-    if let Some(array) = payload
-        .get("result")
-        .and_then(|value| value.get("models"))
-        .and_then(|value| value.as_array())
+
+    if let Some(default_model) = payload
+        .get("default_model")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
     {
-        collect_model_ids(array, &mut result);
+        result.push(default_model.to_string());
     }
 
     result.sort_unstable();
     result.dedup();
     result
-}
-
-fn collect_model_ids(items: &[Value], output: &mut Vec<String>) {
-    for item in items.iter() {
-        match item {
-            Value::String(model_id) => {
-                let model_id = model_id.trim();
-                if !model_id.is_empty() {
-                    output.push(model_id.to_string());
-                }
-            }
-            Value::Object(map) => {
-                for key in ["model_id", "model", "id", "name"] {
-                    if let Some(model_id) = map
-                        .get(key)
-                        .and_then(|value| value.as_str())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                    {
-                        output.push(model_id.to_string());
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 fn build_msg_center_settings(config: &StartConfigSummary) -> Result<Value> {
@@ -1360,22 +1338,20 @@ mod tests {
     }
 
     #[test]
-    fn extract_model_ids_from_response_supports_models_and_data_shapes() {
+    fn extract_model_ids_from_response_supports_items_models_and_data_shapes() {
         let payload = json!({
-            "models": [
-                "gpt-5-mini",
-                { "id": "gpt-5" }
+            "items": [
+                { "provider": "openai", "model": "gpt-5.4" },
+                { "provider": "openai", "model": "gpt-5.4-mini" }
             ],
-            "data": [
-                { "model_id": "dall-e-3" },
-                { "name": "gpt-image-1" }
-            ]
+            "default_model": "gpt-5.4-mini",
+            "models": ["legacy-ignored"],
+            "data": [{ "model_id": "legacy-ignored" }]
         });
         let models = extract_model_ids_from_response(&payload);
-        assert!(models.iter().any(|m| m == "gpt-5-mini"));
-        assert!(models.iter().any(|m| m == "gpt-5"));
-        assert!(models.iter().any(|m| m == "dall-e-3"));
-        assert!(models.iter().any(|m| m == "gpt-image-1"));
+        assert!(models.iter().any(|m| m == "gpt-5.4"));
+        assert!(models.iter().any(|m| m == "gpt-5.4-mini"));
+        assert!(!models.iter().any(|m| m == "legacy-ignored"));
     }
 
     #[test]
