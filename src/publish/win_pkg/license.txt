@@ -1,0 +1,344 @@
+BuckyOS Desktop End User Agreement
+
+1. Introduction
+
+Welcome to BuckyOS Desktop (the “Software”).
+
+The Software is a decentralized desktop software project initiated, maintained, or collaboratively organized by the BuckyOS open-source project (the “Project”). The Software is designed to provide users with a desktop runtime environment centered on decentralization, privacy protection, user autonomy, and a local-first approach.
+
+This Agreement is intended to explain:
+
+1. the open-source nature of the Software and the boundaries of applicable rights;
+2. the basic freedoms users enjoy, and the basic responsibilities users assume, when using the Software;
+3. the boundary between the Software and related online services, third-party services, and local operational services; and
+4. risk disclosures, disclaimers, and limitations of liability associated with the use of the Software.
+
+Important Notice:
+
+- With respect to copying, installing, running, modifying, and distributing the “Software Itself,” the user’s core rights shall, in principle, be governed by the actual open-source license accompanying or applicable to the Software.
+- This Agreement is not intended to deprive users of, limit, or replace any lawful rights already granted under the applicable open-source license. If this Agreement conflicts with the applicable open-source license, the applicable open-source license shall prevail with respect to the relevant matter.
+- If you use any online service, AI service, network forwarding service, domain-related service, or other supporting capability connected to, integrated with, redirected by, or invoked through the Software, and such capability is provided by a specific operating entity, that service may be subject to separate terms of service, privacy policies, usage rules, or applicable local legal requirements.
+
+2. Definitions
+
+Unless the context otherwise requires, the following terms in this Agreement shall have the meanings set out below:
+
+2.1 Software / Software Itself
+
+Refers to the source code, binary programs, installation packages, locally running desktop-side components, and core local functionalities of BuckyOS Desktop. For the avoidance of doubt, the “Software Itself” does not automatically include online services separately provided by third parties or Local Operating Entities.
+
+2.2 Project
+
+Refers to the decentralized open-source project surrounding BuckyOS, together with its community, governance framework, collaboration network, DAO form, or other similar organizational arrangements for development, maintenance, governance, release, collaboration, or community building.
+
+2.3 Extension Services
+
+Refers to online or network-based capabilities related to the Software but not forming part of the Software Itself, including but not limited to:
+
+- official or ecosystem domain name resolution, domain redirection, and related domain services;
+- Warp, Bridge, forwarding, access, proxy, or similar network services;
+- large language models, AI capabilities, or inference services integrated by default or recommended for connection;
+- account bridging, connectors, remote synchronization, cloud relays, or other online supporting capabilities; and
+- similar services that may in the future be provided by the Project, partners, the community, or Local Operating Entities.
+
+2.4 Local Operating Entity
+
+Refers to any company, institution, organization, or business entity established, engaged, mandated, or partnered with for the purpose of providing Extension Services in a specific country or region, complying with local laws and regulations, entering into contracts, ensuring compliance, carrying out operations, billing, support, complaint handling, or performing other obligations.
+
+2.5 Third-Party Services
+
+Refers to any third-party software, plugins, models, websites, interfaces, services, applications, content sources, storage systems, node systems, or network infrastructure that is not directly controlled or provided by the Project.
+
+2.6 User Data
+
+Refers to any data, files, messages, keys, identity information, credentials, logs, configurations, content, or derived information that a user generates, imports, stores, processes, accesses, synchronizes, transmits, encrypts, hosts, or manages while using the Software.
+
+2.7 Digital Identity and Key Material
+
+Refers to DIDs, wallets, key pairs, recovery phrases, mnemonic phrases, access tokens, credentials, certificates, signing keys, and other data used for identification, authorization, authentication, signing, encryption, or recovery.
+
+3. Nature of the Project and Ownership of Rights
+
+3.1 Open-Source Nature of the Project
+
+The Software forms part of an open-source project. The Project encourages users, developers, and community members, within the scope permitted by the applicable open-source license, to freely obtain, run, study, modify, and distribute the source code of the Software and its derivative versions.
+
+3.2 Copyright and Related Rights in the Software Itself
+
+Unless otherwise expressly provided by the applicable open-source license, the relevant rights in the installation packages, official releases, project documentation, names, marks, graphical user interface elements, branding content, and other legally protectable content associated with the Software belong to the BuckyOS open-source project or the relevant rightsholders.
+
+3.3 Trademarks and Names
+
+“BuckyOS” and related names, logos, marks, project branding, and release-channel identifiers may constitute trademarks, service marks, project identifiers, or other protected interests. Except as otherwise permitted by applicable law, the applicable open-source license, or an express authorization from the relevant rightsholder, users may not use such identifiers in any manner that is likely to cause confusion, mislead others, impersonate an official identity, or damage the credibility of the community.
+
+4. Open-Source License and Users’ Basic Freedoms
+
+4.1 Applicable License Prevails
+
+The source code and distributable versions of the Software may be subject to GPL, GPL-compatible licenses, or other open-source licenses expressly identified by the Project. The specific scope of permission, conditions, and obligations shall be governed by the license text actually accompanying the release of the Software or clearly linked at the time of release.
+
+4.2 Users’ Basic Freedoms
+
+Within the scope permitted by the applicable open-source license, users generally enjoy the following basic rights:
+
+1. to run the Software for any lawful purpose;
+2. to study how the Software works and modify it as needed;
+3. to copy and distribute copies of the Software; and
+4. to distribute modified versions or derivative versions.
+
+4.3 This Agreement Does Not Restrict Open-Source Freedom
+
+This Agreement is intended to clarify boundaries of use, risks, and responsibilities, and shall not be interpreted as reducing any freedoms or rights already granted to users under the applicable open-source license.
+
+4.4 Decentralized Use Does Not Require Consent to Centralized Services
+
+Where users rely only on the local functionalities of the Software, decentralized nodes, self-hosted nodes, or runtime environments under their own control, the use of the Software Itself does not require the user to grant additional data licenses to any centralized service provider or accept any additional centralized service agreement. This does not affect the separate applicability of relevant service terms where the user chooses to use Extension Services.
+
+5. Decentralization Principles and Privacy Commitments
+
+5.1 Decentralization Principles
+
+The Software is designed around decentralization, user autonomy, and a local-first model. Under normal circumstances, its core design goals include:
+
+- avoiding reliance on any single centralized party as a mandatory control point;
+- processing data, to the extent possible, on user devices, in local environments, or through nodes managed by users themselves;
+- minimizing reliance on centralized data aggregation architectures; and
+- allowing users to decide whether to connect to external services, whether to share data, and the scope of any such sharing.
+
+5.2 Privacy and Visibility Boundaries
+
+When users rely only on the local functionalities of the Software or on decentralized environments under their own control, the Project does not, in principle, by default view, aggregate, centrally store, or analyze user content data.
+
+However, users understand and agree that:
+
+1. if a user voluntarily connects to Third-Party Services, Extension Services, or remote nodes, relevant data may be transmitted, processed, or stored according to the handling logic of those services;
+2. if a user enables AI services, network forwarding, remote synchronization, cloud relays, domain resolution, or other online capabilities, relevant requests, metadata, or content may enter systems controlled by the corresponding service providers; and
+3. certain logs, diagnostic data, crash information, request metadata, or security incident information may be collected or processed where the user has expressly authorized such collection, enabled relevant features, joined testing programs, or where collection is otherwise legally required.
+
+5.3 User Control
+
+Within the scope made available by the Software, users may independently decide:
+
+- whether to connect to external networks or remote nodes;
+- whether to enable any Extension Services;
+- whether to import, synchronize, or share User Data;
+- whether to authorize Agents, plugins, or third-party components to access relevant resources; and
+- whether to update software versions, receive testing features, or participate in the broader ecosystem.
+
+6. Legal Status and Cross-Jurisdictional Nature
+
+6.1 Virtualized and Cross-Border Collaborative Nature
+
+The Project adopts a decentralized open-source collaboration and governance model, which may include characteristics such as a DAO, community collaboration networks, geographically distributed developer coordination, and operations not centered around a single legal entity. Accordingly, the Project itself is not necessarily equivalent to a single locally incorporated, singly controlled, or singly operated legal entity in any specific country or region.
+
+6.2 Not Automatically a Local Entity Within Any Particular Jurisdiction
+
+With respect to the Software Itself and open-source community collaboration, the Project may be understood as a virtualized open-source organizational arrangement operating across jurisdictions. Unless otherwise expressly stated, the Project itself does not automatically constitute a locally incorporated operating entity in the user’s country or region that is comprehensively governed by a single local company law regime.
+
+6.3 Respect for Mandatory Laws
+
+The foregoing shall not be interpreted as an attempt to evade any applicable mandatory laws or regulations. For operations, service provision, commercial cooperation, consumer relationships, content governance, data processing, compliance responses, tax matters, payment activities, or other regulated activities actually carried out within a particular country or region, the relevant obligations shall be borne by the specific entity providing such activities in accordance with applicable law.
+
+7. Local Operational Services and Service Boundaries
+
+7.1 Independence of Extension Services
+
+The installation package and the Software Itself should be distinguished, legally, operationally, and in terms of responsibility, from Extension Services.
+
+Installing, copying, and running the Software Itself is, in essence, the use of open-source software; using Extension Services is, by contrast, the use of specific online services or network-based capabilities.
+
+7.2 Types of Extension Services That May Exist
+
+Extension Services include, but are not limited to:
+
+- domain systems, domain redirection, name resolution, and access support services;
+- Warp, Bridge, forwarding, relays, access, bandwidth, network optimization, or similar services;
+- default integrated AI large language model, inference, generation, retrieval, or agent capabilities; and
+- supporting infrastructure, account bridging, payment, customer service, compliance, complaints handling, or other services provided by Local Operating Entities or partners.
+
+7.3 Separate Terms for Extension Services
+
+Once a user makes use of an Extension Service, the user shall also comply with the following, as applicable to that Extension Service:
+
+- terms of service;
+- privacy policy;
+- usage rules;
+- billing rules;
+- local legal and regulatory requirements; and
+- any other binding documents issued by the actual provider.
+
+If this Agreement conflicts with specialized terms applicable to a particular Extension Service, the specialized terms shall prevail with respect to matters relating to that Extension Service.
+
+7.4 Responsibilities of Local Operating Entities
+
+Where an Extension Service is provided by a Local Operating Entity, the operation, compliance, support, handling rules, data-related obligations, charging arrangements, and complaint-handling arrangements directly related to that service shall be undertaken and explained by that Local Operating Entity within the scope permitted by applicable law.
+
+7.5 Installing the Software Does Not Automatically Mean Using Services
+
+A user’s mere installation of the Software, mere use of local functionalities, or mere use of self-hosted nodes or decentralized capabilities does not automatically constitute subscription to, registration for, payment for, or consent to any centralized online service, commercial service, or local operational service.
+
+8. Digital Signatures, Distribution, and Installation Packages
+
+8.1 Purpose of Digital Signatures
+
+To ensure the integrity, verifiability, and platform compatibility of installation packages during distribution, the installation packages of the Software may use digital signatures (code signing) on certain release channels, operating systems, or distribution platforms.
+
+8.2 Platform Requirements and Signing Entities
+
+Because certain operating systems, application distribution platforms, or private distribution environments may require digital signing certificates to be registered in the name of a company or other designated entity, some released versions of the Software may be digitally signed by, or with the assistance of, a particular company, institution, or partner entity.
+
+8.3 Digital Signatures Do Not Change Ownership of Rights
+
+Regardless of which entity signs an installation package, the digital signature is used only to:
+
+- verify the origin of the installation package;
+- verify that the installation package has not been tampered with;
+- satisfy platform distribution requirements; and
+- assist with certificate management, key management, or release compatibility requirements.
+
+A signing entity does not thereby obtain the copyright, ownership, control, or any additional disposal rights in the Software. The Software Itself, the related open-source rights, project attribution, and community governance logic remain governed by the Project and the applicable open-source license arrangements.
+
+8.4 User Understanding
+
+Users understand that a digital signature is solely an arrangement for release verification and trusted distribution. It does not mean that the signing entity makes any additional guarantee, beyond what is expressly provided by law or contract, regarding the functionality, security, availability, or ongoing operation of the Software.
+
+9. Developer Ecosystem, Governance, and Value Allocation
+
+9.1 Boundaries of Rights on the User Side
+
+With respect to end users’ use of the Software Itself, the overall boundary of rights within the Project remains consistent with the applicable open-source license and respects the open-source traditions emphasized by GNU / GPL, including software freedom, user control, and the spirit of sharing.
+
+9.2 Exploration of Developer Governance
+
+The Project may continue to explore new institutional designs regarding developer collaboration, community governance, recognition of contributions, value allocation, DAO mechanisms, token incentives, governance proposals, and improvements to limitations in traditional open-source collaboration models.
+
+9.3 Separately Published Documents
+
+The governance and developer-ecosystem arrangements described above do not automatically constitute direct contractual obligations owed to end users under this Agreement. Such matters shall instead be governed by the governance documents, developer policies, community charters, proposal rules, or official explanations published by the Project from time to time. For details, please refer to the Project’s official website or governance documentation links.
+
+10. User Responsibilities
+
+10.1 Lawful Use
+
+Users shall ensure that their use of the Software complies with the laws and regulations of their place of residence and any other applicable jurisdiction. Users may not use the Software for any unlawful, infringing, cybersecurity-threatening, national-security-threatening, fraudulent, money-laundering, malicious-code-spreading, privacy-invading, intellectual-property-infringing, or otherwise improper activities.
+
+10.2 Account, Identity, and Key Security
+
+Where the Software involves DIDs, wallets, accounts, keys, mnemonic phrases, tokens, or other identity credentials, users shall keep them safe on their own. Unless otherwise required by mandatory law or expressly committed by a Local Operating Entity:
+
+- users bear the primary responsibility for safeguarding their identity and Key Material;
+- risks and losses caused by loss, leakage, forgetting, mistaken deletion, mistaken authorization, device damage, or theft shall, in principle, be borne by the user; and
+- certain decentralized identities, keys, signatures, or encrypted data may by their nature be irrecoverable.
+
+10.3 Data Backup
+
+Users shall back up important data, configurations, Key Material, and recovery information according to their own needs. The Project does not guarantee recovery and does not assume responsibility for data corruption, loss, disorder, or unrecoverability caused by device damage, user error, software defects, network failures, third-party failures, attack incidents, synchronization errors, update failures, or other causes.
+
+10.4 Authorization and Consequences of Actions
+
+Users are responsible for operations that they initiate, authorize, configure, or trigger through the Software, Agents, plugins, scripts, automated workflows, APIs, model calls, or third-party components, including but not limited to:
+
+- sending messages;
+- accessing files;
+- applying identity signatures;
+- submitting transactions or instructions;
+- making remote requests;
+- synchronizing, forwarding, or deleting data; and
+- calling external services.
+
+11. Agents, Automation, and Third-Party Components
+
+11.1 Nature of Agents
+
+The Software may support Agents, automated workflows, intelligent assistants, plugins, scripts, connectors, third-party models, or other mechanisms capable of performing tasks on behalf of users. The outputs, suggestions, actions, and results of such capabilities may be affected by model errors, configuration mistakes, prompt bias, network latency, third-party interface failures, data quality issues, or permission-setting problems.
+
+11.2 User Authorization as a Prerequisite
+
+Users should grant Agents or third-party components permission to access data, issue requests, call models, execute actions, or connect to external services only after fully understanding the relevant functional boundaries and risks. Users shall bear corresponding responsibility for the scope of authorization they grant, the way such capabilities are enabled, and the resulting consequences.
+
+11.3 Independent Responsibility of Third Parties
+
+Third-Party Services, third-party nodes, third-party plugins, third-party applications, third-party models, and their content, capabilities, stability, legality, accuracy, security, availability, and continuity are independently the responsibility of the respective third parties. The Project does not provide any implied warranty regarding third-party conduct and does not automatically assume liability for losses caused by third parties.
+
+12. Disclaimer
+
+12.1 Provided “As Is”
+
+To the maximum extent permitted by applicable law, the Software is provided on an “as is,” “as available,” and “with all faults” basis. The Project makes no express or implied warranties, including but not limited to warranties of:
+
+- merchantability;
+- fitness for a particular purpose;
+- non-infringement;
+- error-free, uninterrupted, or defect-free operation;
+- full compatibility with any specific hardware, system, driver, platform, or ecosystem; or
+- satisfaction of all user expectations, commercial purposes, or compliance goals.
+
+12.2 Inherent Risks of Decentralization and Networks
+
+Users understand that decentralized systems, distributed networks, cross-node communication, cryptographic mechanisms, autonomous agents, third-party models, and cross-jurisdictional collaboration all carry inherent risks, including but not limited to:
+
+- node unavailability;
+- routing failures;
+- service interruptions;
+- consensus delays;
+- data desynchronization;
+- misconfigured permissions;
+- certificate or signature anomalies;
+- unstable third-party responses;
+- compatibility issues caused by upgrades;
+- exploitation of security vulnerabilities; and
+- losses caused by user error.
+
+12.3 No Guarantee of Continued Availability of Online Services
+
+The Project does not guarantee that any Extension Service, default integrated service, third-party model service, network relay service, domain-related service, or Local Operating Service will be provided continuously, permanently, free of charge, unconditionally, without review, without delay, or without geographical restriction.
+
+13. Limitation of Liability
+
+To the maximum extent permitted by applicable law, the Project, contributors, community participants, signing entities, and related release participants shall not be liable for any indirect, incidental, special, exemplary, or punitive damages, or for any loss of profits, loss of opportunity, loss of goodwill, loss of data, or replacement costs, arising out of or related to use of, inability to use, defects in the Software, third-party components, interruption of Extension Services, network failures, data corruption, loss of identity credentials, leakage of Key Material, model misjudgments, automated actions by Agents, installation failure, compatibility issues, or any other related causes.
+
+If applicable law does not permit the complete exclusion or limitation of liability, such liability shall be interpreted so as to be minimized to the fullest extent permitted by law. To the maximum extent permitted by applicable law, the aggregate liability relating to the Software Itself shall not exceed the amount actually paid by the user directly to the clearly identified liable party for the Software Itself; if the Software Itself was obtained free of charge, that cap shall be zero or the minimum amount permitted by applicable law.
+
+Nothing in this Section affects any statutory liability that cannot lawfully be excluded or limited.
+
+14. Updates, Modifications, and Version Changes
+
+14.1 Software Updates
+
+The Project may release patches, fixes, upgrades, replacement versions, functional adjustments, interface changes, or architectural updates as needed. Some updates may affect compatibility, functionality, third-party integration methods, configuration structures, network behavior, or data formats.
+
+14.2 Users Decide Whether to Update
+
+Unless otherwise required by applicable law, platform rules, security fixes, or specific service operating conditions, users may generally decide for themselves whether to install updated versions. However, users understand that older versions may contain known vulnerabilities, compatibility issues, or may no longer support certain Extension Services.
+
+14.3 Changes to This Agreement
+
+The Project may update this Agreement in light of project development, governance arrangements, legal requirements, changes to service boundaries, changes in product functions, or risk-management needs. After an updated version is published, notice may be provided through the official website, repository, release notes, installation interface, project documentation, or other reasonable means.
+
+If a user continues to use relevant Extension Services after an update to this Agreement, the continued use of those services shall be subject to the updated corresponding terms. Matters relating to the Software Itself and to open-source licensing shall remain governed by the applicable open-source license and the explanatory materials accompanying the relevant release.
+
+15. Scope, Dispute Handling, and Interpretation
+
+15.1 Separate Interpretation of the Software Itself and Services
+
+Questions concerning the open-source use, copying, modification, and distribution of the Software Itself shall be interpreted primarily by reference to the applicable open-source license and the relevant provisions of this Agreement. Questions involving Extension Services, Third-Party Services, Local Operating Services, paid services, AI services, network services, or data-processing activities shall be interpreted in conjunction with the corresponding service terms, privacy policies, and applicable law.
+
+15.2 Mandatory Consumer Protection Rules
+
+If the law of the user’s location provides mandatory rules regarding consumers, personal information, digital content, e-commerce, automatic renewal, dispute resolution, or limitations of liability, such mandatory rules shall prevail.
+
+15.3 Dispute Resolution
+
+In the event of a dispute arising from the Software Itself, the parties shall first seek to resolve the matter amicably in a spirit of open-source collaboration, community governance, and good faith. If consultation fails, the path for resolution may be determined in accordance with the applicable open-source license, relevant mandatory laws, and the legal relationship most closely connected to the disputed matter.
+
+If a dispute concerns an Extension Service, a Local Operating Service, or a Third-Party Service, it shall be handled in accordance with the governing law, jurisdiction, arbitration, or other dispute-resolution mechanism specified in the specialized terms applicable to that service.
+
+16. Contact Information
+
+If you have any questions regarding this Agreement, the Software, the boundary of Extension Services, open-source licenses, governance documents, copyright statements, or related rights and obligations, please contact the Project through the following channels:
+
+Note on Reading and Applicability
+
+1. If you are only installing and running the local Software Itself of BuckyOS Desktop: please pay particular attention to the open-source license accompanying the Software, Sections 3 through 5 of this Agreement, Section 8, and Sections 10 through 13.
+2. If you also use domain services, forwarding services, default AI services, or other online capabilities: please also read the specialized terms, privacy policies, and compliance notices applicable to those services.
+3. If you are a developer, contributor, or governance participant: please also read the project governance documents, developer policies, community charter, and the text of the applicable open-source license.
