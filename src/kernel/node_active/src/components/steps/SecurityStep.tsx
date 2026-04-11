@@ -298,7 +298,7 @@ const SecurityStep = ({
     <Stack spacing={3}>
       <Alert icon={<PersonRounded />} severity="info">
         {t("create_sn_user_intro", {
-          defaultValue: "先创建 SN 用户，再继续设置当前设备的访问方式和系统权限。",
+          defaultValue: "先创建 SN(BNS) 账户，再继续设置当前设备的访问方式和系统权限。",
         })}
       </Alert>
 
@@ -312,7 +312,7 @@ const SecurityStep = ({
           >
             <Box>
               <Typography fontWeight={700}>
-                {t("create_or_login_sn_user_title", { defaultValue: "创建或登录 SN 用户" })}
+                {t("create_or_login_sn_user_title", { defaultValue: "创建或登录 SN(BNS) 账户" })}
               </Typography>
               <Typography variant="body2" color="text.secondary">
                 {t("create_or_login_sn_user_desc", {
