@@ -66,10 +66,6 @@ pub struct OpenAIInstanceConfig {
     pub provider_type: String,
     pub base_url: String,
     pub auth_mode: String,
-    pub api_token: Option<String>,
-    pub auth_subject: Option<String>,
-    pub auth_appid: Option<String>,
-    pub auth_private_key_path: Option<String>,
     pub timeout_ms: u64,
     pub models: Vec<String>,
     pub default_model: Option<String>,
@@ -90,11 +86,7 @@ pub struct OpenAIProvider {
 #[derive(Debug, Clone)]
 enum OpenAIAuthMode {
     Bearer(String),
-    DeviceJwt {
-        subject: String,
-        appid: String,
-        private_key_path: PathBuf,
-    },
+    DeviceJwt,
 }
 
 impl OpenAIProvider {
@@ -108,7 +100,7 @@ impl OpenAIProvider {
         segments.join(" | caused_by: ")
     }
 
-    pub fn new(cfg: OpenAIInstanceConfig) -> Result<Self> {
+    pub fn new(cfg: OpenAIInstanceConfig, openai_api_token: &str) -> Result<Self> {
         let timeout_ms = if cfg.timeout_ms == 0 {
             DEFAULT_OPENAI_TIMEOUT_MS
         } else {
@@ -129,13 +121,7 @@ impl OpenAIProvider {
             plugin_key: None,
         };
 
-        let auth_mode = Self::parse_auth_mode(
-            cfg.auth_mode.as_str(),
-            cfg.api_token,
-            cfg.auth_subject,
-            cfg.auth_appid,
-            cfg.auth_private_key_path,
-        )?;
+        let auth_mode = Self::parse_auth_mode(cfg.auth_mode.as_str(), openai_api_token)?;
 
         Ok(Self {
             instance,
@@ -145,16 +131,10 @@ impl OpenAIProvider {
         })
     }
 
-    fn parse_auth_mode(
-        auth_mode: &str,
-        api_token: Option<String>,
-        auth_subject: Option<String>,
-        auth_appid: Option<String>,
-        auth_private_key_path: Option<String>,
-    ) -> Result<OpenAIAuthMode> {
+    fn parse_auth_mode(auth_mode: &str, openai_api_token: &str) -> Result<OpenAIAuthMode> {
         let mode = auth_mode.trim().to_ascii_lowercase();
         if mode.is_empty() || mode == DEFAULT_AUTH_MODE {
-            let token = api_token
+            let token = Some(openai_api_token)
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| anyhow!("openai bearer auth requires non-empty api_token"))?;
@@ -162,24 +142,7 @@ impl OpenAIProvider {
         }
 
         if mode == DEVICE_JWT_AUTH_MODE {
-            let appid = auth_appid
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| DEFAULT_DEVICE_AUTH_APP_ID.to_string());
-            let subject = auth_subject
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(Self::read_default_device_subject);
-            let private_key_path = auth_private_key_path
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| get_buckyos_system_etc_dir().join("node_private_key.pem"));
-            return Ok(OpenAIAuthMode::DeviceJwt {
-                subject,
-                appid,
-                private_key_path,
-            });
+            return Ok(OpenAIAuthMode::DeviceJwt);
         }
 
         Err(anyhow!(
@@ -208,14 +171,31 @@ impl OpenAIProvider {
         "ood1".to_string()
     }
 
-    fn build_auth_token(&self) -> Result<String, ProviderError> {
+    fn resolve_device_subject(ctx: &crate::aicc::InvokeCtx) -> String {
+        let subject = ctx.tenant_id.trim();
+        if !subject.is_empty() && subject != "anonymous" {
+            return subject.to_string();
+        }
+        Self::read_default_device_subject()
+    }
+
+    fn resolve_device_appid(ctx: &crate::aicc::InvokeCtx) -> String {
+        ctx.caller_app_id
+            .as_ref()
+            .map(|appid| appid.trim().to_string())
+            .filter(|appid| !appid.is_empty())
+            .unwrap_or_else(|| DEFAULT_DEVICE_AUTH_APP_ID.to_string())
+    }
+
+    fn resolve_private_key_path() -> PathBuf {
+        get_buckyos_system_etc_dir().join("node_private_key.pem")
+    }
+
+    fn build_auth_token(&self, ctx: &crate::aicc::InvokeCtx) -> Result<String, ProviderError> {
         match &self.auth_mode {
             OpenAIAuthMode::Bearer(token) => Ok(token.clone()),
-            OpenAIAuthMode::DeviceJwt {
-                subject,
-                appid,
-                private_key_path,
-            } => {
+            OpenAIAuthMode::DeviceJwt => {
+                let private_key_path = Self::resolve_private_key_path();
                 let private_key = load_private_key(private_key_path.as_path()).map_err(|err| {
                     ProviderError::fatal(format!(
                         "openai device_jwt auth failed to load private key '{}': {}",
@@ -233,8 +213,8 @@ impl OpenAIProvider {
                     iss: Some(Self::read_default_device_subject()),
                     jti: None,
                     session: None,
-                    sub: Some(subject.to_string()),
-                    appid: Some(appid.to_string()),
+                    sub: Some(Self::resolve_device_subject(ctx)),
+                    appid: Some(Self::resolve_device_appid(ctx)),
                     extra: HashMap::new(),
                 };
                 let jwt = claims.generate_jwt(None, &private_key).map_err(|err| {
@@ -1240,10 +1220,11 @@ impl OpenAIProvider {
 
     async fn post_json(
         &self,
+        ctx: &crate::aicc::InvokeCtx,
         url: &str,
         request_obj: &Map<String, Value>,
     ) -> Result<(StatusCode, Value, u64), ProviderError> {
-        let auth_token = self.build_auth_token()?;
+        let auth_token = self.build_auth_token(ctx)?;
         let started_at = std::time::Instant::now();
         let response = self
             .client
@@ -1411,7 +1392,7 @@ impl OpenAIProvider {
         };
         let mut retried_without_option = false;
         let (status, body, latency_ms) = loop {
-            let (status, body, latency_ms) = self.post_json(url.as_str(), &request_obj).await?;
+            let (status, body, latency_ms) = self.post_json(ctx, url.as_str(), &request_obj).await?;
             if status == StatusCode::BAD_REQUEST && !retried_without_option {
                 if let Some(param) = Self::extract_unsupported_request_param(&body) {
                     if Self::remove_retryable_unsupported_option(&mut request_obj, param.as_str()) {
@@ -1594,7 +1575,7 @@ impl OpenAIProvider {
         );
 
         let url = format!("{}/images/generations", self.base_url);
-        let (status, body, latency_ms) = self.post_json(url.as_str(), &request_obj).await?;
+        let (status, body, latency_ms) = self.post_json(ctx, url.as_str(), &request_obj).await?;
         let response_log = body.to_string();
 
         if !status.is_success() {
@@ -1757,14 +1738,6 @@ struct SettingsOpenAIInstanceConfig {
     base_url: String,
     #[serde(default = "default_auth_mode")]
     auth_mode: String,
-    #[serde(default)]
-    api_token: Option<String>,
-    #[serde(default)]
-    auth_subject: Option<String>,
-    #[serde(default)]
-    auth_appid: Option<String>,
-    #[serde(default)]
-    auth_private_key_path: Option<String>,
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
     #[serde(default)]
@@ -1867,10 +1840,6 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
             provider_type: default_provider_type(),
             base_url: default_base_url(),
             auth_mode: default_auth_mode(),
-            api_token: None,
-            auth_subject: None,
-            auth_appid: None,
-            auth_private_key_path: None,
             timeout_ms: default_timeout_ms(),
             models: vec![],
             default_model: None,
@@ -1885,20 +1854,6 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
 
     let mut instances = vec![];
     for raw_instance in raw_instances.into_iter() {
-        let auth_mode = raw_instance.auth_mode.trim().to_ascii_lowercase();
-        let resolved_token = raw_instance
-            .api_token
-            .clone()
-            .or_else(|| Some(settings.api_token.clone()))
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        if (auth_mode.is_empty() || auth_mode == DEFAULT_AUTH_MODE) && resolved_token.is_none() {
-            return Err(anyhow!(
-                "openai instance {} requires api_token when auth_mode is bearer",
-                raw_instance.instance_id
-            ));
-        }
-
         let mut models = normalize_model_list(raw_instance.models);
         if models.is_empty() {
             models = normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS));
@@ -1944,10 +1899,6 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
             provider_type: raw_instance.provider_type,
             base_url: raw_instance.base_url,
             auth_mode: raw_instance.auth_mode,
-            api_token: resolved_token,
-            auth_subject: raw_instance.auth_subject,
-            auth_appid: raw_instance.auth_appid,
-            auth_private_key_path: raw_instance.auth_private_key_path,
             timeout_ms: raw_instance.timeout_ms,
             models,
             default_model,
@@ -2070,9 +2021,10 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
         return Ok(0);
     };
     let instances = build_openai_instances(&openai_settings)?;
+    let api_token = openai_settings.api_token.trim().to_string();
     let mut prepared = Vec::<(OpenAIInstanceConfig, Arc<dyn Provider>)>::new();
     for config in instances.iter() {
-        let provider = OpenAIProvider::new(config.clone())?;
+        let provider = OpenAIProvider::new(config.clone(), api_token.as_str())?;
         prepared.push((config.clone(), Arc::new(provider)));
     }
 
@@ -2486,10 +2438,6 @@ data: [DONE]
                 provider_type: "openai".to_string(),
                 base_url: default_base_url(),
                 auth_mode: default_auth_mode(),
-                api_token: None,
-                auth_subject: None,
-                auth_appid: None,
-                auth_private_key_path: None,
                 timeout_ms: default_timeout_ms(),
                 models: vec!["gpt-4o-mini".to_string(), "dall-e-3".to_string()],
                 default_model: None,
@@ -2520,7 +2468,7 @@ data: [DONE]
     }
 
     #[test]
-    fn build_openai_instances_allows_device_jwt_without_api_token() {
+    fn build_openai_instances_allows_device_jwt_without_static_auth_fields() {
         let settings = OpenAISettings {
             enabled: true,
             api_token: String::new(),
@@ -2530,10 +2478,6 @@ data: [DONE]
                 provider_type: "sn-openai".to_string(),
                 base_url: "https://sn.buckyos.ai/v1".to_string(),
                 auth_mode: DEVICE_JWT_AUTH_MODE.to_string(),
-                api_token: None,
-                auth_subject: Some("ood1".to_string()),
-                auth_appid: Some("aicc".to_string()),
-                auth_private_key_path: Some("/tmp/non-exist.pem".to_string()),
                 timeout_ms: default_timeout_ms(),
                 models: vec!["gpt-5-mini".to_string()],
                 default_model: Some("gpt-5-mini".to_string()),
@@ -2547,7 +2491,6 @@ data: [DONE]
         let instances = build_openai_instances(&settings).expect("instances should be built");
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].auth_mode, DEVICE_JWT_AUTH_MODE);
-        assert!(instances[0].api_token.is_none());
     }
 
     #[test]
@@ -2557,10 +2500,6 @@ data: [DONE]
             provider_type: "sn-openai".to_string(),
             base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
             auth_mode: "bearer".to_string(),
-            api_token: Some("token".to_string()),
-            auth_subject: None,
-            auth_appid: None,
-            auth_private_key_path: None,
             timeout_ms: default_timeout_ms(),
             models: vec!["gpt-5-mini".to_string()],
             default_model: Some("gpt-5-mini".to_string()),
@@ -2568,7 +2507,7 @@ data: [DONE]
             default_image_model: None,
             features: vec![],
             alias_map: HashMap::new(),
-        })
+        }, "token")
         .expect("provider should be built");
         assert!(provider.use_chat_completions_endpoint());
     }

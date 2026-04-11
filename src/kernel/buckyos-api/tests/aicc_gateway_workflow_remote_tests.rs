@@ -17,9 +17,6 @@ const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
 const ENV_AICC_OPENAI_BASE_URL: &str = "AICC_OPENAI_BASE_URL";
 const ENV_AICC_SN_OPENAI_BASE_URL: &str = "AICC_SN_OPENAI_BASE_URL";
 const ENV_AICC_OPENAI_MODEL: &str = "AICC_OPENAI_MODEL";
-const ENV_AICC_SN_AUTH_SUBJECT: &str = "AICC_SN_AUTH_SUBJECT";
-const ENV_AICC_SN_AUTH_APPID: &str = "AICC_SN_AUTH_APPID";
-const ENV_AICC_SN_AUTH_PRIVATE_KEY_PATH: &str = "AICC_SN_AUTH_PRIVATE_KEY_PATH";
 const ENV_AICC_SN_REGISTER_PROVIDER: &str = "AICC_SN_REGISTER_PROVIDER";
 const DEFAULT_MODEL_ALIAS: &str = "llm.plan.default";
 const FIXED_SN_MODEL_ALIAS: &str = "llm.plan.default";
@@ -279,7 +276,7 @@ async fn ensure_provider_configured_for_remote(
     let model =
         optional_env(ENV_AICC_OPENAI_MODEL).unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
 
-    let mut instance_settings = json!({
+    let instance_settings = json!({
         "instance_id": "workflow-openai-remote",
         "provider_type": provider_type,
         "base_url": base_url,
@@ -289,18 +286,6 @@ async fn ensure_provider_configured_for_remote(
         "default_model": model,
         "features": ["plan", "json_output", "tool_calling", "web_search"]
     });
-    if matches!(mode, ProviderBootstrapMode::SnOpenAiJwt) {
-        if let Some(subject) = optional_env(ENV_AICC_SN_AUTH_SUBJECT) {
-            instance_settings["auth_subject"] = json!(subject);
-        }
-        if let Some(appid) = optional_env(ENV_AICC_SN_AUTH_APPID) {
-            instance_settings["auth_appid"] = json!(appid);
-        }
-        if let Some(private_key_path) = optional_env(ENV_AICC_SN_AUTH_PRIVATE_KEY_PATH) {
-            instance_settings["auth_private_key_path"] = json!(private_key_path);
-        }
-    }
-
     let openai_settings = json!({
         "enabled": true,
         "api_token": api_token,
