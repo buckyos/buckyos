@@ -60,6 +60,51 @@ type TaskManagerClientLike = {
   deleteTask: (id: number) => Promise<void>;
 };
 
+// ndm store API types (mirrors ndm_client.ts exports)
+type NdmStoreRequestOptions = {
+  endpoint?: string;
+  sessionToken?: string | null;
+};
+
+type QueryObjectByIdResponse =
+  | { state: "not_exist" }
+  | { state: "object"; obj_data: string };
+
+type QueryChunkStateResponse =
+  | { state: "new"; chunk_size: number }
+  | { state: "completed"; chunk_size: number }
+  | { state: "disabled"; chunk_size: number }
+  | { state: "not_exist"; chunk_size: number }
+  | {
+      state: "local_link";
+      chunk_size: number;
+      local_info: { qcid: string; last_modify_time: number };
+    }
+  | { state: "same_as"; chunk_size: number; same_as: string };
+
+type NdmModule = {
+  putObject: (
+    req: { obj_id: string; obj_data: string },
+    opts?: NdmStoreRequestOptions,
+  ) => Promise<void>;
+  queryObjectById: (
+    req: { obj_id: string },
+    opts?: NdmStoreRequestOptions,
+  ) => Promise<QueryObjectByIdResponse>;
+  queryChunkState: (
+    req: { chunk_id: string },
+    opts?: NdmStoreRequestOptions,
+  ) => Promise<QueryChunkStateResponse>;
+  isObjectExist: (
+    req: { obj_id: string },
+    opts?: NdmStoreRequestOptions,
+  ) => Promise<{ exists: boolean }>;
+  haveChunk: (
+    req: { chunk_id: string },
+    opts?: NdmStoreRequestOptions,
+  ) => Promise<{ exists: boolean }>;
+};
+
 type NodeSdkModule = {
   buckyos: {
     initBuckyOS: (appid: string, config: Record<string, unknown>) => Promise<void>;
@@ -80,6 +125,7 @@ type NodeSdkModule = {
     getSystemConfigClient: () => SystemConfigClientLike;
     getTaskManagerClient: () => TaskManagerClientLike;
   };
+  ndm: NdmModule;
   RuntimeType: { AppService: string };
   parseSessionTokenClaims: (token: string | null | undefined) => Record<string, unknown> | null;
 };
@@ -438,6 +484,16 @@ if (bootstrapState.kind === "ready") {
 }
 
 console.log(`[sys_test] serving ${staticRoot} on http://0.0.0.0:${port}`);
+// Log static root contents for debugging
+try {
+  const entries: string[] = [];
+  for await (const entry of Deno.readDir(staticRoot)) {
+    entries.push(`${entry.isDirectory ? "d" : "f"} ${entry.name}`);
+  }
+  console.log(`[sys_test] static root contents: ${entries.join(", ")}`);
+} catch (e) {
+  console.warn(`[sys_test] failed to list static root: ${e instanceof Error ? e.message : String(e)}`);
+}
 console.log(`[sys_test] sdk routes mounted at ${sdkRoutePrefix}`);
 
 function appServiceUnavailableResponse(): Response {
@@ -490,6 +546,7 @@ Deno.serve({
     console.log(`  POST ${sdkRoutePrefix}/selftest/app_settings`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/task_manager`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/verify_hub`);
+    console.log(`  POST ${sdkRoutePrefix}/ndm_query             (query FileObjId status)`);
     console.log(`  GET  *                                       (static dist/)`);
   },
 }, async (req: Request) => {
@@ -560,6 +617,140 @@ Deno.serve({
           : null,
         tokenClaims: sdk.parseSessionTokenClaims(accountInfo?.session_token ?? null),
       }));
+    }
+
+    // NDM query endpoint: receives FileObjId + FileObject + qcid from the
+    // frontend after upload, then uses ndm store APIs to:
+    //   1. putObject — store the FileObject so NDM knows about it
+    //   2. queryObjectById — query the object state
+    //   3. queryChunkState — query each chunk's state
+    // The qcid is stored alongside the FileObject so that future uploads
+    // of the same file content can be resolved instantly (秒传).
+    if (req.method === "POST" && url.pathname === `${sdkRoutePrefix}/ndm_query`) {
+      if (bootstrapState.kind !== "ready") {
+        return tap("ndm_query[unavail]", appServiceUnavailableResponse());
+      }
+      try {
+        const body = await readJsonBody(req);
+        const fileObjId = body.fileObjId as string | undefined;
+        const fileObject = body.fileObject as Record<string, unknown> | undefined;
+        const qcid = body.qcid as string | undefined;
+
+        if (typeof fileObjId !== "string" || !fileObjId) {
+          return tap(
+            "ndm_query[bad-req]",
+            jsonResponse({ ok: false, error: "fileObjId is required" }, 400),
+          );
+        }
+
+        console.log(
+          `[sys_test] ndm_query: fileObjId=${fileObjId}, qcid=${qcid ?? "N/A"}`,
+        );
+
+        const { ndm } = bootstrapState.sdk;
+
+        // Step 1: putObject — store the FileObject in NDM so it can be
+        // resolved later. Include qcid in metadata for instant-upload.
+        let putObjectResult: { ok: boolean; error?: string } = { ok: true };
+        if (fileObject) {
+          const objDataToStore = qcid
+            ? { ...fileObject, _qcid: qcid }
+            : fileObject;
+          try {
+            await ndm.putObject({
+              obj_id: fileObjId,
+              obj_data: JSON.stringify(objDataToStore),
+            });
+            console.log(`[sys_test] ndm_query: putObject OK for ${fileObjId}`);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn(`[sys_test] ndm_query: putObject failed: ${msg}`);
+            putObjectResult = { ok: false, error: msg };
+          }
+        }
+
+        // Step 2: queryObjectById — check the object state in NDM store
+        let objectState: QueryObjectByIdResponse | { state: "error"; error: string };
+        try {
+          objectState = await ndm.queryObjectById({ obj_id: fileObjId });
+          console.log(
+            `[sys_test] ndm_query: queryObjectById state=${objectState.state}`,
+          );
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn(`[sys_test] ndm_query: queryObjectById failed: ${msg}`);
+          objectState = { state: "error", error: msg };
+        }
+
+        // Step 3: queryChunkState — extract chunk IDs from the FileObject's
+        // content field and query each chunk's state.
+        const chunkStates: Array<{
+          chunkId: string;
+          state: QueryChunkStateResponse | { state: "error"; error: string };
+        }> = [];
+
+        if (fileObject) {
+          const contentField = fileObject.content as string | undefined;
+          const chunkIdsToQuery: string[] = [];
+
+          if (typeof contentField === "string" && contentField) {
+            // For single-chunk files, content is a ChunkId string (e.g. "mix256:...")
+            // For multi-chunk files, content is a ChunkListId (ObjId).
+            // We try to query content directly as a chunk first.
+            chunkIdsToQuery.push(contentField);
+          }
+
+          // Also query the qcid if provided — this lets us verify it's
+          // recognized by NDM for future instant-upload lookups.
+          if (qcid) {
+            chunkIdsToQuery.push(qcid);
+          }
+
+          for (const chunkId of chunkIdsToQuery) {
+            try {
+              const chunkState = await ndm.queryChunkState({
+                chunk_id: chunkId,
+              });
+              console.log(
+                `[sys_test] ndm_query: queryChunkState(${chunkId}) = ${chunkState.state}`,
+              );
+              chunkStates.push({ chunkId, state: chunkState });
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              console.warn(
+                `[sys_test] ndm_query: queryChunkState(${chunkId}) failed: ${msg}`,
+              );
+              chunkStates.push({
+                chunkId,
+                state: { state: "error", error: msg },
+              });
+            }
+          }
+        }
+
+        return tap(
+          "ndm_query",
+          jsonResponse({
+            ok: true,
+            fileObjId,
+            qcid: qcid ?? null,
+            putObject: putObjectResult,
+            objectState,
+            chunkStates,
+          }),
+        );
+      } catch (error) {
+        return tap(
+          "ndm_query[error]",
+          jsonResponse(
+            {
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            500,
+          ),
+        );
+      }
     }
 
     // Per-group selftest endpoint, e.g.
@@ -643,7 +834,23 @@ Deno.serve({
     const staticResponse = await serveDir(req, {
       fsRoot: staticRoot,
       quiet: true,
+      showIndex: true,
     });
+    // Fallback: if the static file is not found and the request is a
+    // navigation (not an asset), serve index.html so the SPA can handle
+    // client-side routing.
+    if (staticResponse.status === 404) {
+      const accept = req.headers.get("accept") ?? "";
+      if (accept.includes("text/html")) {
+        const fallback = await serveDir(
+          new Request(new URL("/index.html", req.url), req),
+          { fsRoot: staticRoot, quiet: true, showIndex: true },
+        );
+        if (fallback.status === 200) {
+          return tap("static[fallback]", fallback);
+        }
+      }
+    }
     return tap("static", staticResponse);
   } catch (error) {
     console.error(

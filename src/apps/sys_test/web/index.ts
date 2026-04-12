@@ -15,7 +15,7 @@
  * Each group also leaves a placeholder area for future per-service manual
  * call panels (point 4 of the task brief).
  */
-import { buckyos } from 'buckyos'
+import { buckyos, ndm } from 'buckyos'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
 
 const APP_ID = 'buckyos_systest'
@@ -334,8 +334,321 @@ function renderGroups() {
   }
 }
 
+// ── NDM Client Demo Panel ──────────────────────────────────────────
+
+type NdmDemoState = {
+  sessionId: string | null
+  fileObjId: string | null
+  uploadStatus: string
+  pollTimer: ReturnType<typeof setInterval> | null
+}
+
+const ndmState: NdmDemoState = {
+  sessionId: null,
+  fileObjId: null,
+  uploadStatus: 'idle',
+  pollTimer: null,
+}
+
+function renderNdmDemoPanel() {
+  const container = $('groups') as HTMLElement
+
+  const card = document.createElement('section')
+  card.className = 'group'
+  card.dataset.group = 'ndm_client'
+
+  card.innerHTML = `
+    <div class="group-header">
+      <h2 class="group-title">NDM Client</h2>
+      <span class="group-id">ndm_client</span>
+    </div>
+    <p class="group-desc">
+      NDM 文件上传演示：选择文件 → 本地计算 ObjectId → 上传到 NDM → 轮询上传进度 → 通知后端查询 FileObjId 及 ChunkId 状态。
+    </p>
+    <div class="group-actions">
+      <button id="ndm-upload-btn" class="btn primary">选择文件并上传</button>
+    </div>
+    <div id="ndm-results" class="results"></div>
+  `
+  container.appendChild(card)
+
+  const uploadBtn = card.querySelector('#ndm-upload-btn') as HTMLButtonElement
+  uploadBtn.addEventListener('click', () => void handleNdmUpload(uploadBtn))
+}
+
+function renderNdmLog(container: HTMLElement, entries: NdmLogEntry[]) {
+  container.innerHTML = ''
+  const block = document.createElement('div')
+  block.className = 'run-block'
+
+  const header = document.createElement('div')
+  header.className = 'run-header'
+  const badge = document.createElement('span')
+  badge.className = 'badge in-page'
+  badge.textContent = 'NDM 上传'
+  header.appendChild(badge)
+  const ts = document.createElement('span')
+  ts.textContent = new Date().toLocaleTimeString()
+  header.appendChild(ts)
+  block.appendChild(header)
+
+  for (const entry of entries) {
+    const el = document.createElement('div')
+    el.className = `case ${entry.status}`
+    el.innerHTML =
+      `<span class="icon">${entry.icon}</span>` +
+      `<span class="name">${escapeHtml(entry.label)}</span>` +
+      `<span class="duration">${entry.extra ?? ''}</span>` +
+      (entry.detail ? `<div class="details${entry.status === 'err' ? ' error' : ''}">${escapeHtml(entry.detail)}</div>` : '')
+    block.appendChild(el)
+  }
+  container.appendChild(block)
+}
+
+type NdmLogEntry = {
+  icon: string
+  label: string
+  status: 'ok' | 'err' | 'run'
+  extra?: string
+  detail?: string
+}
+
+function renderProgressBar(container: HTMLElement, entries: NdmLogEntry[], progress: {
+  uploadedBytes: number
+  totalBytes: number
+  uploadedObjects: number
+  totalObjects: number
+  speedBps?: number
+  estimatedRemainingMs?: number
+}) {
+  const pct = progress.totalBytes > 0
+    ? Math.round((progress.uploadedBytes / progress.totalBytes) * 100)
+    : 0
+
+  const speedStr = progress.speedBps != null
+    ? formatBytes(progress.speedBps) + '/s'
+    : ''
+  const etaStr = progress.estimatedRemainingMs != null && progress.estimatedRemainingMs > 0
+    ? formatDuration(progress.estimatedRemainingMs)
+    : ''
+
+  const progressEntry: NdmLogEntry = {
+    icon: '⏳',
+    label: `上传进度: ${pct}%  (${formatBytes(progress.uploadedBytes)} / ${formatBytes(progress.totalBytes)})  对象: ${progress.uploadedObjects}/${progress.totalObjects}`,
+    status: 'run',
+    extra: [speedStr, etaStr ? `剩余 ${etaStr}` : ''].filter(Boolean).join(' | '),
+  }
+
+  // Replace or append progress entry
+  const idx = entries.findIndex(e => e.label.startsWith('上传进度:'))
+  if (idx >= 0) {
+    entries[idx] = progressEntry
+  } else {
+    entries.push(progressEntry)
+  }
+
+  renderNdmLog(container, entries)
+
+  // Also render actual progress bar element
+  const block = container.querySelector('.run-block')
+  if (block) {
+    let bar = block.querySelector('.ndm-progress-bar') as HTMLDivElement | null
+    if (!bar) {
+      bar = document.createElement('div')
+      bar.className = 'ndm-progress-bar'
+      bar.innerHTML = '<div class="ndm-progress-fill"></div>'
+      block.appendChild(bar)
+    }
+    const fill = bar.querySelector('.ndm-progress-fill') as HTMLDivElement
+    fill.style.width = `${pct}%`
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}
+
+function formatDuration(ms: number): string {
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return `${m}m${s % 60}s`
+}
+
+async function handleNdmUpload(btn: HTMLButtonElement) {
+  btn.disabled = true
+  const resultsContainer = document.getElementById('ndm-results')!
+  const entries: NdmLogEntry[] = []
+
+  // Clean up previous poll timer
+  if (ndmState.pollTimer) {
+    clearInterval(ndmState.pollTimer)
+    ndmState.pollTimer = null
+  }
+
+  try {
+    // Step 1: Pick file and materialize (compute objectId locally)
+    entries.push({ icon: '⏳', label: '正在选择文件...', status: 'run' })
+    renderNdmLog(resultsContainer, entries)
+
+    let snapshot: Awaited<ReturnType<typeof ndm.pickupAndImport>>
+    try {
+      snapshot = await ndm.pickupAndImport({
+        mode: 'single_file',
+        autoStartUpload: false,
+      })
+    } catch (e: any) {
+      if (e?.code === 'USER_CANCELLED') {
+        entries[entries.length - 1] = { icon: '✕', label: '用户取消了文件选择', status: 'err' }
+        renderNdmLog(resultsContainer, entries)
+        return
+      }
+      throw e
+    }
+
+    const sel = snapshot.selection
+    ndmState.sessionId = snapshot.sessionId
+    ndmState.fileObjId = sel.objectId
+
+    entries[entries.length - 1] = {
+      icon: '✓',
+      label: `文件已选择: ${sel.name} (${formatBytes(sel.size)})`,
+      status: 'ok',
+    }
+
+    // Extract FileObject JSON and chunk info
+    const ndnFileObject = sel._ndnFileObject
+    const chunkIds: string[] = []
+    if (ndnFileObject) {
+      // For single-chunk files, content is a ChunkId string directly.
+      // For multi-chunk files, content is a ChunkListId (ObjId).
+      // Either way, we can extract chunk IDs from the session status.
+      const status = await ndm.getImportSessionStatus(snapshot.sessionId)
+      if (status.perObjectProgress) {
+        // perObjectProgress only has objectId-level info, but the internal
+        // session tracks individual chunks. We extract them from the
+        // FileObject's content field instead.
+      }
+    }
+
+    // Get chunk IDs from session's internal object state via the status
+    const sessionStatus = await ndm.getImportSessionStatus(snapshot.sessionId)
+    // The FileObject's "content" field holds the chunk reference
+    const fileObjContent = ndnFileObject ? (ndnFileObject as any).content as string : undefined
+
+    entries.push({
+      icon: '✓',
+      label: `FileObjId 已计算`,
+      status: 'ok',
+      detail: `objectId: ${sel.objectId}\ncontent (chunk ref): ${fileObjContent ?? 'N/A'}`,
+    })
+
+    // Step 1b: Compute QCID for instant-upload optimization
+    let qcid: string | null = null
+    if (sel._file) {
+      try {
+        qcid = await ndm.calculateQcidFromFile(sel._file)
+        entries.push({
+          icon: '✓',
+          label: 'QCID 已计算（用于秒传优化）',
+          status: 'ok',
+          detail: qcid,
+        })
+      } catch {
+        entries.push({
+          icon: '✓',
+          label: 'QCID 跳过（文件过小，不适用）',
+          status: 'ok',
+        })
+      }
+    }
+    renderNdmLog(resultsContainer, entries)
+
+    // Step 2: Start upload
+    entries.push({ icon: '⏳', label: '开始上传...', status: 'run' })
+    renderNdmLog(resultsContainer, entries)
+
+    await ndm.startUpload(snapshot.sessionId)
+    entries[entries.length - 1] = { icon: '✓', label: '上传已启动', status: 'ok' }
+
+    // Step 3: Poll upload progress
+    await new Promise<void>((resolve, reject) => {
+      ndmState.pollTimer = setInterval(async () => {
+        try {
+          const progress = await ndm.getUploadProgress(snapshot.sessionId)
+          renderProgressBar(resultsContainer, entries, progress)
+
+          if (progress.uploadStatus === 'completed') {
+            clearInterval(ndmState.pollTimer!)
+            ndmState.pollTimer = null
+            const idx = entries.findIndex(e => e.label.startsWith('上传进度:'))
+            if (idx >= 0) {
+              entries[idx] = {
+                icon: '✓',
+                label: `上传完成: ${formatBytes(progress.totalBytes)}, ${progress.totalObjects} 个对象`,
+                status: 'ok',
+                extra: progress.elapsedMs != null ? `${(progress.elapsedMs / 1000).toFixed(1)}s` : '',
+              }
+            }
+            renderNdmLog(resultsContainer, entries)
+            resolve()
+          } else if (progress.uploadStatus === 'failed') {
+            clearInterval(ndmState.pollTimer!)
+            ndmState.pollTimer = null
+            reject(new Error('上传失败'))
+          }
+        } catch (err) {
+          clearInterval(ndmState.pollTimer!)
+          ndmState.pollTimer = null
+          reject(err)
+        }
+      }, 500)
+    })
+
+    // Step 4: Notify backend with FileObjId, FileObject, qcid
+    entries.push({ icon: '⏳', label: '正在通知后端，查询对象和Chunk状态...', status: 'run' })
+    renderNdmLog(resultsContainer, entries)
+
+    const queryResp = await fetch('/sdk/appservice/ndm_query', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        fileObjId: sel.objectId,
+        fileObject: ndnFileObject,
+        qcid,
+      }),
+    })
+    const queryResult = await queryResp.json()
+
+    entries[entries.length - 1] = {
+      icon: queryResult.ok ? '✓' : '✕',
+      label: '后端查询结果',
+      status: queryResult.ok ? 'ok' : 'err',
+      detail: JSON.stringify(queryResult, null, 2),
+    }
+    renderNdmLog(resultsContainer, entries)
+
+  } catch (error) {
+    entries.push({
+      icon: '✕',
+      label: '操作失败',
+      status: 'err',
+      detail: error instanceof Error ? error.message : String(error),
+    })
+    renderNdmLog(resultsContainer, entries)
+  } finally {
+    btn.disabled = false
+  }
+}
+
+// ── Main ───────────────────────────────────────────────────────────
+
 async function main() {
   renderGroups()
+  renderNdmDemoPanel()
   setAuthStatus({ kind: 'init' })
 
   try {
