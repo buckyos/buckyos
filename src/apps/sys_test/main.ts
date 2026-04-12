@@ -82,11 +82,19 @@ type QueryChunkStateResponse =
     }
   | { state: "same_as"; chunk_size: number; same_as: string };
 
+type ContentAvailabilityState =
+  | { kind: "chunk"; state: QueryChunkStateResponse | { state: "error"; error: string } }
+  | { kind: "object"; state: QueryObjectByIdResponse | { state: "error"; error: string } };
+
 type NdmModule = {
   putObject: (
     req: { obj_id: string; obj_data: string },
     opts?: NdmStoreRequestOptions,
   ) => Promise<void>;
+  isObjectStored: (
+    req: { obj_id: string; inner_path?: string },
+    opts?: NdmStoreRequestOptions,
+  ) => Promise<{ stored: boolean }>;
   queryObjectById: (
     req: { obj_id: string },
     opts?: NdmStoreRequestOptions,
@@ -103,6 +111,10 @@ type NdmModule = {
     req: { chunk_id: string },
     opts?: NdmStoreRequestOptions,
   ) => Promise<{ exists: boolean }>;
+  addChunkBySameAs: (
+    req: { big_chunk_id: string; chunk_list_id: string; big_chunk_size: number },
+    opts?: NdmStoreRequestOptions,
+  ) => Promise<void>;
 };
 
 type NodeSdkModule = {
@@ -531,6 +543,36 @@ function summarizeHeaders(req: Request): Record<string, string> {
   return out;
 }
 
+function isChunkListContentId(contentId: string): boolean {
+  return contentId.startsWith("clist:") || contentId.startsWith("chunklist:");
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+
+function extractChunkIdsFromChunkListObjectData(objData: string): string[] | null {
+  try {
+    const parsed = JSON.parse(objData) as unknown;
+    return isStringArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function queryContentAvailabilityState(
+  ndm: NdmModule,
+  contentId: string,
+): Promise<ContentAvailabilityState> {
+  if (contentId.startsWith("chunk:") || contentId.startsWith("mix256:") || contentId.startsWith("sha256:")) {
+    const state = await ndm.queryChunkState({ chunk_id: contentId });
+    return { kind: "chunk", state };
+  }
+
+  const state = await ndm.queryObjectById({ obj_id: contentId });
+  return { kind: "object", state };
+}
+
 let requestSeq = 0;
 
 Deno.serve({
@@ -619,11 +661,11 @@ Deno.serve({
       }));
     }
 
-    // NDM query endpoint: receives FileObjId + FileObject + qcid from the
+    // NDM query endpoint: receives FileObjId + FileObject + chunkList + qcid from the
     // frontend after upload, then uses ndm store APIs to:
-    //   1. putObject — store the FileObject so NDM knows about it
+    //   1. putObject — store chunklist/FileObject metadata so NDM knows about it
     //   2. queryObjectById — query the object state
-    //   3. queryChunkState — query each chunk's state
+    //   3. isObjectStored/queryChunkState — query content + qcid state
     // The qcid is stored alongside the FileObject so that future uploads
     // of the same file content can be resolved instantly (秒传).
     if (req.method === "POST" && url.pathname === `${sdkRoutePrefix}/ndm_query`) {
@@ -635,6 +677,8 @@ Deno.serve({
         const fileObjId = body.fileObjId as string | undefined;
         const fileObject = body.fileObject as Record<string, unknown> | undefined;
         const qcid = body.qcid as string | undefined;
+        const chunkList = body.chunkList;
+        const preUploadState = body.preUploadState as Record<string, unknown> | undefined;
 
         if (typeof fileObjId !== "string" || !fileObjId) {
           return tap(
@@ -648,9 +692,35 @@ Deno.serve({
         );
 
         const { ndm } = bootstrapState.sdk;
+        const contentId = typeof fileObject?.content === "string" && fileObject.content.length > 0
+          ? fileObject.content
+          : null;
+        const isChunkListContent = contentId ? isChunkListContentId(contentId) : false;
 
-        // Step 1: putObject — store the FileObject in NDM so it can be
-        // resolved later. Include qcid in metadata for instant-upload.
+        let putChunkListResult: { ok: boolean; error?: string } | null = null;
+        if (contentId && isChunkListContent) {
+          if (!isStringArray(chunkList)) {
+            putChunkListResult = {
+              ok: false,
+              error: "chunkList is required when fileObject.content is a chunklist id",
+            };
+            console.warn(`[sys_test] ndm_query: missing chunkList for ${contentId}`);
+          } else {
+            try {
+              await ndm.putObject({
+                obj_id: contentId,
+                obj_data: JSON.stringify(chunkList),
+              });
+              console.log(`[sys_test] ndm_query: putObject OK for chunklist ${contentId}`);
+              putChunkListResult = { ok: true };
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              console.warn(`[sys_test] ndm_query: put chunklist failed: ${msg}`);
+              putChunkListResult = { ok: false, error: msg };
+            }
+          }
+        }
+
         let putObjectResult: { ok: boolean; error?: string } = { ok: true };
         if (fileObject) {
           const objDataToStore = qcid
@@ -669,7 +739,6 @@ Deno.serve({
           }
         }
 
-        // Step 2: queryObjectById — check the object state in NDM store
         let objectState: QueryObjectByIdResponse | { state: "error"; error: string };
         try {
           objectState = await ndm.queryObjectById({ obj_id: fileObjId });
@@ -682,49 +751,137 @@ Deno.serve({
           objectState = { state: "error", error: msg };
         }
 
-        // Step 3: queryChunkState — extract chunk IDs from the FileObject's
-        // content field and query each chunk's state.
-        const chunkStates: Array<{
+        let contentState:
+          | { contentId: string; state: ContentAvailabilityState }
+          | null = null;
+        if (contentId) {
+          try {
+            const availabilityState = await queryContentAvailabilityState(ndm, contentId);
+            console.log(`[sys_test] ndm_query: content availability for ${contentId} queried`);
+            contentState = { contentId, state: availabilityState };
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn(`[sys_test] ndm_query: content availability query failed for ${contentId}: ${msg}`);
+            contentState = {
+              contentId,
+              state: { kind: "object", state: { state: "error", error: msg } },
+            };
+          }
+        }
+
+        let contentStoredState:
+          | { contentId: string; state: { stored: boolean } | { state: "error"; error: string } }
+          | null = null;
+        if (contentId) {
+          try {
+            const storedState = await ndm.isObjectStored({ obj_id: contentId });
+            console.log(
+              `[sys_test] ndm_query: isObjectStored(${contentId}) = ${storedState.stored}`,
+            );
+            contentStoredState = { contentId, state: storedState };
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn(`[sys_test] ndm_query: isObjectStored(${contentId}) failed: ${msg}`);
+            contentStoredState = {
+              contentId,
+              state: { state: "error", error: msg },
+            };
+          }
+        }
+
+        let contentChunkStates: Array<{
           chunkId: string;
           state: QueryChunkStateResponse | { state: "error"; error: string };
         }> = [];
+        if (contentId && isChunkListContent) {
+          const chunkIds = isStringArray(chunkList)
+            ? chunkList
+            : contentState?.state.kind === "object" && contentState.state.state.state === "object"
+            ? extractChunkIdsFromChunkListObjectData(contentState.state.state.obj_data) ?? []
+            : [];
 
-        if (fileObject) {
-          const contentField = fileObject.content as string | undefined;
-          const chunkIdsToQuery: string[] = [];
-
-          if (typeof contentField === "string" && contentField) {
-            // For single-chunk files, content is a ChunkId string (e.g. "mix256:...")
-            // For multi-chunk files, content is a ChunkListId (ObjId).
-            // We try to query content directly as a chunk first.
-            chunkIdsToQuery.push(contentField);
-          }
-
-          // Also query the qcid if provided — this lets us verify it's
-          // recognized by NDM for future instant-upload lookups.
-          if (qcid) {
-            chunkIdsToQuery.push(qcid);
-          }
-
-          for (const chunkId of chunkIdsToQuery) {
+          for (const chunkId of chunkIds) {
             try {
-              const chunkState = await ndm.queryChunkState({
-                chunk_id: chunkId,
-              });
+              const chunkState = await ndm.queryChunkState({ chunk_id: chunkId });
               console.log(
                 `[sys_test] ndm_query: queryChunkState(${chunkId}) = ${chunkState.state}`,
               );
-              chunkStates.push({ chunkId, state: chunkState });
+              contentChunkStates.push({ chunkId, state: chunkState });
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               console.warn(
                 `[sys_test] ndm_query: queryChunkState(${chunkId}) failed: ${msg}`,
               );
-              chunkStates.push({
+              contentChunkStates.push({
                 chunkId,
                 state: { state: "error", error: msg },
               });
             }
+          }
+        }
+
+        let addSameAsResult: { ok: boolean; skipped?: boolean; error?: string } | null = null;
+        if (qcid && contentId && isChunkListContent) {
+          const fileSize = typeof fileObject?.size === "number" && Number.isFinite(fileObject.size)
+            ? fileObject.size
+            : null;
+          const contentFullyStored = contentStoredState?.state &&
+            "stored" in contentStoredState.state &&
+            contentStoredState.state.stored === true;
+
+          if (fileSize === null) {
+            addSameAsResult = {
+              ok: false,
+              error: "fileObject.size is required when adding qcid same_as mapping",
+            };
+          } else if (!contentFullyStored) {
+            addSameAsResult = {
+              ok: false,
+              error: `skip addChunkBySameAs because content ${contentId} is not fully stored yet`,
+            };
+            console.warn(
+              `[sys_test] ndm_query: skip addChunkBySameAs for ${qcid} because ${contentId} is not fully stored`,
+            );
+          } else {
+            try {
+              await ndm.addChunkBySameAs({
+                big_chunk_id: qcid,
+                chunk_list_id: contentId,
+                big_chunk_size: fileSize,
+              });
+              console.log(`[sys_test] ndm_query: addChunkBySameAs OK for ${qcid} -> ${contentId}`);
+              addSameAsResult = { ok: true };
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              console.warn(`[sys_test] ndm_query: addChunkBySameAs failed: ${msg}`);
+              addSameAsResult = { ok: false, error: msg };
+            }
+          }
+        } else if (qcid) {
+          addSameAsResult = { ok: true, skipped: true };
+        }
+
+        let qcidState:
+          | { chunkId: string; state: QueryChunkStateResponse | { state: "error"; error: string } }
+          | null = null;
+        if (qcid) {
+          try {
+            const chunkState = await ndm.queryChunkState({
+              chunk_id: qcid,
+            });
+            console.log(
+              `[sys_test] ndm_query: queryChunkState(${qcid}) = ${chunkState.state}`,
+            );
+            qcidState = { chunkId: qcid, state: chunkState };
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn(
+              `[sys_test] ndm_query: queryChunkState(${qcid}) failed: ${msg}`,
+            );
+            qcidState = {
+              chunkId: qcid,
+              state: { state: "error", error: msg },
+            };
           }
         }
 
@@ -734,9 +891,15 @@ Deno.serve({
             ok: true,
             fileObjId,
             qcid: qcid ?? null,
+            preUploadState: preUploadState ?? null,
+            putChunkList: putChunkListResult,
             putObject: putObjectResult,
+            addSameAs: addSameAsResult,
             objectState,
-            chunkStates,
+            contentState,
+            contentStoredState,
+            contentChunkStates,
+            qcidState,
           }),
         );
       } catch (error) {

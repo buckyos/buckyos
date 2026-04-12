@@ -15,11 +15,12 @@
  * Each group also leaves a placeholder area for future per-service manual
  * call panels (point 4 of the task brief).
  */
-import { buckyos, ndm } from 'buckyos'
+import { buckyos, ndm, ndn } from 'buckyos'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
 
 const APP_ID = 'buckyos_systest'
 const SELFTEST_BASE_URL = '/sdk/appservice/selftest'
+const NDM_CHUNK_SIZE = 32 * 1024 * 1024
 
 type CaseResult = {
   name: string
@@ -38,6 +39,34 @@ type AuthState =
   | { kind: 'error'; message: string }
 
 let authState: AuthState = { kind: 'init' }
+
+function isChunkListContentId(contentId: string | undefined): contentId is string {
+  return typeof contentId === 'string' && (contentId.startsWith('clist:') || contentId.startsWith('chunklist:'))
+}
+
+async function sha256Bytes(bytes: Uint8Array): Promise<Uint8Array> {
+  return ndn.sha256Bytes(bytes)
+}
+
+async function buildChunkListPayload(file: File, expectedContentId: string): Promise<string[]> {
+  const chunkList = new ndn.SimpleChunkList()
+  let offset = 0
+
+  while (offset < file.size) {
+    const end = Math.min(offset + NDM_CHUNK_SIZE, file.size)
+    const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer())
+    const hash = await sha256Bytes(bytes)
+    chunkList.appendChunk(ndn.ChunkId.fromMix256Result(bytes.length, hash))
+    offset = end
+  }
+
+  const [chunkListObjId] = chunkList.genObjId()
+  if (chunkListObjId.toString() !== expectedContentId) {
+    throw new Error(`chunkList objId mismatch: expected ${expectedContentId}, got ${chunkListObjId.toString()}`)
+  }
+
+  return chunkList.body.map(chunk => chunk.toString())
+}
 
 function $<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id)
@@ -478,6 +507,30 @@ function formatDuration(ms: number): string {
   return `${m}m${s % 60}s`
 }
 
+function describePreUploadState(materializationStatus: string, uploadStatus: string): {
+  label: string
+  detail: string
+} {
+  if (materializationStatus === 'all_in_store') {
+    return {
+      label: '上传前查询状态: InStore',
+      detail: 'QCID 秒传命中，文件内容已在 NDM Store 中，无需再次上传。',
+    }
+  }
+
+  if (materializationStatus === 'on_cache') {
+    return {
+      label: '上传前查询状态: OnCache',
+      detail: '文件已命中本地缓存，但还不在 NDM Store 中，仍需上传。',
+    }
+  }
+
+  return {
+    label: '上传前查询状态: NotInStore',
+    detail: `materializationStatus=${materializationStatus}, uploadStatus=${uploadStatus}`,
+  }
+}
+
 async function handleNdmUpload(btn: HTMLButtonElement) {
   btn.disabled = true
   const resultsContainer = document.getElementById('ndm-results')!
@@ -512,6 +565,7 @@ async function handleNdmUpload(btn: HTMLButtonElement) {
     const sel = snapshot.selection
     ndmState.sessionId = snapshot.sessionId
     ndmState.fileObjId = sel.objectId
+    ndmState.uploadStatus = snapshot.uploadStatus
 
     entries[entries.length - 1] = {
       icon: '✓',
@@ -519,25 +573,9 @@ async function handleNdmUpload(btn: HTMLButtonElement) {
       status: 'ok',
     }
 
-    // Extract FileObject JSON and chunk info
     const ndnFileObject = sel._ndnFileObject
-    const chunkIds: string[] = []
-    if (ndnFileObject) {
-      // For single-chunk files, content is a ChunkId string directly.
-      // For multi-chunk files, content is a ChunkListId (ObjId).
-      // Either way, we can extract chunk IDs from the session status.
-      const status = await ndm.getImportSessionStatus(snapshot.sessionId)
-      if (status.perObjectProgress) {
-        // perObjectProgress only has objectId-level info, but the internal
-        // session tracks individual chunks. We extract them from the
-        // FileObject's content field instead.
-      }
-    }
-
-    // Get chunk IDs from session's internal object state via the status
-    const sessionStatus = await ndm.getImportSessionStatus(snapshot.sessionId)
-    // The FileObject's "content" field holds the chunk reference
     const fileObjContent = ndnFileObject ? (ndnFileObject as any).content as string : undefined
+    let chunkList: string[] | null = null
 
     entries.push({
       icon: '✓',
@@ -545,6 +583,27 @@ async function handleNdmUpload(btn: HTMLButtonElement) {
       status: 'ok',
       detail: `objectId: ${sel.objectId}\ncontent (chunk ref): ${fileObjContent ?? 'N/A'}`,
     })
+
+    const preUploadState = describePreUploadState(
+      snapshot.materializationStatus,
+      snapshot.uploadStatus,
+    )
+    entries.push({
+      icon: snapshot.materializationStatus === 'all_in_store' ? '✓' : '⏳',
+      label: preUploadState.label,
+      status: 'ok',
+      detail: preUploadState.detail,
+    })
+
+    if (sel._file && isChunkListContentId(fileObjContent)) {
+      chunkList = await buildChunkListPayload(sel._file, fileObjContent)
+      entries.push({
+        icon: '✓',
+        label: 'ChunkList 已计算',
+        status: 'ok',
+        detail: `${chunkList.length} chunks`,
+      })
+    }
 
     // Step 1b: Compute QCID for instant-upload optimization
     let qcid: string | null = null
@@ -568,47 +627,58 @@ async function handleNdmUpload(btn: HTMLButtonElement) {
     renderNdmLog(resultsContainer, entries)
 
     // Step 2: Start upload
-    entries.push({ icon: '⏳', label: '开始上传...', status: 'run' })
-    renderNdmLog(resultsContainer, entries)
+    if (snapshot.uploadStatus === 'not_required' || snapshot.materializationStatus === 'all_in_store') {
+      entries.push({
+        icon: '✓',
+        label: '跳过上传',
+        status: 'ok',
+        detail: '上传前查询已命中 InStore，QCID 秒传成功。',
+      })
+      renderNdmLog(resultsContainer, entries)
+    } else {
+      entries.push({ icon: '⏳', label: '开始上传...', status: 'run' })
+      renderNdmLog(resultsContainer, entries)
 
-    await ndm.startUpload(snapshot.sessionId)
-    entries[entries.length - 1] = { icon: '✓', label: '上传已启动', status: 'ok' }
+      await ndm.startUpload(snapshot.sessionId)
+      entries[entries.length - 1] = { icon: '✓', label: '上传已启动', status: 'ok' }
 
-    // Step 3: Poll upload progress
-    await new Promise<void>((resolve, reject) => {
-      ndmState.pollTimer = setInterval(async () => {
-        try {
-          const progress = await ndm.getUploadProgress(snapshot.sessionId)
-          renderProgressBar(resultsContainer, entries, progress)
+      // Step 3: Poll upload progress
+      await new Promise<void>((resolve, reject) => {
+        ndmState.pollTimer = setInterval(async () => {
+          try {
+            const progress = await ndm.getUploadProgress(snapshot.sessionId)
+            ndmState.uploadStatus = progress.uploadStatus
+            renderProgressBar(resultsContainer, entries, progress)
 
-          if (progress.uploadStatus === 'completed') {
-            clearInterval(ndmState.pollTimer!)
-            ndmState.pollTimer = null
-            const idx = entries.findIndex(e => e.label.startsWith('上传进度:'))
-            if (idx >= 0) {
-              entries[idx] = {
-                icon: '✓',
-                label: `上传完成: ${formatBytes(progress.totalBytes)}, ${progress.totalObjects} 个对象`,
-                status: 'ok',
-                extra: progress.elapsedMs != null ? `${(progress.elapsedMs / 1000).toFixed(1)}s` : '',
+            if (progress.uploadStatus === 'completed') {
+              clearInterval(ndmState.pollTimer!)
+              ndmState.pollTimer = null
+              const idx = entries.findIndex(e => e.label.startsWith('上传进度:'))
+              if (idx >= 0) {
+                entries[idx] = {
+                  icon: '✓',
+                  label: `上传完成: ${formatBytes(progress.totalBytes)}, ${progress.totalObjects} 个对象`,
+                  status: 'ok',
+                  extra: progress.elapsedMs != null ? `${(progress.elapsedMs / 1000).toFixed(1)}s` : '',
+                }
               }
+              renderNdmLog(resultsContainer, entries)
+              resolve()
+            } else if (progress.uploadStatus === 'failed') {
+              clearInterval(ndmState.pollTimer!)
+              ndmState.pollTimer = null
+              reject(new Error('上传失败'))
             }
-            renderNdmLog(resultsContainer, entries)
-            resolve()
-          } else if (progress.uploadStatus === 'failed') {
+          } catch (err) {
             clearInterval(ndmState.pollTimer!)
             ndmState.pollTimer = null
-            reject(new Error('上传失败'))
+            reject(err)
           }
-        } catch (err) {
-          clearInterval(ndmState.pollTimer!)
-          ndmState.pollTimer = null
-          reject(err)
-        }
-      }, 500)
-    })
+        }, 500)
+      })
+    }
 
-    // Step 4: Notify backend with FileObjId, FileObject, qcid
+    // Step 4: Notify backend with FileObjId, FileObject, chunkList, qcid
     entries.push({ icon: '⏳', label: '正在通知后端，查询对象和Chunk状态...', status: 'run' })
     renderNdmLog(resultsContainer, entries)
 
@@ -618,7 +688,12 @@ async function handleNdmUpload(btn: HTMLButtonElement) {
       body: JSON.stringify({
         fileObjId: sel.objectId,
         fileObject: ndnFileObject,
+        chunkList,
         qcid,
+        preUploadState: {
+          materializationStatus: snapshot.materializationStatus,
+          uploadStatus: snapshot.uploadStatus,
+        },
       }),
     })
     const queryResult = await queryResp.json()
