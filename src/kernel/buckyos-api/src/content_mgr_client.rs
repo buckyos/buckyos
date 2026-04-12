@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use name_lib::DID;
 use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::net::IpAddr;
 
 pub const CONTENT_MGR_SERVICE_UNIQUE_ID: &str = "publish-content-mgr";

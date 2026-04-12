@@ -8,19 +8,17 @@ pub const SCHEDULER_SERVICE_UNIQUE_ID: &str = "scheduler";
 pub const SCHEDULER_SERVICE_SERVICE_NAME: &str = "scheduler";
 pub const SCHEDULER_SERVICE_SERVICE_PORT: u16 = 3220;
 
-
 //define the resource type
 pub const RESOURCE_TYPE_CPU: &str = "cpu"; //mhz
-pub const RESOURCE_TYPE_MEMORY: &str = "memory";//bytes
-pub const RESOURCE_TYPE_DISK_CACHE: &str = "disk_cache";//bytes
+pub const RESOURCE_TYPE_MEMORY: &str = "memory"; //bytes
+pub const RESOURCE_TYPE_DISK_CACHE: &str = "disk_cache"; //bytes
 pub const RESOURCE_TYPE_UPLOAD: &str = "upload";
 pub const RESOURCE_TYPE_DOWNLOAD: &str = "download";
-pub const RESOURCE_TYPE_GPU_MEMORY: &str = "gpu_memory";//bytes
-pub const RESOURCE_TYPE_GPU: &str = "gpu_tflops";//tflops
+pub const RESOURCE_TYPE_GPU_MEMORY: &str = "gpu_memory"; //bytes
+pub const RESOURCE_TYPE_GPU: &str = "gpu_tflops"; //tflops
 pub const RESOURCE_TYPE_GPU_CORES: &str = "gpu_cores";
 pub const RESOURCE_TYPE_STORAGE: &str = RESOURCE_TYPE_GPU_MEMORY;
 pub const RESOURCE_TYPE_TEMP: &str = RESOURCE_TYPE_GPU_CORES;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerRunThunkRequest {

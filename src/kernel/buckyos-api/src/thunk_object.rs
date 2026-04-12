@@ -7,19 +7,18 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FunctionType {
-    ExecPkg,// executable package
-    Script(String),// script ,language type,content is the script content
-    OPTask(String),// OPScript,language type,content is the OPScript content
+    ExecPkg,        // executable package
+    Script(String), // script ,language type,content is the script content
+    OPTask(String), // OPScript,language type,content is the OPScript content
     Operator,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FunctionParamType {
-    Fixed(String),//参数是传统的类型(和JsonValue Type)，必须保存在ThunkParams中
-    ObjId(String),//参数是ObjId(Obj类型)，在运行前需要先确认该参数在NamedStore中存在
-    CheckByRunner(String),//参数是类型是ObjId,但是由Runner在运行期处理检查
+    Fixed(String),         //参数是传统的类型(和JsonValue Type)，必须保存在ThunkParams中
+    ObjId(String),         //参数是ObjId(Obj类型)，在运行前需要先确认该参数在NamedStore中存在
+    CheckByRunner(String), //参数是类型是ObjId,但是由Runner在运行期处理检查
 }
-
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceRequirements {
@@ -43,11 +42,10 @@ pub enum FunctionResultType {
     Stream(String),
     /// 元素迭代器：结果是一个有限的结构化元素序列
     Iterator {
-        element_schema: String,    // 容器的类型（element的访问前缀）
-        seekable: bool,            // true = 可随机访问任意元素，false = 只能顺序消费
+        element_schema: String, // 容器的类型（element的访问前缀）
+        seekable: bool,         // true = 可随机访问任意元素，false = 只能顺序消费
     },
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AffinityType {
@@ -62,7 +60,7 @@ pub struct FunctionObject {
     pub content: String,
     pub is_pure: bool,
     pub timeout: Option<u64>,
-    
+
     // resource_type => resource_value,0表示只要有就可以，没有最小值要求
     // resourc_type也可以是一个自定义的资源路径，比如 /data/mydata 说明node需要持有这个路径的数据才可以（传统的tag系统），
     //此时resource_value是0
@@ -73,9 +71,8 @@ pub struct FunctionObject {
 
     //param_name => param_type
     //TODO 改成标准的json schema
-    pub params_type: HashMap<String, FunctionParamType>,//参数类型
+    pub params_type: HashMap<String, FunctionParamType>, //参数类型
     pub result_type: FunctionResultType,
-    
 }
 
 impl NamedObject for FunctionObject {
@@ -84,12 +81,11 @@ impl NamedObject for FunctionObject {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThunkObject {
     pub fun_id: ObjId,
     pub params: HashMap<String, Value>,
-    pub metadata: Value,//metadata is a json object
+    pub metadata: Value, //metadata is a json object
 }
 
 impl NamedObject for ThunkObject {
@@ -98,14 +94,13 @@ impl NamedObject for ThunkObject {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ThunkExecutionStatus {
-    Waiting,//waiting for the runner to dispatch
-    Dispatched,//dispatched to the runner id
+    Waiting,    //waiting for the runner to dispatch
+    Dispatched, //dispatched to the runner id
     Success,
-    Failed,//error message
+    Failed, //error message
     Cancelled,
 }
 

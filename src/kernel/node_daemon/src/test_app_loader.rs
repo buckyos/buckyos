@@ -88,17 +88,11 @@ fn build_local_service_doc() -> AppDoc {
 
 fn build_script_service_doc() -> AppDoc {
     let owner = DID::from_str("did:bns:test").unwrap();
-    AppDoc::builder(
-        AppType::Service,
-        "systest",
-        "0.1.0",
-        "did:bns:test",
-        &owner,
-    )
-    .script_pkg(SubPkgDesc::new("systest-script#0.1.0"))
-    .service_port("www", 3000)
-    .build()
-    .unwrap()
+    AppDoc::builder(AppType::Service, "systest", "0.1.0", "did:bns:test", &owner)
+        .script_pkg(SubPkgDesc::new("systest-script#0.1.0"))
+        .service_port("www", 3000)
+        .build()
+        .unwrap()
 }
 
 fn build_service_loader(
@@ -182,9 +176,13 @@ fn helper_functions_keep_expected_normalization() {
 #[test]
 fn docker_missing_text_matches_lowercase_runtime_errors() {
     assert!(docker_missing_text("error: no such object: 732418f568ce"));
-    assert!(docker_missing_text("Error response from daemon: No such container: demo"));
+    assert!(docker_missing_text(
+        "Error response from daemon: No such container: demo"
+    ));
     assert!(docker_missing_text("no such image: repo/demo:latest"));
-    assert!(!docker_missing_text("permission denied while trying to connect to docker daemon"));
+    assert!(!docker_missing_text(
+        "permission denied while trying to connect to docker daemon"
+    ));
 }
 
 #[test]
@@ -223,10 +221,7 @@ fn container_list_contains_name_only_matches_exact_container_name() {
         names,
         "devtest-buckyos_filebrowser"
     ));
-    assert!(!container_list_contains_name(
-        names,
-        "buckyos_filebrowser"
-    ));
+    assert!(!container_list_contains_name(names, "buckyos_filebrowser"));
 }
 
 #[test]
@@ -346,10 +341,17 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert_programs(&start.commands, &["docker", "docker"]);
     assert_eq!(start.commands[0].args, vec!["rm", "-f", "alice-demo"]);
     assert!(start.commands[1].args.contains(&"run".to_string()));
+    assert!(start.commands[1].args.contains(&"--add-host".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"host.docker.internal:host-gateway".to_string()));
     assert!(start.commands[1].args.contains(&"10080:80".to_string()));
     assert!(start.commands[1]
         .args
         .contains(&"demo/service:0.1.0-amd64".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_HOST_GATEWAY=<value>".to_string()));
 
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Docker);
@@ -520,7 +522,13 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     );
     assert_eq!(preview.commands[1].program, "docker");
     assert!(preview.commands[1].args.contains(&"run".to_string()));
-    assert!(preview.commands[1].args.contains(&"alice-desktop-tool".to_string()));
+    assert!(preview.commands[1].args.contains(&"--add-host".to_string()));
+    assert!(preview.commands[1]
+        .args
+        .contains(&"host.docker.internal:host-gateway".to_string()));
+    assert!(preview.commands[1]
+        .args
+        .contains(&"alice-desktop-tool".to_string()));
     assert!(preview.commands[1]
         .args
         .iter()
@@ -589,7 +597,10 @@ fn host_script_aarch64_uses_correct_image_tag() {
         .with_container_support_override(false);
 
     let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
-    assert_eq!(preview.commands[1].args[1], "buckyos/script-service:latest-aarch64");
+    assert_eq!(
+        preview.commands[1].args[1],
+        "buckyos/script-service:latest-aarch64"
+    );
 }
 
 #[test]

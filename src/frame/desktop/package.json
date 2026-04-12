@@ -32,7 +32,7 @@
     "tailwindcss": "^3.4.19",
     "winbox": "^0.2.82",
     "zod": "^4.3.6",
-    "buckyos": "github:buckyos/buckyos-websdk"
+    "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

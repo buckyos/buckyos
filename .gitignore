@@ -69,3 +69,4 @@ src/publish/win_pkg/scripts/seed_defaults.ps1
 src/rootfs/bin/opendan/agent_tool
 src/apps/sys_test/dist/index.d.ts
 src/apps/sys_test/dist/
+old/*

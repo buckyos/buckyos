@@ -7,6 +7,6 @@
     "test": "node --experimental-strip-types aicc_smoke.ts"
   },
   "dependencies": {
-    "buckyos": "github:buckyos/buckyos-websdk"
+    "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
   }
 }

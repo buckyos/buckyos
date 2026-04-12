@@ -690,6 +690,7 @@ impl AppLoader {
             "--name".to_string(),
             container_name.clone(),
         ];
+        append_host_gateway_run_args(&mut args);
 
         for (service_name, instance_port) in self.service_ports_config() {
             let container_port = self
@@ -815,9 +816,8 @@ impl AppLoader {
             "-d".to_string(),
             "--name".to_string(),
             container_name.clone(),
-            "--add-host".to_string(),
-            format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"),
         ];
+        append_host_gateway_run_args(&mut args);
 
         for (service_name, instance_port) in self.service_ports_config() {
             if let Some(container_port) = self
@@ -953,11 +953,12 @@ impl AppLoader {
             self.full_appid(),
             "--entrypoint".to_string(),
             "/bin/bash".to_string(),
-            "--cap-add".to_string(),
-            "SYS_ADMIN".to_string(),
-            "-p".to_string(),
-            format!("{service_port}:{service_port}"),
         ];
+        append_host_gateway_run_args(&mut args);
+        args.push("--cap-add".to_string());
+        args.push("SYS_ADMIN".to_string());
+        args.push("-p".to_string());
+        args.push(format!("{service_port}:{service_port}"));
         self.append_agent_fuse_run_args(&mut args);
 
         for (container_path, host_path, permission) in
@@ -1322,11 +1323,7 @@ impl AppLoader {
         let container_name = self.full_appid();
         let output = run_command(
             "docker",
-            &[
-                "rm".to_string(),
-                "-f".to_string(),
-                container_name.clone(),
-            ],
+            &["rm".to_string(), "-f".to_string(), container_name.clone()],
             None,
             None,
         )
@@ -1697,7 +1694,10 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
         )
         .await?;
         ensure_success("docker container ls -a", &output)?;
-        Ok(container_list_contains_name(output.stdout.as_str(), container_name.as_str()))
+        Ok(container_list_contains_name(
+            output.stdout.as_str(),
+            container_name.as_str(),
+        ))
     }
 
     async fn inspect_current_docker_container(&self) -> Result<Option<DockerContainerRuntime>> {
@@ -1890,6 +1890,7 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
             "--name".to_string(),
             self.full_appid(),
         ];
+        append_host_gateway_run_args(&mut docker_run_args);
 
         let mut service_ports = self.service_ports_config().into_iter().collect::<Vec<_>>();
         service_ports.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
@@ -1962,13 +1963,12 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
             "-d".to_string(),
             "--name".to_string(),
             self.full_appid(),
-            "--add-host".to_string(),
-            format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"),
             "-v".to_string(),
             format!("<app_pkg>:{}:ro", SCRIPT_CONTAINER_PACKAGE_ROOT),
             "-v".to_string(),
             format!("{volume_name}:{}:rw", SCRIPT_CONTAINER_DATA_ROOT),
         ];
+        append_host_gateway_run_args(&mut docker_run_args);
 
         for env_key in self.preview_env_keys(PackageRole::HostApp) {
             docker_run_args.push("-e".to_string());
@@ -2030,21 +2030,23 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
             self.full_appid(),
             "--entrypoint".to_string(),
             "/bin/bash".to_string(),
-            "--add-host".to_string(),
-            format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"),
-            "--cap-add".to_string(),
-            "SYS_ADMIN".to_string(),
-            "-p".to_string(),
-            format!("{service_port}:{service_port}"),
-            "-v".to_string(),
-            format!("<agent_data>:{}:rw", AGENT_CONTAINER_DATA_ROOT),
-            "-v".to_string(),
-            format!("<agent_pkg>:{}:ro", AGENT_CONTAINER_PACKAGE_ROOT),
-            "-v".to_string(),
-            format!("<agent_logs>:{}:rw", AGENT_CONTAINER_LOG_ROOT),
-            "-v".to_string(),
-            format!("<agent_storage>:{}:rw", AGENT_CONTAINER_STORAGE_ROOT),
         ];
+        append_host_gateway_run_args(&mut docker_run_args);
+        docker_run_args.push("--cap-add".to_string());
+        docker_run_args.push("SYS_ADMIN".to_string());
+        docker_run_args.push("-p".to_string());
+        docker_run_args.push(format!("{service_port}:{service_port}"));
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!("<agent_data>:{}:rw", AGENT_CONTAINER_DATA_ROOT));
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!("<agent_pkg>:{}:ro", AGENT_CONTAINER_PACKAGE_ROOT));
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!("<agent_logs>:{}:rw", AGENT_CONTAINER_LOG_ROOT));
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!(
+            "<agent_storage>:{}:rw",
+            AGENT_CONTAINER_STORAGE_ROOT
+        ));
         self.append_agent_fuse_run_args(&mut docker_run_args);
 
         for env_key in self.preview_env_keys(PackageRole::AgentPkg) {
@@ -2382,6 +2384,11 @@ fn split_shell_words(input: &str) -> Result<Vec<String>> {
         )));
     }
     Ok(words)
+}
+
+fn append_host_gateway_run_args(args: &mut Vec<String>) {
+    args.push("--add-host".to_string());
+    args.push(format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"));
 }
 
 struct CommandOutput {

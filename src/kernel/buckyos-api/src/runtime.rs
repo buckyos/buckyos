@@ -16,6 +16,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use tokio::sync::{OnceCell, RwLock};
 
 use name_client::*;
@@ -1876,11 +1877,8 @@ impl BuckyOSRuntime {
     fn resolve_local_service_host(&self) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
-                env::var(BUCKYOS_HOST_GATEWAY_ENV)
-                    .ok()
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or_else(|| DEFAULT_DOCKER_HOST_GATEWAY.to_string())
+                let configured_host = env::var(BUCKYOS_HOST_GATEWAY_ENV).ok();
+                resolve_container_gateway_host(configured_host.as_deref())
             }
             _ => "127.0.0.1".to_string(),
         }
@@ -2254,6 +2252,32 @@ impl BuckyOSRuntime {
     }
 }
 
+fn resolve_container_gateway_host(configured_host: Option<&str>) -> String {
+    let host = configured_host
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_DOCKER_HOST_GATEWAY);
+    resolve_host_to_ipv4_literal(host).unwrap_or_else(|| host.to_string())
+}
+
+fn resolve_host_to_ipv4_literal(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+    if let Ok(ipv4) = host.parse::<Ipv4Addr>() {
+        return Some(ipv4.to_string());
+    }
+
+    (host, 0)
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|addr| match addr.ip() {
+            IpAddr::V4(ipv4) => Some(ipv4.to_string()),
+            IpAddr::V6(_) => None,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2319,5 +2343,17 @@ mod tests {
         assert!(data_dir.is_err());
         assert!(cache_dir.is_err());
         assert!(local_cache_dir.is_err());
+    }
+
+    #[test]
+    fn container_gateway_host_prefers_ipv4_literals() {
+        assert_eq!(
+            resolve_container_gateway_host(Some("127.0.0.1")),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            resolve_container_gateway_host(Some("localhost")),
+            "127.0.0.1"
+        );
     }
 }

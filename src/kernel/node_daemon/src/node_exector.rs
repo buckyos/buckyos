@@ -39,7 +39,10 @@ impl NodeExecutorConfig {
             node_id: node_id.into(),
             poll_interval: Duration::from_secs(2),
             task_type: NODE_EXECUTOR_TASK_TYPE.to_string(),
-            task_manager_url: format!("http://127.0.0.1:{}/kapi/task-manager", TASK_MANAGER_SERVICE_PORT),
+            task_manager_url: format!(
+                "http://127.0.0.1:{}/kapi/task-manager",
+                TASK_MANAGER_SERVICE_PORT
+            ),
             session_token: load_node_daemon_session_token(),
             work_root: get_buckyos_service_data_dir("node_daemon").join("node_executor"),
         }
@@ -172,10 +175,11 @@ impl NodeExecutor {
         thunk_obj_id: &str,
     ) -> Result<RunningThunkExecution> {
         tokio::fs::create_dir_all(&self.config.work_root).await?;
-        let work_dir = self
-            .config
-            .work_root
-            .join(format!("task-{}-{}", task.id, sanitize_component(thunk_obj_id)));
+        let work_dir = self.config.work_root.join(format!(
+            "task-{}-{}",
+            task.id,
+            sanitize_component(thunk_obj_id)
+        ));
         tokio::fs::create_dir_all(&work_dir).await?;
 
         let thunk_json = serde_json::to_string(&payload.thunk)?;
@@ -203,7 +207,10 @@ impl NodeExecutor {
             .env("THIS_THUNK", thunk_json)
             .env("THIS_TASK_ID", task.id.to_string())
             .env("THIS_NODE_ID", &self.config.node_id)
-            .env("EXECUTOR_RESULT_PATH", result_path.to_string_lossy().to_string())
+            .env(
+                "EXECUTOR_RESULT_PATH",
+                result_path.to_string_lossy().to_string(),
+            )
             .stdout(Stdio::from(stdout_file))
             .stderr(Stdio::from(stderr_file));
 
@@ -245,7 +252,9 @@ impl NodeExecutor {
                 }
             }),
         );
-        self.task_manager.update_task_data(task.id, next_data).await?;
+        self.task_manager
+            .update_task_data(task.id, next_data)
+            .await?;
         self.task_manager
             .update_task_status(task.id, TaskStatus::Running)
             .await?;
@@ -322,7 +331,8 @@ impl NodeExecutor {
             None,
             Some("task cancelled".to_string()),
         )?;
-        self.apply_terminal_result(execution.task_id, &result).await?;
+        self.apply_terminal_result(execution.task_id, &result)
+            .await?;
         self.task_manager
             .update_task_status(execution.task_id, TaskStatus::Canceled)
             .await?;
@@ -337,7 +347,8 @@ impl NodeExecutor {
             None,
             Some("executor timeout".to_string()),
         )?;
-        self.apply_terminal_result(execution.task_id, &result).await?;
+        self.apply_terminal_result(execution.task_id, &result)
+            .await?;
         self.task_manager
             .mark_task_as_failed(execution.task_id, "executor timeout")
             .await?;
@@ -356,7 +367,8 @@ impl NodeExecutor {
             exit_success,
         )
         .await?;
-        self.apply_terminal_result(execution.task_id, &result).await?;
+        self.apply_terminal_result(execution.task_id, &result)
+            .await?;
 
         match result.status {
             ThunkExecutionStatus::Success => {
@@ -406,7 +418,9 @@ impl NodeExecutor {
                 "executor_result": result,
             }),
         );
-        self.task_manager.update_task_data(task_id, next_data).await?;
+        self.task_manager
+            .update_task_data(task_id, next_data)
+            .await?;
         Ok(())
     }
 }
@@ -448,8 +462,7 @@ async fn build_execution_plan(
 ) -> Result<ExecutionPlan> {
     match &function_object.func_type {
         FunctionType::ExecPkg => {
-            let tokens = Shlex::new(function_object.content.as_str())
-                .collect::<Vec<_>>();
+            let tokens = Shlex::new(function_object.content.as_str()).collect::<Vec<_>>();
             let Some((program, args)) = tokens.split_first() else {
                 bail!("exec pkg content is empty");
             };
@@ -460,7 +473,8 @@ async fn build_execution_plan(
         }
         FunctionType::Script(language) => {
             let interpreter = script_interpreter(language);
-            let script_path = work_dir.join(format!("runner_script.{}", script_extension(language)));
+            let script_path =
+                work_dir.join(format!("runner_script.{}", script_extension(language)));
             tokio::fs::write(&script_path, function_object.content.as_bytes()).await?;
             Ok(ExecutionPlan {
                 program: interpreter.to_string(),
@@ -469,10 +483,7 @@ async fn build_execution_plan(
         }
         FunctionType::OPTask(language) => {
             let interpreter = script_interpreter(language);
-            let script_path = work_dir.join(format!(
-                "op_task.{}",
-                script_extension(language)
-            ));
+            let script_path = work_dir.join(format!("op_task.{}", script_extension(language)));
             tokio::fs::write(&script_path, function_object.content.as_bytes()).await?;
             Ok(ExecutionPlan {
                 program: interpreter.to_string(),
@@ -716,9 +727,12 @@ mod tests {
         let work_dir = std::env::temp_dir().join(unique);
         tokio::fs::create_dir_all(&work_dir).await.unwrap();
 
-        let mut function_object = sample_function_object(FunctionType::Script("python".to_string()));
+        let mut function_object =
+            sample_function_object(FunctionType::Script("python".to_string()));
         function_object.content = "print('ok')".to_string();
-        let plan = build_execution_plan(&function_object, &work_dir).await.unwrap();
+        let plan = build_execution_plan(&function_object, &work_dir)
+            .await
+            .unwrap();
 
         assert_eq!(plan.program, "python3");
         assert_eq!(plan.args.len(), 1);
