@@ -25,6 +25,7 @@ use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::Frame;
 use log::{info, warn};
 use name_lib::DID;
+use named_store::{NamedStoreMgrZoneGateway, NdmZoneGatewayConfig};
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
 use semver::Version as SemVer;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -374,6 +375,7 @@ struct ControlPanelServer {
     pending_sso_logins: Arc<Mutex<HashMap<u64, sys_auth_backend::PendingSsoLogin>>>,
     file_manager: Arc<file_manager::BuckyFileServer>,
     app_installer: app_installer::AppInstaller,
+    ndm_gateway: Option<Arc<NamedStoreMgrZoneGateway>>,
 }
 
 impl ControlPanelServer {
@@ -401,6 +403,7 @@ impl ControlPanelServer {
             pending_sso_logins: Arc::new(Mutex::new(HashMap::new())),
             file_manager,
             app_installer: app_installer::AppInstaller::new(),
+            ndm_gateway: None,
         }
     }
 
@@ -7415,11 +7418,40 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     set_buckyos_api_runtime(runtime)
         .map_err(|err| anyhow::anyhow!("register control-panel runtime failed: {}", err))?;
 
-    let control_panel_server = ControlPanelServer::new();
+    let mut control_panel_server = ControlPanelServer::new();
     control_panel_server
         .init_file_manager()
         .await
         .map_err(|err| anyhow::anyhow!("init control-panel file manager failed: {}", err))?;
+
+    // 初始化 NDM Zone Gateway（best-effort，named store 不可用时跳过）
+    let runtime = get_buckyos_api_runtime()
+        .map_err(|err| anyhow::anyhow!("get runtime for ndm gateway failed: {}", err))?;
+    match runtime.get_named_store().await {
+        Ok(store_mgr) => {
+            let ndm_cache_dir = runtime
+                .get_cache_folder()
+                .unwrap_or_else(|_| get_buckyos_root_dir().join("cache").join("control-panel"))
+                .join("ndm_upload_cache");
+            let ndm_config = NdmZoneGatewayConfig {
+                cache_dir: ndm_cache_dir,
+                ..Default::default()
+            };
+            let ndm_gw = Arc::new(NamedStoreMgrZoneGateway::new(
+                Arc::new(store_mgr),
+                ndm_config,
+            ));
+            control_panel_server.ndm_gateway = Some(ndm_gw);
+            info!("NDM zone gateway initialized");
+        }
+        Err(e) => {
+            log::warn!(
+                "NDM zone gateway not available (named store not ready: {}), ndm upload disabled",
+                e
+            );
+        }
+    }
+
     let control_panel_server = Arc::new(control_panel_server);
     // Bind to the default control-panel service port.
 
@@ -7443,6 +7475,12 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     );
     // File manager API exposed by control-panel.
     let _ = runner.add_http_server("/api".to_string(), control_panel_server.clone());
+
+    // NDM zone gateway: 注册 /ndm 路径，供系统 App 使用 NDM 上传协议
+    if let Some(ref ndm_gw) = control_panel_server.ndm_gateway {
+        let _ = runner.add_http_server("/ndm".to_string(), ndm_gw.clone());
+        info!("NDM zone gateway registered at /ndm");
+    }
 
     // 添加 web (best-effort, skip if path cannot be resolved)
     let web_dir = std::env::current_exe()

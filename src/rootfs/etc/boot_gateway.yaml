@@ -164,6 +164,9 @@ servers:
               if match $REQ.path "/sso_logout" then
                 sys_service_id="control-panel";
               end
+              if match $REQ.path "/ndm/*" then
+                sys_service_id="control-panel";
+              end
               if !eq $sys_service_id "" then
                 global TARGET_SERVICE_INFO=$SERVICE_INFO[$sys_service_id];
                 global SERVICE_ID=$sys_service_id;

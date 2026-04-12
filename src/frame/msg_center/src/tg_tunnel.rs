@@ -430,7 +430,7 @@ impl TgMessageConverter {
                 anyhow::anyhow!("calculate telegram attachment chunk id failed: {}", error)
             })?;
         named_store
-            .put_chunk(&chunk_id, &attachment.data, true)
+            .put_chunk(&chunk_id, &attachment.data)
             .await
             .map_err(|error| {
                 anyhow::anyhow!(
