@@ -6,7 +6,7 @@
     "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
   },
   "scripts": {
-    "build:web": "pnpm --dir web install --frozen-lockfile && pnpm --dir web run build",
+    "build:web": "pnpm install --frozen-lockfile && pnpm --filter ./web run build",
     "build": "pnpm run build:web && node build.mjs"
   }
 }
