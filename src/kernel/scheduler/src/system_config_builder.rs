@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use buckyos_api::msg_queue::{
     generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
 };
@@ -19,19 +20,25 @@ use buckyos_api::{
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID,
 };
+use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{
-    generate_ed25519_key_pair, AgentDocument, OwnerConfig, VerifyHubInfo, ZoneBootConfig,
-    ZoneConfig, DID,
+    generate_ed25519_key_pair, load_private_key, AgentDocument, OwnerConfig, VerifyHubInfo,
+    ZoneBootConfig, ZoneConfig, DID,
 };
 use package_lib::PackageId;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
 const DEFAULT_OOD_ID: &str = "ood1";
+const DEFAULT_SN_OPENAI_MODELS: &[&str] = &["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"];
+const DEFAULT_SN_OPENAI_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
+const SN_OPENAI_MODELS_API: &str = "https://sn.buckyos.ai/api/v1/ai/models";
+const SN_OPENAI_CHAT_COMPLETIONS_API: &str = "https://sn.buckyos.ai/api/v1/ai/chat/completions";
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AIProviderConfigSummary {
@@ -61,6 +68,8 @@ pub struct StartConfigSummary {
     pub admin_password_hash: String,
     pub public_key: Jwk,
     pub zone_name: String, //zone hostname
+    #[serde(default)]
+    pub sn_active_code: String,
     #[serde(default)]
     pub ood_jwt: Option<String>,
     #[serde(default)]
@@ -312,7 +321,12 @@ impl SystemConfigBuilder {
         )
         .await?;
         self.insert_json("services/aicc/spec", &service_spec)?;
-        let settings = build_aicc_settings(config);
+        let sn_openai_models = if trim_to_option(config.sn_active_code.as_str()).is_some() {
+            fetch_sn_openai_models(config.user_name.as_str()).await
+        } else {
+            None
+        };
+        let settings = build_aicc_settings_with_sn_models(config, sn_openai_models.as_deref());
         self.insert_json_if_absent("services/aicc/settings", &settings)?;
         Ok(self)
     }
@@ -642,31 +656,85 @@ fn build_zone_user_contact_settings(
 }
 
 fn build_aicc_settings(config: &StartConfigSummary) -> Value {
-    let mut settings = serde_json::Map::new();
+    build_aicc_settings_with_sn_models(config, None)
+}
 
-    if let Some(api_token) = trim_to_option(config.ai_provider_config.openai_api_token.as_str()) {
+fn build_aicc_settings_with_sn_models(
+    config: &StartConfigSummary,
+    sn_openai_models: Option<&[String]>,
+) -> Value {
+    const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
+    let mut settings = serde_json::Map::new();
+    let mut openai_alias_map = serde_json::Map::new();
+    let mut openai_instances = Vec::<Value>::new();
+    let openai_api_token =
+        trim_to_option(config.ai_provider_config.openai_api_token.as_str()).unwrap_or_default();
+
+    if !openai_api_token.is_empty() {
+        openai_alias_map.insert("gpt-fast".to_string(), json!("gpt-5-mini"));
+        openai_alias_map.insert("gpt-plan".to_string(), json!("gpt-5"));
+        openai_instances.push(json!({
+            "instance_id": "openai-default",
+            "provider_type": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
+            "models": ["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"],
+            "default_model": "gpt-5-mini",
+            "image_models": ["dall-e-3", "dall-e-2"],
+            "default_image_model": "dall-e-3",
+            "features": ["plan", "json_output", "tool_calling", "web_search"]
+        }));
+    }
+
+    if trim_to_option(config.sn_active_code.as_str()).is_some() {
+        let sn_model_settings = build_sn_openai_model_settings(sn_openai_models);
+        if !openai_alias_map.contains_key("llm.default") {
+            openai_alias_map.insert(
+                "llm.default".to_string(),
+                json!(sn_model_settings.default_model.as_str()),
+            );
+        }
+        if !openai_alias_map.contains_key("llm.chat.default") {
+            openai_alias_map.insert(
+                "llm.chat.default".to_string(),
+                json!(sn_model_settings.default_model.as_str()),
+            );
+        }
+        if !openai_alias_map.contains_key("llm.plan.default") {
+            openai_alias_map.insert(
+                "llm.plan.default".to_string(),
+                json!(sn_model_settings.plan_default_model.as_str()),
+            );
+        }
+        if !openai_alias_map.contains_key("llm.code.default") {
+            openai_alias_map.insert(
+                "llm.code.default".to_string(),
+                json!(sn_model_settings.default_model.as_str()),
+            );
+        }
+
+        openai_instances.push(json!({
+            "instance_id": "sn-openai-default",
+            "provider_type": "sn-openai",
+            "base_url": SN_OPENAI_CHAT_COMPLETIONS_API,
+            "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
+            "models": sn_model_settings.models,
+            "default_model": sn_model_settings.default_model,
+            "image_models": sn_model_settings.image_models,
+            "default_image_model": sn_model_settings.default_image_model,
+            "features": ["plan", "json_output", "tool_calling", "web_search"],
+            "auth_mode": "device_jwt"
+        }));
+    }
+
+    if !openai_instances.is_empty() {
         settings.insert(
             "openai".to_string(),
             json!({
                 "enabled": true,
-                "api_token": api_token,
-                "alias_map": {
-                    "gpt-fast": "gpt-5-mini",
-                    "gpt-plan": "gpt-5"
-                },
-                "instances": [
-                    {
-                        "instance_id": "openai-default",
-                        "provider_type": "openai",
-                        "base_url": "https://api.openai.com/v1",
-                        "timeout_ms": 300000,
-                        "models": ["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"],
-                        "default_model": "gpt-5-mini",
-                        "image_models": ["dall-e-3", "dall-e-2"],
-                        "default_image_model": "dall-e-3",
-                        "features": ["plan", "json_output", "tool_calling", "web_search"]
-                    }
-                ]
+                "api_token": openai_api_token,
+                "alias_map": Value::Object(openai_alias_map),
+                "instances": openai_instances
             }),
         );
     }
@@ -685,7 +753,7 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
                         "instance_id": "google-gimini-default",
                         "provider_type": "google-gimini",
                         "base_url": "https://generativelanguage.googleapis.com/v1beta",
-                        "timeout_ms": 60000,
+                        "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
                         "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
                         "default_model": "gemini-2.5-flash",
                         "image_models": [
@@ -714,7 +782,7 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
                         "instance_id": "claude-default",
                         "provider_type": "claude",
                         "base_url": "https://api.anthropic.com/v1",
-                        "timeout_ms": 60000,
+                        "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
                         "models": ["claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022"],
                         "default_model": "claude-3-7-sonnet-20250219",
                         "features": ["plan", "json_output", "tool_calling"]
@@ -736,6 +804,203 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
     } else {
         Value::Object(settings)
     }
+}
+
+#[derive(Debug)]
+struct SnOpenAIModelSettings {
+    models: Vec<String>,
+    default_model: String,
+    plan_default_model: String,
+    image_models: Vec<String>,
+    default_image_model: String,
+}
+
+fn build_sn_openai_model_settings(sn_openai_models: Option<&[String]>) -> SnOpenAIModelSettings {
+    let mut models = sn_openai_models
+        .unwrap_or(&[])
+        .iter()
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(|item| item.to_string())
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        models = DEFAULT_SN_OPENAI_MODELS
+            .iter()
+            .map(|item| item.to_string())
+            .collect::<Vec<_>>();
+    }
+
+    let default_model =
+        pick_preferred_model(models.as_slice(), &["gpt-5-mini", "gpt-5", "gpt-4.1-mini"])
+            .unwrap_or_else(|| models[0].clone());
+    let plan_default_model =
+        pick_preferred_model(models.as_slice(), &["gpt-5", "gpt-5-mini", "gpt-4.1"])
+            .unwrap_or_else(|| default_model.clone());
+
+    let mut image_models = models
+        .iter()
+        .filter(|item| is_image_model(item.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if image_models.is_empty() {
+        image_models = DEFAULT_SN_OPENAI_IMAGE_MODELS
+            .iter()
+            .map(|item| item.to_string())
+            .collect::<Vec<_>>();
+    }
+    let default_image_model =
+        pick_preferred_model(image_models.as_slice(), &["dall-e-3", "gpt-image-1"])
+            .unwrap_or_else(|| image_models[0].clone());
+
+    SnOpenAIModelSettings {
+        models,
+        default_model,
+        plan_default_model,
+        image_models,
+        default_image_model,
+    }
+}
+
+fn pick_preferred_model(models: &[String], preferred: &[&str]) -> Option<String> {
+    for target in preferred.iter() {
+        if let Some(matched) = models.iter().find(|item| item == target) {
+            return Some(matched.clone());
+        }
+    }
+    None
+}
+
+fn is_image_model(model_id: &str) -> bool {
+    let value = model_id.to_ascii_lowercase();
+    value.contains("dall-e")
+        || value.contains("gpt-image")
+        || value.contains("image")
+        || value.contains("vision")
+}
+
+async fn fetch_sn_openai_models(user_name: &str) -> Option<Vec<String>> {
+    match fetch_sn_openai_models_impl(user_name).await {
+        Ok(models) => Some(models),
+        Err(err) => {
+            warn!(
+                "fetch sn-openai models from {} failed: {}",
+                SN_OPENAI_MODELS_API, err
+            );
+            None
+        }
+    }
+}
+
+async fn fetch_sn_openai_models_impl(user_name: &str) -> Result<Vec<String>> {
+    let token = build_device_jwt_token_for_sn(user_name)?;
+    let client = Client::new();
+    let response = client
+        .get(SN_OPENAI_MODELS_API)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|err| anyhow!("request failed: {}", err))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(anyhow!("request failed with status {}", status));
+    }
+    let response_text = response
+        .text()
+        .await
+        .map_err(|err| anyhow!("failed to read models response body: {}", err))?;
+    info!(
+        "sn-openai models endpoint raw response: {}",
+        response_text
+    );
+    let body: Value = serde_json::from_str(response_text.as_str())
+        .map_err(|err| anyhow!("invalid models response json: {}", err))?;
+    let models = extract_model_ids_from_response(&body);
+    if models.is_empty() {
+        return Err(anyhow!("models response does not contain model ids"));
+    }
+
+    info!(
+        "fetched {} sn-openai models: {:?}",
+        models.len(),
+        models
+    );
+    Ok(models)
+}
+
+fn build_device_jwt_token_for_sn(user_name: &str) -> Result<String> {
+    let device_name = read_default_device_subject();
+    let private_key_path = get_buckyos_system_etc_dir().join("node_private_key.pem");
+    let private_key = load_private_key(private_key_path.as_path()).map_err(|err| {
+        anyhow!(
+            "failed to load device private key '{}': {}",
+            private_key_path.display(),
+            err
+        )
+    })?;
+    let now = buckyos_get_unix_timestamp();
+    let claims = RPCSessionToken {
+        token_type: RPCSessionTokenType::JWT,
+        token: None,
+        aud: None,
+        exp: Some(now + 60 * 15),
+        iss: Some(device_name),
+        jti: None,
+        session: None,
+        sub: Some(user_name.to_string()),
+        appid: Some("aicc".to_string()),
+        extra: HashMap::new(),
+    };
+    claims
+        .generate_jwt(None, &private_key)
+        .map_err(|err| anyhow!("generate sn models jwt failed: {}", err))
+}
+
+fn read_default_device_subject() -> String {
+    let device_cfg_path = get_buckyos_system_etc_dir().join("node_device_config.json");
+    let content = std::fs::read_to_string(device_cfg_path.as_path());
+    if let Ok(content) = content {
+        if let Ok(json_value) = serde_json::from_str::<Value>(content.as_str()) {
+            if let Some(name) = json_value
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return name.to_string();
+            }
+        }
+    }
+    DEFAULT_OOD_ID.to_string()
+}
+
+fn extract_model_ids_from_response(payload: &Value) -> Vec<String> {
+    let mut result = Vec::<String>::new();
+
+    if let Some(items) = payload.get("items").and_then(|value| value.as_array()) {
+        for item in items {
+            if let Some(model_id) = item
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                result.push(model_id.to_string());
+            }
+        }
+    }
+
+    if let Some(default_model) = payload
+        .get("default_model")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        result.push(default_model.to_string());
+    }
+
+    result.sort_unstable();
+    result.dedup();
+    result
 }
 
 fn build_msg_center_settings(config: &StartConfigSummary) -> Result<Value> {
@@ -888,6 +1153,11 @@ impl TryFrom<&Value> for StartConfigSummary {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("start_config.json missing zone_name"))?
                 .to_string(),
+            sn_active_code: value
+                .get("sn_active_code")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
 
             ood_jwt: value
                 .get("ood_jwt")
@@ -920,7 +1190,8 @@ impl StartConfigSummary {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_aicc_settings, build_default_jarvis_agent_spec, build_kernel_service_spec,
+        build_aicc_settings, build_aicc_settings_with_sn_models, build_default_jarvis_agent_spec,
+        build_kernel_service_spec, extract_model_ids_from_response,
         build_msg_center_settings, build_zone_user_contact_settings, StartConfigSummary,
         SystemConfigBuilder,
     };
@@ -1007,6 +1278,7 @@ mod tests {
             settings["openai"]["instances"][0]["default_model"],
             "gpt-5-mini"
         );
+        assert_eq!(settings["openai"]["instances"][0]["timeout_ms"], 600000);
         assert_eq!(settings["google"]["api_token"], "google-token");
         assert_eq!(
             settings["google"]["alias_map"]["gemini-ops"],
@@ -1016,6 +1288,7 @@ mod tests {
             settings["google"]["instances"][0]["provider_type"],
             "google-gimini"
         );
+        assert_eq!(settings["google"]["instances"][0]["timeout_ms"], 600000);
         assert_eq!(settings["claude"]["api_token"], "claude-token");
         assert_eq!(
             settings["claude"]["alias_map"]["claude-reasoning"],
@@ -1024,6 +1297,92 @@ mod tests {
         assert_eq!(
             settings["claude"]["instances"][0]["default_model"],
             "claude-3-7-sonnet-20250219"
+        );
+    }
+
+    #[test]
+    fn build_aicc_settings_adds_sn_provider_when_active_code_present() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com",
+            "sn_active_code": "invite-code-001"
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let settings = build_aicc_settings(&summary);
+
+        assert_eq!(settings["openai"]["enabled"], true);
+        assert_eq!(
+            settings["openai"]["instances"][0]["instance_id"],
+            "sn-openai-default"
+        );
+        assert_eq!(
+            settings["openai"]["instances"][0]["provider_type"],
+            "sn-openai"
+        );
+        assert_eq!(
+            settings["openai"]["instances"][0]["base_url"],
+            "https://sn.buckyos.ai/api/v1/ai/chat/completions"
+        );
+        assert_eq!(
+            settings["openai"]["instances"][0]["auth_mode"],
+            "device_jwt"
+        );
+        assert_eq!(settings["openai"]["alias_map"]["llm.plan.default"], "gpt-5");
+    }
+
+    #[test]
+    fn extract_model_ids_from_response_supports_items_models_and_data_shapes() {
+        let payload = json!({
+            "items": [
+                { "provider": "openai", "model": "gpt-5.4" },
+                { "provider": "openai", "model": "gpt-5.4-mini" }
+            ],
+            "default_model": "gpt-5.4-mini",
+            "models": ["legacy-ignored"],
+            "data": [{ "model_id": "legacy-ignored" }]
+        });
+        let models = extract_model_ids_from_response(&payload);
+        assert!(models.iter().any(|m| m == "gpt-5.4"));
+        assert!(models.iter().any(|m| m == "gpt-5.4-mini"));
+        assert!(!models.iter().any(|m| m == "legacy-ignored"));
+    }
+
+    #[test]
+    fn build_aicc_settings_uses_fetched_sn_model_list() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com",
+            "sn_active_code": "invite-code-001"
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+        let sn_models = vec![
+            "gpt-5".to_string(),
+            "gpt-5-mini".to_string(),
+            "gpt-image-1".to_string(),
+        ];
+
+        let settings = build_aicc_settings_with_sn_models(&summary, Some(sn_models.as_slice()));
+
+        assert_eq!(
+            settings["openai"]["instances"][0]["models"],
+            json!(["gpt-5", "gpt-5-mini", "gpt-image-1"])
+        );
+        assert_eq!(
+            settings["openai"]["instances"][0]["default_image_model"],
+            "gpt-image-1"
         );
     }
 

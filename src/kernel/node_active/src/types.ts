@@ -67,7 +67,8 @@ export type ActiveWizzardData = {
 
   owner_public_key: JsonValue;
   owner_private_key: string | null;//钱包模式为null
-
+  owner_access_token: string | null;//钱包模式为null
+  
   device_public_key: JsonValue;
   device_private_key: string;
 

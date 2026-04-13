@@ -77,6 +77,7 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         enable_guest_access: false,
         owner_private_key: owner_private_key,
         owner_public_key: owner_public_key,
+        owner_access_token: null,
         port_mapping_mode: "full",
         rtcp_port: 2980,
         is_wallet_runtime: false,
@@ -180,21 +181,14 @@ export type SnBindZoneConfigResult = JsonValue & {
     code: number;
 };
 
-export async function register_sn_user(user_name:string,active_code:string,public_key:string,zone_config_jwt:string,user_domain:string|null) : Promise<boolean> {
-    let rpc_client = create_sn_rpc_client(SN_BNS_API_URL);
-    let params:JsonValue = {
-        user_name:user_name,
-        active_code:active_code,
-        public_key:public_key,
-        zone_config:zone_config_jwt
-    };
-    if (user_domain != null) {
-        params["user_domain"] = user_domain;
-    }
-    console.log("register_sn_user params",params);
-    let result: JsonValue = await rpc_client.call("user.register_by_public_key",params);
-    let code = result["code"];
-    return code == 0;
+export async function register_sn_user(user_name:string,pwd_hash:string,active_code:string): Promise<SnLoginResult> {
+    let rpc_client = create_sn_rpc_client(SN_AUTH_API_URL);
+    let result: JsonValue = await rpc_client.call("auth.register",{
+        name:user_name,
+        pwd_hash:pwd_hash,
+        active_code:active_code
+    });
+    return result as SnLoginResult;
 }
 
 export async function login(user_name:string,pwd_hash:string,active_code:string):Promise<SnLoginResult> {
@@ -206,6 +200,10 @@ export async function login(user_name:string,pwd_hash:string,active_code:string)
     });
     return result as SnLoginResult;
 }
+
+// export function hash_sn_password(pwd:string):string {
+//     //todo:
+// }
 
 export async function login_by_password_and_activecode(user_name:string,pwd_hash:string,active_code:string):Promise<SnLoginResult> {
     return login(user_name, pwd_hash, active_code);
@@ -219,10 +217,9 @@ export async function bind_owner_key(access_token:string, public_key:JsonValue|s
     return result as SnBindOwnerKeyResult;
 }
 
-export async function bind_sn_zone_config(user_name:string, zone_config_jwt:string, user_domain:string|null):Promise<SnBindZoneConfigResult> {
-    let rpc_client = create_sn_rpc_client(SN_BNS_API_URL);
+export async function bind_sn_zone_config(zone_config_jwt:string, access_token:string, user_domain:string|null):Promise<SnBindZoneConfigResult> {
+    let rpc_client = create_sn_rpc_client(SN_BNS_API_URL, access_token);
     let params:JsonValue = {
-        user_name:user_name,
         zone_config:zone_config_jwt,
     };
     if (user_domain != null) {
@@ -283,12 +280,40 @@ export function validate_bucky_username(username:string):{valid:boolean; reason?
     return {valid:true};
 }
 
-export async function generate_key_pair():Promise<[JsonValue,string]> {
+export async function generate_key_pair():Promise<[JsonValue,string,string]> {
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     let result: JsonValue = await rpc_client.call("generate_key_pair",{});
     let public_key = result["public_key"]
     let private_key = result["private_key"]
-    return [public_key,private_key];
+    let access_token = result["access_token"]
+    return [public_key,private_key,access_token];
+}
+
+function normalizeWalletSignResult(
+    result: unknown
+): { signatures: (string | null)[]; pwd_hash: string | null } | null {
+    if (result == null) {
+        return null;
+    }
+
+    if (Array.isArray(result)) {
+        return {
+            signatures: result as (string | null)[],
+            pwd_hash: null,
+        };
+    }
+
+    if (typeof result === "object") {
+        const typed = result as { signatures?: unknown; pwd_hash?: unknown };
+        return {
+            signatures: Array.isArray(typed.signatures) ? (typed.signatures as (string | null)[]) : [],
+            pwd_hash: typeof typed.pwd_hash === "string" && typed.pwd_hash.trim().length > 0
+                ? typed.pwd_hash.trim()
+                : null,
+        };
+    }
+
+    return null;
 }
 
 //这个函数在调用的时候，其实在执行激活操作了，用户只有在不使用SN的情况下，才需要调用该函数
@@ -310,14 +335,16 @@ export async function generate_zone_txt_records(sn:string,
             zone_boot_config,
             device_mini_config
         ]
-        let signed_results:string[]|null = await buckyos.walletSignWithActiveDid(will_sign_objects);
-        if (signed_results == null) {
+        const signResult = normalizeWalletSignResult(
+            await buckyos.walletSignWithActiveDid(will_sign_objects)
+        );
+        if (signResult == null || signResult.signatures.length < 2) {
             console.error("Failed to sign zone txt records");
             return null;
         }
         return {
-            "BOOT": signed_results[0],
-            "DEV": signed_results[1],
+            "BOOT": signResult.signatures[0],
+            "DEV": signResult.signatures[1],
             "PKX": owner_public_key["x"],
         }
     } else {
@@ -395,7 +422,8 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
     let device_info_json = prepare_result["device_info"]; 
 
     // Step 2: Sign the data using wallet's signWithActiveDid
-    let signed_results:string[]|null = null;
+    let signed_results:(string | null)[]|null = null;
+    let wallet_pwd_hash:string|null = null;
     try {
         let will_sign_payloads:Record<string,unknown>[] = [
             boot_config_json,
@@ -403,13 +431,24 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
             device_config_json,
             rpc_token_json,
         ]
-        signed_results = await buckyos.walletSignWithActiveDid(will_sign_payloads);
-        if (signed_results == null) {
+        const signResult = normalizeWalletSignResult(
+            await buckyos.walletSignWithActiveDid(will_sign_payloads)
+        );
+        if (signResult == null || signResult.signatures.length < 4) {
             console.error("Failed to sign zone txt records");
             return false;
         }
+        signed_results = signResult.signatures;
+        wallet_pwd_hash = signResult.pwd_hash;
+        console.log("wallet activation pwd_hash", wallet_pwd_hash);
+        if (!wallet_pwd_hash) {
+            throw new Error("missing password hash");
+        }
     } catch (error) {
         console.error("Failed to sign data with wallet:", error);
+        if (error instanceof Error && error.message === "missing password hash") {
+            throw error;
+        }
         return false;
     }
     //console.log("signed_results",signed_results);
@@ -435,11 +474,12 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         zone_name: zone_name,
         is_self_domain: data.use_self_domain,
         public_key: data.owner_public_key, // Still needed for JWT verification
-        admin_password_hash: data.admin_password_hash,
+        admin_password_hash: wallet_pwd_hash,
         guest_access: data.enable_guest_access,
         friend_passcode: data.friend_passcode,
         ai_provider_config: data.ai_provider_config,
         jarvis_msg_tunnel_config: data.jarvis_msg_tunnel_config,
+        sn_active_code: data.sn_active_code,
 
         sn_url: SN_API_URL,
         sn_username: data.sn_user_name,
@@ -486,11 +526,12 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
             return false;
         }
         let zone_config_jwt = records_result["BOOT"];
-
+        console.log("zone_config_jwt",zone_config_jwt);
         let bind_zone_result = await bind_sn_zone_config(
-            data.sn_user_name,
             zone_config_jwt,
+            data.owner_access_token as string,
             user_domain);
+        console.log("bind_zone_result",bind_zone_result);
 
         if (bind_zone_result["code"] != 0) {
             return false;
@@ -526,6 +567,7 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
         device_rtcp_port:data.rtcp_port,
         ai_provider_config:data.ai_provider_config,
         jarvis_msg_tunnel_config:data.jarvis_msg_tunnel_config,
+        sn_active_code:data.sn_active_code,
         sn_username:data.sn_user_name,
         sn_url:sn_url
     });

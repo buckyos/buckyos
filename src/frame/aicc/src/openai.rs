@@ -6,6 +6,7 @@ use crate::openai_protocol::{
     merge_options, merge_requirements_response_format, merge_tool_calls,
     strip_incompatible_sampling_options,
 };
+use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use base64::engine::general_purpose;
@@ -14,11 +15,16 @@ use buckyos_api::{
     features, value_to_object_map, AiArtifact, AiCost, AiResponseSummary, AiToolCall, AiUsage,
     Capability, CompleteRequest, Feature, ResourceRef,
 };
-use log::{info, warn};
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
+use log::{error, info, warn};
+use name_lib::load_private_key;
+use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::error::Error as _;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +32,9 @@ const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nono,gpt-5-pro";
 const DEFAULT_OPENAI_IMAGE_MODELS: &str = "dall-e-3,dall-e-2";
+const DEFAULT_AUTH_MODE: &str = "bearer";
+const DEVICE_JWT_AUTH_MODE: &str = "device_jwt";
+const DEFAULT_DEVICE_AUTH_APP_ID: &str = "aicc";
 const OPENAI_TOOL_TYPE_WEB_SEARCH: &str = "web_search_preview";
 const OPENAI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
     "background",
@@ -56,6 +65,7 @@ pub struct OpenAIInstanceConfig {
     pub instance_id: String,
     pub provider_type: String,
     pub base_url: String,
+    pub auth_mode: String,
     pub timeout_ms: u64,
     pub models: Vec<String>,
     pub default_model: Option<String>,
@@ -69,12 +79,28 @@ pub struct OpenAIInstanceConfig {
 pub struct OpenAIProvider {
     instance: ProviderInstance,
     client: Client,
-    api_token: String,
+    auth_mode: OpenAIAuthMode,
     base_url: String,
 }
 
+#[derive(Debug, Clone)]
+enum OpenAIAuthMode {
+    Bearer(String),
+    DeviceJwt,
+}
+
 impl OpenAIProvider {
-    pub fn new(cfg: OpenAIInstanceConfig, api_token: String) -> Result<Self> {
+    fn format_error_chain(err: &reqwest::Error) -> String {
+        let mut segments = vec![err.to_string()];
+        let mut source = err.source();
+        while let Some(cause) = source {
+            segments.push(cause.to_string());
+            source = cause.source();
+        }
+        segments.join(" | caused_by: ")
+    }
+
+    pub fn new(cfg: OpenAIInstanceConfig, openai_api_token: &str) -> Result<Self> {
         let timeout_ms = if cfg.timeout_ms == 0 {
             DEFAULT_OPENAI_TIMEOUT_MS
         } else {
@@ -95,12 +121,108 @@ impl OpenAIProvider {
             plugin_key: None,
         };
 
+        let auth_mode = Self::parse_auth_mode(cfg.auth_mode.as_str(), openai_api_token)?;
+
         Ok(Self {
             instance,
             client,
-            api_token,
+            auth_mode,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
         })
+    }
+
+    fn parse_auth_mode(auth_mode: &str, openai_api_token: &str) -> Result<OpenAIAuthMode> {
+        let mode = auth_mode.trim().to_ascii_lowercase();
+        if mode.is_empty() || mode == DEFAULT_AUTH_MODE {
+            let token = Some(openai_api_token)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("openai bearer auth requires non-empty api_token"))?;
+            return Ok(OpenAIAuthMode::Bearer(token));
+        }
+
+        if mode == DEVICE_JWT_AUTH_MODE {
+            return Ok(OpenAIAuthMode::DeviceJwt);
+        }
+
+        Err(anyhow!(
+            "unsupported openai auth_mode '{}', expected '{}' or '{}'",
+            auth_mode,
+            DEFAULT_AUTH_MODE,
+            DEVICE_JWT_AUTH_MODE
+        ))
+    }
+
+    fn read_default_device_subject() -> String {
+        let device_cfg_path = get_buckyos_system_etc_dir().join("node_device_config.json");
+        let content = std::fs::read_to_string(device_cfg_path.as_path());
+        if let Ok(content) = content {
+            if let Ok(json_value) = serde_json::from_str::<Value>(content.as_str()) {
+                if let Some(name) = json_value
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    return name.to_string();
+                }
+            }
+        }
+        "ood1".to_string()
+    }
+
+    fn resolve_device_subject(ctx: &crate::aicc::InvokeCtx) -> String {
+        let subject = ctx.tenant_id.trim();
+        if !subject.is_empty() && subject != "anonymous" {
+            return subject.to_string();
+        }
+        Self::read_default_device_subject()
+    }
+
+    fn resolve_device_appid(ctx: &crate::aicc::InvokeCtx) -> String {
+        ctx.caller_app_id
+            .as_ref()
+            .map(|appid| appid.trim().to_string())
+            .filter(|appid| !appid.is_empty())
+            .unwrap_or_else(|| DEFAULT_DEVICE_AUTH_APP_ID.to_string())
+    }
+
+    fn resolve_private_key_path() -> PathBuf {
+        get_buckyos_system_etc_dir().join("node_private_key.pem")
+    }
+
+    fn build_auth_token(&self, ctx: &crate::aicc::InvokeCtx) -> Result<String, ProviderError> {
+        match &self.auth_mode {
+            OpenAIAuthMode::Bearer(token) => Ok(token.clone()),
+            OpenAIAuthMode::DeviceJwt => {
+                let private_key_path = Self::resolve_private_key_path();
+                let private_key = load_private_key(private_key_path.as_path()).map_err(|err| {
+                    ProviderError::fatal(format!(
+                        "openai device_jwt auth failed to load private key '{}': {}",
+                        private_key_path.display(),
+                        err
+                    ))
+                })?;
+                let now = buckyos_get_unix_timestamp();
+                let claims = RPCSessionToken {
+                    token_type: RPCSessionTokenType::JWT,
+                    token: None,
+                    aud: None,
+                    exp: Some(now + 60 * 15),
+                    // SN expects issuer to be device name, while subject/appid are caller identity.
+                    iss: Some(Self::read_default_device_subject()),
+                    jti: None,
+                    session: None,
+                    sub: Some(Self::resolve_device_subject(ctx)),
+                    appid: Some(Self::resolve_device_appid(ctx)),
+                    extra: HashMap::new(),
+                };
+                let jwt = claims.generate_jwt(None, &private_key).map_err(|err| {
+                    ProviderError::fatal(format!("openai device_jwt auth failed: {}", err))
+                })?;
+                Ok(jwt)
+            }
+        }
     }
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
@@ -295,6 +417,135 @@ impl OpenAIProvider {
         }
 
         Ok(messages)
+    }
+
+    fn build_chat_messages(req: &CompleteRequest) -> Result<Vec<Value>, ProviderError> {
+        let mut messages = vec![];
+
+        for msg in req.payload.messages.iter() {
+            if msg.role.trim().is_empty() || msg.content.trim().is_empty() {
+                continue;
+            }
+            messages.push(json!({
+                "role": msg.role,
+                "content": msg.content,
+            }));
+        }
+
+        if messages.is_empty() {
+            let mut content = String::new();
+            if let Some(text) = req.payload.text.as_ref() {
+                content.push_str(text);
+            }
+
+            let mut resource_lines = vec![];
+            for resource in req.payload.resources.iter() {
+                match resource {
+                    ResourceRef::Url { url, .. } => {
+                        resource_lines.push(format!("resource_url: {}", url));
+                    }
+                    ResourceRef::NamedObject { obj_id } => {
+                        resource_lines.push(format!("named_object: {}", obj_id));
+                    }
+                    ResourceRef::Base64 { .. } => {
+                        return Err(ProviderError::fatal(
+                            "openai provider does not support base64 resources in this version",
+                        ));
+                    }
+                }
+            }
+
+            if !resource_lines.is_empty() {
+                if !content.is_empty() {
+                    content.push('\n');
+                    content.push('\n');
+                }
+                content.push_str(resource_lines.join("\n").as_str());
+            }
+
+            if !content.trim().is_empty() {
+                messages.push(json!({
+                    "role": "user",
+                    "content": content
+                }));
+            }
+        }
+
+        if messages.is_empty() {
+            return Err(ProviderError::fatal(
+                "request payload has no usable text/messages for llm",
+            ));
+        }
+
+        Ok(messages)
+    }
+
+    fn use_chat_completions_endpoint(&self) -> bool {
+        self.base_url
+            .to_ascii_lowercase()
+            .contains("/chat/completions")
+    }
+
+    fn convert_text_format_to_chat_response_format(format: Value) -> Value {
+        let Some(format_obj) = format.as_object() else {
+            return format;
+        };
+        let Some(format_type) = format_obj.get("type").and_then(|value| value.as_str()) else {
+            return Value::Object(format_obj.clone());
+        };
+
+        if format_type != "json_schema" {
+            return Value::Object(format_obj.clone());
+        }
+
+        let schema = format_obj
+            .get("schema")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        let name = format_obj
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("aicc_response");
+        let strict = format_obj
+            .get("strict")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+
+        json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": name,
+                "schema": schema,
+                "strict": strict
+            }
+        })
+    }
+
+    fn normalize_chat_completions_request(request_obj: &mut Map<String, Value>) {
+        if let Some(text_format) = request_obj
+            .get("text")
+            .and_then(|value| value.as_object())
+            .and_then(|text_obj| text_obj.get("format"))
+            .cloned()
+        {
+            if !request_obj.contains_key("response_format") {
+                request_obj.insert(
+                    "response_format".to_string(),
+                    Self::convert_text_format_to_chat_response_format(text_format),
+                );
+            }
+            request_obj.remove("text");
+        }
+
+        if let Some(max_output_tokens) = request_obj.remove("max_output_tokens") {
+            if !request_obj.contains_key("max_tokens")
+                && !request_obj.contains_key("max_completion_tokens")
+            {
+                request_obj.insert("max_tokens".to_string(), max_output_tokens);
+            }
+        }
     }
 
     fn extract_legacy_message_text(choice_message: &Value) -> Option<String> {
@@ -684,6 +935,117 @@ impl OpenAIProvider {
         request_obj.remove(param).is_some()
     }
 
+    fn process_sse_event_payload(
+        payload: &str,
+        final_response: &mut Option<Value>,
+        accumulated_text: &mut String,
+    ) -> Result<(), String> {
+        let trimmed = payload.trim();
+        if trimmed.is_empty() || trimmed == "[DONE]" {
+            return Ok(());
+        }
+
+        let event: Value = serde_json::from_str(trimmed)
+            .map_err(|err| format!("invalid sse event json: {}; payload={}", err, trimmed))?;
+
+        if let Some(response) = event.get("response") {
+            if response.is_object() {
+                *final_response = Some(response.clone());
+            }
+        }
+
+        let event_type = event
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if (event_type == "response.output_text.delta" || event_type.ends_with("output_text.delta"))
+            && event
+                .get("delta")
+                .and_then(|value| value.as_str())
+                .is_some()
+        {
+            accumulated_text.push_str(
+                event
+                    .get("delta")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default(),
+            );
+        }
+
+        if let Some(choices) = event.get("choices").and_then(|value| value.as_array()) {
+            for choice in choices {
+                if let Some(text) = choice
+                    .get("delta")
+                    .and_then(|value| value.get("content"))
+                    .and_then(|value| value.as_str())
+                {
+                    accumulated_text.push_str(text);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_sse_response_body(raw: &str) -> Result<Value, String> {
+        let mut final_response: Option<Value> = None;
+        let mut accumulated_text = String::new();
+        let mut pending_data_lines: Vec<String> = vec![];
+
+        for line in raw.lines() {
+            let normalized = line.trim_end_matches('\r');
+            if normalized.is_empty() {
+                if !pending_data_lines.is_empty() {
+                    let payload = pending_data_lines.join("\n");
+                    Self::process_sse_event_payload(
+                        payload.as_str(),
+                        &mut final_response,
+                        &mut accumulated_text,
+                    )?;
+                    pending_data_lines.clear();
+                }
+                continue;
+            }
+
+            if let Some(data) = normalized.strip_prefix("data:") {
+                pending_data_lines.push(data.trim_start().to_string());
+            }
+        }
+
+        if !pending_data_lines.is_empty() {
+            let payload = pending_data_lines.join("\n");
+            Self::process_sse_event_payload(
+                payload.as_str(),
+                &mut final_response,
+                &mut accumulated_text,
+            )?;
+        }
+
+        if let Some(mut response) = final_response {
+            if !accumulated_text.is_empty()
+                && response
+                    .get("output_text")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true)
+            {
+                if let Some(obj) = response.as_object_mut() {
+                    obj.insert("output_text".to_string(), Value::String(accumulated_text));
+                }
+            }
+            return Ok(response);
+        }
+
+        if !accumulated_text.is_empty() {
+            return Ok(json!({
+                "status": "completed",
+                "output_text": accumulated_text,
+                "output": []
+            }));
+        }
+
+        Err("sse stream ended without response payload".to_string())
+    }
+
     fn extract_text2image_prompt(req: &CompleteRequest) -> Option<String> {
         if let Some(text) = req
             .payload
@@ -858,18 +1220,43 @@ impl OpenAIProvider {
 
     async fn post_json(
         &self,
+        ctx: &crate::aicc::InvokeCtx,
         url: &str,
         request_obj: &Map<String, Value>,
     ) -> Result<(StatusCode, Value, u64), ProviderError> {
+        let auth_token = self.build_auth_token(ctx)?;
         let started_at = std::time::Instant::now();
         let response = self
             .client
             .post(url)
-            .bearer_auth(self.api_token.as_str())
+            .bearer_auth(auth_token.as_str())
             .json(request_obj)
             .send()
             .await
             .map_err(|err| {
+                let retryable = err.is_timeout() || err.is_connect();
+                error!(
+                    "aicc.openai.http_send_failed instance_id={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err_chain={}",
+                    self.instance.instance_id,
+                    self.instance.provider_type,
+                    url,
+                    retryable,
+                    err.is_timeout(),
+                    err.is_connect(),
+                    err.status(),
+                    Self::format_error_chain(&err)
+                );
+                eprintln!(
+                    "aicc.openai.http_send_failed instance_id={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err_chain={}",
+                    self.instance.instance_id,
+                    self.instance.provider_type,
+                    url,
+                    retryable,
+                    err.is_timeout(),
+                    err.is_connect(),
+                    err.status(),
+                    Self::format_error_chain(&err)
+                );
                 if err.is_timeout() || err.is_connect() {
                     ProviderError::retryable(format!("openai request failed: {}", err))
                 } else {
@@ -879,7 +1266,70 @@ impl OpenAIProvider {
         let latency_ms = started_at.elapsed().as_millis() as u64;
 
         let status = response.status();
-        let body: Value = response.json().await.map_err(|err| {
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let content_encoding = response
+            .headers()
+            .get(CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let raw_body = response.text().await.map_err(|err| {
+            error!(
+                "aicc.openai.response_decode_failed instance_id={} provider_type={} url={} status={} content_type={} content_encoding={} err={}",
+                self.instance.instance_id,
+                self.instance.provider_type,
+                url,
+                status.as_u16(),
+                content_type,
+                if content_encoding.is_empty() {
+                    "<none>"
+                } else {
+                    content_encoding.as_str()
+                },
+                err
+            );
+            let decode_err = format!(
+                "failed to decode openai response body: {}; status={} content_type={} content_encoding={}",
+                err,
+                status.as_u16(),
+                content_type,
+                if content_encoding.is_empty() {
+                    "<none>"
+                } else {
+                    content_encoding.as_str()
+                }
+            );
+            if status.as_u16() == 429 || status.is_server_error() {
+                ProviderError::retryable(decode_err)
+            } else {
+                ProviderError::fatal(decode_err)
+            }
+        })?;
+        let body_parse_result = if content_type.contains("text/event-stream") {
+            Self::parse_sse_response_body(raw_body.as_str())
+        } else {
+            serde_json::from_str::<Value>(raw_body.as_str()).map_err(|err| {
+                format!(
+                    "invalid json response: {}; body_head={}",
+                    err,
+                    raw_body.chars().take(320).collect::<String>()
+                )
+            })
+        };
+        let body: Value = body_parse_result.map_err(|err| {
+            error!(
+                "aicc.openai.response_parse_failed instance_id={} provider_type={} url={} status={} err={}",
+                self.instance.instance_id,
+                self.instance.provider_type,
+                url,
+                status.as_u16(),
+                err
+            );
             if status.as_u16() == 429 || status.is_server_error() {
                 ProviderError::retryable(format!("failed to parse openai response body: {}", err))
             } else {
@@ -896,14 +1346,18 @@ impl OpenAIProvider {
         provider_model: &str,
         req: &CompleteRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let messages = self.build_messages(req)?;
-
         let mut request_obj = Map::new();
         request_obj.insert(
             "model".to_string(),
             Value::String(provider_model.to_string()),
         );
-        request_obj.insert("input".to_string(), Value::Array(messages));
+        if self.use_chat_completions_endpoint() {
+            let messages = Self::build_chat_messages(req)?;
+            request_obj.insert("messages".to_string(), Value::Array(messages));
+        } else {
+            let messages = self.build_messages(req)?;
+            request_obj.insert("input".to_string(), Value::Array(messages));
+        }
 
         let mut ignored_options = vec![];
         if let Some(options) = req.payload.options.as_ref() {
@@ -915,6 +1369,9 @@ impl OpenAIProvider {
         merge_requirements_response_format(&mut request_obj, req);
         merge_tool_calls(&mut request_obj, req.payload.tool_specs.as_slice())?;
         Self::merge_requirements_tools(&mut request_obj, req)?;
+        if self.use_chat_completions_endpoint() {
+            Self::normalize_chat_completions_request(&mut request_obj);
+        }
         if !ignored_options.is_empty() {
             warn!(
                 "aicc.openai ignored unsupported llm options: instance_id={} model={} trace_id={:?} ignored={:?}",
@@ -928,10 +1385,14 @@ impl OpenAIProvider {
             self.instance.instance_id, provider_model, ctx.trace_id, request_log
         );
 
-        let url = format!("{}/responses", self.base_url);
+        let url = if self.use_chat_completions_endpoint() {
+            self.base_url.clone()
+        } else {
+            format!("{}/responses", self.base_url)
+        };
         let mut retried_without_option = false;
         let (status, body, latency_ms) = loop {
-            let (status, body, latency_ms) = self.post_json(url.as_str(), &request_obj).await?;
+            let (status, body, latency_ms) = self.post_json(ctx, url.as_str(), &request_obj).await?;
             if status == StatusCode::BAD_REQUEST && !retried_without_option {
                 if let Some(param) = Self::extract_unsupported_request_param(&body) {
                     if Self::remove_retryable_unsupported_option(&mut request_obj, param.as_str()) {
@@ -1114,7 +1575,7 @@ impl OpenAIProvider {
         );
 
         let url = format!("{}/images/generations", self.base_url);
-        let (status, body, latency_ms) = self.post_json(url.as_str(), &request_obj).await?;
+        let (status, body, latency_ms) = self.post_json(ctx, url.as_str(), &request_obj).await?;
         let response_log = body.to_string();
 
         if !status.is_success() {
@@ -1275,6 +1736,8 @@ struct SettingsOpenAIInstanceConfig {
     provider_type: String,
     #[serde(default = "default_base_url")]
     base_url: String,
+    #[serde(default = "default_auth_mode")]
+    auth_mode: String,
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
     #[serde(default)]
@@ -1309,6 +1772,10 @@ fn default_base_url() -> String {
 
 fn default_timeout_ms() -> u64 {
     DEFAULT_OPENAI_TIMEOUT_MS
+}
+
+fn default_auth_mode() -> String {
+    DEFAULT_AUTH_MODE.to_string()
 }
 
 fn default_features() -> Vec<String> {
@@ -1372,6 +1839,7 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
             instance_id: default_instance_id(),
             provider_type: default_provider_type(),
             base_url: default_base_url(),
+            auth_mode: default_auth_mode(),
             timeout_ms: default_timeout_ms(),
             models: vec![],
             default_model: None,
@@ -1430,6 +1898,7 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
             instance_id: raw_instance.instance_id,
             provider_type: raw_instance.provider_type,
             base_url: raw_instance.base_url,
+            auth_mode: raw_instance.auth_mode,
             timeout_ms: raw_instance.timeout_ms,
             models,
             default_model,
@@ -1551,15 +2020,11 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
         info!("aicc openai provider is disabled (settings.openai missing or disabled)");
         return Ok(0);
     };
-    if openai_settings.api_token.trim().is_empty() {
-        return Err(anyhow!(
-            "settings.openai.api_token is required when openai provider is enabled"
-        ));
-    }
     let instances = build_openai_instances(&openai_settings)?;
+    let api_token = openai_settings.api_token.trim().to_string();
     let mut prepared = Vec::<(OpenAIInstanceConfig, Arc<dyn Provider>)>::new();
     for config in instances.iter() {
-        let provider = OpenAIProvider::new(config.clone(), openai_settings.api_token.clone())?;
+        let provider = OpenAIProvider::new(config.clone(), api_token.as_str())?;
         prepared.push((config.clone(), Arc::new(provider)));
     }
 
@@ -1882,6 +2347,76 @@ mod tests {
     }
 
     #[test]
+    fn parse_sse_response_body_uses_completed_response_payload() {
+        let raw = r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hel"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"lo"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output_text":"hello"}}
+
+data: [DONE]
+"#;
+
+        let parsed = OpenAIProvider::parse_sse_response_body(raw).expect("sse should parse");
+        assert_eq!(
+            parsed.get("status").and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
+            parsed.get("output_text").and_then(|value| value.as_str()),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn parse_sse_response_body_falls_back_to_accumulated_deltas() {
+        let raw = r#"data: {"type":"response.output_text.delta","delta":"foo"}
+
+data: {"type":"response.output_text.delta","delta":"bar"}
+
+data: [DONE]
+"#;
+
+        let parsed = OpenAIProvider::parse_sse_response_body(raw).expect("sse should parse");
+        assert_eq!(
+            parsed.get("status").and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
+            parsed.get("output_text").and_then(|value| value.as_str()),
+            Some("foobar")
+        );
+    }
+
+    #[test]
+    fn parse_sse_response_body_supports_chat_completions_stream_chunks() {
+        let raw = r#"data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"foo"},"index":0}]}
+
+data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"bar"},"index":0}]}
+
+data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop","index":0}]}
+
+data: [DONE]
+"#;
+
+        let parsed = OpenAIProvider::parse_sse_response_body(raw).expect("sse should parse");
+        assert_eq!(
+            parsed.get("status").and_then(|value| value.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
+            parsed.get("output_text").and_then(|value| value.as_str()),
+            Some("foobar")
+        );
+    }
+
+    #[test]
     fn default_features_include_web_search() {
         let all_features = default_features();
         assert!(
@@ -1902,6 +2437,7 @@ mod tests {
                 instance_id: "openai-1".to_string(),
                 provider_type: "openai".to_string(),
                 base_url: default_base_url(),
+                auth_mode: default_auth_mode(),
                 timeout_ms: default_timeout_ms(),
                 models: vec!["gpt-4o-mini".to_string(), "dall-e-3".to_string()],
                 default_model: None,
@@ -1928,6 +2464,133 @@ mod tests {
             instances[0].default_image_model.as_deref(),
             Some("dall-e-3"),
             "image default should point to inferred image model"
+        );
+    }
+
+    #[test]
+    fn build_openai_instances_allows_device_jwt_without_static_auth_fields() {
+        let settings = OpenAISettings {
+            enabled: true,
+            api_token: String::new(),
+            alias_map: HashMap::new(),
+            instances: vec![SettingsOpenAIInstanceConfig {
+                instance_id: "sn-openai-1".to_string(),
+                provider_type: "sn-openai".to_string(),
+                base_url: "https://sn.buckyos.ai/v1".to_string(),
+                auth_mode: DEVICE_JWT_AUTH_MODE.to_string(),
+                timeout_ms: default_timeout_ms(),
+                models: vec!["gpt-5-mini".to_string()],
+                default_model: Some("gpt-5-mini".to_string()),
+                image_models: vec![],
+                default_image_model: None,
+                features: vec![],
+                alias_map: HashMap::new(),
+            }],
+        };
+
+        let instances = build_openai_instances(&settings).expect("instances should be built");
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].auth_mode, DEVICE_JWT_AUTH_MODE);
+    }
+
+    #[test]
+    fn use_chat_completions_endpoint_detects_custom_sn_path() {
+        let provider = OpenAIProvider::new(OpenAIInstanceConfig {
+            instance_id: "sn-openai-1".to_string(),
+            provider_type: "sn-openai".to_string(),
+            base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
+            auth_mode: "bearer".to_string(),
+            timeout_ms: default_timeout_ms(),
+            models: vec!["gpt-5-mini".to_string()],
+            default_model: Some("gpt-5-mini".to_string()),
+            image_models: vec![],
+            default_image_model: None,
+            features: vec![],
+            alias_map: HashMap::new(),
+        }, "token")
+        .expect("provider should be built");
+        assert!(provider.use_chat_completions_endpoint());
+    }
+
+    #[test]
+    fn normalize_chat_completions_request_moves_text_and_max_tokens() {
+        let mut request = json!({
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_output_tokens": 320,
+            "text": {
+                "format": {
+                    "type": "json_object"
+                }
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("request object");
+
+        OpenAIProvider::normalize_chat_completions_request(&mut request);
+
+        assert!(!request.contains_key("text"));
+        assert!(!request.contains_key("max_output_tokens"));
+        assert_eq!(request.get("max_tokens"), Some(&json!(320)));
+        assert_eq!(
+            request.get("response_format"),
+            Some(&json!({
+                "type": "json_object"
+            }))
+        );
+    }
+
+    #[test]
+    fn normalize_chat_completions_request_converts_json_schema_shape() {
+        let mut request = json!({
+            "model": "gpt-5.4",
+            "messages": [{"role": "user", "content": "hello"}],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "plan_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {"type": "string"}
+                        },
+                        "required": ["plan_id"]
+                    },
+                    "strict": true
+                }
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("request object");
+
+        OpenAIProvider::normalize_chat_completions_request(&mut request);
+        let request_value = Value::Object(request);
+
+        assert_eq!(
+            request_value
+                .pointer("/response_format/type")
+                .and_then(|v| v.as_str()),
+            Some("json_schema")
+        );
+        assert_eq!(
+            request_value
+                .pointer("/response_format/json_schema/name")
+                .and_then(|v| v.as_str()),
+            Some("plan_schema")
+        );
+        assert_eq!(
+            request_value
+                .pointer("/response_format/json_schema/strict")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            request_value
+                .pointer("/response_format/json_schema/schema/required/0")
+                .and_then(|v| v.as_str()),
+            Some("plan_id")
         );
     }
 

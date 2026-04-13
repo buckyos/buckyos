@@ -1,4 +1,4 @@
-# AICC 测试规划与模拟环境方案（cargo test）
+﻿# AICC 测试规划与模拟环境方案（cargo test）
 
 ## 1. 目标与发布门槛
 
@@ -748,3 +748,47 @@ impl FakeArtifactStorage {
 - kRPC 直连 AICC 用例：`src/kernel/buckyos-api/tests/aicc_krpc_remote_tests.rs`
 - gateway 路径用例：`src/kernel/buckyos-api/tests/aicc_gateway_remote_tests.rs`
 - 公共测试辅助（mock RPC server、请求构造、endpoint 解析）：`src/kernel/buckyos-api/tests/aicc_remote_common.rs`
+
+## 12. 复杂场景真实模型单测（gateway 路径，新增）
+
+### 12.1 实现位置
+
+- `src/frame/aicc/tests/workflow_complex_real_env_tests.rs`
+- 用例名：`workflow_real_01_gateway_complex_scenario_protocol_mix`
+
+### 12.2 设计说明（降低操作复杂度）
+
+- 必须经过目标设备 `gateway`：复用既有 `AICC_GATEWAY_HOST`（或 `AICC_HOST`）解析 `/kapi/aicc` 与 `/kapi/system_config`
+- 复用既有认证变量链路：`AICC_RPC_TOKEN`（优先）或 `AICC_LOGIN_USERNAME` + `AICC_LOGIN_PASSWORD` + `AICC_LOGIN_APPID`
+- 仅新增一个必要变量：`OPENAI_API_KEY`（用于写入 `services/aicc/settings` 的 `openai.api_token`）
+- 用例内自动执行：
+  1. `sys_config_set` 写入 OpenAI 实例配置
+  2. `service.reload_settings` 立即生效
+  3. 执行复杂场景请求与断言
+
+### 12.3 协议覆盖（单用例内混合）
+
+- 协议 A：复杂 DAG 规划（`json_output` + `response_format=json_object`）
+- 协议 B：严格 JSON 输出（结构化输出断言）
+- 协议 C：`stream=true` 流式请求（断言 `running/succeeded`）
+
+### 12.4 最小运行方式（PowerShell）
+
+```powershell
+cd d:\project\buckyos-main\src
+
+$env:AICC_GATEWAY_HOST="http://<target-device-host>:4040"
+$env:OPENAI_API_KEY="sk-..."
+
+# 可选：若不提供 AICC_RPC_TOKEN，则可使用登录变量
+# $env:AICC_LOGIN_USERNAME="alice"
+# $env:AICC_LOGIN_PASSWORD="***"
+# $env:AICC_LOGIN_APPID="aicc-tests"
+
+# 可选：覆盖模型别名（默认 llm.plan.default）
+# $env:AICC_MODEL_ALIAS="llm.plan.default"
+
+cargo test -p aicc --test workflow_complex_real_env_tests -- --ignored --nocapture
+```
+
+

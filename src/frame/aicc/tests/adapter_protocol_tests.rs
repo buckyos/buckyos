@@ -1,4 +1,4 @@
-mod common;
+﻿mod common;
 
 use aicc::claude::{ClaudeInstanceConfig, ClaudeProvider};
 use aicc::gimini::{GoogleGiminiInstanceConfig, GoogleGiminiProvider};
@@ -10,21 +10,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
-    OpenAIProvider::new(
-        OpenAIInstanceConfig {
-            instance_id: "openai-test".to_string(),
-            provider_type: "openai".to_string(),
-            base_url,
-            timeout_ms,
-            models: vec!["gpt-4o-mini".to_string()],
-            default_model: Some("gpt-4o-mini".to_string()),
-            image_models: vec!["dall-e-3".to_string()],
-            default_image_model: Some("dall-e-3".to_string()),
-            features: vec!["plan".to_string()],
-            alias_map: HashMap::new(),
-        },
-        "token".to_string(),
-    )
+    OpenAIProvider::new(OpenAIInstanceConfig {
+        instance_id: "openai-test".to_string(),
+        provider_type: "openai".to_string(),
+        base_url,
+        auth_mode: "bearer".to_string(),
+        timeout_ms,
+        models: vec!["gpt-4o-mini".to_string()],
+        default_model: Some("gpt-4o-mini".to_string()),
+        image_models: vec!["dall-e-3".to_string()],
+        default_image_model: Some("dall-e-3".to_string()),
+        features: vec!["plan".to_string()],
+        alias_map: HashMap::new(),
+    }, "token")
     .expect("openai provider")
 }
 
@@ -65,11 +63,11 @@ fn claude_provider(base_url: String, timeout_ms: u64) -> ClaudeProvider {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_openai_01_http_200_success` 用例，覆盖函数名对应的业务路径。
-// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：返回成功结果，关键字段与断言一致。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_openai_01_http_200_success` 鐢ㄤ緥锛岃鐩栧嚱鏁板悕瀵瑰簲鐨勪笟鍔¤矾寰勩€?
+// - 杈撳叆鍙傛暟锛氶€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氳繑鍥炴垚鍔熺粨鏋滐紝鍏抽敭瀛楁涓庢柇瑷€涓€鑷淬€?
 async fn adapter_openai_01_http_200_success() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -98,11 +96,11 @@ async fn adapter_openai_01_http_200_success() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_openai_02_http_429_retryable` 用例，覆盖可重试错误分支、限流错误分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：错误被归类为可重试并触发对应策略。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_openai_02_http_429_retryable` 鐢ㄤ緥锛岃鐩栧彲閲嶈瘯閿欒鍒嗘敮銆侀檺娴侀敊璇垎绫汇€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氶敊璇褰掔被涓哄彲閲嶈瘯骞惰Е鍙戝搴旂瓥鐣ャ€?
 async fn adapter_openai_02_http_429_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 429,
@@ -125,11 +123,11 @@ async fn adapter_openai_02_http_429_retryable() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_openai_03_http_503_retryable` 用例，覆盖可重试错误分支、服务不可用错误分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：错误被归类为可重试并触发对应策略。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_openai_03_http_503_retryable` 鐢ㄤ緥锛岃鐩栧彲閲嶈瘯閿欒鍒嗘敮銆佹湇鍔′笉鍙敤閿欒鍒嗙被銆?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氶敊璇褰掔被涓哄彲閲嶈瘯骞惰Е鍙戝搴旂瓥鐣ャ€?
 async fn adapter_openai_03_http_503_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 503,
@@ -152,11 +150,11 @@ async fn adapter_openai_03_http_503_retryable() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_openai_04_http_400_fatal` 用例，覆盖致命错误分支、参数错误分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：返回拒绝或致命错误，错误码/错误消息符合预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_openai_04_http_400_fatal` 鐢ㄤ緥锛岃鐩栬嚧鍛介敊璇垎鏀€佸弬鏁伴敊璇垎绫汇€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氳繑鍥炴嫆缁濇垨鑷村懡閿欒锛岄敊璇爜/閿欒娑堟伅绗﹀悎棰勬湡銆?
 async fn adapter_openai_04_http_400_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 400,
@@ -179,11 +177,11 @@ async fn adapter_openai_04_http_400_fatal() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_openai_05_invalid_json_fatal` 用例，覆盖致命错误分支、非法 JSON 响应分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：返回成功结果，关键字段与断言一致；返回拒绝或致命错误，错误码/错误消息符合预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_openai_05_invalid_json_fatal` 鐢ㄤ緥锛岃鐩栬嚧鍛介敊璇垎鏀€侀潪娉?JSON 鍝嶅簲鍒嗙被銆?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氳繑鍥炴垚鍔熺粨鏋滐紝鍏抽敭瀛楁涓庢柇瑷€涓€鑷达紱杩斿洖鎷掔粷鎴栬嚧鍛介敊璇紝閿欒鐮?閿欒娑堟伅绗﹀悎棰勬湡銆?
 async fn adapter_openai_05_invalid_json_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -206,11 +204,11 @@ async fn adapter_openai_05_invalid_json_fatal() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_openai_06_timeout_or_network_error_classified` 用例，覆盖超时/网络异常分类。
-// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_openai_06_timeout_or_network_error_classified` 鐢ㄤ緥锛岃鐩栬秴鏃?缃戠粶寮傚父鍒嗙被銆?
+// - 杈撳叆鍙傛暟锛氶€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn adapter_openai_06_timeout_or_network_error_classified() {
     let provider = openai_provider("http://127.0.0.1:9".to_string(), 80);
     let err = provider
@@ -226,11 +224,11 @@ async fn adapter_openai_06_timeout_or_network_error_classified() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_gimini_01_http_200_success` 用例，覆盖函数名对应的业务路径。
-// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：返回成功结果，关键字段与断言一致。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_gimini_01_http_200_success` 鐢ㄤ緥锛岃鐩栧嚱鏁板悕瀵瑰簲鐨勪笟鍔¤矾寰勩€?
+// - 杈撳叆鍙傛暟锛氶€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氳繑鍥炴垚鍔熺粨鏋滐紝鍏抽敭瀛楁涓庢柇瑷€涓€鑷淬€?
 async fn adapter_gimini_01_http_200_success() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -259,11 +257,11 @@ async fn adapter_gimini_01_http_200_success() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_gimini_02_http_429_retryable` 用例，覆盖可重试错误分支、限流错误分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：错误被归类为可重试并触发对应策略。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_gimini_02_http_429_retryable` 鐢ㄤ緥锛岃鐩栧彲閲嶈瘯閿欒鍒嗘敮銆侀檺娴侀敊璇垎绫汇€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氶敊璇褰掔被涓哄彲閲嶈瘯骞惰Е鍙戝搴旂瓥鐣ャ€?
 async fn adapter_gimini_02_http_429_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 429,
@@ -287,11 +285,11 @@ async fn adapter_gimini_02_http_429_retryable() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_claude_01_http_200_success` 用例，覆盖函数名对应的业务路径。
-// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：返回成功结果，关键字段与断言一致。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_claude_01_http_200_success` 鐢ㄤ緥锛岃鐩栧嚱鏁板悕瀵瑰簲鐨勪笟鍔¤矾寰勩€?
+// - 杈撳叆鍙傛暟锛氶€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氳繑鍥炴垚鍔熺粨鏋滐紝鍏抽敭瀛楁涓庢柇瑷€涓€鑷淬€?
 async fn adapter_claude_01_http_200_success() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -314,18 +312,21 @@ async fn adapter_claude_01_http_200_success() {
         ProviderStartResult::Immediate(summary) => {
             assert_eq!(summary.text.as_deref(), Some("ok"));
             assert_eq!(summary.usage.as_ref().and_then(|u| u.input_tokens), Some(1));
-            assert_eq!(summary.usage.as_ref().and_then(|u| u.output_tokens), Some(1));
+            assert_eq!(
+                summary.usage.as_ref().and_then(|u| u.output_tokens),
+                Some(1)
+            );
         }
         _ => panic!("expected immediate summary"),
     }
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_claude_02_http_429_retryable` 用例，覆盖可重试错误分支、限流错误分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：错误被归类为可重试并触发对应策略。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_claude_02_http_429_retryable` 鐢ㄤ緥锛岃鐩栧彲閲嶈瘯閿欒鍒嗘敮銆侀檺娴侀敊璇垎绫汇€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氶敊璇褰掔被涓哄彲閲嶈瘯骞惰Е鍙戝搴旂瓥鐣ャ€?
 async fn adapter_claude_02_http_429_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 429,
@@ -348,11 +349,11 @@ async fn adapter_claude_02_http_429_retryable() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_claude_03_http_400_fatal` 用例，覆盖致命错误分支、参数错误分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：返回拒绝或致命错误，错误码/错误消息符合预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_claude_03_http_400_fatal` 鐢ㄤ緥锛岃鐩栬嚧鍛介敊璇垎鏀€佸弬鏁伴敊璇垎绫汇€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氳繑鍥炴嫆缁濇垨鑷村懡閿欒锛岄敊璇爜/閿欒娑堟伅绗﹀悎棰勬湡銆?
 async fn adapter_claude_03_http_400_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 400,
@@ -375,11 +376,11 @@ async fn adapter_claude_03_http_400_fatal() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_claude_04_timeout_or_network_error_classified` 用例，覆盖超时/网络异常分类。
-// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_claude_04_timeout_or_network_error_classified` 鐢ㄤ緥锛岃鐩栬秴鏃?缃戠粶寮傚父鍒嗙被銆?
+// - 杈撳叆鍙傛暟锛氶€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn adapter_claude_04_timeout_or_network_error_classified() {
     let provider = claude_provider("http://127.0.0.1:9".to_string(), 80);
     let err = provider
@@ -395,11 +396,11 @@ async fn adapter_claude_04_timeout_or_network_error_classified() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_gimini_03_http_503_retryable` 用例，覆盖可重试错误分支、服务不可用错误分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：错误被归类为可重试并触发对应策略。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_gimini_03_http_503_retryable` 鐢ㄤ緥锛岃鐩栧彲閲嶈瘯閿欒鍒嗘敮銆佹湇鍔′笉鍙敤閿欒鍒嗙被銆?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氶敊璇褰掔被涓哄彲閲嶈瘯骞惰Е鍙戝搴旂瓥鐣ャ€?
 async fn adapter_gimini_03_http_503_retryable() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 503,
@@ -422,11 +423,11 @@ async fn adapter_gimini_03_http_503_retryable() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_gimini_04_http_400_fatal` 用例，覆盖致命错误分支、参数错误分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：返回拒绝或致命错误，错误码/错误消息符合预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_gimini_04_http_400_fatal` 鐢ㄤ緥锛岃鐩栬嚧鍛介敊璇垎鏀€佸弬鏁伴敊璇垎绫汇€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氳繑鍥炴嫆缁濇垨鑷村懡閿欒锛岄敊璇爜/閿欒娑堟伅绗﹀悎棰勬湡銆?
 async fn adapter_gimini_04_http_400_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 400,
@@ -449,11 +450,11 @@ async fn adapter_gimini_04_http_400_fatal() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_gimini_05_invalid_json_fatal` 用例，覆盖致命错误分支、非法 JSON 响应分类。
-// - 输入参数：构造多个 provider 候选，并注入 Started/Queued/失败结果；通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：返回成功结果，关键字段与断言一致；返回拒绝或致命错误，错误码/错误消息符合预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_gimini_05_invalid_json_fatal` 鐢ㄤ緥锛岃鐩栬嚧鍛介敊璇垎鏀€侀潪娉?JSON 鍝嶅簲鍒嗙被銆?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲涓?provider 鍊欓€夛紝骞舵敞鍏?Started/Queued/澶辫触缁撴灉锛涢€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氳繑鍥炴垚鍔熺粨鏋滐紝鍏抽敭瀛楁涓庢柇瑷€涓€鑷达紱杩斿洖鎷掔粷鎴栬嚧鍛介敊璇紝閿欒鐮?閿欒娑堟伅绗﹀悎棰勬湡銆?
 async fn adapter_gimini_05_invalid_json_fatal() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -476,11 +477,11 @@ async fn adapter_gimini_05_invalid_json_fatal() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`adapter_gimini_06_timeout_or_network_error_classified` 用例，覆盖超时/网络异常分类。
-// - 输入参数：通过 mock HTTP 服务构造状态码/响应体/超时。
-// - 处理流程：调用具体 provider adapter，请求 mock 服务并执行响应解析与错误分类。
-// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚adapter_gimini_06_timeout_or_network_error_classified` 鐢ㄤ緥锛岃鐩栬秴鏃?缃戠粶寮傚父鍒嗙被銆?
+// - 杈撳叆鍙傛暟锛氶€氳繃 mock HTTP 鏈嶅姟鏋勯€犵姸鎬佺爜/鍝嶅簲浣?瓒呮椂銆?
+// - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
+// - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn adapter_gimini_06_timeout_or_network_error_classified() {
     let provider = gimini_provider("http://127.0.0.1:9".to_string(), 80);
     let err = provider
@@ -496,11 +497,11 @@ async fn adapter_gimini_06_timeout_or_network_error_classified() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`proto_t2i_01_prompt_from_text` 用例，覆盖函数名对应的业务路径。
-// - 输入参数：构造协议字段、资源引用或 base64/url 输入。
-// - 处理流程：走协议校验与任务执行路径，覆盖输入形态、资源处理与事件产出。
-// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚proto_t2i_01_prompt_from_text` 鐢ㄤ緥锛岃鐩栧嚱鏁板悕瀵瑰簲鐨勪笟鍔¤矾寰勩€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲崗璁瓧娈点€佽祫婧愬紩鐢ㄦ垨 base64/url 杈撳叆銆?
+// - 澶勭悊娴佺▼锛氳蛋鍗忚鏍￠獙涓庝换鍔℃墽琛岃矾寰勶紝瑕嗙洊杈撳叆褰㈡€併€佽祫婧愬鐞嗕笌浜嬩欢浜у嚭銆?
+// - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn proto_t2i_01_prompt_from_text() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -538,11 +539,11 @@ async fn proto_t2i_01_prompt_from_text() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`proto_t2i_04_artifact_url_format` 用例，覆盖函数名对应的业务路径。
-// - 输入参数：构造协议字段、资源引用或 base64/url 输入。
-// - 处理流程：走协议校验与任务执行路径，覆盖输入形态、资源处理与事件产出。
-// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚proto_t2i_04_artifact_url_format` 鐢ㄤ緥锛岃鐩栧嚱鏁板悕瀵瑰簲鐨勪笟鍔¤矾寰勩€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲崗璁瓧娈点€佽祫婧愬紩鐢ㄦ垨 base64/url 杈撳叆銆?
+// - 澶勭悊娴佺▼锛氳蛋鍗忚鏍￠獙涓庝换鍔℃墽琛岃矾寰勶紝瑕嗙洊杈撳叆褰㈡€併€佽祫婧愬鐞嗕笌浜嬩欢浜у嚭銆?
+// - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn proto_t2i_04_artifact_url_format() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -577,11 +578,11 @@ async fn proto_t2i_04_artifact_url_format() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`proto_t2i_03_prompt_from_options` 用例，覆盖函数名对应的业务路径。
-// - 输入参数：构造协议字段、资源引用或 base64/url 输入。
-// - 处理流程：走协议校验与任务执行路径，覆盖输入形态、资源处理与事件产出。
-// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚proto_t2i_03_prompt_from_options` 鐢ㄤ緥锛岃鐩栧嚱鏁板悕瀵瑰簲鐨勪笟鍔¤矾寰勩€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲崗璁瓧娈点€佽祫婧愬紩鐢ㄦ垨 base64/url 杈撳叆銆?
+// - 澶勭悊娴佺▼锛氳蛋鍗忚鏍￠獙涓庝换鍔℃墽琛岃矾寰勶紝瑕嗙洊杈撳叆褰㈡€併€佽祫婧愬鐞嗕笌浜嬩欢浜у嚭銆?
+// - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn proto_t2i_03_prompt_from_options() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
@@ -618,11 +619,11 @@ async fn proto_t2i_03_prompt_from_options() {
 }
 
 #[tokio::test]
-// 用例说明：
-// - 验证场景：`proto_t2i_02_prompt_from_messages` 用例，覆盖函数名对应的业务路径。
-// - 输入参数：构造协议字段、资源引用或 base64/url 输入。
-// - 处理流程：走协议校验与任务执行路径，覆盖输入形态、资源处理与事件产出。
-// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
+// 鐢ㄤ緥璇存槑锛?
+// - 楠岃瘉鍦烘櫙锛歚proto_t2i_02_prompt_from_messages` 鐢ㄤ緥锛岃鐩栧嚱鏁板悕瀵瑰簲鐨勪笟鍔¤矾寰勩€?
+// - 杈撳叆鍙傛暟锛氭瀯閫犲崗璁瓧娈点€佽祫婧愬紩鐢ㄦ垨 base64/url 杈撳叆銆?
+// - 澶勭悊娴佺▼锛氳蛋鍗忚鏍￠獙涓庝换鍔℃墽琛岃矾寰勶紝瑕嗙洊杈撳叆褰㈡€併€佽祫婧愬鐞嗕笌浜嬩欢浜у嚭銆?
+// - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn proto_t2i_02_prompt_from_messages() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,

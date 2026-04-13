@@ -23,7 +23,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const [completedUrl, setCompletedUrl] = useState("");
   const walletInfoReady =
     !isWalletRuntime ||
-    (!!walletUser?.sn_username && !!walletUser?.public_key && !!walletUser?.password_hash);
+    (!!walletUser?.sn_username && !!walletUser?.public_key);
   const stepOrder = useMemo<StepKey[]>(
     () =>
       isWalletRuntime
@@ -123,7 +123,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
       return (
         <Alert severity="error">
           {t("wallet_info_incomplete", {
-            defaultValue: "Wallet user info is incomplete. Missing SN username, owner key, or password hash.",
+            defaultValue: "Wallet user info is incomplete. Missing SN username or owner key.",
           })}
         </Alert>
       );

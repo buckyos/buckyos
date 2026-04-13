@@ -34,6 +34,33 @@ def _merge_creationflags(kwargs: dict[str, object], extra_flags: int) -> dict[st
     merged["creationflags"] = int(merged.get("creationflags", 0)) | extra_flags
     return merged
 
+
+def run_hidden_command(args, capture_output=False, check=False, cwd=None, env_vars=None):
+    env = os.environ.copy()
+    if env_vars:
+        env.update(env_vars)
+
+    return subprocess.run(
+        list(args),
+        capture_output=capture_output,
+        text=True,
+        cwd=cwd,
+        env=env,
+        check=check,
+        **_windows_subprocess_kwargs(),
+    )
+
+
+def read_hidden_command(args, cwd=None, env_vars=None):
+    result = run_hidden_command(
+        args,
+        capture_output=True,
+        check=False,
+        cwd=cwd,
+        env_vars=env_vars,
+    )
+    return result.stdout.strip(), result.returncode, result.stderr.strip()
+
 def ensure_directory_accessible(directory_path):
     if not os.path.exists(directory_path):
         os.makedirs(directory_path, exist_ok=True)

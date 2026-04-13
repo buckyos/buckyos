@@ -37,6 +37,31 @@ impl ActiveServer {
         }
     }
 
+    async fn update_zone_boot_cache(zone_did: &DID, zone_boot_config: &ZoneBootConfig) {
+        let zone_boot_doc = match serde_json::to_value(zone_boot_config) {
+            Ok(doc) => EncodedDocument::JsonLd(doc),
+            Err(err) => {
+                warn!(
+                    "serialize zone boot document for cache failed, zone_did={:?}, err={}",
+                    zone_did, err
+                );
+                return;
+            }
+        };
+
+        if let Err(err) = update_did_cache(zone_did.clone(), Some("boot"), zone_boot_doc).await {
+            warn!(
+                "update zone boot did cache failed, zone_did={:?}, err={}",
+                zone_did, err
+            );
+        } else {
+            info!(
+                "update zone boot did cache success, zone_did={:?}",
+                zone_did
+            );
+        }
+    }
+
     pub async fn auto_fill_device_mini_info(&mut self) {
         self.device_mini_info
             .auto_fill_by_system_info()
@@ -288,7 +313,7 @@ impl ActiveServer {
             .map_err(|_| RPCErrors::ReasonError("Invalid zone name".to_string()))?;
         let owner_did = DID::from_str(&user_name).unwrap_or_else(|_| DID::new("bns", &user_name));
         let node_identity = NodeIdentityConfig {
-            zone_did: zone_did,
+            zone_did: zone_did.clone(),
             owner_public_key: owner_public_key,
             owner_did: owner_did,
             device_doc_jwt: device_doc_jwt.to_string(),
@@ -332,6 +357,24 @@ impl ActiveServer {
         .map_err(|_| {
             RPCErrors::ReasonError("Failed to write node_device_config.json".to_string())
         })?;
+
+        let zone_boot_doc = match EncodedDocument::from_str(boot_config_jwt.to_string()) {
+            Ok(doc) => doc,
+            Err(err) => {
+                warn!(
+                    "parse zone boot document failed before cache update, zone_did={:?}, err={}",
+                    zone_did, err
+                );
+                return Err(RPCErrors::ReasonError(format!(
+                    "Failed to parse zone boot config: {}",
+                    err
+                )));
+            }
+        };
+        let zone_boot_config = ZoneBootConfig::decode(&zone_boot_doc, None).map_err(|err| {
+            RPCErrors::ReasonError(format!("Failed to decode zone boot config: {}", err))
+        })?;
+        Self::update_zone_boot_cache(&zone_did, &zone_boot_config).await;
 
         info!("ActiveByWallet Write Active files [node_private_key.pem,node_identity.json,start_config.json,node_device_config.json] success");
 
@@ -588,7 +631,7 @@ impl ActiveServer {
 
         if need_sn {
             //call sn_register_device by owner's token
-            let sn_url = sn_url.unwrap();
+            let sn_url = sn_url.clone().unwrap();
             let sn_username = sn_username.unwrap().as_str().unwrap().to_lowercase();
             let rpc_token = ::kRPC::RPCSessionToken {
                 token_type: ::kRPC::RPCSessionTokenType::Normal,
@@ -661,7 +704,7 @@ impl ActiveServer {
         let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
         let device_mini_doc_jwt = device_mini_config.to_jwt(&owner_private_key_pem).unwrap();
         let node_identity = NodeIdentityConfig {
-            zone_did: zone_did,
+            zone_did: zone_did.clone(),
             owner_public_key: owner_public_key, //TODO:how to update owner's public key? (update owner's did-doc)
             owner_did: DID::new("bns", user_name.as_str()),
             device_doc_jwt: device_doc_jwt.to_string(),
@@ -699,8 +742,38 @@ impl ActiveServer {
                 RPCErrors::ReasonError("Failed to write node_device_config.json".to_string())
             })?;
 
-        //TODO: write zone_boot_config let system can boot immediately?
-        // The zone document caching mechanism needs to be refactored first to prevent incorrect updates.
+        let ood = if let Some(net_id) = device_config.net_id.as_ref() {
+            if net_id != "nat" {
+                OODDescriptionString::new(
+                    "ood1".to_string(),
+                    DeviceNodeType::OOD,
+                    Some(net_id.clone()),
+                    None,
+                )
+            } else {
+                OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None)
+            }
+        } else {
+            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None)
+        };
+
+        let zone_boot_sn = sn_url
+            .as_ref()
+            .filter(|url| url.len() > 5)
+            .and_then(|url| url::Url::parse(url).ok())
+            .and_then(|url| url.host_str().map(|host| host.to_string()));
+
+        let zone_boot_config = ZoneBootConfig {
+            id: None,
+            oods: vec![ood],
+            sn: zone_boot_sn,
+            exp: buckyos_get_unix_timestamp() + 3600 * 24 * 365 * 10,
+            owner: None,
+            owner_key: None,
+            extra_info: HashMap::new(),
+        };
+        Self::update_zone_boot_cache(&zone_did, &zone_boot_config).await;
+
         info!("DoAction Write Active files [node_private_key.pem,node_identity.json,start_config.json,node_device_config.json] success");
 
         tokio::task::spawn(async move {
@@ -719,10 +792,39 @@ impl ActiveServer {
     async fn handle_generate_key_pair(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let (private_key, public_key) = generate_ed25519_key_pair();
         let public_key_str = public_key.to_string();
+        let private_key_pem = EncodingKey::from_ed_pem(private_key.as_bytes()).map_err(|e| {
+            warn!("Failed to parse generated private key: {}", e);
+            RPCErrors::ReasonError("Failed to parse generated private key".to_string())
+        })?;
+        let now = buckyos_get_unix_timestamp();
+        let key_id = public_key
+            .get("x")
+            .and_then(Value::as_str)
+            .unwrap_or(public_key_str.as_str())
+            .to_string();
+        let rpc_token = ::kRPC::RPCSessionToken {
+            token_type: ::kRPC::RPCSessionTokenType::Normal,
+            appid: Some("active_service".to_string()),
+            jti: Some(now.to_string()),
+            session: Some(now),
+            sub: Some("$owner".to_string()),
+            aud: None,
+            exp: Some(now + 60 * 15),
+            iss: None,
+            token: None,
+            extra: HashMap::new(),
+        };
+        let access_token = rpc_token
+            .generate_jwt(None, &private_key_pem)
+            .map_err(|e| {
+                warn!("Failed to generate access token for key pair: {}", e);
+                RPCErrors::ReasonError("Failed to generate access token".to_string())
+            })?;
         return Ok(RPCResponse::new(
             RPCResult::Success(json!({
                 "private_key":private_key,
-                "public_key":public_key
+                "public_key":public_key,
+                "access_token":access_token
             })),
             req.seq,
         ));

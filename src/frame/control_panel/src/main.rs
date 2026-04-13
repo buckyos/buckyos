@@ -89,6 +89,7 @@ const DEFAULT_LOG_LIMIT: usize = 200;
 const MAX_LOG_LIMIT: usize = 1000;
 const METRICS_DISK_REFRESH_INTERVAL_SECS: u64 = 5;
 const NETWORK_TIMELINE_LIMIT: usize = 300;
+const DOCKER_OVERVIEW_CACHE_TTL_SECS: u64 = 15;
 const SYS_CONFIG_TREE_MAX_DEPTH: u64 = 24;
 const GATEWAY_ETC_DIR: &str = "/opt/buckyos/etc";
 const GATEWAY_CONFIG_FILES: [&str; 5] = [
@@ -370,10 +371,18 @@ struct RepoAppReleaseCandidate {
 }
 
 #[derive(Clone)]
+struct DockerOverviewCacheEntry {
+    captured_at: Instant,
+    response: Value,
+}
+
+#[derive(Clone)]
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
     pending_sso_logins: Arc<Mutex<HashMap<u64, sys_auth_backend::PendingSsoLogin>>>,
+    docker_overview_cache: Arc<Mutex<Option<DockerOverviewCacheEntry>>>,
+    docker_overview_refresh_lock: Arc<Mutex<()>>,
     file_manager: Arc<file_manager::BuckyFileServer>,
     app_installer: app_installer::AppInstaller,
     ndm_gateway: Option<Arc<NamedStoreMgrZoneGateway>>,
@@ -402,6 +411,8 @@ impl ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
             metrics_snapshot,
             pending_sso_logins: Arc::new(Mutex::new(HashMap::new())),
+            docker_overview_cache: Arc::new(Mutex::new(None)),
+            docker_overview_refresh_lock: Arc::new(Mutex::new(())),
             file_manager,
             app_installer: app_installer::AppInstaller::new(),
             ndm_gateway: None,
@@ -5939,181 +5950,26 @@ impl ControlPanelServer {
     }
 
     async fn handle_container_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        let mut notes: Vec<String> = Vec::new();
-
-        let server_info = match docker_command()
-            .args(["info", "--format", "{{json .}}"])
-            .output()
-        {
-            Ok(output) => {
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                    let message = if stderr.is_empty() {
-                        "docker info returned non-zero exit code".to_string()
-                    } else {
-                        stderr
-                    };
-                    notes.push(format!("Docker daemon is unavailable: {}", message));
-                    let response = json!({
-                        "available": false,
-                        "daemonRunning": false,
-                        "server": {},
-                        "summary": {
-                            "total": 0,
-                            "running": 0,
-                            "paused": 0,
-                            "exited": 0,
-                            "restarting": 0,
-                            "dead": 0,
-                        },
-                        "containers": [],
-                        "notes": notes,
-                    });
-                    return Ok(RPCResponse::new(RPCResult::Success(response), req.seq));
-                }
-
-                let content = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                serde_json::from_str::<Value>(content.as_str()).unwrap_or_else(|_| json!({}))
-            }
-            Err(error) => {
-                notes.push(format!("docker command not available: {}", error));
-                let response = json!({
-                    "available": false,
-                    "daemonRunning": false,
-                    "server": {},
-                    "summary": {
-                        "total": 0,
-                        "running": 0,
-                        "paused": 0,
-                        "exited": 0,
-                        "restarting": 0,
-                        "dead": 0,
-                    },
-                    "containers": [],
-                    "notes": notes,
-                });
-                return Ok(RPCResponse::new(RPCResult::Success(response), req.seq));
-            }
-        };
-
-        let ps_output = docker_command()
-            .args(["ps", "--all", "--format", "{{json .}}"])
-            .output()
-            .map_err(|error| RPCErrors::ReasonError(format!("docker ps failed: {}", error)))?;
-
-        if !ps_output.status.success() {
-            let stderr = String::from_utf8_lossy(&ps_output.stderr)
-                .trim()
-                .to_string();
-            let message = if stderr.is_empty() {
-                "docker ps returned non-zero exit code".to_string()
-            } else {
-                stderr
-            };
-            return Err(RPCErrors::ReasonError(format!(
-                "docker ps failed: {}",
-                message
-            )));
-        }
-
-        let mut containers: Vec<Value> = Vec::new();
-        for line in String::from_utf8_lossy(&ps_output.stdout).lines() {
-            let row = line.trim();
-            if row.is_empty() {
-                continue;
-            }
-
-            let item = match serde_json::from_str::<Value>(row) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-
-            containers.push(json!({
-                "id": item.get("ID").and_then(|v| v.as_str()).unwrap_or_default(),
-                "name": item.get("Names").and_then(|v| v.as_str()).unwrap_or_default(),
-                "image": item.get("Image").and_then(|v| v.as_str()).unwrap_or_default(),
-                "state": item.get("State").and_then(|v| v.as_str()).unwrap_or_default(),
-                "status": item.get("Status").and_then(|v| v.as_str()).unwrap_or_default(),
-                "ports": item.get("Ports").and_then(|v| v.as_str()).unwrap_or_default(),
-                "networks": item.get("Networks").and_then(|v| v.as_str()).unwrap_or_default(),
-                "createdAt": item.get("CreatedAt").and_then(|v| v.as_str()).unwrap_or_default(),
-                "runningFor": item.get("RunningFor").and_then(|v| v.as_str()).unwrap_or_default(),
-                "command": item.get("Command").and_then(|v| v.as_str()).unwrap_or_default(),
-            }));
-        }
-
-        let running = containers
-            .iter()
-            .filter(|item| {
-                item.get("state")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .eq_ignore_ascii_case("running")
-            })
-            .count() as u64;
-        let paused = containers
-            .iter()
-            .filter(|item| {
-                item.get("state")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .eq_ignore_ascii_case("paused")
-            })
-            .count() as u64;
-        let restarting = containers
-            .iter()
-            .filter(|item| {
-                item.get("state")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .eq_ignore_ascii_case("restarting")
-            })
-            .count() as u64;
-        let dead = containers
-            .iter()
-            .filter(|item| {
-                item.get("state")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .eq_ignore_ascii_case("dead")
-            })
-            .count() as u64;
-        let exited = containers
-            .iter()
-            .filter(|item| {
-                let state = item
-                    .get("state")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                state == "exited" || state == "created"
-            })
-            .count() as u64;
-
         let response = json!({
-            "available": true,
-            "daemonRunning": true,
-            "server": {
-                "name": server_info.get("Name").and_then(|v| v.as_str()).unwrap_or_default(),
-                "version": server_info.get("ServerVersion").and_then(|v| v.as_str()).unwrap_or_default(),
-                "apiVersion": server_info.get("APIVersion").and_then(|v| v.as_str()).unwrap_or_default(),
-                "os": server_info.get("OperatingSystem").and_then(|v| v.as_str()).unwrap_or_default(),
-                "kernel": server_info.get("KernelVersion").and_then(|v| v.as_str()).unwrap_or_default(),
-                "driver": server_info.get("Driver").and_then(|v| v.as_str()).unwrap_or_default(),
-                "cgroupDriver": server_info.get("CgroupDriver").and_then(|v| v.as_str()).unwrap_or_default(),
-                "cpuCount": server_info.get("NCPU").and_then(|v| v.as_u64()).unwrap_or_default(),
-                "memTotalBytes": server_info.get("MemTotal").and_then(|v| v.as_u64()).unwrap_or_default(),
-            },
+            "available": false,
+            "daemonRunning": false,
+            "server": {},
             "summary": {
-                "total": containers.len() as u64,
-                "running": running,
-                "paused": paused,
-                "exited": exited,
-                "restarting": restarting,
-                "dead": dead,
+                "total": 0,
+                "running": 0,
+                "paused": 0,
+                "exited": 0,
+                "restarting": 0,
+                "dead": 0,
             },
-            "containers": containers,
-            "notes": notes,
+            "containers": [],
+            "notes": ["container overview disabled"],
+        });
+
+        let mut cache = self.docker_overview_cache.lock().await;
+        *cache = Some(DockerOverviewCacheEntry {
+            captured_at: Instant::now(),
+            response: response.clone(),
         });
 
         Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
@@ -6154,6 +6010,10 @@ impl ControlPanelServer {
             };
             return Err(RPCErrors::ReasonError(reason));
         }
+
+        let mut cache = self.docker_overview_cache.lock().await;
+        *cache = None;
+        drop(cache);
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
