@@ -68,8 +68,7 @@ import {
   columnsForWidth,
   GRID_GAP,
   rowsForHeight,
-  stretchedRowHeight,
-  densityRowHeight,
+  effectiveRowHeight,
   desktopMinCanvasSize,
   mapPageToGrid,
   normalizeViewportProgress,
@@ -154,9 +153,7 @@ function useGridSpec(
   }, [containerRef, isMobile])
 
   const rows = rowsForHeight(containerHeight, density, isMobile)
-  const rowHeight = isMobile
-    ? densityRowHeight[density]
-    : stretchedRowHeight(containerHeight, rows)
+  const rowHeight = effectiveRowHeight(containerHeight, rows, density, isMobile)
 
   return { cols, rows, rowHeight }
 }

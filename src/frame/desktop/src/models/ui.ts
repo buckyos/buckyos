@@ -17,6 +17,14 @@ export type RuntimeContainer = 'browser' | 'desktop-app' | 'mobile-app'
 export type FormFactor = 'desktop' | 'mobile'
 export type MockScenario = 'normal' | 'empty' | 'error'
 export type DesktopItemType = 'app' | 'widget'
+
+/**
+ * Placement provenance — tracks how an item ended up at its current slot.
+ * - `manual`: user explicitly dragged/placed it
+ * - `auto`: system auto-assigned (e.g. newly installed app)
+ * - `reflow`: system re-placed due to resize / init recovery
+ */
+export type PlacementType = 'manual' | 'auto' | 'reflow'
 export type DesktopWallpaperMode = 'panorama' | 'tile' | 'infinite'
 export type WidgetType = string
 export type DisplayMode = 'windowed' | 'maximized' | 'fullscreen'
@@ -41,6 +49,18 @@ export interface LayoutItemBase {
   y?: number
   w: number
   h: number
+  /**
+   * Linear slot index within the page (column-major for desktop, row-major for mobile).
+   * `undefined` means unpositioned — will be auto-placed at page tail.
+   * This is the **source of truth**; x/y are derived from it.
+   */
+  slotIndex?: number
+  /** The page this item prefers to live on (used during reflow). */
+  preferredPage?: number
+  /** How this item was placed at its current slot. */
+  placementType?: PlacementType
+  /** Stable ordering — e.g. install order or first-appear order. */
+  seq?: number
 }
 
 export interface AppIconItem extends LayoutItemBase {

@@ -44,11 +44,13 @@ import type {
   AppIconItem,
   AppItemLayoutSettings,
   DeadZone,
+  DesktopPageState,
   DesktopPayload,
   DesktopSyncData,
   FormFactor,
   LayoutState,
   MockScenario,
+  PlacementType,
   RuntimeContainer,
   SupportedLocale,
   SystemPreferencesInput,
@@ -64,12 +66,17 @@ import type {
 } from './ui'
 import {
   clamp,
+  coordToSlot,
+  findNearestEmptySlot,
   invalidatePositions,
+  isPageFull,
   layoutStorageKey,
   migrateDeadZone,
+  migrateToSlotModel,
   readJson,
   readWindowAppearancePreferences,
   reconcileLayoutWithDefaultApps,
+  reorderWithinPage,
   resolveLayout,
   runtimeStorageKey,
   sameWindowGeometry,
@@ -247,6 +254,14 @@ export class DesktopUIStore {
   private nextMinimizedOrder = 1
   private windowGeometryByApp: WindowGeometryMap = {}
   private defaultPayload: DesktopPayload | null = null
+
+  /**
+   * Resize reflow debounce timer.
+   * Reflow (invalidation + tail-append) only happens after resize stops,
+   * not on every frame. During resize we only do "pure resize" (geometry update).
+   */
+  private resizeReflowTimer: ReturnType<typeof setTimeout> | null = null
+  private static readonly RESIZE_REFLOW_DELAY = 200
 
   constructor() {
     const runtimeContainer =
@@ -443,6 +458,13 @@ export class DesktopUIStore {
         formFactor,
       )
 
+      // Migrate legacy layouts to slot-based model
+      const { gridCols, gridRows } = this.snapshot.runtime
+      layoutState = migrateToSlotModel(layoutState, gridCols, gridRows)
+
+      // Validate positions against current grid (init-time reflow)
+      layoutState = invalidatePositions(layoutState, gridCols, gridRows)
+
       // Populate syncData from payload
       this.snapshot.syncData.appItemConfig = { apps: payload.apps }
 
@@ -476,6 +498,15 @@ export class DesktopUIStore {
   // Grid spec (driven by container resize observer in the view)
   // ========================================================================
 
+  /**
+   * Update grid geometry.
+   *
+   * **Pure resize** (during resize): only update cols/rows/rowHeight so
+   * the grid re-renders at the new size. No invalidation or reflow.
+   *
+   * **Reflow resize** (after resize settles): debounced — invalidates
+   * out-of-bounds items and runs tail-append placement, then persists.
+   */
   setGridSpec(cols: number, rows: number, rowHeight: number) {
     const { runtime } = this.snapshot
     if (
@@ -486,15 +517,39 @@ export class DesktopUIStore {
       return
     }
 
-    let { layoutState } = this.snapshot
-    if (layoutState) {
-      layoutState = invalidatePositions(layoutState, cols, rows)
-    }
-
+    // Phase 1: pure resize — only update geometry, no invalidation
     this.update({
-      layoutState,
       runtime: { gridCols: cols, gridRows: rows, gridRowHeight: rowHeight },
     })
+
+    // Phase 2: debounced reflow — runs after resize stops
+    if (this.resizeReflowTimer) {
+      clearTimeout(this.resizeReflowTimer)
+    }
+    this.resizeReflowTimer = setTimeout(() => {
+      this.resizeReflowTimer = null
+      this.executeReflow(cols, rows)
+    }, DesktopUIStore.RESIZE_REFLOW_DELAY)
+  }
+
+  /**
+   * Execute a reflow: invalidate out-of-bounds items, then recompute layout.
+   * Called after resize settles (debounced) or on init.
+   */
+  private executeReflow(cols: number, rows: number) {
+    let { layoutState } = this.snapshot
+    if (!layoutState) return
+
+    const before = layoutState
+    layoutState = invalidatePositions(layoutState, cols, rows)
+
+    // Migrate legacy layouts to slot model
+    layoutState = migrateToSlotModel(layoutState, cols, rows)
+
+    if (layoutState !== before) {
+      this.update({ layoutState })
+      this.persistLayout()
+    }
   }
 
   // ========================================================================
@@ -713,6 +768,17 @@ export class DesktopUIStore {
   // Layout actions (操作 Group 4 + Group 5)
   // ========================================================================
 
+  /**
+   * Handle drag-stop with proposal-compliant collision rules:
+   *
+   * 1. **Empty target slot** → place directly, 100% success
+   * 2. **Occupied target, page NOT full** → local collision: bump
+   *    the displaced item to the nearest empty slot (Manhattan distance)
+   * 3. **Occupied target, page IS full** → same-page reorder:
+   *    shift items between source and target to make room
+   *
+   * Drag logic is intentionally separate from resize reflow.
+   */
   handleGridDragStop(
     pageId: string,
     oldItem: { i: string; x: number; y: number; w: number; h: number } | null,
@@ -728,39 +794,116 @@ export class DesktopUIStore {
 
     if (!positionChanged) return
 
-    const { layoutState } = this.snapshot
+    const { layoutState, formFactor } = this.snapshot
     if (!layoutState) return
+
+    const { gridCols: cols, gridRows: rows } = this.snapshot.runtime
+    const order: ScanOrder = formFactor === 'mobile' ? 'row-major' : 'col-major'
 
     this.update({
       layoutState: {
         ...layoutState,
         pages: layoutState.pages.map((page) => {
           if (page.id !== pageId) return page
-          return {
-            ...page,
-            items: page.items.map((item) => {
-              if (item.id === newItem.i) {
-                return { ...item, x: newItem.x, y: newItem.y }
-              }
-              if (item.x !== undefined && item.y !== undefined) {
-                const overlaps = !(
-                  newItem.x + newItem.w <= item.x ||
-                  item.x + item.w <= newItem.x ||
-                  newItem.y + newItem.h <= item.y ||
-                  item.y + item.h <= newItem.y
-                )
-                if (overlaps) {
-                  return { ...item, x: undefined, y: undefined }
-                }
-              }
-              return item
-            }),
-          }
+          return this.applyDragCollision(page, oldItem, newItem, cols, rows, order)
         }),
       },
     })
 
     this.persistLayout()
+  }
+
+  /**
+   * Apply drag collision rules to a single page.
+   */
+  private applyDragCollision(
+    page: DesktopPageState,
+    oldItem: { i: string; x: number; y: number; w: number; h: number } | null,
+    newItem: { i: string; x: number; y: number; w: number; h: number },
+    cols: number,
+    rows: number,
+    order: ScanOrder,
+  ): DesktopPageState {
+    const targetSlot = coordToSlot(newItem.x, newItem.y, cols, rows, order)
+    const sourceSlot = oldItem
+      ? coordToSlot(oldItem.x, oldItem.y, cols, rows, order)
+      : undefined
+
+    // Check if target slot is occupied by another item
+    const occupant = page.items.find((item) => {
+      if (item.id === newItem.i) return false
+      if (item.x === undefined || item.y === undefined) return false
+      return !(
+        newItem.x + newItem.w <= item.x ||
+        item.x + item.w <= newItem.x ||
+        newItem.y + newItem.h <= item.y ||
+        item.y + item.h <= newItem.y
+      )
+    })
+
+    // Rule 1: empty slot → place directly
+    if (!occupant) {
+      return {
+        ...page,
+        items: page.items.map((item) =>
+          item.id === newItem.i
+            ? {
+                ...item,
+                x: newItem.x,
+                y: newItem.y,
+                slotIndex: targetSlot,
+                placementType: 'manual' as PlacementType,
+              }
+            : item,
+        ),
+      }
+    }
+
+    // Rule 3: page is full → same-page reorder (shift items)
+    if (sourceSlot !== undefined && isPageFull(page, cols, rows, order)) {
+      return reorderWithinPage(page, sourceSlot, targetSlot, cols, rows, order)
+    }
+
+    // Rule 2: page not full → local collision (bump displaced to nearest empty)
+    const emptySlot = findNearestEmptySlot(
+      page,
+      occupant.x!,
+      occupant.y!,
+      cols,
+      rows,
+      order,
+      newItem.i, // exclude dragged item from occupancy check
+    )
+
+    return {
+      ...page,
+      items: page.items.map((item) => {
+        if (item.id === newItem.i) {
+          return {
+            ...item,
+            x: newItem.x,
+            y: newItem.y,
+            slotIndex: targetSlot,
+            placementType: 'manual' as PlacementType,
+          }
+        }
+        if (item.id === occupant.id && emptySlot) {
+          const bumpSlot = coordToSlot(emptySlot.x, emptySlot.y, cols, rows, order)
+          return {
+            ...item,
+            x: emptySlot.x,
+            y: emptySlot.y,
+            slotIndex: bumpSlot,
+            placementType: 'manual' as PlacementType,
+          }
+        }
+        // If no empty slot found, mark occupant as unpositioned (fallback)
+        if (item.id === occupant.id && !emptySlot) {
+          return { ...item, x: undefined, y: undefined, slotIndex: undefined }
+        }
+        return item
+      }),
+    }
   }
 
   moveItemBetweenPages(itemId: string, direction: -1 | 1) {
@@ -804,6 +947,9 @@ export class DesktopUIStore {
       ...item,
       x: undefined,
       y: undefined,
+      slotIndex: undefined,
+      preferredPage: targetPageIndex,
+      placementType: 'manual',
     })
 
     this.update({

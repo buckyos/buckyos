@@ -3,6 +3,20 @@
  *
  * Pure functions for grid computation, layout resolution,
  * dead-zone migration, and position management.
+ *
+ * ## Design (proposal: desktop-grid)
+ *
+ * - **Slot-first**: the logical slot index (column-major on desktop,
+ *   row-major on mobile) is the single source of truth.
+ *   Pixel coordinates are derived from it at render time.
+ * - **Page + Slot**: layout is `pages[pageIndex].slots[slotIndex]`,
+ *   not a flat global array.
+ * - **Tail-append, no hole-filling**: unpositioned items are appended
+ *   after `maxUsedSlot + 1`; user-created gaps are preserved.
+ * - **Fixed desktop cell size**: determined by density tier, not by
+ *   stretching to fill the viewport.
+ * - **Resize / drag separation**: resize reflow and drag collision
+ *   use different rule sets (handled in the store layer).
  */
 import type {
   DeadZone,
@@ -10,6 +24,7 @@ import type {
   FormFactor,
   LayoutItem,
   LayoutState,
+  PlacementType,
   WindowAppearancePreferences,
   WindowGeometry,
 } from './ui'
@@ -174,6 +189,16 @@ export function columnsForWidth(width: number): number {
 }
 
 /**
+ * Fixed row height for desktop by density tier.
+ * Desktop cells do NOT stretch — extra space becomes margin.
+ */
+export const desktopFixedRowHeight: Record<GridDensity, number> = {
+  small: 78,
+  medium: 92,
+  large: 108,
+}
+
+/**
  * Minimum row height on desktop -- more compact than the density value.
  * icon-padding-top(10) + icon(48) + label-padding(4) + 1 line(16) = 78
  */
@@ -181,29 +206,155 @@ export const DESKTOP_MIN_ROW_HEIGHT = 78
 
 /**
  * Compute how many rows fit in the available height.
+ * Desktop uses fixed cell height (by density); mobile uses density row height.
  */
 export function rowsForHeight(
   height: number,
   density: GridDensity,
   isMobile: boolean,
 ): number {
-  const slotH = isMobile ? densityRowHeight[density] : DESKTOP_MIN_ROW_HEIGHT
+  const slotH = isMobile ? densityRowHeight[density] : desktopFixedRowHeight[density]
   return Math.max(1, Math.floor((height + GRID_GAP) / (slotH + GRID_GAP)))
 }
 
 /**
  * Compute actual row height so the grid fills the entire container height evenly.
+ * Used for mobile only. Desktop uses fixed row height.
  */
 export function stretchedRowHeight(height: number, rows: number): number {
   if (rows <= 0) return densityRowHeight.medium
   return (height - (rows - 1) * GRID_GAP) / rows
 }
 
+/**
+ * Return the fixed row height for desktop, or stretched height for mobile.
+ */
+export function effectiveRowHeight(
+  height: number,
+  rows: number,
+  density: GridDensity,
+  isMobile: boolean,
+): number {
+  if (isMobile) {
+    return stretchedRowHeight(height, rows)
+  }
+  return desktopFixedRowHeight[density]
+}
+
 // ---------------------------------------------------------------------------
-// Grid slot scanning
+// Slot ↔ grid-coordinate conversion
 // ---------------------------------------------------------------------------
 
 export type ScanOrder = 'row-major' | 'col-major'
+
+/**
+ * Convert a linear slot index to (x, y) grid coordinates.
+ *
+ * - column-major (desktop): slot = col * rows + row → x=col, y=row
+ * - row-major (mobile):     slot = row * cols + col → x=col, y=row
+ */
+export function slotToCoord(
+  slot: number,
+  cols: number,
+  rows: number,
+  order: ScanOrder,
+): { x: number; y: number } {
+  if (order === 'col-major') {
+    const col = Math.floor(slot / rows)
+    const row = slot % rows
+    return { x: col, y: row }
+  }
+  // row-major
+  const row = Math.floor(slot / cols)
+  const col = slot % cols
+  return { x: col, y: row }
+}
+
+/**
+ * Convert (x, y) grid coordinates to a linear slot index.
+ */
+export function coordToSlot(
+  x: number,
+  y: number,
+  cols: number,
+  rows: number,
+  order: ScanOrder,
+): number {
+  if (order === 'col-major') {
+    return x * rows + y
+  }
+  return y * cols + x
+}
+
+/**
+ * Page capacity = rows * cols (total number of 1×1 slots per page).
+ */
+export function pageCapacity(cols: number, rows: number): number {
+  return cols * rows
+}
+
+// ---------------------------------------------------------------------------
+// Max-used-slot & tail-append helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the highest slot index occupied on a page, or -1 if the page is empty.
+ * Uses column-major or row-major depending on scanOrder.
+ */
+export function getMaxUsedSlot(
+  page: DesktopPageState,
+  cols: number,
+  rows: number,
+  order: ScanOrder,
+): number {
+  let maxSlot = -1
+  for (const item of page.items) {
+    if (item.slotIndex !== undefined) {
+      // Use slotIndex directly (new model)
+      const endSlot = item.slotIndex + (item.w - 1) * (order === 'col-major' ? rows : 1)
+        + (item.h - 1) * (order === 'col-major' ? 1 : cols)
+      maxSlot = Math.max(maxSlot, endSlot)
+    } else if (item.x !== undefined && item.y !== undefined) {
+      // Fallback to x/y (legacy or derived)
+      for (let dx = 0; dx < item.w; dx++) {
+        for (let dy = 0; dy < item.h; dy++) {
+          const slot = coordToSlot(item.x + dx, item.y + dy, cols, rows, order)
+          maxSlot = Math.max(maxSlot, slot)
+        }
+      }
+    }
+  }
+  return maxSlot
+}
+
+/**
+ * Build a set of occupied slot indices for a page.
+ */
+function getOccupiedSlots(
+  page: DesktopPageState,
+  cols: number,
+  rows: number,
+  order: ScanOrder,
+  excludeId?: string,
+): Set<number> {
+  const occupied = new Set<number>()
+  const cap = pageCapacity(cols, rows)
+  for (const item of page.items) {
+    if (item.id === excludeId) continue
+    if (item.x === undefined || item.y === undefined) continue
+    for (let dx = 0; dx < item.w; dx++) {
+      for (let dy = 0; dy < item.h; dy++) {
+        const slot = coordToSlot(item.x + dx, item.y + dy, cols, rows, order)
+        if (slot < cap) occupied.add(slot)
+      }
+    }
+  }
+  return occupied
+}
+
+// ---------------------------------------------------------------------------
+// Grid slot scanning (tail-append — no hole filling)
+// ---------------------------------------------------------------------------
 
 function fits(
   page: DesktopPageState,
@@ -228,34 +379,12 @@ function fits(
   })
 }
 
-function findTailSlotColMajor(
-  page: DesktopPageState,
-  w: number,
-  h: number,
-  cols: number,
-  rows: number,
-): { x: number; y: number } | null {
-  let maxLinearEnd = 0
-  for (const item of page.items) {
-    if (item.x === undefined || item.y === undefined) continue
-    for (let col = item.x; col < item.x + item.w; col++) {
-      const linearEnd = col * rows + (item.y + item.h)
-      maxLinearEnd = Math.max(maxLinearEnd, linearEnd)
-    }
-  }
-  const startCol = Math.floor(maxLinearEnd / rows)
-  const startRow = maxLinearEnd % rows
-  for (let x = startCol; x + w <= cols; x++) {
-    const sy = x === startCol ? startRow : 0
-    for (let y = sy; y + h <= rows; y++) {
-      if (fits(page, x, y, w, h, cols, rows)) return { x, y }
-    }
-  }
-  return null
-}
-
 /**
- * Find a slot at the tail of the page (after the last positioned content).
+ * Find a slot at the tail of the page (after maxUsedSlot).
+ * Implements the "tail-append, no hole-filling" policy from the proposal.
+ *
+ * For 1×1 items this is simply `maxUsedSlot + 1` if it's within capacity.
+ * For multi-cell items we scan from that point forward.
  */
 export function findTailSlot(
   page: DesktopPageState,
@@ -265,24 +394,38 @@ export function findTailSlot(
   rows: number,
   scanOrder: ScanOrder = 'row-major',
 ): { x: number; y: number } | null {
-  if (scanOrder === 'col-major') {
-    return findTailSlotColMajor(page, w, h, cols, rows)
-  }
-  // row-major (mobile)
-  let maxLinearEnd = 0
-  for (const item of page.items) {
-    if (item.x === undefined || item.y === undefined) continue
-    for (let row = item.y; row < item.y + item.h; row++) {
-      const linearEnd = row * cols + (item.x + item.w)
-      maxLinearEnd = Math.max(maxLinearEnd, linearEnd)
+  const maxSlot = getMaxUsedSlot(page, cols, rows, scanOrder)
+  const cap = pageCapacity(cols, rows)
+  const startSlot = maxSlot + 1
+
+  if (startSlot >= cap && w === 1 && h === 1) return null
+
+  // For 1×1 items, just convert startSlot
+  if (w === 1 && h === 1) {
+    if (startSlot < cap) {
+      return slotToCoord(startSlot, cols, rows, scanOrder)
     }
+    return null
   }
-  const startRow = Math.floor(maxLinearEnd / cols)
-  const startCol = maxLinearEnd % cols
-  for (let y = startRow; y + h <= rows; y++) {
-    const sx = y === startRow ? startCol : 0
-    for (let x = sx; x + w <= cols; x++) {
-      if (fits(page, x, y, w, h, cols, rows)) return { x, y }
+
+  // For multi-cell items, scan from startSlot
+  if (scanOrder === 'col-major') {
+    const startCol = Math.floor(startSlot / rows)
+    const startRow = startSlot % rows
+    for (let x = startCol; x + w <= cols; x++) {
+      const sy = x === startCol ? startRow : 0
+      for (let y = sy; y + h <= rows; y++) {
+        if (fits(page, x, y, w, h, cols, rows)) return { x, y }
+      }
+    }
+  } else {
+    const startRow = Math.floor(startSlot / cols)
+    const startCol = startSlot % cols
+    for (let y = startRow; y + h <= rows; y++) {
+      const sx = y === startRow ? startCol : 0
+      for (let x = sx; x + w <= cols; x++) {
+        if (fits(page, x, y, w, h, cols, rows)) return { x, y }
+      }
     }
   }
   return null
@@ -294,7 +437,8 @@ export function findTailSlot(
 
 /**
  * Mark positioned items as unpositioned when their position exceeds
- * the current grid bounds.
+ * the current grid bounds (slot >= pageCapacity).
+ * Also marks their slotIndex as undefined and records preferredPage.
  */
 export function invalidatePositions(
   layout: LayoutState,
@@ -302,13 +446,36 @@ export function invalidatePositions(
   rows: number,
 ): LayoutState {
   let anyChanged = false
-  const pages = layout.pages.map((page) => {
+  const cap = pageCapacity(cols, rows)
+  const order: ScanOrder = layout.formFactor === 'mobile' ? 'row-major' : 'col-major'
+
+  const pages = layout.pages.map((page, pageIdx) => {
     let pageChanged = false
     const items = page.items.map((item) => {
       if (item.x === undefined || item.y === undefined) return item
       if (item.x + item.w > cols || item.y + item.h > rows) {
         pageChanged = true
-        return { ...item, x: undefined, y: undefined }
+        return {
+          ...item,
+          x: undefined,
+          y: undefined,
+          slotIndex: undefined,
+          preferredPage: item.preferredPage ?? pageIdx,
+          placementType: 'reflow' as PlacementType,
+        }
+      }
+      // Also check slotIndex against capacity
+      const slot = coordToSlot(item.x, item.y, cols, rows, order)
+      if (slot >= cap) {
+        pageChanged = true
+        return {
+          ...item,
+          x: undefined,
+          y: undefined,
+          slotIndex: undefined,
+          preferredPage: item.preferredPage ?? pageIdx,
+          placementType: 'reflow' as PlacementType,
+        }
       }
       return item
     })
@@ -321,6 +488,11 @@ export function invalidatePositions(
 /**
  * Resolve all unpositioned items by placing them at the tail of each page.
  * Returns a fully-positioned layout suitable for rendering.
+ *
+ * Unpositioned items are sorted by:
+ *   1. preferredPage (try to stay on preferred page)
+ *   2. original slotIndex (if available)
+ *   3. seq (install order)
  */
 export function resolveLayout(
   layout: LayoutState,
@@ -328,12 +500,12 @@ export function resolveLayout(
   rows: number,
   scanOrder: ScanOrder = 'row-major',
 ): LayoutState {
-  const unpositioned: LayoutItem[] = []
-  const resolvedPages: DesktopPageState[] = layout.pages.map((page) => ({
+  const unpositioned: Array<{ item: LayoutItem; sourcePageIdx: number }> = []
+  const resolvedPages: DesktopPageState[] = layout.pages.map((page, pageIdx) => ({
     ...page,
     items: page.items.filter((item) => {
       if (item.x === undefined || item.y === undefined) {
-        unpositioned.push(item)
+        unpositioned.push({ item, sourcePageIdx: pageIdx })
         return false
       }
       return true
@@ -342,24 +514,189 @@ export function resolveLayout(
 
   if (unpositioned.length === 0) return layout
 
-  for (const item of unpositioned) {
+  // Sort unpositioned items for stable placement
+  unpositioned.sort((a, b) => {
+    const prefA = a.item.preferredPage ?? a.sourcePageIdx
+    const prefB = b.item.preferredPage ?? b.sourcePageIdx
+    if (prefA !== prefB) return prefA - prefB
+    const slotA = a.item.slotIndex ?? Infinity
+    const slotB = b.item.slotIndex ?? Infinity
+    if (slotA !== slotB) return slotA - slotB
+    const seqA = a.item.seq ?? Infinity
+    const seqB = b.item.seq ?? Infinity
+    return seqA - seqB
+  })
+
+  for (const { item } of unpositioned) {
+    const preferredPage = item.preferredPage ?? 0
     let placed = false
-    for (const page of resolvedPages) {
-      const slot = findTailSlot(page, item.w, item.h, cols, rows, scanOrder)
+
+    // Try from preferredPage onward
+    for (let pi = preferredPage; pi < resolvedPages.length; pi++) {
+      const slot = findTailSlot(resolvedPages[pi], item.w, item.h, cols, rows, scanOrder)
       if (slot) {
-        page.items.push({ ...item, x: slot.x, y: slot.y })
+        const slotIdx = coordToSlot(slot.x, slot.y, cols, rows, scanOrder)
+        resolvedPages[pi].items.push({
+          ...item,
+          x: slot.x,
+          y: slot.y,
+          slotIndex: slotIdx,
+          placementType: item.placementType ?? 'auto',
+        })
         placed = true
         break
+      }
+    }
+    // Also try pages before preferredPage if not placed
+    if (!placed) {
+      for (let pi = 0; pi < preferredPage && pi < resolvedPages.length; pi++) {
+        const slot = findTailSlot(resolvedPages[pi], item.w, item.h, cols, rows, scanOrder)
+        if (slot) {
+          const slotIdx = coordToSlot(slot.x, slot.y, cols, rows, scanOrder)
+          resolvedPages[pi].items.push({
+            ...item,
+            x: slot.x,
+            y: slot.y,
+            slotIndex: slotIdx,
+            placementType: item.placementType ?? 'auto',
+          })
+          placed = true
+          break
+        }
       }
     }
     if (!placed) {
       resolvedPages.push({
         id: `${layout.formFactor}-page-${resolvedPages.length + 1}`,
-        items: [{ ...item, x: 0, y: 0 }],
+        items: [{ ...item, x: 0, y: 0, slotIndex: 0, placementType: item.placementType ?? 'auto' }],
       })
     }
   }
   return { ...layout, pages: resolvedPages }
+}
+
+// ---------------------------------------------------------------------------
+// Drag collision helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the nearest empty slot to `targetSlot` on the same page.
+ * Search by Manhattan distance, with tie-break favoring the scan-order direction
+ * (column-major: prefer below; row-major: prefer right).
+ *
+ * Returns the (x, y) of the nearest empty slot, or null if page is full.
+ */
+export function findNearestEmptySlot(
+  page: DesktopPageState,
+  targetX: number,
+  targetY: number,
+  cols: number,
+  rows: number,
+  order: ScanOrder,
+  excludeId?: string,
+): { x: number; y: number } | null {
+  const occupied = getOccupiedSlots(page, cols, rows, order, excludeId)
+  const cap = pageCapacity(cols, rows)
+
+  let best: { x: number; y: number; dist: number; slot: number } | null = null
+
+  for (let slot = 0; slot < cap; slot++) {
+    if (occupied.has(slot)) continue
+    const coord = slotToCoord(slot, cols, rows, order)
+    const dist = Math.abs(coord.x - targetX) + Math.abs(coord.y - targetY)
+    if (!best || dist < best.dist || (dist === best.dist && slot < best.slot)) {
+      best = { x: coord.x, y: coord.y, dist, slot }
+    }
+  }
+
+  return best ? { x: best.x, y: best.y } : null
+}
+
+/**
+ * Reorder items within a full page: shift items between source and target
+ * slots to make room. Returns a new items array with updated positions.
+ *
+ * - If source < target: items in (source+1..target) shift back by 1
+ * - If source > target: items in (target..source-1) shift forward by 1
+ */
+export function reorderWithinPage(
+  page: DesktopPageState,
+  sourceSlot: number,
+  targetSlot: number,
+  cols: number,
+  rows: number,
+  order: ScanOrder,
+): DesktopPageState {
+  if (sourceSlot === targetSlot) return page
+
+  // Build slot→item map
+  const slotMap = new Map<number, LayoutItem>()
+  let draggedItem: LayoutItem | undefined
+  for (const item of page.items) {
+    if (item.x === undefined || item.y === undefined) continue
+    const slot = coordToSlot(item.x, item.y, cols, rows, order)
+    if (slot === sourceSlot) {
+      draggedItem = item
+    } else {
+      slotMap.set(slot, item)
+    }
+  }
+
+  if (!draggedItem) return page
+
+  // Shift items
+  const lo = Math.min(sourceSlot, targetSlot)
+  const hi = Math.max(sourceSlot, targetSlot)
+  const newItems: LayoutItem[] = []
+
+  // Items outside the range stay where they are
+  for (const item of page.items) {
+    if (item.x === undefined || item.y === undefined) {
+      newItems.push(item)
+      continue
+    }
+    const slot = coordToSlot(item.x, item.y, cols, rows, order)
+    if (slot === sourceSlot) continue // handle separately
+    if (slot < lo || slot > hi) {
+      newItems.push(item)
+      continue
+    }
+    // Item is in the shift range
+    const newSlot = sourceSlot < targetSlot ? slot - 1 : slot + 1
+    const coord = slotToCoord(newSlot, cols, rows, order)
+    newItems.push({
+      ...item,
+      x: coord.x,
+      y: coord.y,
+      slotIndex: newSlot,
+      placementType: 'manual',
+    })
+  }
+
+  // Place dragged item at target
+  const targetCoord = slotToCoord(targetSlot, cols, rows, order)
+  newItems.push({
+    ...draggedItem,
+    x: targetCoord.x,
+    y: targetCoord.y,
+    slotIndex: targetSlot,
+    placementType: 'manual',
+  })
+
+  return { ...page, items: newItems }
+}
+
+/**
+ * Check if a page is full (all slots occupied).
+ */
+export function isPageFull(
+  page: DesktopPageState,
+  cols: number,
+  rows: number,
+  order: ScanOrder,
+): boolean {
+  const occupied = getOccupiedSlots(page, cols, rows, order)
+  return occupied.size >= pageCapacity(cols, rows)
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +738,11 @@ export function reconcileLayoutWithDefaultApps(
   )
 
   const newItems: LayoutItem[] = []
+  let nextSeq = sanitizedLayout.pages.reduce(
+    (max, page) => Math.max(max, ...page.items.map((i) => i.seq ?? 0)),
+    0,
+  ) + 1
+
   defaultLayout.pages.forEach((defaultPage) => {
     defaultPage.items.forEach((item) => {
       if (
@@ -410,7 +752,14 @@ export function reconcileLayoutWithDefaultApps(
       ) {
         return
       }
-      newItems.push({ ...item, x: undefined, y: undefined })
+      newItems.push({
+        ...item,
+        x: undefined,
+        y: undefined,
+        slotIndex: undefined,
+        placementType: 'auto',
+        seq: nextSeq++,
+      })
       existingAppIds.add(item.appId)
     })
   })
@@ -476,3 +825,40 @@ export function normalizeViewportProgress(
 }
 
 export const desktopMinCanvasSize = { width: 960, height: 720 }
+
+// ---------------------------------------------------------------------------
+// Slot sync: ensure slotIndex is populated from x/y (migration helper)
+// ---------------------------------------------------------------------------
+
+/**
+ * Migrate a layout so that every positioned item has a slotIndex and seq.
+ * Used when loading layouts that predate the slot-based model.
+ */
+export function migrateToSlotModel(
+  layout: LayoutState,
+  cols: number,
+  rows: number,
+): LayoutState {
+  const order: ScanOrder = layout.formFactor === 'mobile' ? 'row-major' : 'col-major'
+  let globalSeq = 0
+
+  const pages = layout.pages.map((page, pageIdx) => ({
+    ...page,
+    items: page.items.map((item) => {
+      const needsSlot = item.slotIndex === undefined && item.x !== undefined && item.y !== undefined
+      const needsSeq = item.seq === undefined
+      if (!needsSlot && !needsSeq) return item
+      return {
+        ...item,
+        slotIndex: needsSlot
+          ? coordToSlot(item.x!, item.y!, cols, rows, order)
+          : item.slotIndex,
+        preferredPage: item.preferredPage ?? pageIdx,
+        placementType: item.placementType ?? ('manual' as PlacementType),
+        seq: needsSeq ? globalSeq++ : item.seq,
+      }
+    }),
+  }))
+
+  return { ...layout, pages }
+}
