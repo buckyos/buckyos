@@ -73,6 +73,8 @@ pub enum RuntimeBackgroundTaskKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeBackgroundTaskStatus {
     pub task: RuntimeBackgroundTaskKind,
+    #[serde(default = "background_task_enabled_default")]
+    pub enabled: bool,
     pub error_class: Option<RuntimeErrorClass>,
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
@@ -82,10 +84,15 @@ pub struct RuntimeBackgroundTaskStatus {
     pub degraded_since: Option<u64>,
 }
 
+fn background_task_enabled_default() -> bool {
+    true
+}
+
 impl RuntimeBackgroundTaskStatus {
     fn new(task: RuntimeBackgroundTaskKind) -> Self {
         Self {
             task,
+            enabled: true,
             error_class: None,
             consecutive_failures: 0,
             last_error: None,
@@ -719,6 +726,33 @@ impl BuckyOSRuntime {
         RuntimeHealthSnapshot { tasks }
     }
 
+    pub async fn set_background_task_enabled(
+        &self,
+        task: RuntimeBackgroundTaskKind,
+        enabled: bool,
+    ) {
+        let mut status_map = self.background_task_status.write().await;
+        let status = status_map
+            .entry(task)
+            .or_insert_with(|| RuntimeBackgroundTaskStatus::new(task));
+        status.enabled = enabled;
+        if enabled {
+            status.next_retry_time = None;
+        }
+    }
+
+    pub async fn set_all_background_tasks_enabled(&self, enabled: bool) {
+        self.set_background_task_enabled(RuntimeBackgroundTaskKind::RenewToken, enabled)
+            .await;
+        self.set_background_task_enabled(
+            RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+            enabled,
+        )
+        .await;
+        self.set_background_task_enabled(RuntimeBackgroundTaskKind::RefreshTrustKeys, enabled)
+            .await;
+    }
+
     fn login_retry_policy() -> RetryPolicy {
         RetryPolicy {
             max_attempts: 3,
@@ -772,8 +806,13 @@ impl BuckyOSRuntime {
         let status_map = self.background_task_status.read().await;
         status_map
             .get(&task)
-            .and_then(|status| status.next_retry_time)
-            .map(|retry_at| retry_at <= now)
+            .map(|status| {
+                status.enabled
+                    && status
+                        .next_retry_time
+                        .map(|retry_at| retry_at <= now)
+                        .unwrap_or(true)
+            })
             .unwrap_or(true)
     }
 
@@ -2284,6 +2323,51 @@ mod tests {
         assert_eq!(
             client_b.get_session_token().await,
             Some("token-b".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn background_tasks_can_be_disabled_and_reenabled() {
+        let runtime = BuckyOSRuntime::new("demo", None, BuckyOSRuntimeType::KernelService);
+        let now = buckyos_get_unix_timestamp();
+
+        assert!(
+            runtime
+                .should_run_background_task(
+                    RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+                    now
+                )
+                .await
+        );
+
+        runtime
+            .set_background_task_enabled(
+                RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+                false,
+            )
+            .await;
+        assert!(
+            !runtime
+                .should_run_background_task(
+                    RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+                    now
+                )
+                .await
+        );
+
+        runtime
+            .set_background_task_enabled(
+                RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+                true,
+            )
+            .await;
+        assert!(
+            runtime
+                .should_run_background_task(
+                    RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
+                    now
+                )
+                .await
         );
     }
 

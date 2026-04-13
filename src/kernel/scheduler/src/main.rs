@@ -224,6 +224,7 @@ async fn service_main(is_boot: bool) -> Result<i32> {
                     error!("init_buckyos_api_runtime failed: {:?}", e);
                     e
                 })?;
+        runtime.set_all_background_tasks_enabled(false).await;
         let mut real_machine_config = BuckyOSMachineConfig::default();
         let machine_config = BuckyOSMachineConfig::load_machine_config();
         if machine_config.is_some() {
