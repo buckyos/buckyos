@@ -1,6 +1,7 @@
 mod app_installer;
 mod file_manager;
 mod sys_auth_backend;
+mod ui_session_mgr;
 
 use ::kRPC::*;
 use anyhow::Result;
@@ -7350,6 +7351,10 @@ impl HttpServer for ControlPanelServer {
         }
         if method == Method::POST && path == "/sso_logout" {
             return self.serve_sso_logout(req, info).await;
+        }
+
+        if path == "/api/desktop" || path.starts_with("/api/desktop/") {
+            return self.handle_desktop_api(req).await;
         }
 
         if path == "/api" || path.starts_with("/api/") {
