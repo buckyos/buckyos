@@ -62,4 +62,8 @@ src/rootfs/bin/msg-center/msg_center
 src/rootfs/bin/opendan/opendan*
 src/rootfs/bin/bucky-file/
 src/publish/win_pkg/scripts/seed_defaults.ps1
+src/publish/win_pkg/scripts/ensure_firewall_rules.ps1
+src/publish/win_pkg/scripts/uninstall_cleanup.ps1
 src/rootfs/bin/opendan/agent_tool
+src/apps/sys_test/web/dist/
+src/frame/desktop/dist/favicon.svg
