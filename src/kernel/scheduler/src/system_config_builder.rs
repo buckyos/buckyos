@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 
 const DEFAULT_OOD_ID: &str = "ood1";
-const DEFAULT_SN_OPENAI_MODELS: &[&str] = &["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"];
+const DEFAULT_SN_OPENAI_MODELS: &[&str] = &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
 const DEFAULT_SN_OPENAI_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
 const SN_OPENAI_MODELS_API: &str = "https://sn.buckyos.ai/api/v1/ai/models";
 const SN_OPENAI_CHAT_COMPLETIONS_API: &str = "https://sn.buckyos.ai/api/v1/ai/chat/completions";
@@ -831,10 +831,10 @@ fn build_sn_openai_model_settings(sn_openai_models: Option<&[String]>) -> SnOpen
     }
 
     let default_model =
-        pick_preferred_model(models.as_slice(), &["gpt-5-mini", "gpt-5", "gpt-4.1-mini"])
+        pick_preferred_model(models.as_slice(), &["gpt-5.4-mini", "gpt-5.4"])
             .unwrap_or_else(|| models[0].clone());
     let plan_default_model =
-        pick_preferred_model(models.as_slice(), &["gpt-5", "gpt-5-mini", "gpt-4.1"])
+        pick_preferred_model(models.as_slice(), &["gpt-5.4", "gpt-5.4-mini"])
             .unwrap_or_else(|| default_model.clone());
 
     let mut image_models = models
