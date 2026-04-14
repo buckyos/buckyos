@@ -1,5 +1,5 @@
+use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
 use anyhow::{anyhow, Result};
-use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use buckyos_api::msg_queue::{
     generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
 };
@@ -20,7 +20,7 @@ use buckyos_api::{
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID,
 };
-use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{
@@ -35,7 +35,8 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 
 const DEFAULT_OOD_ID: &str = "ood1";
-const DEFAULT_SN_OPENAI_MODELS: &[&str] = &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
+const DEFAULT_SN_OPENAI_MODELS: &[&str] =
+    &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
 const DEFAULT_SN_OPENAI_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
 const SN_OPENAI_MODELS_API: &str = "https://sn.buckyos.ai/api/v1/ai/models";
 const SN_OPENAI_CHAT_COMPLETIONS_API: &str = "https://sn.buckyos.ai/api/v1/ai/chat/completions";
@@ -830,12 +831,10 @@ fn build_sn_openai_model_settings(sn_openai_models: Option<&[String]>) -> SnOpen
             .collect::<Vec<_>>();
     }
 
-    let default_model =
-        pick_preferred_model(models.as_slice(), &["gpt-5.4-mini", "gpt-5.4"])
-            .unwrap_or_else(|| models[0].clone());
-    let plan_default_model =
-        pick_preferred_model(models.as_slice(), &["gpt-5.4", "gpt-5.4-mini"])
-            .unwrap_or_else(|| default_model.clone());
+    let default_model = pick_preferred_model(models.as_slice(), &["gpt-5.4-mini", "gpt-5.4"])
+        .unwrap_or_else(|| models[0].clone());
+    let plan_default_model = pick_preferred_model(models.as_slice(), &["gpt-5.4", "gpt-5.4-mini"])
+        .unwrap_or_else(|| default_model.clone());
 
     let mut image_models = models
         .iter()
@@ -908,10 +907,7 @@ async fn fetch_sn_openai_models_impl(user_name: &str) -> Result<Vec<String>> {
         .text()
         .await
         .map_err(|err| anyhow!("failed to read models response body: {}", err))?;
-    info!(
-        "sn-openai models endpoint raw response: {}",
-        response_text
-    );
+    info!("sn-openai models endpoint raw response: {}", response_text);
     let body: Value = serde_json::from_str(response_text.as_str())
         .map_err(|err| anyhow!("invalid models response json: {}", err))?;
     let models = extract_model_ids_from_response(&body);
@@ -919,11 +915,7 @@ async fn fetch_sn_openai_models_impl(user_name: &str) -> Result<Vec<String>> {
         return Err(anyhow!("models response does not contain model ids"));
     }
 
-    info!(
-        "fetched {} sn-openai models: {:?}",
-        models.len(),
-        models
-    );
+    info!("fetched {} sn-openai models: {:?}", models.len(), models);
     Ok(models)
 }
 
@@ -1191,9 +1183,8 @@ impl StartConfigSummary {
 mod tests {
     use super::{
         build_aicc_settings, build_aicc_settings_with_sn_models, build_default_jarvis_agent_spec,
-        build_kernel_service_spec, extract_model_ids_from_response,
-        build_msg_center_settings, build_zone_user_contact_settings, StartConfigSummary,
-        SystemConfigBuilder,
+        build_kernel_service_spec, build_msg_center_settings, build_zone_user_contact_settings,
+        extract_model_ids_from_response, StartConfigSummary, SystemConfigBuilder,
     };
     use buckyos_api::{
         generate_verify_hub_service_doc, AppDoc, AppServiceSpec, AppType, OPENDAN_SERVICE_PORT,

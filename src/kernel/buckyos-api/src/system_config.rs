@@ -1,10 +1,10 @@
 //TODO:
 //  add WATCH,and load cached value automatically when the value is changed.
 
-use ::kRPC::{RPCContext, kRPC};
+use ::kRPC::{kRPC, RPCContext};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use thiserror::Error;
 
 use std::collections::HashMap;
@@ -39,6 +39,13 @@ pub struct SystemConfigValue {
     pub value: String,
     pub version: u64,
     pub is_changed: bool,
+}
+
+fn summarize_session_token(session_token: Option<&str>) -> String {
+    match session_token {
+        Some(token) => format!("present(len={})", token.len()),
+        None => "None".to_string(),
+    }
 }
 
 impl SystemConfigValue {
@@ -160,7 +167,7 @@ impl SystemConfigClient {
         info!(
             "system config client is created,service_url:{},session_token:{}",
             service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),
-            real_session_token.clone().unwrap_or("None".to_string())
+            summarize_session_token(session_token)
         );
         let key_control = vec!["services/".to_string(), "system/rbac/".to_string()];
         let cache_key_control = OnceCell::new_with(Some(key_control));
