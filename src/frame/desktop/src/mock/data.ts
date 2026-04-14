@@ -95,7 +95,6 @@ const appCatalog: AppDefinition[] = [
       titleBarMode: 'system',
       placement: 'inplace',
       contentPadding: 'none',
-      mobileRedirectPath: '/files',
       desktopWindow: {
         width: 1024,
         height: 720,
