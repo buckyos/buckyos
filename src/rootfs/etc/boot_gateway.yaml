@@ -40,7 +40,6 @@ stacks:
     # 1） new_http_stream的时候，可以把来源did写入到REQ中供后续使用，但rtcp中转后，只能看到中转节点的did(可以简单的要求中转节点)
     # 2） new_rtcp_stream的时候，是中转，默认只允许zone内中转(来源必须是zone内的设备)
 
-              
   zone_gateway_http:
     protocol: tcp
     bind: 0.0.0.0:80
@@ -70,7 +69,7 @@ stacks:
 servers:
   buckyos_public:
     type: dir
-    root_path: ../data/srv/publish/ 
+    root_path: ../data/srv/publish/
 
   node_gateway:
     type: http
@@ -80,7 +79,7 @@ servers:
       - text/css
       - application/javascript
       - application/json
-      - application/xml    
+      - application/xml
 
     hook_point:
       main:
@@ -88,10 +87,11 @@ servers:
           default:
             priority: 1
             block: |
-
               global THIS_NODE_ID=$NODE_INFO.this_node_id;
               global THIS_ZONE_HOST=$NODE_INFO.this_zone_host;
               global CONTROL_PANEL_URL="https://sys.${THIS_ZONE_HOST}/";
+              global APP_ID="";
+              global SERVICE_ID="";
 
               if eq $REQ.host "public.${THIS_ZONE_HOST}" then
                 return --from chain $(exec forward_to_public);
@@ -115,18 +115,17 @@ servers:
               echo "reject";
               reject;
 
-
-
           get_app_info_from_req:
             # 尝试通过域名解析得到appid
             # 找到会设置APP_ID和TARGET_APP_INFO
             # host 必须精确匹配 app_id.${THIS_ZONE_HOST} 或 app_id-${THIS_ZONE_HOST} 格式
             priority: 120
             block: |
-              map-create hp;
               if $REQ.host == $THIS_ZONE_HOST then
+                map-create hp;
                 map-add hp 1 "_";
               else
+                map-create hp;
                 match-reg --capture hp $REQ.host "^([a-zA-Z0-9_]+)[-.]" || return false;
               end
               match-include $APP_INFO $hp[1] || return false;
@@ -142,29 +141,42 @@ servers:
               end
               return true;
 
-
           get_service_info_from_req:
             # 尝试通过匹配REQ.path 得到 service_id,/kapi/$service_id 或 /kapi/$service_id/*
             # 找到会设置SERVICE_ID和TARGET_SERVICE_INFO
             priority: 130
             block: |
+              sys_service_id = "";
               if match $REQ.path "/1.0/identifiers/*" then
-                global SERVICE_ID="system_config";
+                sys_service_id="system_config";
               end
               if match $REQ.path "/.well-known/*" then
-                global SERVICE_ID="system_config";
+                sys_service_id="system_config";
               end
-              if eq $SERVICE_ID "system_config" then
-                global TARGET_SERVICE_INFO=$SERVICE_INFO[$SERVICE_ID];
+              if match $REQ.path "/sso_callback" then
+                sys_service_id="control-panel";
+              end
+              if match $REQ.path "/sso_refresh" then
+                sys_service_id="control-panel";
+              end
+              if match $REQ.path "/sso_logout" then
+                sys_service_id="control-panel";
+              end
+              if match $REQ.path "/ndm/*" then
+                sys_service_id="control-panel";
+              end
+              if !eq $sys_service_id "" then
+                global TARGET_SERVICE_INFO=$SERVICE_INFO[$sys_service_id];
+                global SERVICE_ID=$sys_service_id;
                 return true;
               end
 
-              map-create hp;
-              match-reg --capture hp $REQ.path "^/kapi/([a-zA-Z0-9_-]+)(/.*)?" || return false;
-              match-include $SERVICE_INFO $hp[1] || return false;
-              global TARGET_SERVICE_INFO=$SERVICE_INFO[$hp[1]];
-              global SERVICE_ID=$hp[1];
-              return $hp[1];
+              map-create krpc_hp;
+              match-reg --capture krpc_hp $REQ.path "^/kapi/([a-zA-Z0-9_-]+)(/.*)?" || return false;
+              match-include $SERVICE_INFO $krpc_hp[1] || return false;
+              global TARGET_SERVICE_INFO=$SERVICE_INFO[$krpc_hp[1]];
+              global SERVICE_ID=$krpc_hp[1];
+              return $krpc_hp[1];
 
           check_oauth:
             # 判断是否需要在网关做OAuth2.0认证
@@ -186,7 +198,9 @@ servers:
             priority: 140
             block: |
               eq $APP_ID "" && return true;
-              match-include $TARGET_APP_INFO.block_services $SERVICE_ID && error false;
+              if match-include $TARGET_APP_INFO "block_services" then
+                match-include $TARGET_APP_INFO.block_services $SERVICE_ID && error false;
+              end
               return true;
 
           forward_to_service:
@@ -213,7 +227,7 @@ servers:
           forward_to_app:
             priority: 160
             block: |
-              echo "forward_to_app block";
+              #echo "forward_to_app block";
               if match-include $TARGET_APP_INFO "dir_pkg_id" then
                 call-server $TARGET_APP_INFO.dir_pkg_id;
               else
@@ -227,10 +241,8 @@ servers:
               echo "forward_to_public block";
               call-server "buckyos_public";
 
-
           check_block_list:
             # 通过请求信息判断是否允许访问本zone
             priority: 110
             block: |
               return true;
-
