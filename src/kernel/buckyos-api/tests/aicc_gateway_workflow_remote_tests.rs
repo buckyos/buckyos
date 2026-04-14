@@ -17,15 +17,22 @@ const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
 const ENV_AICC_OPENAI_BASE_URL: &str = "AICC_OPENAI_BASE_URL";
 const ENV_AICC_SN_OPENAI_BASE_URL: &str = "AICC_SN_OPENAI_BASE_URL";
 const ENV_AICC_OPENAI_MODEL: &str = "AICC_OPENAI_MODEL";
+const ENV_AICC_GEMINI_API_KEY: &str = "AICC_GEMINI_API_KEY";
+const ENV_GEMINI_API_KEY: &str = "GEMINI_API_KEY";
+const ENV_AICC_GEMINI_BASE_URL: &str = "AICC_GEMINI_BASE_URL";
+const ENV_AICC_GEMINI_MODEL: &str = "AICC_GEMINI_MODEL";
 const ENV_AICC_SN_REGISTER_PROVIDER: &str = "AICC_SN_REGISTER_PROVIDER";
 const DEFAULT_MODEL_ALIAS: &str = "llm.plan.default";
 const FIXED_SN_MODEL_ALIAS: &str = "llm.plan.default";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const FIXED_SN_OPENAI_BASE_URL: &str = "https://sn.buckyos.ai/api/v1/ai/chat/completions";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.4";
+const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 
 const MIN_EXPECTED_STEPS: usize = 6;
 const MAX_TOKENS_COMPLEX_DAG: u64 = 1800;
+const MAX_TOKENS_COMPLEX_DAG_GEMINI: u64 = 4096;
 const MAX_TOKENS_JSON_OUTPUT: u64 = 320;
 const MAX_TOKENS_STREAM_OUTPUT: u64 = 1024;
 const TEMP_COMPLEX_DAG: f64 = 0.1;
@@ -35,15 +42,16 @@ const WORKFLOW_REMOTE_CLIENT_TIMEOUT_SECS: u64 = 120;
 
 const COMPLEX_DAG_PROMPT: &str = r#"You are a workflow planner.
 Return JSON only (no markdown).
-Generate a DAG plan for "product release multimedia package" with:
-- plan_id, goal, steps
-- each step has: id, title, capability, model_alias, depends_on, parallel_group, acceptance_criteria
-- acceptance_criteria MUST be a non-empty array of strings (never a single string)
-- depends_on MUST be an array of step id strings
-- at least 6 steps
-- at least one parallel group containing >=2 steps
-- at least one serial dependency step (depends_on not empty)
-- at least one step with retry_policy or replan_trigger
+Generate a DAG plan for "product release multimedia package" with EXACTLY 6 steps.
+Output must include: plan_id, goal, steps.
+Each step must include: id, title, capability, model_alias, depends_on, parallel_group, acceptance_criteria.
+Rules:
+- acceptance_criteria must be array of strings (never a single string), and each step uses 1-2 short items.
+- depends_on must be an array of step id strings.
+- include at least one parallel group containing >=2 steps.
+- include at least one serial dependency step (depends_on not empty).
+- include retry_policy or replan_trigger on at least one step.
+- keep values concise; avoid long descriptions.
 "#;
 
 const JSON_OUTPUT_PROMPT: &str = r#"Return strict JSON object only:
@@ -229,6 +237,17 @@ fn require_openai_api_key() -> String {
         })
 }
 
+fn require_gemini_api_key() -> String {
+    optional_env(ENV_AICC_GEMINI_API_KEY)
+        .or_else(|| optional_env(ENV_GEMINI_API_KEY))
+        .unwrap_or_else(|| {
+            panic!(
+                "missing required env '{}' (or '{}') for provider bootstrap",
+                ENV_AICC_GEMINI_API_KEY, ENV_GEMINI_API_KEY
+            )
+        })
+}
+
 fn resolve_system_config_endpoint(aicc_endpoint: &str) -> String {
     let mut parsed = Url::parse(aicc_endpoint)
         .unwrap_or_else(|err| panic!("invalid AICC endpoint '{}': {}", aicc_endpoint, err));
@@ -240,6 +259,7 @@ fn resolve_system_config_endpoint(aicc_endpoint: &str) -> String {
 #[derive(Clone, Copy)]
 enum ProviderBootstrapMode {
     OpenAiEnv,
+    GeminiEnv,
     SnOpenAiJwt,
 }
 
@@ -258,26 +278,43 @@ async fn ensure_provider_configured_for_remote(
         .unwrap_or_else(|| {
             panic!("remote provider bootstrap requires AICC_RPC_TOKEN or username/password env")
         });
-    let (api_token, base_url, provider_type, auth_mode) = match mode {
+    let (api_token, base_url, provider_type, auth_mode, settings_json_path) = match mode {
         ProviderBootstrapMode::OpenAiEnv => (
             require_openai_api_key(),
             optional_env(ENV_AICC_OPENAI_BASE_URL)
                 .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string()),
             "openai".to_string(),
             "bearer".to_string(),
+            "/openai".to_string(),
+        ),
+        ProviderBootstrapMode::GeminiEnv => (
+            require_gemini_api_key(),
+            optional_env(ENV_AICC_GEMINI_BASE_URL)
+                .unwrap_or_else(|| DEFAULT_GEMINI_BASE_URL.to_string()),
+            "google-gimini".to_string(),
+            "bearer".to_string(),
+            "/gimini".to_string(),
         ),
         ProviderBootstrapMode::SnOpenAiJwt => (
             String::new(),
             sn_openai_base_url_from_env(),
             "sn-openai".to_string(),
             "device_jwt".to_string(),
+            "/openai".to_string(),
         ),
     };
-    let model =
-        optional_env(ENV_AICC_OPENAI_MODEL).unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
+    let model = match mode {
+        ProviderBootstrapMode::GeminiEnv => optional_env(ENV_AICC_GEMINI_MODEL)
+            .unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string()),
+        _ => optional_env(ENV_AICC_OPENAI_MODEL).unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string()),
+    };
+    let instance_id = match mode {
+        ProviderBootstrapMode::GeminiEnv => "workflow-gimini-remote",
+        _ => "workflow-openai-remote",
+    };
 
     let instance_settings = json!({
-        "instance_id": "workflow-openai-remote",
+        "instance_id": instance_id,
         "provider_type": provider_type,
         "base_url": base_url,
         "auth_mode": auth_mode,
@@ -286,11 +323,51 @@ async fn ensure_provider_configured_for_remote(
         "default_model": model,
         "features": ["plan", "json_output", "tool_calling", "web_search"]
     });
-    let openai_settings = json!({
+    let provider_settings = json!({
         "enabled": true,
         "api_token": api_token,
         "instances": [instance_settings]
     });
+
+    let disable_paths: Vec<&str> = match mode {
+        ProviderBootstrapMode::OpenAiEnv | ProviderBootstrapMode::SnOpenAiJwt => {
+            vec!["/gimini", "/gemini", "/google_gimini", "/google", "/claude", "/minimax"]
+        }
+        ProviderBootstrapMode::GeminiEnv => vec!["/openai", "/claude", "/minimax"],
+    };
+
+    for path in disable_paths {
+        let disable_resp = post_rpc_over_http(
+            &sys_config_endpoint,
+            &RPCRequest {
+                method: "sys_config_set_by_json_path".to_string(),
+                params: json!({
+                    "key": "services/aicc/settings",
+                    "json_path": path,
+                    "value": json!({
+                        "enabled": false,
+                        "instances": []
+                    })
+                    .to_string(),
+                }),
+                seq: now_seq(),
+                token: Some(token.clone()),
+                trace_id: Some(format!(
+                    "workflow-bootstrap-disable-provider-{}",
+                    path.trim_start_matches('/').replace('/', "_")
+                )),
+            },
+        )
+        .await
+        .unwrap_or_else(|err| panic!("disable provider path '{}' failed: {}", path, err));
+
+        if !matches!(disable_resp.result, RPCResult::Success(_)) {
+            panic!(
+                "disable provider path '{}' returned non-success: {:?}",
+                path, disable_resp.result
+            );
+        }
+    }
 
     let set_result = post_rpc_over_http(
         &sys_config_endpoint,
@@ -298,8 +375,8 @@ async fn ensure_provider_configured_for_remote(
             method: "sys_config_set_by_json_path".to_string(),
             params: json!({
                 "key": "services/aicc/settings",
-                "json_path": "/openai",
-                "value": openai_settings.to_string(),
+                "json_path": settings_json_path,
+                "value": provider_settings.to_string(),
             }),
             seq: now_seq(),
             token: Some(token.clone()),
@@ -384,13 +461,19 @@ async fn run_remote_workflow_suite(
         })
         .await;
 
+    let complex_max_tokens = if matches!(mode, ProviderBootstrapMode::GeminiEnv) {
+        MAX_TOKENS_COMPLEX_DAG_GEMINI
+    } else {
+        MAX_TOKENS_COMPLEX_DAG
+    };
+
     let complex = client
         .complete(complete_request(
             COMPLEX_DAG_PROMPT,
             vec!["json_output"],
             json!({
                 "temperature": TEMP_COMPLEX_DAG,
-                "max_tokens": MAX_TOKENS_COMPLEX_DAG,
+                "max_tokens": complex_max_tokens,
                 "response_format": {"type": "json_object"},
             }),
             model_alias,
@@ -502,6 +585,19 @@ async fn workflow_remote_02_sn_openai_complex_scenario_protocol_mix() {
         "workflow-real-sn-openai-remote",
         ProviderBootstrapMode::SnOpenAiJwt,
         register_provider,
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires real gateway(AICC_GATEWAY_HOST) and valid auth(AICC_RPC_TOKEN or username/password)"]
+async fn workflow_remote_03_gemini_complex_scenario_protocol_mix() {
+    let model_alias = model_alias_from_env();
+    run_remote_workflow_suite(
+        model_alias.as_str(),
+        "workflow-real-gemini-remote",
+        ProviderBootstrapMode::GeminiEnv,
+        true,
     )
     .await;
 }
