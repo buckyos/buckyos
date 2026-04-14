@@ -9,7 +9,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use sysinfo::{Pid, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessStatus, ProcessesToUpdate, System};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -570,6 +570,10 @@ fn process_matches(spec: &NativeServiceSpec, process: &sysinfo::Process) -> bool
         .any(|candidate| spec.process_names.iter().any(|name| name == candidate))
 }
 
+fn is_active_process_status(status: ProcessStatus) -> bool {
+    !matches!(status, ProcessStatus::Zombie | ProcessStatus::Dead)
+}
+
 fn service_process_pids(spec: &NativeServiceSpec) -> Vec<i32> {
     let mut system = System::new_all();
     system.refresh_processes(ProcessesToUpdate::All, true);
@@ -577,7 +581,10 @@ fn service_process_pids(spec: &NativeServiceSpec) -> Vec<i32> {
     let mut pids = system
         .processes()
         .iter()
-        .filter_map(|(pid, process)| process_matches(spec, process).then_some(pid.as_u32() as i32))
+        .filter_map(|(pid, process)| {
+            (is_active_process_status(process.status()) && process_matches(spec, process))
+                .then_some(pid.as_u32() as i32)
+        })
         .collect::<Vec<_>>();
     pids.sort_unstable();
     pids.dedup();
@@ -646,7 +653,10 @@ fn is_pid_running(pid: i32) -> bool {
 
     let mut system = System::new_all();
     system.refresh_processes(ProcessesToUpdate::All, true);
-    system.process(Pid::from_u32(pid as u32)).is_some()
+    system
+        .process(Pid::from_u32(pid as u32))
+        .map(|process| is_active_process_status(process.status()))
+        .unwrap_or(false)
 }
 
 async fn run_command(
@@ -838,5 +848,13 @@ mod tests {
             dir.as_path(),
             "deploy"
         ));
+    }
+
+    #[test]
+    fn zombie_and_dead_processes_are_not_treated_as_active() {
+        assert!(!is_active_process_status(ProcessStatus::Zombie));
+        assert!(!is_active_process_status(ProcessStatus::Dead));
+        assert!(is_active_process_status(ProcessStatus::Run));
+        assert!(is_active_process_status(ProcessStatus::Sleep));
     }
 }
