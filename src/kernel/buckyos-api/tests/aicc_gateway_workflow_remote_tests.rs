@@ -85,8 +85,8 @@ fn model_alias_from_env() -> String {
     optional_env(ENV_AICC_MODEL_ALIAS).unwrap_or_else(|| DEFAULT_MODEL_ALIAS.to_string())
 }
 
-fn env_enabled_1(key: &str) -> bool {
-    matches!(optional_env(key).as_deref(), Some("1"))
+fn sn_register_provider_enabled() -> bool {
+    matches!(optional_env(ENV_AICC_SN_REGISTER_PROVIDER).as_deref(), Some("1"))
 }
 
 fn sn_openai_base_url_from_env() -> String {
@@ -263,6 +263,220 @@ enum ProviderBootstrapMode {
     SnOpenAiJwt,
 }
 
+fn isolation_disable_paths(mode: ProviderBootstrapMode) -> Vec<&'static str> {
+    match mode {
+        ProviderBootstrapMode::OpenAiEnv | ProviderBootstrapMode::SnOpenAiJwt => {
+            vec!["/gimini", "/gemini", "/google_gimini", "/google", "/claude", "/minimax"]
+        }
+        ProviderBootstrapMode::GeminiEnv => vec!["/openai", "/claude", "/minimax"],
+    }
+}
+
+fn target_enabled_json_path(mode: ProviderBootstrapMode) -> &'static str {
+    match mode {
+        ProviderBootstrapMode::OpenAiEnv | ProviderBootstrapMode::SnOpenAiJwt => "/openai/enabled",
+        ProviderBootstrapMode::GeminiEnv => "/gimini/enabled",
+    }
+}
+
+async fn disable_non_target_providers(
+    sys_config_endpoint: &str,
+    token: &str,
+    mode: ProviderBootstrapMode,
+) {
+    for path in isolation_disable_paths(mode) {
+        let enabled_path = format!(
+            "{}/enabled",
+            path.trim_end_matches('/')
+        );
+        let disable_resp = post_rpc_over_http(
+            sys_config_endpoint,
+            &RPCRequest {
+                method: "sys_config_set_by_json_path".to_string(),
+                params: json!({
+                    "key": "services/aicc/settings",
+                    "json_path": enabled_path,
+                    "value": "false",
+                }),
+                seq: now_seq(),
+                token: Some(token.to_string()),
+                trace_id: Some(format!(
+                    "workflow-bootstrap-disable-provider-{}",
+                    path.trim_start_matches('/').replace('/', "_")
+                )),
+            },
+        )
+        .await
+        .unwrap_or_else(|err| panic!("disable provider path '{}' failed: {}", path, err));
+
+        if !matches!(disable_resp.result, RPCResult::Success(_)) {
+            panic!(
+                "disable provider path '{}' returned non-success: {:?}",
+                path, disable_resp.result
+            );
+        }
+    }
+}
+
+async fn ensure_target_provider_enabled(
+    sys_config_endpoint: &str,
+    token: &str,
+    mode: ProviderBootstrapMode,
+) {
+    let json_path = target_enabled_json_path(mode);
+    let enable_resp = post_rpc_over_http(
+        sys_config_endpoint,
+        &RPCRequest {
+            method: "sys_config_set_by_json_path".to_string(),
+            params: json!({
+                "key": "services/aicc/settings",
+                "json_path": json_path,
+                "value": "true",
+            }),
+            seq: now_seq(),
+            token: Some(token.to_string()),
+            trace_id: Some(format!(
+                "workflow-bootstrap-enable-target-provider-{}",
+                json_path.trim_start_matches('/').replace('/', "_")
+            )),
+        },
+    )
+    .await
+    .unwrap_or_else(|err| panic!("enable target provider '{}' failed: {}", json_path, err));
+
+    if !matches!(enable_resp.result, RPCResult::Success(_)) {
+        panic!(
+            "enable target provider '{}' returned non-success: {:?}",
+            json_path, enable_resp.result
+        );
+    }
+}
+
+async fn reload_remote_settings_with_token(
+    target: &RpcTestEndpoint,
+    token: &str,
+    trace_id: &str,
+) -> Value {
+    let reload_resp = post_rpc_over_http(
+        &target.endpoint,
+        &RPCRequest {
+            method: "service.reload_settings".to_string(),
+            params: json!({}),
+            seq: now_seq(),
+            token: Some(token.to_string()),
+            trace_id: Some(trace_id.to_string()),
+        },
+    )
+    .await
+    .unwrap_or_else(|err| panic!("reload_settings failed: {}", err));
+
+    match reload_resp.result {
+        RPCResult::Success(value) => value,
+        other => panic!("reload_settings returned non-success: {:?}", other),
+    }
+}
+
+fn providers_registered_from_reload_payload(payload: &Value) -> u64 {
+    payload
+        .get("providers_registered")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+}
+
+async fn get_aicc_settings_from_sys_config(sys_config_endpoint: &str, token: &str) -> Value {
+    let resp = post_rpc_over_http(
+        sys_config_endpoint,
+        &RPCRequest {
+            method: "sys_config_get".to_string(),
+            params: json!({
+                "key": "services/aicc/settings",
+            }),
+            seq: now_seq(),
+            token: Some(token.to_string()),
+            trace_id: Some("workflow-read-aicc-settings".to_string()),
+        },
+    )
+    .await
+    .unwrap_or_else(|err| panic!("sys_config_get services/aicc/settings failed: {}", err));
+
+    let payload = match resp.result {
+        RPCResult::Success(value) => value,
+        other => panic!("sys_config_get returned non-success: {:?}", other),
+    };
+
+    let settings_str = payload
+        .get("value")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("sys_config_get payload missing string field 'value': {}", payload));
+
+    serde_json::from_str::<Value>(settings_str).unwrap_or_else(|err| {
+        panic!(
+            "services/aicc/settings is not valid json: {}; raw={}",
+            err, settings_str
+        )
+    })
+}
+
+async fn ensure_sn_openai_target_from_existing(sys_config_endpoint: &str, token: &str) {
+    let settings = get_aicc_settings_from_sys_config(sys_config_endpoint, token).await;
+    let openai_cfg = settings
+        .get("openai")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let sn_instances = openai_cfg
+        .get("instances")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    item.get("provider_type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "sn-openai")
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    assert!(
+        !sn_instances.is_empty(),
+        "SN OpenAI isolation requires pre-provisioned 'sn-openai' instances in services/aicc/settings.openai.instances, or set {}=1 to auto-register",
+        ENV_AICC_SN_REGISTER_PROVIDER
+    );
+
+    let mut next_openai_cfg = openai_cfg;
+    next_openai_cfg.insert("enabled".to_string(), Value::Bool(true));
+    next_openai_cfg.insert("instances".to_string(), Value::Array(sn_instances));
+
+    let patch_resp = post_rpc_over_http(
+        sys_config_endpoint,
+        &RPCRequest {
+            method: "sys_config_set_by_json_path".to_string(),
+            params: json!({
+                "key": "services/aicc/settings",
+                "json_path": "/openai",
+                "value": Value::Object(next_openai_cfg).to_string(),
+            }),
+            seq: now_seq(),
+            token: Some(token.to_string()),
+            trace_id: Some("workflow-prepare-sn-openai-from-existing".to_string()),
+        },
+    )
+    .await
+    .unwrap_or_else(|err| panic!("prepare sn-openai settings failed: {}", err));
+
+    if !matches!(patch_resp.result, RPCResult::Success(_)) {
+        panic!(
+            "prepare sn-openai settings returned non-success: {:?}",
+            patch_resp.result
+        );
+    }
+}
+
 async fn ensure_provider_configured_for_remote(
     target: &RpcTestEndpoint,
     mode: ProviderBootstrapMode,
@@ -329,45 +543,8 @@ async fn ensure_provider_configured_for_remote(
         "instances": [instance_settings]
     });
 
-    let disable_paths: Vec<&str> = match mode {
-        ProviderBootstrapMode::OpenAiEnv | ProviderBootstrapMode::SnOpenAiJwt => {
-            vec!["/gimini", "/gemini", "/google_gimini", "/google", "/claude", "/minimax"]
-        }
-        ProviderBootstrapMode::GeminiEnv => vec!["/openai", "/claude", "/minimax"],
-    };
-
-    for path in disable_paths {
-        let disable_resp = post_rpc_over_http(
-            &sys_config_endpoint,
-            &RPCRequest {
-                method: "sys_config_set_by_json_path".to_string(),
-                params: json!({
-                    "key": "services/aicc/settings",
-                    "json_path": path,
-                    "value": json!({
-                        "enabled": false,
-                        "instances": []
-                    })
-                    .to_string(),
-                }),
-                seq: now_seq(),
-                token: Some(token.clone()),
-                trace_id: Some(format!(
-                    "workflow-bootstrap-disable-provider-{}",
-                    path.trim_start_matches('/').replace('/', "_")
-                )),
-            },
-        )
-        .await
-        .unwrap_or_else(|err| panic!("disable provider path '{}' failed: {}", path, err));
-
-        if !matches!(disable_resp.result, RPCResult::Success(_)) {
-            panic!(
-                "disable provider path '{}' returned non-success: {:?}",
-                path, disable_resp.result
-            );
-        }
-    }
+    disable_non_target_providers(&sys_config_endpoint, &token, mode).await;
+    ensure_target_provider_enabled(&sys_config_endpoint, &token, mode).await;
 
     let set_result = post_rpc_over_http(
         &sys_config_endpoint,
@@ -393,28 +570,14 @@ async fn ensure_provider_configured_for_remote(
         );
     }
 
-    let reload_resp = post_rpc_over_http(
-        &target.endpoint,
-        &RPCRequest {
-            method: "service.reload_settings".to_string(),
-            params: json!({}),
-            seq: now_seq(),
-            token: Some(token.clone()),
-            trace_id: Some("workflow-bootstrap-provider-reload".to_string()),
-        },
+    let payload = reload_remote_settings_with_token(
+        target,
+        &token,
+        "workflow-bootstrap-provider-reload",
     )
-    .await
-    .unwrap_or_else(|err| panic!("reload_settings after provider bootstrap failed: {}", err));
+    .await;
 
-    let payload = match reload_resp.result {
-        RPCResult::Success(value) => value,
-        other => panic!("reload_settings returned non-success: {:?}", other),
-    };
-
-    let providers = payload
-        .get("providers_registered")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let providers = providers_registered_from_reload_payload(&payload);
     assert!(
         providers > 0,
         "remote aicc has no providers after bootstrap+reload; providers_registered={}, payload={}",
@@ -431,15 +594,44 @@ async fn run_remote_workflow_suite(
     bootstrap_provider: bool,
 ) {
     let target = require_remote_target();
-    let bootstrap_token = if bootstrap_provider {
+    let token = if bootstrap_provider {
         ensure_provider_configured_for_remote(&target, mode).await
     } else {
-        None
-    };
-    let token = if bootstrap_token.is_some() {
-        bootstrap_token
-    } else {
-        token_for_remote_target(&target).await
+        if target.is_remote {
+            let sys_config_endpoint = resolve_system_config_endpoint(&target.endpoint);
+            let token = resolve_remote_test_token(Some(&sys_config_endpoint))
+                .await
+                .expect("resolve remote token for provider isolation")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "remote provider isolation requires AICC_RPC_TOKEN or username/password env"
+                    )
+                });
+
+            if matches!(mode, ProviderBootstrapMode::SnOpenAiJwt) {
+                ensure_sn_openai_target_from_existing(&sys_config_endpoint, &token).await;
+            }
+            disable_non_target_providers(&sys_config_endpoint, &token, mode).await;
+            ensure_target_provider_enabled(&sys_config_endpoint, &token, mode).await;
+            let payload = reload_remote_settings_with_token(
+                &target,
+                &token,
+                "workflow-isolation-only-reload",
+            )
+            .await;
+            let providers = providers_registered_from_reload_payload(&payload);
+            assert!(
+                providers > 0,
+                "remote aicc has no providers after isolation-only reload; providers_registered={}, payload={}. \
+for SN OpenAI mode with {} not set to 1, pre-provision an openai/sn-openai provider in services/aicc/settings.",
+                providers,
+                payload,
+                ENV_AICC_SN_REGISTER_PROVIDER
+            );
+            Some(token)
+        } else {
+            token_for_remote_target(&target).await
+        }
     };
     if let Some(token_value) = token.as_ref() {
         assert!(
@@ -579,7 +771,7 @@ async fn workflow_remote_01_gateway_complex_scenario_protocol_mix() {
 #[tokio::test]
 #[ignore = "requires real gateway(AICC_GATEWAY_HOST) and valid auth(AICC_RPC_TOKEN or username/password)"]
 async fn workflow_remote_02_sn_openai_complex_scenario_protocol_mix() {
-    let register_provider = env_enabled_1(ENV_AICC_SN_REGISTER_PROVIDER);
+    let register_provider = sn_register_provider_enabled();
     run_remote_workflow_suite(
         FIXED_SN_MODEL_ALIAS,
         "workflow-real-sn-openai-remote",

@@ -831,14 +831,15 @@ cargo test -p aicc --test workflow_complex_real_env_tests workflow_real_03_gatew
 - 关键环境变量：
   - `AICC_GATEWAY_HOST`：目标 gateway 地址（必需）
   - `AICC_SN_OPENAI_BASE_URL`：SN OpenAI endpoint（可选，默认 `https://sn.buckyos.ai/api/v1/ai/chat/completions`）
-  - `AICC_SN_REGISTER_PROVIDER`：是否在用例内自动写入 provider 配置（可选，`1` 表示启用）
+  - `AICC_SN_REGISTER_PROVIDER`：是否在用例内自动写入 SN OpenAI provider 配置（可选，默认关闭；设置为 `1` 可启用）
+  - 无论 `AICC_SN_REGISTER_PROVIDER` 是否启用，用例都会先禁用非目标 provider，并显式启用目标 provider（`enabled=true`）后再 reload，确保协议验证隔离
 
 ```powershell
 cd d:\project\buckyos-main\src
 
 $env:AICC_GATEWAY_HOST="http://<target-device-host>:4040"
 
-# 可选：自动注册 SN OpenAI provider（未预置 provider 时建议打开）
+# 可选：开启自动注册 SN OpenAI provider（默认不自动注册）
 # $env:AICC_SN_REGISTER_PROVIDER="1"
 # $env:AICC_SN_OPENAI_BASE_URL="https://sn.buckyos.ai/api/v1/ai/chat/completions"
 
