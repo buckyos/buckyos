@@ -2,13 +2,18 @@ import { IconButton, useMediaQuery } from '@mui/material'
 import clsx from 'clsx'
 import { useCallback, useMemo, useState } from 'react'
 import {
+  Camera,
   ChevronRight,
+  FolderPlus,
+  Image as ImageIcon,
   LayoutGrid,
   List,
   Menu as MenuIcon,
   PanelRight,
+  Plus,
   RefreshCw,
   Search,
+  Upload as UploadIcon,
   X,
 } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
@@ -55,6 +60,7 @@ export function FileBrowserView() {
   // Mobile-only panel states
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false)
+  const [mobileUploadOpen, setMobileUploadOpen] = useState(false)
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
   const currentPath = activeTab?.path ?? '/home'
@@ -353,12 +359,80 @@ export function FileBrowserView() {
           )}
         </div>
 
-        <StatusBar
-          currentPath={currentPath}
-          totalCount={currentEntries.length}
-          selection={selectedEntry}
-          onCopy={copyText}
-        />
+        {/* Floating action button — upload */}
+        <button
+          type="button"
+          onClick={() => setMobileUploadOpen(true)}
+          aria-label={t('filebrowser.actions.upload', 'Upload')}
+          className="absolute bottom-5 right-5 z-20 flex h-14 w-14 items-center justify-center rounded-full text-white shadow-[0_10px_28px_rgba(0,0,0,0.22)] transition active:scale-95"
+          style={{ background: 'var(--cp-accent)' }}
+        >
+          <Plus size={26} />
+        </button>
+
+        {/* Upload action sheet */}
+        {mobileUploadOpen ? (
+          <div className="absolute inset-0 z-40 flex items-end">
+            <div
+              className="absolute inset-0 bg-black/50"
+              onClick={() => setMobileUploadOpen(false)}
+            />
+            <div
+              className="relative w-full rounded-t-[28px] border-t border-[color:var(--cp-border)] pb-5 pt-2"
+              style={{ background: 'var(--cp-surface)' }}
+            >
+              <div className="mx-auto mb-2 h-1 w-10 rounded-full bg-[color:var(--cp-border)]" />
+              <div className="px-5 pb-1 text-[13px] font-semibold text-[color:var(--cp-text)]">
+                {t('filebrowser.upload.title', 'Add to this folder')}
+              </div>
+              <div className="grid grid-cols-4 gap-1 px-3 py-3">
+                {[
+                  {
+                    key: 'files',
+                    icon: <UploadIcon size={22} />,
+                    label: t('filebrowser.upload.files', 'Files'),
+                  },
+                  {
+                    key: 'photos',
+                    icon: <ImageIcon size={22} />,
+                    label: t('filebrowser.upload.photos', 'Photos'),
+                  },
+                  {
+                    key: 'camera',
+                    icon: <Camera size={22} />,
+                    label: t('filebrowser.upload.camera', 'Camera'),
+                  },
+                  {
+                    key: 'folder',
+                    icon: <FolderPlus size={22} />,
+                    label: t('filebrowser.upload.newFolder', 'New folder'),
+                  },
+                ].map((action) => (
+                  <button
+                    key={action.key}
+                    type="button"
+                    onClick={() => {
+                      setMobileUploadOpen(false)
+                      showToast(`${action.label} (mock)`)
+                    }}
+                    className="flex flex-col items-center gap-1.5 rounded-[16px] p-2 text-[11px] text-[color:var(--cp-text)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,transparent)]"
+                  >
+                    <div
+                      className="flex h-12 w-12 items-center justify-center rounded-full text-[color:var(--cp-accent)]"
+                      style={{
+                        background:
+                          'color-mix(in srgb, var(--cp-accent-soft) 32%, var(--cp-surface))',
+                      }}
+                    >
+                      {action.icon}
+                    </div>
+                    <span className="text-center leading-tight">{action.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {/* Sidebar drawer */}
         {mobileSidebarOpen ? (
