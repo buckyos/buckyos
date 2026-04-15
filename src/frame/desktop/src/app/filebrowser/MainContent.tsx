@@ -61,6 +61,7 @@ interface MainContentProps {
   onOpenFolder: (path: string) => void
   currentPath: string
   topicContext: Topic | null
+  isMobile?: boolean
 }
 
 export function MainContent({
@@ -71,6 +72,7 @@ export function MainContent({
   onOpenFolder,
   currentPath,
   topicContext,
+  isMobile = false,
 }: MainContentProps) {
   const { t } = useI18n()
 
@@ -118,7 +120,62 @@ export function MainContent({
         </div>
       ) : null}
 
-      {viewMode === 'list' ? (
+      {viewMode === 'list' && isMobile ? (
+        <div className="flex-1 overflow-y-auto px-3 py-2">
+          <div className="flex flex-col gap-1">
+            {entries.map((entry) => {
+              const selected = entry.id === selectedId
+              const meta =
+                entry.kind === 'folder'
+                  ? `${t('filebrowser.kind.folder', 'Folder')} · ${formatDate(entry.modifiedAt)}`
+                  : `${formatBytes(entry.sizeBytes)} · ${formatDate(entry.modifiedAt)}`
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  onClick={() => onSelect(entry)}
+                  onDoubleClick={() => {
+                    if (entry.kind === 'folder') onOpenFolder(entry.path)
+                  }}
+                  className={clsx(
+                    'flex w-full items-center gap-3 rounded-[14px] px-2.5 py-2 text-left transition',
+                    selected
+                      ? 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))]'
+                      : 'hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,transparent)]',
+                  )}
+                >
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[14px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
+                    {kindIcon(entry.kind, 26)}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-[13px] font-medium text-[color:var(--cp-text)]">
+                        {entry.name}
+                      </span>
+                      {entry.triggersActive ? (
+                        <span
+                          title="AI pipeline active"
+                          className="inline-flex shrink-0 items-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))] px-1.5 py-0.5 text-[9px] font-semibold text-[color:var(--cp-accent)]"
+                        >
+                          <Wand2 size={9} className="mr-1" /> AI
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-[color:var(--cp-muted)]">
+                      {meta}
+                      {isPublic && entry.publicUrl ? (
+                        <span className="ml-1 font-mono text-[color:var(--cp-accent)]">
+                          · {entry.publicUrl}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ) : viewMode === 'list' ? (
         <div className="flex-1 overflow-y-auto">
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-[color:color-mix(in_srgb,var(--cp-surface)_92%,transparent)] text-left text-[11px] uppercase tracking-wider text-[color:var(--cp-muted)] backdrop-blur">

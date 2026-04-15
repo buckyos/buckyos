@@ -2,7 +2,6 @@ import { IconButton, useMediaQuery } from '@mui/material'
 import clsx from 'clsx'
 import { useCallback, useMemo, useState } from 'react'
 import {
-  ArrowLeft,
   ChevronRight,
   LayoutGrid,
   List,
@@ -239,9 +238,9 @@ export function FileBrowserView() {
     }
 
     return (
-      <div className="flex h-full w-full flex-col overflow-hidden" style={{ background: 'var(--cp-bg)' }}>
+      <div className="relative flex h-full w-full flex-col overflow-hidden" style={{ background: 'var(--cp-bg)' }}>
         {/* Operations bar: drawer toggle + search + view mode */}
-        <div className="flex items-center gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] px-3 py-1.5">
+        <div className="flex items-center gap-2 px-3 pt-2 pb-1">
           <IconButton
             size="small"
             onClick={() => setMobileSidebarOpen((v) => !v)}
@@ -302,22 +301,15 @@ export function FileBrowserView() {
           </div>
         </div>
 
-        {/* Address bar: refresh + path crumbs */}
-        <div className="flex items-center gap-1.5 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] px-3 py-1.5">
-          <IconButton
-            size="small"
-            onClick={() => navigate(currentPath)}
-            aria-label={t('filebrowser.topbar.refresh', 'Refresh')}
-          >
-            <RefreshCw size={14} />
-          </IconButton>
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] px-3 py-1 text-xs text-[color:var(--cp-muted)]">
+        {/* Address bar: path crumbs + refresh on the right */}
+        <div className="flex items-center gap-2 px-3 pb-2 pt-1">
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-[13px] text-[color:var(--cp-muted)]">
             {crumbs.map((crumb, idx) => (
               <div key={crumb.path} className="flex shrink-0 items-center gap-1">
                 <button
                   type="button"
                   className={clsx(
-                    'truncate rounded-md px-1 py-0.5',
+                    'truncate rounded-md px-1.5 py-1',
                     idx === crumbs.length - 1 && 'font-semibold text-[color:var(--cp-text)]',
                   )}
                   onClick={() => navigate(crumb.path)}
@@ -325,11 +317,19 @@ export function FileBrowserView() {
                   {crumb.label}
                 </button>
                 {idx < crumbs.length - 1 ? (
-                  <ChevronRight size={11} className="opacity-60" />
+                  <ChevronRight size={13} className="opacity-60" />
                 ) : null}
               </div>
             ))}
           </div>
+          <button
+            type="button"
+            onClick={() => navigate(currentPath)}
+            aria-label={t('filebrowser.topbar.refresh', 'Refresh')}
+            className="shrink-0 p-1 text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]"
+          >
+            <RefreshCw size={16} />
+          </button>
         </div>
 
         <div className="flex-1 overflow-hidden">
@@ -348,6 +348,7 @@ export function FileBrowserView() {
               onOpenFolder={handleOpenFolder}
               currentPath={currentPath}
               topicContext={topicContext}
+              isMobile
             />
           )}
         </div>
@@ -361,27 +362,15 @@ export function FileBrowserView() {
 
         {/* Sidebar drawer */}
         {mobileSidebarOpen ? (
-          <div className="absolute inset-0 z-30 flex">
+          <div className="absolute inset-0 z-40 flex">
             <div
-              className="absolute inset-0 bg-black/40"
+              className="absolute inset-0 bg-black/50"
               onClick={() => setMobileSidebarOpen(false)}
             />
             <div
-              className="relative flex h-full w-[82%] max-w-[340px] flex-col gap-3 border-r border-[color:var(--cp-border)] p-3"
+              className="relative flex h-full w-2/3 flex-col gap-3 border-r border-[color:var(--cp-border)] p-3"
               style={{ background: 'var(--cp-surface)' }}
             >
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMobileSidebarOpen(false)}
-                  className="inline-flex items-center gap-1 rounded-full border border-[color:var(--cp-border)] px-2.5 py-1 text-xs"
-                >
-                  <ArrowLeft size={12} /> {t('common.back', 'Back')}
-                </button>
-                <span className="shell-kicker">
-                  {t('filebrowser.mobile.navigation', 'Navigation')}
-                </span>
-              </div>
               <Sidebar
                 dfsRoots={fileBrowserSnapshot.dfsRoots}
                 devices={fileBrowserSnapshot.devices}
@@ -393,7 +382,6 @@ export function FileBrowserView() {
                 onNavigate={navigate}
                 onSelectTopic={handleSelectTopic}
                 compact
-                onAfterNavigate={() => setMobileSidebarOpen(false)}
               />
             </div>
           </div>
