@@ -128,7 +128,7 @@
     "click_to_access": "Haz clic",
     "access_link": "para acceder",
     "default_credentials": "Nombre de usuario de inicio de sesion: {{username}}.",
-    "refresh_note": "La primera activacion puede tardar unos 2 minutos. Si la pagina muestra errores, actualizala varias veces.",
+    "refresh_note": "La activacion todavia se esta completando. Deberia estar lista en aproximadamente {{time}}. Si la pagina muestra errores, actualizala varias veces.",
     "close_and_redirect": "Cerrar y redirigir",
     "error_password_mismatch": "Las dos contrasenas no coinciden",
     "error_password_too_short": "La contrasena no puede tener menos de 8 caracteres",

@@ -390,7 +390,7 @@ impl AgentMemory {
             selected.push(item);
         }
 
-        info!(
+        debug!(
             "agent_memory.load_memory: token_limit={} selected={} total={} tags={}",
             request.token_limit,
             selected.len(),

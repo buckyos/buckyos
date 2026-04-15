@@ -733,10 +733,14 @@ class Bootstrapper:
                 "x86_64 musl toolchain not found; static Linux builds require musl-gcc or x86_64-linux-musl-gcc"
             )
 
-        if not shutil.which("aarch64-linux-musl-gcc") and not Path("/usr/aarch64-linux-musl/bin/musl-gcc").exists():
+        if (
+            not shutil.which("aarch64-linux-musl-gcc")
+            and not Path("/usr/aarch64-linux-musl/bin/musl-gcc").exists()
+            and not Path("/opt/musl-cross/bin/aarch64-linux-musl-gcc").exists()
+        ):
             self.warnings.append(
                 "aarch64 musl toolchain not found; static Linux builds require aarch64-linux-musl-gcc "
-                "or /usr/aarch64-linux-musl/bin/musl-gcc"
+                "or /usr/aarch64-linux-musl/bin/musl-gcc or /opt/musl-cross/bin/aarch64-linux-musl-gcc"
             )
 
     def ensure_macos_build_tools(self) -> None:

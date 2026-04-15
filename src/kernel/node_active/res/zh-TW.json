@@ -128,7 +128,7 @@
     "click_to_access": "點擊",
     "access_link": "訪問",
     "default_credentials": "登入使用者名稱: {{username}}.",
-    "refresh_note": "首次啟用大約需要 2 分鐘，若開啟頁面時出現錯誤，請多重新整理幾次。",
+    "refresh_note": "系統仍在完成初始化，預計 {{time}} 後可訪問。若頁面顯示錯誤，請多重新整理幾次。",
     "close_and_redirect": "關閉並跳轉",
     "error_password_mismatch": "兩次輸入的密碼不一致",
     "error_password_too_short": "密碼長度不能少於 8",

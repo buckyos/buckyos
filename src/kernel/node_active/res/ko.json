@@ -128,7 +128,7 @@
     "click_to_access": "클릭",
     "access_link": "하여 접속",
     "default_credentials": "로그인 사용자 이름: {{username}}.",
-    "refresh_note": "첫 활성화에는 약 2분이 걸릴 수 있습니다. 페이지에 오류가 보이면 몇 번 더 새로고침하세요.",
+    "refresh_note": "시스템이 아직 초기화를 마무리하는 중입니다. 약 {{time}} 후에 접속할 수 있습니다. 페이지에 오류가 보이면 몇 번 더 새로고침하세요.",
     "close_and_redirect": "닫고 이동",
     "error_password_mismatch": "입력한 두 비밀번호가 일치하지 않습니다",
     "error_password_too_short": "비밀번호는 8자 미만일 수 없습니다",
