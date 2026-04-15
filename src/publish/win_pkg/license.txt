@@ -2,9 +2,9 @@ BuckyOS Desktop End User Agreement
 
 1. Introduction
 
-Welcome to BuckyOS Desktop (the “Software”).
+Welcome to BuckyOS Desktop (the "Software").
 
-The Software is a decentralized desktop software project initiated, maintained, or collaboratively organized by the BuckyOS open-source project (the “Project”). The Software is designed to provide users with a desktop runtime environment centered on decentralization, privacy protection, user autonomy, and a local-first approach.
+The Software is a decentralized desktop software project initiated, maintained, or collaboratively organized by the BuckyOS open-source project (the "Project"). The Software is designed to provide users with a desktop runtime environment centered on decentralization, privacy protection, user autonomy, and a local-first approach.
 
 This Agreement is intended to explain:
 
@@ -15,7 +15,7 @@ This Agreement is intended to explain:
 
 Important Notice:
 
-- With respect to copying, installing, running, modifying, and distributing the “Software Itself,” the user’s core rights shall, in principle, be governed by the actual open-source license accompanying or applicable to the Software.
+- With respect to copying, installing, running, modifying, and distributing the "Software Itself," the user’s core rights shall, in principle, be governed by the actual open-source license accompanying or applicable to the Software.
 - This Agreement is not intended to deprive users of, limit, or replace any lawful rights already granted under the applicable open-source license. If this Agreement conflicts with the applicable open-source license, the applicable open-source license shall prevail with respect to the relevant matter.
 - If you use any online service, AI service, network forwarding service, domain-related service, or other supporting capability connected to, integrated with, redirected by, or invoked through the Software, and such capability is provided by a specific operating entity, that service may be subject to separate terms of service, privacy policies, usage rules, or applicable local legal requirements.
 
@@ -25,7 +25,7 @@ Unless the context otherwise requires, the following terms in this Agreement sha
 
 2.1 Software / Software Itself
 
-Refers to the source code, binary programs, installation packages, locally running desktop-side components, and core local functionalities of BuckyOS Desktop. For the avoidance of doubt, the “Software Itself” does not automatically include online services separately provided by third parties or Local Operating Entities.
+Refers to the source code, binary programs, installation packages, locally running desktop-side components, and core local functionalities of BuckyOS Desktop. For the avoidance of doubt, the "Software Itself" does not automatically include online services separately provided by third parties or Local Operating Entities.
 
 2.2 Project
 
@@ -69,7 +69,7 @@ Unless otherwise expressly provided by the applicable open-source license, the r
 
 3.3 Trademarks and Names
 
-“BuckyOS” and related names, logos, marks, project branding, and release-channel identifiers may constitute trademarks, service marks, project identifiers, or other protected interests. Except as otherwise permitted by applicable law, the applicable open-source license, or an express authorization from the relevant rightsholder, users may not use such identifiers in any manner that is likely to cause confusion, mislead others, impersonate an official identity, or damage the credibility of the community.
+"BuckyOS" and related names, logos, marks, project branding, and release-channel identifiers may constitute trademarks, service marks, project identifiers, or other protected interests. Except as otherwise permitted by applicable law, the applicable open-source license, or an express authorization from the relevant rightsholder, users may not use such identifiers in any manner that is likely to cause confusion, mislead others, impersonate an official identity, or damage the credibility of the community.
 
 4. Open-Source License and Users’ Basic Freedoms
 
@@ -262,9 +262,9 @@ Third-Party Services, third-party nodes, third-party plugins, third-party applic
 
 12. Disclaimer
 
-12.1 Provided “As Is”
+12.1 Provided "As Is"
 
-To the maximum extent permitted by applicable law, the Software is provided on an “as is,” “as available,” and “with all faults” basis. The Project makes no express or implied warranties, including but not limited to warranties of:
+To the maximum extent permitted by applicable law, the Software is provided on an "as is," "as available," and "with all faults" basis. The Project makes no express or implied warranties, including but not limited to warranties of:
 
 - merchantability;
 - fitness for a particular purpose;
