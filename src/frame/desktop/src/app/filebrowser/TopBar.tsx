@@ -36,7 +36,6 @@ interface TopBarProps {
   searchQuery: string
   onSearchChange: (query: string) => void
   onCopyPath: () => void
-  compact?: boolean
 }
 
 function PathCrumbs({ path, onNavigate }: { path: string; onNavigate: (p: string) => void }) {
@@ -88,7 +87,6 @@ export function TopBar({
   searchQuery,
   onSearchChange,
   onCopyPath,
-  compact = false,
 }: TopBarProps) {
   const { t } = useI18n()
   const [searchOpen, setSearchOpen] = useState(false)
@@ -110,47 +108,45 @@ export function TopBar({
   return (
     <div className="flex flex-col gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] px-3 py-2 sm:px-4">
       {/* Tabs row */}
-      {!compact ? (
-        <div className="flex items-center gap-1 overflow-x-auto">
-          {tabs.map((tab) => {
-            const active = tab.id === activeTabId
-            return (
-              <div
-                key={tab.id}
-                className={clsx(
-                  'group flex shrink-0 items-center gap-2 rounded-t-[12px] border-b-2 px-3 py-1.5 text-sm',
-                  active
-                    ? 'border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,var(--cp-surface))] text-[color:var(--cp-text)]'
-                    : 'border-transparent text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,transparent)]',
-                )}
+      <div className="flex items-center gap-1 overflow-x-auto">
+        {tabs.map((tab) => {
+          const active = tab.id === activeTabId
+          return (
+            <div
+              key={tab.id}
+              className={clsx(
+                'group flex shrink-0 items-center gap-2 rounded-t-[12px] border-b-2 px-3 py-1.5 text-sm',
+                active
+                  ? 'border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,var(--cp-surface))] text-[color:var(--cp-text)]'
+                  : 'border-transparent text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,transparent)]',
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => onSelectTab(tab.id)}
+                className="max-w-[180px] truncate font-medium"
               >
+                {tab.title}
+              </button>
+              {tabs.length > 1 ? (
                 <button
                   type="button"
-                  onClick={() => onSelectTab(tab.id)}
-                  className="max-w-[180px] truncate font-medium"
+                  onClick={() => onCloseTab(tab.id)}
+                  className="opacity-0 transition group-hover:opacity-100"
+                  aria-label={t('common.close', 'Close')}
                 >
-                  {tab.title}
+                  <X size={12} />
                 </button>
-                {tabs.length > 1 ? (
-                  <button
-                    type="button"
-                    onClick={() => onCloseTab(tab.id)}
-                    className="opacity-0 transition group-hover:opacity-100"
-                    aria-label={t('common.close', 'Close')}
-                  >
-                    <X size={12} />
-                  </button>
-                ) : null}
-              </div>
-            )
-          })}
-          <Tooltip title={t('filebrowser.topbar.newTab', 'New tab')}>
-            <IconButton size="small" onClick={onNewTab}>
-              <Plus size={14} />
-            </IconButton>
-          </Tooltip>
-        </div>
-      ) : null}
+              ) : null}
+            </div>
+          )
+        })}
+        <Tooltip title={t('filebrowser.topbar.newTab', 'New tab')}>
+          <IconButton size="small" onClick={onNewTab}>
+            <Plus size={14} />
+          </IconButton>
+        </Tooltip>
+      </div>
 
       {/* Nav row */}
       <div className="flex items-center gap-1.5">
@@ -211,42 +207,30 @@ export function TopBar({
           )}
         </div>
 
-        {!compact ? (
-          <div className="flex items-center rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_80%,transparent)]">
-            <IconButton
-              size="small"
-              onClick={() => onViewModeChange('list')}
-              className={clsx(
-                viewMode === 'list' &&
-                  '!bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] !text-[color:var(--cp-text)]',
-              )}
-              aria-label={t('filebrowser.view.list', 'List view')}
-            >
-              <List size={14} />
-            </IconButton>
-            <IconButton
-              size="small"
-              onClick={() => onViewModeChange('icon')}
-              className={clsx(
-                viewMode === 'icon' &&
-                  '!bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] !text-[color:var(--cp-text)]',
-              )}
-              aria-label={t('filebrowser.view.icon', 'Icon view')}
-            >
-              <LayoutGrid size={14} />
-            </IconButton>
-          </div>
-        ) : (
-          <div className="flex items-center rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_80%,transparent)]">
-            <IconButton
-              size="small"
-              onClick={() => onViewModeChange(viewMode === 'list' ? 'icon' : 'list')}
-              aria-label={t('filebrowser.view.toggle', 'Toggle view')}
-            >
-              {viewMode === 'list' ? <LayoutGrid size={14} /> : <List size={14} />}
-            </IconButton>
-          </div>
-        )}
+        <div className="flex items-center rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_80%,transparent)]">
+          <IconButton
+            size="small"
+            onClick={() => onViewModeChange('list')}
+            className={clsx(
+              viewMode === 'list' &&
+                '!bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] !text-[color:var(--cp-text)]',
+            )}
+            aria-label={t('filebrowser.view.list', 'List view')}
+          >
+            <List size={14} />
+          </IconButton>
+          <IconButton
+            size="small"
+            onClick={() => onViewModeChange('icon')}
+            className={clsx(
+              viewMode === 'icon' &&
+                '!bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] !text-[color:var(--cp-text)]',
+            )}
+            aria-label={t('filebrowser.view.icon', 'Icon view')}
+          >
+            <LayoutGrid size={14} />
+          </IconButton>
+        </div>
 
         <Tooltip title={t('filebrowser.topbar.search', 'Search')}>
           <IconButton

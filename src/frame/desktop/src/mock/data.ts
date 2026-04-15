@@ -91,7 +91,7 @@ const appCatalog: AppDefinition[] = [
       allowClose: true,
       allowFullscreen: false,
       mobileFullscreenBehavior: 'cover_dead_zone',
-      mobileStatusBarMode: 'compact',
+      mobileStatusBarMode: 'standard',
       titleBarMode: 'system',
       placement: 'inplace',
       contentPadding: 'none',

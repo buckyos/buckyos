@@ -1,7 +1,22 @@
-import { useMediaQuery } from '@mui/material'
+import { IconButton, useMediaQuery } from '@mui/material'
+import clsx from 'clsx'
 import { useCallback, useMemo, useState } from 'react'
-import { ArrowLeft, Info, PanelRight, Menu as MenuIcon } from 'lucide-react'
+import {
+  ArrowLeft,
+  ChevronRight,
+  LayoutGrid,
+  List,
+  Menu as MenuIcon,
+  PanelRight,
+  RefreshCw,
+  Search,
+  X,
+} from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
+import {
+  useMobileBackHandler,
+  useMobileTitleOverride,
+} from '../../desktop/windows/MobileNavContext'
 import { MainContent } from './MainContent'
 import { PreviewPanel } from './PreviewPanel'
 import { SearchResultsPanel } from './SearchResultsPanel'
@@ -196,53 +211,126 @@ export function FileBrowserView() {
   const hist = history[activeTabId] ?? { back: [], forward: [] }
   const searchActive = !!searchQuery.trim()
 
+  const mobileTitleText = selectedEntry?.name ?? activeTab?.title ?? 'root'
+  const mobileSubtitleText =
+    selectedEntry?.summary ??
+    topicContext?.description ??
+    (currentPath === '/' ? t('filebrowser.mobile.rootHint', 'Root directory') : currentPath)
+
+  const mobileTitleOverride = useMemo(
+    () => (isMobile ? { title: mobileTitleText, subtitle: mobileSubtitleText } : null),
+    [isMobile, mobileTitleText, mobileSubtitleText],
+  )
+  useMobileTitleOverride(mobileTitleOverride)
+
+  const canMobileBack = isMobile && hist.back.length > 0
+  useMobileBackHandler(canMobileBack ? back : null)
+
   // ─── Mobile layout ───
   if (isMobile) {
+    const segments = currentPath.split('/').filter(Boolean)
+    const crumbs: { label: string; path: string }[] = [{ label: 'root', path: '/' }]
+    {
+      let running = ''
+      for (const segment of segments) {
+        running += `/${segment}`
+        crumbs.push({ label: segment, path: running })
+      }
+    }
+
     return (
       <div className="flex h-full w-full flex-col overflow-hidden" style={{ background: 'var(--cp-bg)' }}>
-        <div className="flex items-center gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_90%,transparent)] px-3 py-2">
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded-full border border-[color:var(--cp-border)] px-2.5 py-1 text-xs text-[color:var(--cp-text)]"
-            onClick={() => setMobileSidebarOpen(true)}
+        {/* Operations bar: drawer toggle + search + view mode */}
+        <div className="flex items-center gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] px-3 py-1.5">
+          <IconButton
+            size="small"
+            onClick={() => setMobileSidebarOpen((v) => !v)}
+            aria-label={t('filebrowser.mobile.places', 'Places')}
+            className={clsx(
+              mobileSidebarOpen &&
+                '!bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] !text-[color:var(--cp-text)]',
+            )}
           >
-            <MenuIcon size={14} /> {t('filebrowser.mobile.places', 'Places')}
-          </button>
-          <div className="min-w-0 flex-1 truncate text-sm font-semibold text-[color:var(--cp-text)]">
-            {activeTab?.title}
+            <MenuIcon size={16} />
+          </IconButton>
+          <div className="relative flex min-w-0 flex-1 items-center gap-1 rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] px-2 py-1">
+            <Search size={14} className="ml-1 shrink-0 text-[color:var(--cp-muted)]" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={t(
+                'filebrowser.topbar.searchPlaceholder',
+                'Search across files, folders, AI summaries…',
+              )}
+              className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-[color:var(--cp-muted)]"
+              style={{ color: 'var(--cp-text)' }}
+            />
+            {searchQuery ? (
+              <IconButton
+                size="small"
+                onClick={() => setSearchQuery('')}
+                aria-label={t('common.close', 'Close')}
+              >
+                <X size={12} />
+              </IconButton>
+            ) : null}
           </div>
-          {selectedEntry ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-full border border-[color:var(--cp-border)] px-2.5 py-1 text-xs text-[color:var(--cp-text)]"
-              onClick={() => setMobilePreviewOpen(true)}
+          <div className="flex items-center rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_80%,transparent)]">
+            <IconButton
+              size="small"
+              onClick={() => setViewMode('list')}
+              className={clsx(
+                viewMode === 'list' &&
+                  '!bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] !text-[color:var(--cp-text)]',
+              )}
+              aria-label={t('filebrowser.view.list', 'List view')}
             >
-              <Info size={14} />
-            </button>
-          ) : null}
+              <List size={14} />
+            </IconButton>
+            <IconButton
+              size="small"
+              onClick={() => setViewMode('icon')}
+              className={clsx(
+                viewMode === 'icon' &&
+                  '!bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] !text-[color:var(--cp-text)]',
+              )}
+              aria-label={t('filebrowser.view.icon', 'Icon view')}
+            >
+              <LayoutGrid size={14} />
+            </IconButton>
+          </div>
         </div>
 
-        <TopBar
-          tabs={tabs}
-          activeTabId={activeTabId}
-          onSelectTab={setActiveTabId}
-          onCloseTab={handleCloseTab}
-          onNewTab={handleNewTab}
-          currentPath={currentPath}
-          onNavigate={navigate}
-          onBack={back}
-          onForward={forward}
-          onUp={goUp}
-          canBack={hist.back.length > 0}
-          canForward={hist.forward.length > 0}
-          canUp={currentPath !== '/'}
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          onCopyPath={() => copyText(currentPath)}
-          compact
-        />
+        {/* Address bar: refresh + path crumbs */}
+        <div className="flex items-center gap-1.5 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] px-3 py-1.5">
+          <IconButton
+            size="small"
+            onClick={() => navigate(currentPath)}
+            aria-label={t('filebrowser.topbar.refresh', 'Refresh')}
+          >
+            <RefreshCw size={14} />
+          </IconButton>
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] px-3 py-1 text-xs text-[color:var(--cp-muted)]">
+            {crumbs.map((crumb, idx) => (
+              <div key={crumb.path} className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  className={clsx(
+                    'truncate rounded-md px-1 py-0.5',
+                    idx === crumbs.length - 1 && 'font-semibold text-[color:var(--cp-text)]',
+                  )}
+                  onClick={() => navigate(crumb.path)}
+                >
+                  {crumb.label}
+                </button>
+                {idx < crumbs.length - 1 ? (
+                  <ChevronRight size={11} className="opacity-60" />
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
 
         <div className="flex-1 overflow-hidden">
           {searchActive ? (

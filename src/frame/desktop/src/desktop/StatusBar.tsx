@@ -435,10 +435,10 @@ export function StatusBar({
             </div>
             <div className="absolute left-1/2 top-1/2 flex min-w-0 max-w-[46vw] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center text-center">
               <p className="truncate font-display text-sm font-semibold text-[color:var(--cp-text)]">
-                {t(activeApp.labelKey)}
+                {mobileNav.titleOverride?.title ?? t(activeApp.labelKey)}
               </p>
               <p className="line-clamp-1 text-xs text-[color:var(--cp-muted)]">
-                {t(activeApp.summaryKey)}
+                {mobileNav.titleOverride?.subtitle ?? t(activeApp.summaryKey)}
               </p>
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
