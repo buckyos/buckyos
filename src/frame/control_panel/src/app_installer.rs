@@ -2062,7 +2062,7 @@ struct RepoAppReleaseCandidate {
 }
 
 impl ControlPanelServer {
-    fn resolve_target_user_id(req: &RPCRequest, principal: &RpcAuthPrincipal) -> String {
+    pub(crate) fn resolve_target_user_id(req: &RPCRequest, principal: &RpcAuthPrincipal) -> String {
         Self::param_str(req, "user_id").unwrap_or_else(|| principal.username.clone())
     }
 

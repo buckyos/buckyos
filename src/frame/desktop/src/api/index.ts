@@ -1,55 +1,4 @@
-import {buckyos} from 'buckyos'
-import { ensureSessionToken } from '@/auth/authManager'
-import { isMockRuntime, waitForMockLatency } from '@/runtime'
-
-const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
-
-const isAuthError = (error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error ?? '')
-  const normalized = message.toLowerCase()
-  return (
-    normalized.includes('401') ||
-    normalized.includes('403') ||
-    normalized.includes('invalid token') ||
-    normalized.includes('permission denied') ||
-    normalized.includes('no permission') ||
-    normalized.includes('token')
-  )
-}
-
-const callRpc = async <T>(
-  method: string,
-  params: Record<string, unknown> = {},
-): Promise<{ data: T | null; error: unknown }> => {
-  try {
-    const sessionToken = await ensureSessionToken()
-    rpcClient.setSessionToken(sessionToken)
-
-    const result = await rpcClient.call(method, params)
-    if (!result || typeof result !== 'object') {
-      throw new Error(`Invalid ${method} response`)
-    }
-    return { data: result as T, error: null }
-  } catch (error) {
-    if (isAuthError(error)) {
-      try {
-        const refreshedToken = await ensureSessionToken({ forceRefresh: true })
-        rpcClient.setSessionToken(refreshedToken)
-
-        const retried = await rpcClient.call(method, params)
-        if (!retried || typeof retried !== 'object') {
-          throw new Error(`Invalid ${method} response`)
-        }
-        return { data: retried as T, error: null }
-      } catch (retryError) {
-        return { data: null, error: retryError }
-      }
-    }
-
-    return { data: null, error }
-  }
-}
-
+/*
 const mockLayoutData: RootLayoutData = {
   primaryNav: [
     { label: 'Desktop', icon: 'desktop', path: '/' },
@@ -522,50 +471,6 @@ export const fetchDashboard = async (): Promise<{ data: DashboardState | null; e
   }
 }
 
-export const fetchAppsList = async (): Promise<{ data: DappCard[] | null; error: unknown }> => {
-  if (isMockRuntime()) {
-    await waitForMockLatency()
-    return { data: mockDappStoreData, error: null }
-  }
-  const { data, error } = await callRpc<AppsListResponse>('apps.list', {})
-  if (!data || !Array.isArray(data.items)) {
-    return { data: null, error }
-  }
-  return { data: data.items.map((item) => normalizeAppItem(item)), error }
-}
-
-export const fetchAppsVersionList = async (
-  names: string[] = [],
-): Promise<{ data: Record<string, string> | null; error: unknown }> => {
-  if (isMockRuntime()) {
-    await waitForMockLatency()
-    const versions = Object.fromEntries(
-      mockDappStoreData
-        .filter((item) => names.length === 0 || names.includes(item.name))
-        .map((item) => [item.name, item.version ?? '0.0.0']),
-    )
-    return { data: versions, error: null }
-  }
-  const params = names.length > 0 ? { names } : {}
-  const { data, error } = await callRpc<AppsVersionListResponse>('apps.version.list', params)
-  if (!data || !Array.isArray(data.items)) {
-    return { data: null, error }
-  }
-
-  const versions: Record<string, string> = {}
-  for (const item of data.items) {
-    if (!item || typeof item.name !== 'string' || typeof item.version !== 'string') {
-      continue
-    }
-    const name = item.name.trim()
-    if (!name) {
-      continue
-    }
-    versions[name] = item.version
-  }
-
-  return { data: versions, error }
-}
 
 export const fetchSystemOverview = async (): Promise<{
   data: SystemOverview | null
@@ -1260,3 +1165,7 @@ export {
   mockAiPolicies,
   mockAiDiagnostics,
 }
+*/
+
+export { callRpc } from './rpc.ts'
+export * from './app_mgr.ts'

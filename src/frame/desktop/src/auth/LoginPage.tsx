@@ -176,7 +176,7 @@ const LoginPage = () => {
           nonce,
         )
         // console.log('[login] passwordHash done')
-
+        // 注意这里是一个特殊的krpc client，不是通过getXXXServiceRpcClient创建的（因为这个调用必定不会用runtime的session token）
         const rpcClient = new buckyos.kRPCClient('/kapi/control-panel')
         rpcClient.setSeq(nonce)
         console.log('[login] calling auth.login...', redirectUrl)

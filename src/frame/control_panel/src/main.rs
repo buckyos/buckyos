@@ -915,21 +915,17 @@ impl ControlPanelServer {
             }
         }
 
+        let req_seq = rpc_request.seq;
+        let req_trace_id = rpc_request.trace_id.clone();
         let response = match self.handle_rpc_call(rpc_request, client_ip).await {
             Ok(response) => response,
             Err(error) => {
-                return Ok(http::Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Self::boxed_http_body(
-                        format!("Failed to handle rpc call: {}", error).into_bytes(),
-                    ))
-                    .map_err(|build_error| {
-                        server_err!(
-                            ServerErrorCode::InvalidData,
-                            "Failed to build response: {}",
-                            build_error
-                        )
-                    })?);
+                let mut err_resp = RPCResponse::new(
+                    RPCResult::Failed(error.to_string()),
+                    req_seq,
+                );
+                err_resp.trace_id = req_trace_id;
+                err_resp
             }
         };
 
@@ -1024,8 +1020,12 @@ impl RPCHandler for ControlPanelServer {
             "ai.diagnostics.list" => self.handle_ai_diagnostics_list(req).await,
 
             //AppMgr
-            "apps.list" => self.handle_apps_list(req).await,
-            "apps.version.list" => self.handle_apps_version_list(req).await,
+            "apps.list" => self.handle_apps_list(req, principal.as_ref()).await,
+            "apps.details" | "app.details" => {
+                self.handle_app_detials(req, principal.as_ref()).await
+            }
+            //"apps.version.list" => self.handle_apps_version_list(req).await,
+            //AppInstaller
             "apps.install" => self.handle_apps_install(req, principal.as_ref()).await,
             "apps.update" => self.handle_apps_update(req, principal.as_ref()).await,
             "apps.uninstall" => self.handle_apps_uninstall(req, principal.as_ref()).await,
