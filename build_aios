@@ -255,8 +255,41 @@ resolve_python() {
 load_build_context() {
   local python_bin="$1"
   local rust_target="$2"
+  local -a python_cmd
 
-  "$python_bin" - "$PROJECT_CONFIG_PATH" "$rust_target" <<'PY'
+  if "$python_bin" - <<'PY' >/dev/null 2>&1
+import importlib.util
+import sys
+
+sys.exit(0 if importlib.util.find_spec("buckyos_devkit") else 1)
+PY
+  then
+    python_cmd=("$python_bin")
+  elif command -v uv >/dev/null 2>&1; then
+    if (
+      cd "$SRC_DIR"
+      uv run python - <<'PY' >/dev/null 2>&1
+import importlib.util
+import sys
+
+sys.exit(0 if importlib.util.find_spec("buckyos_devkit") else 1)
+PY
+    ); then
+      python_cmd=(uv run python)
+    fi
+  fi
+
+  if [[ ${#python_cmd[@]} -eq 0 ]]; then
+    cat >&2 <<EOF
+Failed to load build context for $rust_target.
+Neither $python_bin nor \`uv run python\` can import \`buckyos_devkit\`.
+Install the build dependencies or run this script from a repository environment
+where \`uv run python -c 'import buckyos_devkit'\` succeeds.
+EOF
+    return 1
+  fi
+
+  "${python_cmd[@]}" - "$PROJECT_CONFIG_PATH" "$rust_target" <<'PY'
 import contextlib
 import io
 import sys
@@ -312,7 +345,76 @@ resolve_aarch64_musl_cc() {
     return
   fi
 
+  if [[ -x /opt/musl-cross/bin/aarch64-linux-musl-gcc ]]; then
+    echo "/opt/musl-cross/bin/aarch64-linux-musl-gcc"
+    return
+  fi
+
   return 1
+}
+
+resolve_aarch64_musl_tool() {
+  local tool_bin_dir="$1"
+  shift
+  local candidate
+
+  for candidate in "$@"; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return
+    fi
+
+    if [[ -n "$tool_bin_dir" && -x "$tool_bin_dir/$candidate" ]]; then
+      echo "$tool_bin_dir/$candidate"
+      return
+    fi
+  done
+
+  return 1
+}
+
+append_aarch64_musl_env_lines() {
+  local -n env_lines_ref="$1"
+  local aarch64_musl_cc
+  local tool_bin_dir
+  local aarch64_musl_ar
+  local aarch64_musl_ranlib
+
+  if ! aarch64_musl_cc="$(resolve_aarch64_musl_cc)"; then
+    cat >&2 <<'EOF'
+Missing musl cross compiler: aarch64-linux-musl-gcc
+Linux builds in this repository are fully static. Install an aarch64 musl toolchain
+that provides one of:
+  - `aarch64-linux-musl-gcc` in PATH
+  - `/usr/aarch64-linux-musl/bin/musl-gcc`
+  - `/opt/musl-cross/bin/aarch64-linux-musl-gcc`
+then rerun build_aios.
+EOF
+    exit 1
+  fi
+
+  if ! "$aarch64_musl_cc" -dumpmachine >/dev/null 2>&1; then
+    cat >&2 <<EOF
+Resolved musl cross compiler is not runnable: $aarch64_musl_cc
+This usually means the toolchain is installed in a non-standard location but its
+support files are incomplete or unavailable. Ensure the full aarch64 musl toolchain
+is installed, then rerun build_aios.
+EOF
+    exit 1
+  fi
+
+  tool_bin_dir="$(dirname "$aarch64_musl_cc")"
+  env_lines_ref+=("PATH=$tool_bin_dir:$PATH")
+
+  if aarch64_musl_ar="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
+    aarch64-linux-musl-ar aarch64-linux-musl-gcc-ar ar)"; then
+    env_lines_ref+=("AR_aarch64_unknown_linux_musl=$aarch64_musl_ar")
+  fi
+
+  if aarch64_musl_ranlib="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
+    aarch64-linux-musl-ranlib aarch64-linux-musl-gcc-ranlib ranlib)"; then
+    env_lines_ref+=("RANLIB_aarch64_unknown_linux_musl=$aarch64_musl_ranlib")
+  fi
 }
 
 rewrite_env_line() {
@@ -327,7 +429,10 @@ rewrite_env_line() {
     cat >&2 <<'EOF'
 Missing musl cross compiler: aarch64-linux-musl-gcc
 Linux builds in this repository are fully static. Install an aarch64 musl toolchain
-that provides either `aarch64-linux-musl-gcc` in PATH or `/usr/aarch64-linux-musl/bin/musl-gcc`,
+that provides one of:
+  - `aarch64-linux-musl-gcc` in PATH
+  - `/usr/aarch64-linux-musl/bin/musl-gcc`
+  - `/opt/musl-cross/bin/aarch64-linux-musl-gcc`
 then rerun build_aios.
 EOF
     exit 1
@@ -341,7 +446,10 @@ EOF
     cat >&2 <<'EOF'
 Missing musl cross linker: aarch64-linux-musl-gcc
 Linux builds in this repository are fully static. Install an aarch64 musl toolchain
-that provides either `aarch64-linux-musl-gcc` in PATH or `/usr/aarch64-linux-musl/bin/musl-gcc`,
+that provides one of:
+  - `aarch64-linux-musl-gcc` in PATH
+  - `/usr/aarch64-linux-musl/bin/musl-gcc`
+  - `/opt/musl-cross/bin/aarch64-linux-musl-gcc`
 then rerun build_aios.
 EOF
     exit 1
@@ -376,17 +484,19 @@ build_binary() {
   local -a cargo_cmd
   local -a env_cmd
   local -a env_lines
+  local build_context_output
   local raw_line
 
   rust_target="$(resolve_rust_target "$arch")"
   env_lines=()
+  build_context_output="$(load_build_context "$python_bin" "$rust_target")"
   while IFS= read -r raw_line; do
     if [[ "$raw_line" == RUST_TARGET=* ]]; then
       rust_target="${raw_line#RUST_TARGET=}"
     elif [[ -n "$raw_line" ]]; then
       env_lines+=("$raw_line")
     fi
-  done < <(load_build_context "$python_bin" "$rust_target")
+  done <<< "$build_context_output"
 
   if [[ -z "${rust_target:-}" ]]; then
     echo "Failed to resolve rust target for arch: $arch" >&2
@@ -415,6 +525,9 @@ build_binary() {
       normalized_line="$(rewrite_env_line "$line")"
       normalized_env_lines+=("$normalized_line")
     done
+    if [[ "$rust_target" == "aarch64-unknown-linux-musl" ]]; then
+      append_aarch64_musl_env_lines normalized_env_lines
+    fi
     env_cmd+=("${normalized_env_lines[@]}")
   fi
 
