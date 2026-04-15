@@ -13,6 +13,7 @@ import {
   Search,
   X,
 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '../../i18n/provider'
 import type { BrowserTab, ViewMode } from './types'
 
@@ -90,6 +91,21 @@ export function TopBar({
   compact = false,
 }: TopBarProps) {
   const { t } = useI18n()
+  const [searchOpen, setSearchOpen] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (searchQuery) setSearchOpen(true)
+  }, [searchQuery])
+
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus()
+  }, [searchOpen])
+
+  const closeSearch = () => {
+    onSearchChange('')
+    setSearchOpen(false)
+  }
 
   return (
     <div className="flex flex-col gap-2 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)] px-3 py-2 sm:px-4">
@@ -152,12 +168,47 @@ export function TopBar({
         </IconButton>
 
         <div className="relative ml-1 flex min-w-0 flex-1 items-center gap-1 rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] px-2 py-1">
-          <PathCrumbs path={currentPath} onNavigate={onNavigate} />
-          <Tooltip title={t('filebrowser.topbar.copyPath', 'Copy path')}>
-            <IconButton size="small" onClick={onCopyPath}>
-              <Copy size={13} />
-            </IconButton>
-          </Tooltip>
+          {searchOpen ? (
+            <>
+              <Search size={14} className="ml-1 shrink-0 text-[color:var(--cp-muted)]" />
+              <TextField
+                inputRef={searchInputRef}
+                fullWidth
+                variant="standard"
+                placeholder={t(
+                  'filebrowser.topbar.searchPlaceholder',
+                  'Search across files, folders, AI summaries…',
+                )}
+                value={searchQuery}
+                onChange={(event) => onSearchChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') closeSearch()
+                }}
+                InputProps={{ disableUnderline: true }}
+                sx={{
+                  '& .MuiInputBase-input': {
+                    fontSize: 13,
+                    padding: '2px 0',
+                    color: 'var(--cp-text)',
+                  },
+                }}
+              />
+              <Tooltip title={t('common.close', 'Close')}>
+                <IconButton size="small" onClick={closeSearch} aria-label="close-search">
+                  <X size={13} />
+                </IconButton>
+              </Tooltip>
+            </>
+          ) : (
+            <>
+              <PathCrumbs path={currentPath} onNavigate={onNavigate} />
+              <Tooltip title={t('filebrowser.topbar.copyPath', 'Copy path')}>
+                <IconButton size="small" onClick={onCopyPath}>
+                  <Copy size={13} />
+                </IconButton>
+              </Tooltip>
+            </>
+          )}
         </div>
 
         {!compact ? (
@@ -185,25 +236,7 @@ export function TopBar({
               <LayoutGrid size={14} />
             </IconButton>
           </div>
-        ) : null}
-      </div>
-
-      {/* Search row */}
-      <div className="flex items-center gap-2">
-        <TextField
-          fullWidth
-          size="small"
-          placeholder={t(
-            'filebrowser.topbar.searchPlaceholder',
-            'Search across files, folders, AI summaries…',
-          )}
-          value={searchQuery}
-          onChange={(event) => onSearchChange(event.target.value)}
-          InputProps={{
-            startAdornment: <Search size={14} className="mr-2 text-[color:var(--cp-muted)]" />,
-          }}
-        />
-        {compact ? (
+        ) : (
           <div className="flex items-center rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_80%,transparent)]">
             <IconButton
               size="small"
@@ -213,7 +246,21 @@ export function TopBar({
               {viewMode === 'list' ? <LayoutGrid size={14} /> : <List size={14} />}
             </IconButton>
           </div>
-        ) : null}
+        )}
+
+        <Tooltip title={t('filebrowser.topbar.search', 'Search')}>
+          <IconButton
+            size="small"
+            onClick={() => setSearchOpen((v) => !v)}
+            className={clsx(
+              searchOpen &&
+                '!bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] !text-[color:var(--cp-text)]',
+            )}
+            aria-label={t('filebrowser.topbar.search', 'Search')}
+          >
+            <Search size={14} />
+          </IconButton>
+        </Tooltip>
       </div>
     </div>
   )

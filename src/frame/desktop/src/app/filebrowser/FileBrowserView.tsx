@@ -13,7 +13,7 @@ import {
   fileBrowserSnapshot,
   searchFiles,
 } from './mock/data'
-import type { BrowserTab, FileEntry, TriggerRule, ViewMode } from './types'
+import type { BrowserTab, FileEntry, ViewMode } from './types'
 
 interface HistoryState {
   back: string[]
@@ -183,12 +183,6 @@ export function FileBrowserView() {
     })
   }
 
-  const handleSelectTrigger = (rule: TriggerRule) => {
-    showToast(
-      t('filebrowser.toast.triggerInspected', 'Inspected {{name}}', { name: rule.name }),
-    )
-  }
-
   const handleOpenEntry = (entry: FileEntry) => {
     setSelectedId(entry.id)
     if (isMobile) setMobilePreviewOpen(true)
@@ -304,14 +298,12 @@ export function FileBrowserView() {
                 dfsRoots={fileBrowserSnapshot.dfsRoots}
                 devices={fileBrowserSnapshot.devices}
                 topics={fileBrowserSnapshot.topics}
-                triggers={fileBrowserSnapshot.triggers}
                 activePath={currentPath}
                 activeTopicId={activeTopicId}
                 advancedMode={advancedMode}
                 onToggleAdvanced={setAdvancedMode}
                 onNavigate={navigate}
                 onSelectTopic={handleSelectTopic}
-                onSelectTrigger={handleSelectTrigger}
                 compact
                 onAfterNavigate={() => setMobileSidebarOpen(false)}
               />
@@ -403,14 +395,12 @@ export function FileBrowserView() {
             dfsRoots={fileBrowserSnapshot.dfsRoots}
             devices={fileBrowserSnapshot.devices}
             topics={fileBrowserSnapshot.topics}
-            triggers={fileBrowserSnapshot.triggers}
             activePath={currentPath}
             activeTopicId={activeTopicId}
             advancedMode={advancedMode}
             onToggleAdvanced={setAdvancedMode}
             onNavigate={navigate}
             onSelectTopic={handleSelectTopic}
-            onSelectTrigger={handleSelectTrigger}
           />
         </aside>
 

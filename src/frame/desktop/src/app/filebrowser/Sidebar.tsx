@@ -11,26 +11,23 @@ import {
   Lock,
   Share2,
   Sparkles,
-  Workflow,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useI18n } from '../../i18n/provider'
-import type { DeviceNode, DfsNode, Topic, TriggerRule } from './types'
+import type { DeviceNode, DfsNode, Topic } from './types'
 
-type Section = 'dfs' | 'devices' | 'topics' | 'triggers'
+type Section = 'dfs' | 'devices' | 'topics'
 
 interface SidebarProps {
   dfsRoots: DfsNode[]
   devices: DeviceNode[]
   topics: Topic[]
-  triggers: TriggerRule[]
   activePath: string
   activeTopicId: string | null
   advancedMode: boolean
   onToggleAdvanced: (value: boolean) => void
   onNavigate: (path: string) => void
   onSelectTopic: (topicId: string) => void
-  onSelectTrigger: (trigger: TriggerRule) => void
   compact?: boolean
   onAfterNavigate?: () => void
 }
@@ -134,14 +131,12 @@ export function Sidebar({
   dfsRoots,
   devices,
   topics,
-  triggers,
   activePath,
   activeTopicId,
   advancedMode,
   onToggleAdvanced,
   onNavigate,
   onSelectTopic,
-  onSelectTrigger,
   compact = false,
   onAfterNavigate,
 }: SidebarProps) {
@@ -152,11 +147,6 @@ export function Sidebar({
     { id: 'dfs', label: t('filebrowser.sidebar.dfs', 'DFS'), icon: <FolderOpen size={14} /> },
     { id: 'topics', label: t('filebrowser.sidebar.topics', 'Topics'), icon: <Sparkles size={14} /> },
     { id: 'devices', label: t('filebrowser.sidebar.devices', 'Devices'), icon: <Cpu size={14} /> },
-    {
-      id: 'triggers',
-      label: t('filebrowser.sidebar.triggers', 'Triggers'),
-      icon: <Workflow size={14} />,
-    },
   ]
 
   const goto = (path: string) => {
@@ -165,7 +155,7 @@ export function Sidebar({
   }
 
   const renderTopics = (
-    <div className="space-y-1.5">
+    <div className="space-y-0.5">
       {topics.map((topic) => (
         <button
           key={topic.id}
@@ -175,22 +165,17 @@ export function Sidebar({
             onAfterNavigate?.()
           }}
           className={clsx(
-            'w-full rounded-[18px] border px-3 py-2.5 text-left transition',
+            'flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-left text-sm transition',
             activeTopicId === topic.id
-              ? 'border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_22%,var(--cp-surface))]'
-              : 'border-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_78%,transparent)] hover:border-[color:var(--cp-accent)]',
+              ? 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_28%,var(--cp-surface))] text-[color:var(--cp-text)]'
+              : 'text-[color:var(--cp-muted)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] hover:text-[color:var(--cp-text)]',
           )}
         >
-          <div className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-2 text-sm font-semibold text-[color:var(--cp-text)]">
-              <Hash size={12} className="text-[color:var(--cp-accent)]" />
-              {topic.title}
-            </span>
-            <span className="text-[11px] text-[color:var(--cp-muted)]">{topic.coverageCount}</span>
-          </div>
-          <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-[color:var(--cp-muted)]">
-            {topic.description}
-          </p>
+          <Hash size={12} className="shrink-0 text-[color:var(--cp-accent)]" />
+          <span className="min-w-0 flex-1 truncate font-medium">{topic.title}</span>
+          <span className="shrink-0 text-[11px] text-[color:var(--cp-muted)]">
+            {topic.coverageCount}
+          </span>
         </button>
       ))}
     </div>
@@ -253,33 +238,6 @@ export function Sidebar({
     </div>
   )
 
-  const renderTriggers = (
-    <div className="space-y-1.5">
-      {triggers.map((rule) => (
-        <button
-          key={rule.id}
-          type="button"
-          onClick={() => onSelectTrigger(rule)}
-          className="w-full rounded-[16px] border border-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_78%,transparent)] px-3 py-2 text-left hover:border-[color:var(--cp-accent)]"
-        >
-          <div className="flex items-center gap-2 text-sm font-semibold text-[color:var(--cp-text)]">
-            <Workflow size={13} className={rule.enabled ? 'text-[color:var(--cp-success)]' : 'text-[color:var(--cp-muted)]'} />
-            <span className="truncate">{rule.name}</span>
-          </div>
-          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-[color:var(--cp-muted)]">
-            <code className="font-mono">{rule.event}</code>
-            <span>·</span>
-            <span>
-              {rule.enabled
-                ? t('filebrowser.trigger.enabled', 'Enabled')
-                : t('filebrowser.trigger.disabled', 'Blocked')}
-            </span>
-          </div>
-        </button>
-      ))}
-    </div>
-  )
-
   const bodies: Record<Section, React.ReactNode> = {
     dfs: (
       <div className="space-y-0.5">
@@ -296,7 +254,6 @@ export function Sidebar({
     ),
     topics: renderTopics,
     devices: renderDevices,
-    triggers: renderTriggers,
   }
 
   // Compact mode (mobile) — section pills + single active body
@@ -350,12 +307,6 @@ export function Sidebar({
           hint={advancedMode ? t('filebrowser.sidebar.advanced', 'Advanced') : ''}
         />
         {renderDevices}
-
-        <SectionHeader
-          icon={<Workflow size={13} />}
-          label={t('filebrowser.sidebar.triggers', 'Triggers & pipelines')}
-        />
-        {renderTriggers}
       </div>
     </div>
   )
