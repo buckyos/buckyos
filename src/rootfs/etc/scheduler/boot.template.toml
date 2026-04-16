@@ -176,7 +176,7 @@ p, admin,/config/system/rbac/policy,read,allow
 p, admin,/config/system/scheduler/*,read,allow
 p, admin,/config/agents/*/doc,read|write,allow
 p, admin,/config/agents/*/settings,read|write,allow
-p, admin,/config/users/{user}/*,read|write,allow
+p, admin,/config/users/*,read|write,allow
 p, admin,/config/services/*,read|write,allow
 
 p, user,/config/boot/*, read,allow

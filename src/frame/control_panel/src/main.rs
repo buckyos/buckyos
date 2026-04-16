@@ -8,6 +8,7 @@ mod sys_auth_backend;
 mod sys_log_mgr;
 mod sys_settings;
 mod ui_session_mgr;
+mod user_mgr;
 mod zone_mgr;
 
 use sys_log_mgr::LogDownloadEntry;
@@ -982,14 +983,22 @@ impl RPCHandler for ControlPanelServer {
             "auth.login" => self.handle_auth_login(req).await,
 
             // User Mgr
-            "user.list" => self.handle_unimplemented(req, "List users").await,
-            "user.get" => self.handle_unimplemented(req, "Get user detail").await,
-            "user.create" => self.handle_unimplemented(req, "Create user").await,
-            "user.update" => self.handle_unimplemented(req, "Update user").await,
-            "user.delete" => self.handle_unimplemented(req, "Delete user").await,
-            "user.role.list" => self.handle_unimplemented(req, "List roles/policies").await,
-            "user.role.update" => self.handle_unimplemented(req, "Update role/policy").await,
-            // System dashboard
+            "user.list" => self.handle_user_list(req, principal.as_ref()).await,
+            "user.get" => self.handle_user_get(req, principal.as_ref()).await,
+            "user.create" => self.handle_user_create(req, principal.as_ref()).await,
+            "user.update" => self.handle_user_update(req, principal.as_ref()).await,
+            "user.update_contact" => self.handle_user_update_contact(req, principal.as_ref()).await,
+            "user.delete" => self.handle_user_delete(req, principal.as_ref()).await,
+
+            "user.change_password" => self.handle_user_change_password(req, principal.as_ref()).await,
+            "user.change_state" => self.handle_user_change_state(req, principal.as_ref()).await,
+            "user.change_type" => self.handle_user_change_type(req, principal.as_ref()).await,
+
+            "agent.list" => self.handle_agent_list(req, principal.as_ref()).await,
+            "agent.get" => self.handle_agent_get(req, principal.as_ref()).await,
+            "agent.set_msg_tunnel" => self.handle_agent_set_msg_tunnel(req, principal.as_ref()).await,
+            "agent.remove_msg_tunnel" => self.handle_agent_remove_msg_tunnel(req, principal.as_ref()).await,
+             // System dashboard
             "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
             "system.overview" => self.handle_system_overview(req).await,
             "system.status" => self.handle_system_status(req).await,
