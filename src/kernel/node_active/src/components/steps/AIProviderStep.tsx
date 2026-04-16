@@ -38,7 +38,6 @@ const providers: Array<{ key: ProviderKey; title: string }> = [
   { key: "openai_api_token", title: "OpenAI" },
   { key: "claude_api_token", title: "Claude" },
   { key: "google_api_token", title: "Google" },
-  { key: "openrouter_api_token", title: "OpenRouter" },
   { key: "glm_api_token", title: "GLM" },
 ];
 
