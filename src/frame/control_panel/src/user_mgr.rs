@@ -36,12 +36,7 @@ async fn system_config_client_for_caller(
     req: &RPCRequest,
 ) -> Result<SystemConfigClient, RPCErrors> {
     let runtime = get_buckyos_api_runtime()?;
-    let url = runtime
-        .get_zone_service_url("system_config", false)
-        .await
-        .map_err(|e| {
-            RPCErrors::ReasonError(format!("resolve system_config url failed: {}", e))
-        })?;
+    let url = runtime.get_system_config_url();
     let token = req.token.as_deref().ok_or_else(|| {
         RPCErrors::InvalidToken("missing caller session token".to_string())
     })?;
@@ -127,6 +122,11 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let _principal = Self::require_rpc_principal(principal)?;
+        // Directory enumeration (`list("users")`) checks the bare path
+        // `/config/users`, which the admin rule `/config/users/*` does not
+        // match. Use the service token here (control-panel is in the `kernel`
+        // group and has full read access); individual per-user reads below
+        // are unaffected.
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
 
@@ -172,8 +172,7 @@ impl ControlPanelServer {
         let principal = Self::require_rpc_principal(principal)?;
         let target = resolve_target_user_id(&req, principal);
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
         let settings_val = client.get(&settings_path).await.map_err(|e| {
@@ -243,8 +242,7 @@ impl ControlPanelServer {
             ));
         }
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
         // Check if user already exists
         let settings_path = format!("users/{}/settings", user_id);
@@ -289,10 +287,15 @@ impl ControlPanelServer {
             RPCErrors::ReasonError(format!("Failed to create user: {}", e))
         })?;
 
-        // Add to RBAC group if admin
+        // Add to RBAC group if admin.
+        // NOTE: `system/rbac/policy` is writable only by `ood` (per boot.template.toml);
+        // admin has read-only access. So we must use the service's own session token
+        // (not the caller's) for this specific append.
         if matches!(user_type, UserType::Admin) {
+            let runtime = get_buckyos_api_runtime()?;
+            let service_client = runtime.get_system_config_client().await?;
             let policy_line = format!("g, {}, admin", user_id);
-            if let Err(e) = client
+            if let Err(e) = service_client
                 .append("system/rbac/policy", &policy_line)
                 .await
             {
@@ -324,8 +327,7 @@ impl ControlPanelServer {
         let target = resolve_target_user_id(&req, principal);
         require_self_or_admin(principal, &target)?;
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
         let settings_val = client.get(&settings_path).await.map_err(|e| {
@@ -372,8 +374,7 @@ impl ControlPanelServer {
         let target = resolve_target_user_id(&req, principal);
         require_self_or_admin(principal, &target)?;
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
         let settings_val = client.get(&settings_path).await.map_err(|e| {
@@ -452,8 +453,7 @@ impl ControlPanelServer {
             ));
         }
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
         // Mark user as deleted rather than physically removing
         let settings_path = format!("users/{}/settings", target);
@@ -503,8 +503,7 @@ impl ControlPanelServer {
             ));
         }
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
         let settings_val = client.get(&settings_path).await.map_err(|e| {
@@ -554,8 +553,7 @@ impl ControlPanelServer {
             ));
         }
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
         let settings_val = client.get(&settings_path).await.map_err(|e| {
@@ -607,8 +605,7 @@ impl ControlPanelServer {
             ));
         }
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
         let settings_val = client.get(&settings_path).await.map_err(|e| {
@@ -634,10 +631,17 @@ impl ControlPanelServer {
             .await
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to change type: {}", e)))?;
 
-        // Update RBAC policy if admin status changed
+        // Update RBAC policy if admin status changed.
+        // NOTE: `system/rbac/policy` is writable only by `ood` (per boot.template.toml);
+        // admin has read-only access. Use the service's own session token for the append.
         if !old_is_admin && new_is_admin {
+            let runtime = get_buckyos_api_runtime()?;
+            let service_client = runtime.get_system_config_client().await?;
             let policy_line = format!("g, {}, admin", target);
-            if let Err(e) = client.append("system/rbac/policy", &policy_line).await {
+            if let Err(e) = service_client
+                .append("system/rbac/policy", &policy_line)
+                .await
+            {
                 warn!("Failed to add {} to admin RBAC group: {}", target, e);
             }
         }
@@ -669,6 +673,10 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let _principal = Self::require_rpc_principal(principal)?;
+        // See handle_user_list for why we use the service token for the
+        // directory enumeration here; individual `get` calls below can
+        // run with the caller's token but we already have a broad-read
+        // client, so we keep using it for the whole handler.
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
 
@@ -719,8 +727,7 @@ impl ControlPanelServer {
         let _principal = Self::require_rpc_principal(principal)?;
         let agent_id = Self::require_param_str(&req, "agent_id")?;
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
         let doc_path = format!("agents/{}/doc", agent_id);
         let doc_val = client.get(&doc_path).await.map_err(|e| {
@@ -778,15 +785,21 @@ impl ControlPanelServer {
             meta,
         };
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
-        // Store bindings under agents/{agent_id}/bindings
-        let bindings_path = format!("agents/{}/bindings", agent_id);
-        let mut bindings: Vec<UserTunnelBinding> = match client.get(&bindings_path).await {
-            Ok(val) => serde_json::from_str(&val.value).unwrap_or_default(),
-            Err(_) => Vec::new(),
+        // Store bindings inside agents/{agent_id}/settings under the "bindings"
+        // field. RBAC in boot.template.toml grants admin read|write on
+        // `agents/*/settings` but NOT on a separate `bindings` key, so we
+        // colocate the data here.
+        let settings_path = format!("agents/{}/settings", agent_id);
+        let mut settings_obj: Value = match client.get(&settings_path).await {
+            Ok(val) => serde_json::from_str(&val.value).unwrap_or_else(|_| json!({})),
+            Err(_) => json!({}),
         };
+        let mut bindings: Vec<UserTunnelBinding> = settings_obj
+            .get("bindings")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
 
         // Replace existing binding for the same platform or add new
         if let Some(pos) = bindings.iter().position(|b| b.platform == platform) {
@@ -795,13 +808,15 @@ impl ControlPanelServer {
             bindings.push(binding);
         }
 
-        let bindings_json = serde_json::to_string(&bindings)
+        settings_obj["bindings"] = serde_json::to_value(&bindings)
+            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
+        let settings_json = serde_json::to_string(&settings_obj)
             .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
 
-        // Try set, fall back to create if key doesn't exist yet
-        if client.set(&bindings_path, &bindings_json).await.is_err() {
+        // Try set, fall back to create if the settings key doesn't exist yet
+        if client.set(&settings_path, &settings_json).await.is_err() {
             client
-                .create(&bindings_path, &bindings_json)
+                .create(&settings_path, &settings_json)
                 .await
                 .map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to save agent bindings: {}", e))
@@ -837,12 +852,13 @@ impl ControlPanelServer {
         let agent_id = Self::require_param_str(&req, "agent_id")?;
         let platform = Self::require_param_str(&req, "platform")?;
 
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
+        let client = system_config_client_for_caller(&req).await?;
 
-        let bindings_path = format!("agents/{}/bindings", agent_id);
-        let mut bindings: Vec<UserTunnelBinding> = match client.get(&bindings_path).await {
-            Ok(val) => serde_json::from_str(&val.value).unwrap_or_default(),
+        // Bindings live inside agents/{id}/settings under the "bindings" key
+        // (see handle_agent_set_msg_tunnel for RBAC rationale).
+        let settings_path = format!("agents/{}/settings", agent_id);
+        let mut settings_obj: Value = match client.get(&settings_path).await {
+            Ok(val) => serde_json::from_str(&val.value).unwrap_or_else(|_| json!({})),
             Err(_) => {
                 return Err(RPCErrors::ReasonError(format!(
                     "No bindings found for agent '{}'",
@@ -850,6 +866,10 @@ impl ControlPanelServer {
                 )));
             }
         };
+        let mut bindings: Vec<UserTunnelBinding> = settings_obj
+            .get("bindings")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
 
         let original_len = bindings.len();
         bindings.retain(|b| b.platform != platform);
@@ -861,10 +881,12 @@ impl ControlPanelServer {
             )));
         }
 
-        let bindings_json = serde_json::to_string(&bindings)
+        settings_obj["bindings"] = serde_json::to_value(&bindings)
+            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
+        let settings_json = serde_json::to_string(&settings_obj)
             .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
         client
-            .set(&bindings_path, &bindings_json)
+            .set(&settings_path, &settings_json)
             .await
             .map_err(|e| {
                 RPCErrors::ReasonError(format!("Failed to update agent bindings: {}", e))

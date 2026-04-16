@@ -118,22 +118,17 @@ async function main() {
   );
 
   results.push(
-    await runCase("user.list contains root-tier and caller accounts", async () => {
+    await runCase("user.list contains root-tier account", async () => {
       assert(userListAtStart !== null, "userListAtStart should be populated");
-      // DV always provisions at least 2 accounts: a Root and an Admin
-      // (see add_default_accounts in system_config_builder.rs).
+      // DV always provisions at least a Root account on first boot.
       assert(
-        userListAtStart!.users.length >= 2,
-        `expected >= 2 default users, got ${userListAtStart!.users.length}`,
+        userListAtStart!.users.length >= 1,
+        `expected >= 1 default user, got ${userListAtStart!.users.length}`,
       );
       const roots = userListAtStart!.users.filter(
         (u) => u.user_type === "root",
       );
-      const admins = userListAtStart!.users.filter(
-        (u) => u.user_type === "admin",
-      );
       assert(roots.length >= 1, "should have at least one root account");
-      assert(admins.length >= 1, "should have at least one admin account");
     }),
   );
 

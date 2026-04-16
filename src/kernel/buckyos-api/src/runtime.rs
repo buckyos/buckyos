@@ -1923,7 +1923,11 @@ impl BuckyOSRuntime {
         }
     }
 
-    pub async fn get_system_config_client(&self) -> Result<Arc<SystemConfigClient>> {
+    /// Compute the URL used to reach the zone's `system_config` service for
+    /// the current runtime type. Exposed so that callers (e.g. control_panel
+    /// handlers that want to forward the caller's RPC session token) can
+    /// construct a fresh `SystemConfigClient` with their own auth token.
+    pub fn get_system_config_url(&self) -> String {
         let mut url = format!(
             "http://{}:3200/kapi/system_config",
             self.resolve_local_service_host()
@@ -1950,6 +1954,11 @@ impl BuckyOSRuntime {
                 // keep local direct system_config url
             }
         }
+        url
+    }
+
+    pub async fn get_system_config_client(&self) -> Result<Arc<SystemConfigClient>> {
+        let url = self.get_system_config_url();
 
         //let url = self.get_zone_service_url("system_config",self.force_https)?;
         let session_token = self.get_session_token().await;
