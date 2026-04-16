@@ -110,6 +110,32 @@ def _copytree_filtered(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst, dirs_exist_ok=True, ignore=_ignore_copy_entries)
 
 
+def _write_nsis_license_rtf(source_path: Path, out_path: Path) -> Path:
+    """Convert UTF-8 license text to RTF using built-in Windows PowerShell APIs."""
+
+    source = str(source_path)
+    target = str(out_path)
+    ps_script = (
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "$rtb = New-Object System.Windows.Forms.RichTextBox; "
+        f"$rtb.Text = Get-Content -Raw -Encoding UTF8 '{source}'; "
+        f"[System.IO.File]::WriteAllText('{target}', $rtb.Rtf, [System.Text.Encoding]::ASCII)"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-STA", "-Command", ps_script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "failed to convert license.txt to RTF with PowerShell: "
+            f"{result.stderr.strip() or result.stdout.strip() or 'unknown error'}"
+        )
+    return out_path
+
+
 def load_app_layout(
     project_yaml_path: Path,
     app_key: str,
@@ -1113,6 +1139,12 @@ def build_win_installer(
     
     # Generate NSIS script
     license_file = WIN_PKG_PROJECT_DIR / "license.txt"
+    staged_license_file: Path | None = None
+    if license_file.exists():
+        staged_license_file = _write_nsis_license_rtf(
+            license_file,
+            work_dir / "license.rtf",
+        )
     generate_nsis_script(
         title="BuckyOS",
         version=version,
@@ -1120,7 +1152,7 @@ def build_win_installer(
         components=components,
         payload_dir=payload_dir,
         out_path=nsi_file,
-        license_file=license_file if license_file.exists() else None,
+        license_file=staged_license_file,
         bundled_vcredist=(WIN_PKG_PROJECT_DIR / "vcredist_x64.exe"),
     )
     print(f"[build] Generated NSIS script: {nsi_file}")
