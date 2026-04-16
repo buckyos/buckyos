@@ -398,6 +398,7 @@ def _component_expected_filenames(
             expected,
             [
                 "node_daemon.exe",
+                "stop.ps1",
                 "seed_defaults.ps1",
                 "ensure_firewall_rules.ps1",
                 "uninstall_cleanup.ps1",
@@ -778,9 +779,9 @@ def generate_nsis_script(
     lines.append('  ${If} $0 == ""')
     lines.append("    Return")
     lines.append('  ${EndIf}')
-    lines.append('  IfFileExists "$0\\bin\\stop.py" stop_script_exists stop_script_missing')
+    lines.append('  IfFileExists "$0\\bin\\stop.ps1" stop_script_exists stop_script_missing')
     lines.append("stop_script_exists:")
-    lines.append('  nsExec::ExecToLog \'python "$0\\bin\\stop.py"\'')
+    lines.append('  nsExec::ExecToLog \'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$0\\bin\\stop.ps1"\'')
     lines.append("  Return")
     lines.append("stop_script_missing:")
     lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
@@ -792,9 +793,9 @@ def generate_nsis_script(
     lines.append('  ${If} $0 == ""')
     lines.append("    Return")
     lines.append('  ${EndIf}')
-    lines.append('  IfFileExists "$0\\bin\\stop.py" un.stop_script_exists un.stop_script_missing')
+    lines.append('  IfFileExists "$0\\bin\\stop.ps1" un.stop_script_exists un.stop_script_missing')
     lines.append("un.stop_script_exists:")
-    lines.append('  nsExec::ExecToLog \'python "$0\\bin\\stop.py"\'')
+    lines.append('  nsExec::ExecToLog \'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$0\\bin\\stop.ps1"\'')
     lines.append("  Return")
     lines.append("un.stop_script_missing:")
     lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
