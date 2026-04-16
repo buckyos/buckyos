@@ -90,6 +90,7 @@ apps:
       boot-gateway-config: etc/boot_gateway.yaml
       util.py: bin/util.py
       stop.py: bin/stop.py
+      stop.ps1: bin/stop.ps1
       buckyos_jarvis: bin/buckyos_jarvis/
 
 
