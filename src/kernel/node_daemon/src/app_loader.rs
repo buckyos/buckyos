@@ -1475,7 +1475,9 @@ mount_fuse_overlay() {{
   fuse-overlayfs -o lowerdir="$PACKAGE_ROOT",upperdir="$DATA_UPPER",workdir="$OVERLAY_WORK" "$AGENT_ENV_ROOT" 2>/tmp/agent_fuse_overlay.err
 }}
 materialize_env_root() {{
-  cp -a -n "$PACKAGE_ROOT"/. "$DATA_UPPER"/
+  # Avoid metadata-preserving copies here because macOS-backed Docker volumes
+  # (for example OrbStack mounts) can reject directory timestamp updates.
+  cp -RP --update=none "$PACKAGE_ROOT"/. "$DATA_UPPER"/
   rm -rf "$AGENT_ENV_ROOT"
   ln -s "$DATA_UPPER" "$AGENT_ENV_ROOT"
   echo "agent runtime overlay unavailable, seeded upperdir from $PACKAGE_ROOT and linked $AGENT_ENV_ROOT -> $DATA_UPPER" >&2
@@ -1983,6 +1985,13 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
         } else {
             image_ref
         }
+    }
+}
+
+#[cfg(test)]
+impl AppLoader {
+    pub(crate) fn test_agent_runtime_bootstrap_script(&self, service_port: u16) -> String {
+        self.build_agent_runtime_bootstrap_script(service_port)
     }
 }
 

@@ -473,6 +473,8 @@ exec /opt/agent/opendan \
 
 - 这里只是示意启动协议，不代表最终镜像路径必须完全一致
 - 如果容器内不允许 `mount -t overlay`，可以退化为 `fuse-overlayfs`
+- 如果连 `fuse-overlayfs` 也不可用，entrypoint 应退化为把 `package_root` 递归播种到 `data_upper`
+- 这个递归播种不应保留目录时间戳等元数据，否则在 macOS/OrbStack 一类卷后端上可能因 `utimens` 被拒绝而启动失败
 - entrypoint 的职责是“准备 RootFS 并启动 opendan”，不是重新定义 workspace 启动接口
 
 ---
