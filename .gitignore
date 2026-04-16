@@ -74,3 +74,5 @@ src/apps/sys_test/dist/
 old/*
 src/apps/sys_test/web/dist/
 src/frame/desktop/dist/favicon.svg
+test/deno.lock
+.claude/

@@ -245,6 +245,20 @@ impl ControlPanelClient {
         Ok(device_doc)
     }
 
+    pub async fn get_user_config(&self, user_id: &str) -> Result<OwnerConfig> {
+        let user_doc_path = format!("users/{}/doc", user_id);
+        let get_result = self.system_config_client.get(user_doc_path.as_str()).await;
+        if get_result.is_err() {
+            return Err(RPCErrors::KeyNotExist(user_doc_path));
+        }
+
+        let get_result = get_result.unwrap();
+        let user_doc: OwnerConfig = serde_json::from_str(&get_result.value)
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+
+        Ok(user_doc)
+    }
+
     pub async fn add_user(&self, user_config: &OwnerConfig, is_admin: bool) -> Result<u64> {
         //0. check user_config.name is valid
         //1. create users/{user_id}/doc

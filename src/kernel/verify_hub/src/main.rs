@@ -445,29 +445,48 @@ async fn load_trust_public_key_from_source(iss: &str) -> Result<DecodingKey> {
         result_key = owner_auth_key.0;
         info!("load owner public key from zone config");
     } else {
-        //load device config from system config service(not from name-lib)
         let system_config_client = get_system_config_client().await?;
         let control_panel_client = ControlPanelClient::new(system_config_client);
-        let device_config = control_panel_client.get_device_config(iss).await;
-        if device_config.is_err() {
-            warn!(
-                "load device {} config from system config service failed",
-                iss
-            );
-            return Err(RPCErrors::ReasonError(
-                "Device config not found".to_string(),
-            ));
+        match control_panel_client.get_user_config(iss).await {
+            Ok(user_config) => {
+                let owner_key = user_config.get_default_key().ok_or(RPCErrors::ReasonError(
+                    "User public key not found".to_string(),
+                ))?;
+                result_key = DecodingKey::from_jwk(&owner_key)
+                    .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+                info!("load user public key from system config for iss={}", iss);
+            }
+            Err(RPCErrors::KeyNotExist(_)) => {
+                //load device config from system config service(not from name-lib)
+                let device_config = control_panel_client.get_device_config(iss).await;
+                if device_config.is_err() {
+                    warn!(
+                        "load user/device {} config from system config service failed",
+                        iss
+                    );
+                    return Err(RPCErrors::ReasonError(
+                        "User or device config not found".to_string(),
+                    ));
+                }
+                let device_config = device_config.unwrap();
+                let result_device_key =
+                    device_config
+                        .get_auth_key(None)
+                        .ok_or(RPCErrors::ReasonError(
+                            "Device public key not found".to_string(),
+                        ))?;
+                result_key = result_device_key.0;
+                info!("load device public key from system config for iss={}", iss);
+            }
+            Err(err) => {
+                warn!(
+                    "load user {} doc from system config service failed: {}",
+                    iss, err
+                );
+                return Err(err);
+            }
         }
-        let device_config = device_config.unwrap();
-        let result_device_key = device_config
-            .get_auth_key(None)
-            .ok_or(RPCErrors::ReasonError(
-                "Device public key not found".to_string(),
-            ))?;
-        result_key = result_device_key.0;
     }
-
-    //TODO: jwt iss by user is SUDO login, need to add new verify method for sudo login
 
     cache_trustkey(iss, result_key.clone()).await;
     Ok(result_key)

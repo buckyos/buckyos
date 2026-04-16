@@ -1,8 +1,8 @@
-﻿mod aicc_remote_common;
+mod aicc_remote_common;
 
 use aicc_remote_common::*;
 use async_trait::async_trait;
-use kRPC::{RPCErrors, RPCContext, RPCHandler, RPCRequest, RPCResponse, RPCResult};
+use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCResult};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -180,7 +180,9 @@ async fn resolve_sys_config_test_endpoint() -> RpcTestEndpoint {
 
     let server = spawn_rpc_http_server(Arc::new(MockSystemConfigHandler::default())).await;
     let mut endpoint = RpcTestEndpoint::from_local(server);
-    endpoint.endpoint = endpoint.endpoint.replace("/kapi/aicc", "/kapi/system_config");
+    endpoint.endpoint = endpoint
+        .endpoint
+        .replace("/kapi/aicc", "/kapi/system_config");
     endpoint
 }
 
@@ -294,13 +296,21 @@ async fn krpc_01_gateway_complete_minimal_llm_success() {
     assert!(!resp.task_id.is_empty(), "missing task_id");
     if target.is_remote {
         assert!(
-            matches!(resp.status, buckyos_api::CompleteStatus::Succeeded | buckyos_api::CompleteStatus::Running | buckyos_api::CompleteStatus::Failed),
+            matches!(
+                resp.status,
+                buckyos_api::CompleteStatus::Succeeded
+                    | buckyos_api::CompleteStatus::Running
+                    | buckyos_api::CompleteStatus::Failed
+            ),
             "unexpected status: {:?}",
             resp.status
         );
     } else {
         assert!(
-            matches!(resp.status, buckyos_api::CompleteStatus::Succeeded | buckyos_api::CompleteStatus::Running),
+            matches!(
+                resp.status,
+                buckyos_api::CompleteStatus::Succeeded | buckyos_api::CompleteStatus::Running
+            ),
             "unexpected status: {:?}",
             resp.status
         );
@@ -363,7 +373,8 @@ async fn krpc_04_gateway_complete_invalid_sys_shape_returns_bad_request() {
 
     let err_lower = err.to_ascii_lowercase();
     assert!(
-        err_lower.contains("failed to parse completerequest") || err_lower.contains("parse request"),
+        err_lower.contains("failed to parse completerequest")
+            || err_lower.contains("parse request"),
         "unexpected error: {}",
         err
     );
@@ -429,7 +440,10 @@ async fn krpc_06_gateway_cancel_same_tenant_accepted_or_graceful_false() {
         .await;
 
     let start = client.complete(base_request()).await.unwrap();
-    assert!(!start.task_id.is_empty(), "complete should return task_id before cancel");
+    assert!(
+        !start.task_id.is_empty(),
+        "complete should return task_id before cancel"
+    );
 
     let cancel = client.cancel(&start.task_id).await.unwrap();
     assert_eq!(cancel.task_id, start.task_id);
@@ -457,7 +471,8 @@ async fn cfg_01_sys_config_get_aicc_settings_success() {
         json!({"key": key, "value": value}),
         1001,
         Some(admin_token.as_str()),
-    ).await;
+    )
+    .await;
     let set_resp = match set_resp {
         Ok(resp) => resp,
         Err(err) if is_remote_auth_error(&target, &err) => return,
@@ -481,7 +496,10 @@ async fn cfg_01_sys_config_get_aicc_settings_success() {
         other => panic!("unexpected rpc result: {:?}", other),
     };
     if !target.is_remote {
-        assert_eq!(payload.get("key").and_then(|v| v.as_str()), Some(key.as_str()));
+        assert_eq!(
+            payload.get("key").and_then(|v| v.as_str()),
+            Some(key.as_str())
+        );
     }
     assert!(
         payload
@@ -521,7 +539,8 @@ async fn cfg_02_sys_config_set_full_value_effective() {
         json!({"key": key, "value": new_cfg.to_string()}),
         1003,
         Some(admin_token.as_str()),
-    ).await;
+    )
+    .await;
     let set_resp = match set_resp {
         Ok(resp) => resp,
         Err(err) if is_remote_auth_error(&target, &err) => return,
@@ -573,7 +592,8 @@ async fn cfg_03_sys_config_set_by_json_path_partial_update_effective() {
         json!({"key": key, "value": init_cfg.to_string()}),
         1005,
         Some(admin_token.as_str()),
-    ).await;
+    )
+    .await;
     match prepare_result {
         Ok(_) => {}
         Err(err) if is_remote_auth_error(&target, &err) => return,

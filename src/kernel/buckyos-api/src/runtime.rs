@@ -2380,10 +2380,7 @@ mod tests {
         );
 
         runtime
-            .set_background_task_enabled(
-                RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo,
-                true,
-            )
+            .set_background_task_enabled(RuntimeBackgroundTaskKind::UpdateServiceInstanceInfo, true)
             .await;
         assert!(
             runtime

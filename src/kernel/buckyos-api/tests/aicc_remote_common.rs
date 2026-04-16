@@ -1,4 +1,4 @@
-﻿#![allow(dead_code)]
+#![allow(dead_code)]
 
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -24,7 +24,10 @@ pub fn base_request() -> CompleteRequest {
         Requirements::new(vec!["plan".to_string()], Some(3000), Some(0.2), None),
         AiPayload::new(
             Some("hello".to_string()),
-            vec![AiMessage::new("user".to_string(), "write summary".to_string())],
+            vec![AiMessage::new(
+                "user".to_string(),
+                "write summary".to_string(),
+            )],
             vec![],
             vec![],
             None,
@@ -73,7 +76,10 @@ impl AiccHandler for MockRemoteAicc {
             .get(task_id)
             .cloned();
         let Some(owner) = owner else {
-            return Err(RPCErrors::ReasonError(format!("task {} not found", task_id)));
+            return Err(RPCErrors::ReasonError(format!(
+                "task {} not found",
+                task_id
+            )));
         };
 
         if owner != ctx.token {
@@ -103,7 +109,9 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-pub async fn spawn_rpc_http_server(handler: Arc<dyn RPCHandler + Send + Sync>) -> RpcHttpTestServer {
+pub async fn spawn_rpc_http_server(
+    handler: Arc<dyn RPCHandler + Send + Sync>,
+) -> RpcHttpTestServer {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind rpc test server");
@@ -270,7 +278,11 @@ fn endpoint_from_host(host: &str, path: &str) -> Option<String> {
     Some(parsed.to_string())
 }
 
-pub fn resolve_endpoint_from_env(endpoint_keys: &[&str], host_keys: &[&str], path: &str) -> Option<String> {
+pub fn resolve_endpoint_from_env(
+    endpoint_keys: &[&str],
+    host_keys: &[&str],
+    path: &str,
+) -> Option<String> {
     if let Some(endpoint) = first_non_empty_env(endpoint_keys) {
         return Some(endpoint);
     }

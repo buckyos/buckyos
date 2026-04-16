@@ -1,4 +1,4 @@
-﻿mod aicc_remote_common;
+mod aicc_remote_common;
 
 use aicc_remote_common::*;
 use kRPC::{RPCContext, RPCRequest};
@@ -90,7 +90,8 @@ async fn krpc_direct_03_complete_invalid_sys_shape_returns_bad_request() {
 
     let err_lower = err.to_ascii_lowercase();
     assert!(
-        err_lower.contains("failed to parse completerequest") || err_lower.contains("parse request"),
+        err_lower.contains("failed to parse completerequest")
+            || err_lower.contains("parse request"),
         "unexpected error: {}",
         err
     );
@@ -155,7 +156,10 @@ async fn krpc_direct_05_cancel_same_tenant_accepted_or_graceful_false() {
         .await;
 
     let start = client.complete(base_request()).await.unwrap();
-    assert!(!start.task_id.is_empty(), "complete should return task_id before cancel");
+    assert!(
+        !start.task_id.is_empty(),
+        "complete should return task_id before cancel"
+    );
 
     let cancel = client.cancel(&start.task_id).await.unwrap();
     assert_eq!(cancel.task_id, start.task_id);
