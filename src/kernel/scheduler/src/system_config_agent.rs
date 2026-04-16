@@ -1284,6 +1284,7 @@ async fn update_rbac(
 pub(crate) struct SchedulePlan {
     pub tx_actions: HashMap<String, KVAction>,
     pub schedule_snapshot: NodeScheduler,
+    pub need_persist_snapshot: bool,
 }
 
 fn collect_tx_action_keys(tx_actions: &HashMap<String, KVAction>) -> Vec<String> {
@@ -1374,16 +1375,21 @@ pub(crate) async fn build_schedule_plan(
         extend_kv_action_map(&mut tx_actions, &update_gateway_config_actions);
     }
 
+    let need_persist_snapshot =
+        scheduler_ctx.needs_snapshot_persist(last_schedule_snapshot.as_ref());
+
     info!(
-        "build_schedule_plan result: tx_actions={} need_update_rbac={} gateway_nodes={}",
+        "build_schedule_plan result: tx_actions={} need_update_rbac={} gateway_nodes={} need_persist_snapshot={}",
         tx_actions.len(),
         need_update_rbac,
-        need_update_gateway_node_list.len()
+        need_update_gateway_node_list.len(),
+        need_persist_snapshot
     );
 
     Ok(SchedulePlan {
         tx_actions,
         schedule_snapshot: scheduler_ctx,
+        need_persist_snapshot,
     })
 }
 
@@ -1461,31 +1467,38 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
                 tx_action_keys,
                 ret.err().unwrap()
             );
+            continue;
+        }
+        info!(
+            "schedule loop step:{} exec_tx applied {} actions",
+            loop_step, tx_action_count
+        );
+        //save schedule snapshot to system_config
+        if schedule_plan.need_persist_snapshot {
+            let schedule_snapshot_str = serde_json::to_string(&schedule_plan.schedule_snapshot)?;
+            system_config_client
+                .set("system/scheduler/snapshot", &schedule_snapshot_str)
+                .await
+                .map_err(|err| {
+                    error!(
+                        "schedule loop step:{} snapshot set failed, key=system/scheduler/snapshot, err={:?}",
+                        loop_step, err
+                    );
+                    err
+                })?;
+            info!(
+                "schedule loop step:{} snapshot saved with nodes={} specs={} instances={}",
+                loop_step,
+                schedule_plan.schedule_snapshot.nodes.len(),
+                schedule_plan.schedule_snapshot.specs.len(),
+                schedule_plan.schedule_snapshot.replica_instances.len()
+            );
         } else {
             info!(
-                "schedule loop step:{} exec_tx applied {} actions",
-                loop_step, tx_action_count
+                "schedule loop step:{} snapshot unchanged, skip persisting",
+                loop_step
             );
         }
-        //save schedule snapshot to system_config
-        let schedule_snapshot_str = serde_json::to_string(&schedule_plan.schedule_snapshot)?;
-        system_config_client
-            .set("system/scheduler/snapshot", &schedule_snapshot_str)
-            .await
-            .map_err(|err| {
-                error!(
-                    "schedule loop step:{} snapshot set failed, key=system/scheduler/snapshot, err={:?}",
-                    loop_step, err
-                );
-                err
-            })?;
-        info!(
-            "schedule loop step:{} snapshot saved with nodes={} specs={} instances={}",
-            loop_step,
-            schedule_plan.schedule_snapshot.nodes.len(),
-            schedule_plan.schedule_snapshot.specs.len(),
-            schedule_plan.schedule_snapshot.replica_instances.len()
-        );
         if is_boot {
             break;
         }
@@ -1661,6 +1674,61 @@ mod tests {
             state: ServiceState::Running,
             install_config,
         }
+    }
+
+    #[tokio::test]
+    async fn test_build_schedule_plan_skips_snapshot_persist_when_only_schedule_time_changes() {
+        let zone_config = create_test_zone_config();
+        let device_ood1 = create_test_device_info("ood1", None);
+        let mut app_spec = create_test_app_spec();
+        app_spec.state = ServiceState::Stopped;
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/files/spec".to_string(),
+            serde_json::to_string(&app_spec).unwrap(),
+        );
+
+        let first_plan = build_schedule_plan(&input_system_config, false)
+            .await
+            .expect("first plan should build");
+        assert!(
+            first_plan.need_persist_snapshot,
+            "initial plan should persist snapshot"
+        );
+
+        let mut persisted_snapshot = first_plan.schedule_snapshot.clone();
+        persisted_snapshot.schedule_time = 0;
+        input_system_config.insert(
+            "system/scheduler/snapshot".to_string(),
+            serde_json::to_string(&persisted_snapshot).unwrap(),
+        );
+
+        let second_plan = build_schedule_plan(&input_system_config, false)
+            .await
+            .expect("second plan should build");
+
+        assert!(
+            second_plan.tx_actions.is_empty(),
+            "steady-state plan should not emit tx actions: {:?}",
+            second_plan.tx_actions.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !second_plan.need_persist_snapshot,
+            "snapshot persist should be skipped when only schedule_time differs"
+        );
+        assert_ne!(
+            second_plan.schedule_snapshot.schedule_time,
+            persisted_snapshot.schedule_time
+        );
     }
 
     #[test]
