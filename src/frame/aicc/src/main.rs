@@ -37,6 +37,7 @@ const METHOD_RELOAD_SETTINGS: &str = "reload_settings";
 const METHOD_SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
 const METHOD_REALOAD_SETTINGS: &str = "reaload_settings";
 const METHOD_SERVICE_REALOAD_SETTINGS: &str = "service.reaload_settings";
+const REDACTED_SECRET: &str = "***";
 
 struct AiccHttpServer {
     rpc_handler: AiccServerHandler<AIComputeCenter>,
@@ -106,6 +107,30 @@ fn apply_provider_settings(
     Ok(registered_total)
 }
 
+fn redact_settings_for_log(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut next = serde_json::Map::new();
+            for (k, v) in map {
+                let lower = k.to_ascii_lowercase();
+                if lower == "api_token" || lower == "api_key" || lower == "authorization" {
+                    next.insert(k.clone(), serde_json::Value::String(REDACTED_SECRET.to_string()));
+                } else {
+                    next.insert(k.clone(), redact_settings_for_log(v));
+                }
+            }
+            serde_json::Value::Object(next)
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(redact_settings_for_log)
+                .collect::<Vec<_>>(),
+        ),
+        _ => value.clone(),
+    }
+}
+
 impl AiccHttpServer {
     fn new(center: AIComputeCenter) -> Self {
         Self {
@@ -126,6 +151,11 @@ impl AiccHttpServer {
                 serde_json::json!({})
             }
         };
+        let settings_for_log = redact_settings_for_log(&settings);
+        info!(
+            "aicc.reload_settings current settings: {}",
+            settings_for_log
+        );
 
         let registered =
             apply_provider_settings(&self.rpc_handler.0, &settings).map_err(|err| {

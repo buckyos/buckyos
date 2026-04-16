@@ -1,44 +1,76 @@
 # aicc_test
 
-最小的 DV 环境 AICC smoke 测试。
+独立远程 AICC 用例执行器（非 `cargo test`），启动后读取 TOML 配置执行。
 
-它会做三件事：
+## 已迁移用例
 
-1. 用 `buckyos/node` 初始化 `AppClient`
-2. 通过 `verify-hub.login_by_jwt` 换取可用 session token
-3. 调用一次 `/kapi/aicc` 的 `complete`，并把返回结果打印出来
+- 基础远程链路：
+  - `kRPC Direct`
+  - `AiccClient (Rust)`
+  - `TS SDK`
+- 从 `aicc_gateway_workflow_remote_tests.rs` 迁移的复杂场景：
+  - OpenAI
+  - SN OpenAI
+  - Gemini
+  - Claude
+  - 都会执行 `workflow_complex_scenario_protocol_mix`（复杂 DAG + JSON 输出 + stream）
 
-如果 AICC 首次返回 `running`，脚本会继续去 `task-manager` 查找对应的 AICC 任务并轮询，尽量把最终文本结果也打印出来。
+## 配置文件
 
-## 安装
+默认读取当前目录 `aicc_remote_runner.toml`。  
+示例文件：`test/aicc_test/aicc_remote_runner.toml`
 
-```bash
-cd test/aicc_test
-pnpm install
-```
+关键规则：
+
+- `sn-openai` 始终执行（不需要 api-key）
+- `openai/gemini/claude` 未提供 key 时，该 provider 的用例会显示为 `skipped`
 
 ## 运行
 
 ```bash
 cd test/aicc_test
-pnpm run smoke
+pnpm install
+pnpm run remote
 ```
 
-## 可选环境变量
+指定配置文件：
 
 ```bash
-BUCKYOS_SYSTEM_CONFIG_URL=http://127.0.0.1:3200/kapi/system_config
-BUCKYOS_VERIFY_HUB_URL=http://127.0.0.1:3300/kapi/verify-hub
-BUCKYOS_TASK_MANAGER_URL=http://127.0.0.1:3380/kapi/task-manager
-AICC_URL=http://127.0.0.1:4040/kapi/aicc
-BUCKYOS_TEST_APP_ID=control-panel
-BUCKYOS_TEST_USER_ID=devtest
-AICC_MODEL_ALIAS=llm.default
-AICC_TEST_INPUT=请用一句话介绍 BuckyOS
-AICC_WAIT_TIMEOUT_MS=90000
+pnpm run remote -- --config ./aicc_remote_runner.toml
 ```
 
-说明：
+## TOML 示例
 
-- 默认沿用 `test/app_installer_test` 的登录路径和 `control-panel` appid。
-- 如果本机有 `/opt/buckyos/etc/.buckycli/user_private_key.pem`，脚本会优先自签登录 JWT；否则回退到 `buckyos.login()`。
+```toml
+gateway_host = "http://192.168.100.136"
+
+[auth]
+token = ""
+username = "zztestood5"
+password = "your-password"
+login_appid = "buckycli"
+
+[runner]
+model_alias = "llm.plan.default"
+app_id = "aicc-tests"
+output = "reports/aicc_remote_report.md"
+rust_manifest_path = "rust_runner/Cargo.toml"
+
+[api_keys]
+openai = ""
+gemini = ""
+claude = ""
+```
+
+## 报告状态
+
+- `✔` 通过
+- `!` 部分通过
+- `⏭` 跳过
+- `✗` 失败
+
+退出码：
+
+- `0` 无失败
+- `1` 有失败
+- `2` 无失败但有 partial

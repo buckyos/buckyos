@@ -67,3 +67,5 @@ src/publish/win_pkg/scripts/uninstall_cleanup.ps1
 src/rootfs/bin/opendan/agent_tool
 src/apps/sys_test/web/dist/
 src/frame/desktop/dist/favicon.svg
+aicc_remote_runner.toml
+test/aicc_test/rust_runner/target

@@ -759,13 +759,10 @@ impl FakeArtifactStorage {
 
 ## 11. 远程调用用例实现位置
 
-- kRPC 直连 AICC 用例：`src/kernel/buckyos-api/tests/aicc_krpc_remote_tests.rs`
-- gateway 路径用例：`src/kernel/buckyos-api/tests/aicc_gateway_remote_tests.rs`
-- gateway 复杂场景协议混合远程用例：`src/kernel/buckyos-api/tests/aicc_gateway_workflow_remote_tests.rs`
-  - OpenAI：`workflow_remote_01_gateway_complex_scenario_protocol_mix`
-  - SN OpenAI：`workflow_remote_02_sn_openai_complex_scenario_protocol_mix`
-  - Claude：`workflow_remote_03_claude_complex_scenario_protocol_mix`
-- 公共测试辅助（mock RPC server、请求构造、endpoint 解析）：`src/kernel/buckyos-api/tests/aicc_remote_common.rs`
+- 统一远程用例入口：`test/aicc_test/aicc_remote_runner.ts`
+- kRPC 直连 / gateway / system_config / workflow 远程场景均整合为 runner cases 执行
+- Rust 子执行器（AiccClient 路径）：`test/aicc_test/rust_runner/src/main.rs`
+- 运行配置：`test/aicc_test/aicc_remote_runner.toml`
 
 ## 12. 复杂场景真实模型单测（gateway 路径，新增）
 

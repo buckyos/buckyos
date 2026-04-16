@@ -897,11 +897,13 @@ impl Router {
         let mut scored = vec![];
 
         for candidate in snapshot.candidates.iter() {
+            let instance_id = candidate.instance.instance_id.as_str();
+            let provider_type = candidate.instance.provider_type.as_str();
             let provider_model = model_catalog.resolve(
                 tenant_id,
                 &req.capability,
                 req.model.alias.as_str(),
-                candidate.instance.provider_type.as_str(),
+                provider_type,
             );
             if provider_model.is_some() {
                 alias_mapped = true;
@@ -911,25 +913,68 @@ impl Router {
                 .instance
                 .supports_features(&req.requirements.must_features)
             {
+                debug!(
+                    "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=missing_required_features required={:?} provider_features={:?}",
+                    tenant_id,
+                    req.capability,
+                    req.model.alias,
+                    instance_id,
+                    provider_type,
+                    req.requirements.must_features,
+                    candidate.instance.features
+                );
                 continue;
             }
 
             if let Some(allow) = allow_set.as_ref() {
-                if !allow.contains(candidate.instance.provider_type.as_str()) {
+                if !allow.contains(provider_type) {
+                    debug!(
+                        "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=provider_not_in_allow_list allow={:?}",
+                        tenant_id,
+                        req.capability,
+                        req.model.alias,
+                        instance_id,
+                        provider_type,
+                        allow
+                    );
                     continue;
                 }
             }
             if let Some(deny) = deny_set.as_ref() {
-                if deny.contains(candidate.instance.provider_type.as_str()) {
+                if deny.contains(provider_type) {
+                    debug!(
+                        "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=provider_in_deny_list deny={:?}",
+                        tenant_id,
+                        req.capability,
+                        req.model.alias,
+                        instance_id,
+                        provider_type,
+                        deny
+                    );
                     continue;
                 }
             }
 
             let Some(provider_model) = provider_model else {
+                debug!(
+                    "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=model_alias_not_mapped",
+                    tenant_id,
+                    req.capability,
+                    req.model.alias,
+                    instance_id,
+                    provider_type
+                );
                 continue;
             };
-            let Some(provider) = registry.get_provider(candidate.instance.instance_id.as_str())
-            else {
+            let Some(provider) = registry.get_provider(instance_id) else {
+                debug!(
+                    "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=provider_not_found_in_registry",
+                    tenant_id,
+                    req.capability,
+                    req.model.alias,
+                    instance_id,
+                    provider_type
+                );
                 continue;
             };
 
@@ -937,6 +982,16 @@ impl Router {
             if let Some(max_cost) = req.requirements.max_cost_usd {
                 if let Some(estimated_cost) = estimate.estimated_cost_usd {
                     if estimated_cost > max_cost {
+                        debug!(
+                            "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=estimated_cost_exceeds_limit estimated_cost_usd={} max_cost_usd={}",
+                            tenant_id,
+                            req.capability,
+                            req.model.alias,
+                            instance_id,
+                            provider_type,
+                            estimated_cost,
+                            max_cost
+                        );
                         continue;
                     }
                 }
@@ -950,6 +1005,16 @@ impl Router {
 
             if let Some(max_latency_ms) = req.requirements.max_latency_ms {
                 if predicted_latency_ms > max_latency_ms as f64 {
+                    debug!(
+                        "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=predicted_latency_exceeds_limit predicted_latency_ms={} max_latency_ms={}",
+                        tenant_id,
+                        req.capability,
+                        req.model.alias,
+                        instance_id,
+                        provider_type,
+                        predicted_latency_ms,
+                        max_latency_ms
+                    );
                     continue;
                 }
             }
