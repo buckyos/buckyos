@@ -4,6 +4,10 @@ mod constants;
 mod lifecycle;
 mod logging;
 
+use buckyos_api::{
+    BuckyOSRuntimeType, KLOG_SERVICE_PORT, KLOG_SERVICE_UNIQUE_ID, get_session_token_env_key,
+    init_buckyos_api_runtime, set_buckyos_api_runtime,
+};
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::KLogRuntimeConfig;
 use klog::logs::RocksDbLogStorage;
@@ -16,13 +20,14 @@ use klog::state_store::{
 use lifecycle::run_server_lifecycle;
 use log::{error, info, warn};
 use logging::init_logging;
+use std::env;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
     init_logging();
 
-    let (cfg, source) = match KLogRuntimeConfig::load() {
+    let (mut cfg, source) = match KLogRuntimeConfig::load() {
         Ok(result) => result,
         Err(e) => {
             error!("Failed to load runtime config: {}", e);
@@ -31,10 +36,116 @@ async fn main() {
     };
     info!("klog runtime config source: {}", source);
 
+    if let Err(e) = init_buckyos_runtime_if_needed(&mut cfg).await {
+        error!("Failed to initialize BuckyOS runtime integration: {}", e);
+        std::process::exit(1);
+    }
+
     if let Err(e) = run(cfg).await {
         error!("klog startup failed: {}", e);
         std::process::exit(1);
     }
+}
+
+async fn init_buckyos_runtime_if_needed(cfg: &mut KLogRuntimeConfig) -> Result<(), String> {
+    let session_token_env_key = get_session_token_env_key(KLOG_SERVICE_UNIQUE_ID, false);
+    if env::var_os(&session_token_env_key).is_none() {
+        info!(
+            "BuckyOS runtime integration disabled because env {} is not set; running in standalone mode",
+            session_token_env_key
+        );
+        return Ok(());
+    }
+
+    if !cfg.enable_rpc_server {
+        let msg = format!(
+            "Invalid config for BuckyOS runtime: enable_rpc_server=false is not allowed when {} is set",
+            session_token_env_key
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    let rpc_port = parse_port_from_addr(&cfg.rpc_listen_addr).ok_or_else(|| {
+        let msg = format!(
+            "Invalid rpc_listen_addr for BuckyOS runtime integration: {}",
+            cfg.rpc_listen_addr
+        );
+        error!("{}", msg);
+        msg
+    })?;
+
+    let mut runtime = init_buckyos_api_runtime(
+        KLOG_SERVICE_UNIQUE_ID,
+        None,
+        BuckyOSRuntimeType::KernelService,
+    )
+    .await
+    .map_err(|e| {
+        let msg = format!(
+            "Failed to initialize BuckyOS runtime for {}: {}",
+            KLOG_SERVICE_UNIQUE_ID, e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    runtime.login().await.map_err(|e| {
+        let msg = format!(
+            "Failed to login BuckyOS runtime for {}: {}",
+            KLOG_SERVICE_UNIQUE_ID, e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    runtime.set_main_service_port(rpc_port).await;
+
+    let runtime_data_dir = runtime.get_data_folder().map_err(|e| {
+        let msg = format!(
+            "Failed to resolve BuckyOS data dir for {}: {}",
+            KLOG_SERVICE_UNIQUE_ID, e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+
+    if cfg.data_dir != runtime_data_dir {
+        info!(
+            "Overriding klog data dir with BuckyOS runtime data dir: old={}, new={}",
+            cfg.data_dir.display(),
+            runtime_data_dir.display()
+        );
+        cfg.data_dir = runtime_data_dir;
+    }
+
+    set_buckyos_api_runtime(runtime).map_err(|e| {
+        let msg = format!(
+            "Failed to register BuckyOS runtime for {}: {}",
+            KLOG_SERVICE_UNIQUE_ID, e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+
+    info!(
+        "BuckyOS runtime integration enabled: service_name={}, service_port={}, data_dir={}",
+        KLOG_SERVICE_UNIQUE_ID,
+        rpc_port,
+        cfg.data_dir.display()
+    );
+
+    if rpc_port != KLOG_SERVICE_PORT {
+        warn!(
+            "klog-service is running with a non-default rpc port: configured={}, default={}",
+            rpc_port, KLOG_SERVICE_PORT
+        );
+    }
+
+    Ok(())
+}
+
+fn parse_port_from_addr(addr: &str) -> Option<u16> {
+    let (_, port_str) = addr.rsplit_once(':')?;
+    port_str.parse::<u16>().ok()
 }
 
 async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {

@@ -56,13 +56,13 @@
 listen_addr = "127.0.0.1:21001"
 inter_node_listen_addr = "127.0.0.1:21002"
 admin_listen_addr = "127.0.0.1:21003"
-rpc_listen_addr = "127.0.0.1:21101"
+rpc_listen_addr = "127.0.0.1:4070"
 
 advertise_addr = "node-a.example.internal"
 advertise_port = 21001
 advertise_inter_port = 21002
 advertise_admin_port = 21003
-rpc_advertise_port = 21101
+rpc_advertise_port = 4070
 ```
 
 解释：
