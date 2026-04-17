@@ -8,16 +8,17 @@ PROJECT_CONFIG_PATH="$SRC_DIR/bucky_project.yaml"
 IMAGE_NAME="${IMAGE_NAME:-paios/aios}"
 VERSION_FILE="$SRC_DIR/VERSION"
 VERSION_TAG="${VERSION_TAG:-}"
-PLATFORMS=("amd64" "aarch64")
+SUPPORTED_ARCHES=("amd64" "aarch64")
 RUNTIME_PACKAGES=("tmux" "bash" "ca-certificates")
 WORKSPACE_PACKAGES=("python3" "python3-pip" "python3-venv" "nodejs" "npm" "git")
 EXTRA_APT_PACKAGES=()
+SELECTED_ARCHES=()
 PUSH=0
 INSTALL_WORKSPACE_TOOLS=1
 
 usage() {
   cat <<'EOF'
-Usage: ./build_aios [--push] [--image <name>] [--tag <tag>] [--runtime-only] [--apt-package <name>]
+Usage: ./build_aios [--push] [--image <name>] [--tag <tag>] [--runtime-only] [--arch <arch>] [--apt-package <name>]
 
 Builds the OpenDAN binary with cargo for:
   - amd64   -> x86_64-unknown-linux-musl
@@ -34,6 +35,7 @@ Options:
   --image <name>  Override image name, default: paios/aios
   --tag <tag>     Override version tag, default: src/VERSION
   --runtime-only  Install only required runtime dependencies in the image
+  --arch <arch>   Build only one architecture (amd64|aarch64); can be repeated
   --apt-package   Add an extra apt package to the image; can be repeated
   -h, --help      Show this help
 EOF
@@ -56,6 +58,10 @@ while [[ $# -gt 0 ]]; do
     --runtime-only)
       INSTALL_WORKSPACE_TOOLS=0
       shift
+      ;;
+    --arch)
+      SELECTED_ARCHES+=("$2")
+      shift 2
       ;;
     --apt-package)
       EXTRA_APT_PACKAGES+=("$2")
@@ -179,6 +185,37 @@ resolve_version_tag() {
   fi
 }
 
+validate_arch() {
+  local arch="$1"
+
+  case "$arch" in
+    amd64|aarch64)
+      ;;
+    *)
+      echo "Unsupported arch: $arch" >&2
+      exit 1
+      ;;
+  esac
+}
+
+resolve_selected_arches() {
+  local -a resolved=()
+
+  if [[ ${#SELECTED_ARCHES[@]} -eq 0 ]]; then
+    resolved=("${SUPPORTED_ARCHES[@]}")
+  else
+    local arch
+    for arch in "${SELECTED_ARCHES[@]}"; do
+      validate_arch "$arch"
+      if [[ ! " ${resolved[*]} " =~ " ${arch} " ]]; then
+        resolved+=("$arch")
+      fi
+    done
+  fi
+
+  printf '%s\n' "${resolved[@]}"
+}
+
 package_list_to_string() {
   local IFS=' '
   printf '%s' "$*"
@@ -222,6 +259,8 @@ EOF
 RUN mkdir -p /opt/buckyos/bin/opendan
 
 COPY opendan /opt/buckyos/bin/opendan/opendan
+COPY agent_tool /opt/buckyos/bin/opendan/agent_tool
+RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool
 
 ENV AIOS_TARGET_ARCH="${TARGET_ARCH}"
 
@@ -474,13 +513,14 @@ EOF
   printf '%s\n' "$line"
 }
 
-build_binary() {
+build_runtime_binaries() {
   local arch="$1"
-  local output_path="$2"
+  local context_dir="$2"
   local cargo_target_dir="$3"
   local python_bin="$4"
   local rust_target
-  local source_bin
+  local source_opendan
+  local source_agent_tool
   local -a cargo_cmd
   local -a env_cmd
   local -a env_lines
@@ -503,13 +543,16 @@ build_binary() {
     exit 1
   fi
 
-  source_bin="$cargo_target_dir/$rust_target/release/opendan"
+  source_opendan="$cargo_target_dir/$rust_target/release/opendan"
+  source_agent_tool="$cargo_target_dir/$rust_target/release/agent_tool"
 
   cargo_cmd=(
     cargo
     build
     -p
     opendan
+    -p
+    agent_tool
     --release
     --target
     "$rust_target"
@@ -531,20 +574,26 @@ build_binary() {
     env_cmd+=("${normalized_env_lines[@]}")
   fi
 
-  log "Building opendan for $arch using target $rust_target via ${cargo_cmd[*]}"
+  log "Building opendan and agent_tool for $arch using target $rust_target via ${cargo_cmd[*]}"
   (
     cd "$SRC_DIR"
     "${env_cmd[@]}" "${cargo_cmd[@]}"
   )
 
-  if [[ ! -f "$source_bin" ]]; then
-    echo "Expected build output not found: $source_bin" >&2
+  if [[ ! -f "$source_opendan" ]]; then
+    echo "Expected build output not found: $source_opendan" >&2
     exit 1
   fi
 
-  mkdir -p "$(dirname "$output_path")"
-  cp "$source_bin" "$output_path"
-  chmod 755 "$output_path"
+  if [[ ! -f "$source_agent_tool" ]]; then
+    echo "Expected build output not found: $source_agent_tool" >&2
+    exit 1
+  fi
+
+  mkdir -p "$context_dir"
+  cp "$source_opendan" "$context_dir/opendan"
+  cp "$source_agent_tool" "$context_dir/agent_tool"
+  chmod 755 "$context_dir/opendan" "$context_dir/agent_tool"
 }
 
 docker_platform_for_arch() {
@@ -560,6 +609,52 @@ docker_platform_for_arch() {
       exit 1
       ;;
   esac
+}
+
+ensure_buildx_support() {
+  local -a arches=("$@")
+  local builder_info
+  local platforms
+  local missing=()
+  local arch
+  if ! builder_info="$(docker buildx inspect 2>/dev/null)"; then
+    cat >&2 <<'EOF'
+docker buildx inspect failed.
+Ensure Docker Buildx is available and the current builder is healthy before running build_aios.
+EOF
+    exit 1
+  fi
+
+  platforms="$(printf '%s\n' "$builder_info" | sed -n 's/^Platforms:[[:space:]]*//p' | head -n1 | tr -d ' ')"
+  if [[ -z "$platforms" ]]; then
+    cat >&2 <<'EOF'
+Failed to detect platforms supported by the active docker buildx builder.
+Run `docker buildx inspect --bootstrap` and verify the current builder is usable.
+EOF
+    exit 1
+  fi
+
+  for arch in "${arches[@]}"; do
+    if [[ ",$platforms," != *",$(docker_platform_for_arch "$arch"),"* ]]; then
+      missing+=("$arch")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    cat >&2 <<EOF
+Active docker buildx builder does not support the requested architecture(s): ${missing[*]}
+Builder platforms: $platforms
+
+Fix the Docker/buildx environment first, then rerun build_aios. Typical checks:
+  docker buildx inspect --bootstrap
+  docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+If you use Docker Desktop, also make sure the Desktop builder/context is healthy.
+EOF
+    exit 1
+  fi
+
+  log "Using current buildx builder platforms: $platforms"
 }
 
 build_image() {
@@ -609,6 +704,7 @@ publish_manifests() {
 main() {
   local tmp_root
   local python_bin
+  local -a target_arches
 
   if [[ ! -f "$PROJECT_CONFIG_PATH" ]]; then
     echo "Missing project config: $PROJECT_CONFIG_PATH" >&2
@@ -617,13 +713,16 @@ main() {
 
   resolve_version_tag
   python_bin="$(resolve_python)"
+  mapfile -t target_arches < <(resolve_selected_arches)
 
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_aios.XXXXXX")"
   trap "rm -rf '$tmp_root'" EXIT
 
   prepare_docker_config "$tmp_root"
+  ensure_buildx_support "${target_arches[@]}"
 
   log "Version tag: $VERSION_TAG"
+  log "Target arches: $(package_list_to_string "${target_arches[@]}")"
   log "Runtime packages: $(package_list_to_string "${RUNTIME_PACKAGES[@]}")"
   if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then
     log "Workspace packages: $(package_list_to_string "${WORKSPACE_PACKAGES[@]}")"
@@ -634,7 +733,7 @@ main() {
     log "Extra apt packages: $(package_list_to_string "${EXTRA_APT_PACKAGES[@]}")"
   fi
 
-  for arch in "${PLATFORMS[@]}"; do
+  for arch in "${target_arches[@]}"; do
     local context_dir="$tmp_root/$arch"
     local cargo_target_dir="$tmp_root/cargo-$arch"
     local dockerfile_path="$context_dir/Dockerfile"
@@ -643,7 +742,7 @@ main() {
     platform="$(docker_platform_for_arch "$arch")"
     mkdir -p "$context_dir"
 
-    build_binary "$arch" "$context_dir/opendan" "$cargo_target_dir" "$python_bin"
+    build_runtime_binaries "$arch" "$context_dir" "$cargo_target_dir" "$python_bin"
     render_dockerfile "$dockerfile_path"
     build_image "$arch" "$context_dir" "$platform" "$dockerfile_path"
   done

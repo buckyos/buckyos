@@ -25,6 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN mkdir -p /opt/buckyos/bin/opendan
 
 COPY opendan /opt/buckyos/bin/opendan/opendan
+COPY agent_tool /opt/buckyos/bin/opendan/agent_tool
+RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool
 
 ENV AIOS_TARGET_ARCH="${TARGET_ARCH}"
 
