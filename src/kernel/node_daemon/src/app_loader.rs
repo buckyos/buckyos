@@ -836,6 +836,8 @@ impl AppLoader {
             self.full_appid(),
             "--entrypoint".to_string(),
             "/bin/bash".to_string(),
+            "--add-host".to_string(),
+            format!("{AGENT_RUNTIME_HOST_GATEWAY}:host-gateway"),
             "--cap-add".to_string(),
             "SYS_ADMIN".to_string(),
             "-p".to_string(),
