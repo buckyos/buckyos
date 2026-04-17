@@ -26,6 +26,7 @@ use named_store::NamedDataMgr;
 use crate::aicc_client::*;
 use crate::app_mgr::*;
 use crate::control_panel::*;
+use crate::klog_client::*;
 use crate::msg_center_client::*;
 use crate::msg_queue::*;
 use crate::opendan_client::*;
@@ -35,7 +36,8 @@ use crate::system_config::*;
 use crate::task_mgr::*;
 use crate::verify_hub_client::*;
 use crate::{
-    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, OPENDAN_SERVICE_NAME,
+    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, KLOG_SERVICE_NAME,
+    OPENDAN_SERVICE_NAME,
 };
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
@@ -2033,6 +2035,16 @@ impl BuckyOSRuntime {
             .get_zone_service_krpc_client(REPO_SERVICE_SERVICE_NAME)
             .await?;
         Ok(RepoClient::new(krpc_client))
+    }
+
+    pub async fn get_klog_client(&self, request_node_id: u64) -> Result<KLogClient> {
+        let service_url = self
+            .get_zone_service_url(KLOG_SERVICE_NAME, self.force_https)
+            .await?;
+        Ok(KLogClient::from_buckyos_service_url(
+            service_url,
+            request_node_id,
+        ))
     }
 
     pub async fn get_opendan_client(&self) -> Result<OpenDanClient> {
