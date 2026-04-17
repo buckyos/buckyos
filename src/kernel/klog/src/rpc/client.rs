@@ -1,7 +1,7 @@
 use super::{
-    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_METHOD_LOG_APPEND,
-    KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
-    KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
+    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_JSON_RPC_VERSION,
+    KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE,
+    KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
 };
 use crate::KNode;
 use crate::error::{
@@ -20,6 +20,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_LOCAL_SERVICE_ADDR: &str = "127.0.0.1:4070";
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error(
@@ -101,8 +102,15 @@ impl KLogClient {
         )
     }
 
+    pub fn from_buckyos_service_addr(addr: &str, request_node_id: u64) -> Self {
+        Self::new(
+            format!("http://{}{}", addr, KLOG_JSON_RPC_SERVICE_PATH),
+            request_node_id,
+        )
+    }
+
     pub fn local_default(request_node_id: u64) -> Self {
-        Self::from_daemon_addr("127.0.0.1:21101", request_node_id)
+        Self::from_buckyos_service_addr(DEFAULT_LOCAL_SERVICE_ADDR, request_node_id)
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -393,9 +401,10 @@ mod tests {
         KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
     };
     use crate::rpc::{
-        KLOG_JSON_RPC_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND, KLOG_RPC_METHOD_LOG_APPEND,
-        KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
-        KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
+        KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND,
+        KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE,
+        KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest,
+        KLogJsonRpcResponse,
     };
     use axum::Router;
     use axum::extract::Json;
@@ -446,6 +455,11 @@ mod tests {
             KLogClient::from_daemon_addr(&self.addr.to_string(), 9)
                 .with_timeout(Duration::from_secs(1))
         }
+
+        fn service_client(&self) -> KLogClient {
+            KLogClient::from_buckyos_service_addr(&self.addr.to_string(), 9)
+                .with_timeout(Duration::from_secs(1))
+        }
     }
 
     #[test]
@@ -462,6 +476,20 @@ mod tests {
             normalize_endpoint(format!("127.0.0.1:21001{}", KLOG_JSON_RPC_PATH)),
             "http://127.0.0.1:21001/klog/rpc"
         );
+    }
+
+    #[test]
+    fn test_normalize_endpoint_with_buckyos_service_path() {
+        assert_eq!(
+            normalize_endpoint(format!("127.0.0.1:4070{}", KLOG_JSON_RPC_SERVICE_PATH)),
+            "http://127.0.0.1:4070/kapi/klog-service"
+        );
+    }
+
+    #[test]
+    fn test_local_default_uses_buckyos_service_entry() {
+        let client = KLogClient::local_default(9);
+        assert_eq!(client.endpoint, "http://127.0.0.1:4070/kapi/klog-service");
     }
 
     #[tokio::test]
@@ -504,6 +532,38 @@ mod tests {
             .await
             .map_err(|e| anyhow::anyhow!("append failed: {}", e))?;
         assert_eq!(resp.id, 42);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_json_rpc_client_append_success_via_buckyos_service_path() -> anyhow::Result<()> {
+        let app = Router::new().route(
+            KLOG_JSON_RPC_SERVICE_PATH,
+            post(|Json(request): Json<KLogJsonRpcRequest>| async move {
+                assert_eq!(request.method, KLOG_RPC_METHOD_LOG_APPEND);
+                let response =
+                    KLogJsonRpcResponse::success(request.id, KLogAppendResponse { id: 52 });
+                (StatusCode::OK, Json(response))
+            }),
+        );
+
+        let Some(server) = TestJsonRpcServer::try_start(app).await? else {
+            return Ok(());
+        };
+        let client = server.service_client();
+        let resp = client
+            .append_log(KLogAppendRequest {
+                message: "hello-kapi".to_string(),
+                timestamp: Some(1002),
+                node_id: Some(1),
+                level: None,
+                source: None,
+                attrs: None,
+                request_id: Some("req-kapi".to_string()),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("append via /kapi failed: {}", e))?;
+        assert_eq!(resp.id, 52);
         Ok(())
     }
 

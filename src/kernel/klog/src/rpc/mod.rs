@@ -8,6 +8,7 @@ pub use client::*;
 pub use server::*;
 
 pub const KLOG_JSON_RPC_VERSION: &str = "2.0";
+pub const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
 pub const KLOG_JSON_RPC_PATH: &str = "/klog/rpc";
 pub const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
 pub const KLOG_RPC_METHOD_LOG_QUERY: &str = "klog.log.query";

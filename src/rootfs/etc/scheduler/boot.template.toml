@@ -192,6 +192,7 @@ g, system-config, kernel
 g, verify-hub, kernel
 g, task-manager, kernel
 g, kmsg, kernel
+g, klog-service, kernel
 g, repo-service, kernel
 g, aicc, kernel
 g, msg-center, kernel

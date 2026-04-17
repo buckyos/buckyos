@@ -20,7 +20,7 @@ use crate::constants::{
     ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS, ENV_JOIN_RETRY_INITIAL_INTERVAL_MS,
     ENV_JOIN_RETRY_JITTER_RATIO, ENV_JOIN_RETRY_MAX_ATTEMPTS, ENV_JOIN_RETRY_MAX_INTERVAL_MS,
     ENV_JOIN_RETRY_MULTIPLIER, ENV_JOIN_RETRY_REQUEST_TIMEOUT_MS, ENV_JOIN_RETRY_SHUFFLE_TARGETS,
-    ENV_JOIN_RETRY_STRATEGY, ENV_JOIN_TARGET_ROLE, ENV_JOIN_TARGETS, ENV_LISTEN_ADDR, ENV_NODE_ID,
+    ENV_JOIN_RETRY_STRATEGY, ENV_JOIN_TARGETS, ENV_JOIN_TARGET_ROLE, ENV_LISTEN_ADDR, ENV_NODE_ID,
     ENV_RAFT_ELECTION_TIMEOUT_MAX_MS, ENV_RAFT_ELECTION_TIMEOUT_MIN_MS,
     ENV_RAFT_HEARTBEAT_INTERVAL_MS, ENV_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS,
     ENV_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP, ENV_RAFT_MAX_PAYLOAD_ENTRIES, ENV_RAFT_PURGE_BATCH_SIZE,
@@ -32,8 +32,8 @@ use crate::constants::{
     ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
-use klog::KNodeId;
 use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
+use klog::KNodeId;
 use log::error;
 use openraft::{Config as OpenRaftConfig, SnapshotPolicy};
 use serde::{Deserialize, Serialize};
@@ -158,7 +158,7 @@ pub struct KLogRpcConfig {
     /// Route policy for `/klog/data/query`.
     pub query: KLogRpcRouteConfig,
 
-    /// Route policy for `/klog/rpc`.
+    /// Route policy shared by `/klog/rpc` and `/kapi/klog-service`.
     pub jsonrpc: KLogRpcRouteConfig,
 }
 

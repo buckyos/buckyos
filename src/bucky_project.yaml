@@ -21,6 +21,9 @@ modules:
   kmsg:
     type: rust
     name: kmsg
+  klog_daemon:
+    type: rust
+    name: klog_daemon
   smb_service:
     type: rust
     name: smb_service
@@ -79,6 +82,7 @@ apps:
       scheduler: bin/scheduler/
       task_manager: bin/task-manager/
       kmsg: bin/kmsg/
+      klog_daemon: bin/klog-service/
       control_panel: bin/control-panel/
       #control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
