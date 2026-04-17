@@ -334,7 +334,7 @@ pub trait VerifyHubApiHandler: Send + Sync {
     ) -> Result<TokenPair>;
 
     async fn handle_verify_token(&self, session_token: &str, appid: Option<String>)
-    -> Result<bool>;
+        -> Result<bool>;
 
     async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair>;
 

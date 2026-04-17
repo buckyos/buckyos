@@ -114,7 +114,10 @@ fn redact_settings_for_log(value: &serde_json::Value) -> serde_json::Value {
             for (k, v) in map {
                 let lower = k.to_ascii_lowercase();
                 if lower == "api_token" || lower == "api_key" || lower == "authorization" {
-                    next.insert(k.clone(), serde_json::Value::String(REDACTED_SECRET.to_string()));
+                    next.insert(
+                        k.clone(),
+                        serde_json::Value::String(REDACTED_SECRET.to_string()),
+                    );
                 } else {
                     next.insert(k.clone(), redact_settings_for_log(v));
                 }

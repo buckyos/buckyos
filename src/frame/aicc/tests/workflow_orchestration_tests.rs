@@ -1,4 +1,4 @@
-﻿mod common;
+mod common;
 
 use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, TaskEventKind,
@@ -593,4 +593,3 @@ async fn workflow_08_event_sequence_reflects_dag_structure() {
         Some("p1")
     );
 }
-

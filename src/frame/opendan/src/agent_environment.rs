@@ -2023,12 +2023,7 @@ fn render_human_readable_msg_line(record: &MsgRecord, msg_obj: Option<&MsgObject
         .filter(|value| !value.is_empty())
         .map(normalize_multiline_text)
         .unwrap_or_else(|| format!("msg_id={} state={:?}", record.msg_id, record.state));
-    format!(
-        "{} [{}]\n{}",
-        from,
-        format_timestamp(time_ms),
-        content
-    )
+    format!("{} [{}]\n{}", from, format_timestamp(time_ms), content)
 }
 
 fn format_timestamp(timestamp_ms: u64) -> String {

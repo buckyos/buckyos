@@ -12,7 +12,7 @@ use buckyos_api::{
     ResourceRef, Task, TaskFilter, TaskManagerClient, TaskManagerHandler, TaskStatus,
 };
 use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{OnceCell, oneshot};
+use tokio::sync::{oneshot, OnceCell};
 
 pub fn base_request() -> CompleteRequest {
     CompleteRequest::new(
@@ -542,7 +542,9 @@ impl Drop for RpcHttpTestServer {
     }
 }
 
-pub async fn spawn_rpc_http_server(handler: Arc<dyn RPCHandler + Send + Sync>) -> RpcHttpTestServer {
+pub async fn spawn_rpc_http_server(
+    handler: Arc<dyn RPCHandler + Send + Sync>,
+) -> RpcHttpTestServer {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind rpc test server");
@@ -763,8 +765,9 @@ pub fn resolve_gateway_aicc_endpoint_from_env() -> Option<String> {
 }
 
 pub fn resolve_gateway_system_config_endpoint_from_env() -> Option<String> {
-    resolve_gateway_aicc_endpoint_from_env()
-        .and_then(|gateway_endpoint| endpoint_from_host(gateway_endpoint.as_str(), "/kapi/system_config"))
+    resolve_gateway_aicc_endpoint_from_env().and_then(|gateway_endpoint| {
+        endpoint_from_host(gateway_endpoint.as_str(), "/kapi/system_config")
+    })
 }
 
 fn derive_verify_hub_endpoint(url: &str) -> Option<String> {
@@ -902,12 +905,12 @@ async fn start_auto_openai_mock_server(aicc_endpoint: &str) -> std::result::Resu
                         }
                     })
                 };
-                let status = if path.ends_with("/responses") || path.ends_with("/images/generations")
-                {
-                    200
-                } else {
-                    404
-                };
+                let status =
+                    if path.ends_with("/responses") || path.ends_with("/images/generations") {
+                        200
+                    } else {
+                        404
+                    };
                 let response = build_http_json_response(status, body);
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.shutdown().await;
@@ -920,9 +923,7 @@ async fn start_auto_openai_mock_server(aicc_endpoint: &str) -> std::result::Resu
 }
 
 async fn resolve_mock_openai_base_url(aicc_endpoint: &str) -> std::result::Result<String, String> {
-    if let Some(value) =
-        resolve_endpoint_from_env(&[], &["AICC_REMOTE_MOCK_OPENAI_HOST"], "/v1")
-    {
+    if let Some(value) = resolve_endpoint_from_env(&[], &["AICC_REMOTE_MOCK_OPENAI_HOST"], "/v1") {
         return Ok(value);
     }
 
@@ -965,7 +966,9 @@ async fn build_remote_mock_openai_settings(
     }))
 }
 
-async fn bootstrap_remote_mock_provider_once(aicc_endpoint: &str) -> std::result::Result<(), String> {
+async fn bootstrap_remote_mock_provider_once(
+    aicc_endpoint: &str,
+) -> std::result::Result<(), String> {
     let settings = build_remote_mock_openai_settings(aicc_endpoint).await?;
 
     let sys_endpoint = derive_system_config_endpoint(aicc_endpoint).ok_or_else(|| {
@@ -995,7 +998,12 @@ async fn bootstrap_remote_mock_provider_once(aicc_endpoint: &str) -> std::result
         },
     )
     .await
-    .map_err(|err| format!("bootstrap sys_config_set failed via {}: {}", sys_endpoint, err))?;
+    .map_err(|err| {
+        format!(
+            "bootstrap sys_config_set failed via {}: {}",
+            sys_endpoint, err
+        )
+    })?;
 
     post_rpc_over_http(
         aicc_endpoint,
@@ -1008,7 +1016,12 @@ async fn bootstrap_remote_mock_provider_once(aicc_endpoint: &str) -> std::result
         },
     )
     .await
-    .map_err(|err| format!("bootstrap reload_settings failed via {}: {}", aicc_endpoint, err))?;
+    .map_err(|err| {
+        format!(
+            "bootstrap reload_settings failed via {}: {}",
+            aicc_endpoint, err
+        )
+    })?;
 
     Ok(())
 }
@@ -1036,7 +1049,8 @@ fn resolve_login_endpoint(endpoint_hint: Option<&str>) -> std::result::Result<St
         return Ok(login_url);
     }
 
-    if let Some(endpoint) = endpoint_hint.and_then(|value| derive_verify_hub_endpoint(value.trim())) {
+    if let Some(endpoint) = endpoint_hint.and_then(|value| derive_verify_hub_endpoint(value.trim()))
+    {
         return Ok(endpoint);
     }
 
@@ -1062,7 +1076,9 @@ fn resolve_login_endpoint(endpoint_hint: Option<&str>) -> std::result::Result<St
         return Ok(login_url);
     }
 
-    if let Some(endpoint_seed) = first_non_empty_env(&["AICC_GATEWAY_HOST", "AICC_KRPC_HOST", "AICC_HOST"]) {
+    if let Some(endpoint_seed) =
+        first_non_empty_env(&["AICC_GATEWAY_HOST", "AICC_KRPC_HOST", "AICC_HOST"])
+    {
         if let Some(endpoint) = derive_verify_hub_endpoint(&endpoint_seed) {
             return Ok(endpoint);
         }
@@ -1147,7 +1163,12 @@ async fn login_remote_token_once(
         .and_then(|v| v.as_str())
         .map(|v| v.trim())
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| format!("login_by_password response missing session_token: {}", payload))?;
+        .ok_or_else(|| {
+            format!(
+                "login_by_password response missing session_token: {}",
+                payload
+            )
+        })?;
 
     Ok(Some(token.to_string()))
 }

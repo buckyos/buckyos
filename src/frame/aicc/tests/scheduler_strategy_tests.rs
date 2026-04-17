@@ -604,7 +604,12 @@ fn sched_05_master_feature_local_required_filters_non_local() {
     c.set_mapping(Capability::LlmRouter, "llm.plan.default", "local", "m");
     c.set_mapping(Capability::LlmRouter, "llm.plan.default", "remote", "m");
     r.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-local", "local", vec![Capability::LlmRouter], vec!["local".into()]),
+        mock_instance(
+            "p-local",
+            "local",
+            vec![Capability::LlmRouter],
+            vec!["local".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
@@ -612,7 +617,12 @@ fn sched_05_master_feature_local_required_filters_non_local() {
         vec![Ok(ProviderStartResult::Started)],
     )));
     r.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p-remote", "remote", vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(
+            "p-remote",
+            "remote",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),

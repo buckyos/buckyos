@@ -1316,7 +1316,9 @@ impl AgentTool for SetMemoryTool {
             output_schema: json!({
                 "type":"object"
             }),
-            usage: Some("set_memory <key> <content> | set_memory key=<key> content=<content>".to_string()),
+            usage: Some(
+                "set_memory <key> <content> | set_memory key=<key> content=<content>".to_string(),
+            ),
         }
     }
 

@@ -276,7 +276,8 @@ impl AgentMemory {
                     if envelope.valid {
                         let memory_path = self.memory_path_for_key(&envelope.key);
                         let raw_content = serialize_memory_content(&envelope.content)?;
-                        self.write_memory_content(&memory_path, &raw_content).await?;
+                        self.write_memory_content(&memory_path, &raw_content)
+                            .await?;
                         state_map.insert(envelope.key.clone(), envelope);
                     } else {
                         let memory_path = self.memory_path_for_key(&envelope.key);
@@ -516,11 +517,7 @@ impl AgentMemory {
         atomic_write(&self.inner.state_path, body.as_bytes()).await
     }
 
-    async fn write_memory_content(
-        &self,
-        path: &Path,
-        content: &str,
-    ) -> Result<(), AgentToolError> {
+    async fn write_memory_content(&self, path: &Path, content: &str) -> Result<(), AgentToolError> {
         atomic_write(path, content.as_bytes()).await
     }
 
@@ -575,7 +572,8 @@ impl MemoryMutationBackend for AgentMemory {
         content: String,
         source: Json,
     ) -> Result<Json, AgentToolError> {
-        self.set_memory(key.as_str(), content.as_str(), source).await
+        self.set_memory(key.as_str(), content.as_str(), source)
+            .await
     }
 
     async fn remove_memory(&self, key: String, source: Json) -> Result<Json, AgentToolError> {
@@ -1065,9 +1063,9 @@ mod tests {
             memory_path.parent().expect("fallback file parent"),
             memory.memory_dir()
         );
-        assert!(memory_path.file_name().is_some_and(|name| {
-            name.to_string_lossy().starts_with(".memory-key-")
-        }));
+        assert!(memory_path
+            .file_name()
+            .is_some_and(|name| { name.to_string_lossy().starts_with(".memory-key-") }));
     }
 
     #[tokio::test]
