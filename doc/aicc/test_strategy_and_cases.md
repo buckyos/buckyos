@@ -209,12 +209,12 @@
 
 - `xx` 取值为 `openai` / `gimini` / `claude`
 - Claude 当前最小集建议与 OpenAI 对齐，包含：
-  - `adapter_claude_01_http_200_success`
-  - `adapter_claude_02_http_429_retryable`
-  - `adapter_claude_03_http_503_retryable`
-  - `adapter_claude_04_http_400_fatal`
-  - `adapter_claude_05_invalid_json_fatal`
-  - `adapter_claude_06_timeout_or_network_error_classified`
+    - `adapter_claude_01_http_200_success`
+    - `adapter_claude_02_http_429_retryable`
+    - `adapter_claude_03_http_503_retryable`
+    - `adapter_claude_04_http_400_fatal`
+    - `adapter_claude_05_invalid_json_fatal`
+    - `adapter_claude_06_timeout_or_network_error_classified`
 
 ### 4.8 协议规范层 - Base64 资源（8）
 
@@ -782,9 +782,9 @@ impl FakeArtifactStorage {
 - Claude 用例新增变量：`CLAUDE_API_KEY`（用于写入 `services/aicc/settings` 的 `claude.api_token`）
 - 协议隔离约束（必须遵守）：真实场景用例执行前必须禁用非目标 provider，仅保留目标 provider，禁止跨 provider fallback 干扰协议验证结论
 - 用例内自动执行：
-  1. `sys_config_set` 写入对应 provider（OpenAI/Gemini/Claude）实例配置
-  2. `service.reload_settings` 立即生效
-  3. 执行复杂场景请求与断言
+    1. `sys_config_set` 写入对应 provider（OpenAI/Gemini/Claude）实例配置
+    2. `service.reload_settings` 立即生效
+    3. 执行复杂场景请求与断言
 
 ### 12.3 协议覆盖（单用例内混合）
 
@@ -826,10 +826,10 @@ cargo test -p aicc --test workflow_complex_real_env_tests workflow_real_03_gatew
 - 用例名：`workflow_remote_02_sn_openai_complex_scenario_protocol_mix`
 - 认证方式：沿用远程 token/login 链路（`AICC_RPC_TOKEN` 或 `AICC_LOGIN_USERNAME` + `AICC_LOGIN_PASSWORD`）
 - 关键环境变量：
-  - `AICC_GATEWAY_HOST`：目标 gateway 地址（必需）
-  - `AICC_SN_OPENAI_BASE_URL`：SN OpenAI endpoint（可选，默认 `https://sn.buckyos.ai/api/v1/ai/chat/completions`）
-  - `AICC_SN_REGISTER_PROVIDER`：是否在用例内自动写入 SN OpenAI provider 配置（可选，默认关闭；设置为 `1` 可启用）
-  - 无论 `AICC_SN_REGISTER_PROVIDER` 是否启用，用例都会先禁用非目标 provider，并显式启用目标 provider（`enabled=true`）后再 reload，确保协议验证隔离
+    - `AICC_GATEWAY_HOST`：目标 gateway 地址（必需）
+    - `AICC_SN_OPENAI_BASE_URL`：SN OpenAI endpoint（可选，默认 `https://sn.buckyos.ai/api/v1/ai/`）
+    - `AICC_SN_REGISTER_PROVIDER`：是否在用例内自动写入 SN OpenAI provider 配置（可选，默认关闭；设置为 `1` 可启用）
+    - 无论 `AICC_SN_REGISTER_PROVIDER` 是否启用，用例都会先禁用非目标 provider，并显式启用目标 provider（`enabled=true`）后再 reload，确保协议验证隔离
 
 ```powershell
 cd d:\project\buckyos-main\src
@@ -838,9 +838,7 @@ $env:AICC_GATEWAY_HOST="http://<target-device-host>:4040"
 
 # 可选：开启自动注册 SN OpenAI provider（默认不自动注册）
 # $env:AICC_SN_REGISTER_PROVIDER="1"
-# $env:AICC_SN_OPENAI_BASE_URL="https://sn.buckyos.ai/api/v1/ai/chat/completions"
+# $env:AICC_SN_OPENAI_BASE_URL="https://sn.buckyos.ai/api/v1/ai/"
 
 cargo test -p aicc --test aicc_gateway_workflow_remote_tests workflow_remote_02_sn_openai_complex_scenario_protocol_mix -- --ignored --nocapture
 ```
-
-

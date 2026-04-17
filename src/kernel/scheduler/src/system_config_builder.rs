@@ -39,7 +39,7 @@ const DEFAULT_SN_OPENAI_MODELS: &[&str] =
     &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
 const DEFAULT_SN_OPENAI_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
 const SN_OPENAI_MODELS_API: &str = "https://sn.buckyos.ai/api/v1/ai/models";
-const SN_OPENAI_CHAT_COMPLETIONS_API: &str = "https://sn.buckyos.ai/api/v1/ai/chat/completions";
+const SN_OPENAI_RESPONSES_API: &str = "https://sn.buckyos.ai/api/v1/ai/";
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AIProviderConfigSummary {
@@ -717,7 +717,7 @@ fn build_aicc_settings_with_sn_models(
         openai_instances.push(json!({
             "instance_id": "sn-openai-default",
             "provider_type": "sn-openai",
-            "base_url": SN_OPENAI_CHAT_COMPLETIONS_API,
+            "base_url": SN_OPENAI_RESPONSES_API,
             "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
             "models": sn_model_settings.models,
             "default_model": sn_model_settings.default_model,
@@ -1319,7 +1319,7 @@ mod tests {
         );
         assert_eq!(
             settings["openai"]["instances"][0]["base_url"],
-            "https://sn.buckyos.ai/api/v1/ai/chat/completions"
+            "https://sn.buckyos.ai/api/v1/ai/responses"
         );
         assert_eq!(
             settings["openai"]["instances"][0]["auth_mode"],

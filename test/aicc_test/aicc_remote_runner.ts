@@ -97,8 +97,7 @@ const DEFAULT_GEMINI_BASE_URL =
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 const DEFAULT_CLAUDE_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_CLAUDE_MODEL = "claude-3-7-sonnet-latest";
-const DEFAULT_SN_OPENAI_BASE_URL =
-    "https://sn.buckyos.ai/api/v1/ai/chat/completions";
+const DEFAULT_SN_OPENAI_BASE_URL = "https://sn.buckyos.ai/api/v1/ai/";
 const COMPLEX_DAG_PROMPT = `You are a workflow planner.
 Return JSON only (no markdown).
 Generate a DAG plan for "product release multimedia package" with EXACTLY 6 steps.
