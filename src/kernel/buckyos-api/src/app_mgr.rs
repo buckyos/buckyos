@@ -120,6 +120,9 @@ pub struct ServiceInstallConfig {
     pub res_pool_id: String,
     #[serde(default)]
     pub allow_public_access: bool,
+    #[serde(default)]
+    pub rdb_instances : HashMap<String, String>,
+    
 }
 
 impl Default for ServiceInstallConfig {
@@ -134,6 +137,7 @@ impl Default for ServiceInstallConfig {
             start_param: None,
             res_pool_id: "default".to_string(),
             allow_public_access: false,
+            rdb_instances: HashMap::new(),
         }
     }
 }

@@ -23,6 +23,7 @@ mod kevent_client;
 mod kevent_ringbuffer;
 mod opendan_client;
 mod permission;
+mod rdb_mgr;
 mod repo_client;
 mod runtime;
 pub mod test_config;
@@ -46,6 +47,7 @@ pub use gateway_control::*;
 pub use kevent_client::*;
 pub use opendan_client::*;
 pub use permission::*;
+pub use rdb_mgr::*;
 pub use runtime::*;
 
 use ::kRPC::*;
