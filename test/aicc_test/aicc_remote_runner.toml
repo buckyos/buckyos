@@ -16,6 +16,7 @@ model_alias = "llm.plan.default"
 app_id = "aicc-tests"
 output = "reports/aicc_remote_report.md"
 rust_manifest_path = "rust_runner/Cargo.toml"
+protocol_mix_only_no_system_config=true
 
 # sn-openai is always executed and does not need api key.
 # openai/gemini/claude are executed only if key is provided.

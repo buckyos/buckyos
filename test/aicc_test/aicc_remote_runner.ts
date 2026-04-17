@@ -25,6 +25,7 @@ type CliOptions = {
     appId: string;
     providers: ProviderKind[];
     apiKeys: Partial<Record<"openai" | "gemini" | "claude", string>>;
+    protocolMixOnlyNoSystemConfig: boolean;
 };
 
 type Context = {
@@ -119,6 +120,9 @@ const DEFAULT_CASE_CONFIG: RequiredCaseConfig = {
     providerFeatures: ["plan", "json_output", "tool_calling", "web_search"],
     providerTimeoutMs: 120000,
 };
+const DEFAULT_RUST_RUNNER_TIMEOUT_SECS = Math.ceil(
+    (DEFAULT_CASE_CONFIG.providerTimeoutMs ?? 120000) / 1000,
+);
 
 function getEnv(name: string): string | undefined {
     const value = process.env[name];
@@ -150,6 +154,20 @@ function parseArgMap(argv: string[]): Record<string, string> {
         i += 1;
     }
     return kv;
+}
+
+function parseBooleanFlag(value: string | undefined): boolean | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+        return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+        return false;
+    }
+    return undefined;
 }
 
 function parseTomlValue(raw: string): string | number | boolean {
@@ -267,6 +285,15 @@ async function loadOptionsFromConfig(argv: string[]): Promise<CliOptions> {
         "gemini",
         "claude",
     ];
+    const protocolMixOnlyNoSystemConfig =
+        parseBooleanFlag(args["--protocol-mix-only-no-system-config"]) ??
+        parseBooleanFlag(
+            getConfigValue(cfg, [
+                "runner.protocol_mix_only_no_system_config",
+                "protocol_mix_only_no_system_config",
+            ]),
+        ) ??
+        false;
 
     return {
         gatewayHost,
@@ -306,6 +333,7 @@ async function loadOptionsFromConfig(argv: string[]): Promise<CliOptions> {
             "aicc-tests",
         providers,
         apiKeys,
+        protocolMixOnlyNoSystemConfig,
     };
 }
 
@@ -1681,6 +1709,8 @@ function createCases(): TestCase[] {
                         ctx.options.modelAlias,
                         "--prompt",
                         `[${provider}] Rust AiccClient complete`,
+                        "--timeout-secs",
+                        String(DEFAULT_RUST_RUNNER_TIMEOUT_SECS),
                         ...(ctx.token ? ["--token", ctx.token] : []),
                     ],
                     ctx,
@@ -1721,6 +1751,8 @@ function createCases(): TestCase[] {
                         ctx.options.modelAlias,
                         "--prompt",
                         `[${provider}] Rust AiccClient cancel`,
+                        "--timeout-secs",
+                        String(DEFAULT_RUST_RUNNER_TIMEOUT_SECS),
                         ...(ctx.token ? ["--token", ctx.token] : []),
                     ],
                     ctx,
@@ -1862,6 +1894,7 @@ function buildReport(results: CaseResult[], ctx: Context): string {
         `- AiccClient Host: ${ctx.options.aiccClientHost}`,
         `- Model Alias: ${ctx.options.modelAlias}`,
         `- Providers: ${ctx.options.providers.join(", ")}`,
+        `- Mode: ${ctx.options.protocolMixOnlyNoSystemConfig ? "protocol_mix_only_no_system_config" : "default"}`,
         `- Overall: ${statusIcon(overall)} ${overall.toUpperCase()}`,
         `- Summary: total=${total}, passed=${passed}, partial=${partial}, failed=${failed}, skipped=${skipped}`,
         "",
@@ -1912,12 +1945,14 @@ async function runOneCase(
             "AiccClient (Rust)": ctx.targets.rust,
             "TS SDK": ctx.targets.ts,
         };
-        await resetAiccSettings(
-            ctx,
-            targetByLayer[testCase.layer],
-            provider,
-            testCase.requiredConfig,
-        );
+        if (!ctx.options.protocolMixOnlyNoSystemConfig) {
+            await resetAiccSettings(
+                ctx,
+                targetByLayer[testCase.layer],
+                provider,
+                testCase.requiredConfig,
+            );
+        }
         detail = await testCase.run(ctx, provider);
     } catch (error) {
         if (error instanceof SkippedCaseError) {
@@ -1961,7 +1996,15 @@ async function main(): Promise<void> {
     };
     ctx.token = await resolveToken(ctx);
 
-    const cases = createCases();
+    const allCases = createCases();
+    const cases = ctx.options.protocolMixOnlyNoSystemConfig
+        ? allCases.filter((testCase) =>
+              testCase.id.endsWith("_complex_scenario_protocol_mix"),
+          )
+        : allCases;
+    if (cases.length === 0) {
+        throw new Error("no test cases selected by current mode/filter");
+    }
     const results: CaseResult[] = [];
     for (const provider of options.providers) {
         for (const testCase of cases) {

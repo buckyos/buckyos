@@ -36,6 +36,8 @@ struct CommonArgs {
     token: Option<String>,
     #[arg(long, default_value = "aicc-rust-runner")]
     trace_id: String,
+    #[arg(long, default_value_t = 120)]
+    timeout_secs: u64,
 }
 
 #[derive(Serialize)]
@@ -83,7 +85,11 @@ fn status_to_string(status: &buckyos_api::CompleteStatus) -> &'static str {
 }
 
 async fn build_client(args: &CommonArgs) -> AiccClient {
-    let client = AiccClient::new(kRPC::new(args.endpoint.as_str(), None));
+    let client = AiccClient::new(kRPC::new_with_timeout_secs(
+        args.endpoint.as_str(),
+        None,
+        args.timeout_secs,
+    ));
     client
         .set_context(RPCContext {
             token: args.token.clone(),
