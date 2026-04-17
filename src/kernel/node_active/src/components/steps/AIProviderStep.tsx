@@ -60,9 +60,9 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
       ),
     [aiProviderConfig],
   );
-  const hasActiveCode = Boolean(wizardData.sn_active_code?.trim());
+  const hasLlmRouterEnabled = wizardData.enabled_features.llm_router;
   const primaryLabel =
-    hasAnyProviderToken || hasActiveCode ? t("next_button") : t("skip_button");
+    hasAnyProviderToken || hasLlmRouterEnabled ? t("next_button") : t("skip_button");
 
   const normalizeProviderConfig = (
     config: AIProviderConfig,
@@ -94,7 +94,7 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
     const normalizedConfig = normalizeProviderConfig(aiProviderConfig);
     onUpdate({ ai_provider_config: normalizedConfig });
 
-    if (hasAnyProviderToken || hasActiveCode) {
+    if (hasAnyProviderToken || hasLlmRouterEnabled) {
       onNext();
       return;
     }
@@ -178,7 +178,7 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
         ))}
       </Grid>
 
-      {hasActiveCode ? (
+      {hasLlmRouterEnabled ? (
         <Alert icon={<CheckCircleRounded />} severity="success">
           {t("ai_provider_sn_included")}
         </Alert>

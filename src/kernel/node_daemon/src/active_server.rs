@@ -23,7 +23,11 @@ use std::sync::Arc;
 use std::{net::IpAddr, process::exit};
 
 const ACTIVE_SERVICE_MAIN_PORT: u16 = 3182;
-const START_CONFIG_OPTIONAL_FIELDS: &[&str] = &["ai_provider_config", "jarvis_msg_tunnel_config"];
+const START_CONFIG_OPTIONAL_FIELDS: &[&str] = &[
+    "ai_provider_config",
+    "jarvis_msg_tunnel_config",
+    "enabled_features",
+];
 
 #[derive(Clone)]
 struct ActiveServer {

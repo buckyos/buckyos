@@ -48,6 +48,10 @@ export type JarvisMsgTunnelConfig = {
   telegram_account_id: string;
 }
 
+export type EnabledFeatures = {
+  llm_router: boolean;
+}
+
 export type ActiveWizzardData = {
   gatewy_type: GatewayType;
   // is_direct_connect: boolean;
@@ -58,8 +62,9 @@ export type ActiveWizzardData = {
   self_domain: string;
 
   //web3_base_host: string;
-  sn_active_code: string | null;//钱包模式为null
+  sn_active_code: string | null;// 邀请码来源字段，功能开通状态由 enabled_features 表达
   sn_user_name: string | null;//钱包模式不会为null
+  enabled_features: EnabledFeatures;
 
   admin_password_hash: string;
   friend_passcode: string;
