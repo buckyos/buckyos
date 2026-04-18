@@ -2,9 +2,9 @@ use crate::app_loader::{
     command_matches_agent_process, command_matches_exact_agent_process,
     container_list_contains_name, docker_desc_requires_exact_match,
     docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_target,
-    normalize_digest, parse_docker_container_inspect, AppLoader, CommandSpec, ControlOperation,
-    DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
-    DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_OBJID,
+    normalize_digest, parse_docker_container_inspect, resolve_aios_image_repo_from_paths,
+    AppLoader, CommandSpec, ControlOperation, DockerRuntimeIdentity, PlatformArch, PlatformOs,
+    PlatformTarget, RuntimeType, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_OBJID,
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
@@ -14,7 +14,9 @@ use buckyos_api::{
 use name_lib::DID;
 use ndn_lib::ObjId;
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn assert_programs(commands: &[CommandSpec], expected: &[&str]) {
     let actual = commands
@@ -141,6 +143,15 @@ fn build_agent_loader(platform: PlatformTarget) -> AppLoader {
     AppLoader::new_for_service("jarvis@alice@ood1", config)
         .with_platform(platform)
         .with_container_support_override(true)
+        .with_agent_runtime_image_repo_override("paios/aios")
+}
+
+fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
 }
 
 #[test]
@@ -171,6 +182,36 @@ fn helper_functions_keep_expected_normalization() {
     assert_eq!(normalize_digest(Some("sha256:def")), Some("sha256:def"));
     assert_eq!(normalize_digest(Some("   ")), None);
     assert_eq!(normalize_digest(None), None);
+}
+
+#[test]
+fn resolve_aios_image_repo_from_paths_reads_devenv_override() {
+    let temp_dir = unique_temp_path("node-daemon-devenv");
+    fs::create_dir_all(&temp_dir).unwrap();
+    let devenv_path = temp_dir.join("devenv.json");
+    fs::write(&devenv_path, r#"{"aios":"paios/aios_dev"}"#).unwrap();
+
+    let resolved =
+        resolve_aios_image_repo_from_paths([temp_dir.join("missing.json"), devenv_path.clone()]);
+
+    assert_eq!(resolved.as_deref(), Some("paios/aios_dev"));
+
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[test]
+fn resolve_aios_image_repo_from_paths_ignores_missing_or_empty_values() {
+    let temp_dir = unique_temp_path("node-daemon-devenv-empty");
+    fs::create_dir_all(&temp_dir).unwrap();
+    let devenv_path = temp_dir.join("devenv.json");
+    fs::write(&devenv_path, "{\"aios\":\"   \"}").unwrap();
+
+    let resolved =
+        resolve_aios_image_repo_from_paths([temp_dir.join("missing.json"), devenv_path.clone()]);
+
+    assert_eq!(resolved, None);
+
+    let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -476,6 +517,29 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert_eq!(
         status.commands[2].args,
         vec!["images", "-q", "paios/aios:latest-amd64"]
+    );
+}
+
+#[test]
+fn agent_control_commands_support_custom_runtime_image_repo() {
+    let loader = build_agent_loader(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
+        .with_agent_runtime_image_repo_override("paios/aios_dev");
+
+    let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
+    assert_eq!(
+        deploy.commands[2].args,
+        vec!["pull", "paios/aios_dev:latest-amd64"]
+    );
+
+    let start = loader.preview_operation(ControlOperation::Start).unwrap();
+    assert!(start.commands[1]
+        .args
+        .contains(&"paios/aios_dev:latest-amd64".to_string()));
+
+    let status = loader.preview_operation(ControlOperation::Status).unwrap();
+    assert_eq!(
+        status.commands[2].args,
+        vec!["images", "-q", "paios/aios_dev:latest-amd64"]
     );
 }
 

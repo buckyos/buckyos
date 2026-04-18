@@ -5,7 +5,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$ROOT_DIR/src"
 PROJECT_CONFIG_PATH="$SRC_DIR/bucky_project.yaml"
-IMAGE_NAME="${IMAGE_NAME:-paios/aios}"
+DEFAULT_IMAGE_NAME="paios/aios"
+DEVENV_PATH="$ROOT_DIR/devenv.json"
+IMAGE_NAME="${IMAGE_NAME:-}"
 VERSION_FILE="$SRC_DIR/VERSION"
 VERSION_TAG="${VERSION_TAG:-}"
 SUPPORTED_ARCHES=("amd64" "aarch64")
@@ -32,7 +34,7 @@ Then packages each binary into an Ubuntu-based Docker image:
 
 Options:
   --push          Push arch-specific images and create multi-arch manifests
-  --image <name>  Override image name, default: paios/aios
+  --image <name>  Override image name, default: devenv.json["aios"] or paios/aios
   --tag <tag>     Override version tag, default: src/VERSION
   --runtime-only  Install only required runtime dependencies in the image
   --arch <arch>   Build only one architecture (amd64|aarch64); can be repeated
@@ -234,13 +236,13 @@ render_dockerfile() {
   fi
 
   {
-    cat <<'EOF'
+    cat <<EOF
 FROM ubuntu:24.04
 
 ARG TARGET_ARCH
 
 LABEL org.opencontainers.image.title="AIOS" \
-      org.opencontainers.image.description="OpenDAN runtime image for paios/aios" \
+      org.opencontainers.image.description="OpenDAN runtime image for ${IMAGE_NAME}" \
       org.opencontainers.image.vendor="BuckyOS DAO"
 
 WORKDIR /opt/buckyos
@@ -289,6 +291,46 @@ resolve_python() {
 
   echo "python3 not found" >&2
   exit 1
+}
+
+resolve_default_image_name() {
+  local python_bin
+  local resolved_image
+
+  if [[ -n "$IMAGE_NAME" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$DEVENV_PATH" ]]; then
+    IMAGE_NAME="$DEFAULT_IMAGE_NAME"
+    return
+  fi
+
+  python_bin="$(resolve_python)"
+  resolved_image="$(
+    "$python_bin" - "$DEVENV_PATH" "$DEFAULT_IMAGE_NAME" <<'PY'
+import json
+import sys
+
+config_path = sys.argv[1]
+default_image = sys.argv[2]
+
+try:
+    with open(config_path, "r", encoding="utf-8") as fh:
+        config = json.load(fh)
+except Exception:
+    print(default_image)
+    raise SystemExit(0)
+
+image = config.get("aios")
+if isinstance(image, str) and image.strip():
+    print(image.strip())
+else:
+    print(default_image)
+PY
+  )"
+
+  IMAGE_NAME="${resolved_image:-$DEFAULT_IMAGE_NAME}"
 }
 
 load_build_context() {
@@ -711,6 +753,7 @@ main() {
     exit 1
   fi
 
+  resolve_default_image_name
   resolve_version_tag
   python_bin="$(resolve_python)"
   mapfile -t target_arches < <(resolve_selected_arches)
@@ -722,6 +765,7 @@ main() {
   ensure_buildx_support "${target_arches[@]}"
 
   log "Version tag: $VERSION_TAG"
+  log "Image repo: $IMAGE_NAME"
   log "Target arches: $(package_list_to_string "${target_arches[@]}")"
   log "Runtime packages: $(package_list_to_string "${RUNTIME_PACKAGES[@]}")"
   if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then

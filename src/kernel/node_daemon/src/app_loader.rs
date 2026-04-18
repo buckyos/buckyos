@@ -20,7 +20,7 @@ use tokio::process::Command;
 
 const DEFAULT_OPENDAN_SERVICE_PORT: u16 = 4060;
 const OPENDAN_SERVICE_PORT_FALLBACK_KEYS: [&str; 4] = ["www", "http", "https", "main"];
-const AGENT_RUNTIME_IMAGE_REPO: &str = "paios/aios";
+const DEFAULT_AGENT_RUNTIME_IMAGE_REPO: &str = "paios/aios";
 const AGENT_RUNTIME_HOST_GATEWAY: &str = "host.docker.internal";
 const AGENT_CONTAINER_PACKAGE_ROOT: &str = "/opt/agent/package";
 const AGENT_CONTAINER_DATA_ROOT: &str = "/opt/agent/data";
@@ -32,6 +32,8 @@ const AGENT_CONTAINER_OPENDAN_BIN: &str = "/opt/buckyos/bin/opendan/opendan";
 const SCRIPT_SERVICE_IMAGE_REPO: &str = "buckyos/script-service";
 const SCRIPT_CONTAINER_PACKAGE_ROOT: &str = "/opt/script/package";
 const SCRIPT_CONTAINER_DATA_ROOT: &str = "/opt/script/data";
+const DEVENV_JSON_FILE_NAME: &str = "devenv.json";
+const DEVENV_JSON_AIOS_KEY: &str = "aios";
 pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
 pub(crate) const DOCKER_LABEL_OWNER_USER_ID: &str = "buckyos.owner_user_id";
 pub(crate) const DOCKER_LABEL_FULL_APPID: &str = "buckyos.full_appid";
@@ -174,6 +176,7 @@ pub struct AppLoader {
     config: LoaderConfig,
     platform: PlatformTarget,
     support_container_override: Option<bool>,
+    agent_runtime_image_repo_override: Option<String>,
 }
 
 impl AppLoader {
@@ -190,6 +193,7 @@ impl AppLoader {
             config: LoaderConfig::Service(config),
             platform: PlatformTarget::current(),
             support_container_override: None,
+            agent_runtime_image_repo_override: None,
         }
     }
 
@@ -200,6 +204,7 @@ impl AppLoader {
             config: LoaderConfig::Local(config),
             platform: PlatformTarget::current(),
             support_container_override: None,
+            agent_runtime_image_repo_override: None,
         }
     }
 
@@ -210,6 +215,14 @@ impl AppLoader {
 
     pub(crate) fn with_container_support_override(mut self, support_container: bool) -> Self {
         self.support_container_override = Some(support_container);
+        self
+    }
+
+    pub(crate) fn with_agent_runtime_image_repo_override(
+        mut self,
+        image_repo: impl Into<String>,
+    ) -> Self {
+        self.agent_runtime_image_repo_override = Some(image_repo.into());
         self
     }
 
@@ -1507,12 +1520,21 @@ impl AppLoader {
         Ok(mounts)
     }
 
+    fn agent_runtime_image_repo(&self) -> String {
+        if let Some(repo) = &self.agent_runtime_image_repo_override {
+            return repo.clone();
+        }
+
+        resolve_devenv_aios_image_repo()
+            .unwrap_or_else(|| DEFAULT_AGENT_RUNTIME_IMAGE_REPO.to_string())
+    }
+
     fn agent_runtime_image_name(&self) -> String {
         let arch_tag = match self.platform.arch {
             PlatformArch::Aarch64 => "latest-aarch64",
             PlatformArch::Amd64 => "latest-amd64",
         };
-        format!("{AGENT_RUNTIME_IMAGE_REPO}:{arch_tag}")
+        format!("{}:{arch_tag}", self.agent_runtime_image_repo())
     }
 
     fn script_service_image_name(&self) -> String {
@@ -2490,6 +2512,59 @@ fn format_command_failure(step: &str, output: &CommandOutput) -> String {
         output.stdout.trim(),
         output.stderr.trim()
     )
+}
+
+pub(crate) fn resolve_aios_image_repo_from_paths<I, P>(paths: I) -> Option<String>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let mut visited = HashSet::new();
+
+    for candidate in paths {
+        let candidate = candidate.as_ref();
+        let path_key = candidate.to_string_lossy().to_string();
+        if !visited.insert(path_key) || !candidate.is_file() {
+            continue;
+        }
+
+        match parse_aios_image_repo_from_devenv(candidate) {
+            Ok(Some(image_repo)) => return Some(image_repo),
+            Ok(None) => {}
+            Err(error) => warn!(
+                "ignore invalid {} at {}: {}",
+                DEVENV_JSON_FILE_NAME,
+                candidate.display(),
+                error
+            ),
+        }
+    }
+
+    None
+}
+
+fn resolve_devenv_aios_image_repo() -> Option<String> {
+    resolve_aios_image_repo_from_paths([devenv_json_path()])
+}
+
+fn parse_aios_image_repo_from_devenv(path: &Path) -> std::result::Result<Option<String>, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("read {} failed: {}", path.display(), error))?;
+    let value = serde_json::from_str::<Value>(raw.as_str())
+        .map_err(|error| format!("parse {} failed: {}", path.display(), error))?;
+
+    Ok(value
+        .get(DEVENV_JSON_AIOS_KEY)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string))
+}
+
+fn devenv_json_path() -> PathBuf {
+    get_buckyos_root_dir()
+        .join("etc")
+        .join(DEVENV_JSON_FILE_NAME)
 }
 
 fn trim_to_option(value: &str) -> Option<String> {

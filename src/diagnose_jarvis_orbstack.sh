@@ -3,7 +3,10 @@ set -u
 set -o pipefail
 
 SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEFAULT_BUCKYOS_ROOT="/opt/buckyos"
+DEFAULT_AIOS_IMAGE_REPO="paios/aios"
 OWNER_HINT=""
 BUNDLE_DIR=""
 SINCE_MINUTES="60"
@@ -29,6 +32,48 @@ EOF
 
 log() {
   echo "[$SCRIPT_NAME] $*"
+}
+
+resolve_aios_image_repo() {
+  local devenv_path="$PROJECT_ROOT/devenv.json"
+  local python_bin=""
+
+  if [[ ! -f "$devenv_path" ]]; then
+    printf '%s\n' "$DEFAULT_AIOS_IMAGE_REPO"
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python_bin="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    python_bin="$(command -v python)"
+  fi
+
+  if [[ -z "$python_bin" ]]; then
+    printf '%s\n' "$DEFAULT_AIOS_IMAGE_REPO"
+    return
+  fi
+
+  "$python_bin" - "$devenv_path" "$DEFAULT_AIOS_IMAGE_REPO" <<'PY'
+import json
+import sys
+
+config_path = sys.argv[1]
+default_image = sys.argv[2]
+
+try:
+    with open(config_path, "r", encoding="utf-8") as fh:
+        config = json.load(fh)
+except Exception:
+    print(default_image)
+    raise SystemExit(0)
+
+image = config.get("aios")
+if isinstance(image, str) and image.strip():
+    print(image.strip())
+else:
+    print(default_image)
+PY
 }
 
 append_line() {
@@ -243,6 +288,7 @@ REPRO_FILE="$BUNDLE_DIR/repro_jarvis_foreground.sh"
 OWNERS_FILE="$BUNDLE_DIR/owners.txt"
 
 BUCKYOS_ROOT_RESOLVED="$(resolve_buckyos_root)"
+AIOS_IMAGE_REPO="$(resolve_aios_image_repo)"
 LOG_ROOT="$BUCKYOS_ROOT_RESOLVED/logs"
 AGENT_LOG_ROOT="$LOG_ROOT/agents"
 
@@ -364,8 +410,8 @@ done <"$OWNERS_FILE"
 
 capture_cmd "$CONTAINERS_FILE" docker ps -a --no-trunc --filter "label=buckyos.app_id=jarvis"
 append_cmd "$CONTAINERS_FILE" docker ps --no-trunc --filter "label=buckyos.app_id=jarvis"
-append_cmd "$CONTAINERS_FILE" docker image inspect "paios/aios:latest-aarch64"
-append_cmd "$CONTAINERS_FILE" docker image inspect "paios/aios:latest-amd64"
+append_cmd "$CONTAINERS_FILE" docker image inspect "${AIOS_IMAGE_REPO}:latest-aarch64"
+append_cmd "$CONTAINERS_FILE" docker image inspect "${AIOS_IMAGE_REPO}:latest-amd64"
 
 collect_recent_logs "$LOG_ROOT" "$NODE_LOG_FILE" '*node_daemon*' '*node-daemon*' 5
 collect_recent_logs "$AGENT_LOG_ROOT" "$AGENT_LOG_FILE" '*jarvis*' '*.log' 8
