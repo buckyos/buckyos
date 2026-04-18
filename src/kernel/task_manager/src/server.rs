@@ -4,7 +4,7 @@ use crate::download_executor::{
     spec_from_task, task_has_download_url, task_has_objid, DownloadTaskStore, DOWNLOAD_TASK_TYPE,
 };
 use crate::task::{new_task, Task, TaskScope, TaskStatus};
-use crate::task_db::DB_MANAGER;
+use crate::task_db::TaskDb;
 use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_api::*;
@@ -104,12 +104,14 @@ fn unique_task_name_conflict(err: &RPCErrors) -> bool {
 #[derive(Clone)]
 struct TaskManagerService {
     kevent_client: KEventClient,
+    db: Arc<TaskDb>,
 }
 
 impl TaskManagerService {
-    pub fn new() -> Self {
+    pub fn new(db: Arc<TaskDb>) -> Self {
         TaskManagerService {
             kevent_client: KEventClient::new_full(TASK_MANAGER_SERVICE_NAME, None),
+            db,
         }
     }
 
@@ -190,8 +192,8 @@ impl TaskManagerService {
     }
 
     async fn load_task(&self, id: i64) -> Result<Task> {
-        let db_manager = DB_MANAGER.read().await;
-        let task = db_manager
+        let task = self
+            .db
             .get_task(id)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
@@ -205,8 +207,7 @@ impl TaskManagerService {
         let user_id =
             (!request_ctx.user_id.trim().is_empty()).then_some(request_ctx.user_id.as_str());
         let app_id = (!request_ctx.app_id.trim().is_empty()).then_some(request_ctx.app_id.as_str());
-        let db_manager = DB_MANAGER.read().await;
-        db_manager
+        self.db
             .list_tasks_filtered(app_id, Some(DOWNLOAD_TASK_TYPE), None, None, None, user_id)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))
@@ -222,13 +223,10 @@ impl TaskManagerService {
         source_method: &'static str,
     ) -> std::result::Result<Task, String> {
         let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
-        {
-            let db_manager = DB_MANAGER.read().await;
-            db_manager
-                .update_task(id, status, progress, message, data_patch)
-                .await
-                .map_err(|err| err.to_string())?;
-        }
+        self.db
+            .update_task(id, status, progress, message, data_patch)
+            .await
+            .map_err(|err| err.to_string())?;
 
         let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
         if before_task.status != after_task.status {
@@ -245,13 +243,10 @@ impl TaskManagerService {
         source_method: &'static str,
     ) -> std::result::Result<Task, String> {
         let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
-        {
-            let db_manager = DB_MANAGER.read().await;
-            db_manager
-                .update_task_error(id, error_message)
-                .await
-                .map_err(|err| err.to_string())?;
-        }
+        self.db
+            .update_task_error(id, error_message)
+            .await
+            .map_err(|err| err.to_string())?;
 
         let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
         self.publish_task_status_changed_event(&before_task, &after_task, source_method)
@@ -345,15 +340,15 @@ impl TaskManagerHandler for TaskManagerService {
             task.root_id = root_id;
         }
 
-        let db_manager = DB_MANAGER.read().await;
-        let task_id = db_manager
+        let task_id = self
+            .db
             .create_task(&task)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
         if task.root_id.trim().is_empty() {
             let root_id = task_id.to_string();
-            db_manager
+            self.db
                 .set_root_id(task_id, root_id.as_str())
                 .await
                 .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
@@ -413,13 +408,10 @@ impl TaskManagerHandler for TaskManagerService {
                 resolved_objid.as_ref(),
                 download_options.as_ref(),
             ) {
-                {
-                    let db_manager = DB_MANAGER.read().await;
-                    db_manager
-                        .update_task(task.id, None, None, None, Some(data_patch))
-                        .await
-                        .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-                }
+                self.db
+                    .update_task(task.id, None, None, None, Some(data_patch))
+                    .await
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
                 task = self.load_task(task.id).await?;
             }
 
@@ -489,8 +481,8 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<Vec<Task>> {
         let request_ctx = request_context_from_source(source_user_id, source_app_id);
-        let db_manager = DB_MANAGER.read().await;
-        let tasks = db_manager
+        let tasks = self
+            .db
             .list_tasks_filtered(
                 filter.app_id.as_deref(),
                 filter.task_type.as_deref(),
@@ -520,8 +512,8 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<Vec<Task>> {
         let request_ctx = request_context_from_source(source_user_id, source_app_id);
-        let db_manager = DB_MANAGER.read().await;
-        let tasks = db_manager
+        let tasks = self
+            .db
             .list_tasks_filtered(app_id, task_type, None, None, None, None)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
@@ -555,13 +547,10 @@ impl TaskManagerHandler for TaskManagerService {
             ));
         }
 
-        {
-            let db_manager = DB_MANAGER.read().await;
-            db_manager
-                .update_task(id, status, progress, message, data)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        }
+        self.db
+            .update_task(id, status, progress, message, data)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
         if status.is_some() {
             match self.load_task(id).await {
@@ -600,19 +589,16 @@ impl TaskManagerHandler for TaskManagerService {
                 task.root_id.clone()
             };
 
-            let before_tasks = {
-                let db_manager = DB_MANAGER.read().await;
-                let before_tasks = db_manager
-                    .list_tasks_filtered(None, None, None, None, Some(root_id.as_str()), None)
-                    .await
-                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+            let before_tasks = self
+                .db
+                .list_tasks_filtered(None, None, None, None, Some(root_id.as_str()), None)
+                .await
+                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
-                db_manager
-                    .update_task_status_by_root_id(root_id.as_str(), TaskStatus::Canceled)
-                    .await
-                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-                before_tasks
-            };
+            self.db
+                .update_task_status_by_root_id(root_id.as_str(), TaskStatus::Canceled)
+                .await
+                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
             for before_task in before_tasks
                 .into_iter()
@@ -637,13 +623,10 @@ impl TaskManagerHandler for TaskManagerService {
             }
         } else {
             let before_task = task.clone();
-            {
-                let db_manager = DB_MANAGER.read().await;
-                db_manager
-                    .update_task_status(id, TaskStatus::Canceled)
-                    .await
-                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-            }
+            self.db
+                .update_task_status(id, TaskStatus::Canceled)
+                .await
+                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
             if before_task.status != TaskStatus::Canceled {
                 match self.load_task(id).await {
@@ -669,8 +652,8 @@ impl TaskManagerHandler for TaskManagerService {
 
     async fn handle_get_subtasks(&self, parent_id: i64, _ctx: RPCContext) -> Result<Vec<Task>> {
         let request_ctx = request_context_from_source(None, None);
-        let db_manager = DB_MANAGER.read().await;
-        let tasks = db_manager
+        let tasks = self
+            .db
             .list_tasks_filtered(None, None, None, Some(parent_id), None, None)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
@@ -696,13 +679,10 @@ impl TaskManagerHandler for TaskManagerService {
             ));
         }
 
-        {
-            let db_manager = DB_MANAGER.read().await;
-            db_manager
-                .update_task_status(id, status)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        }
+        self.db
+            .update_task_status(id, status)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
         if before_task.status != status {
             match self.load_task(id).await {
@@ -746,8 +726,7 @@ impl TaskManagerHandler for TaskManagerService {
             0.0
         };
 
-        let db_manager = DB_MANAGER.read().await;
-        db_manager
+        self.db
             .update_task_progress(id, progress, completed_items as i32, total_items as i32)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
@@ -756,7 +735,7 @@ impl TaskManagerHandler for TaskManagerService {
             "completed_items": completed_items,
             "total_items": total_items
         });
-        db_manager
+        self.db
             .update_task(id, None, Some(progress), None, Some(data_patch))
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
@@ -778,13 +757,10 @@ impl TaskManagerHandler for TaskManagerService {
             ));
         }
 
-        {
-            let db_manager = DB_MANAGER.read().await;
-            db_manager
-                .update_task_error(id, error_message)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        }
+        self.db
+            .update_task_error(id, error_message)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
         match self.load_task(id).await {
             Ok(after_task) => {
@@ -816,8 +792,7 @@ impl TaskManagerHandler for TaskManagerService {
 
         let data_str =
             serde_json::to_string(&data).map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        let db_manager = DB_MANAGER.read().await;
-        db_manager
+        self.db
             .update_task_data(id, data_str.as_str())
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
@@ -833,8 +808,7 @@ impl TaskManagerHandler for TaskManagerService {
             ));
         }
 
-        let db_manager = DB_MANAGER.read().await;
-        db_manager
+        self.db
             .delete_task(id)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
@@ -903,11 +877,12 @@ pub async fn start_task_manager_service() -> Result<()> {
         RPCErrors::ReasonError(format!("register task manager runtime failed: {}", err))
     })?;
 
-    crate::task_db::init_db_from_service_spec()
+    let db = TaskDb::open_from_service_spec()
         .await
         .map_err(RPCErrors::ReasonError)?;
+    info!("task-manager database initialized");
 
-    let handler = TaskManagerService::new();
+    let handler = TaskManagerService::new(Arc::new(db));
     let server = TaskManagerHttpServer::new(handler);
 
     info!("start node task manager service...");
@@ -925,17 +900,13 @@ pub async fn start_task_manager_service() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task_db::TaskDb;
+    use buckyos_api::RdbBackend;
     use serde_json::json;
     use std::net::IpAddr;
     use std::str::FromStr;
     use std::sync::Once;
     use tempfile::tempdir;
-    use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
 
-    lazy_static::lazy_static! {
-        static ref TEST_MUTEX: AsyncMutex<()> = AsyncMutex::new(());
-    }
     static INIT_LOGGING: Once = Once::new();
 
     fn create_rpc_request(method: &str, params: Value) -> RPCRequest {
@@ -951,9 +922,7 @@ mod tests {
     async fn setup_test_environment() -> (
         buckyos_api::TaskManagerServerHandler<TaskManagerService>,
         tempfile::TempDir,
-        MutexGuard<'static, ()>,
     ) {
-        let guard = TEST_MUTEX.lock().await;
         INIT_LOGGING.call_once(|| {
             buckyos_kit::init_logging("test_task_manager", false);
         });
@@ -961,20 +930,15 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
 
-        let mut db = TaskDb::new();
-        db.connect(&conn).await.unwrap();
-        db.init_db().await.unwrap();
-        *crate::task_db::DB_MANAGER.write().await = db;
-
-        let server = buckyos_api::TaskManagerServerHandler::new(TaskManagerService::new());
-        (server, temp_dir, guard)
+        let db = TaskDb::open(&conn, RdbBackend::Sqlite, None).await.unwrap();
+        let service = TaskManagerService::new(Arc::new(db));
+        let server = buckyos_api::TaskManagerServerHandler::new(service);
+        (server, temp_dir)
     }
-
-    async fn clean_test_environment(_temp_dir: tempfile::TempDir) {}
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_create_and_get_task() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1008,12 +972,11 @@ mod tests {
         } else {
             panic!("Failed to create task");
         }
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_create_task_uses_data_rootid_for_record_root_id() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1046,12 +1009,11 @@ mod tests {
             panic!("Failed to list tasks by root_id");
         }
 
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_create_task_uses_request_root_id_field() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1085,12 +1047,11 @@ mod tests {
             panic!("Failed to list tasks by root_id");
         }
 
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_list_tasks() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         for i in 1..4 {
@@ -1113,12 +1074,11 @@ mod tests {
         } else {
             panic!("Failed to list tasks");
         }
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_list_tasks_by_app() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params1 = json!({
@@ -1152,12 +1112,11 @@ mod tests {
         } else {
             panic!("Failed to list tasks by app");
         }
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_status() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1199,12 +1158,11 @@ mod tests {
         } else {
             panic!("Failed to update task status");
         }
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_progress() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1249,12 +1207,11 @@ mod tests {
         } else {
             panic!("Failed to update task progress");
         }
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_error() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1297,12 +1254,11 @@ mod tests {
         } else {
             panic!("Failed to update task error");
         }
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_update_task_data() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1345,12 +1301,11 @@ mod tests {
         } else {
             panic!("Failed to update task data");
         }
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_delete_task() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_params = json!({
@@ -1389,18 +1344,16 @@ mod tests {
         } else {
             panic!("Failed to delete task");
         }
-        clean_test_environment(_temp_dir).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_invalid_method() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
+        let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let req = create_rpc_request("invalid_method", json!({}));
         let result = server.handle_rpc_call(req, ip).await;
 
         assert!(matches!(result, Err(RPCErrors::UnknownMethod(_))));
-        clean_test_environment(_temp_dir).await;
     }
 }

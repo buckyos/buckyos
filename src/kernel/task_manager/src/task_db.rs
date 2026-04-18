@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::task::{Task, TaskPermissions, TaskStatus};
 use buckyos_api::{
     get_rdb_instance, RdbBackend, TASK_MANAGER_RDB_INSTANCE_ID, TASK_MANAGER_RDB_SCHEMA_POSTGRES,
@@ -10,7 +8,6 @@ use serde_json::Value;
 use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
 use sqlx::{AnyPool, Executor, Row};
 use std::sync::Once;
-use tokio::sync::RwLock;
 
 static INSTALL_DRIVERS: Once = Once::new();
 
@@ -18,44 +15,30 @@ fn ensure_any_drivers_installed() {
     INSTALL_DRIVERS.call_once(install_default_drivers);
 }
 
-/// Handle to the task-manager rdb. Wraps an `sqlx::AnyPool` so the same code
-/// path works against sqlite or postgres — the actual backend is chosen by
-/// `get_rdb_instance` from the service spec. Concurrency + row locking is left
-/// to the underlying engine; we no longer serialize queries through a
-/// process-wide mutex.
+/// Handle to the task-manager rdb. Wraps an `sqlx::AnyPool` — the pool itself
+/// is already `Send + Sync + Clone` (internally `Arc`-backed) and manages its
+/// own per-connection locking, so a `TaskDb` is safe to share via
+/// `Arc<TaskDb>` with no outer Rust-level lock.
+///
+/// The rdb backend + connection string + DDL come from the service spec
+/// (`install_config.rdb_instances[...]`); the compile-time constants are only
+/// a fallback used by tests that don't have a full runtime.
 pub struct TaskDb {
-    pool: Option<AnyPool>,
+    pool: AnyPool,
     backend: RdbBackend,
-    /// DDL selected from the service spec. `init_db` runs this verbatim so the
-    /// `install_config.rdb_instances[...]` schema is the source of truth —
-    /// compile-time constants are only a last-resort fallback for tests.
-    schema: Option<String>,
 }
 
 pub type DbResult<T> = Result<T, sqlx::Error>;
 
 impl TaskDb {
-    pub fn new() -> Self {
-        TaskDb {
-            pool: None,
-            backend: RdbBackend::Sqlite,
-            schema: None,
-        }
-    }
-
-    /// Open the db directly from a connection string. Used mainly by tests —
-    /// production code goes through [`TaskDb::open_from_service_spec`].
-    pub async fn connect(&mut self, connection: &str) -> DbResult<()> {
-        self.connect_with(connection, RdbBackend::Sqlite, None)
-            .await
-    }
-
-    pub async fn connect_with(
-        &mut self,
+    /// Open a pool against `connection`. `schema` is the DDL to apply (usually
+    /// what the service spec carried for the chosen backend); an empty / None
+    /// value means "use the compile-time default for `backend`".
+    pub async fn open(
         connection: &str,
         backend: RdbBackend,
-        schema: Option<String>,
-    ) -> DbResult<()> {
+        schema: Option<&str>,
+    ) -> Result<Self, String> {
         ensure_any_drivers_installed();
         let mut opts = AnyPoolOptions::new().max_connections(8);
         // Each pooled sqlite connection needs `foreign_keys = ON`; the pragma
@@ -70,54 +53,45 @@ impl TaskDb {
                 })
             });
         }
-        let pool = opts.connect(connection).await?;
-        self.pool = Some(pool);
-        self.backend = backend;
-        self.schema = schema;
-        Ok(())
-    }
-
-    /// Resolve the task-manager rdb instance from the service spec and open a
-    /// pool against it.
-    pub async fn open_from_service_spec() -> Result<Self, String> {
-        let instance = get_rdb_instance(TASK_MANAGER_SERVICE_NAME, None, TASK_MANAGER_RDB_INSTANCE_ID)
+        let pool = opts
+            .connect(connection)
             .await
-            .map_err(|err| format!("resolve task-manager rdb instance failed: {}", err))?;
-        let mut db = TaskDb::new();
-        db.connect_with(&instance.connection, instance.backend, instance.schema)
+            .map_err(|err| format!("open task-manager db at {}: {}", connection, err))?;
+        let db = TaskDb { pool, backend };
+        db.apply_schema(schema)
             .await
-            .map_err(|err| format!("open task-manager db failed: {}", err))?;
+            .map_err(|err| format!("apply task-manager schema: {}", err))?;
         Ok(db)
     }
 
-    pub fn backend(&self) -> RdbBackend {
-        self.backend
+    /// Resolve the task-manager rdb instance from the service spec and open a
+    /// pool against it. This is the production entry point.
+    pub async fn open_from_service_spec() -> Result<Self, String> {
+        let instance =
+            get_rdb_instance(TASK_MANAGER_SERVICE_NAME, None, TASK_MANAGER_RDB_INSTANCE_ID)
+                .await
+                .map_err(|err| format!("resolve task-manager rdb instance failed: {}", err))?;
+        Self::open(&instance.connection, instance.backend, instance.schema.as_deref()).await
     }
 
-    fn pool(&self) -> &AnyPool {
-        self.pool.as_ref().expect("TaskDb not connected")
-    }
-
-    /// Run the DDL that was resolved from the service spec. When none is
-    /// attached (tests, or a malformed spec) fall back to the compile-time
-    /// schema for the active backend so the db is at least usable.
-    pub async fn init_db(&self) -> DbResult<()> {
-        let ddl: &str = self.schema.as_deref().unwrap_or_else(|| match self.backend {
-            RdbBackend::Sqlite => TASK_MANAGER_RDB_SCHEMA_SQLITE,
-            RdbBackend::Postgres => TASK_MANAGER_RDB_SCHEMA_POSTGRES,
-        });
-        self.init_db_with_schema(ddl).await
-    }
-
-    pub async fn init_db_with_schema(&self, ddl: &str) -> DbResult<()> {
-        let pool = self.pool();
+    async fn apply_schema(&self, override_ddl: Option<&str>) -> DbResult<()> {
+        let ddl: &str = override_ddl
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(match self.backend {
+                RdbBackend::Sqlite => TASK_MANAGER_RDB_SCHEMA_SQLITE,
+                RdbBackend::Postgres => TASK_MANAGER_RDB_SCHEMA_POSTGRES,
+            });
         // sqlx::AnyPool::execute accepts a single statement at a time when the
         // backend driver is strict, so split on ';' and run each non-empty
         // fragment.
         for statement in split_sql_statements(ddl) {
-            pool.execute(statement.as_str()).await?;
+            self.pool.execute(statement.as_str()).await?;
         }
         Ok(())
+    }
+
+    fn pool(&self) -> &AnyPool {
+        &self.pool
     }
 
     pub async fn create_task(&self, task: &Task) -> DbResult<i64> {
@@ -191,13 +165,6 @@ impl TaskDb {
         row.map(task_from_row).transpose()
     }
 
-    pub async fn list_tasks(&self) -> DbResult<Vec<Task>> {
-        let rows = sqlx::query("SELECT * FROM task ORDER BY created_at DESC")
-            .fetch_all(self.pool())
-            .await?;
-        rows.into_iter().map(task_from_row).collect()
-    }
-
     pub async fn list_tasks_filtered(
         &self,
         app_id: Option<&str>,
@@ -256,21 +223,6 @@ impl TaskDb {
         }
         let rows = query.fetch_all(self.pool()).await?;
         rows.into_iter().map(task_from_row).collect()
-    }
-
-    pub async fn list_tasks_by_app(&self, app_name: &str) -> DbResult<Vec<Task>> {
-        self.list_tasks_filtered(Some(app_name), None, None, None, None, None)
-            .await
-    }
-
-    pub async fn list_tasks_by_type(&self, task_type: &str) -> DbResult<Vec<Task>> {
-        self.list_tasks_filtered(None, Some(task_type), None, None, None, None)
-            .await
-    }
-
-    pub async fn list_tasks_by_status(&self, status: TaskStatus) -> DbResult<Vec<Task>> {
-        self.list_tasks_filtered(None, None, Some(status), None, None, None)
-            .await
     }
 
     pub async fn update_task_status(&self, id: i64, status: TaskStatus) -> DbResult<()> {
@@ -605,25 +557,6 @@ fn merge_json(target: &mut Value, patch: &Value) {
     }
 }
 
-/// Initialize the global [`DB_MANAGER`] from the service spec. Called by the
-/// task-manager server after the buckyos runtime is ready.
-pub async fn init_db_from_service_spec() -> Result<(), String> {
-    let db = TaskDb::open_from_service_spec().await?;
-    db.init_db()
-        .await
-        .map_err(|err| format!("apply task-manager schema failed: {}", err))?;
-    *DB_MANAGER.write().await = db;
-    info!("task-manager database initialized");
-    Ok(())
-}
-
-// Reads don't block each other — the sqlx pool already serializes
-// access per-connection, so a read lock here is just a way to swap the
-// `TaskDb` out in tests without tearing down concurrent readers.
-lazy_static::lazy_static! {
-    pub static ref DB_MANAGER: RwLock<TaskDb> = RwLock::new(TaskDb::new());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,10 +587,7 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
 
-        let mut db = TaskDb::new();
-        db.connect(&conn).await.unwrap();
-        db.init_db().await.unwrap();
-
+        let db = TaskDb::open(&conn, RdbBackend::Sqlite, None).await.unwrap();
         (db, temp_dir)
     }
 
@@ -667,9 +597,7 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
 
-        let mut db = TaskDb::new();
-        db.connect(&conn).await.unwrap();
-        db.init_db().await.unwrap();
+        let _db = TaskDb::open(&conn, RdbBackend::Sqlite, None).await.unwrap();
         assert!(db_path.exists());
     }
 
@@ -699,7 +627,10 @@ mod tests {
         db.create_task(&create_test_task("task2")).await.unwrap();
         db.create_task(&create_test_task("task3")).await.unwrap();
 
-        let tasks = db.list_tasks().await.unwrap();
+        let tasks = db
+            .list_tasks_filtered(None, None, None, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(tasks.len(), 3);
     }
 
@@ -715,8 +646,14 @@ mod tests {
         db.create_task(&task1).await.unwrap();
         db.create_task(&task2).await.unwrap();
 
-        let app1_tasks = db.list_tasks_by_app("app1").await.unwrap();
-        let app2_tasks = db.list_tasks_by_app("app2").await.unwrap();
+        let app1_tasks = db
+            .list_tasks_filtered(Some("app1"), None, None, None, None, None)
+            .await
+            .unwrap();
+        let app2_tasks = db
+            .list_tasks_filtered(Some("app2"), None, None, None, None, None)
+            .await
+            .unwrap();
 
         assert_eq!(app1_tasks.len(), 1);
         assert_eq!(app2_tasks.len(), 1);
@@ -736,8 +673,14 @@ mod tests {
         db.create_task(&task1).await.unwrap();
         db.create_task(&task2).await.unwrap();
 
-        let type1_tasks = db.list_tasks_by_type("type1").await.unwrap();
-        let type2_tasks = db.list_tasks_by_type("type2").await.unwrap();
+        let type1_tasks = db
+            .list_tasks_filtered(None, Some("type1"), None, None, None, None)
+            .await
+            .unwrap();
+        let type2_tasks = db
+            .list_tasks_filtered(None, Some("type2"), None, None, None, None)
+            .await
+            .unwrap();
 
         assert_eq!(type1_tasks.len(), 1);
         assert_eq!(type2_tasks.len(), 1);
@@ -757,9 +700,12 @@ mod tests {
         db.create_task(&task1).await.unwrap();
         db.create_task(&task2).await.unwrap();
 
-        let running_tasks = db.list_tasks_by_status(TaskStatus::Running).await.unwrap();
+        let running_tasks = db
+            .list_tasks_filtered(None, None, Some(TaskStatus::Running), None, None, None)
+            .await
+            .unwrap();
         let completed_tasks = db
-            .list_tasks_by_status(TaskStatus::Completed)
+            .list_tasks_filtered(None, None, Some(TaskStatus::Completed), None, None, None)
             .await
             .unwrap();
 

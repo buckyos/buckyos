@@ -430,6 +430,234 @@ pub_event 跨节点流程:
 - 重连期间的事件丢失，由消费端的 kMsgQueue 轮询兜底
 - 不引入 UDP 补偿通知——TCP 长连接断了说明节点不可达，UDP 大概率也到不了
 
+### 5.4 跨节点通信的协议设计
+
+本节给出协议层设计，分为三类角色：
+
+- **Peer Daemon 协议**：Node Daemon 与 Node Daemon 之间复制全局事件
+- **Native Daemon API**：Full SDK / Light SDK / 其它本地 client 与 Daemon 之间的请求响应协议
+- **HTTP Facade 协议**：穿过 gateway 给浏览器或轻量 HTTP client 使用的协议
+
+当前 Rust 实现中，`src/kernel/kevent/src/lib.rs` 已经稳定了 Daemon 侧的核心语义：
+
+- `register_reader(reader_id, patterns)`：只接受全局 pattern
+- `unregister_reader(reader_id)`
+- `publish_external_global(event)`：只接受全局 event
+- `publish_from_peer(event)`：来自 peer 的事件只做本地分发，不再转发
+- `pull_event(reader_id, timeout_ms)`
+
+对应的协议对象定义在 `KEventDaemonRequest` / `KEventDaemonResponse` 中。
+
+#### 5.4.1 Native Daemon API：请求响应协议
+
+这一层是 Daemon 面向外部 client 的基础协议，适合：
+
+- Light SDK 直连远程 Daemon 发布事件
+- Full SDK 中的 daemon bridge
+- 调试工具、测试工具
+- 后续 HTTP 协议的直接映射
+
+请求结构直接采用当前实现中的 `KEventDaemonRequest`：
+
+```json
+{ "op": "register_reader", "reader_id": "r1", "patterns": ["/taskmgr/**"] }
+{ "op": "unregister_reader", "reader_id": "r1" }
+{ "op": "publish_global", "event": { "eventid": "/taskmgr/new/task_001", "source_node": "node_a", "source_pid": 1234, "ingress_node": "node_a", "timestamp": 1708588800000, "data": { "ok": true } } }
+{ "op": "pull_event", "reader_id": "r1", "timeout_ms": 15000 }
+```
+
+响应结构直接采用当前实现中的 `KEventDaemonResponse`：
+
+```json
+{ "status": "ok" }
+{ "status": "ok", "event": { "eventid": "/taskmgr/new/task_001", "source_node": "node_a", "source_pid": 1234, "ingress_node": "node_a", "timestamp": 1708588800000, "data": { "ok": true } } }
+{ "status": "err", "code": "INVALID_PATTERN", "message": "INVALID_PATTERN: daemon only supports global patterns" }
+```
+
+语义约束：
+
+- `register_reader` 的 `patterns` 不能为空，且必须全部为全局 pattern
+- `publish_global` 的 `event.eventid` 必须为全局 eventid
+- `pull_event` 超时时返回 `{ "status": "ok" }`，即 `event` 字段缺失
+- `timeout_ms == 0` 表示非阻塞读取
+- `reader_id` 为空应视为协议错误
+
+该层协议不规定底层一定是 TCP、Unix Socket、RTCP 或其它 native transport；只规定帧内 payload 语义。也就是说，**transport 可替换，request/response 结构应保持稳定**。
+
+#### 5.4.2 Peer Daemon 协议：单向事件广播
+
+Peer Daemon 之间的协议与上面的请求响应协议不同。当前实现中的 peer 抽象是：
+
+```rust
+trait KEventPeerPublisher {
+    async fn broadcast(&self, event: &Event) -> KEventResult<()>;
+}
+```
+
+这意味着 peer 复制链路只需要一件事：**把一个全局 Event 发给对端**。对端收到后调用 `publish_from_peer(event)`，只做本地分发，不再次广播。
+
+因此 peer 协议推荐定义为：
+
+- 长连接
+- 单向 push
+- 每个 frame 负载为一个完整 `Event`
+- 不走 `register_reader / pull_event / unregister_reader`
+- 不维护跨节点 reader 状态同步
+
+示意：
+
+```json
+{ "eventid": "/taskmgr/new/task_001", "source_node": "node_a", "source_pid": 1234, "ingress_node": "node_a", "timestamp": 1708588800000, "data": { "ok": true } }
+```
+
+`ingress_node` 的作用是防环路：
+
+- 本地 pub 进入 Daemon 时，如果没有 `ingress_node`，Daemon 会填成本地 `source_node`
+- 只有 `ingress_node == local_node` 的事件才允许继续向 peer 广播
+- 从 peer 收到的事件进入 `publish_from_peer()` 后，只做本地分发，不再外扩
+
+因此：
+
+- **Peer 复制协议的核心单位是 `Event`**
+- **Client/Daemon 基础协议的核心单位是 `KEventDaemonRequest` / `KEventDaemonResponse`**
+
+两者不要混用。
+
+#### 5.4.3 HTTP Facade 协议：native 语义的 HTTP 映射
+
+为了让 HTTP client 或经 gateway 转发的外部调用也能访问 kevent，推荐提供一个与 native 请求响应协议一一对应的 HTTP 端点：
+
+```text
+POST /kapi/kevent
+```
+
+请求体直接使用 `KEventDaemonRequest` JSON，响应体直接使用 `KEventDaemonResponse` JSON。
+
+示例：
+
+```http
+POST /kapi/kevent
+content-type: application/json
+
+{ "op": "pull_event", "reader_id": "r1", "timeout_ms": 15000 }
+```
+
+```json
+{ "status": "ok", "event": { "eventid": "/taskmgr/new/task_001", "source_node": "node_a", "source_pid": 1234, "ingress_node": "node_a", "timestamp": 1708588800000, "data": { "ok": true } } }
+```
+
+这个端点的价值是：
+
+- 与当前 Rust 实现完全对齐
+- 易于测试和调试
+- Light SDK 若走 HTTP，也可以直接复用
+- 后续 transport 从 native 切到 HTTP，不影响语义
+
+但它**不是浏览器主推荐接口**，因为浏览器不适合自己管理 `reader_id + register/pull/unregister` 这整套生命周期。
+
+#### 5.4.4 浏览器推荐协议：HTTP Stream Wrapper
+
+对浏览器，推荐单独提供 stream wrapper：
+
+```text
+POST /kapi/kevent/stream
+```
+
+请求体：
+
+```json
+{
+  "patterns": ["/msg_center/user1/box/in/**"],
+  "keepalive_ms": 15000
+}
+```
+
+语义：
+
+1. 服务端收到请求
+2. 内部生成 `reader_id`
+3. 调用 native API：`register_reader(reader_id, patterns)`
+4. 循环调用 native API：`pull_event(reader_id, keepalive_ms)`
+5. 将结果写成 NDJSON stream
+6. 连接关闭时调用 `unregister_reader(reader_id)`
+
+推荐返回类型：
+
+- `content-type: application/x-ndjson`
+
+推荐 frame：
+
+```json
+{ "type": "ack", "connection_id": "c1", "keepalive_ms": 15000 }
+{ "type": "event", "event": { "eventid": "/msg_center/user1/box/in/msg_001", "source_node": "ood1", "source_pid": 1234, "ingress_node": "ood1", "timestamp": 1708588800000, "data": { "record_id": "msg_001" } } }
+{ "type": "keepalive", "at_ms": 1708588805000 }
+{ "type": "error", "error": "INVALID_PATTERN: daemon only supports global patterns" }
+```
+
+该协议与 native API 的关系是：
+
+- 浏览器不直接看到 `reader_id`
+- `ack` 对应 reader 创建成功
+- `event` 对应 native `pull_event` 返回了一个 Event
+- `keepalive` 对应 native `pull_event` 超时但连接继续保持
+- 断开连接等价于 `unregister_reader`
+
+因此浏览器侧只需要维护一个长连接，不需要自己管理三段式 reader 生命周期。
+
+#### 5.4.5 HTTP 发布协议
+
+如果需要让浏览器或 HTTP client 也能发布全局事件，推荐提供：
+
+```text
+POST /kapi/kevent/publish
+```
+
+请求体：
+
+```json
+{
+  "eventid": "/taskmgr/new/task_001",
+  "data": { "ok": true }
+}
+```
+
+服务端收到后应构造完整 `Event`，填充：
+
+- `source_node`
+- `source_pid`
+- `timestamp`
+- `ingress_node`
+
+然后调用内部 native 语义 `publish_external_global(event)`。
+
+成功响应：
+
+```json
+{ "status": "ok" }
+```
+
+这里不要求浏览器自己传完整 `Event`，原因是：
+
+- `source_pid` 等字段应由服务端决定
+- `ingress_node` 是协议控制字段，不应暴露给浏览器随意指定
+- 对浏览器公开的 API 应尽量保持简单且安全
+
+#### 5.4.6 协议分层建议
+
+为了避免后续 Web SDK、Light SDK 和 native SDK 的语义漂移，建议固定如下分层：
+
+- **内部核心语义层**：`register_reader / unregister_reader / publish_global / pull_event`
+- **Native 协议层**：直接传 `KEventDaemonRequest` / `KEventDaemonResponse`
+- **Peer 协议层**：直接传 `Event`
+- **HTTP 兼容层**：`POST /kapi/kevent`，直接映射 native 协议
+- **HTTP 浏览器层**：`POST /kapi/kevent/stream` 和可选的 `POST /kapi/kevent/publish`
+
+这样一来：
+
+- Rust core 语义稳定后，native SDK 不需要反复调整
+- Web SDK 只依赖 HTTP facade，不影响底层实现
+- `subscribe()`、`onEvent()`、React hook 等都只是 client 侧 helper，不需要 backend 再改协议
+
 ---
 
 ## 6. 容错与边界处理
@@ -508,18 +736,214 @@ BuckyOS 通信基础设施:
 
 ---
 
-## 8. 待讨论事项
+## 8. 浏览器视角的 API 结构与使用逻辑
 
-1. **共享内存 Ring Buffer 的具体实现**：进程间共享内存的 Ring Buffer 需要处理并发写入、进程崩溃清理、容量规划等细节。是否第一版先用 Unix Socket 经过 Daemon 中转作为简单实现，后续再优化为共享内存？
+浏览器不是 Full SDK 运行环境，不能直接访问进程内 Ring Buffer、共享内存或 Node Daemon 内部结构。因此浏览器侧看到的 kevent 不应是"直连 Daemon"的协议，而应是**通过 cyfs-gateway 转发到某个 browser-safe HTTP wrapper service** 的能力。
 
-2. **Callback/Push 模式的 API 暴露**：当前 API 仅暴露 `pull_event()`。是否需要在 SDK 层提供 `on_event(callback)` 的 push 风格接口？
+该 wrapper service 可以按 path 或 hostname 被 gateway 路由到任意合适的后端服务；本文档不规定它必须挂在哪个具体服务上，只规定浏览器侧的抽象和语义。
 
-3. **节点规模与拓扑演进**：当前采用全 mesh 广播。若 BuckyOS 未来节点规模增长，可借鉴 NATS 的分层拓扑：核心节点全 mesh，边缘节点作为 Leaf Node 通过 hub-spoke 连接核心集群。这是一个自然的演进路径，不需要在第一版实现。
+### 8.1 浏览器侧定位
 
-4. **Event 消息体大小限制**：建议对 `data` 字段设置大小上限（如 64KB）。EventBus 是信号通道，大数据应通过 kMsgQueue 引用传递。
+- 浏览器侧 kevent 仍然是**信号通道**，不是可靠数据通道
+- 浏览器侧 kevent 只负责"有变化了"的通知；真正的数据仍通过业务 HTTP API 或 kMsgQueue 拉取
+- 浏览器侧 kevent 是对服务端 `create_event_reader + pull_event + close` 的一层远程映射
+- 浏览器侧只支持**全局 pattern**（以 `/` 开头）
+- 浏览器侧不支持本地事件和 Timer，因为两者都是进程内语义
 
-5. **监控与调试**：是否需要提供查询接口，如列出当前活跃的 reader、各节点的连接状态等？
+### 8.2 浏览器侧抽象 API
 
-6. **Timer 精度保证**：SDK 层 Timer 的精度受进程调度影响，是否需要明确精度预期（如毫秒级尽力而为，不保证硬实时）？
+浏览器侧推荐暴露与本地 SDK 尽量一致的消费模型：
 
-7. **广播流量优化时机**：当前全量广播在小规模下没有问题。如果未来事件量增大且大部分节点不关心大部分事件，可以考虑引入轻量的订阅摘要交换（类似 NATS 的 interest graph pruning），但这应作为后续优化而非第一版需求。
+```ts
+create_event_reader(patterns: string[], options?: BrowserReaderOptions)
+  -> Promise<BrowserEventReader>
+
+BrowserEventReader.pull_event(timeout_ms?: number)
+  -> Promise<Event | null>
+
+BrowserEventReader.close()
+  -> void
+```
+
+其中：
+
+- `patterns` 必须全部为全局 pattern
+- `pull_event(timeout_ms)` 的语义与本地 SDK 一致
+- `timeout_ms == 0` 时立即返回
+- `timeout_ms` 省略时表示一直等待，直到收到事件或连接被关闭
+- `close()` 用于主动断开 HTTP stream，并释放服务端 reader
+
+建议的浏览器侧配置：
+
+```ts
+type BrowserReaderOptions = {
+  keepalive_ms?: number
+  signal?: AbortSignal
+}
+```
+
+`keepalive_ms` 仅用于保持 HTTP stream 活性，避免中间网关或浏览器长时间空闲断开；它不改变 EventBus 的 best-effort 语义。
+
+### 8.3 浏览器到服务端的传输映射
+
+浏览器侧不感知 Ring Buffer，也不感知 Daemon。其实际传输可映射为：
+
+1. 浏览器向某个 browser-safe wrapper 发起 HTTP streaming 请求
+2. wrapper 在服务端内部调用 `create_event_reader(patterns)`
+3. wrapper 循环执行 `pull_event(Some(keepalive_ms))`
+4. 有事件时，将事件编码后持续写回浏览器
+5. 超时时，写回 keepalive 或空闲帧
+6. 浏览器断开连接时，wrapper 调用 `close()` 释放 reader
+
+推荐传输形态：
+
+- `POST` 建立订阅
+- 响应为长连接 HTTP stream
+- stream 编码推荐 `application/x-ndjson`
+- 浏览器使用 `fetch()` + `ReadableStream` 消费
+
+示意：
+
+```text
+Browser
+  -> POST /kapi/kevent/stream
+  -> body: { patterns, keepalive_ms }
+
+Wrapper Service
+  -> create_event_reader(patterns)
+  -> loop { pull_event(timeout) }
+  -> write NDJSON frames
+```
+
+返回给浏览器的 stream frame 可采用如下结构：
+
+```json
+{ "type": "ack", "connection_id": "..." }
+{ "type": "event", "event": { "eventid": "/msg_center/u1/box/in/...", "source_node": "ood1", "source_pid": 1234, "timestamp": 1708588800000, "data": {} } }
+{ "type": "keepalive", "at_ms": 1708588800000 }
+{ "type": "error", "error": "..." }
+```
+
+其中真正对应 kevent 语义的是 `type=event`；其它 frame 只是浏览器长连接场景下的 transport 辅助帧。
+
+### 8.4 浏览器侧标准使用逻辑
+
+浏览器侧的推荐消费模式与普通消费端一致：**event 驱动快路径刷新，轮询负责兜底**。
+
+```text
+loop:
+    event = browser_reader.pull_event(timeout=N)
+    if event != null:
+        // 快路径：收到 kevent 通知
+        data = http_get(business_api or kmsgqueue, cursor)
+        handle(data)
+        update(cursor)
+    else:
+        // 慢路径：超时兜底轮询
+        data = http_get(business_api or kmsgqueue, cursor)
+        if data != null:
+            handle(data)
+            update(cursor)
+```
+
+关键原则：
+
+- 不要把 kevent stream 当成可靠消息流
+- 不要假设每次业务变化都一定能收到 kevent
+- 不要要求 wrapper 持久化 cursor 或补发历史事件
+- kevent 的职责只是让浏览器更快知道"可能有新数据了"
+- 最终一致性由业务 HTTP API 或 kMsgQueue 保证
+
+### 8.5 浏览器侧使用示例
+
+以 `msg_center` 为例，浏览器订阅某个 inbox 的变化通知：
+
+```ts
+const reader = await kevent.create_event_reader([
+  `/msg_center/${owner}/box/in/**`
+]);
+
+let cursor = "";
+
+for (;;) {
+  const event = await reader.pull_event(15000);
+
+  if (event) {
+    const data = await http_get_kmsgqueue(cursor);
+    handle(data);
+    cursor = data.next_cursor;
+    continue;
+  }
+
+  const data = await http_get_kmsgqueue(cursor);
+  if (data != null) {
+    handle(data);
+    cursor = data.next_cursor;
+  }
+}
+```
+
+对 `task_manager` 这类"变化后重新拉取当前状态"的场景，也应采用相同模式：
+
+```ts
+const reader = await kevent.create_event_reader([
+  `/task_mgr/${task_id}`
+]);
+
+for (;;) {
+  const event = await reader.pull_event(10000);
+  if (event != null) {
+    const task = await get_task(task_id);
+    render(task);
+  } else {
+    const task = await get_task(task_id);
+    render(task);
+  }
+}
+```
+
+### 8.6 浏览器侧能力边界
+
+浏览器侧 kevent 第一版建议仅支持：
+
+- 订阅全局事件
+- 接收事件通知
+- 主动关闭订阅
+
+浏览器侧不建议直接支持：
+
+- `pub_event`
+- 本地事件订阅
+- `create_timer`
+- 服务端 reader 持久化恢复
+- 历史事件回放
+
+原因是浏览器侧的核心诉求是"通过 gateway 安全地接收通知并触发刷新"，而不是复刻 Full SDK 的全部本地能力。
+
+### 8.7 与服务放置位置的关系
+
+browser-safe wrapper 可以放在任意能够：
+
+- 通过 gateway 暴露 HTTP stream
+- 在服务端内部访问 kevent client
+- 在同一业务上下文里完成鉴权和数据拉取
+
+的服务中。
+
+例如：
+
+- 某个业务 service 内部自带 kevent wrapper
+- 一个专用的 facade service
+- 已有的 control-panel 类 service
+
+是否按 path 还是 hostname 暴露，由 gateway 配置决定；这不影响浏览器侧 API 抽象。
+
+## 9. 待讨论事项
+
+**节点规模与拓扑演进**：当前采用全 mesh 广播。若 BuckyOS 未来节点规模增长，可借鉴 NATS 的分层拓扑：核心节点全 mesh，边缘节点作为 Leaf Node 通过 hub-spoke 连接核心集群。这是一个自然的演进路径，不需要在第一版实现。
+
+**Event 消息体大小限制**：建议对 `data` 字段设置大小上限（如 64KB）。EventBus 是信号通道，大数据应通过 kMsgQueue 引用传递。
+
+**监控与调试**：是否需要提供查询接口，如列出当前活跃的 reader、各节点的连接状态等？
+
+**广播流量优化时机**：当前全量广播在小规模下没有问题。如果未来事件量增大且大部分节点不关心大部分事件，可以考虑引入轻量的订阅摘要交换（类似 NATS 的 interest graph pruning），但这应作为后续优化而非第一版需求。
