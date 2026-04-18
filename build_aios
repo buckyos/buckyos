@@ -236,13 +236,15 @@ render_dockerfile() {
   fi
 
   {
-    cat <<EOF
+    cat <<'EOF'
 FROM ubuntu:24.04
 
 ARG TARGET_ARCH
 
 LABEL org.opencontainers.image.title="AIOS" \
-      org.opencontainers.image.description="OpenDAN runtime image for ${IMAGE_NAME}" \
+EOF
+    printf '      org.opencontainers.image.description="OpenDAN runtime image for %s" \\\n' "$IMAGE_NAME"
+    cat <<'EOF'
       org.opencontainers.image.vendor="BuckyOS DAO"
 
 WORKDIR /opt/buckyos
