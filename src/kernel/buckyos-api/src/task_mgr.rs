@@ -22,7 +22,7 @@ pub const TASK_MANAGER_SERVICE_PORT: u16 = 3380;
 /// Logical name of the task-manager rdb instance. Used by both the scheduler
 /// (when it writes the service's `install_config`) and the task-manager itself
 /// (when it calls `get_rdb_instance`).
-pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "main";
+pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "task-mgr-main";
 /// Version of the task table schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent, so the scheduler can detect drift.
 pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 1;

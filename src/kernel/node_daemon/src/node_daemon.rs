@@ -5,7 +5,7 @@ use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, fs::File};
 use time::macros::format_description;
@@ -636,6 +636,33 @@ async fn update_device_info(device_info: &DeviceInfo, syste_config_client: &Syst
     }
 }
 
+fn get_kevent_client(source_node: &str) -> KEventClient {
+    static KEVENT_CLIENT: OnceLock<KEventClient> = OnceLock::new();
+    KEVENT_CLIENT
+        .get_or_init(|| KEventClient::new_full(source_node.to_string(), None))
+        .clone()
+}
+
+async fn publish_device_info_kevent(device_info: &DeviceInfo) {
+    let eventid = format!("/devices/{}/info", device_info.name.as_str());
+    let event_data = serde_json::to_value(device_info).unwrap();
+    let kevent_client = get_kevent_client(device_info.name.as_str());
+
+    if let Err(err) = kevent_client.pub_event(eventid.as_str(), event_data).await {
+        warn!(
+            "publish device info kevent failed for {}: {}",
+            device_info.name.as_str(),
+            err
+        );
+    } else {
+        info!(
+            "published device info kevent: device={}, eventid={}",
+            device_info.name.as_str(),
+            eventid
+        );
+    }
+}
+
 //if register OK then return sn's real URL for this user
 async fn report_ood_info_to_sn(
     device_info: &DeviceInfo,
@@ -1085,6 +1112,7 @@ async fn node_daemon_main_loop(
                 std::env::set_var("BUCKYOS_THIS_DEVICE_INFO", device_info_str);
             }
             update_device_info(&device_info, &system_config_client).await;
+            publish_device_info_kevent(&device_info).await;
             //TODO：SN的上报频率不用那么快
             let device_session_token_jwt = buckyos_runtime.get_session_token().await;
             report_ood_info_to_sn(&device_info, device_session_token_jwt.as_str(), zone_config)

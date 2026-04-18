@@ -71,6 +71,7 @@ impl TaskDb {
             get_rdb_instance(TASK_MANAGER_SERVICE_NAME, None, TASK_MANAGER_RDB_INSTANCE_ID)
                 .await
                 .map_err(|err| format!("resolve task-manager rdb instance failed: {}", err))?;
+        info!("task_db.open {}", instance.connection);
         Self::open(&instance.connection, instance.backend, instance.schema.as_deref()).await
     }
 

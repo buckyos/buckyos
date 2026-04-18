@@ -45,6 +45,7 @@ pub use zone_gateway::*;
 pub use app_mgr::*;
 pub use gateway_control::*;
 pub use kevent_client::*;
+pub use kevent_ringbuffer::*;
 pub use opendan_client::*;
 pub use permission::*;
 pub use rdb_mgr::*;

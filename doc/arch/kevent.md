@@ -484,6 +484,23 @@ pub_event 跨节点流程:
 
 该层协议不规定底层一定是 TCP、Unix Socket、RTCP 或其它 native transport；只规定帧内 payload 语义。也就是说，**transport 可替换，request/response 结构应保持稳定**。
 
+当前 Rust 节点侧实现额外约定了一种默认 TCP transport，便于调试工具或轻量 client 直接访问：
+
+- 监听端口：`3183`
+- 连接模型：单 TCP 连接上可连续发送多次 request/response
+- frame 格式：`4-byte big-endian length prefix + JSON payload`
+- payload：请求端写入 `KEventDaemonRequest` JSON，服务端返回 `KEventDaemonResponse` JSON
+
+示意：
+
+```text
++----------------------+------------------------------+
+| u32 len (big-endian) | JSON payload bytes (len 个) |
++----------------------+------------------------------+
+```
+
+其中 JSON payload 本身仍然保持上面的 native 协议结构，不额外引入新的字段。
+
 #### 5.4.2 Peer Daemon 协议：单向事件广播
 
 Peer Daemon 之间的协议与上面的请求响应协议不同。当前实现中的 peer 抽象是：
