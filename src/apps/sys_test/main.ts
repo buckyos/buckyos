@@ -36,10 +36,17 @@ type SelftestCaseResult = {
   details?: Record<string, unknown>;
 };
 
-type GroupId = "system_config" | "app_settings" | "task_manager" | "verify_hub";
+type GroupId =
+  | "system_config"
+  | "app_settings"
+  | "task_manager"
+  | "verify_hub"
+  | "kevent";
 
 type SystemConfigClientLike = {
-  get: (key: string) => Promise<{ value: string; version: number; is_changed: boolean }>;
+  get: (
+    key: string,
+  ) => Promise<{ value: string; version: number; is_changed: boolean }>;
   set: (key: string, value: string) => Promise<void>;
 };
 
@@ -53,10 +60,16 @@ type TaskManagerClientLike = {
     userId: string;
     appId: string;
   }) => Promise<TaskLike>;
-  updateTaskProgress: (id: number, completedItems: number, totalItems: number) => Promise<void>;
+  updateTaskProgress: (
+    id: number,
+    completedItems: number,
+    totalItems: number,
+  ) => Promise<void>;
   updateTaskStatus: (id: number, status: string) => Promise<void>;
   getTask: (id: number) => Promise<TaskLike>;
-  listTasks: (params: { filter?: Record<string, unknown> }) => Promise<TaskLike[]>;
+  listTasks: (
+    params: { filter?: Record<string, unknown> },
+  ) => Promise<TaskLike[]>;
   deleteTask: (id: number) => Promise<void>;
 };
 
@@ -76,15 +89,21 @@ type QueryChunkStateResponse =
   | { state: "disabled"; chunk_size: number }
   | { state: "not_exist"; chunk_size: number }
   | {
-      state: "local_link";
-      chunk_size: number;
-      local_info: { qcid: string; last_modify_time: number };
-    }
+    state: "local_link";
+    chunk_size: number;
+    local_info: { qcid: string; last_modify_time: number };
+  }
   | { state: "same_as"; chunk_size: number; same_as: string };
 
 type ContentAvailabilityState =
-  | { kind: "chunk"; state: QueryChunkStateResponse | { state: "error"; error: string } }
-  | { kind: "object"; state: QueryObjectByIdResponse | { state: "error"; error: string } };
+  | {
+    kind: "chunk";
+    state: QueryChunkStateResponse | { state: "error"; error: string };
+  }
+  | {
+    kind: "object";
+    state: QueryObjectByIdResponse | { state: "error"; error: string };
+  };
 
 type NdmModule = {
   putObject: (
@@ -112,14 +131,21 @@ type NdmModule = {
     opts?: NdmStoreRequestOptions,
   ) => Promise<{ exists: boolean }>;
   addChunkBySameAs: (
-    req: { big_chunk_id: string; chunk_list_id: string; big_chunk_size: number },
+    req: {
+      big_chunk_id: string;
+      chunk_list_id: string;
+      big_chunk_size: number;
+    },
     opts?: NdmStoreRequestOptions,
   ) => Promise<void>;
 };
 
 type NodeSdkModule = {
   buckyos: {
-    initBuckyOS: (appid: string, config: Record<string, unknown>) => Promise<void>;
+    initBuckyOS: (
+      appid: string,
+      config: Record<string, unknown>,
+    ) => Promise<void>;
     login: () => Promise<unknown>;
     logout: (cleanAccountInfo?: boolean) => void;
     getAccountInfo: () => Promise<
@@ -133,13 +159,18 @@ type NodeSdkModule = {
     getZoneHostName: () => string | null;
     getZoneServiceURL: (serviceName: string) => string;
     getAppSetting: (settingName?: string | null) => Promise<unknown>;
-    setAppSetting: (settingName: string | null, settingValue: string) => Promise<void>;
+    setAppSetting: (
+      settingName: string | null,
+      settingValue: string,
+    ) => Promise<void>;
     getSystemConfigClient: () => SystemConfigClientLike;
     getTaskManagerClient: () => TaskManagerClientLike;
   };
   ndm: NdmModule;
   RuntimeType: { AppService: string };
-  parseSessionTokenClaims: (token: string | null | undefined) => Record<string, unknown> | null;
+  parseSessionTokenClaims: (
+    token: string | null | undefined,
+  ) => Record<string, unknown> | null;
 };
 
 type BootstrapState =
@@ -181,10 +212,14 @@ async function resolveStaticRoot(): Promise<string> {
     }
   }
 
-  throw new Error(`failed to find sys_test static root, tried: ${candidates.join(", ")}`);
+  throw new Error(
+    `failed to find sys_test static root, tried: ${candidates.join(", ")}`,
+  );
 }
 
-function parseAppInstanceIdentity(appInstanceConfig: string): AppInstanceIdentity {
+function parseAppInstanceIdentity(
+  appInstanceConfig: string,
+): AppInstanceIdentity {
   const parsed = JSON.parse(appInstanceConfig) as {
     app_spec?: {
       user_id?: unknown;
@@ -205,7 +240,9 @@ function parseAppInstanceIdentity(appInstanceConfig: string): AppInstanceIdentit
   return { appId, ownerUserId };
 }
 
-function getRustStyleAppServiceTokenEnvKey(identity: AppInstanceIdentity): string {
+function getRustStyleAppServiceTokenEnvKey(
+  identity: AppInstanceIdentity,
+): string {
   return `${identity.ownerUserId}-${identity.appId}`
     .toUpperCase()
     .replaceAll("-", "_") + "_TOKEN";
@@ -219,14 +256,18 @@ async function resolveWebSdkRoot(): Promise<string> {
     new URL("./dist/buckyos-websdk", import.meta.url).pathname,
     new URL("../../../../../buckyos-websdk", import.meta.url).pathname,
     "/Users/liuzhicong/project/buckyos-websdk",
-  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  ].filter((value): value is string =>
+    typeof value === "string" && value.trim().length > 0
+  );
 
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {
       return candidate;
     }
   }
-  throw new Error(`failed to find buckyos-websdk root, tried: ${candidates.join(", ")}`);
+  throw new Error(
+    `failed to find buckyos-websdk root, tried: ${candidates.join(", ")}`,
+  );
 }
 
 async function loadSdkModule(): Promise<NodeSdkModule> {
@@ -240,7 +281,8 @@ async function bootstrapSdk(): Promise<BootstrapState> {
   if (!appInstanceConfig) {
     return {
       kind: "missing-env",
-      reason: "missing app_instance_config; start sys_test through service_debug.tsx",
+      reason:
+        "missing app_instance_config; start sys_test through service_debug.tsx",
     };
   }
 
@@ -288,7 +330,9 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
-async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
+async function readJsonBody(
+  request: Request,
+): Promise<Record<string, unknown>> {
   const text = (await request.text()).trim();
   if (!text) return {};
   const parsed = JSON.parse(text) as unknown;
@@ -299,7 +343,8 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
 }
 
 function isMissingSettingsError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("system_config key not found");
+  return error instanceof Error &&
+    error.message.includes("system_config key not found");
 }
 
 function getSettingsPath(identity: AppInstanceIdentity): string {
@@ -329,6 +374,174 @@ async function runSelftestCase(
   }
 }
 
+type KEventStreamAckFrame = {
+  type: "ack";
+  connection_id: string;
+  keepalive_ms: number;
+};
+
+type KEventStreamEventFrame = {
+  type: "event";
+  event: {
+    eventid: string;
+    source_node: string;
+    ingress_node?: string | null;
+    data?: Record<string, unknown>;
+  };
+};
+
+type KEventStreamKeepaliveFrame = {
+  type: "keepalive";
+  at_ms: number;
+};
+
+type KEventStreamErrorFrame = {
+  type: "error";
+  error: string;
+};
+
+type KEventStreamFrame =
+  | KEventStreamAckFrame
+  | KEventStreamEventFrame
+  | KEventStreamKeepaliveFrame
+  | KEventStreamErrorFrame;
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function getKEventBaseUrl(sdk: NodeSdkModule): string {
+  const baseUrl = sdk.buckyos.getZoneServiceURL("kevent");
+  return baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+}
+
+function getKEventRequestUrl(
+  sdk: NodeSdkModule,
+  path: "publish" | "stream",
+): string {
+  return new URL(path, getKEventBaseUrl(sdk)).toString();
+}
+
+async function readJsonResponse(
+  response: Response,
+): Promise<Record<string, unknown>> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(
+      `non-json response (${response.status}): ${text.slice(0, 200)}`,
+    );
+  }
+}
+
+async function publishKEvent(
+  sdk: NodeSdkModule,
+  eventid: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const response = await fetch(getKEventRequestUrl(sdk, "publish"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ eventid, data }),
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok || payload.status !== "ok") {
+    throw new Error(
+      String(
+        payload.error ?? `kevent publish failed with status ${response.status}`,
+      ),
+    );
+  }
+}
+
+async function openKEventStream(
+  sdk: NodeSdkModule,
+  patterns: string[],
+): Promise<{
+  next: (timeoutMs: number) => Promise<KEventStreamFrame>;
+  close: () => Promise<void>;
+}> {
+  const controller = new AbortController();
+  const response = await fetch(getKEventRequestUrl(sdk, "stream"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    signal: controller.signal,
+    body: JSON.stringify({ patterns, keepalive_ms: 1_000 }),
+  });
+  if (!response.ok) {
+    const payload = await readJsonResponse(response);
+    throw new Error(
+      String(
+        payload.error ?? `kevent stream failed with status ${response.status}`,
+      ),
+    );
+  }
+  if (!response.body) {
+    throw new Error("kevent stream response has no body");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const readLine = async (timeoutMs: number): Promise<string> => {
+    while (true) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line.length > 0) {
+          return line;
+        }
+        continue;
+      }
+
+      const chunk = await withTimeout(
+        reader.read(),
+        timeoutMs,
+        "waiting for kevent stream frame",
+      );
+      if (chunk.done) {
+        throw new Error("kevent stream closed unexpectedly");
+      }
+      buffer += decoder.decode(chunk.value, { stream: true });
+    }
+  };
+
+  return {
+    next: async (timeoutMs: number) => {
+      const line = await readLine(timeoutMs);
+      return JSON.parse(line) as KEventStreamFrame;
+    },
+    close: async () => {
+      try {
+        await reader.cancel();
+      } catch {
+      }
+      controller.abort();
+    },
+  };
+}
+
 // Mirrors the cases in tests/helpers/service_client_suite.ts and the browser
 // test_groups.ts, but runs them inside this AppService process so that the
 // frontend can trigger the suite per-group with a single HTTP call.
@@ -342,7 +555,9 @@ function buildGroupRunners(
 
     results.push(
       await runSelftestCase("SystemConfigClient.get(boot/config)", async () => {
-        const bootConfig = await sdk.buckyos.getSystemConfigClient().get("boot/config");
+        const bootConfig = await sdk.buckyos.getSystemConfigClient().get(
+          "boot/config",
+        );
         const parsed = JSON.parse(bootConfig.value) as Record<string, unknown>;
         if (!parsed || typeof parsed !== "object") {
           throw new Error("boot/config did not decode into an object");
@@ -350,7 +565,10 @@ function buildGroupRunners(
         if (Object.keys(parsed).length === 0) {
           throw new Error("boot/config decoded into an empty object");
         }
-        return { version: bootConfig.version, keys: Object.keys(parsed).length };
+        return {
+          version: bootConfig.version,
+          keys: Object.keys(parsed).length,
+        };
       }),
     );
 
@@ -358,7 +576,8 @@ function buildGroupRunners(
       await runSelftestCase(
         "SystemConfigClient writes and reads back a namespaced key",
         async () => {
-          const key = `users/${identity.ownerUserId}/apps/${identity.appId}/info`;
+          const key =
+            `users/${identity.ownerUserId}/apps/${identity.appId}/info`;
           const value = JSON.stringify({ ok: true, key, ts: Date.now() });
           await sdk.buckyos.getSystemConfigClient().set(key, value);
           const read = await sdk.buckyos.getSystemConfigClient().get(key);
@@ -397,7 +616,9 @@ function buildGroupRunners(
           }
           const read = await sdk.buckyos.getAppSetting(settingPath);
           if (read !== "roundtrip") {
-            throw new Error(`settings round trip mismatch, got ${JSON.stringify(read)}`);
+            throw new Error(
+              `settings round trip mismatch, got ${JSON.stringify(read)}`,
+            );
           }
           return { settingPath };
         },
@@ -449,22 +670,90 @@ function buildGroupRunners(
 
   const verifyHubGroup = async (): Promise<SelftestCaseResult[]> => {
     return [
-      await runSelftestCase("getAccountInfo + parseSessionTokenClaims", async () => {
-        const accountInfo = await sdk.buckyos.getAccountInfo();
-        if (!accountInfo) {
-          throw new Error("AppService is not logged in");
-        }
-        const claims = sdk.parseSessionTokenClaims(accountInfo.session_token ?? null);
-        if (!claims) {
-          throw new Error("failed to parse session token claims");
-        }
-        return {
-          userId: accountInfo.user_id ?? null,
-          userType: accountInfo.user_type ?? null,
-          appId: claims.appid ?? null,
-          exp: claims.exp ?? null,
-        };
-      }),
+      await runSelftestCase(
+        "getAccountInfo + parseSessionTokenClaims",
+        async () => {
+          const accountInfo = await sdk.buckyos.getAccountInfo();
+          if (!accountInfo) {
+            throw new Error("AppService is not logged in");
+          }
+          const claims = sdk.parseSessionTokenClaims(
+            accountInfo.session_token ?? null,
+          );
+          if (!claims) {
+            throw new Error("failed to parse session token claims");
+          }
+          return {
+            userId: accountInfo.user_id ?? null,
+            userType: accountInfo.user_type ?? null,
+            appId: claims.appid ?? null,
+            exp: claims.exp ?? null,
+          };
+        },
+      ),
+    ];
+  };
+
+  const keventGroup = async (): Promise<SelftestCaseResult[]> => {
+    return [
+      await runSelftestCase(
+        "KEvent stream/publish round trip on a unique eventid",
+        async () => {
+          const eventid =
+            `/users/${identity.ownerUserId}/apps/${identity.appId}/kevent/sys_test_${Date.now()}_${
+              crypto.randomUUID().replaceAll("-", "").slice(0, 8)
+            }`;
+          const marker = `app_service_${Date.now()}`;
+          const stream = await openKEventStream(sdk, [eventid]);
+          try {
+            const ack = await stream.next(2_000);
+            if (ack.type !== "ack") {
+              throw new Error(`expected kevent ack frame, got ${ack.type}`);
+            }
+
+            await publishKEvent(sdk, eventid, {
+              marker,
+              origin: "sys_test_app_service",
+              userId: identity.ownerUserId,
+              appId: identity.appId,
+            });
+
+            while (true) {
+              const frame = await stream.next(5_000);
+              if (frame.type === "keepalive") {
+                continue;
+              }
+              if (frame.type === "error") {
+                throw new Error(frame.error);
+              }
+              if (frame.type !== "event") {
+                throw new Error(`unexpected kevent frame type: ${frame.type}`);
+              }
+
+              const eventData = frame.event.data ?? {};
+              if (frame.event.eventid !== eventid) {
+                throw new Error(
+                  `received mismatched eventid: ${frame.event.eventid}`,
+                );
+              }
+              if (eventData.marker !== marker) {
+                throw new Error(
+                  `received mismatched marker: ${JSON.stringify(eventData)}`,
+                );
+              }
+
+              return {
+                eventid,
+                connectionId: ack.connection_id,
+                sourceNode: frame.event.source_node,
+                ingressNode: frame.event.ingress_node ?? null,
+              };
+            }
+          } finally {
+            await stream.close();
+          }
+        },
+      ),
     ];
   };
 
@@ -473,6 +762,7 @@ function buildGroupRunners(
     app_settings: appSettingsGroup,
     task_manager: taskManagerGroup,
     verify_hub: verifyHubGroup,
+    kevent: keventGroup,
   };
 }
 
@@ -504,12 +794,18 @@ try {
   }
   console.log(`[sys_test] static root contents: ${entries.join(", ")}`);
 } catch (e) {
-  console.warn(`[sys_test] failed to list static root: ${e instanceof Error ? e.message : String(e)}`);
+  console.warn(
+    `[sys_test] failed to list static root: ${
+      e instanceof Error ? e.message : String(e)
+    }`,
+  );
 }
 console.log(`[sys_test] sdk routes mounted at ${sdkRoutePrefix}`);
 
 function appServiceUnavailableResponse(): Response {
-  const reason = bootstrapState.kind === "ready" ? "unknown" : bootstrapState.reason;
+  const reason = bootstrapState.kind === "ready"
+    ? "unknown"
+    : bootstrapState.reason;
   return jsonResponse(
     {
       ok: false,
@@ -548,10 +844,13 @@ function isChunkListContentId(contentId: string): boolean {
 }
 
 function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
+  return Array.isArray(value) &&
+    value.every((item) => typeof item === "string" && item.length > 0);
 }
 
-function extractChunkIdsFromChunkListObjectData(objData: string): string[] | null {
+function extractChunkIdsFromChunkListObjectData(
+  objData: string,
+): string[] | null {
   try {
     const parsed = JSON.parse(objData) as unknown;
     return isStringArray(parsed) ? parsed : null;
@@ -564,7 +863,10 @@ async function queryContentAvailabilityState(
   ndm: NdmModule,
   contentId: string,
 ): Promise<ContentAvailabilityState> {
-  if (contentId.startsWith("chunk:") || contentId.startsWith("mix256:") || contentId.startsWith("sha256:")) {
+  if (
+    contentId.startsWith("chunk:") || contentId.startsWith("mix256:") ||
+    contentId.startsWith("sha256:")
+  ) {
     const state = await ndm.queryChunkState({ chunk_id: contentId });
     return { kind: "chunk", state };
   }
@@ -583,13 +885,20 @@ Deno.serve({
     console.log(`[sys_test] mounted routes:`);
     console.log(`  GET  ${sdkRoutePrefix}/healthz`);
     console.log(`  GET  ${sdkRoutePrefix}/runtime`);
-    console.log(`  POST ${sdkRoutePrefix}/selftest             (run all groups)`);
+    console.log(
+      `  POST ${sdkRoutePrefix}/selftest             (run all groups)`,
+    );
     console.log(`  POST ${sdkRoutePrefix}/selftest/system_config`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/app_settings`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/task_manager`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/verify_hub`);
-    console.log(`  POST ${sdkRoutePrefix}/ndm_query             (query FileObjId status)`);
-    console.log(`  GET  *                                       (static dist/)`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest/kevent`);
+    console.log(
+      `  POST ${sdkRoutePrefix}/ndm_query             (query FileObjId status)`,
+    );
+    console.log(
+      `  GET  *                                       (static dist/)`,
+    );
   },
 }, async (req: Request) => {
   const reqId = ++requestSeq;
@@ -599,9 +908,9 @@ Deno.serve({
     url = new URL(req.url);
   } catch (error) {
     console.warn(
-      `[sys_test][req#${reqId}] failed to parse req.url=${JSON.stringify(req.url)}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `[sys_test][req#${reqId}] failed to parse req.url=${
+        JSON.stringify(req.url)
+      }: ${error instanceof Error ? error.message : String(error)}`,
     );
     return jsonResponse({ ok: false, error: "invalid request URL" }, 400);
   }
@@ -614,7 +923,9 @@ Deno.serve({
 
   const log = (status: number, route: string) => {
     console.log(
-      `[sys_test][req#${reqId}] <- ${status} ${route} (${Date.now() - startedAt}ms)`,
+      `[sys_test][req#${reqId}] <- ${status} ${route} (${
+        Date.now() - startedAt
+      }ms)`,
     );
   };
   const tap = (route: string, response: Response): Response => {
@@ -623,13 +934,15 @@ Deno.serve({
   };
 
   try {
-
     if (req.method === "GET" && url.pathname === `${sdkRoutePrefix}/healthz`) {
-      return tap("healthz", jsonResponse({
-        ok: bootstrapState.kind === "ready",
-        appId: APP_ID,
-        bootstrap: bootstrapState.kind,
-      }));
+      return tap(
+        "healthz",
+        jsonResponse({
+          ok: bootstrapState.kind === "ready",
+          appId: APP_ID,
+          bootstrap: bootstrapState.kind,
+        }),
+      );
     }
 
     if (req.method === "GET" && url.pathname === `${sdkRoutePrefix}/runtime`) {
@@ -638,27 +951,33 @@ Deno.serve({
       }
       const { sdk, identity } = bootstrapState;
       const accountInfo = await sdk.buckyos.getAccountInfo();
-      return tap("runtime", jsonResponse({
-        ok: true,
-        mode: "app-service",
-        appId: identity.appId,
-        ownerUserId: identity.ownerUserId,
-        zoneHost: sdk.buckyos.getZoneHostName(),
-        hostGateway: getEnv("BUCKYOS_HOST_GATEWAY"),
-        expectedTokenEnvKey: getRustStyleAppServiceTokenEnvKey(identity),
-        serviceUrls: {
-          verifyHub: sdk.buckyos.getZoneServiceURL("verify-hub"),
-          taskManager: sdk.buckyos.getZoneServiceURL("task-manager"),
-          systemConfig: sdk.buckyos.getZoneServiceURL("system-config"),
-        },
-        accountInfo: accountInfo
-          ? {
-            userId: accountInfo.user_id ?? null,
-            userType: accountInfo.user_type ?? null,
-          }
-          : null,
-        tokenClaims: sdk.parseSessionTokenClaims(accountInfo?.session_token ?? null),
-      }));
+      return tap(
+        "runtime",
+        jsonResponse({
+          ok: true,
+          mode: "app-service",
+          appId: identity.appId,
+          ownerUserId: identity.ownerUserId,
+          zoneHost: sdk.buckyos.getZoneHostName(),
+          hostGateway: getEnv("BUCKYOS_HOST_GATEWAY"),
+          expectedTokenEnvKey: getRustStyleAppServiceTokenEnvKey(identity),
+          serviceUrls: {
+            verifyHub: sdk.buckyos.getZoneServiceURL("verify-hub"),
+            taskManager: sdk.buckyos.getZoneServiceURL("task-manager"),
+            systemConfig: sdk.buckyos.getZoneServiceURL("system-config"),
+            kevent: sdk.buckyos.getZoneServiceURL("kevent"),
+          },
+          accountInfo: accountInfo
+            ? {
+              userId: accountInfo.user_id ?? null,
+              userType: accountInfo.user_type ?? null,
+            }
+            : null,
+          tokenClaims: sdk.parseSessionTokenClaims(
+            accountInfo?.session_token ?? null,
+          ),
+        }),
+      );
     }
 
     // NDM query endpoint: receives FileObjId + FileObject + chunkList + qcid from the
@@ -668,17 +987,23 @@ Deno.serve({
     //   3. isObjectStored/queryChunkState — query content + qcid state
     // The qcid is stored alongside the FileObject so that future uploads
     // of the same file content can be resolved instantly (秒传).
-    if (req.method === "POST" && url.pathname === `${sdkRoutePrefix}/ndm_query`) {
+    if (
+      req.method === "POST" && url.pathname === `${sdkRoutePrefix}/ndm_query`
+    ) {
       if (bootstrapState.kind !== "ready") {
         return tap("ndm_query[unavail]", appServiceUnavailableResponse());
       }
       try {
         const body = await readJsonBody(req);
         const fileObjId = body.fileObjId as string | undefined;
-        const fileObject = body.fileObject as Record<string, unknown> | undefined;
+        const fileObject = body.fileObject as
+          | Record<string, unknown>
+          | undefined;
         const qcid = body.qcid as string | undefined;
         const chunkList = body.chunkList;
-        const preUploadState = body.preUploadState as Record<string, unknown> | undefined;
+        const preUploadState = body.preUploadState as
+          | Record<string, unknown>
+          | undefined;
 
         if (typeof fileObjId !== "string" || !fileObjId) {
           return tap(
@@ -692,30 +1017,40 @@ Deno.serve({
         );
 
         const { ndm } = bootstrapState.sdk;
-        const contentId = typeof fileObject?.content === "string" && fileObject.content.length > 0
+        const contentId = typeof fileObject?.content === "string" &&
+            fileObject.content.length > 0
           ? fileObject.content
           : null;
-        const isChunkListContent = contentId ? isChunkListContentId(contentId) : false;
+        const isChunkListContent = contentId
+          ? isChunkListContentId(contentId)
+          : false;
 
         let putChunkListResult: { ok: boolean; error?: string } | null = null;
         if (contentId && isChunkListContent) {
           if (!isStringArray(chunkList)) {
             putChunkListResult = {
               ok: false,
-              error: "chunkList is required when fileObject.content is a chunklist id",
+              error:
+                "chunkList is required when fileObject.content is a chunklist id",
             };
-            console.warn(`[sys_test] ndm_query: missing chunkList for ${contentId}`);
+            console.warn(
+              `[sys_test] ndm_query: missing chunkList for ${contentId}`,
+            );
           } else {
             try {
               await ndm.putObject({
                 obj_id: contentId,
                 obj_data: JSON.stringify(chunkList),
               });
-              console.log(`[sys_test] ndm_query: putObject OK for chunklist ${contentId}`);
+              console.log(
+                `[sys_test] ndm_query: putObject OK for chunklist ${contentId}`,
+              );
               putChunkListResult = { ok: true };
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              console.warn(`[sys_test] ndm_query: put chunklist failed: ${msg}`);
+              console.warn(
+                `[sys_test] ndm_query: put chunklist failed: ${msg}`,
+              );
               putChunkListResult = { ok: false, error: msg };
             }
           }
@@ -739,7 +1074,10 @@ Deno.serve({
           }
         }
 
-        let objectState: QueryObjectByIdResponse | { state: "error"; error: string };
+        let objectState: QueryObjectByIdResponse | {
+          state: "error";
+          error: string;
+        };
         try {
           objectState = await ndm.queryObjectById({ obj_id: fileObjId });
           console.log(
@@ -756,12 +1094,19 @@ Deno.serve({
           | null = null;
         if (contentId) {
           try {
-            const availabilityState = await queryContentAvailabilityState(ndm, contentId);
-            console.log(`[sys_test] ndm_query: content availability for ${contentId} queried`);
+            const availabilityState = await queryContentAvailabilityState(
+              ndm,
+              contentId,
+            );
+            console.log(
+              `[sys_test] ndm_query: content availability for ${contentId} queried`,
+            );
             contentState = { contentId, state: availabilityState };
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            console.warn(`[sys_test] ndm_query: content availability query failed for ${contentId}: ${msg}`);
+            console.warn(
+              `[sys_test] ndm_query: content availability query failed for ${contentId}: ${msg}`,
+            );
             contentState = {
               contentId,
               state: { kind: "object", state: { state: "error", error: msg } },
@@ -770,7 +1115,10 @@ Deno.serve({
         }
 
         let contentStoredState:
-          | { contentId: string; state: { stored: boolean } | { state: "error"; error: string } }
+          | {
+            contentId: string;
+            state: { stored: boolean } | { state: "error"; error: string };
+          }
           | null = null;
         if (contentId) {
           try {
@@ -781,7 +1129,9 @@ Deno.serve({
             contentStoredState = { contentId, state: storedState };
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            console.warn(`[sys_test] ndm_query: isObjectStored(${contentId}) failed: ${msg}`);
+            console.warn(
+              `[sys_test] ndm_query: isObjectStored(${contentId}) failed: ${msg}`,
+            );
             contentStoredState = {
               contentId,
               state: { state: "error", error: msg },
@@ -796,13 +1146,18 @@ Deno.serve({
         if (contentId && isChunkListContent) {
           const chunkIds = isStringArray(chunkList)
             ? chunkList
-            : contentState?.state.kind === "object" && contentState.state.state.state === "object"
-            ? extractChunkIdsFromChunkListObjectData(contentState.state.state.obj_data) ?? []
+            : contentState?.state.kind === "object" &&
+                contentState.state.state.state === "object"
+            ? extractChunkIdsFromChunkListObjectData(
+              contentState.state.state.obj_data,
+            ) ?? []
             : [];
 
           for (const chunkId of chunkIds) {
             try {
-              const chunkState = await ndm.queryChunkState({ chunk_id: chunkId });
+              const chunkState = await ndm.queryChunkState({
+                chunk_id: chunkId,
+              });
               console.log(
                 `[sys_test] ndm_query: queryChunkState(${chunkId}) = ${chunkState.state}`,
               );
@@ -820,9 +1175,12 @@ Deno.serve({
           }
         }
 
-        let addSameAsResult: { ok: boolean; skipped?: boolean; error?: string } | null = null;
+        let addSameAsResult:
+          | { ok: boolean; skipped?: boolean; error?: string }
+          | null = null;
         if (qcid && contentId && isChunkListContent) {
-          const fileSize = typeof fileObject?.size === "number" && Number.isFinite(fileObject.size)
+          const fileSize = typeof fileObject?.size === "number" &&
+              Number.isFinite(fileObject.size)
             ? fileObject.size
             : null;
           const contentFullyStored = contentStoredState?.state &&
@@ -832,12 +1190,14 @@ Deno.serve({
           if (fileSize === null) {
             addSameAsResult = {
               ok: false,
-              error: "fileObject.size is required when adding qcid same_as mapping",
+              error:
+                "fileObject.size is required when adding qcid same_as mapping",
             };
           } else if (!contentFullyStored) {
             addSameAsResult = {
               ok: false,
-              error: `skip addChunkBySameAs because content ${contentId} is not fully stored yet`,
+              error:
+                `skip addChunkBySameAs because content ${contentId} is not fully stored yet`,
             };
             console.warn(
               `[sys_test] ndm_query: skip addChunkBySameAs for ${qcid} because ${contentId} is not fully stored`,
@@ -849,11 +1209,15 @@ Deno.serve({
                 chunk_list_id: contentId,
                 big_chunk_size: fileSize,
               });
-              console.log(`[sys_test] ndm_query: addChunkBySameAs OK for ${qcid} -> ${contentId}`);
+              console.log(
+                `[sys_test] ndm_query: addChunkBySameAs OK for ${qcid} -> ${contentId}`,
+              );
               addSameAsResult = { ok: true };
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              console.warn(`[sys_test] ndm_query: addChunkBySameAs failed: ${msg}`);
+              console.warn(
+                `[sys_test] ndm_query: addChunkBySameAs failed: ${msg}`,
+              );
               addSameAsResult = { ok: false, error: msg };
             }
           }
@@ -862,7 +1226,10 @@ Deno.serve({
         }
 
         let qcidState:
-          | { chunkId: string; state: QueryChunkStateResponse | { state: "error"; error: string } }
+          | {
+            chunkId: string;
+            state: QueryChunkStateResponse | { state: "error"; error: string };
+          }
           | null = null;
         if (qcid) {
           try {
@@ -921,6 +1288,7 @@ Deno.serve({
     //   POST /sdk/appservice/selftest/app_settings
     //   POST /sdk/appservice/selftest/task_manager
     //   POST /sdk/appservice/selftest/verify_hub
+    //   POST /sdk/appservice/selftest/kevent
     //
     // Each test group on the frontend gets its own URL so the routing in
     // cyfs-gateway / static servers in front of this process can express
@@ -932,7 +1300,9 @@ Deno.serve({
       if (!groupRunners || bootstrapState.kind !== "ready") {
         return tap("selftest[unavail]", appServiceUnavailableResponse());
       }
-      const groupId = url.pathname.slice(`${sdkRoutePrefix}/selftest/`.length) as GroupId;
+      const groupId = url.pathname.slice(
+        `${sdkRoutePrefix}/selftest/`.length,
+      ) as GroupId;
       const runner = groupRunners[groupId];
       if (!runner) {
         return tap(
@@ -969,7 +1339,9 @@ Deno.serve({
     // optional and ignored — kept around so that the systest jest harness
     // (tests/app-service/integration/app_service_test.ts) and any
     // command-line callers can still trigger the full sweep with one call.
-    if (req.method === "POST" && url.pathname === `${sdkRoutePrefix}/selftest`) {
+    if (
+      req.method === "POST" && url.pathname === `${sdkRoutePrefix}/selftest`
+    ) {
       if (!groupRunners || bootstrapState.kind !== "ready") {
         return tap("selftest[unavail]", appServiceUnavailableResponse());
       }
@@ -1024,7 +1396,10 @@ Deno.serve({
     return tap(
       "error",
       jsonResponse(
-        { ok: false, error: error instanceof Error ? error.message : String(error) },
+        {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
         500,
       ),
     );

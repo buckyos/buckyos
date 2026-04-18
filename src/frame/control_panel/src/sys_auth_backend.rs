@@ -306,7 +306,7 @@ impl ControlPanelServer {
                     refresh_cookie_parts.push("Secure".to_string());
                 }
                 response = response.header(SET_COOKIE, refresh_cookie_parts.join("; "));
-                
+
                 let body = serde_json::to_vec(&json!({
                     "session_token": token_pair.session_token,
                     "user_info": user_info,

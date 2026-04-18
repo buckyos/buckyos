@@ -18,8 +18,7 @@ fn is_admin_or_root(user_type: &UserType) -> bool {
 
 /// Resolve the target user_id from the request; defaults to the caller.
 fn resolve_target_user_id(req: &RPCRequest, principal: &RpcAuthPrincipal) -> String {
-    ControlPanelServer::param_str(req, "user_id")
-        .unwrap_or_else(|| principal.username.clone())
+    ControlPanelServer::param_str(req, "user_id").unwrap_or_else(|| principal.username.clone())
 }
 
 /// Build a fresh `SystemConfigClient` authenticated with the *caller's* RPC
@@ -37,9 +36,10 @@ async fn system_config_client_for_caller(
 ) -> Result<SystemConfigClient, RPCErrors> {
     let runtime = get_buckyos_api_runtime()?;
     let url = runtime.get_system_config_url();
-    let token = req.token.as_deref().ok_or_else(|| {
-        RPCErrors::InvalidToken("missing caller session token".to_string())
-    })?;
+    let token = req
+        .token
+        .as_deref()
+        .ok_or_else(|| RPCErrors::InvalidToken("missing caller session token".to_string()))?;
     Ok(SystemConfigClient::new(Some(url.as_str()), Some(token)))
 }
 
@@ -106,9 +106,8 @@ fn parse_user_type(s: &str) -> Result<UserType, RPCErrors> {
 }
 
 fn parse_user_state(s: &str) -> Result<UserState, RPCErrors> {
-    UserState::try_from(s.to_string()).map_err(|_| {
-        RPCErrors::ParseRequestError(format!("Invalid user state: {}", s))
-    })
+    UserState::try_from(s.to_string())
+        .map_err(|_| RPCErrors::ParseRequestError(format!("Invalid user state: {}", s)))
 }
 
 // ─── User management handlers ──────────────────────────────────────────────
@@ -130,9 +129,10 @@ impl ControlPanelServer {
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
 
-        let user_ids = client.list("users").await.map_err(|e| {
-            RPCErrors::ReasonError(format!("Failed to list users: {}", e))
-        })?;
+        let user_ids = client
+            .list("users")
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to list users: {}", e)))?;
 
         let mut users: Vec<Value> = Vec::new();
         for uid in &user_ids {
@@ -175,9 +175,10 @@ impl ControlPanelServer {
         let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
-        let settings_val = client.get(&settings_path).await.map_err(|e| {
-            RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e))
-        })?;
+        let settings_val = client
+            .get(&settings_path)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
         let settings: UserSettings = serde_json::from_str(&settings_val.value)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
 
@@ -283,9 +284,10 @@ impl ControlPanelServer {
         tx.insert(settings_path, KVAction::Create(settings_json));
         tx.insert(doc_path, KVAction::Create(doc_json));
 
-        client.exec_tx(tx, None).await.map_err(|e| {
-            RPCErrors::ReasonError(format!("Failed to create user: {}", e))
-        })?;
+        client
+            .exec_tx(tx, None)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to create user: {}", e)))?;
 
         // Add to RBAC group if admin.
         // NOTE: `system/rbac/policy` is writable only by `ood` (per boot.template.toml);
@@ -330,9 +332,10 @@ impl ControlPanelServer {
         let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
-        let settings_val = client.get(&settings_path).await.map_err(|e| {
-            RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e))
-        })?;
+        let settings_val = client
+            .get(&settings_path)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
         let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
 
@@ -377,9 +380,10 @@ impl ControlPanelServer {
         let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
-        let settings_val = client.get(&settings_path).await.map_err(|e| {
-            RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e))
-        })?;
+        let settings_val = client
+            .get(&settings_path)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
         let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
 
@@ -448,18 +452,17 @@ impl ControlPanelServer {
             ));
         }
         if target == principal.username {
-            return Err(RPCErrors::ReasonError(
-                "Cannot delete yourself".to_string(),
-            ));
+            return Err(RPCErrors::ReasonError("Cannot delete yourself".to_string()));
         }
 
         let client = system_config_client_for_caller(&req).await?;
 
         // Mark user as deleted rather than physically removing
         let settings_path = format!("users/{}/settings", target);
-        let settings_val = client.get(&settings_path).await.map_err(|e| {
-            RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e))
-        })?;
+        let settings_val = client
+            .get(&settings_path)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
         let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
 
@@ -506,9 +509,10 @@ impl ControlPanelServer {
         let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
-        let settings_val = client.get(&settings_path).await.map_err(|e| {
-            RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e))
-        })?;
+        let settings_val = client
+            .get(&settings_path)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
         let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
 
@@ -518,9 +522,7 @@ impl ControlPanelServer {
         client
             .set(&settings_path, &updated_json)
             .await
-            .map_err(|e| {
-                RPCErrors::ReasonError(format!("Failed to change password: {}", e))
-            })?;
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to change password: {}", e)))?;
 
         info!(
             "Password changed for user '{}' by '{}'",
@@ -556,9 +558,10 @@ impl ControlPanelServer {
         let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
-        let settings_val = client.get(&settings_path).await.map_err(|e| {
-            RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e))
-        })?;
+        let settings_val = client
+            .get(&settings_path)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
         let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
 
@@ -600,17 +603,16 @@ impl ControlPanelServer {
         let new_type = parse_user_type(&type_str)?;
 
         if matches!(new_type, UserType::Root) {
-            return Err(RPCErrors::ReasonError(
-                "Cannot promote to root".to_string(),
-            ));
+            return Err(RPCErrors::ReasonError("Cannot promote to root".to_string()));
         }
 
         let client = system_config_client_for_caller(&req).await?;
 
         let settings_path = format!("users/{}/settings", target);
-        let settings_val = client.get(&settings_path).await.map_err(|e| {
-            RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e))
-        })?;
+        let settings_val = client
+            .get(&settings_path)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("User '{}' not found: {}", target, e)))?;
         let mut settings: UserSettings = serde_json::from_str(&settings_val.value)
             .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))?;
 
@@ -680,17 +682,17 @@ impl ControlPanelServer {
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
 
-        let agent_ids = client.list("agents").await.map_err(|e| {
-            RPCErrors::ReasonError(format!("Failed to list agents: {}", e))
-        })?;
+        let agent_ids = client
+            .list("agents")
+            .await
+            .map_err(|e| RPCErrors::ReasonError(format!("Failed to list agents: {}", e)))?;
 
         let mut agents: Vec<Value> = Vec::new();
         for agent_id in &agent_ids {
             let doc_path = format!("agents/{}/doc", agent_id);
             match client.get(&doc_path).await {
                 Ok(val) => {
-                    let mut agent_info = if let Ok(doc) =
-                        serde_json::from_str::<Value>(&val.value)
+                    let mut agent_info = if let Ok(doc) = serde_json::from_str::<Value>(&val.value)
                     {
                         doc
                     } else {
@@ -746,10 +748,7 @@ impl ControlPanelServer {
             }
         }
 
-        Ok(RPCResponse::new(
-            RPCResult::Success(agent_doc),
-            req.seq,
-        ))
+        Ok(RPCResponse::new(RPCResult::Success(agent_doc), req.seq))
     }
 
     // ── agent.set_msg_tunnel ────────────────────────────────────────────

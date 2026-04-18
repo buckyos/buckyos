@@ -1,5 +1,5 @@
+use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
 use anyhow::{anyhow, Result};
-use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use buckyos_api::msg_queue::{
     generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
 };
@@ -20,7 +20,7 @@ use buckyos_api::{
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID,
 };
-use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
+use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{
@@ -912,10 +912,7 @@ async fn fetch_sn_openai_models_impl(user_name: &str) -> Result<Vec<String>> {
         .text()
         .await
         .map_err(|err| anyhow!("failed to read models response body: {}", err))?;
-    info!(
-        "sn-openai models endpoint raw response: {}",
-        response_text
-    );
+    info!("sn-openai models endpoint raw response: {}", response_text);
     let body: Value = serde_json::from_str(response_text.as_str())
         .map_err(|err| anyhow!("invalid models response json: {}", err))?;
     let models = extract_model_ids_from_response(&body);
@@ -923,11 +920,7 @@ async fn fetch_sn_openai_models_impl(user_name: &str) -> Result<Vec<String>> {
         return Err(anyhow!("models response does not contain model ids"));
     }
 
-    info!(
-        "fetched {} sn-openai models: {:?}",
-        models.len(),
-        models
-    );
+    info!("fetched {} sn-openai models: {:?}", models.len(), models);
     Ok(models)
 }
 
@@ -1195,9 +1188,8 @@ impl StartConfigSummary {
 mod tests {
     use super::{
         build_aicc_settings, build_aicc_settings_with_sn_models, build_default_jarvis_agent_spec,
-        build_kernel_service_spec, extract_model_ids_from_response,
-        build_msg_center_settings, build_zone_user_contact_settings, StartConfigSummary,
-        SystemConfigBuilder,
+        build_kernel_service_spec, build_msg_center_settings, build_zone_user_contact_settings,
+        extract_model_ids_from_response, StartConfigSummary, SystemConfigBuilder,
     };
     use buckyos_api::{
         generate_verify_hub_service_doc, AppDoc, AppServiceSpec, AppType, OPENDAN_SERVICE_PORT,

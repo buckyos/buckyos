@@ -93,7 +93,11 @@ async fn stream_02_incremental_chunks_are_append_only() {
     assert!(matches!(e1[0].kind, TaskEventKind::Started));
     assert_eq!(e1[0].task_id, resp.task_id);
     let e2 = s.events_for(&resp.task_id);
-    assert_eq!(e2.len(), e1.len(), "event list should not shrink or reorder");
+    assert_eq!(
+        e2.len(),
+        e1.len(),
+        "event list should not shrink or reorder"
+    );
     assert!(e2
         .iter()
         .zip(e1.iter())
@@ -323,7 +327,11 @@ async fn stream_08_stream_final_snapshot_consistent_with_chunks() {
     assert_eq!(chunks[2].as_str(), Some("c"));
 
     let events = s.events_for(&resp.task_id);
-    assert_eq!(events.len(), 2, "immediate response should emit started + final");
+    assert_eq!(
+        events.len(),
+        2,
+        "immediate response should emit started + final"
+    );
     assert!(matches!(events[0].kind, TaskEventKind::Started));
     assert!(matches!(events[1].kind, TaskEventKind::Final));
 }

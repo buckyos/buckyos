@@ -158,10 +158,7 @@ impl ControlPanelServer {
                     apps.push(Self::build_app_summary(&spec, false, true, &spec_key));
                 }
                 Err(error) => {
-                    warn!(
-                        "skip built-in system app `{}`: {}",
-                        system_app_id, error
-                    );
+                    warn!("skip built-in system app `{}`: {}", system_app_id, error);
                 }
             }
         }
@@ -205,13 +202,9 @@ impl ControlPanelServer {
                 Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
             };
 
-            let spec: AppServiceSpec =
-                serde_json::from_str(&record.value).map_err(|error| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to parse spec `{}`: {}",
-                        spec_key, error
-                    ))
-                })?;
+            let spec: AppServiceSpec = serde_json::from_str(&record.value).map_err(|error| {
+                RPCErrors::ReasonError(format!("Failed to parse spec `{}`: {}", spec_key, error))
+            })?;
             let spec_value = serde_json::to_value(&spec).map_err(|error| {
                 RPCErrors::ReasonError(format!("Failed to serialize spec: {}", error))
             })?;

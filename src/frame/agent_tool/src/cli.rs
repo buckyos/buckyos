@@ -19,13 +19,13 @@ use tokio::process::Command;
 
 use crate::{
     cli_exit_code_for_error, normalize_abs_path, parse_read_file_bash_args, render_cli_output,
-    rewrite_read_file_path_with_shell_cwd, session_record_path, AgentTool, AgentToolError,
-    AgentToolResult, AgentMemory, AgentMemoryConfig, BindWorkspaceTool, CliPendingReason,
-    CliResultEnvelope, CliRunOutput, CliStatus, CreateWorkspaceTool, EditFileTool,
-    FileToolConfig, GetSessionTool, NoopFileWriteAudit, ReadFileTool, RemoveMemoryTool,
-    SessionRuntimeContext, SessionViewBackend, SetMemoryTool, TodoTool, TodoToolConfig,
-    WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE,
-    TOOL_GET_SESSION, TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY,
+    rewrite_read_file_path_with_shell_cwd, session_record_path, AgentMemory, AgentMemoryConfig,
+    AgentTool, AgentToolError, AgentToolResult, BindWorkspaceTool, CliPendingReason,
+    CliResultEnvelope, CliRunOutput, CliStatus, CreateWorkspaceTool, EditFileTool, FileToolConfig,
+    GetSessionTool, NoopFileWriteAudit, ReadFileTool, RemoveMemoryTool, SessionRuntimeContext,
+    SessionViewBackend, SetMemoryTool, TodoTool, TodoToolConfig, WorkspaceToolBackend,
+    WriteFileTool, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_GET_SESSION,
+    TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY,
 };
 
 const TOOL_TODO: &str = "todo";
@@ -366,10 +366,11 @@ fn parse_tool_command(
         TOOL_WRITE_FILE => parse_write_file_cli_args(tool_name, tokens, current_dir),
         TOOL_EDIT_FILE => parse_edit_file_cli_args(tool_name, tokens, current_dir),
         TOOL_GET_SESSION => parse_get_session_cli_command(tool_name, tokens),
-        TOOL_SET_MEMORY | TOOL_REMOVE_MEMORY | TOOL_TODO | TOOL_CREATE_WORKSPACE
-        | TOOL_BIND_WORKSPACE => {
-            Ok(parse_passthrough_bash_command(tool_name, tokens))
-        }
+        TOOL_SET_MEMORY
+        | TOOL_REMOVE_MEMORY
+        | TOOL_TODO
+        | TOOL_CREATE_WORKSPACE
+        | TOOL_BIND_WORKSPACE => Ok(parse_passthrough_bash_command(tool_name, tokens)),
         TOOL_CHECK_TASK => parse_check_task_cli_command(tool_name, tokens),
         TOOL_CANCEL_TASK => parse_cancel_task_cli_command(tool_name, tokens),
         _ => Err(AgentToolError::InvalidArgs(format!(
@@ -1140,9 +1141,7 @@ async fn build_set_memory_tool(env: &CliRuntimeEnv) -> Result<SetMemoryTool, Age
     Ok(SetMemoryTool::new(build_memory_backend(env).await?))
 }
 
-async fn build_remove_memory_tool(
-    env: &CliRuntimeEnv,
-) -> Result<RemoveMemoryTool, AgentToolError> {
+async fn build_remove_memory_tool(env: &CliRuntimeEnv) -> Result<RemoveMemoryTool, AgentToolError> {
     Ok(RemoveMemoryTool::new(build_memory_backend(env).await?))
 }
 
@@ -2100,7 +2099,11 @@ mod tests {
         .expect("run set_memory");
         assert_eq!(set_output.exit_code, EXIT_SUCCESS);
 
-        let memory_path = root.join("memory").join("remind").join("bob").join("20260323");
+        let memory_path = root
+            .join("memory")
+            .join("remind")
+            .join("bob")
+            .join("20260323");
         let content = fs::read_to_string(&memory_path)
             .await
             .expect("read memory file");

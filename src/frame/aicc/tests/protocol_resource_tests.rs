@@ -495,7 +495,10 @@ async fn proto_res_01_named_object_passthrough_preserved() {
         .unwrap();
     assert_eq!(resp.status, CompleteStatus::Running);
     let taskmgr = center.task_manager_client().unwrap();
-    let tasks = taskmgr.list_tasks(None::<TaskFilter>, None, None).await.unwrap();
+    let tasks = taskmgr
+        .list_tasks(None::<TaskFilter>, None, None)
+        .await
+        .unwrap();
     let task = tasks
         .into_iter()
         .find(|t| {
@@ -600,7 +603,10 @@ async fn proto_res_05_equivalent_resource_semantics_base64_url_named_object() {
         .complete(req_base64, rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    let r2 = center.complete(req_url, rpc_ctx_with_tenant(None)).await.unwrap();
+    let r2 = center
+        .complete(req_url, rpc_ctx_with_tenant(None))
+        .await
+        .unwrap();
     let r3 = center
         .complete(req_named, rpc_ctx_with_tenant(None))
         .await
@@ -696,7 +702,10 @@ async fn proto_res_08_named_object_and_url_mixed_order_stable() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().unwrap();
-    let tasks = taskmgr.list_tasks(None::<TaskFilter>, None, None).await.unwrap();
+    let tasks = taskmgr
+        .list_tasks(None::<TaskFilter>, None, None)
+        .await
+        .unwrap();
     let task = tasks
         .into_iter()
         .find(|t| {
@@ -735,7 +744,10 @@ async fn proto_res_09_mime_hint_consistency_after_translation() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().unwrap();
-    let tasks = taskmgr.list_tasks(None::<TaskFilter>, None, None).await.unwrap();
+    let tasks = taskmgr
+        .list_tasks(None::<TaskFilter>, None, None)
+        .await
+        .unwrap();
     let task = tasks
         .into_iter()
         .find(|t| {

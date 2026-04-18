@@ -7,7 +7,6 @@ mod system_config_agent;
 mod system_config_builder;
 mod thunk_runner;
 
-
 #[cfg(test)]
 mod scheduler_test;
 

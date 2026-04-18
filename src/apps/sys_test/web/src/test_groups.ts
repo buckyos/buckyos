@@ -32,6 +32,154 @@ export interface TestGroup {
   cases: TestCase[]
 }
 
+type KEventStreamAckFrame = {
+  type: 'ack'
+  connection_id: string
+  keepalive_ms: number
+}
+
+type KEventStreamEventFrame = {
+  type: 'event'
+  event: {
+    eventid: string
+    source_node: string
+    ingress_node?: string | null
+    data?: Record<string, unknown>
+  }
+}
+
+type KEventStreamKeepaliveFrame = {
+  type: 'keepalive'
+  at_ms: number
+}
+
+type KEventStreamErrorFrame = {
+  type: 'error'
+  error: string
+}
+
+type KEventStreamFrame =
+  | KEventStreamAckFrame
+  | KEventStreamEventFrame
+  | KEventStreamKeepaliveFrame
+  | KEventStreamErrorFrame
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    promise.then(
+      value => {
+        window.clearTimeout(timer)
+        resolve(value)
+      },
+      error => {
+        window.clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
+function getKEventBaseUrl(sdk: Sdk): string {
+  const baseUrl = sdk.getZoneServiceURL('kevent')
+  return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
+}
+
+function getKEventRequestUrl(sdk: Sdk, path: 'publish' | 'stream'): string {
+  return new URL(path, getKEventBaseUrl(sdk)).toString()
+}
+
+async function readJsonResponse(response: Response): Promise<Record<string, unknown>> {
+  const text = await response.text()
+  try {
+    return JSON.parse(text) as Record<string, unknown>
+  } catch {
+    throw new Error(`non-json response (${response.status}): ${text.slice(0, 200)}`)
+  }
+}
+
+async function publishKEvent(sdk: Sdk, eventid: string, data: Record<string, unknown>): Promise<void> {
+  const response = await fetch(getKEventRequestUrl(sdk, 'publish'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ eventid, data }),
+  })
+  const payload = await readJsonResponse(response)
+  if (!response.ok || payload.status !== 'ok') {
+    throw new Error(String(payload.error ?? `kevent publish failed with status ${response.status}`))
+  }
+}
+
+async function openKEventStream(
+  sdk: Sdk,
+  patterns: string[],
+): Promise<{
+  next: (timeoutMs: number) => Promise<KEventStreamFrame>
+  close: () => Promise<void>
+}> {
+  const controller = new AbortController()
+  const response = await fetch(getKEventRequestUrl(sdk, 'stream'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'include',
+    signal: controller.signal,
+    body: JSON.stringify({ patterns, keepalive_ms: 1_000 }),
+  })
+  if (!response.ok) {
+    const payload = await readJsonResponse(response)
+    throw new Error(String(payload.error ?? `kevent stream failed with status ${response.status}`))
+  }
+  if (!response.body) {
+    throw new Error('kevent stream response has no body')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const readLine = async (timeoutMs: number): Promise<string> => {
+    while (true) {
+      const newlineIndex = buffer.indexOf('\n')
+      if (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex).trim()
+        buffer = buffer.slice(newlineIndex + 1)
+        if (line.length > 0) {
+          return line
+        }
+        continue
+      }
+
+      const chunk = await withTimeout(
+        reader.read(),
+        timeoutMs,
+        'waiting for kevent stream frame',
+      )
+      if (chunk.done) {
+        throw new Error('kevent stream closed unexpectedly')
+      }
+      buffer += decoder.decode(chunk.value, { stream: true })
+    }
+  }
+
+  return {
+    next: async (timeoutMs: number) => {
+      const line = await readLine(timeoutMs)
+      return JSON.parse(line) as KEventStreamFrame
+    },
+    close: async () => {
+      try {
+        await reader.cancel()
+      } catch {
+        // ignore close failures
+      }
+      controller.abort()
+    },
+  }
+}
+
 export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'system_config',
@@ -155,6 +303,66 @@ export const TEST_GROUPS: TestGroup[] = [
             userType: accountInfo.user_type,
             appId: claims.appid ?? null,
             exp: claims.exp ?? null,
+          }
+        },
+      },
+    ],
+  },
+  {
+    id: 'kevent',
+    title: 'KEvent',
+    description: '事件检测：通过 kevent HTTP stream 订阅唯一事件，再通过 publish 发布并确认页面端收到回环事件。',
+    cases: [
+      {
+        name: 'KEvent stream/publish round trip on a unique eventid',
+        run: async ({ sdk, userId, appId }) => {
+          const eventid = `/users/${userId}/apps/${appId}/kevent/sys_test_${Date.now()}_${Math.random()
+            .toString(36)
+            .slice(2, 8)}`
+          const marker = `page_${Date.now()}`
+          const stream = await openKEventStream(sdk, [eventid])
+          try {
+            const ack = await stream.next(2_000)
+            if (ack.type !== 'ack') {
+              throw new Error(`expected kevent ack frame, got ${ack.type}`)
+            }
+
+            await publishKEvent(sdk, eventid, {
+              marker,
+              origin: 'sys_test_web',
+              userId,
+              appId,
+            })
+
+            while (true) {
+              const frame = await stream.next(5_000)
+              if (frame.type === 'keepalive') {
+                continue
+              }
+              if (frame.type === 'error') {
+                throw new Error(frame.error)
+              }
+              if (frame.type !== 'event') {
+                throw new Error(`unexpected kevent frame type: ${frame.type}`)
+              }
+
+              const eventData = frame.event.data ?? {}
+              if (frame.event.eventid !== eventid) {
+                throw new Error(`received mismatched eventid: ${frame.event.eventid}`)
+              }
+              if (eventData.marker !== marker) {
+                throw new Error(`received mismatched marker: ${JSON.stringify(eventData)}`)
+              }
+
+              return {
+                eventid,
+                connectionId: ack.connection_id,
+                sourceNode: frame.event.source_node,
+                ingressNode: frame.event.ingress_node ?? null,
+              }
+            }
+          } finally {
+            await stream.close()
           }
         },
       },

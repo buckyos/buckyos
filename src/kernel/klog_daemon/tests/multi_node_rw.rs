@@ -242,8 +242,7 @@ async fn test_three_node_multi_writer_and_filtered_query_interactions() -> Resul
             .iter()
             .map(|e| e.message.as_str())
             .collect::<BTreeSet<_>>();
-        let expected_kmsg_msgs =
-            BTreeSet::from(["node1-warn-kmsg", "node2-warn-kmsg"]);
+        let expected_kmsg_msgs = BTreeSet::from(["node1-warn-kmsg", "node2-warn-kmsg"]);
         if source_kmsg_msgs != expected_kmsg_msgs {
             return Err(format!(
                 "unexpected source filter result on follower rpc_port={}: expected={:?}, got={:?}",

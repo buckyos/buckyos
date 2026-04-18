@@ -391,9 +391,15 @@ mod tests {
         println!("{}", expr_tree_str);
         assert_eq!(compiled.graph.start_nodes, vec!["collect".to_string()]);
 
-        assert_eq!(expr_tree["collect"]["expr"]["Apply"]["executor"], "skill/fs.scan");
+        assert_eq!(
+            expr_tree["collect"]["expr"]["Apply"]["executor"],
+            "skill/fs.scan"
+        );
 
-        assert_eq!(expr_tree["draft"]["expr"]["Apply"]["executor"], "agent/planner");
+        assert_eq!(
+            expr_tree["draft"]["expr"]["Apply"]["executor"],
+            "agent/planner"
+        );
         assert_eq!(
             expr_tree["draft"]["expr"]["Apply"]["params"]["files"]["Reference"]["node_id"],
             "collect"
@@ -407,7 +413,8 @@ mod tests {
             "brief"
         );
         assert_eq!(
-            expr_tree["draft"]["expr"]["Apply"]["params"]["options"]["Object"]["include_risks"]["Literal"],
+            expr_tree["draft"]["expr"]["Apply"]["params"]["options"]["Object"]["include_risks"]
+                ["Literal"],
             true
         );
 

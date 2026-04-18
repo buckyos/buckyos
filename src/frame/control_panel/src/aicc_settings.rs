@@ -1116,10 +1116,7 @@ impl ControlPanelServer {
         ))
     }
 
-    pub(crate) async fn handle_ai_reload(
-        &self,
-        req: RPCRequest,
-    ) -> Result<RPCResponse, RPCErrors> {
+    pub(crate) async fn handle_ai_reload(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let krpc_client = runtime
             .get_zone_service_krpc_client("aicc")

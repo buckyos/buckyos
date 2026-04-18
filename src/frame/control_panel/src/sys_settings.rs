@@ -7,7 +7,10 @@ use std::collections::HashMap;
 const SYS_CONFIG_TREE_MAX_DEPTH: u64 = 24;
 
 impl ControlPanelServer {
-    pub(crate) async fn handle_system_config_test(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
+    pub(crate) async fn handle_system_config_test(
+        &self,
+        req: RPCRequest,
+    ) -> Result<RPCResponse, RPCErrors> {
         let key = req
             .params
             .get("key")
@@ -31,7 +34,7 @@ impl ControlPanelServer {
             req.seq,
         ))
     }
-    
+
     pub(crate) async fn handle_sys_config_get(
         &self,
         req: RPCRequest,

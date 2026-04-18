@@ -22,8 +22,8 @@ use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::error::Error as _;
 use std::collections::HashMap;
+use std::error::Error as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1392,7 +1392,8 @@ impl OpenAIProvider {
         };
         let mut retried_without_option = false;
         let (status, body, latency_ms) = loop {
-            let (status, body, latency_ms) = self.post_json(ctx, url.as_str(), &request_obj).await?;
+            let (status, body, latency_ms) =
+                self.post_json(ctx, url.as_str(), &request_obj).await?;
             if status == StatusCode::BAD_REQUEST && !retried_without_option {
                 if let Some(param) = Self::extract_unsupported_request_param(&body) {
                     if Self::remove_retryable_unsupported_option(&mut request_obj, param.as_str()) {
@@ -2495,19 +2496,22 @@ data: [DONE]
 
     #[test]
     fn use_chat_completions_endpoint_detects_custom_sn_path() {
-        let provider = OpenAIProvider::new(OpenAIInstanceConfig {
-            instance_id: "sn-openai-1".to_string(),
-            provider_type: "sn-openai".to_string(),
-            base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
-            auth_mode: "bearer".to_string(),
-            timeout_ms: default_timeout_ms(),
-            models: vec!["gpt-5-mini".to_string()],
-            default_model: Some("gpt-5-mini".to_string()),
-            image_models: vec![],
-            default_image_model: None,
-            features: vec![],
-            alias_map: HashMap::new(),
-        }, "token")
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                instance_id: "sn-openai-1".to_string(),
+                provider_type: "sn-openai".to_string(),
+                base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+                models: vec!["gpt-5-mini".to_string()],
+                default_model: Some("gpt-5-mini".to_string()),
+                image_models: vec![],
+                default_image_model: None,
+                features: vec![],
+                alias_map: HashMap::new(),
+            },
+            "token",
+        )
         .expect("provider should be built");
         assert!(provider.use_chat_completions_endpoint());
     }

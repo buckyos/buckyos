@@ -67,21 +67,30 @@ impl TaskDb {
     /// Resolve the task-manager rdb instance from the service spec and open a
     /// pool against it. This is the production entry point.
     pub async fn open_from_service_spec() -> Result<Self, String> {
-        let instance =
-            get_rdb_instance(TASK_MANAGER_SERVICE_NAME, None, TASK_MANAGER_RDB_INSTANCE_ID)
-                .await
-                .map_err(|err| format!("resolve task-manager rdb instance failed: {}", err))?;
+        let instance = get_rdb_instance(
+            TASK_MANAGER_SERVICE_NAME,
+            None,
+            TASK_MANAGER_RDB_INSTANCE_ID,
+        )
+        .await
+        .map_err(|err| format!("resolve task-manager rdb instance failed: {}", err))?;
         info!("task_db.open {}", instance.connection);
-        Self::open(&instance.connection, instance.backend, instance.schema.as_deref()).await
+        Self::open(
+            &instance.connection,
+            instance.backend,
+            instance.schema.as_deref(),
+        )
+        .await
     }
 
     async fn apply_schema(&self, override_ddl: Option<&str>) -> DbResult<()> {
-        let ddl: &str = override_ddl
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(match self.backend {
-                RdbBackend::Sqlite => TASK_MANAGER_RDB_SCHEMA_SQLITE,
-                RdbBackend::Postgres => TASK_MANAGER_RDB_SCHEMA_POSTGRES,
-            });
+        let ddl: &str =
+            override_ddl
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(match self.backend {
+                    RdbBackend::Sqlite => TASK_MANAGER_RDB_SCHEMA_SQLITE,
+                    RdbBackend::Postgres => TASK_MANAGER_RDB_SCHEMA_POSTGRES,
+                });
         // sqlx::AnyPool::execute accepts a single statement at a time when the
         // backend driver is strict, so split on ';' and run each non-empty
         // fragment.

@@ -59,11 +59,7 @@ impl SmokeClient {
                 let token = resolve_remote_test_token(Some(&url))
                     .await
                     .expect("resolve remote test token");
-                Self::Remote {
-                    client,
-                    url,
-                    token,
-                }
+                Self::Remote { client, url, token }
             }
             None => {
                 let registry = Registry::default();
@@ -305,7 +301,10 @@ async fn smoke_03_cancel_endpoint_reachable_on_assigned_url() {
         .unwrap_or("");
     assert!(!task_id.is_empty(), "missing task_id: {cancel_result}");
     assert!(
-        cancel_result.get("accepted").and_then(|v| v.as_bool()).is_some(),
+        cancel_result
+            .get("accepted")
+            .and_then(|v| v.as_bool())
+            .is_some(),
         "missing accepted bool: {cancel_result}"
     );
 }
@@ -442,11 +441,11 @@ async fn smoke_06_bug_context_capture_template_complete() {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            assert!(!tid.is_empty(), "failed result should still include task_id: {result}");
-            (
-                format!("business failed with status={}", status),
-                tid,
-            )
+            assert!(
+                !tid.is_empty(),
+                "failed result should still include task_id: {result}"
+            );
+            (format!("business failed with status={}", status), tid)
         }
     };
     let log_snippet = format!(
@@ -480,7 +479,9 @@ async fn smoke_06_bug_context_capture_template_complete() {
         Some("complete")
     );
     assert_eq!(
-        context.pointer("/request/trace_id").and_then(|v| v.as_str()),
+        context
+            .pointer("/request/trace_id")
+            .and_then(|v| v.as_str()),
         Some(trace_id)
     );
     assert!(

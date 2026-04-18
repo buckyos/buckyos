@@ -4,10 +4,9 @@ use async_trait::async_trait;
 use buckyos_api::{
     get_session_token_env_key, AffinityType, FunctionObject, FunctionParamType, FunctionType,
     SchedulerDispatchReceipt, SchedulerRunThunkResponse, SchedulerRunThunkStatus,
-    SystemConfigClient, ThunkObject,
-    RESOURCE_TYPE_CPU, RESOURCE_TYPE_DISK_CACHE, RESOURCE_TYPE_DOWNLOAD, RESOURCE_TYPE_GPU,
-    RESOURCE_TYPE_GPU_CORES, RESOURCE_TYPE_GPU_MEMORY, RESOURCE_TYPE_MEMORY,
-    RESOURCE_TYPE_UPLOAD, SCHEDULER_SERVICE_SERVICE_NAME,
+    SystemConfigClient, ThunkObject, RESOURCE_TYPE_CPU, RESOURCE_TYPE_DISK_CACHE,
+    RESOURCE_TYPE_DOWNLOAD, RESOURCE_TYPE_GPU, RESOURCE_TYPE_GPU_CORES, RESOURCE_TYPE_GPU_MEMORY,
+    RESOURCE_TYPE_MEMORY, RESOURCE_TYPE_UPLOAD, SCHEDULER_SERVICE_SERVICE_NAME,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -194,10 +193,7 @@ impl DefaultThunkRunner {
         function_object: FunctionObject,
     ) -> Result<SchedulerRunThunkResponse> {
         let thunk_obj_id = calc_thunk_obj_id(&thunk)?;
-        if !self
-            .check_param_is_ready(&thunk, &function_object)
-            .await?
-        {
+        if !self.check_param_is_ready(&thunk, &function_object).await? {
             return Ok(SchedulerRunThunkResponse {
                 thunk_obj_id,
                 status: SchedulerRunThunkStatus::Rejected,
@@ -207,7 +203,10 @@ impl DefaultThunkRunner {
         }
 
         let function_hint = build_scheduling_hint(&function_object);
-        let candidates = self.node_catalog.list_candidates(&thunk, &function_hint).await?;
+        let candidates = self
+            .node_catalog
+            .list_candidates(&thunk, &function_hint)
+            .await?;
         let Some(node) = select_best_node(&function_object, &function_hint, &candidates) else {
             return Ok(SchedulerRunThunkResponse {
                 thunk_obj_id,
@@ -375,7 +374,9 @@ fn score_weighted_resource(
     }
 
     let available = available_resource(node, resource_type).unwrap_or_default();
-    let total = total_resource(node, resource_type).unwrap_or(available).max(1);
+    let total = total_resource(node, resource_type)
+        .unwrap_or(available)
+        .max(1);
     let required = required_value.unwrap_or_default();
 
     let normalized = if required > 0 {
@@ -459,7 +460,9 @@ fn build_resource_maps(node: &NodeItem) -> (HashMap<String, u64>, HashMap<String
     for (resource_name, resource) in &node.resources {
         available.insert(
             resource_name.clone(),
-            resource.total_capacity.saturating_sub(resource.used_capacity),
+            resource
+                .total_capacity
+                .saturating_sub(resource.used_capacity),
         );
         total.insert(resource_name.clone(), resource.total_capacity);
     }
@@ -515,9 +518,11 @@ fn normalize_node_labels(labels: &[String]) -> (HashMap<String, String>, HashSet
 fn resource_is_present(node: &ThunkNodeCandidate, resource_type: &str) -> bool {
     match resource_type {
         RESOURCE_TYPE_CPU | RESOURCE_TYPE_MEMORY => true,
-        _ => total_resource(node, resource_type).unwrap_or_default() > 0
-            || available_resource(node, resource_type).unwrap_or_default() > 0
-            || node_matches_selector(node, resource_type),
+        _ => {
+            total_resource(node, resource_type).unwrap_or_default() > 0
+                || available_resource(node, resource_type).unwrap_or_default() > 0
+                || node_matches_selector(node, resource_type)
+        }
     }
 }
 
@@ -753,7 +758,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status, SchedulerRunThunkStatus::Rejected);
-        assert_eq!(response.reason.as_deref(), Some("no_executor_node_available"));
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("no_executor_node_available")
+        );
     }
 
     #[test]
@@ -764,8 +772,7 @@ mod tests {
         };
         let mut node = sample_node("node-a", 600, 1024);
         node.label_set.insert("/data/model-a".to_string());
-        node.labels
-            .insert("zone".to_string(), "public".to_string());
+        node.labels.insert("zone".to_string(), "public".to_string());
 
         assert!(hint
             .affinity_selectors

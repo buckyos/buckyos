@@ -11,6 +11,10 @@ mod task_tracker;
 mod types;
 
 pub use analysis::{analyze_workflow, AnalysisReport, AnalysisSeverity};
+pub use buckyos_api::{
+    FunctionObject, FunctionParamType, FunctionResultType, FunctionType, ResourceRequirements,
+    ThunkExecutionResult, ThunkExecutionStatus, ThunkObject,
+};
 pub use compiler::{
     compile_workflow, CompileOutput, CompiledNode, CompiledWorkflow, WorkflowGraph,
 };
@@ -20,9 +24,5 @@ pub use error::{WorkflowError, WorkflowResult};
 pub use object_store::{InMemoryObjectStore, NamedStoreObjectStore, WorkflowObjectStore};
 pub use orchestrator::WorkflowOrchestrator;
 pub use runtime::*;
-pub use buckyos_api::{
-    FunctionObject, FunctionParamType, FunctionResultType, FunctionType, ResourceRequirements,
-    ThunkExecutionResult, ThunkExecutionStatus, ThunkObject,
-};
 pub use task_tracker::{NoopTaskTracker, TaskManagerTaskTracker, WorkflowTaskTracker};
 pub use types::*;

@@ -1008,7 +1008,6 @@ mod tests {
         } else {
             panic!("Failed to list tasks by root_id");
         }
-
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1046,7 +1045,6 @@ mod tests {
         } else {
             panic!("Failed to list tasks by root_id");
         }
-
     }
 
     #[tokio::test(flavor = "current_thread")]

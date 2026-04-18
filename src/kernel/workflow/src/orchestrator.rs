@@ -800,12 +800,16 @@ fn build_thunk(
     });
     let thunk_obj_id = deterministic_object_id("thunk", &thunk_without_id)?;
 
-    Ok((thunk_obj_id, ThunkObject {
-        fun_id: ObjId::new(format!("func:{}", fun_id).as_str())
-            .map_err(|err| WorkflowError::Serialization(format!("invalid fun_id `{}`: {}", fun_id, err)))?,
-        params,
-        metadata,
-    }))
+    Ok((
+        thunk_obj_id,
+        ThunkObject {
+            fun_id: ObjId::new(format!("func:{}", fun_id).as_str()).map_err(|err| {
+                WorkflowError::Serialization(format!("invalid fun_id `{}`: {}", fun_id, err))
+            })?,
+            params,
+            metadata,
+        },
+    ))
 }
 
 fn resolve_template_value(run: &WorkflowRun, value: &ValueTemplate) -> WorkflowResult<Value> {

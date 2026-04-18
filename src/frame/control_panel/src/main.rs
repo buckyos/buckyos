@@ -19,9 +19,8 @@ use ::kRPC::*;
 use anyhow::Result;
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
-    BuckyOSRuntimeType, SystemConfigClient, UserType,
-    CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
+    SystemConfigClient, UserType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
@@ -38,10 +37,7 @@ use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::process::Command;
 use std::sync::Arc;
-use std::{
-    net::IpAddr,
-    time::Instant,
-};
+use std::{net::IpAddr, time::Instant};
 use sysinfo::{Disks, Networks};
 use tokio::sync::{Mutex, RwLock};
 
@@ -246,7 +242,6 @@ impl ControlPanelServer {
     async fn init_file_manager(&self) -> Result<(), RPCErrors> {
         self.file_manager.init_share_db().await
     }
-
 
     fn sum_disks(disks: &Disks) -> (u64, u64, Vec<Value>) {
         let mut total_bytes: u64 = 0;
@@ -705,7 +700,6 @@ impl ControlPanelServer {
         ))
     }
 
-
     async fn handle_network_overview(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let snapshot = { self.metrics_snapshot.read().await.clone() };
 
@@ -760,7 +754,6 @@ impl ControlPanelServer {
 
         Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
     }
-
 
     async fn handle_unimplemented(
         &self,
@@ -921,10 +914,7 @@ impl ControlPanelServer {
         let response = match self.handle_rpc_call(rpc_request, client_ip).await {
             Ok(response) => response,
             Err(error) => {
-                let mut err_resp = RPCResponse::new(
-                    RPCResult::Failed(error.to_string()),
-                    req_seq,
-                );
+                let mut err_resp = RPCResponse::new(RPCResult::Failed(error.to_string()), req_seq);
                 err_resp.trace_id = req_trace_id;
                 err_resp
             }
@@ -987,18 +977,30 @@ impl RPCHandler for ControlPanelServer {
             "user.get" => self.handle_user_get(req, principal.as_ref()).await,
             "user.create" => self.handle_user_create(req, principal.as_ref()).await,
             "user.update" => self.handle_user_update(req, principal.as_ref()).await,
-            "user.update_contact" => self.handle_user_update_contact(req, principal.as_ref()).await,
+            "user.update_contact" => {
+                self.handle_user_update_contact(req, principal.as_ref())
+                    .await
+            }
             "user.delete" => self.handle_user_delete(req, principal.as_ref()).await,
 
-            "user.change_password" => self.handle_user_change_password(req, principal.as_ref()).await,
+            "user.change_password" => {
+                self.handle_user_change_password(req, principal.as_ref())
+                    .await
+            }
             "user.change_state" => self.handle_user_change_state(req, principal.as_ref()).await,
             "user.change_type" => self.handle_user_change_type(req, principal.as_ref()).await,
 
             "agent.list" => self.handle_agent_list(req, principal.as_ref()).await,
             "agent.get" => self.handle_agent_get(req, principal.as_ref()).await,
-            "agent.set_msg_tunnel" => self.handle_agent_set_msg_tunnel(req, principal.as_ref()).await,
-            "agent.remove_msg_tunnel" => self.handle_agent_remove_msg_tunnel(req, principal.as_ref()).await,
-             // System dashboard
+            "agent.set_msg_tunnel" => {
+                self.handle_agent_set_msg_tunnel(req, principal.as_ref())
+                    .await
+            }
+            "agent.remove_msg_tunnel" => {
+                self.handle_agent_remove_msg_tunnel(req, principal.as_ref())
+                    .await
+            }
+            // System dashboard
             "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
             "system.overview" => self.handle_system_overview(req).await,
             "system.status" => self.handle_system_status(req).await,
@@ -1011,7 +1013,7 @@ impl RPCHandler for ControlPanelServer {
             "system.logs.download" => self.handle_system_logs_download(req).await,
             "system.update.check" => self.handle_unimplemented(req, "Check updates").await,
             "system.update.apply" => self.handle_unimplemented(req, "Apply update").await,
-           
+
             // AICC
             "ai.overview" => self.handle_ai_overview(req).await,
             "ai.provider.list" => self.handle_ai_provider_list(req).await,
@@ -1047,7 +1049,7 @@ impl RPCHandler for ControlPanelServer {
             "chat.contact.list" => self.handle_chat_contact_list(req, principal.as_ref()).await,
             "chat.message.list" => self.handle_chat_message_list(req, principal.as_ref()).await,
             "chat.message.send" => self.handle_chat_message_send(req, principal.as_ref()).await,
-            
+
             //ZoneMgr
             "zone.overview" | "zone.config" => self.handle_zone_overview(req).await,
             "gateway.overview" | "gateway.config" => self.handle_gateway_overview(req).await,
@@ -1205,18 +1207,9 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         "/kapi/control-panel".to_string(),
         control_panel_server.clone(),
     );
-    let _ = runner.add_http_server(
-        "/sso_callback".to_string(),
-        control_panel_server.clone(),
-    );
-    let _ = runner.add_http_server(
-        "/sso_refresh".to_string(),
-        control_panel_server.clone(),
-    );
-    let _ = runner.add_http_server(
-        "/sso_logout".to_string(),
-        control_panel_server.clone(),
-    );
+    let _ = runner.add_http_server("/sso_callback".to_string(), control_panel_server.clone());
+    let _ = runner.add_http_server("/sso_refresh".to_string(), control_panel_server.clone());
+    let _ = runner.add_http_server("/sso_logout".to_string(), control_panel_server.clone());
     // File manager API exposed by control-panel.
     let _ = runner.add_http_server("/api".to_string(), control_panel_server.clone());
 

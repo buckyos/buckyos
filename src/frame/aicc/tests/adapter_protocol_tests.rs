@@ -1,4 +1,4 @@
-﻿mod common;
+mod common;
 
 use aicc::claude::{ClaudeInstanceConfig, ClaudeProvider};
 use aicc::gimini::{GoogleGiminiInstanceConfig, GoogleGiminiProvider};
@@ -10,19 +10,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
-    OpenAIProvider::new(OpenAIInstanceConfig {
-        instance_id: "openai-test".to_string(),
-        provider_type: "openai".to_string(),
-        base_url,
-        auth_mode: "bearer".to_string(),
-        timeout_ms,
-        models: vec!["gpt-4o-mini".to_string()],
-        default_model: Some("gpt-4o-mini".to_string()),
-        image_models: vec!["dall-e-3".to_string()],
-        default_image_model: Some("dall-e-3".to_string()),
-        features: vec!["plan".to_string()],
-        alias_map: HashMap::new(),
-    }, "token")
+    OpenAIProvider::new(
+        OpenAIInstanceConfig {
+            instance_id: "openai-test".to_string(),
+            provider_type: "openai".to_string(),
+            base_url,
+            auth_mode: "bearer".to_string(),
+            timeout_ms,
+            models: vec!["gpt-4o-mini".to_string()],
+            default_model: Some("gpt-4o-mini".to_string()),
+            image_models: vec!["dall-e-3".to_string()],
+            default_image_model: Some("dall-e-3".to_string()),
+            features: vec!["plan".to_string()],
+            alias_map: HashMap::new(),
+        },
+        "token",
+    )
     .expect("openai provider")
 }
 

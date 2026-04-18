@@ -3,11 +3,11 @@ use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Utc};
+use cyfs_gateway_lib::*;
 use http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use cyfs_gateway_lib::*;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tokio::task;
@@ -1033,11 +1033,10 @@ impl ControlPanelServer {
                                 }
                             }
                             if since_filter.is_some() || until_filter.is_some() {
-                                let ts_value =
-                                    match ControlPanelServer::parse_log_timestamp(&ts) {
-                                        Some(value) => value,
-                                        None => continue,
-                                    };
+                                let ts_value = match ControlPanelServer::parse_log_timestamp(&ts) {
+                                    Some(value) => value,
+                                    None => continue,
+                                };
                                 if let Some(since) = since_filter.as_ref() {
                                     if &ts_value < since {
                                         continue;

@@ -9,8 +9,8 @@ use cyfs_gateway_lib::{
 };
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
-use server_runner::*;
 use serde_json::json;
+use server_runner::*;
 use std::net::IpAddr;
 use std::result::Result;
 use std::sync::Arc;
@@ -41,8 +41,8 @@ impl RPCHandler for SchedulerServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let result = match req.method.as_str() {
             "run_thunk" => {
-                let run_req: SchedulerRunThunkRequest =
-                    serde_json::from_value(req.params).map_err(|err| {
+                let run_req: SchedulerRunThunkRequest = serde_json::from_value(req.params)
+                    .map_err(|err| {
                         RPCErrors::ReasonError(format!(
                             "invalid run_thunk request payload: {}",
                             err

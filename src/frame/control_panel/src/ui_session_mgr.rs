@@ -109,9 +109,7 @@ fn json_path_set(root: &mut Value, json_path: &str, new_value: Value) -> Result<
             // Navigate or create intermediate object
             match current {
                 Value::Object(map) => {
-                    current = map
-                        .entry(part.to_string())
-                        .or_insert_with(|| json!({}));
+                    current = map.entry(part.to_string()).or_insert_with(|| json!({}));
                 }
                 Value::Array(arr) => {
                     let idx: usize = part
@@ -123,7 +121,12 @@ fn json_path_set(root: &mut Value, json_path: &str, new_value: Value) -> Result<
                         return Err(format!("array index out of bounds: {}", idx));
                     }
                 }
-                _ => return Err(format!("cannot navigate through non-object/array at '{}'", part)),
+                _ => {
+                    return Err(format!(
+                        "cannot navigate through non-object/array at '{}'",
+                        part
+                    ))
+                }
             }
         }
     }
@@ -169,7 +172,12 @@ fn json_path_delete(root: &mut Value, json_path: &str) -> Result<Option<Value>, 
                         .get_mut(idx)
                         .ok_or_else(|| format!("array index out of bounds: {}", idx))?;
                 }
-                _ => return Err(format!("cannot navigate through non-object/array at '{}'", part)),
+                _ => {
+                    return Err(format!(
+                        "cannot navigate through non-object/array at '{}'",
+                        part
+                    ))
+                }
             }
         }
     }
@@ -218,14 +226,10 @@ impl ControlPanelServer {
             .map_err(|e| server_err!(ServerErrorCode::BadRequest, "read body: {:?}", e))?
             .to_bytes();
 
-        let body: Value = serde_json::from_slice(&body_bytes).map_err(|e| {
-            server_err!(ServerErrorCode::BadRequest, "invalid JSON body: {}", e)
-        })?;
+        let body: Value = serde_json::from_slice(&body_bytes)
+            .map_err(|e| server_err!(ServerErrorCode::BadRequest, "invalid JSON body: {}", e))?;
 
-        let action = body
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
         let userid = &principal.username;
 
@@ -243,9 +247,7 @@ impl ControlPanelServer {
                     .get("session_id")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "missing session_id".to_string())
-                    .map_err(|e| {
-                        server_err!(ServerErrorCode::BadRequest, "{}", e)
-                    })?;
+                    .map_err(|e| server_err!(ServerErrorCode::BadRequest, "{}", e))?;
                 self.desktop_session_delete(userid, session_id).await
             }
             "session.rename" => {
@@ -288,9 +290,10 @@ impl ControlPanelServer {
                     .ok_or_else(|| "missing state_key".to_string())
                     .map_err(|e| server_err!(ServerErrorCode::BadRequest, "{}", e))?;
                 let json_path = body.get("json_path").and_then(|v| v.as_str());
-                let value = body.get("value").cloned().ok_or_else(|| {
-                    server_err!(ServerErrorCode::BadRequest, "missing value")
-                })?;
+                let value = body
+                    .get("value")
+                    .cloned()
+                    .ok_or_else(|| server_err!(ServerErrorCode::BadRequest, "missing value"))?;
                 self.desktop_state_set(userid, session_id, state_key, json_path, value)
                     .await
             }
@@ -318,7 +321,9 @@ impl ControlPanelServer {
         };
 
         match result {
-            Ok(data) => self.desktop_json_response(StatusCode::OK, json!({"ok": true, "data": data})),
+            Ok(data) => {
+                self.desktop_json_response(StatusCode::OK, json!({"ok": true, "data": data}))
+            }
             Err(e) => self.desktop_json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({"ok": false, "error": e}),
@@ -330,8 +335,7 @@ impl ControlPanelServer {
 
     /// List all UI sessions for a user.
     async fn desktop_session_list(&self, userid: &str) -> Result<Value, String> {
-        let runtime =
-            get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
+        let runtime = get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
         let client = runtime
             .get_system_config_client()
             .await
@@ -375,8 +379,7 @@ impl ControlPanelServer {
 
     /// Create a new UI session.
     async fn desktop_session_create(&self, userid: &str, name: &str) -> Result<Value, String> {
-        let runtime =
-            get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
+        let runtime = get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
         let client = runtime
             .get_system_config_client()
             .await
@@ -392,8 +395,8 @@ impl ControlPanelServer {
         });
 
         let meta_key = desktop_session_meta_key(userid, &session_id);
-        let serialized = serde_json::to_string(&meta)
-            .map_err(|e| format!("serialize meta: {}", e))?;
+        let serialized =
+            serde_json::to_string(&meta).map_err(|e| format!("serialize meta: {}", e))?;
         client
             .set(&meta_key, &serialized)
             .await
@@ -418,8 +421,7 @@ impl ControlPanelServer {
         userid: &str,
         session_id: &str,
     ) -> Result<Value, String> {
-        let runtime =
-            get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
+        let runtime = get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
         let client = runtime
             .get_system_config_client()
             .await
@@ -461,8 +463,7 @@ impl ControlPanelServer {
         session_id: &str,
         new_name: &str,
     ) -> Result<Value, String> {
-        let runtime =
-            get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
+        let runtime = get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
         let client = runtime
             .get_system_config_client()
             .await
@@ -505,8 +506,7 @@ impl ControlPanelServer {
         state_key: &str,
         json_path: Option<&str>,
     ) -> Result<Value, String> {
-        let runtime =
-            get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
+        let runtime = get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
         let client = runtime
             .get_system_config_client()
             .await
@@ -544,8 +544,7 @@ impl ControlPanelServer {
         json_path: Option<&str>,
         value: Value,
     ) -> Result<Value, String> {
-        let runtime =
-            get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
+        let runtime = get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
         let client = runtime
             .get_system_config_client()
             .await
@@ -566,8 +565,8 @@ impl ControlPanelServer {
             value
         };
 
-        let serialized = serde_json::to_string(&final_value)
-            .map_err(|e| format!("serialize state: {}", e))?;
+        let serialized =
+            serde_json::to_string(&final_value).map_err(|e| format!("serialize state: {}", e))?;
         client
             .set(&key, &serialized)
             .await
@@ -603,8 +602,7 @@ impl ControlPanelServer {
         state_key: &str,
         json_path: Option<&str>,
     ) -> Result<Value, String> {
-        let runtime =
-            get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
+        let runtime = get_buckyos_api_runtime().map_err(|e| format!("get runtime: {}", e))?;
         let client = runtime
             .get_system_config_client()
             .await
@@ -621,8 +619,8 @@ impl ControlPanelServer {
             let mut root = existing;
             json_path_delete(&mut root, path)?;
 
-            let serialized = serde_json::to_string(&root)
-                .map_err(|e| format!("serialize state: {}", e))?;
+            let serialized =
+                serde_json::to_string(&root).map_err(|e| format!("serialize state: {}", e))?;
             client
                 .set(&key, &serialized)
                 .await

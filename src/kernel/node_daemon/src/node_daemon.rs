@@ -655,7 +655,10 @@ async fn publish_device_info_kevent(device_info: &DeviceInfo) {
     let eventid = format!("/devices/{}/info", device_info.name.as_str());
     let event_data = serde_json::to_value(device_info).unwrap();
 
-    if let Err(err) = service.publish_local_global(eventid.as_str(), event_data).await {
+    if let Err(err) = service
+        .publish_local_global(eventid.as_str(), event_data)
+        .await
+    {
         warn!(
             "publish device info kevent failed for {}: {}",
             device_info.name.as_str(),
