@@ -1,3 +1,4 @@
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
 use crate::{get_buckyos_api_runtime, AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -12,6 +13,164 @@ use std::net::IpAddr;
 pub const MSG_CENTER_SERVICE_UNIQUE_ID: &str = "msg-center";
 pub const MSG_CENTER_SERVICE_NAME: &str = "msg-center";
 pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
+
+/// Logical name of the msg-center rdb instance. The scheduler writes this into
+/// `services/msg-center/spec` and the msg-center service resolves it at start
+/// via `get_rdb_instance`.
+pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
+/// Version of the msg-center schema. Bump whenever the DDL below changes in a
+/// way that is not trivially re-idempotent.
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 1;
+
+/// Sqlite DDL for the msg-center database. Covers mailbox records, the
+/// per-owner message-id index, and contact-manager tables. All tables carry an
+/// `owner` column so a single db file can serve every zone user.
+pub const MSG_CENTER_RDB_SCHEMA_SQLITE: &str = r#"
+CREATE TABLE IF NOT EXISTS msg_records (
+    owner            TEXT NOT NULL,
+    record_id        TEXT NOT NULL,
+    box_kind         TEXT NOT NULL,
+    msg_id           TEXT NOT NULL,
+    msg_from         TEXT,
+    msg_to           TEXT,
+    msg_kind         TEXT,
+    state            TEXT NOT NULL,
+    created_at_ms    INTEGER NOT NULL,
+    updated_at_ms    INTEGER NOT NULL,
+    thread_key       TEXT,
+    session_id       TEXT,
+    sort_key         INTEGER NOT NULL,
+    tags_json        TEXT NOT NULL,
+    route_tunnel_did TEXT,
+    route_json       TEXT,
+    delivery_json    TEXT,
+    PRIMARY KEY (owner, record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_sort
+    ON msg_records(owner, box_kind, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_state_sort
+    ON msg_records(owner, box_kind, state, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_tunnel_state_sort
+    ON msg_records(owner, route_tunnel_did, state, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_kind_sort
+    ON msg_records(owner, box_kind, msg_kind, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_from_sort
+    ON msg_records(owner, box_kind, msg_from, sort_key DESC, record_id DESC);
+
+CREATE TABLE IF NOT EXISTS msg_refs (
+    owner         TEXT NOT NULL,
+    msg_id        TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (owner, msg_id)
+);
+
+CREATE TABLE IF NOT EXISTS contact_metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contacts (
+    owner_key TEXT NOT NULL,
+    did       TEXT NOT NULL,
+    payload   TEXT NOT NULL,
+    PRIMARY KEY (owner_key, did)
+);
+
+CREATE TABLE IF NOT EXISTS group_subscribers (
+    owner_key        TEXT NOT NULL,
+    group_did        TEXT NOT NULL,
+    subscribers_json TEXT NOT NULL,
+    PRIMARY KEY (owner_key, group_did)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_key);
+CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owner_key);
+"#;
+
+/// Postgres DDL mirroring the sqlite schema above.
+pub const MSG_CENTER_RDB_SCHEMA_POSTGRES: &str = r#"
+CREATE TABLE IF NOT EXISTS msg_records (
+    owner            TEXT NOT NULL,
+    record_id        TEXT NOT NULL,
+    box_kind         TEXT NOT NULL,
+    msg_id           TEXT NOT NULL,
+    msg_from         TEXT,
+    msg_to           TEXT,
+    msg_kind         TEXT,
+    state            TEXT NOT NULL,
+    created_at_ms    BIGINT NOT NULL,
+    updated_at_ms    BIGINT NOT NULL,
+    thread_key       TEXT,
+    session_id       TEXT,
+    sort_key         BIGINT NOT NULL,
+    tags_json        TEXT NOT NULL,
+    route_tunnel_did TEXT,
+    route_json       TEXT,
+    delivery_json    TEXT,
+    PRIMARY KEY (owner, record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_sort
+    ON msg_records(owner, box_kind, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_state_sort
+    ON msg_records(owner, box_kind, state, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_tunnel_state_sort
+    ON msg_records(owner, route_tunnel_did, state, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_kind_sort
+    ON msg_records(owner, box_kind, msg_kind, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_from_sort
+    ON msg_records(owner, box_kind, msg_from, sort_key DESC, record_id DESC);
+
+CREATE TABLE IF NOT EXISTS msg_refs (
+    owner         TEXT NOT NULL,
+    msg_id        TEXT NOT NULL,
+    created_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (owner, msg_id)
+);
+
+CREATE TABLE IF NOT EXISTS contact_metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contacts (
+    owner_key TEXT NOT NULL,
+    did       TEXT NOT NULL,
+    payload   TEXT NOT NULL,
+    PRIMARY KEY (owner_key, did)
+);
+
+CREATE TABLE IF NOT EXISTS group_subscribers (
+    owner_key        TEXT NOT NULL,
+    group_did        TEXT NOT NULL,
+    subscribers_json TEXT NOT NULL,
+    PRIMARY KEY (owner_key, group_did)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_key);
+CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owner_key);
+"#;
+
+/// Default rdb-instance config for the msg-center service. The scheduler drops
+/// this into `install_config.rdb_instances` when bootstrapping the service.
+pub fn msg_center_default_rdb_instance_config() -> RdbInstanceConfig {
+    let mut schema = HashMap::new();
+    schema.insert(
+        RdbBackend::Sqlite,
+        MSG_CENTER_RDB_SCHEMA_SQLITE.to_string(),
+    );
+    schema.insert(
+        RdbBackend::Postgres,
+        MSG_CENTER_RDB_SCHEMA_POSTGRES.to_string(),
+    );
+    RdbInstanceConfig {
+        backend: RdbBackend::Sqlite,
+        version: MSG_CENTER_RDB_SCHEMA_VERSION,
+        schema,
+        // Empty -> rdb_mgr generates `sqlite://$appdata/msg-center-main.db` at
+        // resolve time.
+        connection: String::new(),
+    }
+}
 
 const METHOD_MSG_DISPATCH: &str = "msg.dispatch";
 const METHOD_MSG_POST_SEND: &str = "msg.post_send";

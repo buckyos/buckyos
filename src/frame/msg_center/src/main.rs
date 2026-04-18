@@ -580,6 +580,7 @@ async fn sync_zone_user_contacts_once(center: &MessageCenter, raw_settings: &Val
     for owner in owner_scopes {
         let updated = center
             .upsert_zone_user_contacts(contacts.clone(), owner.clone())
+            .await
             .map_err(|error| {
                 anyhow::anyhow!(
                     "zone user sync failed for owner_scope={}: {}",
@@ -860,7 +861,8 @@ pub async fn start_msg_center_service() -> Result<()> {
     set_buckyos_api_runtime(runtime)
         .map_err(|err| anyhow::anyhow!("register msg-center runtime failed: {}", err))?;
 
-    let center = MessageCenter::try_new()
+    let center = MessageCenter::open_from_service_spec()
+        .await
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;
 
     let tunnel_mgr = Arc::new(MsgTunnelInstanceMgr::new());

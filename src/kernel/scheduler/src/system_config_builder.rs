@@ -337,13 +337,17 @@ impl SystemConfigBuilder {
 
     pub async fn add_msg_center(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
         let service_doc = generate_msg_center_service_doc();
-        let service_spec = build_kernel_service_spec(
+        let mut service_spec = build_kernel_service_spec(
             MSG_CENTER_SERVICE_UNIQUE_ID,
             MSG_CENTER_SERVICE_PORT,
             1,
             service_doc,
         )
         .await?;
+        service_spec.install_config.rdb_instances.insert(
+            buckyos_api::MSG_CENTER_RDB_INSTANCE_ID.to_string(),
+            buckyos_api::msg_center_default_rdb_instance_config(),
+        );
         self.insert_json("services/msg-center/spec", &service_spec)?;
         let settings = build_msg_center_settings(config)?;
         self.insert_json_if_absent("services/msg-center/settings", &settings)?;

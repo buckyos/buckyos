@@ -1,4 +1,4 @@
-use crate::contact_mgr::ContactMgr;
+use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
     BoxKind, DeliveryReportResult, IngressContext, MsgCenterHandler, MsgState, ReadReceiptState,
@@ -7,8 +7,8 @@ use buckyos_api::{
 use kRPC::RPCContext;
 use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tempfile::{tempdir, TempDir};
 
 static TEST_TIME_SEQ: AtomicU64 = AtomicU64::new(10_000);
 
@@ -16,30 +16,13 @@ fn next_created_at_ms() -> u64 {
     TEST_TIME_SEQ.fetch_add(1, Ordering::SeqCst)
 }
 
-fn test_db_path(tag: &str) -> PathBuf {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "msg_center_{}_{}_{}.sqlite3",
-        tag,
-        std::process::id(),
-        now
-    ))
-}
-
-fn test_msg_box_root(tag: &str) -> PathBuf {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!("msg_box_{}_{}_{}", tag, std::process::id(), now))
-}
-
-fn new_center(tag: &str) -> MessageCenter {
-    let mgr = ContactMgr::new_with_path(test_db_path(tag)).unwrap();
-    MessageCenter::new_with_msg_box_root(mgr, test_msg_box_root(tag)).unwrap()
+async fn new_center(_tag: &str) -> (MessageCenter, TempDir) {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("msg-center.db");
+    let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let msg_box_db = MsgBoxDbMgr::open_default_sqlite(&conn).await.unwrap();
+    let center = MessageCenter::open_with_db(msg_box_db).await.unwrap();
+    (center, tmp)
 }
 
 fn make_msg(from: DID, to: Vec<DID>, kind: MsgObjKind) -> MsgObject {
@@ -63,7 +46,7 @@ fn ctx() -> RPCContext {
 
 #[tokio::test]
 async fn dispatch_single_chat_goes_to_inbox_and_locking_moves_state() {
-    let center = new_center("dispatch_inbox");
+    let (center, _tmp) = new_center("dispatch_inbox").await;
     let sender = DID::new("bns", "sender-a");
     let recipient = DID::new("bns", "recipient-a");
 
@@ -118,7 +101,7 @@ async fn dispatch_single_chat_goes_to_inbox_and_locking_moves_state() {
 
 #[tokio::test]
 async fn dispatch_stranger_goes_to_request_box() {
-    let center = new_center("dispatch_request");
+    let (center, _tmp) = new_center("dispatch_request").await;
     let sender = DID::new("bns", "sender-b");
     let recipient = DID::new("bns", "recipient-b");
     let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
@@ -146,7 +129,7 @@ async fn dispatch_stranger_goes_to_request_box() {
 
 #[tokio::test]
 async fn dispatch_group_message_creates_group_and_agent_views() {
-    let center = new_center("dispatch_group");
+    let (center, _tmp) = new_center("dispatch_group").await;
     let group_id = DID::new("bns", "group-a");
     let author = DID::new("bns", "author-a");
     let agent_1 = DID::new("bns", "agent-a1");
@@ -198,7 +181,7 @@ async fn dispatch_group_message_creates_group_and_agent_views() {
 
 #[tokio::test]
 async fn post_send_creates_owner_and_tunnel_outbox_records() {
-    let center = new_center("post_send");
+    let (center, _tmp) = new_center("post_send").await;
     let author = DID::new("bns", "author-b");
     let target = DID::new("bns", "target-b");
     let msg = make_msg(author.clone(), vec![target], MsgObjKind::Chat);
@@ -250,7 +233,7 @@ async fn post_send_creates_owner_and_tunnel_outbox_records() {
 
 #[tokio::test]
 async fn report_delivery_handles_success_and_failure_paths() {
-    let center = new_center("report_delivery");
+    let (center, _tmp) = new_center("report_delivery").await;
     let sender = DID::new("bns", "sender-c");
     let target = DID::new("bns", "target-c");
 
@@ -305,7 +288,7 @@ async fn report_delivery_handles_success_and_failure_paths() {
 
 #[tokio::test]
 async fn update_record_state_checks_transition_rules() {
-    let center = new_center("update_state");
+    let (center, _tmp) = new_center("update_state").await;
     let sender = DID::new("bns", "sender-d");
     let recipient = DID::new("bns", "recipient-d");
 
@@ -354,7 +337,7 @@ async fn update_record_state_checks_transition_rules() {
 
 #[tokio::test]
 async fn list_box_by_time_supports_pagination() {
-    let center = new_center("list_pagination");
+    let (center, _tmp) = new_center("list_pagination").await;
     let sender = DID::new("bns", "sender-e");
     let recipient = DID::new("bns", "recipient-e");
 
@@ -433,7 +416,7 @@ async fn list_box_by_time_supports_pagination() {
 
 #[tokio::test]
 async fn read_receipt_can_be_set_and_queried() {
-    let center = new_center("read_receipt");
+    let (center, _tmp) = new_center("read_receipt").await;
     let group = DID::new("bns", "group-b");
     let author = DID::new("bns", "author-b");
     let reader = DID::new("bns", "reader-b");
@@ -470,7 +453,7 @@ async fn read_receipt_can_be_set_and_queried() {
 
 #[tokio::test]
 async fn idempotency_key_prevents_duplicate_records() {
-    let center = new_center("idempotency");
+    let (center, _tmp) = new_center("idempotency").await;
     let sender = DID::new("bns", "sender-f");
     let recipient = DID::new("bns", "recipient-f");
 

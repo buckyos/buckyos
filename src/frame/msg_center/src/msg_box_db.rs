@@ -1,20 +1,44 @@
-use buckyos_api::{BoxKind, DeliveryInfo, MsgRecord, MsgState, RouteInfo, MSG_CENTER_SERVICE_NAME};
-use buckyos_kit::get_buckyos_service_data_dir;
+/*!
+ * Unified msg-box + msg-ref storage for the msg-center.
+ *
+ * Uses an `sqlx::AnyPool` so the backend (sqlite / postgres) is driven by the
+ * zone's rdb instance config; the pool itself is `Send + Sync + Clone` and
+ * manages its own locking, so an `Arc<MsgBoxDbMgr>` is safe to share without
+ * an outer Rust-level lock. Every row carries an `owner` column so a single
+ * database holds mailboxes for every zone user.
+ */
+
+use buckyos_api::{
+    get_rdb_instance, msg_center_default_rdb_instance_config, BoxKind, DeliveryInfo, MsgRecord,
+    MsgState, RdbBackend, RouteInfo, MSG_CENTER_RDB_INSTANCE_ID, MSG_CENTER_RDB_SCHEMA_POSTGRES,
+    MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_SERVICE_NAME,
+};
 use kRPC::RPCErrors;
+use log::info;
 use name_lib::DID;
 use ndn_lib::{MsgObject, ObjId};
-use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
+use sqlx::{AnyPool, Executor, Row};
+use std::str::FromStr;
+use std::sync::{Arc, Once};
 
-const MSG_BOX_DB_ROOT_ENV_KEY: &str = "BUCKYOS_MSG_CENTER_MSG_BOX_DIR";
+static INSTALL_DRIVERS: Once = Once::new();
+
+fn ensure_any_drivers_installed() {
+    INSTALL_DRIVERS.call_once(install_default_drivers);
+}
 
 #[derive(Clone, Debug)]
 pub struct MsgBoxDbMgr {
-    root_dir: Arc<PathBuf>,
+    inner: Arc<MsgBoxDbInner>,
+}
+
+#[derive(Debug)]
+struct MsgBoxDbInner {
+    pool: AnyPool,
+    backend: RdbBackend,
 }
 
 #[derive(Debug)]
@@ -38,53 +62,223 @@ struct MsgRecordRow {
 }
 
 impl MsgBoxDbMgr {
-    pub fn new() -> std::result::Result<Self, RPCErrors> {
-        let root_dir = std::env::var(MSG_BOX_DB_ROOT_ENV_KEY)
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| default_msg_box_root_dir());
-        Self::new_with_root(root_dir)
-    }
-
-    pub fn new_with_root<P: AsRef<Path>>(root_dir: P) -> std::result::Result<Self, RPCErrors> {
-        let root_dir = root_dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(&root_dir).map_err(|error| {
+    /// Open a pool against `connection`. `schema` is the DDL to apply (usually
+    /// what the service spec carried for the chosen backend); an empty / None
+    /// value means "use the compile-time default for `backend`".
+    pub async fn open(
+        connection: &str,
+        backend: RdbBackend,
+        schema: Option<&str>,
+    ) -> std::result::Result<Self, RPCErrors> {
+        ensure_any_drivers_installed();
+        let mut opts = AnyPoolOptions::new().max_connections(8);
+        if backend == RdbBackend::Sqlite {
+            opts = opts.after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    conn.execute("PRAGMA foreign_keys = ON;").await?;
+                    conn.execute("PRAGMA journal_mode = WAL;").await?;
+                    Ok(())
+                })
+            });
+        }
+        let pool = opts.connect(connection).await.map_err(|error| {
             RPCErrors::ReasonError(format!(
-                "failed to create msg box root dir {}: {}",
-                root_dir.display(),
-                error
+                "open msg-center db at {} failed: {}",
+                connection, error
             ))
         })?;
-
-        Ok(Self {
-            root_dir: Arc::new(root_dir),
-        })
+        let inner = Arc::new(MsgBoxDbInner { pool, backend });
+        let mgr = Self { inner };
+        mgr.apply_schema(schema).await?;
+        Ok(mgr)
     }
 
-    pub fn upsert_record(&self, record: &MsgRecord) -> std::result::Result<(), RPCErrors> {
-        self.upsert_record_with_msg(record, None)
+    /// Resolve the msg-center rdb instance from the service spec and open a
+    /// pool against it. This is the production entry point.
+    pub async fn open_from_service_spec() -> std::result::Result<Self, RPCErrors> {
+        let instance =
+            get_rdb_instance(MSG_CENTER_SERVICE_NAME, None, MSG_CENTER_RDB_INSTANCE_ID)
+                .await
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "resolve msg-center rdb instance failed: {}",
+                        error
+                    ))
+                })?;
+        info!("msg_box_db.open {}", instance.connection);
+        Self::open(
+            &instance.connection,
+            instance.backend,
+            instance.schema.as_deref(),
+        )
+        .await
     }
 
-    pub fn upsert_record_with_msg(
+    /// Test / fallback entry: build a default instance config (sqlite) against
+    /// the given connection string. The schema DDL comes from the compiled-in
+    /// default for the chosen backend.
+    pub async fn open_default_sqlite(connection: &str) -> std::result::Result<Self, RPCErrors> {
+        let cfg = msg_center_default_rdb_instance_config();
+        let schema = cfg.schema.get(&RdbBackend::Sqlite).cloned();
+        Self::open(connection, RdbBackend::Sqlite, schema.as_deref()).await
+    }
+
+    pub(crate) fn pool(&self) -> &AnyPool {
+        &self.inner.pool
+    }
+
+    pub(crate) fn backend(&self) -> RdbBackend {
+        self.inner.backend
+    }
+
+    async fn apply_schema(&self, override_ddl: Option<&str>) -> std::result::Result<(), RPCErrors> {
+        let ddl: &str =
+            override_ddl
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(match self.backend() {
+                    RdbBackend::Sqlite => MSG_CENTER_RDB_SCHEMA_SQLITE,
+                    RdbBackend::Postgres => MSG_CENTER_RDB_SCHEMA_POSTGRES,
+                });
+        for statement in split_sql_statements(ddl) {
+            self.pool().execute(statement.as_str()).await.map_err(|e| {
+                RPCErrors::ReasonError(format!("apply msg-center schema failed: {}", e))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Translate `?` placeholders into `$N` form for postgres.
+    fn render_sql(&self, sql: &str) -> String {
+        match self.backend() {
+            RdbBackend::Postgres => rewrite_placeholders_to_dollar(sql),
+            RdbBackend::Sqlite => sql.to_string(),
+        }
+    }
+
+    pub async fn upsert_record(&self, record: &MsgRecord) -> std::result::Result<(), RPCErrors> {
+        self.upsert_record_with_msg(record, None).await
+    }
+
+    pub async fn upsert_record_with_msg(
         &self,
         record: &MsgRecord,
         msg: Option<&MsgObject>,
     ) -> std::result::Result<(), RPCErrors> {
         let owner = owner_from_record_id(&record.record_id)?;
-        let conn = self.connect_owner(&owner)?;
-        upsert_record_with_conn(&conn, record, msg)?;
-        self.touch_message(&owner, &record.msg_id, record.created_at_ms)?;
+        self.upsert_record_with_owner(&owner, record, msg).await?;
+        self.touch_message(&owner, &record.msg_id, record.created_at_ms)
+            .await?;
         Ok(())
     }
 
-    pub fn get_record(
+    async fn upsert_record_with_owner(
+        &self,
+        owner: &DID,
+        record: &MsgRecord,
+        msg: Option<&MsgObject>,
+    ) -> std::result::Result<(), RPCErrors> {
+        let tags_json = serde_json::to_string(&record.tags).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode tags of msg record {}: {}",
+                record.record_id, error
+            ))
+        })?;
+
+        let route_tunnel_did = record
+            .route
+            .as_ref()
+            .and_then(|route| route.tunnel_did.as_ref().map(|did| did.to_string()));
+        let route_json = encode_optional_json(record.route.as_ref(), &record.record_id, "route")?;
+        let delivery_json =
+            encode_optional_json(record.delivery.as_ref(), &record.record_id, "delivery")?;
+        let msg_from = Some(
+            msg.map(|obj| obj.from.clone())
+                .unwrap_or_else(|| record.from.clone())
+                .to_string(),
+        );
+        let msg_to = Some(
+            msg.and_then(|obj| obj.to.first().cloned())
+                .unwrap_or_else(|| record.to.clone())
+                .to_string(),
+        );
+        let msg_kind = msg.map(|obj| obj.kind).unwrap_or(record.msg_kind);
+
+        let sql = self.render_sql(
+            r#"
+INSERT INTO msg_records (
+    owner,
+    record_id,
+    box_kind,
+    msg_id,
+    msg_from,
+    msg_to,
+    msg_kind,
+    state,
+    created_at_ms,
+    updated_at_ms,
+    thread_key,
+    session_id,
+    sort_key,
+    tags_json,
+    route_tunnel_did,
+    route_json,
+    delivery_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(owner, record_id) DO UPDATE SET
+    box_kind = excluded.box_kind,
+    msg_id = excluded.msg_id,
+    msg_from = COALESCE(excluded.msg_from, msg_records.msg_from),
+    msg_to = COALESCE(excluded.msg_to, msg_records.msg_to),
+    msg_kind = COALESCE(excluded.msg_kind, msg_records.msg_kind),
+    state = excluded.state,
+    created_at_ms = excluded.created_at_ms,
+    updated_at_ms = excluded.updated_at_ms,
+    thread_key = excluded.thread_key,
+    session_id = COALESCE(excluded.session_id, msg_records.session_id),
+    sort_key = excluded.sort_key,
+    tags_json = excluded.tags_json,
+    route_tunnel_did = excluded.route_tunnel_did,
+    route_json = excluded.route_json,
+    delivery_json = excluded.delivery_json
+"#,
+        );
+
+        sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(record.record_id.clone())
+            .bind(box_kind_name(&record.box_kind).to_string())
+            .bind(record.msg_id.to_string())
+            .bind(msg_from)
+            .bind(msg_to)
+            .bind(Some(msg_obj_kind_name(&msg_kind).to_string()))
+            .bind(msg_state_name(&record.state).to_string())
+            .bind(to_sql_i64(record.created_at_ms))
+            .bind(to_sql_i64(record.updated_at_ms))
+            .bind(record.ui_session_id.clone())
+            .bind(record.ui_session_id.clone())
+            .bind(to_sql_i64(record.sort_key))
+            .bind(tags_json)
+            .bind(route_tunnel_did)
+            .bind(route_json)
+            .bind(delivery_json)
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to upsert msg record {}: {}",
+                    record.record_id, error
+                ))
+            })?;
+        Ok(())
+    }
+
+    pub async fn get_record(
         &self,
         owner: &DID,
         record_id: &str,
     ) -> std::result::Result<Option<MsgRecord>, RPCErrors> {
-        let conn = self.connect_owner(owner)?;
-        let row = conn
-            .query_row(
-                r#"
+        let sql = self.render_sql(
+            r#"
 SELECT
     record_id,
     box_kind,
@@ -103,31 +297,15 @@ SELECT
     route_json,
     delivery_json
 FROM msg_records
-WHERE record_id = ?1
+WHERE owner = ? AND record_id = ?
 "#,
-                params![record_id],
-                |row| {
-                    Ok(MsgRecordRow {
-                        record_id: row.get(0)?,
-                        box_kind: row.get(1)?,
-                        msg_id: row.get(2)?,
-                        msg_kind: row.get(3)?,
-                        msg_from: row.get(4)?,
-                        msg_to: row.get(5)?,
-                        state: row.get(6)?,
-                        created_at_ms: row.get(7)?,
-                        updated_at_ms: row.get(8)?,
-                        thread_key: row.get(9)?,
-                        session_id: row.get(10)?,
-                        sort_key: row.get(11)?,
-                        tags_json: row.get(12)?,
-                        route_tunnel_did: row.get(13)?,
-                        route_json: row.get(14)?,
-                        delivery_json: row.get(15)?,
-                    })
-                },
-            )
-            .optional()
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(record_id.to_string())
+            .fetch_optional(self.pool())
+            .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!(
                     "failed to query msg record {}: {}",
@@ -136,19 +314,21 @@ WHERE record_id = ?1
             })?;
 
         match row {
-            Some(row) => Ok(Some(row_to_record(owner, row)?)),
+            Some(row) => {
+                let decoded = decode_record_row(&row, record_id)?;
+                Ok(Some(row_to_record(owner, decoded)?))
+            }
             None => Ok(None),
         }
     }
 
-    pub fn list_records(
+    pub async fn list_records(
         &self,
         owner: &DID,
         box_kind: &BoxKind,
         state_filter: Option<&[MsgState]>,
         descending: bool,
     ) -> std::result::Result<Vec<MsgRecord>, RPCErrors> {
-        let conn = self.connect_owner(owner)?;
         let order_clause = if descending {
             "ORDER BY sort_key DESC, record_id DESC"
         } else {
@@ -174,87 +354,71 @@ SELECT
     route_json,
     delivery_json
 FROM msg_records
-WHERE box_kind = ?1
+WHERE owner = ? AND box_kind = ?
 {}
 "#,
             order_clause
         );
+        let sql = self.render_sql(&sql);
 
-        let mut stmt = conn.prepare(&sql).map_err(|error| {
-            RPCErrors::ReasonError(format!("failed to prepare list records query: {}", error))
-        })?;
-        let rows = stmt
-            .query_map(params![box_kind_name(box_kind)], |row| {
-                Ok(MsgRecordRow {
-                    record_id: row.get(0)?,
-                    box_kind: row.get(1)?,
-                    msg_id: row.get(2)?,
-                    msg_kind: row.get(3)?,
-                    msg_from: row.get(4)?,
-                    msg_to: row.get(5)?,
-                    state: row.get(6)?,
-                    created_at_ms: row.get(7)?,
-                    updated_at_ms: row.get(8)?,
-                    thread_key: row.get(9)?,
-                    session_id: row.get(10)?,
-                    sort_key: row.get(11)?,
-                    tags_json: row.get(12)?,
-                    route_tunnel_did: row.get(13)?,
-                    route_json: row.get(14)?,
-                    delivery_json: row.get(15)?,
-                })
-            })
+        let rows = sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(box_kind_name(box_kind).to_string())
+            .fetch_all(self.pool())
+            .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!("failed to list msg records: {}", error))
             })?;
 
-        let mut records = Vec::new();
-        for row in rows {
-            let row = row.map_err(|error| {
-                RPCErrors::ReasonError(format!("failed to decode msg record row: {}", error))
-            })?;
-
-            if !state_matches_filter(state_filter, &row.state) {
+        let mut records = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let decoded = decode_record_row(row, "")?;
+            if !state_matches_filter(state_filter, &decoded.state) {
                 continue;
             }
-
-            records.push(row_to_record(owner, row)?);
+            records.push(row_to_record(owner, decoded)?);
         }
-
         Ok(records)
     }
 
-    pub fn touch_message(
+    pub async fn touch_message(
         &self,
         owner: &DID,
         msg_id: &ObjId,
         created_at_ms: u64,
     ) -> std::result::Result<(), RPCErrors> {
-        let conn = self.connect_owner(owner)?;
-        conn.execute(
-            "INSERT OR IGNORE INTO msg_refs(msg_id, created_at_ms) VALUES(?1, ?2)",
-            params![msg_id.to_string(), to_sql_i64(created_at_ms)],
-        )
-        .map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "failed to persist message ref {}: {}",
-                msg_id.to_string(),
-                error
-            ))
-        })?;
-
+        let sql = self.render_sql(
+            "INSERT INTO msg_refs(owner, msg_id, created_at_ms) VALUES(?, ?, ?)
+             ON CONFLICT(owner, msg_id) DO NOTHING",
+        );
+        sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(msg_id.to_string())
+            .bind(to_sql_i64(created_at_ms))
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to persist message ref {}: {}",
+                    msg_id.to_string(),
+                    error
+                ))
+            })?;
         Ok(())
     }
 
-    pub fn has_message(&self, owner: &DID, msg_id: &ObjId) -> std::result::Result<bool, RPCErrors> {
-        let conn = self.connect_owner(owner)?;
-        let exists: Option<u8> = conn
-            .query_row(
-                "SELECT 1 FROM msg_refs WHERE msg_id = ?1 LIMIT 1",
-                params![msg_id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()
+    pub async fn has_message(
+        &self,
+        owner: &DID,
+        msg_id: &ObjId,
+    ) -> std::result::Result<bool, RPCErrors> {
+        let sql =
+            self.render_sql("SELECT 1 FROM msg_refs WHERE owner = ? AND msg_id = ? LIMIT 1");
+        let row = sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(msg_id.to_string())
+            .fetch_optional(self.pool())
+            .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!(
                     "failed to query message ref {}: {}",
@@ -262,225 +426,43 @@ WHERE box_kind = ?1
                     error
                 ))
             })?;
-        Ok(exists.is_some())
-    }
-
-    fn connect_owner(&self, owner: &DID) -> std::result::Result<Connection, RPCErrors> {
-        let db_path = self.owner_db_path(owner);
-        let conn = Connection::open(&db_path).map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "failed to open msg box db {}: {}",
-                db_path.display(),
-                error
-            ))
-        })?;
-
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!(
-                    "failed to configure msg box db {}: {}",
-                    db_path.display(),
-                    error
-                ))
-            })?;
-
-        self.init_owner_db(&conn, &db_path)?;
-        Ok(conn)
-    }
-
-    fn init_owner_db(
-        &self,
-        conn: &Connection,
-        db_path: &Path,
-    ) -> std::result::Result<(), RPCErrors> {
-        conn.execute_batch(
-            r#"
-CREATE TABLE IF NOT EXISTS msg_records (
-    record_id TEXT PRIMARY KEY,
-    box_kind TEXT NOT NULL,
-    msg_id TEXT NOT NULL,
-    msg_from TEXT,
-    msg_to TEXT,
-    msg_kind TEXT,
-    state TEXT NOT NULL,
-    created_at_ms INTEGER NOT NULL,
-    updated_at_ms INTEGER NOT NULL,
-    thread_key TEXT,
-    session_id TEXT,
-    sort_key INTEGER NOT NULL,
-    tags_json TEXT NOT NULL,
-    route_tunnel_did TEXT,
-    route_json TEXT,
-    delivery_json TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_msg_records_box_sort
-    ON msg_records(box_kind, sort_key DESC, record_id DESC);
-CREATE INDEX IF NOT EXISTS idx_msg_records_box_state_sort
-    ON msg_records(box_kind, state, sort_key DESC, record_id DESC);
-CREATE INDEX IF NOT EXISTS idx_msg_records_tunnel_state_sort
-    ON msg_records(route_tunnel_did, state, sort_key DESC, record_id DESC);
-CREATE INDEX IF NOT EXISTS idx_msg_records_box_kind_sort
-    ON msg_records(box_kind, msg_kind, sort_key DESC, record_id DESC);
-CREATE INDEX IF NOT EXISTS idx_msg_records_box_from_sort
-    ON msg_records(box_kind, msg_from, sort_key DESC, record_id DESC);
-
-CREATE TABLE IF NOT EXISTS msg_refs (
-    msg_id TEXT PRIMARY KEY,
-    created_at_ms INTEGER NOT NULL
-);
-"#,
-        )
-        .map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "failed to initialize msg box db {}: {}",
-                db_path.display(),
-                error
-            ))
-        })?;
-
-        self.ensure_msg_records_session_id_column(conn, db_path)?;
-
-        Ok(())
-    }
-
-    fn ensure_msg_records_session_id_column(
-        &self,
-        conn: &Connection,
-        db_path: &Path,
-    ) -> std::result::Result<(), RPCErrors> {
-        let exists: Option<u8> = conn
-            .query_row(
-                "SELECT 1 FROM pragma_table_info('msg_records') WHERE name = ?1 LIMIT 1",
-                params!["session_id"],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!(
-                    "failed to inspect msg_records schema {}: {}",
-                    db_path.display(),
-                    error
-                ))
-            })?;
-        if exists.is_some() {
-            return Ok(());
-        }
-
-        conn.execute("ALTER TABLE msg_records ADD COLUMN session_id TEXT", [])
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!(
-                    "failed to add session_id column for msg_records {}: {}",
-                    db_path.display(),
-                    error
-                ))
-            })?;
-        Ok(())
-    }
-
-    fn owner_db_path(&self, owner: &DID) -> PathBuf {
-        self.root_dir.join(format!(
-            "{}.sqlite3",
-            sanitize_for_filename(&owner.to_raw_host_name())
-        ))
+        Ok(row.is_some())
     }
 }
 
-fn upsert_record_with_conn(
-    conn: &Connection,
-    record: &MsgRecord,
-    msg: Option<&MsgObject>,
-) -> std::result::Result<(), RPCErrors> {
-    let tags_json = serde_json::to_string(&record.tags).map_err(|error| {
+fn decode_record_row(row: &AnyRow, fallback_id: &str) -> std::result::Result<MsgRecordRow, RPCErrors> {
+    let decode = |field: &str, err: sqlx::Error| {
         RPCErrors::ReasonError(format!(
-            "failed to encode tags of msg record {}: {}",
-            record.record_id, error
+            "failed to decode msg_records.{} (record {}): {}",
+            field, fallback_id, err
         ))
-    })?;
-
-    let route_tunnel_did = record
-        .route
-        .as_ref()
-        .and_then(|route| route.tunnel_did.as_ref().map(|did| did.to_string()));
-    let route_json = encode_optional_json(record.route.as_ref(), &record.record_id, "route")?;
-    let delivery_json =
-        encode_optional_json(record.delivery.as_ref(), &record.record_id, "delivery")?;
-    let msg_from = Some(
-        msg.map(|obj| obj.from.clone())
-            .unwrap_or_else(|| record.from.clone())
-            .to_string(),
-    );
-    let msg_to = Some(
-        msg.and_then(|obj| obj.to.first().cloned())
-            .unwrap_or_else(|| record.to.clone())
-            .to_string(),
-    );
-    let msg_kind = msg.map(|obj| obj.kind).unwrap_or(record.msg_kind);
-
-    conn.execute(
-        r#"
-INSERT INTO msg_records (
-    record_id,
-    box_kind,
-    msg_id,
-    msg_from,
-    msg_to,
-    msg_kind,
-    state,
-    created_at_ms,
-    updated_at_ms,
-    thread_key,
-    session_id,
-    sort_key,
-    tags_json,
-    route_tunnel_did,
-    route_json,
-    delivery_json
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-ON CONFLICT(record_id) DO UPDATE SET
-    box_kind = excluded.box_kind,
-    msg_id = excluded.msg_id,
-    msg_from = COALESCE(excluded.msg_from, msg_records.msg_from),
-    msg_to = COALESCE(excluded.msg_to, msg_records.msg_to),
-    msg_kind = COALESCE(excluded.msg_kind, msg_records.msg_kind),
-    state = excluded.state,
-    created_at_ms = excluded.created_at_ms,
-    updated_at_ms = excluded.updated_at_ms,
-    thread_key = excluded.thread_key,
-    session_id = COALESCE(excluded.session_id, msg_records.session_id),
-    sort_key = excluded.sort_key,
-    tags_json = excluded.tags_json,
-    route_tunnel_did = excluded.route_tunnel_did,
-    route_json = excluded.route_json,
-    delivery_json = excluded.delivery_json
-"#,
-        params![
-            record.record_id,
-            box_kind_name(&record.box_kind),
-            record.msg_id.to_string(),
-            msg_from,
-            msg_to,
-            Some(msg_obj_kind_name(&msg_kind)),
-            msg_state_name(&record.state),
-            to_sql_i64(record.created_at_ms),
-            to_sql_i64(record.updated_at_ms),
-            record.ui_session_id.clone(),
-            record.ui_session_id.clone(),
-            to_sql_i64(record.sort_key),
-            tags_json,
-            route_tunnel_did,
-            route_json,
-            delivery_json,
-        ],
-    )
-    .map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "failed to upsert msg record {}: {}",
-            record.record_id, error
-        ))
-    })?;
-
-    Ok(())
+    };
+    Ok(MsgRecordRow {
+        record_id: row.try_get("record_id").map_err(|e| decode("record_id", e))?,
+        box_kind: row.try_get("box_kind").map_err(|e| decode("box_kind", e))?,
+        msg_id: row.try_get("msg_id").map_err(|e| decode("msg_id", e))?,
+        msg_kind: row.try_get("msg_kind").map_err(|e| decode("msg_kind", e))?,
+        msg_from: row.try_get("msg_from").map_err(|e| decode("msg_from", e))?,
+        msg_to: row.try_get("msg_to").map_err(|e| decode("msg_to", e))?,
+        state: row.try_get("state").map_err(|e| decode("state", e))?,
+        created_at_ms: row
+            .try_get("created_at_ms")
+            .map_err(|e| decode("created_at_ms", e))?,
+        updated_at_ms: row
+            .try_get("updated_at_ms")
+            .map_err(|e| decode("updated_at_ms", e))?,
+        thread_key: row.try_get("thread_key").map_err(|e| decode("thread_key", e))?,
+        session_id: row.try_get("session_id").map_err(|e| decode("session_id", e))?,
+        sort_key: row.try_get("sort_key").map_err(|e| decode("sort_key", e))?,
+        tags_json: row.try_get("tags_json").map_err(|e| decode("tags_json", e))?,
+        route_tunnel_did: row
+            .try_get("route_tunnel_did")
+            .map_err(|e| decode("route_tunnel_did", e))?,
+        route_json: row.try_get("route_json").map_err(|e| decode("route_json", e))?,
+        delivery_json: row
+            .try_get("delivery_json")
+            .map_err(|e| decode("delivery_json", e))?,
+    })
 }
 
 fn row_to_record(owner: &DID, row: MsgRecordRow) -> std::result::Result<MsgRecord, RPCErrors> {
@@ -734,31 +716,6 @@ fn state_matches_filter(state_filter: Option<&[MsgState]>, state_name: &str) -> 
     }
 }
 
-fn sanitize_for_filename(raw: &str) -> String {
-    let mut output = String::with_capacity(raw.len());
-    let mut prev_sep = false;
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() {
-            output.push(ch.to_ascii_lowercase());
-            prev_sep = false;
-        } else if !prev_sep {
-            output.push('_');
-            prev_sep = true;
-        }
-    }
-
-    let trimmed = output.trim_matches('_');
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    raw.hash(&mut hasher);
-    let suffix = format!("{:016x}", hasher.finish());
-    let prefix = if trimmed.is_empty() {
-        "default".to_string()
-    } else {
-        trimmed.chars().take(120).collect()
-    };
-    format!("{}_{}", prefix, suffix)
-}
-
 fn to_sql_i64(value: u64) -> i64 {
     value.min(i64::MAX as u64) as i64
 }
@@ -773,6 +730,173 @@ fn from_sql_i64(value: i64, field: &str, record_id: &str) -> std::result::Result
     Ok(value as u64)
 }
 
-fn default_msg_box_root_dir() -> PathBuf {
-    get_buckyos_service_data_dir(MSG_CENTER_SERVICE_NAME).join("msg_boxes")
+fn rewrite_placeholders_to_dollar(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut idx = 0u32;
+    let mut in_single = false;
+    let mut in_double = false;
+    for ch in sql.chars() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                out.push(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                out.push(ch);
+            }
+            '?' if !in_single && !in_double => {
+                idx += 1;
+                out.push('$');
+                out.push_str(&idx.to_string());
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn split_sql_statements(ddl: &str) -> Vec<String> {
+    let mut stmts = Vec::new();
+    let mut buf = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    for ch in ddl.chars() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                buf.push(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                buf.push(ch);
+            }
+            ';' if !in_single && !in_double => {
+                let trimmed = buf.trim();
+                if !trimmed.is_empty() {
+                    stmts.push(trimmed.to_string());
+                }
+                buf.clear();
+            }
+            _ => buf.push(ch),
+        }
+    }
+    let trimmed = buf.trim();
+    if !trimmed.is_empty() {
+        stmts.push(trimmed.to_string());
+    }
+    stmts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    async fn setup_test_mgr() -> (MsgBoxDbMgr, tempfile::TempDir) {
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("msg-box.db");
+        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+        let mgr = MsgBoxDbMgr::open_default_sqlite(&conn).await.unwrap();
+        (mgr, temp_dir)
+    }
+
+    fn sample_owner() -> DID {
+        DID::from_str("did:bns:alice").unwrap()
+    }
+
+    fn sample_record(owner: &DID, box_kind: BoxKind, suffix: &str) -> MsgRecord {
+        let record_id = format!("{}|{}|{}", owner.to_string(), box_kind_name(&box_kind), suffix);
+        let msg_id: ObjId = serde_json::from_value(Value::String(format!(
+            "mobjchat:{}",
+            "a".repeat(40)
+        )))
+        .unwrap();
+        MsgRecord {
+            record_id,
+            box_kind,
+            msg_id,
+            msg_kind: ndn_lib::MsgObjKind::Chat,
+            state: MsgState::Unread,
+            from: owner.clone(),
+            from_name: None,
+            to: owner.clone(),
+            created_at_ms: 1_700_000_000_000,
+            updated_at_ms: 1_700_000_000_000,
+            route: None,
+            delivery: None,
+            ui_session_id: Some("topic-1".to_string()),
+            sort_key: 1_700_000_000_000,
+            tags: vec!["tag".to_string()],
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_and_upsert_record_roundtrip() {
+        let (mgr, _tmp) = setup_test_mgr().await;
+        let owner = sample_owner();
+        let record = sample_record(&owner, BoxKind::Inbox, "one");
+        mgr.upsert_record(&record).await.unwrap();
+        let got = mgr.get_record(&owner, &record.record_id).await.unwrap();
+        assert!(got.is_some());
+        let got = got.unwrap();
+        assert_eq!(got.record_id, record.record_id);
+        assert_eq!(got.box_kind, BoxKind::Inbox);
+        assert_eq!(got.state, MsgState::Unread);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_records_and_state_filter() {
+        let (mgr, _tmp) = setup_test_mgr().await;
+        let owner = sample_owner();
+        let r1 = sample_record(&owner, BoxKind::Inbox, "one");
+        let mut r2 = sample_record(&owner, BoxKind::Inbox, "two");
+        r2.state = MsgState::Readed;
+        mgr.upsert_record(&r1).await.unwrap();
+        mgr.upsert_record(&r2).await.unwrap();
+        let all = mgr
+            .list_records(&owner, &BoxKind::Inbox, None, true)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2);
+        let unread = mgr
+            .list_records(&owner, &BoxKind::Inbox, Some(&[MsgState::Unread]), true)
+            .await
+            .unwrap();
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].state, MsgState::Unread);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn touch_message_and_has_message() {
+        let (mgr, _tmp) = setup_test_mgr().await;
+        let owner = sample_owner();
+        let msg_id: ObjId =
+            serde_json::from_value(Value::String(format!("mobjchat:{}", "b".repeat(40))))
+                .unwrap();
+        assert!(!mgr.has_message(&owner, &msg_id).await.unwrap());
+        mgr.touch_message(&owner, &msg_id, 1_700_000_000_000)
+            .await
+            .unwrap();
+        assert!(mgr.has_message(&owner, &msg_id).await.unwrap());
+        // Idempotent.
+        mgr.touch_message(&owner, &msg_id, 1_700_000_000_001)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn rewrite_placeholders_handles_quotes() {
+        assert_eq!(
+            rewrite_placeholders_to_dollar("SELECT ? FROM t WHERE s = '?' AND x = ?"),
+            "SELECT $1 FROM t WHERE s = '?' AND x = $2"
+        );
+    }
+
+    #[test]
+    fn split_sql_statements_basic() {
+        let ddl = "CREATE TABLE a(x INT); CREATE TABLE b(y TEXT);";
+        let stmts = split_sql_statements(ddl);
+        assert_eq!(stmts.len(), 2);
+    }
 }
