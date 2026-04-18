@@ -66,6 +66,8 @@ src/publish/win_pkg/scripts/seed_defaults.ps1
 src/publish/win_pkg/scripts/ensure_firewall_rules.ps1
 src/publish/win_pkg/scripts/uninstall_cleanup.ps1
 src/rootfs/bin/opendan/agent_tool
+src/rootfs/bin/klog-service/
+.dev_buckyos*/
 
 src/apps/sys_test/dist/
 old/*
