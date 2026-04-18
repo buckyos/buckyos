@@ -1,3 +1,4 @@
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
 use crate::{AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -6,11 +7,154 @@ use ndn_lib::{ActionObject, InclusionProof, ObjId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::net::IpAddr;
 
 pub const REPO_SERVICE_UNIQUE_ID: &str = "repo-service";
 pub const REPO_SERVICE_SERVICE_NAME: &str = "repo-service";
 pub const REPO_SERVICE_SERVICE_PORT: u16 = 4000;
+
+/// Logical name of the repo-service rdb instance. Used by the scheduler when it
+/// writes the service's `install_config` and by the repo-service itself when it
+/// calls `get_rdb_instance`.
+pub const REPO_SERVICE_RDB_INSTANCE_ID: &str = "repo-service-main";
+/// Version of the repo-service schema. Bump whenever the DDL below changes in a
+/// way that isn't trivially re-idempotent, so the scheduler can detect drift.
+pub const REPO_SERVICE_RDB_SCHEMA_VERSION: u64 = 1;
+
+/// Sqlite DDL for the repo-service database. `CREATE TABLE IF NOT EXISTS` so
+/// the migration is safe to re-run on every process start.
+pub const REPO_SERVICE_RDB_SCHEMA_SQLITE: &str = r#"
+CREATE TABLE IF NOT EXISTS objects (
+    content_id      TEXT PRIMARY KEY,
+    content_name    TEXT,
+    status          TEXT NOT NULL DEFAULT 'collected',
+    origin          TEXT NOT NULL,
+    meta            TEXT NOT NULL,
+    owner_did       TEXT,
+    author          TEXT,
+    access_policy   TEXT NOT NULL DEFAULT 'free',
+    price           TEXT,
+    content_size    INTEGER,
+    collected_at    INTEGER,
+    pinned_at       INTEGER,
+    updated_at      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_content_name ON objects(content_name);
+CREATE INDEX IF NOT EXISTS idx_status ON objects(status);
+CREATE INDEX IF NOT EXISTS idx_origin ON objects(origin);
+CREATE INDEX IF NOT EXISTS idx_owner_did ON objects(owner_did);
+CREATE INDEX IF NOT EXISTS idx_collected_at ON objects(collected_at);
+CREATE TABLE IF NOT EXISTS proofs (
+    proof_id        TEXT PRIMARY KEY,
+    content_id      TEXT NOT NULL,
+    proof_kind      TEXT NOT NULL,
+    action_type     TEXT,
+    subject_id      TEXT,
+    target_id       TEXT,
+    base_on         TEXT,
+    curator_did     TEXT,
+    proof_data      TEXT NOT NULL,
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proof_content_id ON proofs(content_id);
+CREATE INDEX IF NOT EXISTS idx_proof_kind ON proofs(proof_kind);
+CREATE INDEX IF NOT EXISTS idx_proof_action_type ON proofs(action_type);
+CREATE INDEX IF NOT EXISTS idx_proof_subject ON proofs(subject_id);
+CREATE INDEX IF NOT EXISTS idx_proof_target ON proofs(target_id);
+CREATE INDEX IF NOT EXISTS idx_proof_curator ON proofs(curator_did);
+CREATE INDEX IF NOT EXISTS idx_proof_created ON proofs(created_at);
+CREATE INDEX IF NOT EXISTS idx_proof_content_kind ON proofs(content_id, proof_kind);
+CREATE TABLE IF NOT EXISTS receipts (
+    receipt_id      TEXT PRIMARY KEY,
+    content_name    TEXT NOT NULL,
+    buyer_did       TEXT NOT NULL,
+    seller_did      TEXT NOT NULL,
+    signature       TEXT NOT NULL,
+    receipt_data    TEXT NOT NULL,
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_receipt_content_name ON receipts(content_name);
+CREATE INDEX IF NOT EXISTS idx_receipt_buyer ON receipts(buyer_did);
+"#;
+
+/// Postgres DDL for the repo-service database. Same logical schema as the
+/// sqlite variant; integer columns widen to BIGINT.
+pub const REPO_SERVICE_RDB_SCHEMA_POSTGRES: &str = r#"
+CREATE TABLE IF NOT EXISTS objects (
+    content_id      TEXT PRIMARY KEY,
+    content_name    TEXT,
+    status          TEXT NOT NULL DEFAULT 'collected',
+    origin          TEXT NOT NULL,
+    meta            TEXT NOT NULL,
+    owner_did       TEXT,
+    author          TEXT,
+    access_policy   TEXT NOT NULL DEFAULT 'free',
+    price           TEXT,
+    content_size    BIGINT,
+    collected_at    BIGINT,
+    pinned_at       BIGINT,
+    updated_at      BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_content_name ON objects(content_name);
+CREATE INDEX IF NOT EXISTS idx_status ON objects(status);
+CREATE INDEX IF NOT EXISTS idx_origin ON objects(origin);
+CREATE INDEX IF NOT EXISTS idx_owner_did ON objects(owner_did);
+CREATE INDEX IF NOT EXISTS idx_collected_at ON objects(collected_at);
+CREATE TABLE IF NOT EXISTS proofs (
+    proof_id        TEXT PRIMARY KEY,
+    content_id      TEXT NOT NULL,
+    proof_kind      TEXT NOT NULL,
+    action_type     TEXT,
+    subject_id      TEXT,
+    target_id       TEXT,
+    base_on         TEXT,
+    curator_did     TEXT,
+    proof_data      TEXT NOT NULL,
+    created_at      BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proof_content_id ON proofs(content_id);
+CREATE INDEX IF NOT EXISTS idx_proof_kind ON proofs(proof_kind);
+CREATE INDEX IF NOT EXISTS idx_proof_action_type ON proofs(action_type);
+CREATE INDEX IF NOT EXISTS idx_proof_subject ON proofs(subject_id);
+CREATE INDEX IF NOT EXISTS idx_proof_target ON proofs(target_id);
+CREATE INDEX IF NOT EXISTS idx_proof_curator ON proofs(curator_did);
+CREATE INDEX IF NOT EXISTS idx_proof_created ON proofs(created_at);
+CREATE INDEX IF NOT EXISTS idx_proof_content_kind ON proofs(content_id, proof_kind);
+CREATE TABLE IF NOT EXISTS receipts (
+    receipt_id      TEXT PRIMARY KEY,
+    content_name    TEXT NOT NULL,
+    buyer_did       TEXT NOT NULL,
+    seller_did      TEXT NOT NULL,
+    signature       TEXT NOT NULL,
+    receipt_data    TEXT NOT NULL,
+    created_at      BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_receipt_content_name ON receipts(content_name);
+CREATE INDEX IF NOT EXISTS idx_receipt_buyer ON receipts(buyer_did);
+"#;
+
+/// Default rdb-instance config for the repo-service. The scheduler drops this
+/// into `install_config.rdb_instances` when bootstrapping the service so
+/// `get_rdb_instance` can find it later.
+pub fn repo_service_default_rdb_instance_config() -> RdbInstanceConfig {
+    let mut schema = HashMap::new();
+    schema.insert(
+        RdbBackend::Sqlite,
+        REPO_SERVICE_RDB_SCHEMA_SQLITE.to_string(),
+    );
+    schema.insert(
+        RdbBackend::Postgres,
+        REPO_SERVICE_RDB_SCHEMA_POSTGRES.to_string(),
+    );
+    RdbInstanceConfig {
+        backend: RdbBackend::Sqlite,
+        version: REPO_SERVICE_RDB_SCHEMA_VERSION,
+        schema,
+        // Empty -> rdb_mgr generates `sqlite://$appdata/<instance>.db` at resolve time.
+        connection: String::new(),
+    }
+}
 
 pub const REPO_STATUS_COLLECTED: &str = "collected";
 pub const REPO_STATUS_PINNED: &str = "pinned";

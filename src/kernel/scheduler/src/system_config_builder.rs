@@ -377,8 +377,12 @@ impl SystemConfigBuilder {
 
     pub async fn add_repo_service(&mut self) -> Result<&mut Self> {
         let service_doc = generate_repo_service_doc();
-        let config =
+        let mut config =
             build_kernel_service_spec(REPO_SERVICE_UNIQUE_ID, 4000, 1, service_doc).await?;
+        config.install_config.rdb_instances.insert(
+            buckyos_api::REPO_SERVICE_RDB_INSTANCE_ID.to_string(),
+            buckyos_api::repo_service_default_rdb_instance_config(),
+        );
         self.insert_json("services/repo-service/spec", &config)?;
 
         let settings = RepoServiceSettings {
