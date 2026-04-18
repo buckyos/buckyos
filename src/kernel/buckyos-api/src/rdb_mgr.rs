@@ -104,7 +104,8 @@ pub async fn get_rdb_instance(
     let runtime = get_buckyos_api_runtime()?;
     let sys_cfg = runtime.get_system_config_client().await?;
 
-    let cfg = load_install_rdb_config(&sys_cfg, appid, owner_user_id.as_deref(), instance_id).await?;
+    let cfg =
+        load_install_rdb_config(&sys_cfg, appid, owner_user_id.as_deref(), instance_id).await?;
 
     let connection = build_connection_string(&cfg, appid, owner_user_id.as_deref(), instance_id)?;
     let schema = pick_schema(&cfg);
@@ -189,7 +190,12 @@ fn build_connection_string(
 
     let template = if cfg.connection.is_empty() {
         match cfg.backend {
-            RdbBackend::Sqlite => format!("sqlite://{}/{}.db", appdata_str, instance_id),
+            // `mode=rwc` lets sqlx auto-create the db file on first open —
+            // without it the default mode is `rw` and the pool fails to connect
+            // the very first time the service starts.
+            RdbBackend::Sqlite => {
+                format!("sqlite://{}/{}.db?mode=rwc", appdata_str, instance_id)
+            }
             RdbBackend::Postgres => {
                 return Err(RPCErrors::ReasonError(format!(
                     "rdb instance {} uses postgres backend but has no connection string configured",
@@ -214,8 +220,8 @@ fn build_connection_string(
 
 fn resolve_appdata_dir(appid: &str, owner_user_id: Option<&str>) -> Result<PathBuf> {
     let runtime = get_buckyos_api_runtime()?;
-    let is_self = runtime.get_app_id() == appid
-        && runtime.get_owner_user_id().as_deref() == owner_user_id;
+    let is_self =
+        runtime.get_app_id() == appid && runtime.get_owner_user_id().as_deref() == owner_user_id;
     if is_self {
         return runtime.get_data_folder();
     }
@@ -262,8 +268,14 @@ mod tests {
     #[test]
     fn pick_schema_selects_active_backend() {
         let mut schema = HashMap::new();
-        schema.insert(RdbBackend::Sqlite, "CREATE TABLE t(id INTEGER);".to_string());
-        schema.insert(RdbBackend::Postgres, "CREATE TABLE t(id BIGINT);".to_string());
+        schema.insert(
+            RdbBackend::Sqlite,
+            "CREATE TABLE t(id INTEGER);".to_string(),
+        );
+        schema.insert(
+            RdbBackend::Postgres,
+            "CREATE TABLE t(id BIGINT);".to_string(),
+        );
         let cfg = RdbInstanceConfig {
             backend: RdbBackend::Postgres,
             version: 1,
@@ -312,7 +324,12 @@ mod tests {
             }
         }"#;
         let view: SpecInstallView = serde_json::from_str(raw).unwrap();
-        let cfg = view.install_config.rdb_instances.get("main").cloned().unwrap();
+        let cfg = view
+            .install_config
+            .rdb_instances
+            .get("main")
+            .cloned()
+            .unwrap();
         assert_eq!(cfg.backend, RdbBackend::Sqlite);
         assert_eq!(cfg.version, 3);
         assert_eq!(cfg.connection, "sqlite://$appdata/main.db");

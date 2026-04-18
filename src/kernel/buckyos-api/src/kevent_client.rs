@@ -15,7 +15,7 @@ use tokio::time::Instant;
 
 pub const KEVENT_SERVICE_UNIQUE_ID: &str = "kevent";
 pub const KEVENT_SERVICE_NAME: &str = "kevent";
-pub const KEVENT_SERVICE_MAIN_PORT: u16 = 4041;
+pub const KEVENT_SERVICE_MAIN_PORT: u16 = 3181;
 pub const DEFAULT_READER_CAPACITY: usize = 1024;
 pub const MAX_EVENT_DATA_SIZE_BYTES: usize = 64 * 1024;
 const SHARED_RING_DRAIN_BATCH: usize = 128;

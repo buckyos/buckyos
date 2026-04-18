@@ -33,6 +33,7 @@ use crate::active_server::*;
 use crate::app_mgr::*;
 use crate::frame_service_mgr::*;
 use crate::kernel_mgr::*;
+use crate::kevent_server::*;
 use crate::local_app_mgr::LocalAppRunItem;
 use crate::run_item::*;
 use crate::service_pkg::*;
@@ -1533,6 +1534,13 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         &device_name,
         node_identity.zone_did.to_host_name()
     );
+
+    let kevent_source_node = device_name.clone();
+    tokio::task::spawn(async move {
+        start_node_kevent_service(kevent_source_node).await;
+        warn!("kevent service returned, node_daemon will continue without kevent http endpoint");
+    });
+
     node_daemon_main_loop(node_id, &device_name, is_ood, is_desktop)
         .await
         .map_err(|err| {

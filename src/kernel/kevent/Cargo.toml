@@ -7,5 +7,13 @@ authors = ["BuckyOS DAO", "@waterflier", "@alexsunxl"]
 [dependencies]
 async-trait = { workspace = true }
 tokio = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+axum = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+http-body-util = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
 buckyos-api = { path = "../buckyos-api" }
+hyper = "1.8.1"

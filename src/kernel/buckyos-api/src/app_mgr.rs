@@ -121,8 +121,7 @@ pub struct ServiceInstallConfig {
     #[serde(default)]
     pub allow_public_access: bool,
     #[serde(default)]
-    pub rdb_instances :  HashMap<String, RdbInstanceConfig>,
-    
+    pub rdb_instances: HashMap<String, RdbInstanceConfig>,
 }
 
 impl Default for ServiceInstallConfig {

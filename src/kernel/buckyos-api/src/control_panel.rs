@@ -259,8 +259,6 @@ impl ControlPanelClient {
         Ok(user_doc)
     }
 
-    
-
     pub async fn get_user_list(&self) -> Result<Vec<String>> {
         let user_list = self.system_config_client.list("users").await;
         if user_list.is_err() {
@@ -280,7 +278,6 @@ impl ControlPanelClient {
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(user_info)
     }
-
 
     pub async fn update_service_instance_info(
         &self,
@@ -323,7 +320,6 @@ impl ControlPanelClient {
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(service_info)
     }
-
 }
 
 pub fn generate_control_panel_service_doc() -> AppDoc {

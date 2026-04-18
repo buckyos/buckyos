@@ -95,7 +95,10 @@ CREATE INDEX IF NOT EXISTS idx_task_type_created ON task(task_type, created_at D
 /// service so `get_rdb_instance` can find it later.
 pub fn task_manager_default_rdb_instance_config() -> RdbInstanceConfig {
     let mut schema = HashMap::new();
-    schema.insert(RdbBackend::Sqlite, TASK_MANAGER_RDB_SCHEMA_SQLITE.to_string());
+    schema.insert(
+        RdbBackend::Sqlite,
+        TASK_MANAGER_RDB_SCHEMA_SQLITE.to_string(),
+    );
     schema.insert(
         RdbBackend::Postgres,
         TASK_MANAGER_RDB_SCHEMA_POSTGRES.to_string(),
