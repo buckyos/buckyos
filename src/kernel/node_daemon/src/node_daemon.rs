@@ -636,19 +636,26 @@ async fn update_device_info(device_info: &DeviceInfo, syste_config_client: &Syst
     }
 }
 
-fn get_kevent_client(source_node: &str) -> KEventClient {
-    static KEVENT_CLIENT: OnceLock<KEventClient> = OnceLock::new();
-    KEVENT_CLIENT
-        .get_or_init(|| KEventClient::new_full(source_node.to_string(), None))
+static KEVENT_SERVICE: OnceLock<Arc<kevent::KEventService>> = OnceLock::new();
+
+fn get_kevent_service(source_node: &str) -> Arc<kevent::KEventService> {
+    KEVENT_SERVICE
+        .get_or_init(|| Arc::new(kevent::KEventService::new(source_node.to_string())))
         .clone()
 }
 
 async fn publish_device_info_kevent(device_info: &DeviceInfo) {
+    let Some(service) = KEVENT_SERVICE.get() else {
+        warn!(
+            "kevent service not initialized, skip publishing device info for {}",
+            device_info.name.as_str()
+        );
+        return;
+    };
     let eventid = format!("/devices/{}/info", device_info.name.as_str());
     let event_data = serde_json::to_value(device_info).unwrap();
-    let kevent_client = get_kevent_client(device_info.name.as_str());
 
-    if let Err(err) = kevent_client.pub_event(eventid.as_str(), event_data).await {
+    if let Err(err) = service.publish_local_global(eventid.as_str(), event_data).await {
         warn!(
             "publish device info kevent failed for {}: {}",
             device_info.name.as_str(),
@@ -1563,9 +1570,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         node_identity.zone_did.to_host_name()
     );
 
-    let kevent_source_node = device_name.clone();
+    let kevent_service = get_kevent_service(&device_name);
     tokio::task::spawn(async move {
-        start_node_kevent_service(kevent_source_node).await;
+        start_node_kevent_service(kevent_service).await;
         warn!("kevent service returned, node_daemon will continue without kevent http endpoint");
     });
 

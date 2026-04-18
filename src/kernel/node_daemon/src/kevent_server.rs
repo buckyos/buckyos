@@ -9,7 +9,7 @@ use std::io::{self, ErrorKind};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
 const MAX_NATIVE_FRAME_SIZE: usize = 1024 * 1024;
 const SHARED_RING_DRAIN_BATCH: usize = 128;
@@ -18,13 +18,25 @@ const SHARED_RING_WAIT_TIMEOUT_MS: u64 = 500;
 #[cfg(not(target_os = "linux"))]
 const SHARED_RING_WAIT_TIMEOUT_MS: u64 = 1;
 
-pub async fn start_node_kevent_service(source_node: String) {
+pub async fn start_node_kevent_service(service: Arc<KEventService>) {
     info!(
         "start kevent service on http port {} and native tcp port {} for source_node={}",
-        KEVENT_SERVICE_MAIN_PORT, KEVENT_SERVICE_NATIVE_PORT, source_node
+        KEVENT_SERVICE_MAIN_PORT,
+        KEVENT_SERVICE_NATIVE_PORT,
+        service.source_node()
     );
 
-    let service = Arc::new(KEventService::new(source_node));
+    match SharedKEventRingBuffer::open() {
+        Ok(shared_ring) => {
+            let shared_ring = Arc::new(shared_ring);
+            service.set_shared_ring(shared_ring.clone()).await;
+            start_shared_ring_importer(service.clone(), shared_ring);
+        }
+        Err(err) => {
+            error!("kevent shared ring disabled: {}", err);
+        }
+    }
+
     let http_server = Arc::new(KEventHttpServer::new(service.clone()));
     let runner = Runner::new(KEVENT_SERVICE_MAIN_PORT);
 
@@ -33,8 +45,6 @@ pub async fn start_node_kevent_service(source_node: String) {
         error!("Failed to add kevent http server: {}", err);
         return;
     }
-
-    start_shared_ring_importer(service.clone());
 
     let native_service = service.clone();
     tokio::spawn(async move {
@@ -46,14 +56,11 @@ pub async fn start_node_kevent_service(source_node: String) {
     runner.run().await;
 }
 
-fn start_shared_ring_importer(service: Arc<KEventService>) {
-    let shared_ring = match SharedKEventRingBuffer::open() {
-        Ok(shared_ring) => Arc::new(shared_ring),
-        Err(err) => {
-            error!("kevent shared ring importer disabled: {}", err);
-            return;
-        }
-    };
+fn start_shared_ring_importer(
+    service: Arc<KEventService>,
+    shared_ring: Arc<SharedKEventRingBuffer>,
+) {
+    shared_ring.prime_cursors();
 
     let runtime_handle = tokio::runtime::Handle::current();
     if let Err(err) = std::thread::Builder::new()
@@ -62,10 +69,15 @@ fn start_shared_ring_importer(service: Arc<KEventService>) {
             let seq_before = shared_ring.load_notify_seq();
             let events = shared_ring.drain_events::<Event>(SHARED_RING_DRAIN_BATCH);
 
-            for event in events {
-                if let Err(err) = runtime_handle.block_on(service.publish_external_global(event)) {
-                    error!("kevent shared ring import failed: {}", err);
-                }
+            if !events.is_empty() {
+                let service = service.clone();
+                runtime_handle.spawn(async move {
+                    for event in events {
+                        if let Err(err) = service.publish_external_global(event).await {
+                            error!("kevent shared ring import failed: {}", err);
+                        }
+                    }
+                });
             }
 
             shared_ring.wait_for_events(

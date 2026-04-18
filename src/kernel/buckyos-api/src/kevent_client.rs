@@ -1174,4 +1174,25 @@ mod tests {
         assert_eq!(event.eventid, eventid);
         assert_eq!(event.data.get("path"), Some(&json!("shared_ring")));
     }
+
+    #[tokio::test]
+    async fn test_full_mode_shared_ring_first_event_from_late_producer() {
+        init_test_ringbuffer_path();
+        let subscriber = KEventClient::new_full("node_a", None);
+        let eventid = format!("/kevent/shared_ring/late_producer_{}", now_millis());
+        let reader = subscriber
+            .create_event_reader(vec![eventid.clone()])
+            .await
+            .unwrap();
+
+        let publisher = KEventClient::new_full("node_a", None);
+        publisher
+            .pub_event(&eventid, json!({"path": "late_producer"}))
+            .await
+            .unwrap();
+
+        let event = reader.pull_event(Some(600)).await.unwrap().unwrap();
+        assert_eq!(event.eventid, eventid);
+        assert_eq!(event.data.get("path"), Some(&json!("late_producer")));
+    }
 }

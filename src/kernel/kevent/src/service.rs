@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     is_global_eventid, is_global_pattern, match_event_patterns, validate_event_data_size,
     validate_eventid, validate_pattern, Event, KEventDaemonRequest, KEventDaemonResponse,
-    KEventError, KEventResult,
+    KEventError, KEventResult, SharedKEventRingBuffer,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -24,6 +24,7 @@ pub struct KEventService {
     reader_capacity: usize,
     readers: Arc<RwLock<HashMap<String, Arc<ServiceReaderState>>>>,
     peers: Arc<RwLock<Vec<Arc<dyn KEventPeerPublisher>>>>,
+    shared_ring: Arc<RwLock<Option<Arc<SharedKEventRingBuffer>>>>,
 }
 
 struct ServiceReaderState {
@@ -70,6 +71,7 @@ impl KEventService {
             reader_capacity: reader_capacity.max(1),
             readers: Arc::new(RwLock::new(HashMap::new())),
             peers: Arc::new(RwLock::new(Vec::new())),
+            shared_ring: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -79,6 +81,10 @@ impl KEventService {
 
     pub async fn add_peer_publisher(&self, peer: Arc<dyn KEventPeerPublisher>) {
         self.peers.write().await.push(peer);
+    }
+
+    pub async fn set_shared_ring(&self, shared_ring: Arc<SharedKEventRingBuffer>) {
+        *self.shared_ring.write().await = Some(shared_ring);
     }
 
     pub async fn register_reader(
@@ -133,6 +139,10 @@ impl KEventService {
             timestamp: now_millis(),
             data,
         };
+        // Mirror to shared ring so other local processes (full-mode SDK
+        // readers that mmap the region) observe daemon-originated events
+        // via the same fast path as peer/http-originated events.
+        self.mirror_to_shared_ring(&event).await?;
         self.distribute(&event).await;
         if should_broadcast_to_peers(&event, &self.source_node) {
             self.broadcast_to_peers(&event).await
@@ -150,7 +160,7 @@ impl KEventService {
             timestamp: now_millis(),
             data,
         };
-        self.publish_external_global(event).await
+        self.accept_external_global(event).await
     }
 
     pub async fn publish_external_global(&self, mut event: Event) -> KEventResult<()> {
@@ -172,6 +182,24 @@ impl KEventService {
         }
     }
 
+    pub async fn accept_external_global(&self, mut event: Event) -> KEventResult<()> {
+        if !is_global_eventid(&event.eventid) {
+            return Err(KEventError::InvalidEventId(
+                "daemon only accepts global eventid".to_string(),
+            ));
+        }
+        validate_eventid(&event.eventid)?;
+        validate_event_data_size(&event.data)?;
+        event.ingress_node = Some(self.source_node.clone());
+        self.mirror_to_shared_ring(&event).await?;
+        self.distribute(&event).await;
+        if should_broadcast_to_peers(&event, &self.source_node) {
+            self.broadcast_to_peers(&event).await
+        } else {
+            Ok(())
+        }
+    }
+
     pub async fn publish_from_peer(&self, mut event: Event) -> KEventResult<()> {
         if !is_global_eventid(&event.eventid) {
             return Err(KEventError::InvalidEventId(
@@ -183,6 +211,7 @@ impl KEventService {
         if event.ingress_node.is_none() {
             event.ingress_node = Some(event.source_node.clone());
         }
+        self.mirror_to_shared_ring(&event).await?;
         self.distribute(&event).await;
         Ok(())
     }
@@ -243,7 +272,7 @@ impl KEventService {
                 KEventDaemonResponse::Ok { event: None }
             }
             KEventDaemonRequest::PublishGlobal { event } => {
-                match self.publish_external_global(event).await {
+                match self.accept_external_global(event).await {
                     Ok(_) => KEventDaemonResponse::Ok { event: None },
                     Err(err) => err_to_response(err),
                 }
@@ -281,6 +310,16 @@ impl KEventService {
             None => Ok(()),
         }
     }
+
+    async fn mirror_to_shared_ring(&self, event: &Event) -> KEventResult<()> {
+        let shared_ring = self.shared_ring.read().await.clone();
+        let Some(shared_ring) = shared_ring else {
+            return Ok(());
+        };
+        shared_ring
+            .publish_event(event)
+            .map_err(KEventError::Internal)
+    }
 }
 
 fn now_millis() -> u64 {
@@ -311,6 +350,19 @@ pub fn protocol_ok() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Once;
+
+    fn init_test_ringbuffer_path() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let path = std::env::temp_dir().join(format!(
+                "kevent_service_ringbuffer_test_{}.shm",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            std::env::set_var("BUCKYOS_KEVENT_RINGBUFFER_PATH", &path);
+        });
+    }
 
     #[tokio::test]
     async fn test_daemon_register_publish_pull() {
@@ -338,5 +390,34 @@ mod tests {
             })
             .await;
         assert!(matches!(resp, KEventDaemonResponse::Ok { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_accept_external_global_mirrors_to_shared_ring() {
+        init_test_ringbuffer_path();
+        let consumer = SharedKEventRingBuffer::open().unwrap();
+        consumer.prime_cursors();
+
+        let service = KEventService::new("node_a");
+        service
+            .set_shared_ring(Arc::new(SharedKEventRingBuffer::open().unwrap()))
+            .await;
+
+        service
+            .accept_external_global(Event {
+                eventid: "/system/node/online".to_string(),
+                source_node: "light_client".to_string(),
+                source_pid: 7,
+                ingress_node: Some("light_client".to_string()),
+                timestamp: 1,
+                data: json!({ "ok": true }),
+            })
+            .await
+            .unwrap();
+
+        let events = consumer.drain_events::<Event>(8);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].ingress_node.as_deref(), Some("node_a"));
+        assert_eq!(events[0].source_node, "light_client");
     }
 }

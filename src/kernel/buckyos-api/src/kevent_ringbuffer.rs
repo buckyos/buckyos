@@ -132,6 +132,7 @@ struct ConsumeInner {
     region_ptr: *mut SharedRegion,
     my_ring_id: usize,
     cursors: HashMap<usize, RingCursor>,
+    primed_existing_rings: bool,
 }
 
 // SAFETY: the mmap region is process-wide; sharing the pointer across
@@ -176,6 +177,7 @@ impl SharedKEventRingBuffer {
                 region_ptr,
                 my_ring_id,
                 cursors: HashMap::new(),
+                primed_existing_rings: false,
             }),
         })
     }
@@ -285,10 +287,8 @@ impl SharedKEventRingBuffer {
     /// Snapshot currently active producer rings into the local cursor table.
     ///
     /// This is used when a new reader subscribes to global events: we want
-    /// the next event published by already-active producers to be observable,
-    /// even if the ShmDispatch thread has not drained those rings yet.
-    /// Missing cursors start at the producer's current head, so existing
-    /// backlog is skipped and only future publishes are observed.
+    /// existing producer rings to skip backlog, while producer rings that
+    /// appear later should still deliver their first event.
     pub fn prime_cursors(&self) {
         let mut inner = match self.consume.lock() {
             Ok(g) => g,
@@ -320,6 +320,7 @@ impl SharedKEventRingBuffer {
         my_entry
             .last_heartbeat_ms
             .store(now_millis(), Ordering::Relaxed);
+        inner.primed_existing_rings = true;
     }
 
     fn drain_payloads(&self, max_events: usize) -> Vec<Vec<u8>> {
@@ -360,16 +361,20 @@ impl SharedKEventRingBuffer {
 
             let generation = entry.generation.load(Ordering::Acquire);
             let ring = &region.rings[ring_id];
+            let primed_existing_rings = inner.primed_existing_rings;
             let cursor = inner.cursors.entry(ring_id).or_insert_with(|| RingCursor {
                 generation,
-                read_seq: ring.head_seq.load(Ordering::Acquire),
+                read_seq: initial_read_seq(
+                    ring.head_seq.load(Ordering::Acquire),
+                    primed_existing_rings,
+                ),
             });
 
             // Generation changed → ring was recycled; reset cursor
             if cursor.generation != generation {
                 cursor.generation = generation;
-                cursor.read_seq = ring.head_seq.load(Ordering::Acquire);
-                continue;
+                cursor.read_seq =
+                    initial_read_seq(ring.head_seq.load(Ordering::Acquire), primed_existing_rings);
             }
 
             while out.len() < max_events {
@@ -765,6 +770,14 @@ fn ringbuffer_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_RINGBUFFER_PATH))
 }
 
+fn initial_read_seq(head_seq: u64, primed_existing_rings: bool) -> u64 {
+    if primed_existing_rings {
+        head_seq.saturating_sub(1)
+    } else {
+        head_seq
+    }
+}
+
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -801,6 +814,7 @@ fn is_process_alive(_pid: u32) -> bool {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+    use std::sync::Once;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
     struct TestEvent {
@@ -897,6 +911,18 @@ mod tests {
         }
     }
 
+    fn init_test_ringbuffer_path() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let path = std::env::temp_dir().join(format!(
+                "buckyos_kevent_ringbuffer_core_test_{}.shm",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            std::env::set_var(DEFAULT_RINGBUFFER_PATH_ENV, &path);
+        });
+    }
+
     /// Verify that header_matches rejects mismatched parameters.
     #[test]
     fn test_header_mismatch() {
@@ -912,5 +938,26 @@ mod tests {
 
         region.header.version = 999;
         assert!(!header_matches(&region));
+    }
+
+    #[test]
+    fn test_prime_cursors_keeps_first_event_from_new_ring() {
+        init_test_ringbuffer_path();
+
+        let consumer = SharedKEventRingBuffer::open().unwrap();
+        consumer.prime_cursors();
+
+        let producer = SharedKEventRingBuffer::open().unwrap();
+        producer
+            .publish_event(&TestEvent {
+                id: "first".to_string(),
+                seq: 1,
+            })
+            .unwrap();
+
+        let events = consumer.drain_events::<TestEvent>(8);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "first");
+        assert_eq!(events[0].seq, 1);
     }
 }
