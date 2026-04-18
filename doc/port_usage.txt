@@ -3,6 +3,8 @@
 
 2980 是rtcp stack的默认端口，可以完全打开
 3180,3143 是默认的cyfs-gateway(node-gateway) http,https端口，建议只允许本机访问
+3182 device active协议用的http端口
+3181,3193 node_daemon用来做kevent订阅的端口
 3200 是system_config的端口，建议允许局域网访问
 
 其他端口都为动态端口，无需特意保留

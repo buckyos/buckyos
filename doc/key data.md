@@ -165,7 +165,7 @@ cyfs://$zone_id/home/$userid/  用户的全部个人数据
 cyfs://$zone_id/home/$userid/ -> $buckyos_root/data/home/$userid/
 用户的全部私有个人数据,可以授权部分文件夹给指定应用访问
 
-### 应用数据
+## 应用数据
 
 cyfs://$zone_id/home/$userid/.local/share/$appid/ -> $buckyos_root/data/home/$userid/.local/share/$appid/
 app有读写权限的永久数据区,谨慎写入。默认在app卸载时删除,用户可选保留
@@ -208,6 +208,82 @@ library,publish,home,cache,var,storage,local,tmp,logs
 应用名必须是 `发行商-应用名` 形式,发行商名字中不能包含-
 
 
+## 应用容器内文件系统视图
+
+- BUCKYOS_ROOT基本固定到/opt/buckyos ，所以app总是可以在  /opt/buckyos/bin/$APP_ID 目录下看到自己的PKG_DIR(有读写权限)
+    - 原始目录不可写，在 /mnt/buckyos/bin/$APP_ID, 初始化私有卷时复制过去（这是一个固定的启动脚本）
+- BuckyOS ExtTools 会只读+可执行挂载到 /opt/buckyos/tools/store ,
+- /opt/buckyos/tools/bin 每 App 一份,由 AppService 启动时根据
+  该 App 的 tool 授权清单渲染 symlink 到store,挂载为可读+可执行
+  (App 内部只读,修改通过控制平面的授权变更触发重新渲染)
+- ExtTools 卷里可能会包含固化好的deno-cache和uv-cache,减少磁盘占用
+  - lowerdir: /opt/buckyos/tools/deno-cache (ExtTools 卷,全局只读)
+  - upperdir: <AppDataVolume>/cache/deno (App 私有,记录本 App 新增的依赖)
+  - merged:   $DENO_DIR (容器内 deno 实际使用的路径)
+  - UV也使用同样的模式  /opt/buckyos/tools/uv-cache
+- 根据用户的授权，选择性挂载 （buckyos filebrowser相同视图)
+  - 在 /opt/buckyos/data/ 目录下看到buckyos体系下的用户数据
+  - 在 /mnt/$nodeid/ 目录下，看到非buckyos体系下的用户数据（用户设备上的数据)，此时已经开始走cyfs体系
+    - /mnt/self/ 可以看到当前zone的cyfs根目录
+    - /mnt/$zoneid/ 可以看到别的zone的cyfs目录
+    
+
+## Agent容器内文件系统视图 （分离数据和可执行文件)
+- Agent Env Root 在 /opt/buckyos/data 的app_data目录下，通常是session data和交付记录.读写权限，不可执行.每次启动的时候，执行一次从上游的同步操作
+- Agent 的 session-bin 属于Agent的私有卷
+  挂载到 /opt/buckyos/tools/$agent_id/$session_id/, 里面都是符号链接。有读写权限，可执行
+- Agent通过工具 exec_on("nodeid",cmdline) 在任意zone内设备上运行命令（或则是标准的ssh命令，还可以解决文件传输的问题)
+
+
+
+## 通用约定
+- BUCKYOS_ROOT=/opt/buckyos (固定)
+- 环境变量契约:BUCKYOS_APP_ID, BUCKYOS_DATA_DIR, ...
+- /tmp: tmpfs, 1GB, 容器销毁清空
+
+
+## App 容器视图
+
+### 代码层 (只读为主)
+- /opt/buckyos/bin/$APP_ID/      # PKG_DIR, 建议视为只读,ScriptHost目录为可读写
+  source: /mnt/buckyos/bin/$APP_ID/ (只读挂载)
+  init: 首次启动 copy-on-init
+
+### 工具层
+- /opt/buckyos/tools/store/      # 全局只读,所有 App 共享
+- /opt/buckyos/tools/bin/        # 按本 App 授权渲染的 symlink，创建App私有卷是构造
+- /opt/buckyos/tools/deno-cache/ # OverlayFS lower
+- /opt/buckyos/tools/uv-cache/   # OverlayFS lower
+
+### 数据层
+- /opt/buckyos/data/home/$userid/.local/share/$appid/             # 本 App 结构化数据,noexec
+- /mnt/self/                     # 当前 zone CYFS 根, noexec
+- /mnt/$zone_id/                 # 其他 zone CYFS 视图(按授权)
+- /mnt/$node_id/                 # 特定设备的host fs数据(按授权)
+
+## Agent 容器视图
+(继承 App 视图,增加 session 层)
+
+### Agent 工具层(扩展)
+- /opt/buckyos/tools/$sessionid/    # session-bin, 读写可执行
+
+
+### Agent Root (数据层，和App语义不同)
+- /opt/buckyos/data/home/$userid/.local/share/$agentid/            
+  ├── sessions/$SESSION_ID/      # ssession 交付物
+  ├── memory/                    # 跨 session 记忆
+  └── skills/                    # 通用技能
+
+
+## 权限矩阵
+| 卷                      | 读 | 写 | 执行 |
+|-------------------------|----|----|------|
+| PKG_DIR                 | ✓  | ✓  | ✓    |
+| tools/store             | ✓  | ✗  | ✓    |
+| tools/bin (App)         | ✓  | ✗  | ✓    |
+| tools/$sessionid(Agent) | ✓  | ✓  | ✓    |
+| data/                   | ✓  | ✓  | ✗    |
+| /mnt/<zone>             | ✓  | ✓* | ✗    |
 
 
 
