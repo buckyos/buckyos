@@ -1,4 +1,4 @@
-use crate::PermissionRequest;
+use crate::{PermissionRequest, RdbInstanceConfig};
 use ::kRPC::*;
 use name_lib::DID;
 use ndn_lib::ObjId;
@@ -89,6 +89,8 @@ pub struct ServiceInstallConfigTips {
     pub start_param: Option<String>,
     #[serde(flatten)]
     pub custom_config: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub rdb_instances: HashMap<String, RdbInstanceConfig>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

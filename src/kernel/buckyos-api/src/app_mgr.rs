@@ -1,6 +1,6 @@
 //system control panel client
 
-use crate::AppDoc;
+use crate::{AppDoc, RdbInstanceConfig};
 use ::kRPC::*;
 use log::warn;
 use name_lib::DID;
@@ -121,7 +121,7 @@ pub struct ServiceInstallConfig {
     #[serde(default)]
     pub allow_public_access: bool,
     #[serde(default)]
-    pub rdb_instances : HashMap<String, String>,
+    pub rdb_instances :  HashMap<String, RdbInstanceConfig>,
     
 }
 
