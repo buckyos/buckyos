@@ -171,7 +171,7 @@ p, app, /config/users/*/agents/{app}/info,read|write,allow
 p, app, /config/services/*/info,read,allow
 p, app, /config/services/{app}/*,read|write,allow
 
-p, admin, /config/boot/*, read,allow
+p, admin,/config/boot/*, read,allow
 p, admin,/config/system/rbac/policy,read,allow
 p, admin,/config/system/scheduler/*,read,allow
 p, admin,/config/agents/*/doc,read|write,allow

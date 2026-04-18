@@ -41,6 +41,13 @@ pub struct SystemConfigValue {
     pub is_changed: bool,
 }
 
+fn summarize_session_token(session_token: Option<&str>) -> String {
+    match session_token {
+        Some(token) => format!("present(len={})", token.len()),
+        None => "None".to_string(),
+    }
+}
+
 impl SystemConfigValue {
     pub fn new(value: String, version: u64, is_changed: bool) -> Self {
         Self {
@@ -160,7 +167,7 @@ impl SystemConfigClient {
         info!(
             "system config client is created,service_url:{},session_token:{}",
             service_url.unwrap_or("http://127.0.0.1:3200/kapi/system_config"),
-            real_session_token.clone().unwrap_or("None".to_string())
+            summarize_session_token(session_token)
         );
         let key_control = vec!["services/".to_string(), "system/rbac/".to_string()];
         let cache_key_control = OnceCell::new_with(Some(key_control));

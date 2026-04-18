@@ -23,7 +23,11 @@ use std::sync::Arc;
 use std::{net::IpAddr, process::exit};
 
 const ACTIVE_SERVICE_MAIN_PORT: u16 = 3182;
-const START_CONFIG_OPTIONAL_FIELDS: &[&str] = &["ai_provider_config", "jarvis_msg_tunnel_config"];
+const START_CONFIG_OPTIONAL_FIELDS: &[&str] = &[
+    "ai_provider_config",
+    "jarvis_msg_tunnel_config",
+    "enabled_features",
+];
 
 #[derive(Clone)]
 struct ActiveServer {
@@ -34,6 +38,46 @@ impl ActiveServer {
     pub fn new() -> Self {
         ActiveServer {
             device_mini_info: DeviceMiniInfo::default(),
+        }
+    }
+
+    fn is_sensitive_param_key(key: &str) -> bool {
+        matches!(
+            key,
+            "private_key"
+                | "device_private_key"
+                | "boot_config_jwt"
+                | "device_doc_jwt"
+                | "device_mini_doc_jwt"
+                | "ood_jwt"
+                | "sn_rpc_token"
+                | "access_token"
+                | "admin_password_hash"
+                | "friend_passcode"
+        )
+    }
+
+    fn redact_sensitive_json(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut redacted = Map::new();
+                for (key, child_value) in map {
+                    if Self::is_sensitive_param_key(key.as_str()) {
+                        let value_len = child_value.as_str().map(|v| v.len()).unwrap_or(0);
+                        redacted.insert(
+                            key.clone(),
+                            Value::String(format!("[redacted:{} chars]", value_len)),
+                        );
+                    } else {
+                        redacted.insert(key.clone(), Self::redact_sensitive_json(child_value));
+                    }
+                }
+                Value::Object(redacted)
+            }
+            Value::Array(values) => {
+                Value::Array(values.iter().map(Self::redact_sensitive_json).collect())
+            }
+            _ => value.clone(),
         }
     }
 
@@ -110,7 +154,10 @@ impl ActiveServer {
             return Err(RPCErrors::ParseRequestError("Invalid params, missing required fields: owner_public_key_param, device_doc_jwt, device_mini_doc_jwt, device_private_key, zone_name".to_string()));
         }
 
-        info!("handle_active_by_wallet params: {:?}", req.params);
+        info!(
+            "handle_active_by_wallet params: {}",
+            Self::redact_sensitive_json(&req.params)
+        );
 
         let boot_config_jwt = boot_config_jwt.unwrap().as_str().unwrap();
         let zone_name = zone_name.unwrap().as_str().unwrap();
@@ -219,8 +266,9 @@ impl ActiveServer {
             };
 
             info!(
-                "Bind new zone_boot_jwt {} to sn: {}",
-                boot_config_jwt, sn_url
+                "Bind new zone boot config to sn: {}, boot_config_jwt_len={}",
+                sn_url,
+                boot_config_jwt.len()
             );
             let user_domain = if is_self_domain {
                 Some(zone_name.to_string())
@@ -866,7 +914,7 @@ impl ActiveServer {
         let zone_config = zone_boot_config_str.unwrap().as_str().unwrap();
         let private_key = private_key.unwrap().as_str().unwrap();
 
-        info!("will sign zone config: {}", zone_config);
+        info!("will sign zone config, bytes={}", zone_config.len());
         let mut zone_boot_config: ZoneBootConfig =
             serde_json::from_str(zone_config).map_err(|e| {
                 RPCErrors::ParseRequestError(format!("Invalid zone config: {}", e.to_string()))
@@ -883,12 +931,15 @@ impl ActiveServer {
                         e.to_string()
                     ))
                 })?;
-        info!("zone config jwt: {}", zone_boot_config_jwt.to_string());
+        info!(
+            "zone config jwt generated, bytes={}",
+            zone_boot_config_jwt.to_string().len()
+        );
 
         let device_mini_config_str = device_mini_config_str.unwrap().as_str().unwrap();
         info!(
-            "will sign device mini config: {}",
-            device_mini_config_str.to_string()
+            "will sign device mini config, bytes={}",
+            device_mini_config_str.len()
         );
         let device_mini_config: DeviceMiniConfig = serde_json::from_str(device_mini_config_str)
             .map_err(|e| {
@@ -903,7 +954,10 @@ impl ActiveServer {
                 e.to_string()
             ))
         })?;
-        info!("device mini config jwt: {}", device_mini_config_jwt);
+        info!(
+            "device mini config jwt generated, bytes={}",
+            device_mini_config_jwt.len()
+        );
 
         return Ok(RPCResponse::new(
             RPCResult::Success(json!({
@@ -919,7 +973,7 @@ impl ActiveServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         let device_info_json = serde_json::to_string(&self.device_mini_info).unwrap();
-        info!("device_info_json: {}", device_info_json);
+        info!("serve mini device info, bytes={}", device_info_json.len());
         Ok(http::Response::builder()
             .body(BoxBody::new(
                 Full::new(Bytes::from(device_info_json))

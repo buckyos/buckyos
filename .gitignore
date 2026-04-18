@@ -74,5 +74,6 @@ src/apps/sys_test/dist/
 old/*
 src/apps/sys_test/web/dist/
 src/frame/desktop/dist/favicon.svg
-test/deno.lock
+aicc_remote_runner.toml
+test/aicc_test/rust_runner/targettest/deno.lock
 .claude/

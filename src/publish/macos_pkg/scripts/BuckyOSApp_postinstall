@@ -9,6 +9,7 @@ if [ ! -d "$STAGE_APP" ]; then
 fi
 
 CONSOLE_USER="$(stat -f%Su /dev/console 2>/dev/null || true)"
+CONSOLE_UID=""
 DEST_APP=""
 DEST_PARENT=""
 
@@ -17,6 +18,7 @@ if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ] || [ "$CONSOLE_USER" =
   DEST_PARENT="/Applications"
   DEST_APP="$DEST_PARENT/BuckyOS.app"
 else
+  CONSOLE_UID="$(id -u "$CONSOLE_USER" 2>/dev/null || true)"
   HOME_DIR="$(dscl . -read /Users/"$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
   if [ -n "$HOME_DIR" ] && [ -d "$HOME_DIR" ]; then
     DEST_PARENT="$HOME_DIR/Applications"
@@ -36,4 +38,33 @@ if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" 
   chown -R "$CONSOLE_USER":"$USER_GROUP" "$DEST_APP" || true
 fi
 
+refresh_buckyos_app_registration() {
+  if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
+    return 0
+  fi
+  if [ -z "$CONSOLE_UID" ] || [ ! -d "$DEST_APP" ]; then
+    return 0
+  fi
+
+  LSREGISTER=""
+  for candidate in \
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" \
+    "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+  do
+    if [ -x "$candidate" ]; then
+      LSREGISTER="$candidate"
+      break
+    fi
+  done
+
+  if [ -z "$LSREGISTER" ]; then
+    echo "[BuckyOSApp] postinstall: lsregister not found, skip app registration refresh"
+    return 0
+  fi
+
+  echo "[BuckyOSApp] postinstall: refreshing app registration via lsregister"
+  /bin/launchctl asuser "$CONSOLE_UID" "$LSREGISTER" -f "$DEST_APP" >/dev/null 2>&1 || true
+}
+
 echo "[BuckyOSApp] postinstall: installed to $DEST_APP"
+refresh_buckyos_app_registration

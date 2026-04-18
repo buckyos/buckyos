@@ -110,6 +110,32 @@ def _copytree_filtered(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst, dirs_exist_ok=True, ignore=_ignore_copy_entries)
 
 
+def _write_nsis_license_rtf(source_path: Path, out_path: Path) -> Path:
+    """Convert UTF-8 license text to RTF using built-in Windows PowerShell APIs."""
+
+    source = str(source_path)
+    target = str(out_path)
+    ps_script = (
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "$rtb = New-Object System.Windows.Forms.RichTextBox; "
+        f"$rtb.Text = Get-Content -Raw -Encoding UTF8 '{source}'; "
+        f"[System.IO.File]::WriteAllText('{target}', $rtb.Rtf, [System.Text.Encoding]::ASCII)"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-STA", "-Command", ps_script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "failed to convert license.txt to RTF with PowerShell: "
+            f"{result.stderr.strip() or result.stdout.strip() or 'unknown error'}"
+        )
+    return out_path
+
+
 def load_app_layout(
     project_yaml_path: Path,
     app_key: str,
@@ -372,6 +398,7 @@ def _component_expected_filenames(
             expected,
             [
                 "node_daemon.exe",
+                "stop.ps1",
                 "seed_defaults.ps1",
                 "ensure_firewall_rules.ps1",
                 "uninstall_cleanup.ps1",
@@ -612,9 +639,9 @@ def generate_nsis_script(
         lines.append(f'  ; {comp.name} directory selection')
         lines.append(f'  ${{NSD_CreateLabel}} 0 {y_pos}u 100% 12u "{comp.name} Install Location:"')
         lines.append(f'  Pop $Label')
-        lines.append(f'  ${{NSD_CreateDirRequest}} 0 {y_pos + 14}u 280u 12u "${var_name}"')
+        lines.append(f'  ${{NSD_CreateDirRequest}} 0 {y_pos + 14}u 78% 12u "${var_name}"')
         lines.append(f'  Pop ${dir_req_var}')
-        lines.append(f'  ${{NSD_CreateBrowseButton}} 285u {y_pos + 13}u 60u 14u "Browse..."')
+        lines.append(f'  ${{NSD_CreateBrowseButton}} 80% {y_pos + 13}u 20% 14u "Browse..."')
         lines.append(f'  Pop $0')
         lines.append(f'  ${{NSD_OnClick}} $0 OnBrowse{idx}')
         lines.append("")
@@ -652,10 +679,16 @@ def generate_nsis_script(
     lines.append("; Runtime dependency checks")
     lines.append("Function CheckDockerDesktopForUser")
     lines.append('  StrCpy $DockerCheckCode "0"')
-    lines.append('  nsExec::Exec \'cmd /c "docker version >nul 2>nul"\'')
+    lines.append('  nsExec::Exec \'cmd /c "docker --version >nul 2>nul"\'')
     lines.append("  Pop $0")
     lines.append('  ${If} $0 != 0')
     lines.append('    StrCpy $DockerCheckCode "1"')
+    lines.append("    Return")
+    lines.append("  ${EndIf}")
+    lines.append('  nsExec::Exec \'cmd /c "docker version >nul 2>nul"\'')
+    lines.append("  Pop $0")
+    lines.append('  ${If} $0 != 0')
+    lines.append('    StrCpy $DockerCheckCode "2"')
     lines.append("    Return")
     lines.append("  ${EndIf}")
     lines.append("FunctionEnd")
@@ -732,13 +765,46 @@ def generate_nsis_script(
     lines.append('  ${EndIf}')
     lines.append('  nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
     lines.append('  DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
-    lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
+    lines.append('  ${If} $ExistingBuckyRoot != ""')
+    lines.append('    Push $ExistingBuckyRoot')
+    lines.append('    Call RunStopScript')
+    lines.append('  ${Else}')
+    lines.append('    nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
+    lines.append('  ${EndIf}')
     lines.append('  ${If} $ExistingBuckyRoot != ""')
     lines.append('    ; Backward compatibility: stop/remove legacy Windows service if present')
     lines.append('    nsExec::ExecToLog \'sc stop buckyos\'')
     lines.append("    Sleep 2000")
     lines.append('    nsExec::ExecToLog \'sc delete buckyos\'')
     lines.append('  ${EndIf}')
+    lines.append("FunctionEnd")
+    lines.append("")
+
+    lines.append("Function RunStopScript")
+    lines.append("  Exch $0")
+    lines.append('  ${If} $0 == ""')
+    lines.append("    Return")
+    lines.append('  ${EndIf}')
+    lines.append('  IfFileExists "$0\\bin\\stop.ps1" stop_script_exists stop_script_missing')
+    lines.append("stop_script_exists:")
+    lines.append('  nsExec::ExecToLog \'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$0\\bin\\stop.ps1"\'')
+    lines.append("  Return")
+    lines.append("stop_script_missing:")
+    lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
+    lines.append("FunctionEnd")
+    lines.append("")
+
+    lines.append("Function un.RunStopScript")
+    lines.append("  Exch $0")
+    lines.append('  ${If} $0 == ""')
+    lines.append("    Return")
+    lines.append('  ${EndIf}')
+    lines.append('  IfFileExists "$0\\bin\\stop.ps1" un.stop_script_exists un.stop_script_missing')
+    lines.append("un.stop_script_exists:")
+    lines.append('  nsExec::ExecToLog \'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$0\\bin\\stop.ps1"\'')
+    lines.append("  Return")
+    lines.append("un.stop_script_missing:")
+    lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
     lines.append("FunctionEnd")
     lines.append("")
 
@@ -791,20 +857,18 @@ def generate_nsis_script(
     lines.append('  ; Check Docker Desktop availability for current user context')
     lines.append("  Call CheckDockerDesktopForUser")
     lines.append('  ${If} $DockerCheckCode != "0"')
-    lines.append('    MessageBox MB_YESNO|MB_ICONSTOP "Docker Desktop is required and must be usable by the current user.$\\r$\\nExpected: docker CLI and Docker Engine reachable.$\\r$\\nError code: $DockerCheckCode.$\\r$\\n$\\r$\\nOpen Docker Desktop install guide?" IDYES +2')
-    lines.append("    Abort")
-    lines.append('    ExecShell "open" "https://docs.docker.com/desktop/setup/install/windows-install/"')
-    lines.append("    Abort")
+    lines.append('    ${If} $DockerCheckCode == "1"')
+    lines.append('      MessageBox MB_YESNO|MB_ICONSTOP "Docker Desktop is required.$\\r$\\nThe installer could not find the docker command in the current PATH.$\\r$\\n$\\r$\\nOpen Docker Desktop install guide?" IDYES +2')
+    lines.append("      Abort")
+    lines.append('      ExecShell "open" "https://docs.docker.com/desktop/setup/install/windows-install/"')
+    lines.append("      Abort")
+    lines.append("    ${Else}")
+    lines.append('      MessageBox MB_OK|MB_ICONSTOP "Docker Desktop was found, but Docker Engine is not reachable right now.$\\r$\\nPlease open Docker Desktop, wait until it finishes starting, then retry this step."')
+    lines.append("      Abort")
+    lines.append("    ${EndIf}")
     lines.append("  ${EndIf}")
     lines.append("")
-
-    lines.append("  Call CheckRequiredPorts")
-    lines.append('  ${If} $PortCheckCode != "0"')
-    lines.append('    MessageBox MB_OK|MB_ICONSTOP "Required port $PortCheckPort cannot be bound.$\\r$\\nPlease free ports 3180, 80, and 443 (or stop conflicting services) before installing."')
-    lines.append("    Abort")
-    lines.append("  ${EndIf}")
-    lines.append("")
-
+    
     lines.append("  Call IsVCRedistInstalled")
     lines.append('  ${If} $VCRedistInstalled != "1"')
     if bundled_vcredist and bundled_vcredist.exists():
@@ -848,6 +912,12 @@ def generate_nsis_script(
             if comp.system_service:
                 lines.append("  ; Stop existing service and running processes before overwrite")
                 lines.append("  Call StopExistingBuckyOS")
+                lines.append("  ; Check required ports only when installation actually starts")
+                lines.append("  Call CheckRequiredPorts")
+                lines.append('  ${If} $PortCheckCode != "0"')
+                lines.append('    MessageBox MB_OK|MB_ICONSTOP "Required port $PortCheckPort cannot be bound.$\\r$\\nPlease free ports 3180, 80, and 443 (or stop conflicting services) before installing."')
+                lines.append("    Abort")
+                lines.append("  ${EndIf}")
             lines.append(f'  SetOutPath "${var_name}"')
             lines.append(f'  File /r "{comp_payload}\\*.*"')
         
@@ -948,12 +1018,22 @@ def generate_nsis_script(
         lines.append('  SetRegView 64')
     
     lines.append('  ; Stop old service (for backward compatibility) and current-user daemon')
+    lines.append('  StrCpy $ExistingBuckyRoot ""')
+    lines.append('  ReadRegStr $ExistingBuckyRoot HKCU "Environment" "BUCKYOS_ROOT"')
+    lines.append('  ${If} $ExistingBuckyRoot == ""')
+    lines.append('    ReadRegStr $ExistingBuckyRoot HKCU "Software\\BuckyOS" "InstallDir"')
+    lines.append('  ${EndIf}')
     lines.append('  nsExec::ExecToLog \'sc stop buckyos\'')
     lines.append("  Sleep 3000")
     lines.append('  nsExec::ExecToLog \'sc delete buckyos\'')
     lines.append('  nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
     lines.append('  DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
-    lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
+    lines.append('  ${If} $ExistingBuckyRoot != ""')
+    lines.append('    Push $ExistingBuckyRoot')
+    lines.append('    Call un.RunStopScript')
+    lines.append('  ${Else}')
+    lines.append('    nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
+    lines.append('  ${EndIf}')
     lines.append("")
     
     # Remove shortcuts for bundle components
@@ -973,12 +1053,13 @@ def generate_nsis_script(
         lines.append(f'  ${{If}} $0 != ""')
         if comp.system_service:
             lines.append(f'    ; Stop running processes and old service for service component')
-            lines.append(f'    nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
-            lines.append(f'    DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
-            lines.append(f'    nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
             lines.append(f'    nsExec::ExecToLog \'sc stop buckyos\'')
             lines.append("    Sleep 3000")
             lines.append(f'    nsExec::ExecToLog \'sc delete buckyos\'')
+            lines.append(f'    nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
+            lines.append(f'    DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
+            lines.append(f'    Push $0')
+            lines.append(f'    Call un.RunStopScript')
             lines.append(f'    ; Run cleanup script for service component')
             lines.append(f'    nsExec::ExecToLog \'powershell.exe -ExecutionPolicy Bypass -File "$0\\scripts\\uninstall_cleanup.ps1"\'')
             lines.append(f'    RMDir /r "$0\\.buckyos_installer_defaults"')
@@ -1113,6 +1194,12 @@ def build_win_installer(
     
     # Generate NSIS script
     license_file = WIN_PKG_PROJECT_DIR / "license.txt"
+    staged_license_file: Path | None = None
+    if license_file.exists():
+        staged_license_file = _write_nsis_license_rtf(
+            license_file,
+            work_dir / "license.rtf",
+        )
     generate_nsis_script(
         title="BuckyOS",
         version=version,
@@ -1120,7 +1207,7 @@ def build_win_installer(
         components=components,
         payload_dir=payload_dir,
         out_path=nsi_file,
-        license_file=license_file if license_file.exists() else None,
+        license_file=staged_license_file,
         bundled_vcredist=(WIN_PKG_PROJECT_DIR / "vcredist_x64.exe"),
     )
     print(f"[build] Generated NSIS script: {nsi_file}")

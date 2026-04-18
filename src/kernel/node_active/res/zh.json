@@ -128,7 +128,7 @@
     "click_to_access": "点击",
     "access_link": "访问",
     "default_credentials": "登录用户名:{{username}}.",
-    "refresh_note": "首次激活大概需要2分分钟,打开页面如有错误请多刷新几次.",
+    "refresh_note": "系统仍在完成初始化，预计 {{time}} 后可访问。如页面报错，请多刷新几次。",
     "close_and_redirect": "关闭并跳转",
     "error_password_mismatch": "两次输入的密码不一致",
     "error_password_too_short": "密码长度不能小于8",

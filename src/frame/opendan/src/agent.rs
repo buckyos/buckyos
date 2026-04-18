@@ -517,7 +517,7 @@ impl AIAgent {
     async fn run_self_check_timer_loop(self: Arc<Self>) {
         let interval_secs = self.cfg.self_check_timer_secs;
         let interval = Duration::from_secs(interval_secs);
-        info!(
+        debug!(
             "agent.self_check_timer.started: agent={} did={} interval_secs={}",
             self.agent_name,
             self.did.to_string(),
@@ -528,7 +528,7 @@ impl AIAgent {
         loop {
             sleep(interval).await;
             tick = tick.saturating_add(1);
-            info!(
+            debug!(
                 "agent.self_check_timer.tick: agent={} did={} tick={} interval_secs={}",
                 self.agent_name,
                 self.did.to_string(),

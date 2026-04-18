@@ -35,10 +35,11 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 
 const DEFAULT_OOD_ID: &str = "ood1";
-const DEFAULT_SN_OPENAI_MODELS: &[&str] = &["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"];
+const DEFAULT_SN_OPENAI_MODELS: &[&str] =
+    &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
 const DEFAULT_SN_OPENAI_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
 const SN_OPENAI_MODELS_API: &str = "https://sn.buckyos.ai/api/v1/ai/models";
-const SN_OPENAI_CHAT_COMPLETIONS_API: &str = "https://sn.buckyos.ai/api/v1/ai/chat/completions";
+const SN_OPENAI_RESPONSES_API: &str = "https://sn.buckyos.ai/api/v1/ai/";
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AIProviderConfigSummary {
@@ -62,6 +63,12 @@ pub struct JarvisMsgTunnelConfigSummary {
     pub telegram_account_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct EnabledFeaturesSummary {
+    #[serde(default)]
+    pub llm_router: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StartConfigSummary {
     pub user_name: String,
@@ -72,6 +79,8 @@ pub struct StartConfigSummary {
     pub sn_active_code: String,
     #[serde(default)]
     pub ood_jwt: Option<String>,
+    #[serde(default)]
+    pub enabled_features: EnabledFeaturesSummary,
     #[serde(default)]
     pub ai_provider_config: AIProviderConfigSummary,
     #[serde(default)]
@@ -325,7 +334,7 @@ impl SystemConfigBuilder {
         )
         .await?;
         self.insert_json("services/aicc/spec", &service_spec)?;
-        let sn_openai_models = if trim_to_option(config.sn_active_code.as_str()).is_some() {
+        let sn_openai_models = if config.llm_router_enabled() {
             fetch_sn_openai_models(config.user_name.as_str()).await
         } else {
             None
@@ -698,7 +707,7 @@ fn build_aicc_settings_with_sn_models(
         }));
     }
 
-    if trim_to_option(config.sn_active_code.as_str()).is_some() {
+    if config.llm_router_enabled() {
         let sn_model_settings = build_sn_openai_model_settings(sn_openai_models);
         if !openai_alias_map.contains_key("llm.default") {
             openai_alias_map.insert(
@@ -728,7 +737,7 @@ fn build_aicc_settings_with_sn_models(
         openai_instances.push(json!({
             "instance_id": "sn-openai-default",
             "provider_type": "sn-openai",
-            "base_url": SN_OPENAI_CHAT_COMPLETIONS_API,
+            "base_url": SN_OPENAI_RESPONSES_API,
             "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
             "models": sn_model_settings.models,
             "default_model": sn_model_settings.default_model,
@@ -842,12 +851,10 @@ fn build_sn_openai_model_settings(sn_openai_models: Option<&[String]>) -> SnOpen
             .collect::<Vec<_>>();
     }
 
-    let default_model =
-        pick_preferred_model(models.as_slice(), &["gpt-5-mini", "gpt-5", "gpt-4.1-mini"])
-            .unwrap_or_else(|| models[0].clone());
-    let plan_default_model =
-        pick_preferred_model(models.as_slice(), &["gpt-5", "gpt-5-mini", "gpt-4.1"])
-            .unwrap_or_else(|| default_model.clone());
+    let default_model = pick_preferred_model(models.as_slice(), &["gpt-5.4-mini", "gpt-5.4"])
+        .unwrap_or_else(|| models[0].clone());
+    let plan_default_model = pick_preferred_model(models.as_slice(), &["gpt-5.4", "gpt-5.4-mini"])
+        .unwrap_or_else(|| default_model.clone());
 
     let mut image_models = models
         .iter()
@@ -1141,6 +1148,21 @@ impl TryFrom<&Value> for StartConfigSummary {
                 .ok_or_else(|| anyhow!("start_config.json missing public_key"))?,
         )
         .map_err(|e| anyhow!("Failed to parse public key: {}", e))?;
+        let sn_active_code = value
+            .get("sn_active_code")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let mut enabled_features: EnabledFeaturesSummary = serde_json::from_value(
+            value
+                .get("enabled_features")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        )
+        .map_err(|e| anyhow!("Failed to parse enabled_features: {}", e))?;
+        if !enabled_features.llm_router && trim_to_option(sn_active_code.as_str()).is_some() {
+            enabled_features.llm_router = true;
+        }
         Ok(Self {
             user_name: value
                 .get("user_name")
@@ -1158,16 +1180,13 @@ impl TryFrom<&Value> for StartConfigSummary {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("start_config.json missing zone_name"))?
                 .to_string(),
-            sn_active_code: value
-                .get("sn_active_code")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            sn_active_code,
 
             ood_jwt: value
                 .get("ood_jwt")
                 .and_then(Value::as_str)
                 .map(|s| s.to_string()),
+            enabled_features,
             ai_provider_config: serde_json::from_value(
                 value
                     .get("ai_provider_config")
@@ -1189,6 +1208,10 @@ impl TryFrom<&Value> for StartConfigSummary {
 impl StartConfigSummary {
     pub fn from_value(value: &Value) -> Result<Self> {
         Self::try_from(value)
+    }
+
+    pub fn llm_router_enabled(&self) -> bool {
+        self.enabled_features.llm_router
     }
 }
 
@@ -1332,13 +1355,40 @@ mod tests {
         );
         assert_eq!(
             settings["openai"]["instances"][0]["base_url"],
-            "https://sn.buckyos.ai/api/v1/ai/chat/completions"
+            "https://sn.buckyos.ai/api/v1/ai/"
         );
         assert_eq!(
             settings["openai"]["instances"][0]["auth_mode"],
             "device_jwt"
         );
-        assert_eq!(settings["openai"]["alias_map"]["llm.plan.default"], "gpt-5");
+        assert_eq!(settings["openai"]["alias_map"]["llm.plan.default"], "gpt-5.4");
+    }
+
+    #[test]
+    fn build_aicc_settings_adds_sn_provider_when_llm_router_feature_enabled() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "public_key": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+            },
+            "zone_name": "did:web:alice.example.com",
+            "enabled_features": {
+                "llm_router": true
+            }
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+
+        let settings = build_aicc_settings(&summary);
+
+        assert_eq!(summary.llm_router_enabled(), true);
+        assert_eq!(settings["openai"]["enabled"], true);
+        assert_eq!(
+            settings["openai"]["instances"][0]["instance_id"],
+            "sn-openai-default"
+        );
     }
 
     #[test]

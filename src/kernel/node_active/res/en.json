@@ -128,7 +128,7 @@
     "click_to_access": "Click",
     "access_link": "to access",
     "default_credentials": "Login username: {{username}}.",
-    "refresh_note": "The first activation may take about 2 minutes. If the page shows errors, refresh a few more times.",
+    "refresh_note": "Activation is still completing. It should be ready in about {{time}}. If the page shows errors, refresh a few more times.",
     "close_and_redirect": "Close and redirect",
     "error_password_mismatch": "The two passwords entered do not match",
     "error_password_too_short": "Password length cannot be less than 8",

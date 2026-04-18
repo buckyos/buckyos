@@ -128,7 +128,7 @@
     "click_to_access": "クリック",
     "access_link": "してアクセス",
     "default_credentials": "ログインユーザー名: {{username}}.",
-    "refresh_note": "初回の有効化には約 2 分かかる場合があります。ページでエラーが表示されたら、数回リロードしてください。",
+    "refresh_note": "システムはまだ初期化中です。あと {{time}} ほどで利用可能になる見込みです。ページにエラーが表示された場合は、数回リロードしてください。",
     "close_and_redirect": "閉じて移動",
     "error_password_mismatch": "入力した 2 つのパスワードが一致しません",
     "error_password_too_short": "パスワードは 8 文字未満にできません",

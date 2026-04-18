@@ -1299,7 +1299,7 @@ impl BuckyOSRuntime {
                     RPCSessionToken::from_string(session_token.as_str())?;
                 drop(session_token);
 
-                info!("real_session_token: {:?}", authenticated_session_token);
+                // info!("real_session_token: {:?}", authenticated_session_token);
                 let appid = authenticated_session_token
                     .appid
                     .clone()

@@ -128,7 +128,7 @@
     "click_to_access": "Klicken",
     "access_link": "zum Zugriff",
     "default_credentials": "Anmeldename: {{username}}.",
-    "refresh_note": "Die erste Aktivierung kann etwa 2 Minuten dauern. Wenn die Seite Fehler anzeigt, aktualisiere sie noch ein paar Mal.",
+    "refresh_note": "Die Aktivierung wird noch abgeschlossen. Sie sollte in etwa {{time}} bereit sein. Wenn die Seite Fehler anzeigt, aktualisiere sie noch ein paar Mal.",
     "close_and_redirect": "Schliessen und weiterleiten",
     "error_password_mismatch": "Die beiden eingegebenen Passwoerter stimmen nicht ueberein",
     "error_password_too_short": "Das Passwort darf nicht kuerzer als 8 Zeichen sein",

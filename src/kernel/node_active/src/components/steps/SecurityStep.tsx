@@ -26,6 +26,7 @@ import {
   check_sn_active_code,
   login_by_password_and_activecode,
   register_sn_user,
+  resolveEnabledFeatures,
   WEB3_BASE_HOST,
   validate_bucky_username,
 } from "../../../active_lib";
@@ -280,6 +281,10 @@ const SecurityStep = ({
         sn_user_name: normalizedUsername,
         owner_user_name: isWalletRuntime ? wizardData.owner_user_name : normalizedUsername,
         sn_active_code: isWalletRuntime ? wizardData.sn_active_code : normalizedCode,
+        enabled_features: resolveEnabledFeatures(
+          isWalletRuntime ? wizardData.sn_active_code : normalizedCode,
+          wizardData.enabled_features,
+        ),
         admin_password_hash: hash,
         owner_access_token: nextOwnerAccessToken,
         friend_passcode: "",

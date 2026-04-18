@@ -480,6 +480,15 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
 }
 
 #[test]
+fn agent_bootstrap_script_materializes_package_without_preserving_timestamps() {
+    let loader = build_agent_loader(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64));
+    let script = loader.test_agent_runtime_bootstrap_script(14060);
+
+    assert!(script.contains("cp -RP --update=none \"$PACKAGE_ROOT\"/. \"$DATA_UPPER\"/"));
+    assert!(!script.contains("cp -a -n \"$PACKAGE_ROOT\"/. \"$DATA_UPPER\"/"));
+}
+
+#[test]
 fn agent_stop_command_uses_docker_on_windows() {
     let loader = build_agent_loader(PlatformTarget::new(
         PlatformOs::Windows,

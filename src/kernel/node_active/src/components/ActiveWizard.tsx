@@ -56,6 +56,9 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
             owner_public_key: walletUser.public_key,
             sn_user_name: (walletUser.sn_username || "").toLowerCase(),
             sn_active_code: null,
+            enabled_features: {
+              llm_router: true,
+            },
             admin_password_hash: walletUser.password_hash || "",
           });
           if (!cancelled) setWizardData(data);

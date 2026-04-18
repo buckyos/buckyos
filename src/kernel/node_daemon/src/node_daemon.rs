@@ -1068,6 +1068,42 @@ async fn get_system_config_client(
     }
 }
 
+#[cfg(unix)]
+fn reap_exited_children_nonblocking() -> usize {
+    let mut reaped = 0usize;
+
+    loop {
+        let mut status = 0i32;
+        let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+        if pid > 0 {
+            reaped += 1;
+            info!("reaped exited child process pid={} status={}", pid, status);
+            continue;
+        }
+
+        if pid == 0 {
+            break;
+        }
+
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::ECHILD) => break,
+            Some(libc::EINTR) => continue,
+            _ => {
+                warn!("waitpid(-1, WNOHANG) failed: {}", err);
+                break;
+            }
+        }
+    }
+
+    reaped
+}
+
+#[cfg(not(unix))]
+fn reap_exited_children_nonblocking() -> usize {
+    0
+}
+
 async fn node_daemon_main_loop(
     node_id: &str,
     node_host_name: &str,
@@ -1081,6 +1117,10 @@ async fn node_daemon_main_loop(
     let mut node_gateway_info_id: Option<ObjId> = None;
 
     loop {
+        let reaped = reap_exited_children_nonblocking();
+        if reaped > 0 {
+            info!("node daemon reaped {} exited child process(es)", reaped);
+        }
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         loop_step += 1;
         info!("node daemon main loop step:{}", loop_step);

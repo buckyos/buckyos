@@ -272,6 +272,22 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
             shutil.copy2(s, d)
 
 
+def _normalize_tree_modes(root: Path) -> None:
+    if not root.exists():
+        return
+
+    paths = [root, *sorted(root.rglob("*"))]
+    for path in paths:
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            path.chmod(0o755)
+            continue
+        if path.is_file():
+            is_executable = bool(path.stat().st_mode & 0o111)
+            path.chmod(0o755 if is_executable else 0o644)
+
+
 def _run(cmd: List[str], dry_run: bool, cwd: Path | None = None) -> None:
     print("+", " ".join(cmd))
     if dry_run:
@@ -456,6 +472,9 @@ def build_deb(
     else:
         payload_root.mkdir(parents=True, exist_ok=True)
         _stage_buckyos_app_root(src_root=src_root, dst_root=payload_root, layout=layout)
+        deb_dir.chmod(0o755)
+        (deb_dir / "opt").chmod(0o755)
+        _normalize_tree_modes(payload_root)
 
     # Ensure maintainer scripts are executable
     for script_name in ("preinst", "postinst", "prerm", "postrm"):
@@ -466,18 +485,20 @@ def build_deb(
             else:
                 script_path.chmod(0o755)
 
-    if dry_run:
-        print(f"[dry-run] chmod -R 755 {deb_dir}")
-    else:
-        _run(["chmod", "-R", "755", str(deb_dir)], dry_run=False)
-
     out_dir.mkdir(parents=True, exist_ok=True)
     out_deb = out_dir / f"buckyos-linux-{deb_arch}-{version}.deb"
+    build_cmd = [
+        "dpkg-deb",
+        "--build",
+        "--root-owner-group",
+        str(deb_dir),
+        str(out_deb),
+    ]
 
     if dry_run:
-        print(f"[dry-run] dpkg-deb --build {deb_dir} {out_deb}")
+        print(f"[dry-run] {' '.join(build_cmd)}")
     else:
-        _run(["dpkg-deb", "--build", str(deb_dir), str(out_deb)], dry_run=False, cwd=work_root)
+        _run(build_cmd, dry_run=False, cwd=work_root)
     return out_deb
 
 

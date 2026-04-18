@@ -1,6 +1,6 @@
 import { buckyos } from 'buckyos';
 
-import { ActiveConfig, ActiveWizzardData, GatewayType, JsonValue } from "./src/types";
+import { ActiveConfig, ActiveWizzardData, EnabledFeatures, GatewayType, JsonValue } from "./src/types";
 
 export let SN_BASE_HOST:string = "buckyos.ai";
 export let SN_HOST:string = "sn." + SN_BASE_HOST;
@@ -45,6 +45,17 @@ export async function init_active_lib(config: ActiveConfig) {
     TELEGRAM_ACCOUNT_ID_TUTORIAL_URL =
         config.telegram_account_id_tutorial_url ||
         TELEGRAM_ACCOUNT_ID_TUTORIAL_URL;
+}
+
+export function resolveEnabledFeatures(
+    snActiveCode: string | null | undefined,
+    explicit?: Partial<EnabledFeatures> | null
+): EnabledFeatures {
+    const hasActiveCode =
+        typeof snActiveCode === "string" && snActiveCode.trim().length > 0;
+    return {
+        llm_router: Boolean(explicit?.llm_router) || hasActiveCode,
+    };
 }
 
 export async function createInitialWizardData (initial?: Partial<ActiveWizzardData>): Promise<ActiveWizzardData> {
@@ -94,6 +105,10 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
             telegram_account_id: "",
         },
         ...initial,
+        enabled_features: resolveEnabledFeatures(
+            initial?.sn_active_code,
+            initial?.enabled_features
+        ),
     };
     console.log("createInitialWizardData result",result);
     return result;
@@ -480,6 +495,10 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         ai_provider_config: data.ai_provider_config,
         jarvis_msg_tunnel_config: data.jarvis_msg_tunnel_config,
         sn_active_code: data.sn_active_code,
+        enabled_features: resolveEnabledFeatures(
+            data.sn_active_code,
+            data.enabled_features
+        ),
 
         sn_url: SN_API_URL,
         sn_username: data.sn_user_name,
@@ -568,6 +587,10 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
         ai_provider_config:data.ai_provider_config,
         jarvis_msg_tunnel_config:data.jarvis_msg_tunnel_config,
         sn_active_code:data.sn_active_code,
+        enabled_features: resolveEnabledFeatures(
+            data.sn_active_code,
+            data.enabled_features
+        ),
         sn_username:data.sn_user_name,
         sn_url:sn_url
     });

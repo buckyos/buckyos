@@ -522,7 +522,7 @@ def _write_distribution_xml(
     # Optional HTML screens (if present in resources).
     for tag, filename in (("welcome", "welcome.html"), ("license", "license.html"), ("conclusion", "conclusion.html")):
         if (resources_dir / filename).exists():
-            lines.append(f'  <{tag} file="{filename}" />')
+            lines.append(f'  <{tag} file="{filename}" mime-type="text/html" />')
 
     lines.append("  <choices-outline>")
     # Required first, then optional.

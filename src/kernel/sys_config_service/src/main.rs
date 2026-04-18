@@ -100,8 +100,8 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
 
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     info!(
-        "GET: full_res_path:{},real_key_path:{:?},appid:{},userid:{},session_token:{:?}",
-        full_res_path, real_key_path, appid, userid, session_token
+        "GET: full_res_path:{},real_key_path:{:?},appid:{},userid:{}",
+        full_res_path, real_key_path, appid, userid
     );
     let is_allowed = enforce(userid, Some(appid), full_res_path.as_str(), "read").await;
     if !is_allowed {
@@ -172,7 +172,7 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
 
     //do business logic
     let store = SYS_STORE.lock().await;
-    info!("Set key:[{}] to value:[{}]", key, new_value);
+    info!("Set key:[{}], value_len={}", key, new_value.len());
     store
         .set(real_key_path, String::from(new_value))
         .await
@@ -238,7 +238,7 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
 
     //do business logic
     let store = SYS_STORE.lock().await;
-    info!("Create key:[{}] to value:[{}]", key, new_value);
+    info!("Create key:[{}], value_len={}", key, new_value.len());
     store
         .create(&real_key_path, new_value)
         .await
@@ -713,25 +713,20 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
 
         if devcie_key.is_some() {
             let devcie_key = devcie_key.unwrap();
-            let device_key_str = serde_json::to_string(&devcie_key).unwrap();
             let real_key = DecodingKey::from_jwk(&devcie_key).unwrap();
             TRUST_KEYS
                 .lock()
                 .await
                 .insert(device_doc.name.clone(), real_key.clone());
-            info!(
-                "Insert device name:[{}] - key:[{}] to trust keys",
-                device_doc.name, device_key_str
-            );
+            info!("Insert device name:[{}] to trust keys", device_doc.name);
 
             TRUST_KEYS
                 .lock()
                 .await
                 .insert(device_doc.id.to_string(), real_key);
             info!(
-                "Insert device did:[{}] - key:[{}] to trust keys",
-                device_doc.id.to_string(),
-                device_key_str
+                "Insert device did:[{}] to trust keys",
+                device_doc.id.to_string()
             );
         }
     } else {
@@ -745,8 +740,14 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
         let rbac_model = rbac_model.unwrap();
         let rbac_policy = rbac_policy.unwrap();
         if rbac_model.is_some() && rbac_policy.is_some() {
-            info!("model config: {}", rbac_model.clone().unwrap());
-            info!("policy config: {}", rbac_policy.clone().unwrap());
+            info!(
+                "model config loaded, bytes={}",
+                rbac_model.clone().unwrap().len()
+            );
+            info!(
+                "policy config loaded, bytes={}",
+                rbac_policy.clone().unwrap().len()
+            );
             rbac::create_enforcer(
                 Some(rbac_model.unwrap().trim()),
                 Some(rbac_policy.unwrap().trim()),

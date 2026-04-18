@@ -197,11 +197,37 @@ const App = () => {
               spacing={2}
               sx={{ mb: 3 }}
             >
-              <Box>
+              <Box sx={{ minWidth: 0, width: { xs: "100%", sm: "auto" } }}>
                 <Typography variant="h4">{t("active_title")}</Typography>
                 {isWalletRuntime && walletUser?.user_name && (
-                  <Stack direction="row" spacing={1} alignItems="center" mt={0.5} flexWrap="wrap">
-                    <Chip size="small" label={t("wallet_device_owner", { user_name: walletUser.user_name, public_key: walletPubKeyDisplay })} />
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    mt={0.5}
+                    flexWrap="wrap"
+                    sx={{ minWidth: 0, width: { xs: "100%", sm: "auto" } }}
+                  >
+                    <Chip
+                      size="small"
+                      label={t("wallet_device_owner", {
+                        user_name: walletUser.user_name,
+                        public_key: walletPubKeyDisplay,
+                      })}
+                      sx={{
+                        maxWidth: { xs: "100%", sm: "fit-content" },
+                        height: { xs: "auto", sm: 32 },
+                        alignItems: { xs: "flex-start", sm: "center" },
+                        "& .MuiChip-label": {
+                          display: "block",
+                          whiteSpace: { xs: "normal", sm: "nowrap" },
+                          overflowWrap: { xs: "anywhere", sm: "normal" },
+                          wordBreak: { xs: "break-word", sm: "normal" },
+                          lineHeight: { xs: 1.4, sm: "32px" },
+                          py: { xs: 0.75, sm: 0 },
+                        },
+                      }}
+                    />
                   </Stack>
                 )}
               </Box>

@@ -48,7 +48,7 @@
 
 ### L2：Provider 协议层（必须全绿）
 
-对 `openai.rs` / `gimini.rs` 的请求-响应语义做协议测试：
+对 `openai.rs` / `gimini.rs` / `claude.rs` 的请求-响应语义做协议测试：
 
 - 2xx 正常返回
 - 4xx 不可重试错误
@@ -196,7 +196,7 @@
 - `conc_01_task_id_uniqueness_under_concurrency`：输入并发 complete 请求，经过任务创建流程，最终应输出唯一 `task_id` 集合。
 - `conc_02_registry_hot_update_route_consistency`：输入注册表热更新与路由并发场景，经过读写并发流程，最终应输出路由稳定可用。
 
-### 4.7 Adapter 协议测试（OpenAI/Gimini 各 6）
+### 4.7 Adapter 协议测试（OpenAI/Gimini/Claude）
 
 - `adapter_xx_01_http_200_success`：输入 provider 返回 200 合法响应，经过 adapter 解析流程，最终应输出成功启动。
 - `adapter_xx_02_http_429_retryable`：输入 provider 返回 429，经过错误分类流程，最终应输出可重试错误。
@@ -204,6 +204,17 @@
 - `adapter_xx_04_http_400_fatal`：输入 provider 返回 400，经过错误分类流程，最终应输出不可重试错误。
 - `adapter_xx_05_invalid_json_fatal`：输入 200 但 body 非法 JSON，经过解析流程，最终应输出不可重试错误。
 - `adapter_xx_06_timeout_or_network_error_classified`：输入网络超时/连接失败，经过错误分类流程，最终应输出可重试错误。
+
+说明：
+
+- `xx` 取值为 `openai` / `gimini` / `claude`
+- Claude 当前最小集建议与 OpenAI 对齐，包含：
+    - `adapter_claude_01_http_200_success`
+    - `adapter_claude_02_http_429_retryable`
+    - `adapter_claude_03_http_503_retryable`
+    - `adapter_claude_04_http_400_fatal`
+    - `adapter_claude_05_invalid_json_fatal`
+    - `adapter_claude_06_timeout_or_network_error_classified`
 
 ### 4.8 协议规范层 - Base64 资源（8）
 
@@ -353,6 +364,7 @@ cargo test -p aicc obs_
 cargo test -p aicc conc_
 cargo test -p aicc adapter_openai_
 cargo test -p aicc adapter_gimini_
+cargo test -p aicc adapter_claude_
 
 # 协议规范层
 cargo test -p aicc proto_b64_
@@ -494,7 +506,8 @@ kRPC 直连 AICC 链路建议（不经过 gateway）：
     - 跨租户 cancel 拒绝
     - base64 超限/非法 mime 拒绝
 - 协议测试证据：
-    - openai/gimini 各至少 6 条
+    - openai/gimini/claude 各至少 6 条
+    - 真实场景用例需提供“仅命中目标 provider”的日志证据（含 `primary_instance`、`provider_model`，且无跨 provider fallback）
 - 失败路径证据：
     - `model_alias_not_mapped`
     - `provider_start_failed`
@@ -720,11 +733,12 @@ impl FakeArtifactStorage {
     - base64 超限/非法 mime 拒绝
     - URL 无 scheme 拒绝
 - 协议测试证据：
-    - openai/gimini 各至少 6 条
+    - openai/gimini/claude 各至少 6 条
     - Base64 协议测试至少 8 条
     - URL 协议测试至少 6 条
     - 各模型特定格式测试至少 10 条
     - Streaming 协议测试至少 8 条
+    - 真实场景用例需提供“仅命中目标 provider”的日志证据（含 `primary_instance`、`provider_model`，且无跨 provider fallback）
 - 失败路径证据：
     - `model_alias_not_mapped`
     - `provider_start_failed`
@@ -745,26 +759,32 @@ impl FakeArtifactStorage {
 
 ## 11. 远程调用用例实现位置
 
-- kRPC 直连 AICC 用例：`src/kernel/buckyos-api/tests/aicc_krpc_remote_tests.rs`
-- gateway 路径用例：`src/kernel/buckyos-api/tests/aicc_gateway_remote_tests.rs`
-- 公共测试辅助（mock RPC server、请求构造、endpoint 解析）：`src/kernel/buckyos-api/tests/aicc_remote_common.rs`
+- 统一远程用例入口：`test/aicc_test/aicc_remote_runner.ts`
+- kRPC 直连 / gateway / system_config / workflow 远程场景均整合为 runner cases 执行
+- Rust 子执行器（AiccClient 路径）：`test/aicc_test/rust_runner/src/main.rs`
+- 运行配置：`test/aicc_test/aicc_remote_runner.toml`
 
 ## 12. 复杂场景真实模型单测（gateway 路径，新增）
 
 ### 12.1 实现位置
 
-- `src/frame/aicc/tests/workflow_complex_real_env_tests.rs`
-- 用例名：`workflow_real_01_gateway_complex_scenario_protocol_mix`
+- `src/frame/aicc/tests/`
+- 用例名（OpenAI）：`workflow_real_01_gateway_complex_scenario_protocol_mix_openai`
+- 用例名（Gemini）：`workflow_real_02_gateway_complex_scenario_protocol_mix_gemini`
+- 用例名（Claude）：`workflow_real_03_gateway_complex_scenario_protocol_mix_claude`
 
 ### 12.2 设计说明（降低操作复杂度）
 
 - 必须经过目标设备 `gateway`：复用既有 `AICC_GATEWAY_HOST`（或 `AICC_HOST`）解析 `/kapi/aicc` 与 `/kapi/system_config`
 - 复用既有认证变量链路：`AICC_RPC_TOKEN`（优先）或 `AICC_LOGIN_USERNAME` + `AICC_LOGIN_PASSWORD` + `AICC_LOGIN_APPID`
-- 仅新增一个必要变量：`OPENAI_API_KEY`（用于写入 `services/aicc/settings` 的 `openai.api_token`）
+- OpenAI 用例新增变量：`OPENAI_API_KEY`（用于写入 `services/aicc/settings` 的 `openai.api_token`）
+- Gemini 用例新增变量：`GEMINI_API_KEY`（用于写入 `services/aicc/settings` 的 `gemini.api_token`）
+- Claude 用例新增变量：`CLAUDE_API_KEY`（用于写入 `services/aicc/settings` 的 `claude.api_token`）
+- 协议隔离约束（必须遵守）：真实场景用例执行前必须禁用非目标 provider，仅保留目标 provider，禁止跨 provider fallback 干扰协议验证结论
 - 用例内自动执行：
-  1. `sys_config_set` 写入 OpenAI 实例配置
-  2. `service.reload_settings` 立即生效
-  3. 执行复杂场景请求与断言
+    1. `sys_config_set` 写入对应 provider（OpenAI/Gemini/Claude）实例配置
+    2. `service.reload_settings` 立即生效
+    3. 执行复杂场景请求与断言
 
 ### 12.3 协议覆盖（单用例内混合）
 
@@ -788,7 +808,37 @@ $env:OPENAI_API_KEY="sk-..."
 # 可选：覆盖模型别名（默认 llm.plan.default）
 # $env:AICC_MODEL_ALIAS="llm.plan.default"
 
-cargo test -p aicc --test workflow_complex_real_env_tests -- --ignored --nocapture
+# OpenAI 用例
+cargo test -p aicc --test workflow_complex_real_env_tests workflow_real_01_gateway_complex_scenario_protocol_mix_openai -- --ignored --nocapture
+
+# Gemini 用例
+$env:GEMINI_API_KEY="AIza..."
+cargo test -p aicc --test workflow_complex_real_env_tests workflow_real_02_gateway_complex_scenario_protocol_mix_gemini -- --ignored --nocapture
+
+# Claude 用例
+$env:CLAUDE_API_KEY="sk-ant-..."
+cargo test -p aicc --test workflow_complex_real_env_tests workflow_real_03_gateway_complex_scenario_protocol_mix_claude -- --ignored --nocapture
 ```
 
+### 12.5 SN OpenAI 远程复杂场景用例（gateway 路径）
 
+- 用例文件：`src/kernel/buckyos-api/tests/aicc_gateway_workflow_remote_tests.rs`
+- 用例名：`workflow_remote_02_sn_openai_complex_scenario_protocol_mix`
+- 认证方式：沿用远程 token/login 链路（`AICC_RPC_TOKEN` 或 `AICC_LOGIN_USERNAME` + `AICC_LOGIN_PASSWORD`）
+- 关键环境变量：
+    - `AICC_GATEWAY_HOST`：目标 gateway 地址（必需）
+    - `AICC_SN_OPENAI_BASE_URL`：SN OpenAI endpoint（可选，默认 `https://sn.buckyos.ai/api/v1/ai/`）
+    - `AICC_SN_REGISTER_PROVIDER`：是否在用例内自动写入 SN OpenAI provider 配置（可选，默认关闭；设置为 `1` 可启用）
+    - 无论 `AICC_SN_REGISTER_PROVIDER` 是否启用，用例都会先禁用非目标 provider，并显式启用目标 provider（`enabled=true`）后再 reload，确保协议验证隔离
+
+```powershell
+cd d:\project\buckyos-main\src
+
+$env:AICC_GATEWAY_HOST="http://<target-device-host>:4040"
+
+# 可选：开启自动注册 SN OpenAI provider（默认不自动注册）
+# $env:AICC_SN_REGISTER_PROVIDER="1"
+# $env:AICC_SN_OPENAI_BASE_URL="https://sn.buckyos.ai/api/v1/ai/"
+
+cargo test -p aicc --test aicc_gateway_workflow_remote_tests workflow_remote_02_sn_openai_complex_scenario_protocol_mix -- --ignored --nocapture
+```

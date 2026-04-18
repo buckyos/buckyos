@@ -42,7 +42,7 @@ NodeScheduler — 纯函数式、平台无关的服务调度器
 5. 通过 schedule_action_to_tx_actions() 将 SchedulerAction 转换为 KV 事务操作
 6. 附加处理：更新 RBAC 策略、更新 Node 的 gateway_config（路由规则）
 7. 通过 exec_tx() 事务提交所有变更
-8. 保存本次调度快照到 system/scheduler/snapshot
+8. 如果快照有变化，保存本次调度快照到 system/scheduler/snapshot
 
 支持两种运行模式：
 - Boot 模式（--boot）：仅执行一次调度，用于系统初始化
@@ -601,6 +601,20 @@ impl NodeScheduler {
     pub fn add_replica_instance(&mut self, instance: ReplicaInstance) {
         let key = instance.instance_id.clone();
         self.replica_instances.insert(key, instance);
+    }
+
+    pub fn needs_snapshot_persist(&self, last_snapshot: Option<&NodeScheduler>) -> bool {
+        let Some(last_snapshot) = last_snapshot else {
+            return true;
+        };
+
+        self.default_user_id != last_snapshot.default_user_id
+            || self.users != last_snapshot.users
+            || self.nodes != last_snapshot.nodes
+            || self.specs != last_snapshot.specs
+            || self.replica_instances != last_snapshot.replica_instances
+            || self.service_infos != last_snapshot.service_infos
+            || self.service_info_refresh_times != last_snapshot.service_info_refresh_times
     }
 
     #[cfg(test)]

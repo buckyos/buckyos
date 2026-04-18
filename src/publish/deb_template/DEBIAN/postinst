@@ -3,10 +3,28 @@ set -e
 BUCKYOS_ROOT="/opt/buckyos"
 DEFAULTS_DIR="$BUCKYOS_ROOT/.buckyos_installer_defaults"
 
+ensure_mutable_dir() {
+  local path="$1"
+  mkdir -p "$path"
+  chmod 0777 "$path"
+}
+
 if [ -d "$DEFAULTS_DIR" ]; then
   # BEGIN AUTO-GENERATED: data_paths
+  :
   # END AUTO-GENERATED: data_paths
 fi
+
+# Keep package content at package-defined permissions; only mutable runtime roots
+# need wide write access for host services and containerized agents.
+ensure_mutable_dir "$BUCKYOS_ROOT/data"
+ensure_mutable_dir "$BUCKYOS_ROOT/data/home"
+ensure_mutable_dir "$BUCKYOS_ROOT/data/cache"
+ensure_mutable_dir "$BUCKYOS_ROOT/data/srv"
+ensure_mutable_dir "$BUCKYOS_ROOT/data/var"
+ensure_mutable_dir "$BUCKYOS_ROOT/local"
+ensure_mutable_dir "$BUCKYOS_ROOT/logs"
+ensure_mutable_dir "$BUCKYOS_ROOT/storage"
 
 cat <<EOF > /etc/systemd/system/buckyos.service
 [Unit]
@@ -28,7 +46,5 @@ systemctl stop buckyos.service
 systemctl daemon-reload
 systemctl enable buckyos.service
 systemctl start buckyos.service
-
-chmod -R 777 /opt/buckyos/
 
 echo "BuckyOS install success, open http://127.0.0.1:3182/index.html to start, ENJOY!"

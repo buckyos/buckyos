@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "smoke": "node --experimental-strip-types aicc_smoke.ts",
-    "test": "node --experimental-strip-types aicc_smoke.ts"
+    "remote": "node --experimental-strip-types aicc_remote_runner.ts",
+    "test": "node --experimental-strip-types aicc_remote_runner.ts"
   },
   "dependencies": {
     "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
