@@ -190,7 +190,7 @@ impl TaskManagerService {
     }
 
     async fn load_task(&self, id: i64) -> Result<Task> {
-        let db_manager = DB_MANAGER.lock().await;
+        let db_manager = DB_MANAGER.read().await;
         let task = db_manager
             .get_task(id)
             .await
@@ -205,7 +205,7 @@ impl TaskManagerService {
         let user_id =
             (!request_ctx.user_id.trim().is_empty()).then_some(request_ctx.user_id.as_str());
         let app_id = (!request_ctx.app_id.trim().is_empty()).then_some(request_ctx.app_id.as_str());
-        let db_manager = DB_MANAGER.lock().await;
+        let db_manager = DB_MANAGER.read().await;
         db_manager
             .list_tasks_filtered(app_id, Some(DOWNLOAD_TASK_TYPE), None, None, None, user_id)
             .await
@@ -223,7 +223,7 @@ impl TaskManagerService {
     ) -> std::result::Result<Task, String> {
         let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
         {
-            let db_manager = DB_MANAGER.lock().await;
+            let db_manager = DB_MANAGER.read().await;
             db_manager
                 .update_task(id, status, progress, message, data_patch)
                 .await
@@ -246,7 +246,7 @@ impl TaskManagerService {
     ) -> std::result::Result<Task, String> {
         let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
         {
-            let db_manager = DB_MANAGER.lock().await;
+            let db_manager = DB_MANAGER.read().await;
             db_manager
                 .update_task_error(id, error_message)
                 .await
@@ -345,7 +345,7 @@ impl TaskManagerHandler for TaskManagerService {
             task.root_id = root_id;
         }
 
-        let db_manager = DB_MANAGER.lock().await;
+        let db_manager = DB_MANAGER.read().await;
         let task_id = db_manager
             .create_task(&task)
             .await
@@ -414,7 +414,7 @@ impl TaskManagerHandler for TaskManagerService {
                 download_options.as_ref(),
             ) {
                 {
-                    let db_manager = DB_MANAGER.lock().await;
+                    let db_manager = DB_MANAGER.read().await;
                     db_manager
                         .update_task(task.id, None, None, None, Some(data_patch))
                         .await
@@ -489,7 +489,7 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<Vec<Task>> {
         let request_ctx = request_context_from_source(source_user_id, source_app_id);
-        let db_manager = DB_MANAGER.lock().await;
+        let db_manager = DB_MANAGER.read().await;
         let tasks = db_manager
             .list_tasks_filtered(
                 filter.app_id.as_deref(),
@@ -520,7 +520,7 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<Vec<Task>> {
         let request_ctx = request_context_from_source(source_user_id, source_app_id);
-        let db_manager = DB_MANAGER.lock().await;
+        let db_manager = DB_MANAGER.read().await;
         let tasks = db_manager
             .list_tasks_filtered(app_id, task_type, None, None, None, None)
             .await
@@ -556,7 +556,7 @@ impl TaskManagerHandler for TaskManagerService {
         }
 
         {
-            let db_manager = DB_MANAGER.lock().await;
+            let db_manager = DB_MANAGER.read().await;
             db_manager
                 .update_task(id, status, progress, message, data)
                 .await
@@ -601,7 +601,7 @@ impl TaskManagerHandler for TaskManagerService {
             };
 
             let before_tasks = {
-                let db_manager = DB_MANAGER.lock().await;
+                let db_manager = DB_MANAGER.read().await;
                 let before_tasks = db_manager
                     .list_tasks_filtered(None, None, None, None, Some(root_id.as_str()), None)
                     .await
@@ -638,7 +638,7 @@ impl TaskManagerHandler for TaskManagerService {
         } else {
             let before_task = task.clone();
             {
-                let db_manager = DB_MANAGER.lock().await;
+                let db_manager = DB_MANAGER.read().await;
                 db_manager
                     .update_task_status(id, TaskStatus::Canceled)
                     .await
@@ -669,7 +669,7 @@ impl TaskManagerHandler for TaskManagerService {
 
     async fn handle_get_subtasks(&self, parent_id: i64, _ctx: RPCContext) -> Result<Vec<Task>> {
         let request_ctx = request_context_from_source(None, None);
-        let db_manager = DB_MANAGER.lock().await;
+        let db_manager = DB_MANAGER.read().await;
         let tasks = db_manager
             .list_tasks_filtered(None, None, None, Some(parent_id), None, None)
             .await
@@ -697,7 +697,7 @@ impl TaskManagerHandler for TaskManagerService {
         }
 
         {
-            let db_manager = DB_MANAGER.lock().await;
+            let db_manager = DB_MANAGER.read().await;
             db_manager
                 .update_task_status(id, status)
                 .await
@@ -746,7 +746,7 @@ impl TaskManagerHandler for TaskManagerService {
             0.0
         };
 
-        let db_manager = DB_MANAGER.lock().await;
+        let db_manager = DB_MANAGER.read().await;
         db_manager
             .update_task_progress(id, progress, completed_items as i32, total_items as i32)
             .await
@@ -779,7 +779,7 @@ impl TaskManagerHandler for TaskManagerService {
         }
 
         {
-            let db_manager = DB_MANAGER.lock().await;
+            let db_manager = DB_MANAGER.read().await;
             db_manager
                 .update_task_error(id, error_message)
                 .await
@@ -816,7 +816,7 @@ impl TaskManagerHandler for TaskManagerService {
 
         let data_str =
             serde_json::to_string(&data).map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        let db_manager = DB_MANAGER.lock().await;
+        let db_manager = DB_MANAGER.read().await;
         db_manager
             .update_task_data(id, data_str.as_str())
             .await
@@ -833,7 +833,7 @@ impl TaskManagerHandler for TaskManagerService {
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
+        let db_manager = DB_MANAGER.read().await;
         db_manager
             .delete_task(id)
             .await
@@ -903,6 +903,10 @@ pub async fn start_task_manager_service() -> Result<()> {
         RPCErrors::ReasonError(format!("register task manager runtime failed: {}", err))
     })?;
 
+    crate::task_db::init_db_from_service_spec()
+        .await
+        .map_err(RPCErrors::ReasonError)?;
+
     let handler = TaskManagerService::new();
     let server = TaskManagerHttpServer::new(handler);
 
@@ -955,12 +959,12 @@ mod tests {
         });
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        let db_path_str = db_path.to_str().unwrap();
+        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
 
         let mut db = TaskDb::new();
-        db.connect(db_path_str).unwrap();
+        db.connect(&conn).await.unwrap();
         db.init_db().await.unwrap();
-        *crate::task_db::DB_MANAGER.lock().await = db;
+        *crate::task_db::DB_MANAGER.write().await = db;
 
         let server = buckyos_api::TaskManagerServerHandler::new(TaskManagerService::new());
         (server, temp_dir, guard)

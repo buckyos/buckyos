@@ -287,13 +287,17 @@ impl SystemConfigBuilder {
 
     pub async fn add_task_mgr(&mut self) -> Result<&mut Self> {
         let service_doc = generate_task_manager_service_doc();
-        let config = build_kernel_service_spec(
+        let mut config = build_kernel_service_spec(
             TASK_MANAGER_SERVICE_UNIQUE_ID,
             TASK_MANAGER_SERVICE_PORT,
             1,
             service_doc,
         )
         .await?;
+        config.install_config.rdb_instances.insert(
+            buckyos_api::TASK_MANAGER_RDB_INSTANCE_ID.to_string(),
+            buckyos_api::task_manager_default_rdb_instance_config(),
+        );
         self.insert_json("services/task-manager/spec", &config)?;
         Ok(self)
     }

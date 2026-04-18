@@ -17,5 +17,7 @@ db schema保存在 system_config中，app在安装时，有系统根据其AppDoc
 2）在unitTest期间，通过调试用的db connect string,来构造调试环境
 
 
-## 常见问题处理
+## 迁移时的主要要求
+- 统一基于sqlx来操作rdb
+- service迁移，要优先修改 scheduler中的build_doc函数，把数据库的instance schema落进去
 - 修正现有基于sqlite模型时错误的锁模型：应正确依赖 db锁/table锁/行锁

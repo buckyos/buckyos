@@ -11,11 +11,103 @@ use std::ops::Range;
 use std::str::FromStr;
 use std::time::Duration;
 
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
 use crate::{AppDoc, AppType, SelectorType};
+use std::collections::HashMap;
 
 pub const TASK_MANAGER_SERVICE_UNIQUE_ID: &str = "task-manager";
 pub const TASK_MANAGER_SERVICE_NAME: &str = "task-manager";
 pub const TASK_MANAGER_SERVICE_PORT: u16 = 3380;
+
+/// Logical name of the task-manager rdb instance. Used by both the scheduler
+/// (when it writes the service's `install_config`) and the task-manager itself
+/// (when it calls `get_rdb_instance`).
+pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "main";
+/// Version of the task table schema. Bump whenever the DDL below changes in a
+/// way that is not trivially re-idempotent, so the scheduler can detect drift.
+pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 1;
+
+/// Sqlite DDL for the task-manager database. `CREATE TABLE IF NOT EXISTS` so
+/// the migration is safe to re-run on every process start.
+pub const TASK_MANAGER_RDB_SCHEMA_SQLITE: &str = r#"
+CREATE TABLE IF NOT EXISTS task (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    title           TEXT,
+    task_type       TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    progress        REAL NOT NULL,
+    total_items     INTEGER NOT NULL DEFAULT 0,
+    completed_items INTEGER NOT NULL DEFAULT 0,
+    error_message   TEXT,
+    data            TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    user_id         TEXT NOT NULL DEFAULT '',
+    app_id          TEXT NOT NULL DEFAULT '',
+    parent_id       INTEGER,
+    root_id         TEXT NOT NULL DEFAULT '',
+    permissions     TEXT,
+    message         TEXT,
+    FOREIGN KEY(parent_id) REFERENCES task(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, name);
+CREATE INDEX IF NOT EXISTS idx_task_root_status ON task(root_id, status);
+CREATE INDEX IF NOT EXISTS idx_task_parent ON task(parent_id);
+CREATE INDEX IF NOT EXISTS idx_task_app_created ON task(app_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_status_created ON task(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_type_created ON task(task_type, created_at DESC);
+"#;
+
+/// Postgres DDL for the task-manager database. Same logical schema as the
+/// sqlite variant; id uses BIGSERIAL so Postgres assigns it automatically.
+pub const TASK_MANAGER_RDB_SCHEMA_POSTGRES: &str = r#"
+CREATE TABLE IF NOT EXISTS task (
+    id              BIGSERIAL PRIMARY KEY,
+    name            TEXT NOT NULL,
+    title           TEXT,
+    task_type       TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    progress        REAL NOT NULL,
+    total_items     BIGINT NOT NULL DEFAULT 0,
+    completed_items BIGINT NOT NULL DEFAULT 0,
+    error_message   TEXT,
+    data            TEXT,
+    created_at      BIGINT NOT NULL,
+    updated_at      BIGINT NOT NULL,
+    user_id         TEXT NOT NULL DEFAULT '',
+    app_id          TEXT NOT NULL DEFAULT '',
+    parent_id       BIGINT REFERENCES task(id) ON DELETE CASCADE,
+    root_id         TEXT NOT NULL DEFAULT '',
+    permissions     TEXT,
+    message         TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, name);
+CREATE INDEX IF NOT EXISTS idx_task_root_status ON task(root_id, status);
+CREATE INDEX IF NOT EXISTS idx_task_parent ON task(parent_id);
+CREATE INDEX IF NOT EXISTS idx_task_app_created ON task(app_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_status_created ON task(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_type_created ON task(task_type, created_at DESC);
+"#;
+
+/// Default rdb-instance config for the task-manager service. The scheduler
+/// drops this into `install_config.rdb_instances` when bootstrapping the
+/// service so `get_rdb_instance` can find it later.
+pub fn task_manager_default_rdb_instance_config() -> RdbInstanceConfig {
+    let mut schema = HashMap::new();
+    schema.insert(RdbBackend::Sqlite, TASK_MANAGER_RDB_SCHEMA_SQLITE.to_string());
+    schema.insert(
+        RdbBackend::Postgres,
+        TASK_MANAGER_RDB_SCHEMA_POSTGRES.to_string(),
+    );
+    RdbInstanceConfig {
+        backend: RdbBackend::Sqlite,
+        version: TASK_MANAGER_RDB_SCHEMA_VERSION,
+        schema,
+        // Empty -> rdb_mgr generates `sqlite://$appdata/main.db` at resolve time.
+        connection: String::new(),
+    }
+}
 
 pub type TaskId = i64;
 
