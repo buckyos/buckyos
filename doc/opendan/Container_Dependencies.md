@@ -12,6 +12,7 @@
 |------|------|----------|
 | **tmux** | exec_bash 通过 tmux 创建 per-session 的 shell 环境，执行命令、捕获输出、维持 cwd | `agent_bash.rs` |
 | **bash** | 默认 `/bin/bash`，exec_bash 的 shell 入口；可通过 `AgentWorkshopConfig.bash_path` 覆盖 | `workshop.rs` |
+| **tree** | 多个内置 behavior / prompt 会直接调用 `tree` 来查看目录结构或 memory 树 | `src/rootfs/bin/buckyos_jarvis/behaviors/self_check.yaml` 等 |
 
 ### tmux 使用方式
 
@@ -78,6 +79,7 @@ ENTRYPOINT ["/opt/buckyos/bin/opendan/opendan"]
 
 - `tmux`：exec_bash 会直接失败
 - `bash`：ubuntu 通常有，但若使用 minimal base 需确认
+- `tree`：部分内置 behavior 和提示词会直接执行，缺失时会报 `tree: command not found`
 - Python3、Node.js、git：Agent 工作流常用，建议预装
 
 ---
@@ -94,6 +96,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux \
     bash \
     ca-certificates \
+    tree \
     && rm -rf /var/lib/apt/lists/*
 
 # Agent 工作空间常用
@@ -126,5 +129,4 @@ ENTRYPOINT ["/opt/buckyos/bin/opendan/opendan"]
 - `ca-certificates` 用于 HTTPS 请求（如 pip、npm registry）
 
 ---
-
 
