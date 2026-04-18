@@ -92,6 +92,9 @@ servers:
               global CONTROL_PANEL_URL="https://sys.${THIS_ZONE_HOST}/";
               global APP_ID="";
               global SERVICE_ID="";
+              if match $REQ.path "/kapi/kevent/*" then
+                return --from chain $(exec forward_to_kevent);
+              end
 
               if eq $REQ.host "public.${THIS_ZONE_HOST}" then
                 return --from chain $(exec forward_to_public);
@@ -238,8 +241,14 @@ servers:
           forward_to_public:
             priority: 170
             block: |
-              echo "forward_to_public block";
+              #echo "forward_to_public block";
               call-server "buckyos_public";
+
+          forward_to_kevent:
+            priority: 180
+            block: |
+              #echo "forward_to_kevent block";
+              forward "http://127.0.0.1:3181";
 
           check_block_list:
             # 通过请求信息判断是否允许访问本zone
