@@ -490,6 +490,9 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .contains(&"BUCKYOS_APP_TYPE=agent".to_string()));
     assert!(start.commands[1]
         .args
+        .contains(&"BUCKYOS_DATA_DIR=/home/alice/.local/share/jarvis".to_string()));
+    assert!(start.commands[1]
+        .args
         .contains(&"BUCKYOS_PKG_DIR=/opt/buckyos/bin/jarvis".to_string()));
     assert!(start.commands[1]
         .args
@@ -525,6 +528,10 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools".to_string()));
+    assert!(start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg == "<app_data>:/home/alice/.local/share/jarvis:rw"));
     assert!(start.commands[1]
         .args
         .iter()

@@ -80,8 +80,8 @@ impl HttpServer for OpenDanHttpServer {
 }
 
 const OPENDAN_AGENT_ID_ENV: [&str; 1] = ["OPENDAN_AGENT_ID"];
-const OPENDAN_AGENT_ENV_ENV: [&str; 1] = ["OPENDAN_AGENT_ENV"];
-const OPENDAN_AGENT_BIN_ENV: [&str; 1] = ["OPENDAN_AGENT_BIN"];
+const OPENDAN_AGENT_ENV_ENV: [&str; 2] = ["OPENDAN_AGENT_ENV", "BUCKYOS_DATA_DIR"];
+const OPENDAN_AGENT_BIN_ENV: [&str; 2] = ["OPENDAN_AGENT_BIN", "BUCKYOS_PKG_DIR"];
 const OPENDAN_AGENT_OWNER_ENV: [&str; 1] = ["OPENDAN_AGENT_OWNER"];
 const OPENDAN_SERVICE_PORT_ENV: [&str; 1] = ["OPENDAN_SERVICE_PORT"];
 const OPENDAN_SESSION_WORKER_THREADS_ENV: &str = "OPENDAN_SESSION_WORKER_THREADS";
@@ -450,13 +450,20 @@ fn resolve_agent_env_root(
     _spec: Option<&AgentAppSpec>,
     _doc: Option<&AgentInstanceDoc>,
     agent_id: &str,
+    owner_id: &str,
 ) -> PathBuf {
     let direct = resolve_optional_path(startup.agent_env.as_ref(), &OPENDAN_AGENT_ENV_ENV);
     if direct.is_some() {
         return direct.unwrap();
     }
 
-    get_buckyos_root_dir().join("agents").join(agent_id)
+    get_buckyos_root_dir()
+        .join("data")
+        .join("home")
+        .join(owner_id)
+        .join(".local")
+        .join("share")
+        .join(agent_id)
 }
 
 fn resolve_agent_package_root(
@@ -662,6 +669,7 @@ async fn service_main() -> Result<()> {
         agent_spec.as_ref(),
         agent_doc.as_ref(),
         &agent_id,
+        &owner_id,
     ))?;
     let agent_package_root =
         resolve_agent_package_root(&startup, agent_spec.as_ref(), agent_doc.as_ref())
@@ -795,9 +803,9 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_spec_key_candidates, parse_startup_args_from_iter, resolve_owner_from_agent_env,
-        resolve_requested_owner_id, resolve_requested_service_port, StartupArgs,
-        DEFAULT_OPENDAN_SERVICE_PORT,
+        agent_spec_key_candidates, parse_startup_args_from_iter, resolve_agent_env_root,
+        resolve_owner_from_agent_env, resolve_requested_owner_id,
+        resolve_requested_service_port, StartupArgs, DEFAULT_OPENDAN_SERVICE_PORT,
     };
     use std::path::PathBuf;
 
@@ -844,6 +852,16 @@ mod tests {
         assert_eq!(
             resolve_requested_owner_id(&startup).expect("resolve owner"),
             "devtest"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_env_root_defaults_to_data_home_path() {
+        let startup = StartupArgs::default();
+
+        assert_eq!(
+            resolve_agent_env_root(&startup, None, None, "jarvis", "devtest"),
+            PathBuf::from("/opt/buckyos/data/home/devtest/.local/share/jarvis")
         );
     }
 

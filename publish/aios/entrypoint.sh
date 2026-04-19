@@ -47,6 +47,9 @@ PIP_CACHE_DEFAULT="${BUCKYOS_INSTANCE_VOLUME}/pip-cache"
 SYNC_META_DIR="${BUCKYOS_INSTANCE_VOLUME}/.sync"
 SYNC_META_FILE="${SYNC_META_DIR}/upstream.json"
 SYNC_LOG_FILE="${SYNC_META_DIR}/last-sync.log"
+AGENT_SYNC_META_DIR="${BUCKYOS_DATA_DIR}/.sync"
+AGENT_SYNC_META_FILE="${AGENT_SYNC_META_DIR}/upstream.json"
+AGENT_SYNC_LOG_FILE="${AGENT_SYNC_META_DIR}/last-sync.log"
 EXTTOOL_SEED_MARK="${SYNC_META_DIR}/exttool-seeded"
 
 export DENO_DIR="${DENO_DIR:-$DENO_DIR_DEFAULT}"
@@ -118,14 +121,20 @@ fi
 # File-level sync is the replacement for the old overlayfs/fuse-overlayfs model.
 # It runs entirely inside the container and behaves identically on Linux,
 # macOS and Windows (Docker Desktop). See notepads/paios容器需求.md §7.4.
-sync_upstream_into_instance() {
-  if [[ ! -d "$BUCKYOS_PKG_SOURCE_DIR" ]]; then
-    log "no upstream package source at $BUCKYOS_PKG_SOURCE_DIR (skipping sync)"
+sync_tree_with_upstream_policy() {
+  local src="$1"
+  local dst="$2"
+  local meta_path="$3"
+  local log_path="$4"
+  local label="$5"
+
+  if [[ ! -d "$src" ]]; then
+    log "no ${label} source at $src (skipping sync)"
     return
   fi
 
-  log "syncing upstream pkg $BUCKYOS_PKG_SOURCE_DIR -> $BUCKYOS_PKG_DIR (backing $INSTANCE_PKG_DIR)"
-  python3 - "$BUCKYOS_PKG_SOURCE_DIR" "$INSTANCE_PKG_DIR" "$SYNC_META_FILE" "$SYNC_LOG_FILE" <<'PY'
+  log "syncing ${label} $src -> $dst"
+  python3 - "$src" "$dst" "$meta_path" "$log_path" <<'PY'
 import hashlib
 import json
 import os
@@ -228,6 +237,29 @@ log_path.write_text(json.dumps({
 
 print(json.dumps(stats))
 PY
+}
+
+sync_upstream_into_instance() {
+  sync_tree_with_upstream_policy \
+    "$BUCKYOS_PKG_SOURCE_DIR" \
+    "$INSTANCE_PKG_DIR" \
+    "$SYNC_META_FILE" \
+    "$SYNC_LOG_FILE" \
+    "upstream pkg"
+}
+
+sync_agent_upstream_into_data_root() {
+  local source_root="$BUCKYOS_PKG_SOURCE_DIR"
+  if [[ ! -d "$source_root" ]]; then
+    source_root="$BUCKYOS_PKG_DIR"
+  fi
+
+  sync_tree_with_upstream_policy \
+    "$source_root" \
+    "$BUCKYOS_DATA_DIR" \
+    "$AGENT_SYNC_META_FILE" \
+    "$AGENT_SYNC_LOG_FILE" \
+    "agent root"
 }
 
 sync_upstream_into_instance
@@ -368,6 +400,7 @@ case "$BUCKYOS_APP_TYPE" in
     if [[ ! -x "$OPENDAN_BIN" ]]; then
       die "agent dispatch: OpenDAN binary not found at $OPENDAN_BIN"
     fi
+    sync_agent_upstream_into_data_root
     # §9: Agent Root lives in the data layer, not in the pkg working copy.
     # OpenDAN creates sessions/, memory/, skills/, todo/, worklog/ on demand
     # — the exact layout under agent_root isn't frozen yet, so we only
