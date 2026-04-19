@@ -106,6 +106,16 @@ pub enum KLogResponse {
 
 pub type KNodeId = u64;
 
+/// Selects how cluster-internal traffic reaches a specific peer node.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KClusterTransportMode {
+    #[default]
+    Direct,
+    GatewayProxy,
+    Hybrid,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KNode {
     pub id: KNodeId,

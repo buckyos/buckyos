@@ -5,7 +5,7 @@ use super::request::{
     KLogQueryRequest, KLogQueryResponse, RaftRequest, RaftResponse,
 };
 use crate::error::{KLogErrorCode, KLogServiceError, parse_error_envelope_json};
-use crate::{KNode, KNodeId, KTypeConfig};
+use crate::{KClusterTransportMode, KNode, KNodeId, KTypeConfig};
 use openraft::error::{
     InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Timeout, Unreachable,
 };
@@ -17,6 +17,82 @@ use openraft::raft::{
 use std::time::Duration;
 
 const DEFAULT_DATA_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KClusterPlane {
+    Raft,
+    InterNode,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KClusterEndpointBuilder<'a> {
+    target: &'a KNode,
+    mode: KClusterTransportMode,
+}
+
+impl<'a> KClusterEndpointBuilder<'a> {
+    fn new(target: &'a KNode, mode: KClusterTransportMode) -> Self {
+        Self { target, mode }
+    }
+
+    fn direct(target: &'a KNode) -> Self {
+        Self::new(target, KClusterTransportMode::Direct)
+    }
+
+    fn build(self, plane: KClusterPlane, path: &str) -> Result<String, String> {
+        match self.mode {
+            KClusterTransportMode::Direct => Ok(format!(
+                "http://{}:{}{}",
+                self.target.addr,
+                self.port_for_plane(plane),
+                path
+            )),
+            KClusterTransportMode::GatewayProxy => Err(format!(
+                "cluster transport mode gateway_proxy is not implemented yet: target_node_id={}, plane={}",
+                self.target.id,
+                plane.as_str()
+            )),
+            KClusterTransportMode::Hybrid => Err(format!(
+                "cluster transport mode hybrid is not implemented yet: target_node_id={}, plane={}",
+                self.target.id,
+                plane.as_str()
+            )),
+        }
+    }
+
+    fn port_for_plane(self, plane: KClusterPlane) -> u16 {
+        match plane {
+            KClusterPlane::Raft => self.target.port,
+            KClusterPlane::InterNode => {
+                if self.target.inter_port > 0 {
+                    self.target.inter_port
+                } else {
+                    self.target.port
+                }
+            }
+            KClusterPlane::Admin => {
+                if self.target.admin_port > 0 {
+                    self.target.admin_port
+                } else if self.target.inter_port > 0 {
+                    self.target.inter_port
+                } else {
+                    self.target.port
+                }
+            }
+        }
+    }
+}
+
+impl KClusterPlane {
+    fn as_str(self) -> &'static str {
+        match self {
+            KClusterPlane::Raft => "raft",
+            KClusterPlane::InterNode => "inter",
+            KClusterPlane::Admin => "admin",
+        }
+    }
+}
 
 pub struct KNetworkFactory {
     local: KNodeId,
@@ -32,7 +108,7 @@ impl RaftNetworkFactory<KTypeConfig> for KNetworkFactory {
     type Network = KNetworkClient;
 
     async fn new_client(&mut self, target: KNodeId, node: &KNode) -> Self::Network {
-        KNetworkClient::new(self.local.clone(), target, node.clone())
+        KNetworkClient::new(self.local, target, node.clone())
     }
 }
 
@@ -78,7 +154,7 @@ impl KDataClient {
     ) -> Result<KLogAppendResponse, KLogServiceError> {
         let path = KLogDataRequestType::Append.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let url = Self::build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .post(&url)
@@ -150,7 +226,7 @@ impl KDataClient {
     ) -> Result<KLogQueryResponse, KLogServiceError> {
         let path = KLogDataRequestType::Query.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let url = Self::build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .get(&url)
@@ -222,7 +298,7 @@ impl KDataClient {
     ) -> Result<KLogMetaPutResponse, KLogServiceError> {
         let path = KLogDataRequestType::MetaPut.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let url = Self::build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .post(&url)
@@ -294,7 +370,7 @@ impl KDataClient {
     ) -> Result<KLogMetaDeleteResponse, KLogServiceError> {
         let path = KLogDataRequestType::MetaDelete.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let url = Self::build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .post(&url)
@@ -369,7 +445,7 @@ impl KDataClient {
     ) -> Result<KLogMetaQueryResponse, KLogServiceError> {
         let path = KLogDataRequestType::MetaQuery.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = format!("http://{}:{}{}", target.addr, endpoint_port, path);
+        let url = Self::build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .get(&url)
@@ -438,6 +514,28 @@ impl KDataClient {
             target.port
         }
     }
+
+    fn build_data_url(
+        target: &KNode,
+        path: &str,
+        trace_id: &str,
+    ) -> Result<String, KLogServiceError> {
+        KClusterEndpointBuilder::direct(target)
+            .build(KClusterPlane::InterNode, path)
+            .map_err(|e| {
+                let msg = format!(
+                    "build inter-node endpoint failed: target={}({}), path={}, err={}",
+                    target.id, target.addr, path, e
+                );
+                error!("{}", msg);
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })
+    }
 }
 
 impl KNetworkClient {
@@ -458,7 +556,10 @@ impl KNetworkClient {
     where
         Err: std::error::Error + 'static + Clone,
     {
-        let url = self.get_request_url(&req);
+        let url = self.get_request_url(&req).map_err(|msg| {
+            error!("{}", msg);
+            RPCError::Unreachable(Unreachable::new(&std::io::Error::other(msg)))
+        })?;
 
         let body = req.serialize().map_err(|e| {
             let msg = format!("Failed to serialize request for {}: {}", url, e);
@@ -514,17 +615,16 @@ impl KNetworkClient {
                 )));
             } else if status.is_client_error() {
                 return Err(RPCError::Unreachable(Unreachable::new(
-                    &std::io::Error::new(std::io::ErrorKind::Other, msg),
+                    &std::io::Error::other(msg),
                 )));
             } else if status.is_server_error() {
-                return Err(RPCError::Network(NetworkError::new(&std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    msg,
-                ))));
+                return Err(RPCError::Network(NetworkError::new(
+                    &std::io::Error::other(msg),
+                )));
             }
 
             return Err(RPCError::Unreachable(Unreachable::new(
-                &std::io::Error::new(std::io::ErrorKind::Other, msg),
+                &std::io::Error::other(msg),
             )));
         }
 
@@ -561,13 +661,99 @@ impl KNetworkClient {
         RPCError::Network(NetworkError::new(&io_err))
     }
 
-    fn get_request_url(&self, req: &RaftRequest) -> String {
-        format!(
-            "http://{}:{}/klog/{}",
-            self.node.addr,
-            self.node.port,
-            req.request_path()
-        )
+    fn get_request_url(&self, req: &RaftRequest) -> Result<String, String> {
+        KClusterEndpointBuilder::direct(&self.node)
+            .build(KClusterPlane::Raft, &req.request_type().klog_path())
+            .map_err(|e| {
+                format!(
+                    "build raft endpoint failed: target={}({}), rpc_type={:?}, err={}",
+                    self.target,
+                    self.node.addr,
+                    req.rpc_type(),
+                    e
+                )
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KClusterEndpointBuilder, KClusterPlane};
+    use crate::{KClusterTransportMode, KNode};
+
+    fn test_node() -> KNode {
+        KNode {
+            id: 7,
+            addr: "10.0.0.7".to_string(),
+            port: 21001,
+            inter_port: 21002,
+            admin_port: 21003,
+            rpc_port: 4070,
+        }
+    }
+
+    #[test]
+    fn test_cluster_endpoint_builder_direct_urls() {
+        let node = test_node();
+        let builder = KClusterEndpointBuilder::direct(&node);
+
+        assert_eq!(
+            builder.build(KClusterPlane::Raft, "/klog/vote").unwrap(),
+            "http://10.0.0.7:21001/klog/vote"
+        );
+        assert_eq!(
+            builder
+                .build(KClusterPlane::InterNode, "/klog/data/query")
+                .unwrap(),
+            "http://10.0.0.7:21002/klog/data/query"
+        );
+        assert_eq!(
+            builder
+                .build(KClusterPlane::Admin, "/klog/admin/cluster-state")
+                .unwrap(),
+            "http://10.0.0.7:21003/klog/admin/cluster-state"
+        );
+    }
+
+    #[test]
+    fn test_cluster_endpoint_builder_direct_fallback_ports() {
+        let node = KNode {
+            id: 8,
+            addr: "10.0.0.8".to_string(),
+            port: 22001,
+            inter_port: 0,
+            admin_port: 0,
+            rpc_port: 4070,
+        };
+        let builder = KClusterEndpointBuilder::direct(&node);
+
+        assert_eq!(
+            builder
+                .build(KClusterPlane::InterNode, "/klog/data/query")
+                .unwrap(),
+            "http://10.0.0.8:22001/klog/data/query"
+        );
+        assert_eq!(
+            builder
+                .build(KClusterPlane::Admin, "/klog/admin/cluster-state")
+                .unwrap(),
+            "http://10.0.0.8:22001/klog/admin/cluster-state"
+        );
+    }
+
+    #[test]
+    fn test_cluster_endpoint_builder_rejects_unimplemented_modes() {
+        let node = test_node();
+        let gateway_proxy =
+            KClusterEndpointBuilder::new(&node, KClusterTransportMode::GatewayProxy)
+                .build(KClusterPlane::Raft, "/klog/vote")
+                .expect_err("gateway proxy should not be implemented in phase 1");
+        assert!(gateway_proxy.contains("gateway_proxy"));
+
+        let hybrid = KClusterEndpointBuilder::new(&node, KClusterTransportMode::Hybrid)
+            .build(KClusterPlane::Raft, "/klog/vote")
+            .expect_err("hybrid should not be implemented in phase 1");
+        assert!(hybrid.contains("hybrid"));
     }
 }
 
