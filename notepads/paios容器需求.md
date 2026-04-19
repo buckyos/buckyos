@@ -408,7 +408,7 @@ OpenDAN 必须被纳入统一 App 模型，而不是继续维持独立特例：
 - /mnt/$node_id/                 # 特定设备的host fs数据(按授权)
 
 ### Agent 工具层(继承 App 视图,增加 session 层)
-- /opt/buckyos/tools/$sessionid/    # session-bin, 读写可执行
+- /opt/buckyos/tools/$agentid/$sessionid/    # session-bin, 读写可执行
 
 
 ### Agent Root (数据层，和App语义不同)

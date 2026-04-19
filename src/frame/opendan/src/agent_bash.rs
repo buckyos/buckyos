@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use buckyos_api::{CreateTaskOptions, TaskManagerClient, TaskStatus, OPENDAN_SERVICE_NAME};
+use buckyos_kit::get_buckyos_root_dir;
 use log::{error, warn};
 use serde_json::{json, Value as Json};
 use tokio::fs;
@@ -38,7 +39,9 @@ const EXEC_BASH_TMUX_LIST_FORMAT: &str = "#{session_name}\t#{session_activity}";
 const EXEC_BASH_PENDING_PARTIAL_LINES: usize = 10;
 const EXEC_BASH_LONG_RUNNING_CHECK_AFTER_SECS: u64 = 5;
 const EXEC_BASH_LONG_RUNNING_TASK_TYPE: &str = "exec_bash";
-const EXEC_BASH_SESSION_TOOL_DIR: &str = ".tool";
+// Session-scoped tool bin directory lives under `<BUCKYOS_ROOT>/tools/<agent_id>/<session_id>`
+// per the instance-volume model, rather than inside `<agent_env_root>/sessions/<id>/.tool`.
+const EXEC_BASH_SESSION_TOOL_ROOT: &str = "tools";
 const EXEC_BASH_AGENT_TOOL_BIN: &str = "agent_tool";
 const EXEC_BASH_COMMAND_NOT_FOUND_PROXY: &str = "__command_not_found__";
 const EXEC_BASH_AGENT_CLI_TOOL_NAMES: [&str; 9] = [
@@ -151,12 +154,7 @@ impl ExecBashTool {
             AgentToolError::ExecFailed("resolve agent_tool binary failed".to_string())
         })?;
 
-        let tool_dir = self
-            .cfg
-            .agent_env_root
-            .join("sessions")
-            .join(session_id)
-            .join(EXEC_BASH_SESSION_TOOL_DIR);
+        let tool_dir = resolve_session_tool_dir(self.cfg.agent_did.as_str(), session_id);
         let tool_names = self.resolve_session_cli_tool_names(session_id).await;
         sync_session_tool_links(&tool_dir, &agent_tool_path, &tool_names)?;
 
@@ -1133,6 +1131,15 @@ fn build_exec_env_vars(
     merged.into_iter().collect()
 }
 
+fn resolve_session_tool_dir(agent_id: &str, session_id: &str) -> PathBuf {
+    // agent_did (e.g. "did:opendan:xxx") contains characters unsafe for path components,
+    // so it gets sanitized into a stable lower-case token before joining.
+    get_buckyos_root_dir()
+        .join(EXEC_BASH_SESSION_TOOL_ROOT)
+        .join(sanitize_token_for_id(agent_id))
+        .join(session_id)
+}
+
 fn resolve_agent_tool_path() -> Option<PathBuf> {
     if let Some(candidate) = std::env::var_os("CARGO_BIN_EXE_agent_tool").map(PathBuf::from) {
         if candidate.exists() {
@@ -2106,7 +2113,7 @@ mod tests {
     #[test]
     fn sync_session_tool_links_rewrites_visible_tool_set() {
         let temp = tempdir().expect("create tempdir");
-        let tool_dir = temp.path().join("session").join(".tool");
+        let tool_dir = temp.path().join("tools").join("agent_demo").join("work-demo");
         let agent_tool_path = temp.path().join("agent_tool");
         std_fs::create_dir_all(&tool_dir).expect("create tool dir");
         std_fs::write(&agent_tool_path, "#!/bin/sh\n").expect("seed agent_tool");
