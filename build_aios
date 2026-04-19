@@ -27,10 +27,12 @@ SELECTED_ARCHES=()
 PUSH=0
 INSTALL_WORKSPACE_TOOLS=1
 ENTRYPOINT_SOURCE="$ROOT_DIR/publish/aios/entrypoint.sh"
+REUSE_CARGO_TARGET=0
+CARGO_TARGET_DIR_OVERRIDE="${AIOS_CARGO_TARGET_DIR:-}"
 
 usage() {
   cat <<'EOF'
-Usage: ./build_aios [--push] [--image <name>] [--tag <tag>] [--runtime-only] [--arch <arch>] [--apt-package <name>]
+Usage: ./build_aios [--push] [--image <name>] [--tag <tag>] [--runtime-only] [--arch <arch>] [--apt-package <name>] [--reuse-cargo-target] [--cargo-target-dir <dir>]
 
 Builds the OpenDAN binary with cargo for:
   - amd64   -> x86_64-unknown-linux-musl
@@ -49,6 +51,10 @@ Options:
   --runtime-only  Install only required runtime dependencies in the image
   --arch <arch>   Build only one architecture (amd64|aarch64); can be repeated
   --apt-package   Add an extra apt package to the image; can be repeated
+  --reuse-cargo-target
+                  Reuse Cargo artifacts from a stable /tmp cache across runs (development only)
+  --cargo-target-dir <dir>
+                  Reuse a specific Cargo target dir; relative paths are resolved from repo root
   -h, --help      Show this help
 EOF
 }
@@ -79,6 +85,14 @@ while [[ $# -gt 0 ]]; do
       EXTRA_APT_PACKAGES+=("$2")
       shift 2
       ;;
+    --reuse-cargo-target)
+      REUSE_CARGO_TARGET=1
+      shift
+      ;;
+    --cargo-target-dir)
+      CARGO_TARGET_DIR_OVERRIDE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -93,6 +107,39 @@ done
 
 log() {
   printf '[build_aios] %s\n' "$*"
+}
+
+default_reused_cargo_target_dir() {
+  local tmp_base="${TMPDIR:-/tmp}"
+  local repo_name
+  local repo_key
+  local cache_owner
+
+  repo_name="$(basename "$ROOT_DIR" | tr -c 'A-Za-z0-9._-' '_')"
+  repo_key="$(printf '%s' "$ROOT_DIR" | cksum | awk '{print $1}')"
+  cache_owner="${USER:-$(id -un 2>/dev/null || id -u)}"
+
+  printf '%s\n' "$tmp_base/build_aios-cargo-$cache_owner-$repo_name-$repo_key"
+}
+
+resolve_cargo_target_dir() {
+  local tmp_root="$1"
+
+  if [[ -n "$CARGO_TARGET_DIR_OVERRIDE" ]]; then
+    if [[ "$CARGO_TARGET_DIR_OVERRIDE" == /* ]]; then
+      printf '%s\n' "$CARGO_TARGET_DIR_OVERRIDE"
+    else
+      printf '%s\n' "$ROOT_DIR/$CARGO_TARGET_DIR_OVERRIDE"
+    fi
+    return
+  fi
+
+  if [[ "$REUSE_CARGO_TARGET" -eq 1 ]]; then
+    default_reused_cargo_target_dir
+    return
+  fi
+
+  printf '%s\n' "$tmp_root/cargo"
 }
 
 prepare_docker_config() {
@@ -383,6 +430,9 @@ load_build_context() {
   local python_bin="$1"
   local rust_target="$2"
   local -a python_cmd
+  local musl_cc=""
+  local musl_tool_bin_dir=""
+  local -a python_env_cmd=(env)
 
   if "$python_bin" - <<'PY' >/dev/null 2>&1
 import importlib.util
@@ -416,7 +466,24 @@ EOF
     return 1
   fi
 
-  "${python_cmd[@]}" - "$PROJECT_CONFIG_PATH" "$rust_target" <<'PY'
+  case "$rust_target" in
+    x86_64-unknown-linux-musl)
+      if musl_cc="$(resolve_x86_64_musl_cc)"; then
+        musl_tool_bin_dir="$(dirname "$musl_cc")"
+      fi
+      ;;
+    aarch64-unknown-linux-musl)
+      if musl_cc="$(resolve_aarch64_musl_cc)"; then
+        musl_tool_bin_dir="$(dirname "$musl_cc")"
+      fi
+      ;;
+  esac
+
+  if [[ -n "$musl_tool_bin_dir" ]]; then
+    python_env_cmd+=("PATH=$musl_tool_bin_dir:$PATH")
+  fi
+
+  "${python_env_cmd[@]}" "${python_cmd[@]}" - "$PROJECT_CONFIG_PATH" "$rust_target" <<'PY'
 import contextlib
 import io
 import sys
@@ -878,6 +945,8 @@ publish_manifests() {
 main() {
   local tmp_root
   local python_bin
+  local cargo_target_dir
+  local cargo_target_mode
   local -a target_arches
 
   if [[ ! -f "$PROJECT_CONFIG_PATH" ]]; then
@@ -893,12 +962,24 @@ main() {
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_aios.XXXXXX")"
   trap "rm -rf '$tmp_root'" EXIT
 
+  cargo_target_dir="$(resolve_cargo_target_dir "$tmp_root")"
+  mkdir -p "$cargo_target_dir"
+
+  if [[ -n "$CARGO_TARGET_DIR_OVERRIDE" ]]; then
+    cargo_target_mode="persistent (explicit)"
+  elif [[ "$REUSE_CARGO_TARGET" -eq 1 ]]; then
+    cargo_target_mode="persistent (--reuse-cargo-target)"
+  else
+    cargo_target_mode="ephemeral"
+  fi
+
   prepare_docker_config "$tmp_root"
   ensure_buildx_support "${target_arches[@]}"
 
   log "Version tag: $VERSION_TAG"
   log "Image repo: $IMAGE_NAME"
   log "Target arches: $(package_list_to_string "${target_arches[@]}")"
+  log "Cargo target dir: $cargo_target_dir ($cargo_target_mode)"
   log "Runtime packages: $(package_list_to_string "${RUNTIME_PACKAGES[@]}")"
   if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then
     log "Workspace packages: $(package_list_to_string "${WORKSPACE_PACKAGES[@]}")"
@@ -911,7 +992,6 @@ main() {
 
   for arch in "${target_arches[@]}"; do
     local context_dir="$tmp_root/$arch"
-    local cargo_target_dir="$tmp_root/cargo-$arch"
     local dockerfile_path="$context_dir/Dockerfile"
     local platform
 
