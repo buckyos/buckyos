@@ -36,8 +36,23 @@ const WORKER_CONTAINER_INSTANCE_VOLUME_ROOT: &str = "/opt/buckyos/instance";
 const WORKER_CONTAINER_PKG_ROOT: &str = "/opt/buckyos/instance/pkg";
 const WORKER_CONTAINER_LOG_ROOT: &str = "/opt/buckyos/logs";
 const WORKER_CONTAINER_STORAGE_ROOT: &str = "/opt/buckyos/storage";
+/// ExtTool Volume mount point inside the container (§6.1, §9 of
+/// paios容器需求.md). The Worker image bakes a default layout here; a shared
+/// named volume overlays it so multiple containers see the same tool set.
+const WORKER_CONTAINER_EXTTOOL_ROOT: &str = "/opt/buckyos/tools";
+/// Shared named volume that serves as the default ExtTool Volume. All
+/// containers on the same node mount this volume read-only at
+/// WORKER_CONTAINER_EXTTOOL_ROOT; if empty (first start), the image's baked
+/// tool layout wins.
+const DEFAULT_EXTTOOL_VOLUME_NAME: &str = "buckyos-exttool";
 const DEVENV_JSON_FILE_NAME: &str = "devenv.json";
 const DEVENV_JSON_AIOS_KEY: &str = "aios";
+const DEVENV_JSON_EXTTOOL_KEY: &str = "exttool";
+/// Seed image that populates the buckyos-exttool named volume on first use
+/// (see publish/exttool + build_exttool). Node_daemon runs this image once
+/// per host with the volume mounted so Docker auto-copies the baked
+/// /opt/buckyos/tools/ tree into the empty volume.
+const DEFAULT_EXTTOOL_IMAGE_REPO: &str = "paios/exttool";
 pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
 pub(crate) const DOCKER_LABEL_OWNER_USER_ID: &str = "buckyos.owner_user_id";
 pub(crate) const DOCKER_LABEL_FULL_APPID: &str = "buckyos.full_appid";
@@ -258,6 +273,7 @@ impl AppLoader {
                     .ok_or_else(|| self.pkg_not_found("script or host app package"))?;
                 self.ensure_pkg_installed(pkg_id.as_str()).await?;
                 self.prepare_worker_image().await?;
+                self.prepare_exttool_volume().await?;
             }
             RuntimeType::Agent => {
                 let pkg_id = self
@@ -268,6 +284,7 @@ impl AppLoader {
                     self.ensure_pkg_installed(skills_pkg_id.as_str()).await?;
                 }
                 self.prepare_worker_image().await?;
+                self.prepare_exttool_volume().await?;
             }
             RuntimeType::Vm => {
                 return Err(ControlRuntItemErrors::NotSupport(
@@ -951,6 +968,18 @@ impl AppLoader {
             instance_volume, WORKER_CONTAINER_INSTANCE_VOLUME_ROOT
         ));
 
+        // Shared ExtTool Volume — mounted across all worker containers on
+        // this node. On first start Docker seeds the empty named volume from
+        // the image's baked /opt/buckyos/tools/ layout (FreeCAD tool package,
+        // pre-warmed uv/deno caches). Mounted read-only per §9 permission
+        // matrix — new tool packages are installed by the control plane via
+        // an ad-hoc management container, not by apps.
+        args.push("-v".to_string());
+        args.push(format!(
+            "{}:{}:ro",
+            DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
+        ));
+
         // Bind mounts (pkg source ro, logs, storage, data, declared mounts).
         for (container_path, host_path, permission) in mounts {
             args.push("-v".to_string());
@@ -1336,7 +1365,8 @@ impl AppLoader {
 
         for (container_path, raw_value) in &self.install_config().data_mount_point {
             let (host_relative, permission_override) = parse_mount_value(raw_value.as_str());
-            let host_path = get_buckyos_root_dir().join(host_relative.trim_start_matches('/'));
+            let host_path =
+                resolve_external_mount_host_path(container_path.as_str(), host_relative)?;
             let permission = permission_override.unwrap_or_else(|| {
                 default_mount_permission(container_path.as_str(), &self.app_id, &self.owner_user_id)
             });
@@ -1489,10 +1519,12 @@ impl AppLoader {
         );
 
         // Developer-declared data mount points (e.g. zone shared data) map from
-        // container paths into BUCKYOS_ROOT on the host.
+        // container paths into BUCKYOS_ROOT on the host. Host paths are bounded
+        // to BUCKYOS_ROOT (R-27/R-28) and default to ro unless explicitly `:rw`.
         for (container_path, raw_value) in &self.install_config().data_mount_point {
             let (host_relative, permission_override) = parse_mount_value(raw_value.as_str());
-            let host_path = get_buckyos_root_dir().join(host_relative.trim_start_matches('/'));
+            let host_path =
+                resolve_external_mount_host_path(container_path.as_str(), host_relative)?;
             let permission = permission_override.unwrap_or_else(|| {
                 default_mount_permission(container_path.as_str(), &self.app_id, &self.owner_user_id)
             });
@@ -1598,6 +1630,131 @@ impl AppLoader {
         Ok(())
     }
 
+    fn exttool_image_repo(&self) -> String {
+        resolve_devenv_exttool_image_repo()
+            .unwrap_or_else(|| DEFAULT_EXTTOOL_IMAGE_REPO.to_string())
+    }
+
+    fn exttool_image_name(&self) -> String {
+        let arch_tag = match self.platform.arch {
+            PlatformArch::Aarch64 => "latest-aarch64",
+            PlatformArch::Amd64 => "latest-amd64",
+        };
+        format!("{}:{arch_tag}", self.exttool_image_repo())
+    }
+
+    async fn check_docker_volume_exists(&self, volume: &str) -> Result<bool> {
+        let output = run_command(
+            "docker",
+            &[
+                "volume".to_string(),
+                "inspect".to_string(),
+                volume.to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        if output.status.success() {
+            return Ok(true);
+        }
+        if docker_object_missing(&output) {
+            return Ok(false);
+        }
+        Err(ControlRuntItemErrors::ExecuteError(
+            "docker volume inspect".to_string(),
+            format_command_failure("docker volume inspect", &output),
+        ))
+    }
+
+    async fn ensure_docker_volume(&self, volume: &str) -> Result<()> {
+        let output = run_command(
+            "docker",
+            &[
+                "volume".to_string(),
+                "create".to_string(),
+                volume.to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        ensure_success("docker volume create", &output)
+    }
+
+    async fn seed_exttool_volume(&self, image_name: &str) -> Result<()> {
+        let output = run_command(
+            "docker",
+            &[
+                "run".to_string(),
+                "--rm".to_string(),
+                "-v".to_string(),
+                format!(
+                    "{}:{}",
+                    DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
+                ),
+                image_name.to_string(),
+                "true".to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        ensure_success("docker run (exttool seed)", &output)
+    }
+
+    /// Make sure the shared `buckyos-exttool` named volume exists and has
+    /// been populated with the ExtTool image payload at least once.
+    ///
+    /// Seeding relies on Docker's "auto-copy the image's files into an
+    /// empty named volume" behaviour: running *any* container from
+    /// `paios/exttool:<arch>` with the volume mounted at
+    /// `/opt/buckyos/tools` is enough. Re-seeding after an image upgrade
+    /// currently requires an explicit `docker volume rm buckyos-exttool`
+    /// (§6.3 of paios容器需求.md — OverlayFS lower/upper is the design
+    /// target that makes upgrades seamless; until then this is the
+    /// pragmatic seam).
+    async fn prepare_exttool_volume(&self) -> Result<()> {
+        let already_seeded = self
+            .check_docker_volume_exists(DEFAULT_EXTTOOL_VOLUME_NAME)
+            .await?;
+
+        let image_name = self.exttool_image_name();
+        if !self
+            .check_docker_image_exists(image_name.as_str(), None)
+            .await?
+        {
+            info!(
+                "exttool image {} missing, pulling now",
+                image_name
+            );
+            if let Err(error) = self.pull_docker_image(image_name.as_str(), None).await {
+                // A missing/unreachable exttool image must not block apps that
+                // don't actually exercise a baked tool. Guarantee the volume
+                // exists (so the ro mount succeeds) and continue.
+                warn!(
+                    "exttool image {} pull failed ({}); proceeding with an empty {} volume",
+                    image_name, error, DEFAULT_EXTTOOL_VOLUME_NAME
+                );
+                self.ensure_docker_volume(DEFAULT_EXTTOOL_VOLUME_NAME)
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        if !already_seeded {
+            self.ensure_docker_volume(DEFAULT_EXTTOOL_VOLUME_NAME)
+                .await?;
+            info!(
+                "seeding {} from {}",
+                DEFAULT_EXTTOOL_VOLUME_NAME, image_name
+            );
+            self.seed_exttool_volume(image_name.as_str()).await?;
+        }
+
+        Ok(())
+    }
+
     async fn build_worker_runtime_env(
         &self,
         role: PackageRole,
@@ -1639,6 +1796,10 @@ impl AppLoader {
         env_vars.insert(
             "BUCKYOS_INSTANCE_VOLUME".to_string(),
             WORKER_CONTAINER_INSTANCE_VOLUME_ROOT.to_string(),
+        );
+        env_vars.insert(
+            "BUCKYOS_EXTTOOL_DIR".to_string(),
+            WORKER_CONTAINER_EXTTOOL_ROOT.to_string(),
         );
         env_vars.insert(
             "BUCKYOS_SAFE_MODE".to_string(),
@@ -1962,6 +2123,14 @@ impl AppLoader {
             "docker",
             ["pull", self.worker_image_name().as_str()],
         ));
+        commands.push(CommandSpec::new(
+            "docker",
+            ["pull", self.exttool_image_name().as_str()],
+        ));
+        commands.push(CommandSpec::new(
+            "docker",
+            ["volume", "create", DEFAULT_EXTTOOL_VOLUME_NAME],
+        ));
         Ok(commands)
     }
 
@@ -1984,6 +2153,14 @@ impl AppLoader {
         commands.push(CommandSpec::new(
             "docker",
             ["pull", self.worker_image_name().as_str()],
+        ));
+        commands.push(CommandSpec::new(
+            "docker",
+            ["pull", self.exttool_image_name().as_str()],
+        ));
+        commands.push(CommandSpec::new(
+            "docker",
+            ["volume", "create", DEFAULT_EXTTOOL_VOLUME_NAME],
         ));
         Ok(commands)
     }
@@ -2025,6 +2202,11 @@ impl AppLoader {
         ));
         docker_run_args.push("-v".to_string());
         docker_run_args.push(format!(
+            "{}:{}:ro",
+            DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
+        ));
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!(
             "<app_pkg>:{}:ro",
             WORKER_CONTAINER_PKG_SOURCE_ROOT
         ));
@@ -2061,6 +2243,11 @@ impl AppLoader {
         docker_run_args.push(format!("BUCKYOS_APP_ID={}", self.app_id));
         docker_run_args.push("-e".to_string());
         docker_run_args.push(format!("BUCKYOS_APP_TYPE={}", app_type_label));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!(
+            "BUCKYOS_EXTTOOL_DIR={}",
+            WORKER_CONTAINER_EXTTOOL_ROOT
+        ));
         if let Some(port) = service_port {
             docker_run_args.push("-e".to_string());
             docker_run_args.push(format!("BUCKYOS_SERVICE_PORT={port}"));
@@ -2301,6 +2488,10 @@ fn parse_mount_value(value: &str) -> (&str, Option<&'static str>) {
     (value, None)
 }
 
+/// Default permission for a developer-declared mount when no explicit `:ro`/`:rw`
+/// suffix is given. Per paios容器需求.md R-26/R-27/R-28, default to the minimum
+/// useful privilege: only the app's own private data dir is `rw`; everything
+/// else falls through to `ro` and must be opted into writability explicitly.
 fn default_mount_permission(
     container_path: &str,
     app_id: &str,
@@ -2311,19 +2502,60 @@ fn default_mount_permission(
     if path == app_data || path.starts_with(format!("{app_data}/").as_str()) {
         return "rw";
     }
+    "ro"
+}
 
-    let shared = format!("/home/{owner_user_id}/shared");
-    if path == "/srv/publish"
-        || path.starts_with("/srv/publish/")
-        || path == shared
-        || path.starts_with(format!("{shared}/").as_str())
-        || path == format!("/home/{owner_user_id}")
-        || path.starts_with(format!("/home/{owner_user_id}/").as_str())
-    {
-        return "ro";
+/// Resolve a developer-declared host path (relative to BUCKYOS_ROOT) into an
+/// absolute path, rejecting anything that would escape BUCKYOS_ROOT via `..`
+/// or absolute segments. This is the boundary check that keeps a buggy or
+/// malicious install_config from binding the container to arbitrary host
+/// directories (R-27/R-28 minimum-privilege model).
+fn resolve_external_mount_host_path(
+    container_path: &str,
+    host_relative: &str,
+) -> Result<PathBuf> {
+    use std::path::Component;
+
+    let root = get_buckyos_root_dir();
+    let stripped = host_relative.trim_start_matches('/');
+    let relative = Path::new(stripped);
+
+    for component in relative.components() {
+        match component {
+            Component::Normal(_) => {}
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(ControlRuntItemErrors::ParserConfigError(format!(
+                    "mount host path for container {container_path:?} contains parent-dir segment (`..`); \
+                     external mounts must stay within BUCKYOS_ROOT"
+                )));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(ControlRuntItemErrors::ParserConfigError(format!(
+                    "mount host path for container {container_path:?} has an absolute segment; \
+                     external mounts must be relative to BUCKYOS_ROOT"
+                )));
+            }
+        }
     }
 
-    "rw"
+    let host_path = root.join(relative);
+
+    // Defence in depth: even after the per-component check, verify the joined
+    // path still starts with BUCKYOS_ROOT once any `.` components are flattened.
+    let flattened: PathBuf = host_path
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .collect();
+    if !flattened.starts_with(&root) {
+        return Err(ControlRuntItemErrors::ParserConfigError(format!(
+            "mount host path {} escapes BUCKYOS_ROOT {}",
+            flattened.display(),
+            root.display()
+        )));
+    }
+
+    Ok(host_path)
 }
 
 fn trim_trailing_slash(value: &str) -> &str {
@@ -2527,13 +2759,53 @@ fn resolve_devenv_aios_image_repo() -> Option<String> {
 }
 
 fn parse_aios_image_repo_from_devenv(path: &Path) -> std::result::Result<Option<String>, String> {
+    parse_image_repo_from_devenv(path, DEVENV_JSON_AIOS_KEY)
+}
+
+pub(crate) fn resolve_exttool_image_repo_from_paths<I, P>(paths: I) -> Option<String>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let mut visited = HashSet::new();
+
+    for candidate in paths {
+        let candidate = candidate.as_ref();
+        let path_key = candidate.to_string_lossy().to_string();
+        if !visited.insert(path_key) || !candidate.is_file() {
+            continue;
+        }
+
+        match parse_image_repo_from_devenv(candidate, DEVENV_JSON_EXTTOOL_KEY) {
+            Ok(Some(image_repo)) => return Some(image_repo),
+            Ok(None) => {}
+            Err(error) => warn!(
+                "ignore invalid {} at {}: {}",
+                DEVENV_JSON_FILE_NAME,
+                candidate.display(),
+                error
+            ),
+        }
+    }
+
+    None
+}
+
+fn resolve_devenv_exttool_image_repo() -> Option<String> {
+    resolve_exttool_image_repo_from_paths([devenv_json_path()])
+}
+
+fn parse_image_repo_from_devenv(
+    path: &Path,
+    key: &str,
+) -> std::result::Result<Option<String>, String> {
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("read {} failed: {}", path.display(), error))?;
     let value = serde_json::from_str::<Value>(raw.as_str())
         .map_err(|error| format!("parse {} failed: {}", path.display(), error))?;
 
     Ok(value
-        .get(DEVENV_JSON_AIOS_KEY)
+        .get(key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())

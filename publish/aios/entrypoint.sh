@@ -35,6 +35,7 @@ die() {
 : "${BUCKYOS_INSTANCE_VOLUME:=${BUCKYOS_ROOT}/instance}"
 : "${BUCKYOS_PKG_DIR:=${BUCKYOS_INSTANCE_VOLUME}/pkg}"
 : "${BUCKYOS_DATA_DIR:=${BUCKYOS_ROOT}/data/home/default/.local/share/${BUCKYOS_APP_ID}}"
+: "${BUCKYOS_EXTTOOL_DIR:=${BUCKYOS_ROOT}/tools}"
 : "${BUCKYOS_SAFE_MODE:=0}"
 
 DENO_DIR_DEFAULT="${BUCKYOS_INSTANCE_VOLUME}/deno-cache"
@@ -44,11 +45,18 @@ PIP_CACHE_DEFAULT="${BUCKYOS_INSTANCE_VOLUME}/pip-cache"
 SYNC_META_DIR="${BUCKYOS_INSTANCE_VOLUME}/.sync"
 SYNC_META_FILE="${SYNC_META_DIR}/upstream.json"
 SYNC_LOG_FILE="${SYNC_META_DIR}/last-sync.log"
+EXTTOOL_SEED_MARK="${SYNC_META_DIR}/exttool-seeded"
 
 export DENO_DIR="${DENO_DIR:-$DENO_DIR_DEFAULT}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$UV_CACHE_DEFAULT}"
 export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$NPM_CACHE_DEFAULT}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$PIP_CACHE_DEFAULT}"
+
+# ExtTool Volume bin dir comes before the instance/system PATH so baked-in
+# tool packages (FreeCADCmd etc.) are discoverable by scripts and agents.
+if [[ -d "${BUCKYOS_EXTTOOL_DIR}/bin" ]] && [[ ":$PATH:" != *":${BUCKYOS_EXTTOOL_DIR}/bin:"* ]]; then
+  export PATH="${BUCKYOS_EXTTOOL_DIR}/bin:${PATH}"
+fi
 
 mkdir -p \
   "$BUCKYOS_INSTANCE_VOLUME" \
@@ -59,6 +67,24 @@ mkdir -p \
   "$PIP_CACHE_DIR" \
   "$SYNC_META_DIR" \
   "$BUCKYOS_DATA_DIR"
+
+# Copy-on-first-use seed from the shared ExtTool caches into the per-instance
+# caches. Cheap enough on first start, and cheap enough to repeat on upgrade:
+# cp -rn never overwrites locally-added entries, so apps keep their deltas.
+# Once OverlayFS lower/upper is wired in (design §9), this block becomes a
+# no-op and can be deleted.
+seed_from_exttool() {
+  local src="$1" dst="$2"
+  if [[ -d "$src" ]] && [[ -n "$(ls -A "$src" 2>/dev/null)" ]]; then
+    cp -rn "$src"/. "$dst"/ 2>/dev/null || true
+  fi
+}
+
+if [[ ! -f "$EXTTOOL_SEED_MARK" ]]; then
+  seed_from_exttool "${BUCKYOS_EXTTOOL_DIR}/uv-cache" "$UV_CACHE_DIR"
+  seed_from_exttool "${BUCKYOS_EXTTOOL_DIR}/deno-cache" "$DENO_DIR"
+  touch "$EXTTOOL_SEED_MARK"
+fi
 
 if [[ "$BUCKYOS_SAFE_MODE" == "1" ]]; then
   log "SAFE_MODE=1: resetting working copy and sync metadata for ${BUCKYOS_APP_ID}"
@@ -250,15 +276,50 @@ run_script_app() {
   case "$lang" in
     python)
       local venv="${BUCKYOS_INSTANCE_VOLUME}/venv"
+      local dep_stamp="${BUCKYOS_INSTANCE_VOLUME}/.sync/venv-deps.sha256"
+      local manifest=""
+      if [[ -f "$root/pyproject.toml" ]]; then
+        manifest="$root/pyproject.toml"
+      elif [[ -f "$root/requirements.txt" ]]; then
+        manifest="$root/requirements.txt"
+      fi
+
+      local want_hash=""
+      if [[ -n "$manifest" ]]; then
+        want_hash="$(sha256sum "$manifest" | awk '{print $1}')"
+      fi
+      local have_hash=""
+      if [[ -f "$dep_stamp" ]]; then
+        have_hash="$(cat "$dep_stamp" 2>/dev/null || true)"
+      fi
+
+      local need_install=0
       if [[ ! -x "$venv/bin/python" ]]; then
         log "creating venv at $venv"
         uv venv "$venv"
-        if [[ -f "$root/pyproject.toml" ]]; then
-          (cd "$root" && uv pip install --python "$venv/bin/python" .)
-        elif [[ -f "$root/requirements.txt" ]]; then
-          uv pip install --python "$venv/bin/python" -r "$root/requirements.txt"
-        fi
+        need_install=1
+      elif [[ "$want_hash" != "$have_hash" ]]; then
+        # Upstream sync (R-15) may have replaced the manifest. Re-install so
+        # that a fresh code revision doesn't run against a stale venv.
+        log "venv deps manifest changed (have=${have_hash:-<none>} want=${want_hash:-<none>}), reinstalling"
+        need_install=1
       fi
+
+      if (( need_install )) && [[ -n "$manifest" ]]; then
+        if [[ "$manifest" == *pyproject.toml ]]; then
+          (cd "$root" && uv pip install --python "$venv/bin/python" .)
+        else
+          uv pip install --python "$venv/bin/python" -r "$manifest"
+        fi
+        mkdir -p "$(dirname "$dep_stamp")"
+        printf '%s' "$want_hash" > "$dep_stamp"
+      elif (( need_install )); then
+        # No manifest — nothing to install, but still stamp so we don't retry
+        # every start for an app that genuinely has no deps.
+        mkdir -p "$(dirname "$dep_stamp")"
+        : > "$dep_stamp"
+      fi
+
       exec "$venv/bin/python" "$entry" "$@"
       ;;
     typescript)
@@ -284,10 +345,14 @@ case "$BUCKYOS_APP_TYPE" in
     if [[ ! -x "$OPENDAN_BIN" ]]; then
       die "agent dispatch: OpenDAN binary not found at $OPENDAN_BIN"
     fi
-    log "agent=${BUCKYOS_APP_ID} port=${BUCKYOS_SERVICE_PORT} env=${BUCKYOS_PKG_DIR}"
+    # §9: Agent Root lives in the data layer, not in the pkg working copy.
+    # OpenDAN creates sessions/, memory/, skills/, todo/, worklog/ on demand
+    # — the exact layout under agent_root isn't frozen yet, so we only
+    # guarantee the data root itself exists (already mkdir'd at the top).
+    log "agent=${BUCKYOS_APP_ID} port=${BUCKYOS_SERVICE_PORT} env=${BUCKYOS_DATA_DIR}"
     exec "$OPENDAN_BIN" \
       --agent-id "$BUCKYOS_APP_ID" \
-      --agent-env "$BUCKYOS_PKG_DIR" \
+      --agent-env "$BUCKYOS_DATA_DIR" \
       --agent-bin "$BUCKYOS_PKG_SOURCE_DIR" \
       --service-port "$BUCKYOS_SERVICE_PORT" \
       "$@"

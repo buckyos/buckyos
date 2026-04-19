@@ -450,12 +450,23 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
 
     let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(deploy.runtime, RuntimeType::Agent);
-    assert_programs(&deploy.commands, &["pkg-install", "pkg-install", "docker"]);
+    assert_programs(
+        &deploy.commands,
+        &["pkg-install", "pkg-install", "docker", "docker", "docker"],
+    );
     assert_eq!(deploy.commands[0].args, vec!["jarvis-agent"]);
     assert_eq!(deploy.commands[1].args, vec!["jarvis-skills"]);
     assert_eq!(
         deploy.commands[2].args,
         vec!["pull", "paios/aios:latest-amd64"]
+    );
+    assert_eq!(
+        deploy.commands[3].args,
+        vec!["pull", "paios/exttool:latest-amd64"]
+    );
+    assert_eq!(
+        deploy.commands[4].args,
+        vec!["volume", "create", "buckyos-exttool"]
     );
 
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
@@ -499,6 +510,15 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .args
         .iter()
         .any(|arg| arg == "buckyos-instance-alice-jarvis:/opt/buckyos/instance:rw"));
+    // Default ExtTool Volume (§6.1) mounted ro — image seeds it with
+    // FreeCADCmd + pre-warmed uv/deno caches on first start.
+    assert!(start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg == "buckyos-exttool:/opt/buckyos/tools:ro"));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools".to_string()));
     assert!(start.commands[1]
         .args
         .iter()
@@ -617,6 +637,10 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(preview.commands[1]
         .args
         .iter()
+        .any(|a| a == "buckyos-exttool:/opt/buckyos/tools:ro"));
+    assert!(preview.commands[1]
+        .args
+        .iter()
         .any(|a| a == "<app_pkg>:/mnt/buckyos/pkg:ro"));
     assert!(preview.commands[1]
         .args
@@ -662,11 +686,19 @@ fn host_script_deploy_preview_includes_pkg_install_and_image_pull() {
 
     let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(preview.runtime, RuntimeType::HostScript);
-    assert_eq!(preview.commands.len(), 2);
+    assert_eq!(preview.commands.len(), 4);
     assert_eq!(preview.commands[0].program, "pkg-install");
     assert_eq!(preview.commands[1].program, "docker");
     assert_eq!(preview.commands[1].args[0], "pull");
     assert!(preview.commands[1].args[1].contains("paios/aios:"));
+    assert_eq!(preview.commands[2].program, "docker");
+    assert_eq!(preview.commands[2].args[0], "pull");
+    assert!(preview.commands[2].args[1].contains("paios/exttool:"));
+    assert_eq!(preview.commands[3].program, "docker");
+    assert_eq!(
+        preview.commands[3].args,
+        vec!["volume", "create", "buckyos-exttool"]
+    );
 }
 
 #[test]

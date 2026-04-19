@@ -10,7 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Runtime + predefined worker CLI tools. No compile toolchain: the Crafter
 # image (deferred per requirements §7.8) is the only place build-time deps
-# are allowed to land.
+# are allowed to land. Heavy tools (FreeCAD etc.) live in the paios/exttool
+# image and arrive via the buckyos-exttool named volume, not this image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
@@ -49,6 +50,9 @@ RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 ENV BUCKYOS_ROOT=/opt/buckyos
 WORKDIR /opt/buckyos
 
+# ExtTool Volume mount point — kept empty in the Worker image. Real payload
+# ships in the separate paios/exttool image and lands in the buckyos-exttool
+# named volume, which node_daemon mounts here read-only at run time.
 RUN mkdir -p \
     /opt/buckyos/bin/opendan \
     /opt/buckyos/data \
@@ -73,10 +77,12 @@ ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     BUCKYOS_INSTANCE_VOLUME=/opt/buckyos/instance \
     BUCKYOS_PKG_SOURCE_DIR=/mnt/buckyos/pkg \
     BUCKYOS_PKG_DIR=/opt/buckyos/instance/pkg \
+    BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools \
     DENO_DIR=/opt/buckyos/instance/deno-cache \
     UV_CACHE_DIR=/opt/buckyos/instance/uv-cache \
     NPM_CONFIG_CACHE=/opt/buckyos/instance/npm-cache \
-    PIP_CACHE_DIR=/opt/buckyos/instance/pip-cache
+    PIP_CACHE_DIR=/opt/buckyos/instance/pip-cache \
+    PATH="/opt/buckyos/tools/bin:${PATH}"
 
 EXPOSE 3180
 
