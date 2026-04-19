@@ -490,6 +490,12 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .contains(&"BUCKYOS_APP_TYPE=agent".to_string()));
     assert!(start.commands[1]
         .args
+        .contains(&"BUCKYOS_PKG_DIR=/opt/buckyos/bin/jarvis".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_PKG_SOURCE_DIR=/mnt/buckyos/pkg".to_string()));
+    assert!(start.commands[1]
+        .args
         .contains(&"BUCKYOS_SERVICE_PORT=14060".to_string()));
     assert!(start.commands[1]
         .args
@@ -645,6 +651,12 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(preview.commands[1]
         .args
         .contains(&"BUCKYOS_APP_TYPE=script".to_string()));
+    assert!(preview.commands[1]
+        .args
+        .contains(&"BUCKYOS_PKG_DIR=/opt/buckyos/bin/desktop-tool".to_string()));
+    assert!(preview.commands[1]
+        .args
+        .contains(&"BUCKYOS_PKG_SOURCE_DIR=/mnt/buckyos/pkg".to_string()));
 }
 
 #[test]
@@ -719,10 +731,7 @@ fn host_script_aarch64_uses_correct_image_tag() {
         .with_worker_image_repo_override("paios/aios");
 
     let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
-    assert_eq!(
-        preview.commands[1].args[1],
-        "paios/aios:latest-aarch64"
-    );
+    assert_eq!(preview.commands[1].args[1], "paios/aios:latest-aarch64");
 }
 
 #[test]

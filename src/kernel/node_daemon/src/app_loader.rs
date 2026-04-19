@@ -32,8 +32,11 @@ const WORKER_CONTAINER_PKG_SOURCE_ROOT: &str = "/mnt/buckyos/pkg";
 /// Base mount point of the per-instance private Docker volume. Contains the
 /// working copy, dep caches (deno/uv/npm/pip) and sync metadata.
 const WORKER_CONTAINER_INSTANCE_VOLUME_ROOT: &str = "/opt/buckyos/instance";
-/// Writable working copy of the app package inside the instance volume.
-const WORKER_CONTAINER_PKG_ROOT: &str = "/opt/buckyos/instance/pkg";
+/// App-visible package root. The worker image rewires this path to the
+/// instance-volume working copy so apps keep seeing the historical
+/// `/opt/buckyos/bin/$APP_ID` contract while all writes land in the private
+/// instance volume.
+const WORKER_CONTAINER_BIN_ROOT: &str = "/opt/buckyos/bin";
 const WORKER_CONTAINER_LOG_ROOT: &str = "/opt/buckyos/logs";
 const WORKER_CONTAINER_STORAGE_ROOT: &str = "/opt/buckyos/storage";
 /// ExtTool Volume mount point inside the container (§6.1, §9 of
@@ -240,10 +243,7 @@ impl AppLoader {
         self
     }
 
-    pub(crate) fn with_worker_image_repo_override(
-        mut self,
-        image_repo: impl Into<String>,
-    ) -> Self {
+    pub(crate) fn with_worker_image_repo_override(mut self, image_repo: impl Into<String>) -> Self {
         self.worker_image_repo_override = Some(image_repo.into());
         self
     }
@@ -1474,6 +1474,10 @@ impl AppLoader {
         get_buckyos_root_dir().join("storage")
     }
 
+    fn worker_pkg_dir(&self) -> String {
+        format!("{}/{}", WORKER_CONTAINER_BIN_ROOT, self.app_id)
+    }
+
     fn build_worker_volume_mounts(
         &self,
         pkg_source_root: &Path,
@@ -1494,8 +1498,11 @@ impl AppLoader {
 
         let app_data_container =
             format!("/home/{}/.local/share/{}", self.owner_user_id, self.app_id);
-        let instance_volume_mount =
-            format!("{}:{}:rw", self.instance_volume_name(), WORKER_CONTAINER_INSTANCE_VOLUME_ROOT);
+        let instance_volume_mount = format!(
+            "{}:{}:rw",
+            self.instance_volume_name(),
+            WORKER_CONTAINER_INSTANCE_VOLUME_ROOT
+        );
         // Mounts are keyed by container-path so later entries can be overridden
         // by user declarations if they legitimately want to remap. The instance
         // volume mount uses a named volume — we encode that as a sentinel path
@@ -1587,8 +1594,7 @@ impl AppLoader {
             return repo.clone();
         }
 
-        resolve_devenv_aios_image_repo()
-            .unwrap_or_else(|| DEFAULT_WORKER_IMAGE_REPO.to_string())
+        resolve_devenv_aios_image_repo().unwrap_or_else(|| DEFAULT_WORKER_IMAGE_REPO.to_string())
     }
 
     fn worker_image_name(&self) -> String {
@@ -1620,10 +1626,7 @@ impl AppLoader {
         {
             return Err(ControlRuntItemErrors::ExecuteError(
                 "deploy".to_string(),
-                format!(
-                    "worker image {} prepared but validation failed",
-                    image_name
-                ),
+                format!("worker image {} prepared but validation failed", image_name),
             ));
         }
 
@@ -1724,10 +1727,7 @@ impl AppLoader {
             .check_docker_image_exists(image_name.as_str(), None)
             .await?
         {
-            info!(
-                "exttool image {} missing, pulling now",
-                image_name
-            );
+            info!("exttool image {} missing, pulling now", image_name);
             if let Err(error) = self.pull_docker_image(image_name.as_str(), None).await {
                 // A missing/unreachable exttool image must not block apps that
                 // don't actually exercise a baked tool. Guarantee the volume
@@ -1762,13 +1762,11 @@ impl AppLoader {
         service_port: Option<u16>,
     ) -> Result<HashMap<String, String>> {
         let mut env_vars = self.build_runtime_env(role).await?;
+        let worker_pkg_dir = self.worker_pkg_dir();
 
         // §9 env contract.
         env_vars.insert("BUCKYOS_APP_ID".to_string(), self.app_id.clone());
-        env_vars.insert(
-            "BUCKYOS_APP_TYPE".to_string(),
-            app_type_label.to_string(),
-        );
+        env_vars.insert("BUCKYOS_APP_TYPE".to_string(), app_type_label.to_string());
         env_vars.insert(
             "BUCKYOS_OWNER_USER_ID".to_string(),
             self.owner_user_id.clone(),
@@ -1789,10 +1787,7 @@ impl AppLoader {
             "BUCKYOS_PKG_SOURCE_DIR".to_string(),
             WORKER_CONTAINER_PKG_SOURCE_ROOT.to_string(),
         );
-        env_vars.insert(
-            "BUCKYOS_PKG_DIR".to_string(),
-            WORKER_CONTAINER_PKG_ROOT.to_string(),
-        );
+        env_vars.insert("BUCKYOS_PKG_DIR".to_string(), worker_pkg_dir.clone());
         env_vars.insert(
             "BUCKYOS_INSTANCE_VOLUME".to_string(),
             WORKER_CONTAINER_INSTANCE_VOLUME_ROOT.to_string(),
@@ -1803,7 +1798,11 @@ impl AppLoader {
         );
         env_vars.insert(
             "BUCKYOS_SAFE_MODE".to_string(),
-            if self.safe_mode { "1".to_string() } else { "0".to_string() },
+            if self.safe_mode {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            },
         );
         if let Some(port) = service_port {
             env_vars.insert("BUCKYOS_SERVICE_PORT".to_string(), port.to_string());
@@ -1818,10 +1817,7 @@ impl AppLoader {
         if let Some(media_info) = env_vars.get("app_media_info").cloned() {
             if let Ok(mut value) = serde_json::from_str::<Value>(media_info.as_str()) {
                 if let Some(object) = value.as_object_mut() {
-                    object.insert(
-                        "full_path".to_string(),
-                        Value::String(WORKER_CONTAINER_PKG_ROOT.to_string()),
-                    );
+                    object.insert("full_path".to_string(), Value::String(worker_pkg_dir));
                     env_vars.insert("app_media_info".to_string(), value.to_string());
                 }
             }
@@ -2206,10 +2202,7 @@ impl AppLoader {
             DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
         ));
         docker_run_args.push("-v".to_string());
-        docker_run_args.push(format!(
-            "<app_pkg>:{}:ro",
-            WORKER_CONTAINER_PKG_SOURCE_ROOT
-        ));
+        docker_run_args.push(format!("<app_pkg>:{}:ro", WORKER_CONTAINER_PKG_SOURCE_ROOT));
         docker_run_args.push("-v".to_string());
         docker_run_args.push(format!("<app_logs>:{}:rw", WORKER_CONTAINER_LOG_ROOT));
         docker_run_args.push("-v".to_string());
@@ -2244,13 +2237,52 @@ impl AppLoader {
         docker_run_args.push("-e".to_string());
         docker_run_args.push(format!("BUCKYOS_APP_TYPE={}", app_type_label));
         docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!("BUCKYOS_OWNER_USER_ID={}", self.owner_user_id));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!(
+            "BUCKYOS_DATA_DIR=/home/{}/.local/share/{}",
+            self.owner_user_id, self.app_id
+        ));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!("BUCKYOS_LOG_DIR={}", WORKER_CONTAINER_LOG_ROOT));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!(
+            "BUCKYOS_STORAGE_DIR={}",
+            WORKER_CONTAINER_STORAGE_ROOT
+        ));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!(
+            "BUCKYOS_PKG_SOURCE_DIR={}",
+            WORKER_CONTAINER_PKG_SOURCE_ROOT
+        ));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!("BUCKYOS_PKG_DIR={}", self.worker_pkg_dir()));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!(
+            "BUCKYOS_INSTANCE_VOLUME={}",
+            WORKER_CONTAINER_INSTANCE_VOLUME_ROOT
+        ));
+        docker_run_args.push("-e".to_string());
         docker_run_args.push(format!(
             "BUCKYOS_EXTTOOL_DIR={}",
             WORKER_CONTAINER_EXTTOOL_ROOT
         ));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!(
+            "BUCKYOS_SAFE_MODE={}",
+            if self.safe_mode { 1 } else { 0 }
+        ));
         if let Some(port) = service_port {
             docker_run_args.push("-e".to_string());
             docker_run_args.push(format!("BUCKYOS_SERVICE_PORT={port}"));
+            if app_type_label == "agent" {
+                docker_run_args.push("-e".to_string());
+                docker_run_args.push(format!("OPENDAN_SERVICE_PORT={port}"));
+            }
+        }
+        if app_type_label == "agent" {
+            docker_run_args.push("-e".to_string());
+            docker_run_args.push(format!("OPENDAN_AGENT_ID={}", self.app_id));
         }
 
         if let Some(desc) = desc {
@@ -2273,7 +2305,10 @@ impl AppLoader {
         vec![
             CommandSpec::new("docker", ["ps", "-q", "-f", filter.as_str()]),
             CommandSpec::new("docker", ["ps", "-aq", "-f", filter.as_str()]),
-            CommandSpec::new("docker", ["images", "-q", self.worker_image_name().as_str()]),
+            CommandSpec::new(
+                "docker",
+                ["images", "-q", self.worker_image_name().as_str()],
+            ),
         ]
     }
 
@@ -2510,10 +2545,7 @@ fn default_mount_permission(
 /// or absolute segments. This is the boundary check that keeps a buggy or
 /// malicious install_config from binding the container to arbitrary host
 /// directories (R-27/R-28 minimum-privilege model).
-fn resolve_external_mount_host_path(
-    container_path: &str,
-    host_relative: &str,
-) -> Result<PathBuf> {
+fn resolve_external_mount_host_path(container_path: &str, host_relative: &str) -> Result<PathBuf> {
     use std::path::Component;
 
     let root = get_buckyos_root_dir();

@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file \
     fuse \
     libfuse2t64 \
+    unzip \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 

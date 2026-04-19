@@ -305,7 +305,6 @@ RUN chmod 755 /opt/buckyos/entrypoint.sh
 ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     BUCKYOS_INSTANCE_VOLUME=/opt/buckyos/instance \
     BUCKYOS_PKG_SOURCE_DIR=/mnt/buckyos/pkg \
-    BUCKYOS_PKG_DIR=/opt/buckyos/instance/pkg \
     BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools \
     DENO_DIR=/opt/buckyos/instance/deno-cache \
     UV_CACHE_DIR=/opt/buckyos/instance/uv-cache \

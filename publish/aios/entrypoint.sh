@@ -5,7 +5,8 @@
 # agents that use the paios/aios worker image. It performs three jobs:
 #
 #   1. Bootstrap the instance volume layout (pkg working copy, dep caches,
-#      sync metadata) inside /opt/buckyos/instance.
+#      sync metadata) inside /opt/buckyos/instance and expose the writable app
+#      package at /opt/buckyos/bin/$APP_ID.
 #   2. File-level sync from the read-only upstream package mount
 #      ($BUCKYOS_PKG_SOURCE_DIR, typically /mnt/buckyos/pkg) into the instance
 #      volume's working copy ($BUCKYOS_PKG_DIR). Honours the R-15 policy:
@@ -33,11 +34,12 @@ die() {
 : "${BUCKYOS_APP_TYPE:=}"
 : "${BUCKYOS_PKG_SOURCE_DIR:=/mnt/buckyos/pkg}"
 : "${BUCKYOS_INSTANCE_VOLUME:=${BUCKYOS_ROOT}/instance}"
-: "${BUCKYOS_PKG_DIR:=${BUCKYOS_INSTANCE_VOLUME}/pkg}"
+: "${BUCKYOS_PKG_DIR:=${BUCKYOS_ROOT}/bin/${BUCKYOS_APP_ID}}"
 : "${BUCKYOS_DATA_DIR:=${BUCKYOS_ROOT}/data/home/default/.local/share/${BUCKYOS_APP_ID}}"
 : "${BUCKYOS_EXTTOOL_DIR:=${BUCKYOS_ROOT}/tools}"
 : "${BUCKYOS_SAFE_MODE:=0}"
 
+INSTANCE_PKG_DIR="${BUCKYOS_INSTANCE_VOLUME}/pkg"
 DENO_DIR_DEFAULT="${BUCKYOS_INSTANCE_VOLUME}/deno-cache"
 UV_CACHE_DEFAULT="${BUCKYOS_INSTANCE_VOLUME}/uv-cache"
 NPM_CACHE_DEFAULT="${BUCKYOS_INSTANCE_VOLUME}/npm-cache"
@@ -58,15 +60,35 @@ if [[ -d "${BUCKYOS_EXTTOOL_DIR}/bin" ]] && [[ ":$PATH:" != *":${BUCKYOS_EXTTOOL
   export PATH="${BUCKYOS_EXTTOOL_DIR}/bin:${PATH}"
 fi
 
+ensure_pkg_dir_alias() {
+  local pkg_parent current_target
+  pkg_parent="$(dirname "$BUCKYOS_PKG_DIR")"
+  mkdir -p "$pkg_parent"
+
+  if [[ -L "$BUCKYOS_PKG_DIR" ]]; then
+    current_target="$(readlink "$BUCKYOS_PKG_DIR" 2>/dev/null || true)"
+    if [[ "$current_target" == "$INSTANCE_PKG_DIR" ]]; then
+      return
+    fi
+    rm -f "$BUCKYOS_PKG_DIR"
+  elif [[ -e "$BUCKYOS_PKG_DIR" ]]; then
+    die "pkg dir path already exists and is not the expected instance-volume alias: $BUCKYOS_PKG_DIR"
+  fi
+
+  ln -s "$INSTANCE_PKG_DIR" "$BUCKYOS_PKG_DIR"
+}
+
 mkdir -p \
   "$BUCKYOS_INSTANCE_VOLUME" \
-  "$BUCKYOS_PKG_DIR" \
+  "$INSTANCE_PKG_DIR" \
   "$DENO_DIR" \
   "$UV_CACHE_DIR" \
   "$NPM_CONFIG_CACHE" \
   "$PIP_CACHE_DIR" \
   "$SYNC_META_DIR" \
   "$BUCKYOS_DATA_DIR"
+
+ensure_pkg_dir_alias
 
 # Copy-on-first-use seed from the shared ExtTool caches into the per-instance
 # caches. Cheap enough on first start, and cheap enough to repeat on upgrade:
@@ -88,8 +110,9 @@ fi
 
 if [[ "$BUCKYOS_SAFE_MODE" == "1" ]]; then
   log "SAFE_MODE=1: resetting working copy and sync metadata for ${BUCKYOS_APP_ID}"
-  rm -rf "$BUCKYOS_PKG_DIR" "$SYNC_META_DIR"
-  mkdir -p "$BUCKYOS_PKG_DIR" "$SYNC_META_DIR"
+  rm -rf "$INSTANCE_PKG_DIR" "$SYNC_META_DIR"
+  mkdir -p "$INSTANCE_PKG_DIR" "$SYNC_META_DIR"
+  ensure_pkg_dir_alias
 fi
 
 # File-level sync is the replacement for the old overlayfs/fuse-overlayfs model.
@@ -101,8 +124,8 @@ sync_upstream_into_instance() {
     return
   fi
 
-  log "syncing upstream pkg $BUCKYOS_PKG_SOURCE_DIR -> $BUCKYOS_PKG_DIR"
-  python3 - "$BUCKYOS_PKG_SOURCE_DIR" "$BUCKYOS_PKG_DIR" "$SYNC_META_FILE" "$SYNC_LOG_FILE" <<'PY'
+  log "syncing upstream pkg $BUCKYOS_PKG_SOURCE_DIR -> $BUCKYOS_PKG_DIR (backing $INSTANCE_PKG_DIR)"
+  python3 - "$BUCKYOS_PKG_SOURCE_DIR" "$INSTANCE_PKG_DIR" "$SYNC_META_FILE" "$SYNC_LOG_FILE" <<'PY'
 import hashlib
 import json
 import os
@@ -353,7 +376,7 @@ case "$BUCKYOS_APP_TYPE" in
     exec "$OPENDAN_BIN" \
       --agent-id "$BUCKYOS_APP_ID" \
       --agent-env "$BUCKYOS_DATA_DIR" \
-      --agent-bin "$BUCKYOS_PKG_SOURCE_DIR" \
+      --agent-bin "$BUCKYOS_PKG_DIR" \
       --service-port "$BUCKYOS_SERVICE_PORT" \
       "$@"
     ;;
