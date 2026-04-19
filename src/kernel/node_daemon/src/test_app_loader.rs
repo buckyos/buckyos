@@ -221,6 +221,9 @@ fn docker_missing_text_matches_lowercase_runtime_errors() {
         "Error response from daemon: No such container: demo"
     ));
     assert!(docker_missing_text("no such image: repo/demo:latest"));
+    assert!(docker_missing_text(
+        "Error response from daemon: get buckyos-exttool: no such volume"
+    ));
     assert!(!docker_missing_text(
         "permission denied while trying to connect to docker daemon"
     ));

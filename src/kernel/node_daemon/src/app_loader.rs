@@ -6,7 +6,7 @@ use buckyos_api::{
     ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use ndn_lib::{load_named_object_from_obj_str, ObjId};
 use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
 use serde::Deserialize;
@@ -700,7 +700,7 @@ impl AppLoader {
         let env_vars = self.build_runtime_env(PackageRole::DockerImage).await?;
         let mut args: Vec<String> = vec![
             "run".to_string(),
-            "--rm".to_string(),
+            //"--rm".to_string(),
             "-d".to_string(),
             "--name".to_string(),
             container_name.clone(),
@@ -796,6 +796,16 @@ impl AppLoader {
     }
 
     async fn start_host_script(&self) -> Result<()> {
+        // Mirror start_agent: re-run deploy so the worker image, pkg install
+        // and the shared buckyos-exttool volume are all guaranteed before
+        // we hand off to run_worker_container. Without this, a host-script
+        // app whose very first start happened before the exttool volume was
+        // seeded (e.g. the image pull lost the race with another app's
+        // deploy) would stay running forever without the ExtTool mount,
+        // because the ensure loop sees the container as Started and never
+        // restarts it.
+        let _ = self.deploy().await?;
+
         let pkg_id = self
             .host_script_pkg_id()
             .ok_or_else(|| self.pkg_not_found("script or host app package"))?;
@@ -969,16 +979,33 @@ impl AppLoader {
         ));
 
         // Shared ExtTool Volume — mounted across all worker containers on
-        // this node. On first start Docker seeds the empty named volume from
-        // the image's baked /opt/buckyos/tools/ layout (FreeCAD tool package,
-        // pre-warmed uv/deno caches). Mounted read-only per §9 permission
-        // matrix — new tool packages are installed by the control plane via
-        // an ad-hoc management container, not by apps.
-        args.push("-v".to_string());
-        args.push(format!(
-            "{}:{}:ro",
-            DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
-        ));
+        // this node when it has been seeded. On first start Docker seeds the
+        // empty named volume from the image's baked /opt/buckyos/tools/
+        // layout (FreeCAD tool package, pre-warmed uv/deno caches). Mounted
+        // read-only per §9 permission matrix — new tool packages are
+        // installed by the control plane via an ad-hoc management
+        // container, not by apps.
+        //
+        // If the ExtTool image was unreachable during deploy, the volume is
+        // absent and we skip the mount entirely. The Worker image bakes a
+        // minimal /opt/buckyos/tools layout of its own, and entrypoint.sh
+        // no-ops gracefully when no tool cache is present, so apps that
+        // don't exercise baked tools still start.
+        if self
+            .check_docker_volume_exists(DEFAULT_EXTTOOL_VOLUME_NAME)
+            .await?
+        {
+            args.push("-v".to_string());
+            args.push(format!(
+                "{}:{}:ro",
+                DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
+            ));
+        } else {
+            warn!(
+                "{} volume is absent; starting {} without the ExtTool mount",
+                DEFAULT_EXTTOOL_VOLUME_NAME, container_name
+            );
+        }
 
         // Bind mounts (pkg source ro, logs, storage, data, declared mounts).
         for (container_path, host_path, permission) in mounts {
@@ -1717,8 +1744,15 @@ impl AppLoader {
     /// (§6.3 of paios容器需求.md — OverlayFS lower/upper is the design
     /// target that makes upgrades seamless; until then this is the
     /// pragmatic seam).
+    ///
+    /// If the ExtTool image is not available (not yet built/pushed, or the
+    /// registry is unreachable), we deliberately leave the volume absent.
+    /// The worker container launch path treats a missing volume as "no
+    /// ExtTool mount", so apps that don't need baked tools still start —
+    /// and once the image becomes reachable a later deploy will seed the
+    /// volume cleanly, instead of being locked into an empty one forever.
     async fn prepare_exttool_volume(&self) -> Result<()> {
-        let already_seeded = self
+        let volume_exists = self
             .check_docker_volume_exists(DEFAULT_EXTTOOL_VOLUME_NAME)
             .await?;
 
@@ -1728,21 +1762,16 @@ impl AppLoader {
             .await?
         {
             info!("exttool image {} missing, pulling now", image_name);
-            if let Err(error) = self.pull_docker_image(image_name.as_str(), None).await {
-                // A missing/unreachable exttool image must not block apps that
-                // don't actually exercise a baked tool. Guarantee the volume
-                // exists (so the ro mount succeeds) and continue.
-                warn!(
-                    "exttool image {} pull failed ({}); proceeding with an empty {} volume",
-                    image_name, error, DEFAULT_EXTTOOL_VOLUME_NAME
+            if let Err(pull_error) = self.pull_docker_image(image_name.as_str(), None).await {
+                error!(
+                    "exttool image {} unavailable: {}. Skipping {} volume seed; worker containers will start without the ExtTool mount until the image becomes reachable.",
+                    image_name, pull_error, DEFAULT_EXTTOOL_VOLUME_NAME
                 );
-                self.ensure_docker_volume(DEFAULT_EXTTOOL_VOLUME_NAME)
-                    .await?;
                 return Ok(());
             }
         }
 
-        if !already_seeded {
+        if !volume_exists {
             self.ensure_docker_volume(DEFAULT_EXTTOOL_VOLUME_NAME)
                 .await?;
             info!(
@@ -2861,9 +2890,14 @@ fn trim_to_option(value: &str) -> Option<String> {
 
 pub(crate) fn docker_missing_text(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
+    // `docker volume inspect <name>` (Docker Engine ≥ 25) phrases the
+    // missing-volume error as `get <name>: no such volume` — a different
+    // wording than the container/image paths, but still a "missing object"
+    // result from the caller's perspective.
     lower.contains("no such object")
         || lower.contains("no such image")
         || lower.contains("no such container")
+        || lower.contains("no such volume")
 }
 
 fn docker_object_missing(output: &CommandOutput) -> bool {
