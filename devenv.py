@@ -26,7 +26,17 @@ class BootstrapError(RuntimeError):
 
 
 LINUX_CORE_PACKAGES = {
-    "apt-get": ["build-essential", "curl", "wget", "git", "pkg-config", "libssl-dev"],
+    "apt-get": [
+        "build-essential",
+        "curl",
+        "wget",
+        "git",
+        "pkg-config",
+        "libssl-dev",
+        "clang",
+        "libclang-dev",
+        "llvm-dev",
+    ],
     "dnf": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconf-pkg-config", "openssl-devel"],
     "yum": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconfig", "openssl-devel"],
     "pacman": ["base-devel", "curl", "wget", "git", "pkgconf", "openssl"],
@@ -98,6 +108,26 @@ LINUX_CROSS_PACKAGE_CHOICES = {
     "yum": [["musl-gcc"], ["gcc-aarch64-linux-gnu"]],
     "pacman": [["musl"], ["musl-aarch64"]],
     "zypper": [["musl"], ["gcc-aarch64-linux-gnu"], ["cross-aarch64-gcc13", "cross-aarch64-binutils"]],
+}
+
+LINUX_BINDGEN_PACKAGE_CHOICES = {
+    "apt-get": [["clang", "libclang-dev", "llvm-dev"]],
+    "dnf": [
+        ["clang", "clang-devel", "llvm-devel"],
+        ["clang", "libclang", "llvm-devel"],
+        ["clang", "libclang-devel", "llvm-devel"],
+    ],
+    "yum": [
+        ["clang", "clang-devel", "llvm-devel"],
+        ["clang", "libclang", "llvm-devel"],
+        ["clang", "libclang-devel", "llvm-devel"],
+    ],
+    "pacman": [["clang", "llvm"]],
+    "zypper": [
+        ["clang", "clang-devel", "llvm-devel"],
+        ["clang", "libclang-devel", "llvm-devel"],
+        ["clang", "llvm-devel"],
+    ],
 }
 
 BREW_FORMULAE = ["git", "wget", "pkgconf", "openssl@3", "python@3.12", "node", "pnpm", "rustup", "uv", "deno", "tmux"]
@@ -429,6 +459,38 @@ class Bootstrapper:
                 return str(candidate)
         return None
 
+    def find_libclang(self) -> str | None:
+        env_path = os.environ.get("LIBCLANG_PATH")
+        if env_path:
+            env_candidate = Path(env_path)
+            search_roots = [env_candidate] if env_candidate.is_dir() else [env_candidate.parent]
+        else:
+            search_roots = []
+
+        search_roots.extend(
+            [
+                Path("/usr/lib"),
+                Path("/usr/local/lib"),
+                Path("/usr/lib64"),
+                Path("/usr/local/lib64"),
+                Path("/opt/homebrew/opt/llvm/lib"),
+                Path("/usr/local/opt/llvm/lib"),
+            ]
+        )
+        search_roots.extend(sorted(Path("/usr/lib").glob("llvm-*/lib")))
+        search_roots.extend(sorted(Path("/usr/lib64").glob("llvm-*/lib")))
+
+        seen: set[Path] = set()
+        for root in search_roots:
+            if root in seen or not root.exists():
+                continue
+            seen.add(root)
+            for pattern in ("libclang.so", "libclang.so.*", "libclang.dylib", "libclang.dll"):
+                matches = sorted(root.glob(pattern))
+                if matches:
+                    return str(matches[0])
+        return None
+
     def ensure_uv(self) -> None:
         if self.find_uv():
             return
@@ -655,6 +717,12 @@ class Bootstrapper:
     def install_linux_environment(self) -> None:
         self.update_package_index()
         self.install_packages(LINUX_CORE_PACKAGES[self.package_manager])
+        if self.package_manager != "apt-get":
+            self.install_first_resolved_set(
+                "clang/libclang build dependencies",
+                LINUX_BINDGEN_PACKAGE_CHOICES[self.package_manager],
+                optional=True,
+            )
         self.install_first_resolved_set("Python 3", LINUX_PYTHON_CHOICES[self.package_manager])
         self.ensure_linux_node()
         self.ensure_linux_rustup()
@@ -687,6 +755,7 @@ class Bootstrapper:
             for choices in LINUX_CROSS_PACKAGE_CHOICES[self.package_manager]:
                 self.install_first_resolved_set("cross-compilation dependencies", [choices], optional=True)
             self.check_linux_static_tooling()
+        self.check_linux_bindgen_tooling()
 
         if not self.args.skip_buckyos_dir:
             self.ensure_buckyos_directory()
@@ -762,6 +831,12 @@ class Bootstrapper:
                 "x86_64 musl toolchain not found; static Linux builds require musl-gcc or x86_64-linux-musl-gcc"
             )
 
+        if not shutil.which("musl-g++") and not shutil.which("x86_64-linux-musl-g++"):
+            self.warnings.append(
+                "x86_64 musl C++ toolchain not found; crates with C++ deps (for example rocksdb) require "
+                "musl-g++ or x86_64-linux-musl-g++. On Ubuntu, musl-tools alone is not enough."
+            )
+
         if (
             not shutil.which("aarch64-linux-musl-gcc")
             and not Path("/usr/aarch64-linux-musl/bin/musl-gcc").exists()
@@ -770,6 +845,15 @@ class Bootstrapper:
             self.warnings.append(
                 "aarch64 musl toolchain not found; static Linux builds require aarch64-linux-musl-gcc "
                 "or /usr/aarch64-linux-musl/bin/musl-gcc or /opt/musl-cross/bin/aarch64-linux-musl-gcc"
+            )
+
+    def check_linux_bindgen_tooling(self) -> None:
+        if not shutil.which("clang"):
+            self.warnings.append("clang not found; crates using bindgen or C/C++ build steps may fail")
+
+        if not self.find_libclang():
+            self.warnings.append(
+                "libclang not found; crates using bindgen may fail unless LIBCLANG_PATH points to libclang.so"
             )
 
     def ensure_macos_build_tools(self) -> None:

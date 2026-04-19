@@ -54,9 +54,6 @@ src/rootfs/bin/sys_test/
 publish/*
 !publish/aios/
 !publish/aios/Dockerfile
-!publish/script_service/
-!publish/script_service/Dockerfile
-!publish/script_service/entrypoint.sh
 src/rootfs/bin/buckyos_systest/
 src/rootfs/bin/aicc/aicc
 src/rootfs/bin/kmsg/kmsg
@@ -77,3 +74,4 @@ src/frame/desktop/dist/favicon.svg
 aicc_remote_runner.toml
 test/aicc_test/rust_runner/targettest/deno.lock
 .claude/
+uv.lock

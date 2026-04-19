@@ -462,6 +462,34 @@ resolve_rust_target() {
   esac
 }
 
+resolve_x86_64_musl_cc() {
+  if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+    command -v x86_64-linux-musl-gcc
+    return
+  fi
+
+  if command -v musl-gcc >/dev/null 2>&1; then
+    command -v musl-gcc
+    return
+  fi
+
+  return 1
+}
+
+resolve_x86_64_musl_cxx() {
+  if command -v x86_64-linux-musl-g++ >/dev/null 2>&1; then
+    command -v x86_64-linux-musl-g++
+    return
+  fi
+
+  if command -v musl-g++ >/dev/null 2>&1; then
+    command -v musl-g++
+    return
+  fi
+
+  return 1
+}
+
 resolve_aarch64_musl_cc() {
   if command -v aarch64-linux-musl-gcc >/dev/null 2>&1; then
     command -v aarch64-linux-musl-gcc
@@ -499,6 +527,55 @@ resolve_aarch64_musl_tool() {
   done
 
   return 1
+}
+
+append_x86_64_musl_env_lines() {
+  local -n env_lines_ref="$1"
+  local x86_64_musl_cc
+  local x86_64_musl_cxx
+  local tool_bin_dir
+  local x86_64_musl_ar
+  local x86_64_musl_ranlib
+
+  if ! x86_64_musl_cc="$(resolve_x86_64_musl_cc)"; then
+    cat >&2 <<'EOF'
+Missing musl compiler for x86_64-linux-musl.
+Linux builds in this repository are fully static. Install a musl toolchain that provides:
+  - `x86_64-linux-musl-gcc` in PATH
+  - or `musl-gcc` in PATH
+then rerun build_aios.
+EOF
+    exit 1
+  fi
+
+  if ! "$x86_64_musl_cc" -dumpmachine >/dev/null 2>&1; then
+    cat >&2 <<EOF
+Resolved musl compiler is not runnable: $x86_64_musl_cc
+Ensure the full x86_64 musl toolchain is installed, then rerun build_aios.
+EOF
+    exit 1
+  fi
+
+  tool_bin_dir="$(dirname "$x86_64_musl_cc")"
+  env_lines_ref+=("PATH=$tool_bin_dir:$PATH")
+  env_lines_ref+=("CC_x86_64_unknown_linux_musl=$x86_64_musl_cc")
+  env_lines_ref+=("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$x86_64_musl_cc")
+
+  if x86_64_musl_ar="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
+    x86_64-linux-musl-ar x86_64-linux-musl-gcc-ar ar)"; then
+    env_lines_ref+=("AR_x86_64_unknown_linux_musl=$x86_64_musl_ar")
+  fi
+
+  if x86_64_musl_ranlib="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
+    x86_64-linux-musl-ranlib x86_64-linux-musl-gcc-ranlib ranlib)"; then
+    env_lines_ref+=("RANLIB_x86_64_unknown_linux_musl=$x86_64_musl_ranlib")
+  fi
+
+  if x86_64_musl_cxx="$(resolve_x86_64_musl_cxx)"; then
+    env_lines_ref+=("CXX_x86_64_unknown_linux_musl=$x86_64_musl_cxx")
+  else
+    log "x86_64 musl C++ compiler not found; crates with C++ deps (for example rocksdb) require x86_64-linux-musl-g++ or musl-g++"
+  fi
 }
 
 append_aarch64_musl_env_lines() {
@@ -657,7 +734,9 @@ build_runtime_binaries() {
       normalized_line="$(rewrite_env_line "$line")"
       normalized_env_lines+=("$normalized_line")
     done
-    if [[ "$rust_target" == "aarch64-unknown-linux-musl" ]]; then
+    if [[ "$rust_target" == "x86_64-unknown-linux-musl" ]]; then
+      append_x86_64_musl_env_lines normalized_env_lines
+    elif [[ "$rust_target" == "aarch64-unknown-linux-musl" ]]; then
       append_aarch64_musl_env_lines normalized_env_lines
     fi
     env_cmd+=("${normalized_env_lines[@]}")
