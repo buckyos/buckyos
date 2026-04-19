@@ -742,21 +742,6 @@ async function runForeground(
   return status.code
 }
 
-async function resolveLocalScriptServiceEntrypoint(): Promise<string | null> {
-  const scriptDir = new URL('.', import.meta.url).pathname
-  const candidates = [
-    joinPath(scriptDir, '..', '..', '..', 'publish', 'script_service', 'entrypoint.sh'),
-  ]
-
-  for (const candidate of candidates) {
-    if (await fileExists(candidate)) {
-      return candidate
-    }
-  }
-
-  return null
-}
-
 function detectHostScriptLanguage(packageRoot: string): 'typescript' | 'python' | 'unknown' {
   for (const candidate of ['deno.json', 'deno.jsonc']) {
     try {
@@ -839,20 +824,6 @@ async function runHostScriptForeground(
   scriptDataRoot: string,
   env: Record<string, string>,
 ): Promise<number> {
-  const entrypoint = await resolveLocalScriptServiceEntrypoint()
-  if (entrypoint) {
-    const child = new Deno.Command('bash', {
-      args: [entrypoint],
-      cwd: packageRoot,
-      env,
-      stdin: 'inherit',
-      stdout: 'inherit',
-      stderr: 'inherit',
-    }).spawn()
-    const status = await child.status
-    return status.code
-  }
-
   const language = detectHostScriptLanguage(packageRoot)
   const entry = findHostScriptEntry(packageRoot, language)
   if (!entry) {
@@ -897,20 +868,6 @@ async function runHostScriptDetached(
   scriptDataRoot: string,
   env: Record<string, string>,
 ): Promise<void> {
-  const entrypoint = await resolveLocalScriptServiceEntrypoint()
-  if (entrypoint) {
-    const child = new Deno.Command('bash', {
-      args: [entrypoint],
-      cwd: packageRoot,
-      env,
-      stdin: 'null',
-      stdout: 'inherit',
-      stderr: 'inherit',
-    }).spawn()
-    console.log(`started detached host script pid=${child.pid}`)
-    return
-  }
-
   const language = detectHostScriptLanguage(packageRoot)
   const entry = findHostScriptEntry(packageRoot, language)
   if (!entry) {

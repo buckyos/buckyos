@@ -223,6 +223,7 @@ library,publish,home,cache,var,storage,local,tmp,logs
   - UV也使用同样的模式  /opt/buckyos/tools/uv-cache
 - 根据用户的授权，选择性挂载 （buckyos filebrowser相同视图)
   - 在 /opt/buckyos/data/ 目录下看到buckyos体系下的用户数据
+  - 在 /opt/buckyos/storage/ 目录下看到named store的原始数据（
   - 在 /mnt/$nodeid/ 目录下，看到非buckyos体系下的用户数据（用户设备上的数据)，此时已经开始走cyfs体系
     - /mnt/self/ 可以看到当前zone的cyfs根目录
     - /mnt/$zoneid/ 可以看到别的zone的cyfs目录

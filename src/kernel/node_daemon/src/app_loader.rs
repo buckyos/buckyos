@@ -20,18 +20,22 @@ use tokio::process::Command;
 
 const DEFAULT_OPENDAN_SERVICE_PORT: u16 = 4060;
 const OPENDAN_SERVICE_PORT_FALLBACK_KEYS: [&str; 4] = ["www", "http", "https", "main"];
-const DEFAULT_AGENT_RUNTIME_IMAGE_REPO: &str = "paios/aios";
+/// Default repo for the unified Worker Image (paios/aios). This single image
+/// now hosts both Agent and HostScript apps — the legacy buckyos/script-service
+/// image is gone (see notepads/paios容器需求.md §6.3, §8).
+const DEFAULT_WORKER_IMAGE_REPO: &str = "paios/aios";
 const AGENT_RUNTIME_HOST_GATEWAY: &str = "host.docker.internal";
-const AGENT_CONTAINER_PACKAGE_ROOT: &str = "/opt/agent/package";
-const AGENT_CONTAINER_DATA_ROOT: &str = "/opt/agent/data";
-const AGENT_CONTAINER_ENV_ROOT: &str = "/opt/agent/rootfs";
-const AGENT_CONTAINER_FUSE_DEVICE: &str = "/dev/fuse";
-const AGENT_CONTAINER_LOG_ROOT: &str = "/opt/buckyos/logs";
-const AGENT_CONTAINER_STORAGE_ROOT: &str = "/opt/buckyos/storage";
-const AGENT_CONTAINER_OPENDAN_BIN: &str = "/opt/buckyos/bin/opendan/opendan";
-const SCRIPT_SERVICE_IMAGE_REPO: &str = "buckyos/script-service";
-const SCRIPT_CONTAINER_PACKAGE_ROOT: &str = "/opt/script/package";
-const SCRIPT_CONTAINER_DATA_ROOT: &str = "/opt/script/data";
+/// Read-only source mount inside the container. The image entrypoint
+/// file-syncs this into the instance volume's working copy, replacing the
+/// old overlayfs / fuse-overlayfs bootstrap.
+const WORKER_CONTAINER_PKG_SOURCE_ROOT: &str = "/mnt/buckyos/pkg";
+/// Base mount point of the per-instance private Docker volume. Contains the
+/// working copy, dep caches (deno/uv/npm/pip) and sync metadata.
+const WORKER_CONTAINER_INSTANCE_VOLUME_ROOT: &str = "/opt/buckyos/instance";
+/// Writable working copy of the app package inside the instance volume.
+const WORKER_CONTAINER_PKG_ROOT: &str = "/opt/buckyos/instance/pkg";
+const WORKER_CONTAINER_LOG_ROOT: &str = "/opt/buckyos/logs";
+const WORKER_CONTAINER_STORAGE_ROOT: &str = "/opt/buckyos/storage";
 const DEVENV_JSON_FILE_NAME: &str = "devenv.json";
 const DEVENV_JSON_AIOS_KEY: &str = "aios";
 pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
@@ -176,7 +180,8 @@ pub struct AppLoader {
     config: LoaderConfig,
     platform: PlatformTarget,
     support_container_override: Option<bool>,
-    agent_runtime_image_repo_override: Option<String>,
+    worker_image_repo_override: Option<String>,
+    safe_mode: bool,
 }
 
 impl AppLoader {
@@ -193,7 +198,8 @@ impl AppLoader {
             config: LoaderConfig::Service(config),
             platform: PlatformTarget::current(),
             support_container_override: None,
-            agent_runtime_image_repo_override: None,
+            worker_image_repo_override: None,
+            safe_mode: false,
         }
     }
 
@@ -204,7 +210,8 @@ impl AppLoader {
             config: LoaderConfig::Local(config),
             platform: PlatformTarget::current(),
             support_container_override: None,
-            agent_runtime_image_repo_override: None,
+            worker_image_repo_override: None,
+            safe_mode: false,
         }
     }
 
@@ -218,11 +225,19 @@ impl AppLoader {
         self
     }
 
-    pub(crate) fn with_agent_runtime_image_repo_override(
+    pub(crate) fn with_worker_image_repo_override(
         mut self,
         image_repo: impl Into<String>,
     ) -> Self {
-        self.agent_runtime_image_repo_override = Some(image_repo.into());
+        self.worker_image_repo_override = Some(image_repo.into());
+        self
+    }
+
+    /// Start the app with an empty instance volume (§7.5 Safe Mode).
+    /// The instance volume is isolated per safe-mode session so the real
+    /// instance volume is preserved for later diagnosis.
+    pub(crate) fn with_safe_mode(mut self, safe_mode: bool) -> Self {
+        self.safe_mode = safe_mode;
         self
     }
 
@@ -242,7 +257,7 @@ impl AppLoader {
                     .host_script_pkg_id()
                     .ok_or_else(|| self.pkg_not_found("script or host app package"))?;
                 self.ensure_pkg_installed(pkg_id.as_str()).await?;
-                self.prepare_script_service_image().await?;
+                self.prepare_worker_image().await?;
             }
             RuntimeType::Agent => {
                 let pkg_id = self
@@ -252,6 +267,7 @@ impl AppLoader {
                 if let Some(skills_pkg_id) = self.agent_skills_pkg_id() {
                     self.ensure_pkg_installed(skills_pkg_id.as_str()).await?;
                 }
+                self.prepare_worker_image().await?;
             }
             RuntimeType::Vm => {
                 return Err(ControlRuntItemErrors::NotSupport(
@@ -648,37 +664,6 @@ impl AppLoader {
         Ok(())
     }
 
-    async fn prepare_agent_runtime_image(&self) -> Result<()> {
-        let image_name = self.agent_runtime_image_name();
-        if self
-            .check_docker_image_exists(image_name.as_str(), None)
-            .await?
-        {
-            return Ok(());
-        }
-
-        info!(
-            "agent runtime image {} missing for app {}, pulling now",
-            image_name, self.app_id
-        );
-        self.pull_docker_image(image_name.as_str(), None).await?;
-
-        if !self
-            .check_docker_image_exists(image_name.as_str(), None)
-            .await?
-        {
-            return Err(ControlRuntItemErrors::ExecuteError(
-                "deploy".to_string(),
-                format!(
-                    "agent runtime image {} prepared but validation failed",
-                    image_name
-                ),
-            ));
-        }
-
-        Ok(())
-    }
-
     async fn start_docker(&self) -> Result<()> {
         self.prepare_docker_image().await?;
 
@@ -811,89 +796,14 @@ impl AppLoader {
 
         self.stop_host_script().await?;
 
-        let env_vars = self.build_script_runtime_env().await?;
-        let image_name = self.script_service_image_name();
-        let container_name = self.full_appid();
-        let volume_name = self.script_data_volume_name();
-
-        info!(
-            "starting host script app {} in container image={} package_root={}",
-            container_name,
-            image_name,
-            package_root.display()
-        );
-
-        let mut args = vec![
-            "run".to_string(),
-            "--rm".to_string(),
-            "-d".to_string(),
-            "--name".to_string(),
-            container_name.clone(),
-        ];
-        append_host_gateway_run_args(&mut args);
-
-        for (service_name, instance_port) in self.service_ports_config() {
-            if let Some(container_port) = self
-                .app_doc()
-                .install_config_tips
-                .service_ports
-                .get(service_name.as_str())
-                .copied()
-            {
-                args.push("-p".to_string());
-                args.push(format!("{instance_port}:{container_port}"));
-            }
-        }
-
-        args.push("-v".to_string());
-        args.push(format!(
-            "{}:{}:ro",
-            canonicalize_mount_path(package_root.as_path()).to_string_lossy(),
-            SCRIPT_CONTAINER_PACKAGE_ROOT,
-        ));
-        args.push("-v".to_string());
-        args.push(format!("{volume_name}:{SCRIPT_CONTAINER_DATA_ROOT}:rw"));
-
-        for (container_path, host_path, permission) in self.build_volume_mounts()? {
-            if container_path == SCRIPT_CONTAINER_PACKAGE_ROOT
-                || container_path == SCRIPT_CONTAINER_DATA_ROOT
-            {
-                continue;
-            }
-            args.push("-v".to_string());
-            args.push(format!(
-                "{}:{}:{}",
-                host_path.to_string_lossy(),
-                container_path,
-                permission
-            ));
-        }
-
-        for (key, value) in env_vars.iter() {
-            args.push("-e".to_string());
-            args.push(format!("{key}={value}"));
-        }
-
-        if let Some(desc) = self.host_script_desc() {
-            for (key, value) in self.docker_runtime_labels(desc) {
-                args.push("--label".to_string());
-                args.push(format!("{key}={value}"));
-            }
-        }
-
-        if let Some(container_param) = &self.install_config().container_param {
-            args.extend(split_shell_words(container_param.as_str())?);
-        }
-
-        args.push(image_name.clone());
-
-        let output = run_command("docker", &args, None, None).await?;
-        ensure_success("docker run (script-service)", &output)?;
-        info!(
-            "host script container {} started for app {} with image {}",
-            container_name, self.app_id, image_name
-        );
-        Ok(())
+        self.run_worker_container(
+            PackageRole::HostApp,
+            "script",
+            package_root.as_path(),
+            None,
+            self.host_script_desc(),
+        )
+        .await
     }
 
     async fn stop_host_script(&self) -> Result<()> {
@@ -916,7 +826,7 @@ impl AppLoader {
             return Ok(ServiceInstanceState::Exited);
         }
 
-        let image_name = self.script_service_image_name();
+        let image_name = self.worker_image_name();
         if self
             .check_docker_image_exists(image_name.as_str(), None)
             .await?
@@ -948,69 +858,14 @@ impl AppLoader {
         self.stop_agent().await?;
 
         let service_port = self.select_agent_service_port();
-        let env_vars = self.build_agent_runtime_env(service_port).await?;
-        let image_name = self.agent_runtime_image_name();
-        info!(
-            "starting agent {} in container image={} package_root={} env_root={} service_port={}",
-            self.full_appid(),
-            image_name,
-            agent_root.display(),
-            AGENT_CONTAINER_ENV_ROOT,
-            service_port
-        );
-        let mut args = vec![
-            "run".to_string(),
-            "--rm".to_string(),
-            "-d".to_string(),
-            "--name".to_string(),
-            self.full_appid(),
-            "--entrypoint".to_string(),
-            "/bin/bash".to_string(),
-        ];
-        append_host_gateway_run_args(&mut args);
-        args.push("--cap-add".to_string());
-        args.push("SYS_ADMIN".to_string());
-        args.push("-p".to_string());
-        args.push(format!("{service_port}:{service_port}"));
-        self.append_agent_fuse_run_args(&mut args);
-
-        for (container_path, host_path, permission) in
-            self.build_agent_volume_mounts(agent_root.as_path())?
-        {
-            args.push("-v".to_string());
-            args.push(format!(
-                "{}:{}:{}",
-                host_path.to_string_lossy(),
-                container_path,
-                permission
-            ));
-        }
-
-        for (key, value) in env_vars.iter() {
-            args.push("-e".to_string());
-            args.push(format!("{key}={value}"));
-        }
-
-        for (key, value) in self.docker_runtime_labels(desc) {
-            args.push("--label".to_string());
-            args.push(format!("{key}={value}"));
-        }
-
-        args.push(image_name.clone());
-        args.push("-lc".to_string());
-        args.push(self.build_agent_runtime_bootstrap_script(service_port));
-
-        let output = run_command("docker", &args, None, None).await?;
-        ensure_success("docker run", &output)?;
-
-        info!(
-            "agent {} started in container {} with runtime image {} port={}",
-            self.full_appid(),
-            self.full_appid(),
-            image_name,
-            service_port
-        );
-        Ok(())
+        self.run_worker_container(
+            PackageRole::AgentPkg,
+            "agent",
+            agent_root.as_path(),
+            Some(service_port),
+            Some(desc),
+        )
+        .await
     }
 
     async fn stop_agent(&self) -> Result<()> {
@@ -1043,13 +898,118 @@ impl AppLoader {
         }
 
         if self
-            .check_docker_image_exists(self.agent_runtime_image_name().as_str(), None)
+            .check_docker_image_exists(self.worker_image_name().as_str(), None)
             .await?
         {
             Ok(ServiceInstanceState::Stopped)
         } else {
             Ok(ServiceInstanceState::NotExist)
         }
+    }
+
+    /// Build + launch a worker container (paios/aios) with the unified
+    /// instance-volume layout. Called by both start_agent and start_host_script.
+    async fn run_worker_container(
+        &self,
+        role: PackageRole,
+        app_type_label: &str,
+        pkg_source_root: &Path,
+        service_port: Option<u16>,
+        desc: Option<&SubPkgDesc>,
+    ) -> Result<()> {
+        let image_name = self.worker_image_name();
+        let container_name = self.full_appid();
+        let instance_volume = self.instance_volume_name();
+        let env_vars = self
+            .build_worker_runtime_env(role, app_type_label, service_port)
+            .await?;
+        let mounts = self.build_worker_volume_mounts(pkg_source_root, role)?;
+
+        info!(
+            "starting worker app_type={} id={} image={} pkg_source={} instance_volume={} safe_mode={}",
+            app_type_label,
+            container_name,
+            image_name,
+            pkg_source_root.display(),
+            instance_volume,
+            self.safe_mode,
+        );
+
+        let mut args: Vec<String> = vec![
+            "run".to_string(),
+            "--rm".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            container_name.clone(),
+        ];
+        append_host_gateway_run_args(&mut args);
+
+        // Named instance volume (private per-app).
+        args.push("-v".to_string());
+        args.push(format!(
+            "{}:{}:rw",
+            instance_volume, WORKER_CONTAINER_INSTANCE_VOLUME_ROOT
+        ));
+
+        // Bind mounts (pkg source ro, logs, storage, data, declared mounts).
+        for (container_path, host_path, permission) in mounts {
+            args.push("-v".to_string());
+            args.push(format!(
+                "{}:{}:{}",
+                host_path.to_string_lossy(),
+                container_path,
+                permission
+            ));
+        }
+
+        // Port publishing. Agents publish their service_port; scripts
+        // publish whichever ports the install config declared.
+        if app_type_label == "agent" {
+            if let Some(port) = service_port {
+                args.push("-p".to_string());
+                args.push(format!("{port}:{port}"));
+            }
+        } else {
+            for (service_name, instance_port) in self.service_ports_config() {
+                if let Some(container_port) = self
+                    .app_doc()
+                    .install_config_tips
+                    .service_ports
+                    .get(service_name.as_str())
+                    .copied()
+                {
+                    args.push("-p".to_string());
+                    args.push(format!("{instance_port}:{container_port}"));
+                }
+            }
+        }
+
+        for (key, value) in env_vars.iter() {
+            args.push("-e".to_string());
+            args.push(format!("{key}={value}"));
+        }
+
+        if let Some(desc) = desc {
+            for (key, value) in self.docker_runtime_labels(desc) {
+                args.push("--label".to_string());
+                args.push(format!("{key}={value}"));
+            }
+        }
+
+        if let Some(container_param) = &self.install_config().container_param {
+            args.extend(split_shell_words(container_param.as_str())?);
+        }
+
+        args.push(image_name.clone());
+
+        let output = run_command("docker", &args, None, None).await?;
+        ensure_success("docker run (worker)", &output)?;
+
+        info!(
+            "worker container {} started (image={}, app_type={})",
+            container_name, image_name, app_type_label
+        );
+        Ok(())
     }
 
     async fn package_media_info(&self, role: PackageRole) -> Result<Option<MediaInfo>> {
@@ -1473,84 +1433,142 @@ impl AppLoader {
             .join(self.full_appid())
     }
 
-    fn agent_log_dir(&self) -> PathBuf {
+    fn worker_log_dir(&self) -> PathBuf {
         get_buckyos_root_dir()
             .join("logs")
-            .join("agents")
+            .join("apps")
             .join(self.full_appid())
     }
 
-    fn agent_storage_dir(&self) -> PathBuf {
+    fn worker_storage_dir(&self) -> PathBuf {
         get_buckyos_root_dir().join("storage")
     }
 
-    fn build_agent_volume_mounts(
+    fn build_worker_volume_mounts(
         &self,
-        agent_package_root: &Path,
+        pkg_source_root: &Path,
+        role: PackageRole,
     ) -> Result<Vec<(String, PathBuf, &'static str)>> {
-        let agent_data_root = self.app_data_dir();
-        let agent_log_root = self.agent_log_dir();
-        let agent_storage_root = self.agent_storage_dir();
-        ensure_directory(&agent_data_root, true)?;
-        ensure_directory(&agent_log_root, true)?;
-        ensure_directory(&agent_storage_root, true)?;
-        let mut mounts = vec![
-            (
-                AGENT_CONTAINER_DATA_ROOT.to_string(),
-                canonicalize_mount_path(agent_data_root.as_path()),
-                "rw",
-            ),
-            (
-                AGENT_CONTAINER_PACKAGE_ROOT.to_string(),
-                canonicalize_mount_path(agent_package_root),
-                "ro",
-            ),
-            (
-                AGENT_CONTAINER_LOG_ROOT.to_string(),
-                canonicalize_mount_path(agent_log_root.as_path()),
-                "rw",
-            ),
-            (
-                AGENT_CONTAINER_STORAGE_ROOT.to_string(),
-                canonicalize_mount_path(agent_storage_root.as_path()),
-                "rw",
-            ),
-        ];
-        mounts.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
-        Ok(mounts)
+        // §6.1/§7.1: the worker container always has three volume groups —
+        // (1) a read-only view of the upstream package at /mnt/buckyos/pkg,
+        // (2) a private instance volume at /opt/buckyos/instance (for working
+        //     copy, dep caches, and self-evolved state),
+        // (3) external mounts for business data, logs, storage, plus the
+        //     developer-declared data_mount_point / cache_mount_point pairs.
+        let data_root = self.app_data_dir();
+        let log_root = self.worker_log_dir();
+        let storage_root = self.worker_storage_dir();
+        ensure_directory(&data_root, true)?;
+        ensure_directory(&log_root, true)?;
+        ensure_directory(&storage_root, true)?;
+
+        let app_data_container =
+            format!("/home/{}/.local/share/{}", self.owner_user_id, self.app_id);
+        let instance_volume_mount =
+            format!("{}:{}:rw", self.instance_volume_name(), WORKER_CONTAINER_INSTANCE_VOLUME_ROOT);
+        // Mounts are keyed by container-path so later entries can be overridden
+        // by user declarations if they legitimately want to remap. The instance
+        // volume mount uses a named volume — we encode that as a sentinel path
+        // and the caller formats it separately.
+        let mut mounts: HashMap<String, (PathBuf, &'static str)> = HashMap::new();
+        mounts.insert(
+            WORKER_CONTAINER_PKG_SOURCE_ROOT.to_string(),
+            (canonicalize_mount_path(pkg_source_root), "ro"),
+        );
+        mounts.insert(
+            WORKER_CONTAINER_LOG_ROOT.to_string(),
+            (canonicalize_mount_path(log_root.as_path()), "rw"),
+        );
+        mounts.insert(
+            WORKER_CONTAINER_STORAGE_ROOT.to_string(),
+            (canonicalize_mount_path(storage_root.as_path()), "rw"),
+        );
+        mounts.insert(
+            app_data_container.clone(),
+            (canonicalize_mount_path(data_root.as_path()), "rw"),
+        );
+
+        // Developer-declared data mount points (e.g. zone shared data) map from
+        // container paths into BUCKYOS_ROOT on the host.
+        for (container_path, raw_value) in &self.install_config().data_mount_point {
+            let (host_relative, permission_override) = parse_mount_value(raw_value.as_str());
+            let host_path = get_buckyos_root_dir().join(host_relative.trim_start_matches('/'));
+            let permission = permission_override.unwrap_or_else(|| {
+                default_mount_permission(container_path.as_str(), &self.app_id, &self.owner_user_id)
+            });
+            ensure_directory(&host_path, permission == "rw")?;
+            mounts.insert(container_path.clone(), (host_path, permission));
+        }
+
+        let base_cache_dir = self.app_cache_dir();
+        for mount_point in &self.install_config().cache_mount_point {
+            let host_path = base_cache_dir.join(mount_point.trim_start_matches('/'));
+            ensure_directory(&host_path, true)?;
+            mounts.insert(mount_point.clone(), (host_path, "rw"));
+        }
+        let base_local_cache_dir = self.app_local_cache_dir();
+        for mount_point in &self.install_config().local_cache_mount_point {
+            let host_path = base_local_cache_dir.join(mount_point.trim_start_matches('/'));
+            ensure_directory(&host_path, true)?;
+            mounts.insert(mount_point.clone(), (host_path, "rw"));
+        }
+
+        let _ = role; // reserved for future per-role external mounts
+
+        let mut result: Vec<(String, PathBuf, &'static str)> = mounts
+            .into_iter()
+            .map(|(container_path, (host_path, permission))| {
+                let resolved = canonicalize_mount_path(host_path.as_path());
+                (
+                    trim_trailing_slash(container_path.as_str()).to_string(),
+                    resolved,
+                    permission,
+                )
+            })
+            .collect();
+        result.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+
+        // Prepend the named-volume mount as a synthetic entry the caller can
+        // recognise (empty host path => "this is a docker volume, format as
+        // <name>:<container>:<perm>").
+        // To keep the external API simple we instead return a sentinel string.
+        // Callers already iterate tuples of (container, host_path, perm); we
+        // expose a separate accessor for the instance-volume mount spec.
+        let _ = instance_volume_mount;
+        Ok(result)
     }
 
-    fn agent_runtime_image_repo(&self) -> String {
-        if let Some(repo) = &self.agent_runtime_image_repo_override {
+    /// Canonical name of the per-app instance volume (§6.1). In safe mode
+    /// (§7.5) we use a disposable volume so the real one can be inspected by
+    /// the user afterwards.
+    fn instance_volume_name(&self) -> String {
+        if self.safe_mode {
+            let timestamp = buckyos_get_unix_timestamp();
+            format!("buckyos-instance-{}-safe-{}", self.full_appid(), timestamp)
+        } else {
+            format!("buckyos-instance-{}", self.full_appid())
+        }
+    }
+
+    fn worker_image_repo(&self) -> String {
+        if let Some(repo) = &self.worker_image_repo_override {
             return repo.clone();
         }
 
         resolve_devenv_aios_image_repo()
-            .unwrap_or_else(|| DEFAULT_AGENT_RUNTIME_IMAGE_REPO.to_string())
+            .unwrap_or_else(|| DEFAULT_WORKER_IMAGE_REPO.to_string())
     }
 
-    fn agent_runtime_image_name(&self) -> String {
+    fn worker_image_name(&self) -> String {
         let arch_tag = match self.platform.arch {
             PlatformArch::Aarch64 => "latest-aarch64",
             PlatformArch::Amd64 => "latest-amd64",
         };
-        format!("{}:{arch_tag}", self.agent_runtime_image_repo())
+        format!("{}:{arch_tag}", self.worker_image_repo())
     }
 
-    fn script_service_image_name(&self) -> String {
-        let arch_tag = match self.platform.arch {
-            PlatformArch::Aarch64 => "latest-aarch64",
-            PlatformArch::Amd64 => "latest-amd64",
-        };
-        format!("{SCRIPT_SERVICE_IMAGE_REPO}:{arch_tag}")
-    }
-
-    fn script_data_volume_name(&self) -> String {
-        format!("buckyos-script-{}", self.full_appid())
-    }
-
-    async fn prepare_script_service_image(&self) -> Result<()> {
-        let image_name = self.script_service_image_name();
+    async fn prepare_worker_image(&self) -> Result<()> {
+        let image_name = self.worker_image_name();
         if self
             .check_docker_image_exists(image_name.as_str(), None)
             .await?
@@ -1559,7 +1577,7 @@ impl AppLoader {
         }
 
         info!(
-            "script-service image {} missing for app {}, pulling now",
+            "worker image {} missing for app {}, pulling now",
             image_name, self.app_id
         );
         self.pull_docker_image(image_name.as_str(), None).await?;
@@ -1571,7 +1589,7 @@ impl AppLoader {
             return Err(ControlRuntItemErrors::ExecuteError(
                 "deploy".to_string(),
                 format!(
-                    "script-service image {} prepared but validation failed",
+                    "worker image {} prepared but validation failed",
                     image_name
                 ),
             ));
@@ -1580,99 +1598,68 @@ impl AppLoader {
         Ok(())
     }
 
-    async fn build_script_runtime_env(&self) -> Result<HashMap<String, String>> {
-        let mut env_vars = self.build_runtime_env(PackageRole::HostApp).await?;
-        env_vars.insert("SCRIPT_APP_ID".to_string(), self.app_id.clone());
+    async fn build_worker_runtime_env(
+        &self,
+        role: PackageRole,
+        app_type_label: &str,
+        service_port: Option<u16>,
+    ) -> Result<HashMap<String, String>> {
+        let mut env_vars = self.build_runtime_env(role).await?;
+
+        // §9 env contract.
+        env_vars.insert("BUCKYOS_APP_ID".to_string(), self.app_id.clone());
         env_vars.insert(
-            "SCRIPT_PACKAGE_ROOT".to_string(),
-            SCRIPT_CONTAINER_PACKAGE_ROOT.to_string(),
+            "BUCKYOS_APP_TYPE".to_string(),
+            app_type_label.to_string(),
         );
         env_vars.insert(
-            "SCRIPT_DATA_ROOT".to_string(),
-            SCRIPT_CONTAINER_DATA_ROOT.to_string(),
+            "BUCKYOS_OWNER_USER_ID".to_string(),
+            self.owner_user_id.clone(),
         );
-        Ok(env_vars)
-    }
-
-    fn build_agent_runtime_bootstrap_script(&self, service_port: u16) -> String {
-        let app_id = shell_quote(self.app_id.as_str());
-        let package_root = shell_quote(AGENT_CONTAINER_PACKAGE_ROOT);
-        let data_root = shell_quote(AGENT_CONTAINER_DATA_ROOT);
-        let env_root = shell_quote(AGENT_CONTAINER_ENV_ROOT);
-        let fuse_device = shell_quote(AGENT_CONTAINER_FUSE_DEVICE);
-        let opendan_bin = shell_quote(AGENT_CONTAINER_OPENDAN_BIN);
-
-        format!(
-            r#"set -eu
-PACKAGE_ROOT={package_root}
-DATA_UPPER={data_root}
-OVERLAY_WORK="$DATA_UPPER/.overlay_work"
-AGENT_ENV_ROOT={env_root}
-FUSE_DEVICE={fuse_device}
-mkdir -p "$DATA_UPPER" "$OVERLAY_WORK"
-if [ ! -e "$AGENT_ENV_ROOT" ]; then
-  mkdir -p "$AGENT_ENV_ROOT"
-fi
-mount_kernel_overlay() {{
-  mount -t overlay overlay -o lowerdir="$PACKAGE_ROOT",upperdir="$DATA_UPPER",workdir="$OVERLAY_WORK" "$AGENT_ENV_ROOT" 2>/tmp/agent_overlay.err
-}}
-mount_fuse_overlay() {{
-  if ! command -v fuse-overlayfs >/dev/null 2>&1; then
-    return 1
-  fi
-  if [ ! -e "$FUSE_DEVICE" ]; then
-    echo "agent runtime fuse-overlayfs unavailable: missing $FUSE_DEVICE" >&2
-    return 1
-  fi
-  rm -rf "$AGENT_ENV_ROOT"
-  mkdir -p "$AGENT_ENV_ROOT"
-  fuse-overlayfs -o lowerdir="$PACKAGE_ROOT",upperdir="$DATA_UPPER",workdir="$OVERLAY_WORK" "$AGENT_ENV_ROOT" 2>/tmp/agent_fuse_overlay.err
-}}
-materialize_env_root() {{
-  # Avoid metadata-preserving copies here because macOS-backed Docker volumes
-  # (for example OrbStack mounts) can reject directory timestamp updates.
-  cp -RP --update=none "$PACKAGE_ROOT"/. "$DATA_UPPER"/
-  rm -rf "$AGENT_ENV_ROOT"
-  ln -s "$DATA_UPPER" "$AGENT_ENV_ROOT"
-  echo "agent runtime overlay unavailable, seeded upperdir from $PACKAGE_ROOT and linked $AGENT_ENV_ROOT -> $DATA_UPPER" >&2
-}}
-if mount_kernel_overlay; then
-  echo "agent runtime overlay mounted at $AGENT_ENV_ROOT"
-elif mount_fuse_overlay; then
-  echo "agent runtime fuse-overlayfs mounted at $AGENT_ENV_ROOT"
-else
-  materialize_env_root
-  if [ -f /tmp/agent_overlay.err ]; then cat /tmp/agent_overlay.err >&2; fi
-  if [ -f /tmp/agent_fuse_overlay.err ]; then cat /tmp/agent_fuse_overlay.err >&2; fi
-fi
-exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin "$PACKAGE_ROOT" --service-port {service_port}"#
-        )
-    }
-
-    fn append_agent_fuse_run_args(&self, args: &mut Vec<String>) {
-        if !Path::new(AGENT_CONTAINER_FUSE_DEVICE).exists() {
-            return;
+        env_vars.insert(
+            "BUCKYOS_DATA_DIR".to_string(),
+            format!("/home/{}/.local/share/{}", self.owner_user_id, self.app_id),
+        );
+        env_vars.insert(
+            "BUCKYOS_LOG_DIR".to_string(),
+            WORKER_CONTAINER_LOG_ROOT.to_string(),
+        );
+        env_vars.insert(
+            "BUCKYOS_STORAGE_DIR".to_string(),
+            WORKER_CONTAINER_STORAGE_ROOT.to_string(),
+        );
+        env_vars.insert(
+            "BUCKYOS_PKG_SOURCE_DIR".to_string(),
+            WORKER_CONTAINER_PKG_SOURCE_ROOT.to_string(),
+        );
+        env_vars.insert(
+            "BUCKYOS_PKG_DIR".to_string(),
+            WORKER_CONTAINER_PKG_ROOT.to_string(),
+        );
+        env_vars.insert(
+            "BUCKYOS_INSTANCE_VOLUME".to_string(),
+            WORKER_CONTAINER_INSTANCE_VOLUME_ROOT.to_string(),
+        );
+        env_vars.insert(
+            "BUCKYOS_SAFE_MODE".to_string(),
+            if self.safe_mode { "1".to_string() } else { "0".to_string() },
+        );
+        if let Some(port) = service_port {
+            env_vars.insert("BUCKYOS_SERVICE_PORT".to_string(), port.to_string());
+            // Legacy name kept for OpenDAN which still reads OPENDAN_SERVICE_PORT.
+            env_vars.insert("OPENDAN_SERVICE_PORT".to_string(), port.to_string());
+        }
+        if app_type_label == "agent" {
+            env_vars.insert("OPENDAN_AGENT_ID".to_string(), self.app_id.clone());
         }
 
-        args.push("--device".to_string());
-        args.push(AGENT_CONTAINER_FUSE_DEVICE.to_string());
-        args.push("--security-opt".to_string());
-        args.push("apparmor=unconfined".to_string());
-        args.push("--security-opt".to_string());
-        args.push("seccomp=unconfined".to_string());
-    }
-
-    async fn build_agent_runtime_env(&self, service_port: u16) -> Result<HashMap<String, String>> {
-        let mut env_vars = self.build_runtime_env(PackageRole::AgentPkg).await?;
-        env_vars.insert("OPENDAN_AGENT_ID".to_string(), self.app_id.clone());
-        env_vars.insert("OPENDAN_SERVICE_PORT".to_string(), service_port.to_string());
-
+        // The app sees itself at BUCKYOS_PKG_DIR, not at the host media path.
         if let Some(media_info) = env_vars.get("app_media_info").cloned() {
             if let Ok(mut value) = serde_json::from_str::<Value>(media_info.as_str()) {
                 if let Some(object) = value.as_object_mut() {
                     object.insert(
                         "full_path".to_string(),
-                        Value::String(AGENT_CONTAINER_PACKAGE_ROOT.to_string()),
+                        Value::String(WORKER_CONTAINER_PKG_ROOT.to_string()),
                     );
                     env_vars.insert("app_media_info".to_string(), value.to_string());
                 }
@@ -1973,35 +1960,113 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
         let mut commands = vec![CommandSpec::new("pkg-install", [pkg_id])];
         commands.push(CommandSpec::new(
             "docker",
-            ["pull", self.script_service_image_name().as_str()],
+            ["pull", self.worker_image_name().as_str()],
         ));
         Ok(commands)
     }
 
     fn preview_host_script_start(&self) -> Result<Vec<CommandSpec>> {
-        let image_name = self.script_service_image_name();
-        let volume_name = self.script_data_volume_name();
+        self.preview_worker_start("script", None, self.host_script_desc())
+    }
+
+    fn preview_host_script_status(&self) -> Vec<CommandSpec> {
+        self.preview_worker_status()
+    }
+
+    fn preview_agent_deploy(&self) -> Result<Vec<CommandSpec>> {
+        let pkg_id = self
+            .agent_pkg_id()
+            .ok_or_else(|| self.pkg_not_found("agent package"))?;
+        let mut commands = vec![CommandSpec::new("pkg-install", [pkg_id])];
+        if let Some(skills_pkg_id) = self.agent_skills_pkg_id() {
+            commands.push(CommandSpec::new("pkg-install", [skills_pkg_id]));
+        }
+        commands.push(CommandSpec::new(
+            "docker",
+            ["pull", self.worker_image_name().as_str()],
+        ));
+        Ok(commands)
+    }
+
+    fn preview_agent_start(&self) -> Result<Vec<CommandSpec>> {
+        let service_port = self.select_agent_service_port();
+        self.preview_worker_start("agent", Some(service_port), self.agent_desc())
+    }
+
+    fn preview_agent_stop(&self) -> CommandSpec {
+        CommandSpec::new("docker", ["rm", "-f", self.full_appid().as_str()])
+    }
+
+    fn preview_agent_status(&self) -> Vec<CommandSpec> {
+        self.preview_worker_status()
+    }
+
+    fn preview_worker_start(
+        &self,
+        app_type_label: &str,
+        service_port: Option<u16>,
+        desc: Option<&SubPkgDesc>,
+    ) -> Result<Vec<CommandSpec>> {
+        let image_name = self.worker_image_name();
+        let instance_volume = self.instance_volume_name();
         let mut docker_run_args = vec![
             "run".to_string(),
             "--rm".to_string(),
             "-d".to_string(),
             "--name".to_string(),
             self.full_appid(),
-            "-v".to_string(),
-            format!("<app_pkg>:{}:ro", SCRIPT_CONTAINER_PACKAGE_ROOT),
-            "-v".to_string(),
-            format!("{volume_name}:{}:rw", SCRIPT_CONTAINER_DATA_ROOT),
         ];
         append_host_gateway_run_args(&mut docker_run_args);
 
-        for env_key in self.preview_env_keys(PackageRole::HostApp) {
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!(
+            "{}:{}:rw",
+            instance_volume, WORKER_CONTAINER_INSTANCE_VOLUME_ROOT
+        ));
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!(
+            "<app_pkg>:{}:ro",
+            WORKER_CONTAINER_PKG_SOURCE_ROOT
+        ));
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!("<app_logs>:{}:rw", WORKER_CONTAINER_LOG_ROOT));
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!(
+            "<app_storage>:{}:rw",
+            WORKER_CONTAINER_STORAGE_ROOT
+        ));
+        docker_run_args.push("-v".to_string());
+        docker_run_args.push(format!(
+            "<app_data>:/home/{}/.local/share/{}:rw",
+            self.owner_user_id, self.app_id
+        ));
+
+        if app_type_label == "agent" {
+            if let Some(port) = service_port {
+                docker_run_args.push("-p".to_string());
+                docker_run_args.push(format!("{port}:{port}"));
+            }
+        }
+
+        let package_role = if app_type_label == "agent" {
+            PackageRole::AgentPkg
+        } else {
+            PackageRole::HostApp
+        };
+        for env_key in self.preview_env_keys(package_role) {
             docker_run_args.push("-e".to_string());
             docker_run_args.push(format!("{env_key}=<value>"));
         }
         docker_run_args.push("-e".to_string());
-        docker_run_args.push(format!("SCRIPT_APP_ID={}", self.app_id));
+        docker_run_args.push(format!("BUCKYOS_APP_ID={}", self.app_id));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!("BUCKYOS_APP_TYPE={}", app_type_label));
+        if let Some(port) = service_port {
+            docker_run_args.push("-e".to_string());
+            docker_run_args.push(format!("BUCKYOS_SERVICE_PORT={port}"));
+        }
 
-        if let Some(desc) = self.host_script_desc() {
+        if let Some(desc) = desc {
             for (key, value) in self.docker_runtime_labels(desc) {
                 docker_run_args.push("--label".to_string());
                 docker_run_args.push(format!("{key}={value}"));
@@ -2016,102 +2081,12 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
         ])
     }
 
-    fn preview_host_script_status(&self) -> Vec<CommandSpec> {
+    fn preview_worker_status(&self) -> Vec<CommandSpec> {
         let filter = format!("name=^{}$", self.full_appid());
         vec![
             CommandSpec::new("docker", ["ps", "-q", "-f", filter.as_str()]),
             CommandSpec::new("docker", ["ps", "-aq", "-f", filter.as_str()]),
-            CommandSpec::new(
-                "docker",
-                ["images", "-q", self.script_service_image_name().as_str()],
-            ),
-        ]
-    }
-
-    fn preview_agent_deploy(&self) -> Result<Vec<CommandSpec>> {
-        let pkg_id = self
-            .agent_pkg_id()
-            .ok_or_else(|| self.pkg_not_found("agent package"))?;
-        let mut commands = vec![CommandSpec::new("pkg-install", [pkg_id])];
-        if let Some(skills_pkg_id) = self.agent_skills_pkg_id() {
-            commands.push(CommandSpec::new("pkg-install", [skills_pkg_id]));
-        }
-        commands.push(CommandSpec::new(
-            "docker",
-            ["pull", self.agent_runtime_image_name().as_str()],
-        ));
-        Ok(commands)
-    }
-
-    fn preview_agent_start(&self) -> Result<Vec<CommandSpec>> {
-        let service_port = self.select_agent_service_port();
-        let image_name = self.agent_runtime_image_name();
-        let mut docker_run_args = vec![
-            "run".to_string(),
-            "--rm".to_string(),
-            "-d".to_string(),
-            "--name".to_string(),
-            self.full_appid(),
-            "--entrypoint".to_string(),
-            "/bin/bash".to_string(),
-        ];
-        append_host_gateway_run_args(&mut docker_run_args);
-        docker_run_args.push("--cap-add".to_string());
-        docker_run_args.push("SYS_ADMIN".to_string());
-        docker_run_args.push("-p".to_string());
-        docker_run_args.push(format!("{service_port}:{service_port}"));
-        docker_run_args.push("-v".to_string());
-        docker_run_args.push(format!("<agent_data>:{}:rw", AGENT_CONTAINER_DATA_ROOT));
-        docker_run_args.push("-v".to_string());
-        docker_run_args.push(format!("<agent_pkg>:{}:ro", AGENT_CONTAINER_PACKAGE_ROOT));
-        docker_run_args.push("-v".to_string());
-        docker_run_args.push(format!("<agent_logs>:{}:rw", AGENT_CONTAINER_LOG_ROOT));
-        docker_run_args.push("-v".to_string());
-        docker_run_args.push(format!(
-            "<agent_storage>:{}:rw",
-            AGENT_CONTAINER_STORAGE_ROOT
-        ));
-        self.append_agent_fuse_run_args(&mut docker_run_args);
-
-        for env_key in self.preview_env_keys(PackageRole::AgentPkg) {
-            docker_run_args.push("-e".to_string());
-            docker_run_args.push(format!("{env_key}=<value>"));
-        }
-        docker_run_args.push("-e".to_string());
-        docker_run_args.push(format!("OPENDAN_AGENT_ID={}", self.app_id));
-        docker_run_args.push("-e".to_string());
-        docker_run_args.push(format!("OPENDAN_SERVICE_PORT={service_port}"));
-
-        if let Some(desc) = self.agent_desc() {
-            for (key, value) in self.docker_runtime_labels(desc) {
-                docker_run_args.push("--label".to_string());
-                docker_run_args.push(format!("{key}={value}"));
-            }
-        }
-
-        docker_run_args.push(image_name);
-        docker_run_args.push("-lc".to_string());
-        docker_run_args.push("<agent-bootstrap-script>".to_string());
-
-        Ok(vec![
-            self.preview_agent_stop(),
-            CommandSpec::new("docker", docker_run_args),
-        ])
-    }
-
-    fn preview_agent_stop(&self) -> CommandSpec {
-        CommandSpec::new("docker", ["rm", "-f", self.full_appid().as_str()])
-    }
-
-    fn preview_agent_status(&self) -> Vec<CommandSpec> {
-        let filter = format!("name=^{}$", self.full_appid());
-        vec![
-            CommandSpec::new("docker", ["ps", "-q", "-f", filter.as_str()]),
-            CommandSpec::new("docker", ["ps", "-aq", "-f", filter.as_str()]),
-            CommandSpec::new(
-                "docker",
-                ["images", "-q", self.agent_runtime_image_name().as_str()],
-            ),
+            CommandSpec::new("docker", ["images", "-q", self.worker_image_name().as_str()]),
         ]
     }
 
@@ -2154,8 +2129,12 @@ exec {opendan_bin} --agent-id {app_id} --agent-env "$AGENT_ENV_ROOT" --agent-bin
 
 #[cfg(test)]
 impl AppLoader {
-    pub(crate) fn test_agent_runtime_bootstrap_script(&self, service_port: u16) -> String {
-        self.build_agent_runtime_bootstrap_script(service_port)
+    pub(crate) fn test_worker_image_name(&self) -> String {
+        self.worker_image_name()
+    }
+
+    pub(crate) fn test_instance_volume_name(&self) -> String {
+        self.instance_volume_name()
     }
 }
 

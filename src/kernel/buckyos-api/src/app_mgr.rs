@@ -100,6 +100,44 @@ impl Default for ServiceExposeConfig {
     }
 }
 
+/// Governs whether a container App/Agent gets a private instance volume
+/// (§7.1 of the paios container spec).
+///
+/// * `Required` (default): the loader must create an instance volume and will
+///   refuse to start the app without one. Fits Script apps, Agents and any
+///   service that caches deps or self-evolving state.
+/// * `Optional`: an instance volume is created if available but the app can
+///   function without one. Reserved for mixed-use cases.
+/// * `Disabled`: the app explicitly opts out — used by pure binaries with no
+///   private mutable state.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum InstanceVolumeMode {
+    Required,
+    Optional,
+    Disabled,
+}
+
+impl Default for InstanceVolumeMode {
+    fn default() -> Self {
+        InstanceVolumeMode::Required
+    }
+}
+
+/// Developer declaration of instance-volume semantics (§11 of the spec).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct InstanceVolumeConfig {
+    #[serde(default)]
+    pub mode: InstanceVolumeMode,
+    /// Soft quota in MiB. Not enforced yet (§7.10 observability stub).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_mib: Option<u64>,
+    /// Relative paths inside the instance volume whose loss is expected when
+    /// the user runs "reset app". Used both for docs and later cleanup tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ephemeral_contents: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ServiceInstallConfig {
     //mount pint
@@ -122,6 +160,11 @@ pub struct ServiceInstallConfig {
     pub allow_public_access: bool,
     #[serde(default)]
     pub rdb_instances: HashMap<String, RdbInstanceConfig>,
+    /// Instance-volume declaration (§7.1, §11). Defaults to Required so that
+    /// apps upgraded from earlier manifests automatically gain a private
+    /// volume.
+    #[serde(default)]
+    pub instance_volume: InstanceVolumeConfig,
 }
 
 impl Default for ServiceInstallConfig {
@@ -137,6 +180,7 @@ impl Default for ServiceInstallConfig {
             res_pool_id: "default".to_string(),
             allow_public_access: false,
             rdb_instances: HashMap::new(),
+            instance_volume: InstanceVolumeConfig::default(),
         }
     }
 }

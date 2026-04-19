@@ -11,12 +11,22 @@ IMAGE_NAME="${IMAGE_NAME:-}"
 VERSION_FILE="$SRC_DIR/VERSION"
 VERSION_TAG="${VERSION_TAG:-}"
 SUPPORTED_ARCHES=("amd64" "aarch64")
-RUNTIME_PACKAGES=("tmux" "bash" "ca-certificates" "tree")
-WORKSPACE_PACKAGES=("python3" "python3-pip" "python3-venv" "nodejs" "npm" "git")
+# Core runtime + predefined Worker Image CLI tool set (see container
+# requirements §6.3). No compile toolchain — Crafter is deferred.
+RUNTIME_PACKAGES=(
+  "bash" "ca-certificates" "curl" "git" "jq" "locales" "rsync"
+  "tmux" "tree" "unzip" "xz-utils"
+  "python3" "python3-venv"
+  "nodejs" "npm"
+  "ffmpeg" "imagemagick" "poppler-utils" "pandoc" "tesseract-ocr"
+)
+# Legacy flag kept for CLI compat; the Worker Image always ships the tool set.
+WORKSPACE_PACKAGES=()
 EXTRA_APT_PACKAGES=()
 SELECTED_ARCHES=()
 PUSH=0
 INSTALL_WORKSPACE_TOOLS=1
+ENTRYPOINT_SOURCE="$ROOT_DIR/publish/aios/entrypoint.sh"
 
 usage() {
   cat <<'EOF'
@@ -227,10 +237,6 @@ render_dockerfile() {
   local output_path="$1"
   local -a apt_packages=("${RUNTIME_PACKAGES[@]}")
 
-  if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then
-    apt_packages+=("${WORKSPACE_PACKAGES[@]}")
-  fi
-
   if [[ ${#EXTRA_APT_PACKAGES[@]} -gt 0 ]]; then
     apt_packages+=("${EXTRA_APT_PACKAGES[@]}")
   fi
@@ -241,15 +247,15 @@ FROM ubuntu:24.04
 
 ARG TARGET_ARCH
 
-LABEL org.opencontainers.image.title="AIOS" \
+LABEL org.opencontainers.image.title="paios/aios (BuckyOS Worker Image)" \
 EOF
-    printf '      org.opencontainers.image.description="OpenDAN runtime image for %s" \\\n' "$IMAGE_NAME"
+    printf '      org.opencontainers.image.description="Unified worker runtime for %s" \\\n' "$IMAGE_NAME"
     cat <<'EOF'
       org.opencontainers.image.vendor="BuckyOS DAO"
 
-WORKDIR /opt/buckyos
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Required by OpenDAN runtime and common agent workspace workflows.
+# Runtime + predefined worker CLI tools (see container spec §6.3).
 RUN apt-get update && apt-get install -y --no-install-recommends \
 EOF
 
@@ -258,19 +264,52 @@ EOF
     done
 
     cat <<'EOF'
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && locale-gen en_US.UTF-8
 
-RUN mkdir -p /opt/buckyos/bin/opendan
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+# uv — managed Python + dependency installer used by Script apps.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+RUN uv python install 3.12
+
+# Deno — TypeScript runtime used by Script apps and Worker-layer Agents.
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
+
+ENV BUCKYOS_ROOT=/opt/buckyos
+WORKDIR /opt/buckyos
+
+RUN mkdir -p \
+    /opt/buckyos/bin/opendan \
+    /opt/buckyos/data \
+    /opt/buckyos/logs \
+    /opt/buckyos/storage \
+    /opt/buckyos/tools/store \
+    /opt/buckyos/tools/bin \
+    /mnt/buckyos/pkg
 
 COPY opendan /opt/buckyos/bin/opendan/opendan
 COPY agent_tool /opt/buckyos/bin/opendan/agent_tool
 RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool
 
-ENV AIOS_TARGET_ARCH="${TARGET_ARCH}"
+# Unified entrypoint: instance-volume bootstrap + file-level upstream sync +
+# agent/script/custom dispatch.
+COPY entrypoint.sh /opt/buckyos/entrypoint.sh
+RUN chmod 755 /opt/buckyos/entrypoint.sh
+
+ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
+    BUCKYOS_INSTANCE_VOLUME=/opt/buckyos/instance \
+    BUCKYOS_PKG_SOURCE_DIR=/mnt/buckyos/pkg \
+    BUCKYOS_PKG_DIR=/opt/buckyos/instance/pkg \
+    DENO_DIR=/opt/buckyos/instance/deno-cache \
+    UV_CACHE_DIR=/opt/buckyos/instance/uv-cache \
+    NPM_CONFIG_CACHE=/opt/buckyos/instance/npm-cache \
+    PIP_CACHE_DIR=/opt/buckyos/instance/pip-cache
 
 EXPOSE 3180
 
-ENTRYPOINT ["/opt/buckyos/bin/opendan/opendan"]
+ENTRYPOINT ["/opt/buckyos/entrypoint.sh"]
 EOF
   } > "$output_path"
 }
@@ -638,6 +677,13 @@ build_runtime_binaries() {
   cp "$source_opendan" "$context_dir/opendan"
   cp "$source_agent_tool" "$context_dir/agent_tool"
   chmod 755 "$context_dir/opendan" "$context_dir/agent_tool"
+
+  if [[ ! -f "$ENTRYPOINT_SOURCE" ]]; then
+    echo "Missing paios/aios entrypoint at $ENTRYPOINT_SOURCE" >&2
+    exit 1
+  fi
+  cp "$ENTRYPOINT_SOURCE" "$context_dir/entrypoint.sh"
+  chmod 755 "$context_dir/entrypoint.sh"
 }
 
 docker_platform_for_arch() {

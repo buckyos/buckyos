@@ -143,7 +143,7 @@ fn build_agent_loader(platform: PlatformTarget) -> AppLoader {
     AppLoader::new_for_service("jarvis@alice@ood1", config)
         .with_platform(platform)
         .with_container_support_override(true)
-        .with_agent_runtime_image_repo_override("paios/aios")
+        .with_worker_image_repo_override("paios/aios")
 }
 
 fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
@@ -463,19 +463,23 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert_programs(&start.commands, &["docker", "docker"]);
     assert_eq!(start.commands[0].args, vec!["rm", "-f", "alice-jarvis"]);
     assert!(start.commands[1].args.contains(&"run".to_string()));
-    assert!(start.commands[1].args.contains(&"--entrypoint".to_string()));
-    assert!(start.commands[1].args.contains(&"/bin/bash".to_string()));
+    // Unified worker image has the dispatcher baked in, so we no longer
+    // override the entrypoint or request SYS_ADMIN at the docker layer.
+    assert!(!start.commands[1].args.contains(&"--entrypoint".to_string()));
+    assert!(!start.commands[1].args.contains(&"SYS_ADMIN".to_string()));
     assert!(start.commands[1].args.contains(&"--add-host".to_string()));
     assert!(start.commands[1]
         .args
         .contains(&"host.docker.internal:host-gateway".to_string()));
-    assert!(start.commands[1].args.contains(&"SYS_ADMIN".to_string()));
     assert!(start.commands[1]
         .args
-        .contains(&"OPENDAN_AGENT_ID=jarvis".to_string()));
+        .contains(&"BUCKYOS_APP_ID=jarvis".to_string()));
     assert!(start.commands[1]
         .args
-        .contains(&"OPENDAN_SERVICE_PORT=14060".to_string()));
+        .contains(&"BUCKYOS_APP_TYPE=agent".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_SERVICE_PORT=14060".to_string()));
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_THIS_DEVICE=<value>".to_string()));
@@ -486,21 +490,28 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert!(start.commands[1]
         .args
         .contains(&"paios/aios:latest-amd64".to_string()));
+    // §6.1: upstream pkg mounted read-only, instance volume mounted rw.
     assert!(start.commands[1]
         .args
         .iter()
-        .any(|arg| arg == "<agent_logs>:/opt/buckyos/logs:rw"));
+        .any(|arg| arg == "<app_pkg>:/mnt/buckyos/pkg:ro"));
     assert!(start.commands[1]
         .args
         .iter()
-        .any(|arg| arg == "<agent_storage>:/opt/buckyos/storage:rw"));
+        .any(|arg| arg == "buckyos-instance-alice-jarvis:/opt/buckyos/instance:rw"));
     assert!(start.commands[1]
         .args
-        .contains(&"<agent-bootstrap-script>".to_string()));
+        .iter()
+        .any(|arg| arg == "<app_logs>:/opt/buckyos/logs:rw"));
+    assert!(start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg == "<app_storage>:/opt/buckyos/storage:rw"));
+    // No bootstrap script is passed at the docker layer anymore — the image
+    // entrypoint handles instance-volume bootstrap + agent dispatch itself.
     assert!(!start.commands[1]
         .args
-        .iter()
-        .any(|arg| arg.contains("<buckyos_etc>:")));
+        .contains(&"<agent-bootstrap-script>".to_string()));
 
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Agent);
@@ -523,7 +534,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
 #[test]
 fn agent_control_commands_support_custom_runtime_image_repo() {
     let loader = build_agent_loader(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
-        .with_agent_runtime_image_repo_override("paios/aios_dev");
+        .with_worker_image_repo_override("paios/aios_dev");
 
     let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(
@@ -541,15 +552,6 @@ fn agent_control_commands_support_custom_runtime_image_repo() {
         status.commands[2].args,
         vec!["images", "-q", "paios/aios_dev:latest-amd64"]
     );
-}
-
-#[test]
-fn agent_bootstrap_script_materializes_package_without_preserving_timestamps() {
-    let loader = build_agent_loader(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64));
-    let script = loader.test_agent_runtime_bootstrap_script(14060);
-
-    assert!(script.contains("cp -RP --update=none \"$PACKAGE_ROOT\"/. \"$DATA_UPPER\"/"));
-    assert!(!script.contains("cp -a -n \"$PACKAGE_ROOT\"/. \"$DATA_UPPER\"/"));
 }
 
 #[test]
@@ -583,7 +585,8 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     };
     let loader = AppLoader::new_for_local("desktop-tool", config)
         .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
-        .with_container_support_override(false);
+        .with_container_support_override(false)
+        .with_worker_image_repo_override("paios/aios");
 
     let preview = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(preview.runtime, RuntimeType::HostScript);
@@ -605,7 +608,19 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(preview.commands[1]
         .args
         .iter()
-        .any(|a| a.contains("buckyos/script-service:")));
+        .any(|a| a.contains("paios/aios:")));
+    // Unified worker image mounts the instance volume and read-only pkg source.
+    assert!(preview.commands[1]
+        .args
+        .iter()
+        .any(|a| a == "buckyos-instance-alice-desktop-tool:/opt/buckyos/instance:rw"));
+    assert!(preview.commands[1]
+        .args
+        .iter()
+        .any(|a| a == "<app_pkg>:/mnt/buckyos/pkg:ro"));
+    assert!(preview.commands[1]
+        .args
+        .contains(&"BUCKYOS_APP_TYPE=script".to_string()));
 }
 
 #[test]
@@ -642,7 +657,8 @@ fn host_script_deploy_preview_includes_pkg_install_and_image_pull() {
     };
     let loader = AppLoader::new_for_local("desktop-tool", config)
         .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
-        .with_container_support_override(false);
+        .with_container_support_override(false)
+        .with_worker_image_repo_override("paios/aios");
 
     let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(preview.runtime, RuntimeType::HostScript);
@@ -650,7 +666,7 @@ fn host_script_deploy_preview_includes_pkg_install_and_image_pull() {
     assert_eq!(preview.commands[0].program, "pkg-install");
     assert_eq!(preview.commands[1].program, "docker");
     assert_eq!(preview.commands[1].args[0], "pull");
-    assert!(preview.commands[1].args[1].contains("buckyos/script-service:"));
+    assert!(preview.commands[1].args[1].contains("paios/aios:"));
 }
 
 #[test]
@@ -667,12 +683,13 @@ fn host_script_aarch64_uses_correct_image_tag() {
             PlatformOs::Linux,
             PlatformArch::Aarch64,
         ))
-        .with_container_support_override(false);
+        .with_container_support_override(false)
+        .with_worker_image_repo_override("paios/aios");
 
     let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(
         preview.commands[1].args[1],
-        "buckyos/script-service:latest-aarch64"
+        "paios/aios:latest-aarch64"
     );
 }
 
@@ -683,7 +700,8 @@ fn script_pkg_field_routes_service_app_to_host_script() {
         HashMap::from([("www".to_string(), 18080)]),
         PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64),
         true,
-    );
+    )
+    .with_worker_image_repo_override("paios/aios");
 
     let preview = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(preview.runtime, RuntimeType::HostScript);
@@ -692,7 +710,7 @@ fn script_pkg_field_routes_service_app_to_host_script() {
     assert!(preview.commands[1]
         .args
         .iter()
-        .any(|a| a.contains("buckyos/script-service:")));
+        .any(|a| a.contains("paios/aios:")));
 }
 
 #[test]
