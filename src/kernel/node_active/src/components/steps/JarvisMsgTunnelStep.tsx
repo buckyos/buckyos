@@ -23,6 +23,7 @@ import {
   TELEGRAM_ACCOUNT_ID_TUTORIAL_URL,
   TELEGRAM_BOT_API_TOKEN_TUTORIAL_URL,
 } from "../../../active_lib";
+import { buckyos, RuntimeType } from "buckyos";
 
 type Props = {
   wizardData: WizardData;
@@ -57,6 +58,10 @@ const JarvisMsgTunnelStep = ({
 
   const openExternal = (url: string) => {
     if (!url) {
+      return;
+    }
+    if (buckyos.getRuntimeType?.() === RuntimeType.AppRuntime) {
+      buckyos.openExternal?.(url);
       return;
     }
     window.open(url, "_blank", "noopener,noreferrer");

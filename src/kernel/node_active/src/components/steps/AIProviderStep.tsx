@@ -24,6 +24,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AIProviderConfig, WizardData } from "../../types";
 import { AI_PROVIDER_TUTORIAL_URL } from "../../../active_lib";
+import { buckyos, RuntimeType } from "buckyos";
 
 type Props = {
   wizardData: WizardData;
@@ -85,6 +86,10 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
 
   const openTutorial = () => {
     if (!AI_PROVIDER_TUTORIAL_URL) {
+      return;
+    }
+    if (buckyos.getRuntimeType?.() === RuntimeType.AppRuntime) {
+      buckyos.openExternal?.(AI_PROVIDER_TUTORIAL_URL);
       return;
     }
     window.open(AI_PROVIDER_TUTORIAL_URL, "_blank", "noopener,noreferrer");
