@@ -1004,7 +1004,7 @@ impl KNetworkServer {
         };
 
         info!(
-            "KNetworkServer admin cluster-state request: node_id={}, cluster_name={}, cluster_id={}, server_state={}, current_leader={:?}, voters={:?}, learners={:?}",
+            "KNetworkServer admin cluster-state request: raft_node_id={}, cluster_name={}, cluster_id={}, server_state={}, current_leader={:?}, voters={:?}, learners={:?}",
             body.node_id,
             body.cluster_name,
             body.cluster_id,

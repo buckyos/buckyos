@@ -10,7 +10,6 @@ use buckyos_api::{
 };
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::KLogRuntimeConfig;
-use klog::{KClusterTransportConfig, KClusterTransportMode};
 use klog::logs::RocksDbLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
 use klog::rpc::KRpcServer;
@@ -18,6 +17,7 @@ use klog::state_machine::{KLogStateMachine, SnapshotManager};
 use klog::state_store::{
     KLogStateStore, KLogStateStoreManager, RocksDbSnapshotMode, RocksDbStateStore,
 };
+use klog::{KClusterTransportConfig, KClusterTransportMode};
 use lifecycle::run_server_lifecycle;
 use log::{error, info, warn};
 use logging::init_logging;
@@ -101,7 +101,10 @@ async fn init_buckyos_runtime_if_needed(cfg: &mut KLogRuntimeConfig) -> Result<(
     validate_buckyos_cluster_transport_identity(
         cfg.cluster_network.mode,
         cfg.advertise_node_name.as_deref(),
-        runtime.device_config.as_ref().map(|device| device.name.as_str()),
+        runtime
+            .device_config
+            .as_ref()
+            .map(|device| device.name.as_str()),
     )?;
     runtime.set_main_service_port(rpc_port).await;
 
@@ -173,7 +176,7 @@ fn validate_buckyos_cluster_transport_identity(
     })?;
     let advertise_node_name = advertise_node_name.ok_or_else(|| {
         let msg = format!(
-            "Missing network.advertise_node_name for cluster_network.mode={} under BuckyOS runtime",
+            "Missing network.advertise_node_name (BuckyOS node name) for cluster_network.mode={} under BuckyOS runtime",
             transport_mode
         );
         error!("{}", msg);
@@ -182,7 +185,7 @@ fn validate_buckyos_cluster_transport_identity(
 
     if advertise_node_name != runtime_node_name {
         let msg = format!(
-            "Invalid cluster transport identity: cluster_network.mode={}, advertise_node_name={} must equal BuckyOS node name {}",
+            "Invalid cluster transport identity: cluster_network.mode={}, advertise_node_name(BuckyOS node name)={} must equal runtime_node_name={}",
             transport_mode, advertise_node_name, runtime_node_name
         );
         error!("{}", msg);
@@ -190,7 +193,7 @@ fn validate_buckyos_cluster_transport_identity(
     }
 
     info!(
-        "Validated BuckyOS cluster transport identity: cluster_network.mode={}, advertise_node_name={}, runtime_node_name={}",
+        "Validated BuckyOS cluster transport identity: cluster_network.mode={}, advertise_node_name(BuckyOS node name)={}, runtime_node_name={}",
         transport_mode, advertise_node_name, runtime_node_name
     );
     Ok(())
@@ -206,7 +209,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, advertise_node_name={:?}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, cluster_network_mode={}, cluster_gateway_addr={}, cluster_gateway_route_prefix={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
+        "klog startup config: raft_node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, advertise_node_name(BuckyOS node name)={:?}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, cluster_network_mode={}, cluster_gateway_addr={}, cluster_gateway_route_prefix={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
         cfg.node_id,
         cfg.listen_addr,
         cfg.inter_node_listen_addr,
@@ -338,9 +341,14 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         state_machine,
     )
     .await
-    .map_err(|e| format!("Failed to create raft node {}: {}", cfg.node_id, e))?;
+    .map_err(|e| {
+        format!(
+            "Failed to create raft node raft_node_id={}: {}",
+            cfg.node_id, e
+        )
+    })?;
     let raft = Arc::new(raft);
-    info!("Raft node created: node_id={}", cfg.node_id);
+    info!("Raft node created: raft_node_id={}", cfg.node_id);
 
     initialize_cluster_if_needed(&cfg, &raft).await;
     let join_task = spawn_auto_join_task(&cfg);
@@ -381,12 +389,8 @@ mod tests {
 
     #[test]
     fn test_validate_buckyos_cluster_transport_identity_direct_skips_check() {
-        validate_buckyos_cluster_transport_identity(
-            KClusterTransportMode::Direct,
-            None,
-            None,
-        )
-        .expect("direct mode should skip node identity validation");
+        validate_buckyos_cluster_transport_identity(KClusterTransportMode::Direct, None, None)
+            .expect("direct mode should skip node identity validation");
     }
 
     #[test]
@@ -404,7 +408,7 @@ mod tests {
             Some("ood1"),
         )
         .expect_err("mismatched advertise_node_name should be rejected");
-        assert!(err.contains("advertise_node_name=ood2"));
-        assert!(err.contains("BuckyOS node name ood1"));
+        assert!(err.contains("advertise_node_name(BuckyOS node name)=ood2"));
+        assert!(err.contains("runtime_node_name=ood1"));
     }
 }

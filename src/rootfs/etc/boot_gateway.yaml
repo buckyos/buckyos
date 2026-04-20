@@ -96,7 +96,7 @@ servers:
               global CONTROL_PANEL_URL="https://sys.${THIS_ZONE_HOST}/";
               global APP_ID="";
               global SERVICE_ID="";
-              global KLOG_CLUSTER_TARGET_NODE_ID="";
+              global KLOG_CLUSTER_TARGET_NODE_NAME="";
               global KLOG_CLUSTER_TARGET_PORT="";
 
               if match $REQ.path "/kapi/kevent/*" then
@@ -108,7 +108,7 @@ servers:
               end
 
               exec get_klog_cluster_target_from_req;
-              if !eq $KLOG_CLUSTER_TARGET_NODE_ID "" then
+              if !eq $KLOG_CLUSTER_TARGET_NODE_NAME "" then
                 return --from chain $(exec forward_to_klog_cluster);
               end
 
@@ -133,13 +133,13 @@ servers:
           get_klog_cluster_target_from_req:
             priority: 125
             block: |
-              global KLOG_CLUSTER_TARGET_NODE_ID="";
+              global KLOG_CLUSTER_TARGET_NODE_NAME="";
               global KLOG_CLUSTER_TARGET_PORT="";
               eq $REQ.dest_port 3180 || return false;
               match-reg --capture klog_hp $REQ.path "^/\\.cluster/klog/([^/]+)/(raft|inter|admin)(/.*)?$" || return false;
               match-include $KLOG_CLUSTER_INFO $klog_hp[0] || return false;
 
-              global KLOG_CLUSTER_TARGET_NODE_ID=$KLOG_CLUSTER_INFO[$klog_hp[0]].node_id;
+              global KLOG_CLUSTER_TARGET_NODE_NAME=$KLOG_CLUSTER_INFO[$klog_hp[0]].node_name;
               if eq $klog_hp[1] "raft" then
                 global KLOG_CLUSTER_TARGET_PORT=$KLOG_CLUSTER_INFO[$klog_hp[0]].raft_port;
                 return true;
@@ -152,7 +152,7 @@ servers:
                 global KLOG_CLUSTER_TARGET_PORT=$KLOG_CLUSTER_INFO[$klog_hp[0]].admin_port;
                 return true;
               end
-              global KLOG_CLUSTER_TARGET_NODE_ID="";
+              global KLOG_CLUSTER_TARGET_NODE_NAME="";
               global KLOG_CLUSTER_TARGET_PORT="";
               return false;
 
@@ -268,13 +268,13 @@ servers:
           forward_to_klog_cluster:
             priority: 155
             block: |
-              eq $KLOG_CLUSTER_TARGET_NODE_ID "" && reject;
+              eq $KLOG_CLUSTER_TARGET_NODE_NAME "" && reject;
               eq $KLOG_CLUSTER_TARGET_PORT "" && reject;
 
-              if eq $KLOG_CLUSTER_TARGET_NODE_ID $THIS_NODE_ID then
+              if eq $KLOG_CLUSTER_TARGET_NODE_NAME $THIS_NODE_ID then
                 forward "http://127.0.0.1:${KLOG_CLUSTER_TARGET_PORT}";
               else
-                local target_rtcp_url = ${NODE_ROUTE_MAP[$KLOG_CLUSTER_TARGET_NODE_ID]}
+                local target_rtcp_url = ${NODE_ROUTE_MAP[$KLOG_CLUSTER_TARGET_NODE_NAME]}
                 eq $target_rtcp_url "" && reject;
                 forward "${target_rtcp_url}:3180";
               end

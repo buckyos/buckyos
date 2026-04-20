@@ -785,13 +785,14 @@ impl KLogRuntimeConfig {
         let node_id = match node_id {
             Some(v) => v,
             None => {
-                let msg = "Missing required field: node_id (or KLOG_NODE_ID)".to_string();
+                let msg =
+                    "Missing required field: node_id (raft node id, or KLOG_NODE_ID)".to_string();
                 error!("{}", msg);
                 return Err(msg);
             }
         };
         if node_id == 0 {
-            let msg = "Invalid node_id=0: node_id must be greater than 0".to_string();
+            let msg = "Invalid node_id=0: raft node id must be greater than 0".to_string();
             error!("{}", msg);
             return Err(msg);
         }
@@ -897,7 +898,7 @@ impl KLogRuntimeConfig {
             && advertise_node_name.is_none()
         {
             let msg = format!(
-                "Missing required field: network.advertise_node_name for cluster_network.mode={}",
+                "Missing required field: network.advertise_node_name (BuckyOS node name) for cluster_network.mode={}",
                 cluster_network_cfg.mode
             );
             error!("{}", msg);

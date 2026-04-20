@@ -693,7 +693,7 @@ struct NodeGatewayInfo {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct NodeGatewayKlogClusterNodeEntry {
-    node_id: String,
+    node_name: String,
     raft_port: u16,
     inter_port: u16,
     admin_port: u16,
@@ -1024,57 +1024,57 @@ fn build_klog_cluster_info(
 
         match service_name.as_str() {
             KLOG_CLUSTER_RAFT_SERVICE_NAME => {
-                for (node_id, target) in selector {
-                    raft_ports.insert(node_id, target.port);
+                for (node_name, target) in selector {
+                    raft_ports.insert(node_name, target.port);
                 }
             }
             KLOG_CLUSTER_INTER_SERVICE_NAME => {
-                for (node_id, target) in selector {
-                    inter_ports.insert(node_id, target.port);
+                for (node_name, target) in selector {
+                    inter_ports.insert(node_name, target.port);
                 }
             }
             KLOG_CLUSTER_ADMIN_SERVICE_NAME => {
-                for (node_id, target) in selector {
-                    admin_ports.insert(node_id, target.port);
+                for (node_name, target) in selector {
+                    admin_ports.insert(node_name, target.port);
                 }
             }
             _ => {}
         }
     }
 
-    let mut node_ids = HashSet::new();
-    node_ids.extend(raft_ports.keys().cloned());
-    node_ids.extend(inter_ports.keys().cloned());
-    node_ids.extend(admin_ports.keys().cloned());
+    let mut node_names = HashSet::new();
+    node_names.extend(raft_ports.keys().cloned());
+    node_names.extend(inter_ports.keys().cloned());
+    node_names.extend(admin_ports.keys().cloned());
 
     let mut result = HashMap::new();
-    for node_id in node_ids {
-        let Some(raft_port) = raft_ports.get(&node_id).copied() else {
+    for node_name in node_names {
+        let Some(raft_port) = raft_ports.get(&node_name).copied() else {
             warn!(
                 "skip klog cluster gateway entry for node {} because raft port is missing",
-                node_id
+                node_name
             );
             continue;
         };
-        let Some(inter_port) = inter_ports.get(&node_id).copied() else {
+        let Some(inter_port) = inter_ports.get(&node_name).copied() else {
             warn!(
                 "skip klog cluster gateway entry for node {} because inter port is missing",
-                node_id
+                node_name
             );
             continue;
         };
-        let Some(admin_port) = admin_ports.get(&node_id).copied() else {
+        let Some(admin_port) = admin_ports.get(&node_name).copied() else {
             warn!(
                 "skip klog cluster gateway entry for node {} because admin port is missing",
-                node_id
+                node_name
             );
             continue;
         };
 
         result.insert(
-            node_id.clone(),
+            node_name.clone(),
             NodeGatewayKlogClusterNodeEntry {
-                node_id,
+                node_name,
                 raft_port,
                 inter_port,
                 admin_port,
@@ -2678,13 +2678,13 @@ mod tests {
             "/.cluster/klog"
         );
         let local = gateway_info.klog_cluster_info.get("ood1").unwrap();
-        assert_eq!(local.node_id, "ood1");
+        assert_eq!(local.node_name, "ood1");
         assert_eq!(local.raft_port, 21001);
         assert_eq!(local.inter_port, 21002);
         assert_eq!(local.admin_port, 21003);
 
         let remote = gateway_info.klog_cluster_info.get("ood2").unwrap();
-        assert_eq!(remote.node_id, "ood2");
+        assert_eq!(remote.node_name, "ood2");
         assert_eq!(remote.raft_port, 21011);
         assert_eq!(remote.inter_port, 21012);
         assert_eq!(remote.admin_port, 21013);
