@@ -51,6 +51,9 @@ pub const ENV_AUTO_BOOTSTRAP: &str = "KLOG_AUTO_BOOTSTRAP";
 /// Environment variable key: fsync/sync-write for state store.
 pub const ENV_STATE_STORE_SYNC_WRITE: &str = "KLOG_STATE_STORE_SYNC_WRITE";
 
+/// Environment variable key: cluster internal transport mode.
+pub const ENV_CLUSTER_NETWORK_MODE: &str = "KLOG_CLUSTER_NETWORK_MODE";
+
 /// Environment variable key: comma-separated join targets (admin endpoint host:port).
 pub const ENV_JOIN_TARGETS: &str = "KLOG_JOIN_TARGETS";
 
@@ -186,6 +189,9 @@ pub const DEFAULT_AUTO_BOOTSTRAP: bool = false;
 
 /// Default switch: enable state-store sync write for durability.
 pub const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
+
+/// Default cluster internal transport mode.
+pub const DEFAULT_CLUSTER_NETWORK_MODE: &str = "direct";
 
 /// Default add-learner request mode, non-blocking.
 pub const DEFAULT_JOIN_BLOCKING: bool = false;

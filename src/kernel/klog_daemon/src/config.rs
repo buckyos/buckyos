@@ -1,7 +1,7 @@
 use crate::constants::{
     DEFAULT_ADMIN_LOCAL_ONLY, DEFAULT_ADMIN_PORT, DEFAULT_ADVERTISE_ADDR, DEFAULT_AUTO_BOOTSTRAP,
-    DEFAULT_ENABLE_RPC_SERVER, DEFAULT_INTER_NODE_PORT, DEFAULT_JOIN_BLOCKING,
-    DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
+    DEFAULT_CLUSTER_NETWORK_MODE, DEFAULT_ENABLE_RPC_SERVER, DEFAULT_INTER_NODE_PORT,
+    DEFAULT_JOIN_BLOCKING, DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
     DEFAULT_JOIN_RETRY_INITIAL_INTERVAL_MS, DEFAULT_JOIN_RETRY_JITTER_RATIO,
     DEFAULT_JOIN_RETRY_MAX_ATTEMPTS, DEFAULT_JOIN_RETRY_MAX_INTERVAL_MS,
     DEFAULT_JOIN_RETRY_MULTIPLIER, DEFAULT_JOIN_RETRY_REQUEST_TIMEOUT_MS,
@@ -15,12 +15,12 @@ use crate::constants::{
     DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS, DEFAULT_STATE_STORE_SYNC_WRITE,
     ENV_ADMIN_ADVERTISE_PORT, ENV_ADMIN_LISTEN_ADDR, ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR,
     ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID,
-    ENV_CLUSTER_NAME, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
-    ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING,
+    ENV_CLUSTER_NAME, ENV_CLUSTER_NETWORK_MODE, ENV_CONFIG_FILE, ENV_DATA_DIR,
+    ENV_ENABLE_RPC_SERVER, ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING,
     ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS, ENV_JOIN_RETRY_INITIAL_INTERVAL_MS,
     ENV_JOIN_RETRY_JITTER_RATIO, ENV_JOIN_RETRY_MAX_ATTEMPTS, ENV_JOIN_RETRY_MAX_INTERVAL_MS,
     ENV_JOIN_RETRY_MULTIPLIER, ENV_JOIN_RETRY_REQUEST_TIMEOUT_MS, ENV_JOIN_RETRY_SHUFFLE_TARGETS,
-    ENV_JOIN_RETRY_STRATEGY, ENV_JOIN_TARGETS, ENV_JOIN_TARGET_ROLE, ENV_LISTEN_ADDR, ENV_NODE_ID,
+    ENV_JOIN_RETRY_STRATEGY, ENV_JOIN_TARGET_ROLE, ENV_JOIN_TARGETS, ENV_LISTEN_ADDR, ENV_NODE_ID,
     ENV_RAFT_ELECTION_TIMEOUT_MAX_MS, ENV_RAFT_ELECTION_TIMEOUT_MIN_MS,
     ENV_RAFT_HEARTBEAT_INTERVAL_MS, ENV_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS,
     ENV_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP, ENV_RAFT_MAX_PAYLOAD_ENTRIES, ENV_RAFT_PURGE_BATCH_SIZE,
@@ -33,7 +33,7 @@ use crate::constants::{
 };
 use buckyos_kit::get_buckyos_service_data_dir;
 use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
-use klog::KNodeId;
+use klog::{KClusterTransportMode, KNodeId};
 use log::error;
 use openraft::{Config as OpenRaftConfig, SnapshotPolicy};
 use serde::{Deserialize, Serialize};
@@ -292,6 +292,21 @@ impl Default for KLogJoinRetryConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogClusterNetworkConfig {
+    /// Cluster internal transport mode.
+    pub mode: KClusterTransportMode,
+}
+
+impl Default for KLogClusterNetworkConfig {
+    fn default() -> Self {
+        Self {
+            mode: KClusterTransportMode::parse(DEFAULT_CLUSTER_NETWORK_MODE)
+                .expect("DEFAULT_CLUSTER_NETWORK_MODE must be valid"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KLogRuntimeConfig {
     /// Raft node id in current cluster, must be greater than 0.
@@ -357,6 +372,9 @@ pub struct KLogRuntimeConfig {
     /// OpenRaft core runtime settings.
     pub raft: KLogRaftConfig,
 
+    /// Cluster internal transport mode and future routing settings.
+    pub cluster_network: KLogClusterNetworkConfig,
+
     /// Restrict admin APIs to loopback clients only.
     pub admin_local_only: bool,
 
@@ -419,6 +437,13 @@ pub struct KLogClusterConfigPatch {
 
     /// Optional override for auto bootstrap switch.
     pub auto_bootstrap: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KLogClusterNetworkConfigPatch {
+    /// Optional cluster internal transport mode.
+    pub mode: Option<KClusterTransportMode>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -553,6 +578,9 @@ pub struct KLogRuntimeConfigPatch {
     /// Optional grouped raft runtime section.
     pub raft: Option<KLogRaftConfigPatch>,
 
+    /// Optional grouped cluster internal transport section.
+    pub cluster_network: Option<KLogClusterNetworkConfigPatch>,
+
     /// Optional grouped admin API section.
     pub admin: Option<KLogAdminConfigPatch>,
 
@@ -613,6 +641,9 @@ impl KLogRuntimeConfig {
                 name: parse_env_string(ENV_CLUSTER_NAME)?,
                 id: parse_env_string(ENV_CLUSTER_ID)?,
                 auto_bootstrap: parse_env_bool(ENV_AUTO_BOOTSTRAP)?,
+            }),
+            cluster_network: Some(KLogClusterNetworkConfigPatch {
+                mode: parse_env_cluster_transport_mode(ENV_CLUSTER_NETWORK_MODE)?,
             }),
             join: Some(KLogJoinConfigPatch {
                 targets: parse_env_string_list(ENV_JOIN_TARGETS)?,
@@ -711,6 +742,7 @@ impl KLogRuntimeConfig {
             cluster,
             join,
             raft,
+            cluster_network,
             admin,
             rpc,
             node_id,
@@ -721,6 +753,7 @@ impl KLogRuntimeConfig {
         let cluster = cluster.unwrap_or_default();
         let join = join.unwrap_or_default();
         let raft = raft.unwrap_or_default();
+        let cluster_network = cluster_network.unwrap_or_default();
         let admin = admin.unwrap_or_default();
         let rpc = rpc.unwrap_or_default();
 
@@ -773,6 +806,7 @@ impl KLogRuntimeConfig {
         let rpc_cfg = merge_rpc_config(rpc)?;
         let join_retry_cfg = merge_join_retry_config(join.retry.unwrap_or_default())?;
         let raft_cfg = merge_raft_config(raft)?;
+        let cluster_network_cfg = merge_cluster_network_config(cluster_network)?;
         let listen_addr = network.listen_addr.unwrap_or_else(default_listen_addr);
         let inter_node_listen_addr = network
             .inter_node_listen_addr
@@ -851,6 +885,7 @@ impl KLogRuntimeConfig {
             join_target_role: join.target_role.unwrap_or(DEFAULT_JOIN_TARGET_ROLE),
             join_retry: join_retry_cfg,
             raft: raft_cfg,
+            cluster_network: cluster_network_cfg,
             admin_local_only: admin.local_only.unwrap_or(DEFAULT_ADMIN_LOCAL_ONLY),
             rpc: rpc_cfg,
         })
@@ -886,6 +921,28 @@ fn merge_rpc_config(patch: KLogRpcConfigPatch) -> Result<KLogRpcConfig, String> 
         query,
         jsonrpc,
     })
+}
+
+fn merge_cluster_network_config(
+    patch: KLogClusterNetworkConfigPatch,
+) -> Result<KLogClusterNetworkConfig, String> {
+    let cfg = KLogClusterNetworkConfig {
+        mode: patch.mode.unwrap_or(
+            KClusterTransportMode::parse(DEFAULT_CLUSTER_NETWORK_MODE)
+                .expect("DEFAULT_CLUSTER_NETWORK_MODE must be valid"),
+        ),
+    };
+
+    if cfg.mode != KClusterTransportMode::Direct {
+        let msg = format!(
+            "Unsupported cluster_network.mode={}: only direct is supported in the current build",
+            cfg.mode
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    Ok(cfg)
 }
 
 fn merge_rpc_route_config(
@@ -1266,6 +1323,15 @@ fn parse_env_join_retry_strategy(key: &str) -> Result<Option<KLogJoinRetryStrate
     }
 }
 
+fn parse_env_cluster_transport_mode(key: &str) -> Result<Option<KClusterTransportMode>, String> {
+    match parse_env_string(key)? {
+        Some(v) => KClusterTransportMode::parse(&v)
+            .map(Some)
+            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1310,6 +1376,9 @@ state_store_sync_write = false
 name = "cluster_a"
 id = "cluster_a_id"
 auto_bootstrap = false
+
+[cluster_network]
+mode = "direct"
 
 [join]
 targets = ["127.0.0.1:21001", "127.0.0.1:21002"]
@@ -1375,6 +1444,7 @@ concurrency = 128
         assert_eq!(cfg.cluster_name, "cluster_a");
         assert_eq!(cfg.cluster_id, "cluster_a_id");
         assert!(!cfg.auto_bootstrap);
+        assert_eq!(cfg.cluster_network.mode, KClusterTransportMode::Direct);
         assert!(!cfg.state_store_sync_write);
         assert_eq!(
             cfg.join_targets,
@@ -1471,6 +1541,7 @@ id = "cluster_partial_id"
         assert_eq!(cfg.cluster_name, "cluster_partial");
         assert_eq!(cfg.cluster_id, "cluster_partial_id");
         assert_eq!(cfg.auto_bootstrap, DEFAULT_AUTO_BOOTSTRAP);
+        assert_eq!(cfg.cluster_network.mode, KClusterTransportMode::Direct);
         assert_eq!(cfg.state_store_sync_write, DEFAULT_STATE_STORE_SYNC_WRITE);
         assert!(cfg.join_targets.is_empty());
         assert_eq!(cfg.join_blocking, DEFAULT_JOIN_BLOCKING);
@@ -1629,6 +1700,28 @@ targets = ["127.0.0.1:21001"]
     }
 
     #[test]
+    fn test_from_file_cluster_network_non_direct_rejected() {
+        let file = unique_test_file("cluster_network_non_direct");
+        let content = r#"
+node_id = 9
+
+[cluster]
+name = "cluster_transport"
+id = "cluster_transport_id"
+
+[cluster_network]
+mode = "gateway_proxy"
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err = KLogRuntimeConfig::from_file(&file)
+            .expect_err("cluster_network.mode=gateway_proxy must fail in current build");
+        assert!(err.contains("only direct is supported"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
     fn test_from_file_admin_listener_must_be_distinct() {
         let file = unique_test_file("admin_listener_conflict");
         let content = r#"
@@ -1703,6 +1796,9 @@ id = "cluster_admin_conflict_id"
                 max_in_snapshot_log_to_keep: Some(1500),
                 purge_batch_size: Some(8),
             }),
+            cluster_network: Some(KLogClusterNetworkConfigPatch {
+                mode: Some(KClusterTransportMode::Direct),
+            }),
             admin: Some(KLogAdminConfigPatch {
                 local_only: Some(false),
             }),
@@ -1728,6 +1824,7 @@ id = "cluster_admin_conflict_id"
         assert_eq!(cfg.cluster_name, "bk");
         assert_eq!(cfg.cluster_id, "bk-id");
         assert!(!cfg.auto_bootstrap);
+        assert_eq!(cfg.cluster_network.mode, KClusterTransportMode::Direct);
         assert!(!cfg.state_store_sync_write);
         assert_eq!(cfg.join_targets, vec!["10.0.0.1:21001".to_string()]);
         assert!(cfg.join_blocking);

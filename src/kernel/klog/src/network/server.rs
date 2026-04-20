@@ -6,7 +6,7 @@ use super::request::{
 use crate::error::{KLogErrorEnvelope, KLogServiceError, generate_trace_id};
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
-use crate::{KNode, KNodeId, KRaftRef};
+use crate::{KClusterTransportMode, KNode, KNodeId, KRaftRef};
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
@@ -80,6 +80,7 @@ pub struct KNetworkServer {
     admin_local_only: bool,
     cluster_name: String,
     cluster_id: String,
+    transport_mode: KClusterTransportMode,
 }
 
 impl KNetworkServer {
@@ -93,6 +94,7 @@ impl KNetworkServer {
             admin_local_only: false,
             cluster_name: "klog".to_string(),
             cluster_id: "klog".to_string(),
+            transport_mode: KClusterTransportMode::Direct,
         }
     }
 
@@ -125,6 +127,11 @@ impl KNetworkServer {
         self
     }
 
+    pub fn with_cluster_transport_mode(mut self, transport_mode: KClusterTransportMode) -> Self {
+        self.transport_mode = transport_mode;
+        self
+    }
+
     pub async fn run(&self) -> Result<(), String> {
         self.run_with_shutdown(std::future::pending::<()>()).await
     }
@@ -154,9 +161,11 @@ impl KNetworkServer {
             raft: self.raft.clone(),
             write_service: self.state_store_manager.clone().map(|state_store_manager| {
                 KLogWriteService::new("KNetworkServer", self.raft.clone(), state_store_manager)
+                    .with_transport_mode(self.transport_mode)
             }),
             query_service: self.state_store_manager.clone().map(|state_store_manager| {
                 KLogQueryService::new("KNetworkServer", self.raft.clone(), state_store_manager)
+                    .with_transport_mode(self.transport_mode)
             }),
             admin_local_only: self.admin_local_only,
             cluster_name: self.cluster_name.clone(),

@@ -116,6 +116,31 @@ pub enum KClusterTransportMode {
     Hybrid,
 }
 
+impl KClusterTransportMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KClusterTransportMode::Direct => "direct",
+            KClusterTransportMode::GatewayProxy => "gateway_proxy",
+            KClusterTransportMode::Hybrid => "hybrid",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "direct" => Ok(KClusterTransportMode::Direct),
+            "gateway_proxy" => Ok(KClusterTransportMode::GatewayProxy),
+            "hybrid" => Ok(KClusterTransportMode::Hybrid),
+            _ => Err("expected direct, gateway_proxy or hybrid".to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for KClusterTransportMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KNode {
     pub id: KNodeId,

@@ -96,11 +96,15 @@ impl KClusterPlane {
 
 pub struct KNetworkFactory {
     local: KNodeId,
+    transport_mode: KClusterTransportMode,
 }
 
 impl KNetworkFactory {
-    pub fn new(local: KNodeId) -> Self {
-        Self { local }
+    pub fn new(local: KNodeId, transport_mode: KClusterTransportMode) -> Self {
+        Self {
+            local,
+            transport_mode,
+        }
     }
 }
 
@@ -108,7 +112,7 @@ impl RaftNetworkFactory<KTypeConfig> for KNetworkFactory {
     type Network = KNetworkClient;
 
     async fn new_client(&mut self, target: KNodeId, node: &KNode) -> Self::Network {
-        KNetworkClient::new(self.local, target, node.clone())
+        KNetworkClient::new(self.local, target, node.clone(), self.transport_mode)
     }
 }
 
@@ -117,12 +121,14 @@ pub struct KNetworkClient {
     local: KNodeId,
     target: KNodeId,
     node: KNode,
+    transport_mode: KClusterTransportMode,
 }
 
 #[derive(Clone)]
 pub struct KDataClient {
     client: reqwest::Client,
     timeout: Duration,
+    transport_mode: KClusterTransportMode,
 }
 
 impl Default for KDataClient {
@@ -136,11 +142,17 @@ impl KDataClient {
         Self {
             client: reqwest::Client::new(),
             timeout: DEFAULT_DATA_RPC_TIMEOUT,
+            transport_mode: KClusterTransportMode::Direct,
         }
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    pub fn with_transport_mode(mut self, transport_mode: KClusterTransportMode) -> Self {
+        self.transport_mode = transport_mode;
         self
     }
 
@@ -154,7 +166,7 @@ impl KDataClient {
     ) -> Result<KLogAppendResponse, KLogServiceError> {
         let path = KLogDataRequestType::Append.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = Self::build_data_url(target, &path, trace_id)?;
+        let url = self.build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .post(&url)
@@ -226,7 +238,7 @@ impl KDataClient {
     ) -> Result<KLogQueryResponse, KLogServiceError> {
         let path = KLogDataRequestType::Query.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = Self::build_data_url(target, &path, trace_id)?;
+        let url = self.build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .get(&url)
@@ -298,7 +310,7 @@ impl KDataClient {
     ) -> Result<KLogMetaPutResponse, KLogServiceError> {
         let path = KLogDataRequestType::MetaPut.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = Self::build_data_url(target, &path, trace_id)?;
+        let url = self.build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .post(&url)
@@ -370,7 +382,7 @@ impl KDataClient {
     ) -> Result<KLogMetaDeleteResponse, KLogServiceError> {
         let path = KLogDataRequestType::MetaDelete.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = Self::build_data_url(target, &path, trace_id)?;
+        let url = self.build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .post(&url)
@@ -445,7 +457,7 @@ impl KDataClient {
     ) -> Result<KLogMetaQueryResponse, KLogServiceError> {
         let path = KLogDataRequestType::MetaQuery.klog_path();
         let endpoint_port = Self::inter_node_port(target);
-        let url = Self::build_data_url(target, &path, trace_id)?;
+        let url = self.build_data_url(target, &path, trace_id)?;
         let response = self
             .client
             .get(&url)
@@ -516,16 +528,17 @@ impl KDataClient {
     }
 
     fn build_data_url(
+        &self,
         target: &KNode,
         path: &str,
         trace_id: &str,
     ) -> Result<String, KLogServiceError> {
-        KClusterEndpointBuilder::direct(target)
+        KClusterEndpointBuilder::new(target, self.transport_mode)
             .build(KClusterPlane::InterNode, path)
             .map_err(|e| {
                 let msg = format!(
-                    "build inter-node endpoint failed: target={}({}), path={}, err={}",
-                    target.id, target.addr, path, e
+                    "build inter-node endpoint failed: target={}({}), path={}, mode={}, err={}",
+                    target.id, target.addr, path, self.transport_mode, e
                 );
                 error!("{}", msg);
                 KLogServiceError::new(
@@ -539,11 +552,17 @@ impl KDataClient {
 }
 
 impl KNetworkClient {
-    pub fn new(local: KNodeId, target: KNodeId, node: KNode) -> Self {
+    pub fn new(
+        local: KNodeId,
+        target: KNodeId,
+        node: KNode,
+        transport_mode: KClusterTransportMode,
+    ) -> Self {
         Self {
             local,
             target,
             node,
+            transport_mode,
             client: reqwest::Client::new(),
         }
     }
@@ -662,14 +681,15 @@ impl KNetworkClient {
     }
 
     fn get_request_url(&self, req: &RaftRequest) -> Result<String, String> {
-        KClusterEndpointBuilder::direct(&self.node)
+        KClusterEndpointBuilder::new(&self.node, self.transport_mode)
             .build(KClusterPlane::Raft, &req.request_type().klog_path())
             .map_err(|e| {
                 format!(
-                    "build raft endpoint failed: target={}({}), rpc_type={:?}, err={}",
+                    "build raft endpoint failed: target={}({}), rpc_type={:?}, mode={}, err={}",
                     self.target,
                     self.node.addr,
                     req.rpc_type(),
+                    self.transport_mode,
                     e
                 )
             })

@@ -483,7 +483,8 @@ mod tests {
         ensure_cluster_identity_matches,
     };
     use crate::config::{
-        KLogJoinRetryConfig, KLogJoinTargetRole, KLogRaftConfig, KLogRuntimeConfig,
+        KLogClusterNetworkConfig, KLogJoinRetryConfig, KLogJoinTargetRole, KLogRaftConfig,
+        KLogRuntimeConfig,
     };
     use klog::network::KLogClusterStateResponse;
     use klog::{KNode, KNodeId};
@@ -579,6 +580,7 @@ mod tests {
             join_target_role: KLogJoinTargetRole::Voter,
             join_retry: KLogJoinRetryConfig::default(),
             raft: KLogRaftConfig::default(),
+            cluster_network: KLogClusterNetworkConfig::default(),
             admin_local_only: true,
             rpc: Default::default(),
         }

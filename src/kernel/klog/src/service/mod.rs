@@ -6,7 +6,10 @@ use crate::network::{
     KLogQueryRequest, KLogQueryResponse,
 };
 use crate::state_store::{KLogQuery, KLogQueryOrder, KLogStateStoreManagerRef};
-use crate::{KLogEntry, KLogLevel, KLogMetaEntry, KLogRequest, KLogResponse, KNode, KRaftRef};
+use crate::{
+    KClusterTransportMode, KLogEntry, KLogLevel, KLogMetaEntry, KLogRequest, KLogResponse, KNode,
+    KRaftRef,
+};
 use axum::http::{HeaderMap, StatusCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -43,6 +46,11 @@ impl KLogWriteService {
             state_store_manager,
             data_client: KDataClient::new(),
         }
+    }
+
+    pub fn with_transport_mode(mut self, transport_mode: KClusterTransportMode) -> Self {
+        self.data_client = self.data_client.with_transport_mode(transport_mode);
+        self
     }
 
     pub async fn append(
@@ -901,6 +909,11 @@ impl KLogQueryService {
             state_store_manager,
             data_client: KDataClient::new(),
         }
+    }
+
+    pub fn with_transport_mode(mut self, transport_mode: KClusterTransportMode) -> Self {
+        self.data_client = self.data_client.with_transport_mode(transport_mode);
+        self
     }
 
     pub async fn query(
