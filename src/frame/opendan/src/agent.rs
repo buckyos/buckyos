@@ -28,6 +28,7 @@ use crate::agent_config::{AIAgentConfig, AgentLocalConfigOverrides};
 use crate::agent_environment::{AgentEnvironment, AgentTemplateRenderResult};
 use crate::agent_session::{
     AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
+    SessionWaitDetails,
 };
 use crate::agent_tool::{
     normalize_tool_name, sanitize_session_id_for_path, AgentMemory, AgentMemoryConfig, AgentPolicy,
@@ -77,6 +78,13 @@ const SELF_CHECK_EXACT_TIME_WINDOW_MS: u64 = 10_000;
 const SESSION_META_CREATOR_UI_SESSION_ID: &str = "creator_ui_session_id";
 const ACTION_RESULTS_SKIPPED_KEY: &str = "__skipped__";
 const SESSION_KEVENT_SUBSCRIPTIONS_FILE: &str = "session_kevent_subscriptions.json";
+const LLM_STEP_TIMEOUT_RETRY_WAIT_MS: u64 = 15_000;
+const LLM_STEP_PROVIDER_RETRY_WAIT_MS: u64 = 30_000;
+const LLM_STEP_INTERNAL_RETRY_WAIT_MS: u64 = 10_000;
+const LLM_STEP_PROVIDER_UNAVAILABLE_REPLY: &str =
+    "I'm temporarily unable to reply because no AI model provider is available right now. Please try again later.";
+const LLM_STEP_TOKEN_LIMIT_REPLY: &str =
+    "Your message is too large for the current AI model. Please shorten it and try again.";
 
 type ActionResultsMap = HashMap<String, AgentToolResult>;
 
@@ -170,6 +178,13 @@ struct SessionQueueBinding {
 struct StepTransition {
     keep_running: bool,
     behavior_switched: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LLMStepErrorHandling {
+    BubbleUp,
+    ReplyAndWait { reply: &'static str },
+    RetryAfter { wait_ms: u64 },
 }
 
 #[derive(Clone, Debug)]
@@ -1421,14 +1436,19 @@ impl AIAgent {
                 Ok(result) => result,
                 Err(err) => {
                     let llm_completed_at_ms = now_ms();
-                    if !should_record_llm_step_error(&err) {
+                    let handling = classify_llm_step_error(&err);
+                    if handling == LLMStepErrorHandling::BubbleUp {
                         return Err(anyhow!("llm behavior step failed: {err}"));
                     }
 
                     let error = format_llm_step_error("run_step", &err);
+                    let mut error_result = BehaviorLLMResult::default();
+                    if let LLMStepErrorHandling::ReplyAndWait { reply } = handling {
+                        error_result.reply = Some(reply.to_string());
+                    }
                     warn!(
-                        "{}.run_behavior_loop recoverable_step_error: session_id={} behavior_name={} current_step_index={} err={}",
-                        self.agent_name, session_id, behavior_name, current_step_index, err
+                        "{}.run_behavior_loop handled_step_error: session_id={} behavior_name={} current_step_index={} handling={:?} err={}",
+                        self.agent_name, session_id, behavior_name, current_step_index, handling, err
                     );
                     self.append_llm_step_record(
                         session.clone(),
@@ -1439,9 +1459,9 @@ impl AIAgent {
                         llm_completed_at_ms,
                         &input,
                         None,
-                        &BehaviorLLMResult::default(),
+                        &error_result,
                         &ActionResultsMap::new(),
-                        Some(error),
+                        Some(error.clone()),
                     )
                     .await;
 
@@ -1452,23 +1472,65 @@ impl AIAgent {
 
                     result_report.executed_steps = result_report.executed_steps.saturating_add(1);
 
-                    let transition = {
-                        let mut guard = session.lock().await;
-                        apply_session_behavior_transition(
-                            &mut guard,
-                            self.default_behavior.as_str(),
-                            behavior_cfg.step_limit,
-                            behavior_cfg.faild_back.as_deref(),
-                            None,
-                        )
-                    };
-                    result_report.keep_running = transition.keep_running;
-                    result_report.behavior_switched = transition.behavior_switched;
+                    match handling {
+                        LLMStepErrorHandling::ReplyAndWait { reply } => {
+                            let reply_history = self
+                                .handle_reply(session.clone(), &trace, Some(reply))
+                                .await;
+                            self.append_reply_message_worklogs(
+                                session.clone(),
+                                &trace,
+                                &reply_history,
+                            )
+                            .await;
 
-                    if !transition.keep_running {
-                        break;
+                            let (msg_cursor, event_cursor, msg_owner_agent) = {
+                                let guard = session.lock().await;
+                                (
+                                    guard.msg_kmsgqueue_curosr,
+                                    guard.event_kmsgqueue_curosr,
+                                    guard.owner_agent.clone(),
+                                )
+                            };
+
+                            self.persist_step_history_records(
+                                session.clone(),
+                                session_id.as_str(),
+                                reply_history.as_slice(),
+                            )
+                            .await;
+                            self.commit_session_queue_msg_ack(
+                                msg_owner_agent.as_str(),
+                                session_id.as_str(),
+                                msg_cursor,
+                            )
+                            .await?;
+                            self.commit_session_queue_event_ack(
+                                msg_owner_agent.as_str(),
+                                session_id.as_str(),
+                                event_cursor,
+                            )
+                            .await?;
+
+                            {
+                                let mut guard = session.lock().await;
+                                guard.just_readed_input_msg.clear();
+                                guard.just_readed_input_event.clear();
+                            }
+
+                            self.set_running_session_to_wait(&session).await?;
+                        }
+                        LLMStepErrorHandling::RetryAfter { wait_ms } => {
+                            let note = build_llm_step_retry_note("run_step", &err, wait_ms);
+                            self.set_running_session_retry_wait(&session, wait_ms, note.as_str())
+                                .await?;
+                        }
+                        LLMStepErrorHandling::BubbleUp => unreachable!(),
                     }
-                    continue;
+
+                    result_report.keep_running = false;
+                    result_report.behavior_switched = false;
+                    break;
                 }
             };
             let llm_completed_at_ms = now_ms();
@@ -2390,6 +2452,7 @@ impl AIAgent {
             if guard.state == SessionState::Running {
                 guard.state = SessionState::Wait;
             }
+            guard.wait_details = None;
             guard.session_id.clone()
         };
         self.session_mgr.save_session(&session_id).await?;
@@ -2405,6 +2468,31 @@ impl AIAgent {
             if guard.state == SessionState::Running {
                 guard.state = SessionState::Ready;
             }
+            guard.wait_details = None;
+            guard.session_id.clone()
+        };
+        self.session_mgr.save_session(&session_id).await?;
+        Ok(())
+    }
+
+    async fn set_running_session_retry_wait(
+        &self,
+        session: &Arc<Mutex<crate::agent_session::AgentSession>>,
+        wait_ms: u64,
+        note: &str,
+    ) -> Result<()> {
+        let deadline_ms = now_ms().saturating_add(wait_ms);
+        let session_id = {
+            let mut guard = session.lock().await;
+            if guard.state == SessionState::Running {
+                guard.state = SessionState::Wait;
+            }
+            guard.wait_details = Some(SessionWaitDetails {
+                filter: Json::Null,
+                deadline_ms: Some(deadline_ms),
+                note: Some(compact_text_for_log(note, 256))
+                    .filter(|value| !value.trim().is_empty()),
+            });
             guard.session_id.clone()
         };
         self.session_mgr.save_session(&session_id).await?;
@@ -3864,6 +3952,56 @@ fn should_record_llm_step_error(err: &LLMComputeError) -> bool {
     }
 }
 
+fn classify_llm_step_error(err: &LLMComputeError) -> LLMStepErrorHandling {
+    if let Some(reply) = llm_step_error_reply(err) {
+        return LLMStepErrorHandling::ReplyAndWait { reply };
+    }
+
+    match err {
+        LLMComputeError::Timeout | LLMComputeError::Cancelled => LLMStepErrorHandling::RetryAfter {
+            wait_ms: LLM_STEP_TIMEOUT_RETRY_WAIT_MS,
+        },
+        LLMComputeError::Provider(_) => LLMStepErrorHandling::RetryAfter {
+            wait_ms: LLM_STEP_PROVIDER_RETRY_WAIT_MS,
+        },
+        LLMComputeError::Internal(_) if should_record_llm_step_error(err) => {
+            LLMStepErrorHandling::RetryAfter {
+                wait_ms: LLM_STEP_INTERNAL_RETRY_WAIT_MS,
+            }
+        }
+        LLMComputeError::Internal(_) => LLMStepErrorHandling::BubbleUp,
+    }
+}
+
+fn llm_step_error_reply(err: &LLMComputeError) -> Option<&'static str> {
+    let msg = match err {
+        LLMComputeError::Provider(msg) => msg.to_ascii_lowercase(),
+        _ => return None,
+    };
+
+    if msg.contains("no_provider_available")
+        || msg.contains("no provider instance supports requested capability")
+        || msg.contains("all candidate providers were filtered out by policy or requirements")
+        || msg.contains("model_alias_not_mapped")
+        || msg.contains("is not mapped for capability")
+    {
+        return Some(LLM_STEP_PROVIDER_UNAVAILABLE_REPLY);
+    }
+
+    if msg.contains("token_limit_exceeded") {
+        return Some(LLM_STEP_TOKEN_LIMIT_REPLY);
+    }
+
+    None
+}
+
+fn build_llm_step_retry_note(stage: &str, err: &LLMComputeError, wait_ms: u64) -> String {
+    compact_text_for_log(
+        format!("retry in {wait_ms}ms after {stage} failed: {err}").as_str(),
+        256,
+    )
+}
+
 fn format_llm_step_error(stage: &str, err: &LLMComputeError) -> String {
     compact_text_for_log(format!("{stage} failed: {err}").as_str(), 600)
 }
@@ -5273,6 +5411,65 @@ mod tests {
         assert!(!should_record_llm_step_error(&LLMComputeError::Internal(
             "load buckyos runtime failed: missing runtime".to_string(),
         )));
+    }
+
+    #[test]
+    fn classify_llm_step_error_replies_when_provider_is_unavailable() {
+        assert_eq!(
+            classify_llm_step_error(&LLMComputeError::Provider(
+                "no_provider_available: no provider instance supports requested capability"
+                    .to_string(),
+            )),
+            LLMStepErrorHandling::ReplyAndWait {
+                reply: LLM_STEP_PROVIDER_UNAVAILABLE_REPLY,
+            }
+        );
+    }
+
+    #[test]
+    fn classify_llm_step_error_replies_when_token_limit_is_hit() {
+        assert_eq!(
+            classify_llm_step_error(&LLMComputeError::Provider(
+                "TOKEN_LIMIT_EXCEEDED: llm token limit reached".to_string(),
+            )),
+            LLMStepErrorHandling::ReplyAndWait {
+                reply: LLM_STEP_TOKEN_LIMIT_REPLY,
+            }
+        );
+    }
+
+    #[test]
+    fn classify_llm_step_error_retries_transient_provider_failures() {
+        assert_eq!(
+            classify_llm_step_error(&LLMComputeError::Provider(
+                "upstream provider returned 503".to_string(),
+            )),
+            LLMStepErrorHandling::RetryAfter {
+                wait_ms: LLM_STEP_PROVIDER_RETRY_WAIT_MS,
+            }
+        );
+    }
+
+    #[test]
+    fn classify_llm_step_error_retries_recoverable_internal_failures() {
+        assert_eq!(
+            classify_llm_step_error(&LLMComputeError::Internal(
+                "invalid behavior llm xml: root tag must be <response>".to_string(),
+            )),
+            LLMStepErrorHandling::RetryAfter {
+                wait_ms: LLM_STEP_INTERNAL_RETRY_WAIT_MS,
+            }
+        );
+    }
+
+    #[test]
+    fn classify_llm_step_error_bubbles_runtime_internal_failures() {
+        assert_eq!(
+            classify_llm_step_error(&LLMComputeError::Internal(
+                "load buckyos runtime failed: missing runtime".to_string(),
+            )),
+            LLMStepErrorHandling::BubbleUp
+        );
     }
 
     #[test]

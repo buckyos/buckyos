@@ -660,7 +660,10 @@ impl AgentSession {
     }
 
     pub fn should_ready_by_wait_timeout(&self, now_ms: u64) -> bool {
-        if self.state != SessionState::WaitForMsg && self.state != SessionState::WaitForEvent {
+        if self.state != SessionState::Wait
+            && self.state != SessionState::WaitForMsg
+            && self.state != SessionState::WaitForEvent
+        {
             return false;
         }
         self.wait_details
@@ -701,6 +704,7 @@ impl AgentSession {
 
         if self.state == SessionState::WaitForMsg && item.msg.is_some() {
             self.updated_at_ms = now_ms();
+            self.wait_details = None;
             self.state = SessionState::Ready;
             info!(
                 "{} will wakeup session:{} from WaitForMsg",
@@ -710,6 +714,7 @@ impl AgentSession {
         }
         if self.state == SessionState::WaitForEvent && item.event_id.is_some() {
             self.updated_at_ms = now_ms();
+            self.wait_details = None;
             self.state = SessionState::Ready;
             info!(
                 "{} will wakeup session:{} from WaitForEvent",
@@ -719,6 +724,7 @@ impl AgentSession {
         }
         if self.state == SessionState::Wait || self.state == SessionState::End {
             self.updated_at_ms = now_ms();
+            self.wait_details = None;
             self.state = SessionState::Ready;
             debug!(
                 "{} will wakeup session:{} by input",
@@ -1184,6 +1190,7 @@ impl AgentSessionMgr {
         for session in sessions {
             let mut guard = session.lock().await;
             if guard.state == SessionState::Ready {
+                guard.wait_details = None;
                 if let Some(local_workspace_id) = guard
                     .local_workspace_id
                     .as_deref()
@@ -1737,6 +1744,20 @@ mod tests {
         let restored = AgentSession::from_record(record);
         assert_eq!(restored.step_num, 42);
         assert_eq!(restored.step_index, 7);
+    }
+
+    #[test]
+    fn wait_timeout_can_wake_generic_wait_state() {
+        let mut session = AgentSession::new("s-wait-timeout", "did:opendan:test", Some("DO"));
+        session.state = SessionState::Wait;
+        session.wait_details = Some(SessionWaitDetails {
+            filter: Json::Null,
+            deadline_ms: Some(123),
+            note: Some("retry later".to_string()),
+        });
+
+        assert!(session.should_ready_by_wait_timeout(123));
+        assert!(!session.should_ready_by_wait_timeout(122));
     }
 
     #[tokio::test]
