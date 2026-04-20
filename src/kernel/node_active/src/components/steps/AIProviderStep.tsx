@@ -89,7 +89,7 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
       return;
     }
     if (buckyos.getRuntimeType?.() === RuntimeType.AppRuntime) {
-      buckyos.openExternal?.(AI_PROVIDER_TUTORIAL_URL);
+      buckyos.openExternalUrl?.(AI_PROVIDER_TUTORIAL_URL);
       return;
     }
     window.open(AI_PROVIDER_TUTORIAL_URL, "_blank", "noopener,noreferrer");

@@ -61,7 +61,7 @@ const JarvisMsgTunnelStep = ({
       return;
     }
     if (buckyos.getRuntimeType?.() === RuntimeType.AppRuntime) {
-      buckyos.openExternal?.(url);
+      buckyos.openExternalUrl?.(url);
       return;
     }
     window.open(url, "_blank", "noopener,noreferrer");
