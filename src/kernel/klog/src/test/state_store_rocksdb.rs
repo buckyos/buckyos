@@ -27,7 +27,7 @@ async fn test_manager_recovers_next_log_id_after_rocksdb_reopen() -> anyhow::Res
     let prepared = manager.prepare_append_entry(KLogEntry {
         id: 0,
         timestamp: 300,
-        node_id: 1,
+        node_name: "node-1".to_string(),
         request_id: None,
         level: Default::default(),
         source: None,
@@ -50,7 +50,7 @@ async fn test_rocksdb_request_id_dedup_persists_after_reopen() -> anyhow::Result
     let first = manager.prepare_append_entry(KLogEntry {
         id: 0,
         timestamp: 123,
-        node_id: 1,
+        node_name: "node-1".to_string(),
         request_id: Some("rk-dedup-1".to_string()),
         level: Default::default(),
         source: None,
@@ -71,7 +71,7 @@ async fn test_rocksdb_request_id_dedup_persists_after_reopen() -> anyhow::Result
     let retry = manager.prepare_append_entry(KLogEntry {
         id: 0,
         timestamp: 124,
-        node_id: 1,
+        node_name: "node-1".to_string(),
         request_id: Some("rk-dedup-1".to_string()),
         level: Default::default(),
         source: None,
@@ -112,7 +112,7 @@ async fn test_rocksdb_meta_persists_after_reopen() -> anyhow::Result<()> {
             key: "cluster/config/max_clients".to_string(),
             value: "64".to_string(),
             updated_at: 1000,
-            updated_by: 1,
+            updated_by_node_name: "node-1".to_string(),
             revision: 0,
         })
         .await?;
@@ -127,7 +127,7 @@ async fn test_rocksdb_meta_persists_after_reopen() -> anyhow::Result<()> {
         .await?
         .expect("meta must exist");
     assert_eq!(item.value, "64");
-    assert_eq!(item.updated_by, 1);
+    assert_eq!(item.updated_by_node_name, format!("node-1"));
     assert_eq!(item.revision, 1);
 
     let second = manager
@@ -135,7 +135,7 @@ async fn test_rocksdb_meta_persists_after_reopen() -> anyhow::Result<()> {
             key: "cluster/config/max_clients".to_string(),
             value: "128".to_string(),
             updated_at: 1001,
-            updated_by: 1,
+            updated_by_node_name: "node-1".to_string(),
             revision: 0,
         })
         .await?;
@@ -162,7 +162,7 @@ async fn test_rocksdb_meta_snapshot_roundtrip() -> anyhow::Result<()> {
             key: "cluster/config/version".to_string(),
             value: "v1".to_string(),
             updated_at: 2000,
-            updated_by: 2,
+            updated_by_node_name: "node-2".to_string(),
             revision: 0,
         })
         .await?;
@@ -182,7 +182,7 @@ async fn test_rocksdb_meta_snapshot_roundtrip() -> anyhow::Result<()> {
         .await?
         .expect("meta must exist after snapshot install");
     assert_eq!(item.value, "v1");
-    assert_eq!(item.updated_by, 2);
+    assert_eq!(item.updated_by_node_name, format!("node-2"));
     assert_eq!(item.revision, 1);
 
     Ok(())
@@ -266,7 +266,7 @@ async fn test_rocksdb_state_store_install_snapshot() -> anyhow::Result<()> {
         .append(vec![KLogEntry {
             id: 999,
             timestamp: 1,
-            node_id: 7,
+            node_name: "node-7".to_string(),
             request_id: None,
             level: Default::default(),
             source: None,
@@ -283,7 +283,7 @@ async fn test_rocksdb_state_store_install_snapshot() -> anyhow::Result<()> {
     let prepared = dst_mgr.prepare_append_entry(KLogEntry {
         id: 0,
         timestamp: 500,
-        node_id: 1,
+        node_name: "node-1".to_string(),
         request_id: None,
         level: Default::default(),
         source: None,
@@ -318,7 +318,7 @@ async fn test_rocksdb_checkpoint_mode_snapshot_roundtrip() -> anyhow::Result<()>
         .append(vec![KLogEntry {
             id: 999,
             timestamp: 1,
-            node_id: 7,
+            node_name: "node-7".to_string(),
             request_id: None,
             level: Default::default(),
             source: None,
@@ -358,7 +358,7 @@ async fn test_rocksdb_checkpoint_mode_install_enumerate_snapshot() -> anyhow::Re
         .append(vec![KLogEntry {
             id: 500,
             timestamp: 2,
-            node_id: 9,
+            node_name: "node-9".to_string(),
             request_id: None,
             level: Default::default(),
             source: None,
@@ -399,7 +399,7 @@ async fn test_rocksdb_backup_engine_mode_snapshot_roundtrip() -> anyhow::Result<
         .append(vec![KLogEntry {
             id: 999,
             timestamp: 1,
-            node_id: 7,
+            node_name: "node-7".to_string(),
             request_id: None,
             level: Default::default(),
             source: None,
@@ -438,7 +438,7 @@ async fn test_rocksdb_backup_engine_mode_install_enumerate_snapshot() -> anyhow:
         .append(vec![KLogEntry {
             id: 501,
             timestamp: 2,
-            node_id: 9,
+            node_name: "node-9".to_string(),
             request_id: None,
             level: Default::default(),
             source: None,
@@ -472,7 +472,7 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
             KLogEntry {
                 id: 10,
                 timestamp: 1,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: Default::default(),
                 source: None,
@@ -482,7 +482,7 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
             KLogEntry {
                 id: 11,
                 timestamp: 2,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: Default::default(),
                 source: None,
@@ -492,7 +492,7 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
             KLogEntry {
                 id: 12,
                 timestamp: 3,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: Default::default(),
                 source: None,
@@ -502,7 +502,7 @@ async fn test_rocksdb_query_entries_asc_range_limit() -> anyhow::Result<()> {
             KLogEntry {
                 id: 13,
                 timestamp: 4,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: Default::default(),
                 source: None,
@@ -542,7 +542,7 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
             KLogEntry {
                 id: 20,
                 timestamp: 1,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: Default::default(),
                 source: None,
@@ -552,7 +552,7 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
             KLogEntry {
                 id: 21,
                 timestamp: 2,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: Default::default(),
                 source: None,
@@ -562,7 +562,7 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
             KLogEntry {
                 id: 22,
                 timestamp: 3,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: Default::default(),
                 source: None,
@@ -572,7 +572,7 @@ async fn test_rocksdb_query_entries_desc_range_limit() -> anyhow::Result<()> {
             KLogEntry {
                 id: 23,
                 timestamp: 4,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: Default::default(),
                 source: None,
@@ -622,7 +622,7 @@ async fn test_rocksdb_query_entries_with_source_level_and_attrs() -> anyhow::Res
             KLogEntry {
                 id: 100,
                 timestamp: 1,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: KLogLevel::Info,
                 source: Some("kernel/kmsg".to_string()),
@@ -632,7 +632,7 @@ async fn test_rocksdb_query_entries_with_source_level_and_attrs() -> anyhow::Res
             KLogEntry {
                 id: 101,
                 timestamp: 2,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: KLogLevel::Error,
                 source: Some("kernel/kmsg".to_string()),
@@ -642,7 +642,7 @@ async fn test_rocksdb_query_entries_with_source_level_and_attrs() -> anyhow::Res
             KLogEntry {
                 id: 102,
                 timestamp: 3,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: None,
                 level: KLogLevel::Warn,
                 source: Some("kernel/net".to_string()),

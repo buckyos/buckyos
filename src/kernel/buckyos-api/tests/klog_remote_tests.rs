@@ -1,13 +1,12 @@
 use buckyos_api::{
-    init_buckyos_api_runtime, BuckyOSRuntimeType, KLogAppendRequest, KLogLevel,
-    KLogMetaDeleteRequest, KLogMetaPutRequest, KLogMetaQueryRequest, KLogQueryRequest,
+    BuckyOSRuntimeType, KLogAppendRequest, KLogLevel, KLogMetaDeleteRequest, KLogMetaPutRequest,
+    KLogMetaQueryRequest, KLogQueryRequest, init_buckyos_api_runtime,
 };
 use klog::network::KLogClusterStateResponse;
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TEST_APP_ID: &str = "buckycli";
-const TEST_REQUEST_NODE_ID: u64 = 9_001;
 const TEST_TIMEOUT_SECS: u64 = 15;
 const TEST_NODE_GATEWAY_BASE_URL: &str = "http://127.0.0.1:3180";
 
@@ -19,8 +18,8 @@ fn unique_suffix(prefix: &str) -> String {
     format!("{}-{}", prefix, now)
 }
 
-async fn init_logged_in_runtime(
-) -> std::result::Result<buckyos_api::BuckyOSRuntime, kRPC::RPCErrors> {
+async fn init_logged_in_runtime()
+-> std::result::Result<buckyos_api::BuckyOSRuntime, kRPC::RPCErrors> {
     let mut runtime =
         init_buckyos_api_runtime(TEST_APP_ID, None, BuckyOSRuntimeType::AppClient).await?;
     runtime.login().await?;
@@ -42,10 +41,11 @@ async fn runtime_klog_01_append_and_strong_query_roundtrip() {
         .await
         .expect("init/login runtime for klog append/query");
     let client = runtime
-        .get_klog_client(TEST_REQUEST_NODE_ID)
+        .get_klog_client()
         .await
         .expect("get klog runtime client")
         .with_timeout(Duration::from_secs(TEST_TIMEOUT_SECS));
+    let request_node_name = require_runtime_node_name(&runtime);
 
     let suffix = unique_suffix("append-query");
     let source = format!("buckyos-api/tests/klog-{}", suffix);
@@ -58,7 +58,7 @@ async fn runtime_klog_01_append_and_strong_query_roundtrip() {
         .append_log(KLogAppendRequest {
             message: message.clone(),
             timestamp: None,
-            node_id: Some(TEST_REQUEST_NODE_ID),
+            node_name: Some(request_node_name),
             level: Some(KLogLevel::Warn),
             source: Some(source.clone()),
             attrs: Some(attrs.clone()),
@@ -105,7 +105,7 @@ async fn runtime_klog_02_meta_roundtrip() {
         .await
         .expect("init/login runtime for klog meta");
     let client = runtime
-        .get_klog_client(TEST_REQUEST_NODE_ID)
+        .get_klog_client()
         .await
         .expect("get klog runtime client")
         .with_timeout(Duration::from_secs(TEST_TIMEOUT_SECS));
@@ -118,6 +118,7 @@ async fn runtime_klog_02_meta_roundtrip() {
         .put_meta(KLogMetaPutRequest {
             key: key.clone(),
             value: value.clone(),
+            node_name: None,
             expected_revision: None,
         })
         .await
@@ -164,10 +165,11 @@ async fn runtime_klog_03_request_id_dedup() {
         .await
         .expect("init/login runtime for klog dedup");
     let client = runtime
-        .get_klog_client(TEST_REQUEST_NODE_ID)
+        .get_klog_client()
         .await
         .expect("get klog runtime client")
         .with_timeout(Duration::from_secs(TEST_TIMEOUT_SECS));
+    let request_node_name = require_runtime_node_name(&runtime);
 
     let suffix = unique_suffix("dedup");
     let source = format!("buckyos-api/tests/klog-dedup-{}", suffix);
@@ -177,7 +179,7 @@ async fn runtime_klog_03_request_id_dedup() {
         .append_log(KLogAppendRequest {
             message: format!("runtime-dedup-original-{}", suffix),
             timestamp: None,
-            node_id: Some(TEST_REQUEST_NODE_ID),
+            node_name: Some(request_node_name.clone()),
             level: Some(KLogLevel::Info),
             source: Some(source.clone()),
             attrs: None,
@@ -189,7 +191,7 @@ async fn runtime_klog_03_request_id_dedup() {
         .append_log(KLogAppendRequest {
             message: format!("runtime-dedup-retry-{}", suffix),
             timestamp: None,
-            node_id: Some(TEST_REQUEST_NODE_ID),
+            node_name: Some(request_node_name),
             level: Some(KLogLevel::Info),
             source: Some(source.clone()),
             attrs: None,

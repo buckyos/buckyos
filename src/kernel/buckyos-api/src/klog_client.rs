@@ -46,31 +46,34 @@ pub struct KLogClient {
 }
 
 impl KLogClient {
-    pub fn new(endpoint: impl Into<String>, request_node_id: u64) -> Self {
+    pub fn new(endpoint: impl Into<String>, request_node_name: impl Into<String>) -> Self {
         Self {
-            inner: KLogRpcClient::new(endpoint, request_node_id),
+            inner: KLogRpcClient::new(endpoint, request_node_name),
         }
     }
 
-    pub fn from_daemon_addr(addr: &str, request_node_id: u64) -> Self {
+    pub fn from_daemon_addr(addr: &str, request_node_name: impl Into<String>) -> Self {
         Self {
-            inner: KLogRpcClient::from_daemon_addr(addr, request_node_id),
+            inner: KLogRpcClient::from_daemon_addr(addr, request_node_name),
         }
     }
 
-    pub fn from_buckyos_service_addr(addr: &str, request_node_id: u64) -> Self {
+    pub fn from_buckyos_service_addr(addr: &str, request_node_name: impl Into<String>) -> Self {
         Self {
-            inner: KLogRpcClient::from_buckyos_service_addr(addr, request_node_id),
+            inner: KLogRpcClient::from_buckyos_service_addr(addr, request_node_name),
         }
     }
 
-    pub fn from_buckyos_service_url(url: impl Into<String>, request_node_id: u64) -> Self {
-        Self::new(url, request_node_id)
+    pub fn from_buckyos_service_url(
+        url: impl Into<String>,
+        request_node_name: impl Into<String>,
+    ) -> Self {
+        Self::new(url, request_node_name)
     }
 
-    pub fn local_default(request_node_id: u64) -> Self {
+    pub fn local_default(request_node_name: impl Into<String>) -> Self {
         Self {
-            inner: KLogRpcClient::local_default(request_node_id),
+            inner: KLogRpcClient::local_default(request_node_name),
         }
     }
 
@@ -79,8 +82,8 @@ impl KLogClient {
         self
     }
 
-    pub fn generate_request_id(node_id: u64) -> String {
-        KLogRpcClient::generate_request_id(node_id)
+    pub fn generate_request_id(node_name: &str) -> String {
+        KLogRpcClient::generate_request_id(node_name)
     }
 
     pub fn inner(&self) -> &KLogRpcClient {

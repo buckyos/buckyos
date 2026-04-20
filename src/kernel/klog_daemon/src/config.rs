@@ -319,7 +319,7 @@ impl Default for KLogClusterNetworkConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KLogRuntimeConfig {
-    /// Raft node id in current cluster, must be greater than 0.
+    /// Internal raft_node_id in current cluster, must be greater than 0.
     pub node_id: KNodeId,
 
     /// Raft protocol listen address, format "host:port".
@@ -352,7 +352,7 @@ pub struct KLogRuntimeConfig {
     /// Advertised client RPC port, set to 0 when RPC server is disabled.
     pub rpc_advertise_port: u16,
 
-    /// Stable advertised node name used for gateway/proxy cluster routing.
+    /// Stable BuckyOS node name used for gateway/proxy cluster routing.
     pub advertise_node_name: Option<String>,
 
     /// Root data directory for raft log, state store and snapshots.
@@ -428,7 +428,7 @@ pub struct KLogNetworkConfigPatch {
     /// Optional override for advertised client RPC port.
     pub rpc_advertise_port: Option<u16>,
 
-    /// Optional override for advertised stable node name.
+    /// Optional override for advertised stable BuckyOS node name.
     pub advertise_node_name: Option<String>,
 }
 

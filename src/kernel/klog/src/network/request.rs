@@ -17,6 +17,7 @@ const NETWORK_HEADER_LEN: usize = 8 + 2 + 1 + 1 + 1 + 4;
 pub const KLOG_FORWARD_HOPS_HEADER: &str = "x-klog-forward-hops";
 pub const KLOG_FORWARDED_BY_HEADER: &str = "x-klog-forwarded-by";
 pub const KLOG_TRACE_ID_HEADER: &str = "x-klog-trace-id";
+pub const KLOG_ORIGIN_NODE_NAME_HEADER: &str = "x-klog-origin-node-name";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RaftRequestType {
@@ -108,7 +109,8 @@ impl KLogDataRequestType {
 pub struct KLogAppendRequest {
     pub message: String,
     pub timestamp: Option<u64>,
-    pub node_id: Option<KNodeId>,
+    #[serde(default)]
+    pub node_name: Option<String>,
     #[serde(default)]
     pub level: Option<KLogLevel>,
     #[serde(default)]
@@ -150,6 +152,8 @@ pub struct KLogQueryResponse {
 pub struct KLogMetaPutRequest {
     pub key: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<u64>,
 }

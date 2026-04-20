@@ -6,6 +6,7 @@ duration_sec = 30
 warmup_sec = 5
 payload_bytes = 256
 write_target = "round-robin"
+# Numeric seed used only to derive a synthetic request origin name such as bench-node-9001.
 request_node_id = 9001
 sync_write = true
 # report_json = "/tmp/klog_bench_report.json"

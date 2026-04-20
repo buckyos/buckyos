@@ -3,15 +3,15 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ::kRPC::*;
 use buckyos_kit::*;
-use jsonwebtoken::{decode, DecodingKey, EncodingKey, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Validation, decode};
 use log::*;
-use ndn_lib::{load_named_object_from_obj_str, ChunkId, ObjId};
+use ndn_lib::{ChunkId, ObjId, load_named_object_from_obj_str};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,8 +36,8 @@ use crate::system_config::*;
 use crate::task_mgr::*;
 use crate::verify_hub_client::*;
 use crate::{
-    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, KLOG_SERVICE_NAME,
-    OPENDAN_SERVICE_NAME,
+    KLOG_SERVICE_NAME, OPENDAN_SERVICE_NAME, get_buckyos_api_runtime, get_full_appid,
+    get_session_token_env_key,
 };
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
@@ -610,7 +610,10 @@ impl BuckyOSRuntime {
 
                 let private_key = load_private_key(&user_private_key_file);
                 if private_key.is_ok() {
-                    info!("!!!! Make sure your development machine is secured,user_private_key_file {} load success, ",user_private_key_file.to_string_lossy());
+                    info!(
+                        "!!!! Make sure your development machine is secured,user_private_key_file {} load success, ",
+                        user_private_key_file.to_string_lossy()
+                    );
                     self.user_private_key = Some(private_key.unwrap());
                 } else {
                     info!(
@@ -1253,7 +1256,10 @@ impl BuckyOSRuntime {
                 //info!("api-runtime: session token is empty,runtime_type:{:?},try to create session token by known private key",self.runtime_type);
                 if self.runtime_type == BuckyOSRuntimeType::AppClient {
                     if self.user_private_key.is_some() && self.user_config.is_some() {
-                        info!("api-runtime: session token is empty,runtime_type:{:?},try to create session token by user_private_key",self.runtime_type);
+                        info!(
+                            "api-runtime: session token is empty,runtime_type:{:?},try to create session token by user_private_key",
+                            self.runtime_type
+                        );
                         let (session_token_str, real_session_token) =
                             RPCSessionToken::generate_jwt_token(
                                 self.user_id.as_ref().unwrap(),
@@ -1271,7 +1277,10 @@ impl BuckyOSRuntime {
                     && self.device_config.is_some()
                     && session_token.is_empty()
                 {
-                    info!("buckyos-api-runtime: session token is empty,runtime_type:{:?},try to create session token by device_private_key",self.runtime_type);
+                    info!(
+                        "buckyos-api-runtime: session token is empty,runtime_type:{:?},try to create session token by device_private_key",
+                        self.runtime_type
+                    );
                     let device_name = &self.device_config.as_ref().unwrap().name;
                     let (session_token_str, real_session_token) =
                         RPCSessionToken::generate_jwt_token(
@@ -2037,13 +2046,20 @@ impl BuckyOSRuntime {
         Ok(RepoClient::new(krpc_client))
     }
 
-    pub async fn get_klog_client(&self, request_node_id: u64) -> Result<KLogClient> {
+    pub async fn get_klog_client(&self) -> Result<KLogClient> {
         let service_url = self
             .get_zone_service_url(KLOG_SERVICE_NAME, self.force_https)
             .await?;
+        let request_node_name = self
+            .device_config
+            .as_ref()
+            .map(|device| device.name.clone())
+            .ok_or_else(|| {
+                RPCErrors::ReasonError("runtime missing device_config.name for klog client".into())
+            })?;
         Ok(KLogClient::from_buckyos_service_url(
             service_url,
-            request_node_id,
+            request_node_name,
         ))
     }
 

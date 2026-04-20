@@ -90,10 +90,10 @@ impl KLogStateMachine {
                 // Id is expected to be assigned on leader before log replication.
                 // State machine apply must be deterministic and should not mutate ids.
                 debug!(
-                    "StateMachine process append request: id={}, ts={}, node_id={}, msg_len={}",
+                    "StateMachine process append request: id={}, ts={}, node_name={}, msg_len={}",
                     item.id,
                     item.timestamp,
-                    item.node_id,
+                    item.node_name,
                     item.message.len()
                 );
                 match self.state_store.append_prepared_entry(item).await {
@@ -112,11 +112,11 @@ impl KLogStateMachine {
                 expected_revision,
             } => {
                 debug!(
-                    "StateMachine process put-meta request: key={}, value_len={}, updated_at={}, updated_by={}, expected_revision={:?}",
+                    "StateMachine process put-meta request: key={}, value_len={}, updated_at={}, updated_by_node_name={}, expected_revision={:?}",
                     item.key,
                     item.value.len(),
                     item.updated_at,
-                    item.updated_by,
+                    item.updated_by_node_name,
                     expected_revision
                 );
                 let key = item.key.clone();

@@ -233,7 +233,7 @@ pub(crate) fn sample_state_entries() -> Vec<KLogEntry> {
         KLogEntry {
             id: 11,
             timestamp: 100,
-            node_id: 1,
+            node_name: "node-1".to_string(),
             request_id: None,
             level: Default::default(),
             source: None,
@@ -243,7 +243,7 @@ pub(crate) fn sample_state_entries() -> Vec<KLogEntry> {
         KLogEntry {
             id: 12,
             timestamp: 101,
-            node_id: 1,
+            node_name: "node-1".to_string(),
             request_id: None,
             level: Default::default(),
             source: None,

@@ -53,6 +53,13 @@
 
 ## 3. 方案总览
 
+在进入 transport 方案之前，先固定身份语义：
+
+- `node_name`：BuckyOS 节点主身份，也是 gateway / scheduler / route-map 侧应使用的外部标识
+- `KNodeId` / `node_id`：`klog` / OpenRaft 内部使用的 `raft_node_id`
+
+这两者不应继续混用。后续 transport、路由和日志来源语义都应优先以 `node_name` 对外表达。
+
 ### 3.1 统一引入 Cluster Transport 层
 
 建议在 `klog` 内部增加一个独立概念：
@@ -219,6 +226,7 @@ pub struct KProxyTransportAdvertise {
 - `direct` 和 `proxy` 都可以同时存在
 - `Hybrid` 模式下不需要重新做配置切换，只是客户端选择策略不同
 - `target_node_name` 用于和 `NODE_ROUTE_MAP` / scheduler 节点标识对齐
+- `raft_node_id` 仍然保留在 membership / vote / log id 内部使用，不参与 gateway 路由主键
 
 ## 6. gateway/proxy 模式的路由设计
 

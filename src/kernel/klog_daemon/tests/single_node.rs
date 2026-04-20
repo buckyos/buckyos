@@ -90,9 +90,9 @@ async fn test_single_node_business_log_append_and_query() -> Result<(), String> 
         if asc.items[0].timestamp != 100
             || asc.items[1].timestamp != 101
             || asc.items[2].timestamp != 102
-            || asc.items.iter().any(|e| e.node_id != 1)
+            || asc.items.iter().any(|e| e.node_name != "node-1")
         {
-            return Err("unexpected query timestamps or node_id".to_string());
+            return Err("unexpected query timestamps or node_name".to_string());
         }
 
         Ok(())

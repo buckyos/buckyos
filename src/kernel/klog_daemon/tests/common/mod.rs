@@ -22,7 +22,7 @@ pub struct ClusterState {
 pub struct AppendLogBody {
     pub message: String,
     pub timestamp: Option<u64>,
-    pub node_id: Option<u64>,
+    pub node_name: Option<String>,
     pub request_id: Option<String>,
 }
 
@@ -35,7 +35,7 @@ pub struct AppendLogResponse {
 pub struct QueryLogEntry {
     pub id: u64,
     pub timestamp: u64,
-    pub node_id: u64,
+    pub node_name: String,
     pub message: String,
 }
 
@@ -562,7 +562,7 @@ pub async fn append_log_with_request_id(
     let body = AppendLogBody {
         message: message.to_string(),
         timestamp,
-        node_id,
+        node_name: node_id.map(|v| format!("node-{}", v)),
         request_id: request_id.map(|v| v.to_string()),
     };
 

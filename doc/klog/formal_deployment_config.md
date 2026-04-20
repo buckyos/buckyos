@@ -116,9 +116,15 @@ id = "zone-prod-klog-v1"
 auto_bootstrap = false
 ```
 
+身份语义需要明确分层：
+
+- `node_id` 是 `klog` / OpenRaft 内部使用的 `raft_node_id`，类型为 `u64`
+- `BuckyOS` 的节点主身份仍然是 `node_name`
+- 如果后续启用 `gateway_proxy` / `hybrid`，还需要显式配置 `network.advertise_node_name`
+
 要求：
 
-- `node_id` 必须全局唯一，且大于 `0`
+- `node_id`（也就是 `raft_node_id`）必须全局唯一，且大于 `0`
 - `cluster.name` 和 `cluster.id` 都必须显式设置
 - 正式环境默认 `auto_bootstrap = false`
 
@@ -173,6 +179,7 @@ enable_rpc_server = true
 - `listen_*` 决定本机绑定在哪个地址上
 - `advertise_*` 决定其他 peer 如何找到当前节点
 - 对 Raft 内部流量来说，`advertise_addr + advertise_*` 必须是 peer 真实可达地址
+- `network.advertise_node_name` 表达的是 BuckyOS 节点名，不是 `raft_node_id`
 
 重要：
 
@@ -309,6 +316,7 @@ advertise_port = 21001
 advertise_inter_port = 21002
 advertise_admin_port = 21003
 rpc_advertise_port = 4070
+advertise_node_name = "ood1"
 enable_rpc_server = true
 
 [admin]
@@ -341,6 +349,7 @@ advertise_port = 21001
 advertise_inter_port = 21002
 advertise_admin_port = 21003
 rpc_advertise_port = 4070
+advertise_node_name = "ood2"
 enable_rpc_server = true
 
 [admin]
@@ -373,6 +382,7 @@ advertise_port = 21001
 advertise_inter_port = 21002
 advertise_admin_port = 21003
 rpc_advertise_port = 4070
+advertise_node_name = "ood3"
 enable_rpc_server = true
 
 [admin]
@@ -489,7 +499,7 @@ blocking = false
 
 重启后不要改动：
 
-- `node_id`
+- `node_id`（`raft_node_id`）
 - `cluster.id`
 - `data_dir`
 
@@ -515,7 +525,7 @@ blocking = false
 正式部署前至少确认：
 
 1. 每个节点 `cluster.name` / `cluster.id` 一致
-2. 每个节点 `node_id` 唯一
+2. 每个节点 `node_id`（`raft_node_id`）唯一
 3. `advertise_addr + advertise_*` 在 cluster network 上真实可达
 4. `rpc_listen_addr` 只绑定到本机
 5. `admin_local_only = false`，但 `admin_port` 仅在 cluster network 开放
@@ -524,6 +534,10 @@ blocking = false
 8. zone gateway 能正确转发 `/kapi/klog-service`
 9. `3180` 只本机开放
 10. peer 之间不依赖公网业务入口做 Raft 复制
+
+如果启用 `gateway_proxy` / `hybrid`，还应额外确认：
+
+11. `network.advertise_node_name` 与 BuckyOS 节点名一致
 
 ## 11. 与现有文档的关系
 

@@ -10,7 +10,7 @@ use tokio::task::JoinSet;
 struct RichAppendLogBody {
     message: String,
     timestamp: Option<u64>,
-    node_id: Option<u64>,
+    node_name: Option<String>,
     level: Option<String>,
     source: Option<String>,
     attrs: Option<BTreeMap<String, String>>,
@@ -31,7 +31,7 @@ async fn append_log_rich(
     let body = RichAppendLogBody {
         message: message.to_string(),
         timestamp,
-        node_id,
+        node_name: node_id.map(|v| format!("node-{}", v)),
         level: level.map(|v| v.to_string()),
         source: source.map(|v| v.to_string()),
         attrs,
@@ -449,9 +449,14 @@ async fn test_three_node_concurrent_multi_writer_converges_for_all_nodes() -> Re
                     source_items.items.len()
                 ));
             }
-            if source_items.items.iter().any(|e| e.node_id != node_id) {
+            let expected_node_name = format!("node-{}", node_id);
+            if source_items
+                .items
+                .iter()
+                .any(|e| e.node_name != expected_node_name)
+            {
                 return Err(format!(
-                    "source-filtered query contains unexpected node_id for node_id={}",
+                    "source-filtered query contains unexpected node_name for node_id={}",
                     node_id
                 ));
             }
