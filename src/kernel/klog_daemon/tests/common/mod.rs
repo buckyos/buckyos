@@ -1,11 +1,14 @@
 #![allow(dead_code)]
 
+use klog::KClusterTransportMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep};
 
@@ -55,6 +58,53 @@ pub struct TestNode {
     pub child: Child,
 }
 
+#[derive(Debug, Clone)]
+pub struct TestNodeSpawnOptions {
+    pub advertise_addr: String,
+    pub advertise_port: Option<u16>,
+    pub advertise_inter_port: Option<u16>,
+    pub advertise_admin_port: Option<u16>,
+    pub rpc_advertise_port: Option<u16>,
+    pub advertise_node_name: Option<String>,
+    pub cluster_network_mode: KClusterTransportMode,
+    pub cluster_gateway_addr: String,
+    pub cluster_gateway_route_prefix: String,
+}
+
+impl Default for TestNodeSpawnOptions {
+    fn default() -> Self {
+        Self {
+            advertise_addr: "127.0.0.1".to_string(),
+            advertise_port: None,
+            advertise_inter_port: None,
+            advertise_admin_port: None,
+            rpc_advertise_port: None,
+            advertise_node_name: None,
+            cluster_network_mode: KClusterTransportMode::Direct,
+            cluster_gateway_addr: "127.0.0.1:3180".to_string(),
+            cluster_gateway_route_prefix: "/.cluster/klog".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TestGatewayNodeTarget {
+    pub raft_port: u16,
+    pub inter_port: u16,
+    pub admin_port: u16,
+}
+
+pub struct TestGatewayProxy {
+    pub addr: String,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for TestGatewayProxy {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 impl TestNode {
     pub async fn stop(&mut self) {
         let _ = self.child.kill().await;
@@ -77,7 +127,7 @@ fn admin_port_map() -> &'static Mutex<HashMap<u16, u16>> {
     RAFT_TO_ADMIN_PORT_MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn derive_admin_port(raft_port: u16) -> u16 {
+pub fn derive_admin_port(raft_port: u16) -> u16 {
     const OFFSET: u16 = 1_000;
     if raft_port <= u16::MAX - OFFSET {
         raft_port + OFFSET
@@ -189,6 +239,44 @@ pub fn can_bind_localhost() -> bool {
     std::net::TcpListener::bind("127.0.0.1:0").is_ok()
 }
 
+pub async fn spawn_gateway_proxy(
+    route_prefix: &str,
+    targets: HashMap<String, TestGatewayNodeTarget>,
+) -> Result<TestGatewayProxy, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("failed to bind test gateway proxy listener: {}", e))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("failed to read test gateway proxy local addr: {}", e))?;
+    let route_prefix = normalize_route_prefix(route_prefix);
+    let client = reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(1))
+        .build()
+        .map_err(|e| format!("failed to build test gateway proxy client: {}", e))?;
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let route_prefix = route_prefix.clone();
+            let targets = targets.clone();
+            let client = client.clone();
+            tokio::spawn(async move {
+                let _ =
+                    handle_gateway_proxy_connection(stream, route_prefix, targets, client).await;
+            });
+        }
+    });
+
+    Ok(TestGatewayProxy {
+        addr: addr.to_string(),
+        handle,
+    })
+}
+
 pub fn make_targets_toml(targets: &[String]) -> String {
     let quoted = targets
         .iter()
@@ -196,6 +284,248 @@ pub fn make_targets_toml(targets: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("[{}]", quoted)
+}
+
+fn normalize_route_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() {
+        return "/.cluster/klog".to_string();
+    }
+
+    let with_leading_slash = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{}", trimmed)
+    };
+
+    let normalized = with_leading_slash.trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        "/".to_string()
+    } else {
+        normalized
+    }
+}
+
+async fn handle_gateway_proxy_connection(
+    mut stream: tokio::net::TcpStream,
+    route_prefix: String,
+    targets: HashMap<String, TestGatewayNodeTarget>,
+    client: reqwest::Client,
+) -> Result<(), String> {
+    let request = read_http_request(&mut stream).await?;
+    let (target_port, forward_path) =
+        resolve_gateway_proxy_target(&route_prefix, &targets, &request.path_and_query)?;
+    let url = format!("http://127.0.0.1:{}{}", target_port, forward_path);
+    let method = reqwest::Method::from_bytes(request.method.as_bytes())
+        .map_err(|e| format!("invalid proxy method {}: {}", request.method, e))?;
+    let mut builder = client.request(method, &url);
+    for (name, value) in &request.headers {
+        let lower = name.to_ascii_lowercase();
+        if lower == "host"
+            || lower == "connection"
+            || lower == "proxy-connection"
+            || lower == "content-length"
+        {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+    if !request.body.is_empty() {
+        builder = builder.body(request.body);
+    }
+
+    let response = builder
+        .send()
+        .await
+        .map_err(|e| format!("proxy forward {} failed: {}", url, e))?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|e| format!("proxy read response body {} failed: {}", url, e))?;
+
+    let reason = status.canonical_reason().unwrap_or("Unknown");
+    let mut response_head = format!(
+        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        status.as_u16(),
+        reason,
+        body.len()
+    );
+    for (name, value) in headers.iter() {
+        let lower = name.as_str().to_ascii_lowercase();
+        if lower == "content-length" || lower == "connection" || lower == "transfer-encoding" {
+            continue;
+        }
+        if let Ok(value) = value.to_str() {
+            response_head.push_str(&format!("{}: {}\r\n", name.as_str(), value));
+        }
+    }
+    response_head.push_str("\r\n");
+
+    stream
+        .write_all(response_head.as_bytes())
+        .await
+        .map_err(|e| format!("proxy write response head failed: {}", e))?;
+    stream
+        .write_all(&body)
+        .await
+        .map_err(|e| format!("proxy write response body failed: {}", e))?;
+    stream
+        .shutdown()
+        .await
+        .map_err(|e| format!("proxy shutdown failed: {}", e))?;
+    Ok(())
+}
+
+fn resolve_gateway_proxy_target(
+    route_prefix: &str,
+    targets: &HashMap<String, TestGatewayNodeTarget>,
+    path_and_query: &str,
+) -> Result<(u16, String), String> {
+    let (path, query) = match path_and_query.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (path_and_query, None),
+    };
+    let path = if path.starts_with(route_prefix) {
+        &path[route_prefix.len()..]
+    } else {
+        return Err(format!(
+            "proxy path '{}' does not start with route_prefix '{}'",
+            path, route_prefix
+        ));
+    };
+    let trimmed = path.trim_start_matches('/');
+    let mut parts = trimmed.splitn(3, '/');
+    let node_name = parts
+        .next()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| format!("proxy path '{}' missing target node", path_and_query))?;
+    let plane = parts
+        .next()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| format!("proxy path '{}' missing plane", path_and_query))?;
+    let rest = parts
+        .next()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| format!("proxy path '{}' missing forwarded suffix", path_and_query))?;
+    let target = targets
+        .get(node_name)
+        .ok_or_else(|| format!("proxy target node '{}' not found", node_name))?;
+    let port = match plane {
+        "raft" => target.raft_port,
+        "inter" => target.inter_port,
+        "admin" => target.admin_port,
+        _ => {
+            return Err(format!(
+                "proxy path '{}' uses unsupported plane '{}'",
+                path_and_query, plane
+            ));
+        }
+    };
+    let mut forward_path = format!("{}/{}/{}", route_prefix, node_name, plane);
+    if !rest.is_empty() {
+        forward_path.push('/');
+        forward_path.push_str(rest);
+    }
+    if let Some(query) = query {
+        forward_path.push('?');
+        forward_path.push_str(query);
+    }
+    Ok((port, forward_path))
+}
+
+struct SimpleHttpRequest {
+    method: String,
+    path_and_query: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+async fn read_http_request(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<SimpleHttpRequest, String> {
+    let mut buf = Vec::new();
+    let header_end = loop {
+        let mut chunk = [0_u8; 4096];
+        let n = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|e| format!("proxy read request failed: {}", e))?;
+        if n == 0 {
+            return Err("proxy client closed before request headers".to_string());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = find_header_end(&buf) {
+            break pos;
+        }
+        if buf.len() > 1024 * 1024 {
+            return Err("proxy request headers too large".to_string());
+        }
+    };
+    let head = std::str::from_utf8(&buf[..header_end])
+        .map_err(|e| format!("proxy request header is not valid utf-8: {}", e))?;
+    let mut lines = head.split("\r\n");
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "proxy request missing request line".to_string())?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .ok_or_else(|| "proxy request line missing method".to_string())?
+        .to_string();
+    let path_and_query = request_parts
+        .next()
+        .ok_or_else(|| "proxy request line missing path".to_string())?
+        .to_string();
+
+    let mut headers = Vec::new();
+    let mut content_length = 0usize;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| format!("proxy request header missing ':' separator: {}", line))?;
+        let value = value.trim().to_string();
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value
+                .parse::<usize>()
+                .map_err(|e| format!("invalid content-length '{}': {}", value, e))?;
+        }
+        headers.push((name.to_string(), value));
+    }
+
+    let body_start = header_end + 4;
+    let mut body = buf[body_start..].to_vec();
+    while body.len() < content_length {
+        let mut chunk = vec![0_u8; content_length - body.len()];
+        let n = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|e| format!("proxy read request body failed: {}", e))?;
+        if n == 0 {
+            return Err(format!(
+                "proxy client closed before full body: got={}, expect={}",
+                body.len(),
+                content_length
+            ));
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+    body.truncate(content_length);
+
+    Ok(SimpleHttpRequest {
+        method,
+        path_and_query,
+        headers,
+        body,
+    })
+}
+
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
 pub fn write_config_file(
@@ -211,6 +541,45 @@ pub fn write_config_file(
     join_targets: &[String],
     target_role: &str,
 ) -> Result<(), String> {
+    write_config_file_with_options(
+        path,
+        node_id,
+        port,
+        inter_node_port,
+        admin_port,
+        rpc_port,
+        data_dir,
+        cluster_name,
+        auto_bootstrap,
+        join_targets,
+        target_role,
+        &TestNodeSpawnOptions::default(),
+    )
+}
+
+pub fn write_config_file_with_options(
+    path: &PathBuf,
+    node_id: u64,
+    port: u16,
+    inter_node_port: u16,
+    admin_port: u16,
+    rpc_port: u16,
+    data_dir: &PathBuf,
+    cluster_name: &str,
+    auto_bootstrap: bool,
+    join_targets: &[String],
+    target_role: &str,
+    options: &TestNodeSpawnOptions,
+) -> Result<(), String> {
+    let advertise_port = options.advertise_port.unwrap_or(port);
+    let advertise_inter_port = options.advertise_inter_port.unwrap_or(inter_node_port);
+    let advertise_admin_port = options.advertise_admin_port.unwrap_or(admin_port);
+    let rpc_advertise_port = options.rpc_advertise_port.unwrap_or(rpc_port);
+    let advertise_node_name = options
+        .advertise_node_name
+        .as_ref()
+        .map(|v| format!("advertise_node_name = \"{}\"\n", v))
+        .unwrap_or_default();
     let content = format!(
         r#"
 node_id = {node_id}
@@ -220,11 +589,12 @@ listen_addr = "127.0.0.1:{port}"
 inter_node_listen_addr = "127.0.0.1:{inter_node_port}"
 admin_listen_addr = "127.0.0.1:{admin_port}"
 rpc_listen_addr = "127.0.0.1:{rpc_port}"
-advertise_addr = "127.0.0.1"
-advertise_port = {port}
-advertise_inter_port = {inter_node_port}
-advertise_admin_port = {admin_port}
-rpc_advertise_port = {rpc_port}
+advertise_addr = "{advertise_addr}"
+advertise_port = {advertise_port}
+advertise_inter_port = {advertise_inter_port}
+advertise_admin_port = {advertise_admin_port}
+rpc_advertise_port = {rpc_advertise_port}
+{advertise_node_name}
 
 [storage]
 data_dir = "{data_dir}"
@@ -234,6 +604,11 @@ state_store_sync_write = true
 name = "{cluster_name}"
 id = "{cluster_name}"
 auto_bootstrap = {auto_bootstrap}
+
+[cluster_network]
+mode = "{cluster_network_mode}"
+gateway_addr = "{cluster_gateway_addr}"
+gateway_route_prefix = "{cluster_gateway_route_prefix}"
 
 [join]
 targets = {join_targets}
@@ -256,9 +631,18 @@ config_change_conflict_extra_backoff_ms = 0
         inter_node_port = inter_node_port,
         admin_port = admin_port,
         rpc_port = rpc_port,
+        advertise_addr = options.advertise_addr,
+        advertise_port = advertise_port,
+        advertise_inter_port = advertise_inter_port,
+        advertise_admin_port = advertise_admin_port,
+        rpc_advertise_port = rpc_advertise_port,
+        advertise_node_name = advertise_node_name,
         data_dir = data_dir.display(),
         cluster_name = cluster_name,
         auto_bootstrap = auto_bootstrap,
+        cluster_network_mode = options.cluster_network_mode.as_str(),
+        cluster_gateway_addr = options.cluster_gateway_addr,
+        cluster_gateway_route_prefix = options.cluster_gateway_route_prefix,
         join_targets = make_targets_toml(join_targets),
         target_role = target_role,
     );
@@ -348,10 +732,27 @@ pub async fn spawn_node(
     join_targets: &[String],
     target_role: &str,
 ) -> Result<TestNode, String> {
-    let data_dir = unique_tmp_path(&format!("node{}_data", node_id));
-    let config_path = unique_tmp_path(&format!("node{}_config.toml", node_id));
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|e| format!("failed to create data dir {}: {}", data_dir.display(), e))?;
+    spawn_node_with_options(
+        node_id,
+        port,
+        cluster_name,
+        auto_bootstrap,
+        join_targets,
+        target_role,
+        &TestNodeSpawnOptions::default(),
+    )
+    .await
+}
+
+pub async fn spawn_node_with_options(
+    node_id: u64,
+    port: u16,
+    cluster_name: &str,
+    auto_bootstrap: bool,
+    join_targets: &[String],
+    target_role: &str,
+    options: &TestNodeSpawnOptions,
+) -> Result<TestNode, String> {
     let rpc_port = loop {
         let p = choose_free_port().map_err(|e| format!("choose rpc port failed: {}", e))?;
         if p != port {
@@ -365,8 +766,39 @@ pub async fn spawn_node(
             break p;
         }
     };
+    spawn_node_on_ports_with_options(
+        node_id,
+        port,
+        inter_node_port,
+        admin_port,
+        rpc_port,
+        cluster_name,
+        auto_bootstrap,
+        join_targets,
+        target_role,
+        options,
+    )
+    .await
+}
+
+pub async fn spawn_node_on_ports_with_options(
+    node_id: u64,
+    port: u16,
+    inter_node_port: u16,
+    admin_port: u16,
+    rpc_port: u16,
+    cluster_name: &str,
+    auto_bootstrap: bool,
+    join_targets: &[String],
+    target_role: &str,
+    options: &TestNodeSpawnOptions,
+) -> Result<TestNode, String> {
+    let data_dir = unique_tmp_path(&format!("node{}_data", node_id));
+    let config_path = unique_tmp_path(&format!("node{}_config.toml", node_id));
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|e| format!("failed to create data dir {}: {}", data_dir.display(), e))?;
     let normalized_join_targets = normalize_join_targets_as_admin_endpoints(join_targets);
-    write_config_file(
+    write_config_file_with_options(
         &config_path,
         node_id,
         port,
@@ -378,6 +810,7 @@ pub async fn spawn_node(
         auto_bootstrap,
         &normalized_join_targets,
         target_role,
+        options,
     )?;
 
     let mut child = spawn_daemon_child(&config_path).await?;
@@ -1029,15 +1462,55 @@ pub async fn spawn_three_voter_cluster(
     port2: u16,
     port3: u16,
 ) -> Result<Vec<TestNode>, String> {
+    let default_options = [
+        TestNodeSpawnOptions::default(),
+        TestNodeSpawnOptions::default(),
+        TestNodeSpawnOptions::default(),
+    ];
+    spawn_three_voter_cluster_with_options(cluster_name, port1, port2, port3, &default_options)
+        .await
+}
+
+pub async fn spawn_three_voter_cluster_with_options(
+    cluster_name: &str,
+    port1: u16,
+    port2: u16,
+    port3: u16,
+    options: &[TestNodeSpawnOptions; 3],
+) -> Result<Vec<TestNode>, String> {
     let join_seed = vec![format!("127.0.0.1:{}", port1)];
     let mut nodes = Vec::new();
-    nodes.push(spawn_node(1, port1, cluster_name, true, &[], "voter").await?);
+    nodes.push(
+        spawn_node_with_options(1, port1, cluster_name, true, &[], "voter", &options[0]).await?,
+    );
     wait_single_node_leader(port1, 1, Duration::from_secs(20)).await?;
 
-    nodes.push(spawn_node(2, port2, cluster_name, false, &join_seed, "voter").await?);
+    nodes.push(
+        spawn_node_with_options(
+            2,
+            port2,
+            cluster_name,
+            false,
+            &join_seed,
+            "voter",
+            &options[1],
+        )
+        .await?,
+    );
     let _ = wait_cluster_voters(&[port1, port2], &[1, 2], Duration::from_secs(40)).await?;
 
-    nodes.push(spawn_node(3, port3, cluster_name, false, &join_seed, "voter").await?);
+    nodes.push(
+        spawn_node_with_options(
+            3,
+            port3,
+            cluster_name,
+            false,
+            &join_seed,
+            "voter",
+            &options[2],
+        )
+        .await?,
+    );
     let _ =
         wait_cluster_voters(&[port1, port2, port3], &[1, 2, 3], Duration::from_secs(50)).await?;
     let leader =

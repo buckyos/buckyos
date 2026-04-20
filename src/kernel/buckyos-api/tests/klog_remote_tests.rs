@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const TEST_APP_ID: &str = "buckycli";
 const TEST_TIMEOUT_SECS: u64 = 15;
 const TEST_NODE_GATEWAY_BASE_URL: &str = "http://127.0.0.1:3180";
+const DEFAULT_KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX: &str = "/.cluster/klog";
 
 fn unique_suffix(prefix: &str) -> String {
     let now = SystemTime::now()
@@ -32,6 +33,33 @@ fn require_runtime_node_name(runtime: &buckyos_api::BuckyOSRuntime) -> String {
         .as_ref()
         .map(|device| device.name.clone())
         .expect("runtime missing device_config.name")
+}
+
+fn normalize_cluster_gateway_route_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX.to_string();
+    }
+
+    let with_leading_slash = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{}", trimmed)
+    };
+
+    let normalized = with_leading_slash.trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        return "/".to_string();
+    }
+
+    normalized
+}
+
+fn cluster_gateway_route_prefix() -> String {
+    std::env::var("KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX")
+        .ok()
+        .map(|v| normalize_cluster_gateway_route_prefix(v.as_str()))
+        .unwrap_or_else(|| DEFAULT_KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX.to_string())
 }
 
 #[tokio::test]
@@ -238,9 +266,10 @@ async fn runtime_klog_04_cluster_state_via_node_gateway() {
         .await
         .expect("init/login runtime for node-gateway cluster-state");
     let node_name = require_runtime_node_name(&runtime);
+    let route_prefix = cluster_gateway_route_prefix();
     let url = format!(
-        "{}/.cluster/klog/{}/admin/cluster-state",
-        TEST_NODE_GATEWAY_BASE_URL, node_name
+        "{}{}/{}/admin/cluster-state",
+        TEST_NODE_GATEWAY_BASE_URL, route_prefix, node_name
     );
 
     let client = reqwest::Client::builder()

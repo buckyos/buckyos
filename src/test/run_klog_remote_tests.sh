@@ -15,6 +15,14 @@ KLOG_INTER_NODE_PORT="${KLOG_INTER_NODE_PORT:-21002}"
 KLOG_ADMIN_PORT="${KLOG_ADMIN_PORT:-21003}"
 KLOG_RPC_PORT="${KLOG_RPC_PORT:-4070}"
 KLOG_GATEWAY_CONTAINER="${KLOG_GATEWAY_CONTAINER:-dev-kapi-gateway}"
+KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX="${KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX:-/.cluster/klog}"
+
+if [[ "${KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX}" != /* ]]; then
+  KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX="/${KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX}"
+fi
+while [[ "${KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX}" != "/" && "${KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX}" == */ ]]; do
+  KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX="${KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX%/}"
+done
 
 log() {
   printf '[klog-dev] %s\n' "$*"
@@ -184,6 +192,9 @@ advertise_admin_port = ${KLOG_ADMIN_PORT}
 rpc_advertise_port = ${KLOG_RPC_PORT}
 enable_rpc_server = true
 
+[cluster_network]
+gateway_route_prefix = "${KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX}"
+
 [admin]
 local_only = true
 EOF
@@ -229,6 +240,8 @@ ensure_port_free() {
 
 start_min_gateway() {
   local gateway_conf="${BUCKYOS_ROOT}/etc/min_kapi_gateway.conf"
+  local escaped_route_prefix
+  escaped_route_prefix="$(printf '%s' "${KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX}" | sed -e 's/[][(){}.^$*+?|\\-]/\\\\&/g')"
 
   cat > "${gateway_conf}" <<EOF
 server {
@@ -254,15 +267,15 @@ server {
         proxy_pass http://127.0.0.1:${KLOG_RPC_PORT};
     }
 
-    location ~ ^/\\.cluster/klog/[^/]+/raft/ {
+    location ~ ^${escaped_route_prefix}/[^/]+/raft/ {
         proxy_pass http://127.0.0.1:${KLOG_RAFT_PORT};
     }
 
-    location ~ ^/\\.cluster/klog/[^/]+/inter/ {
+    location ~ ^${escaped_route_prefix}/[^/]+/inter/ {
         proxy_pass http://127.0.0.1:${KLOG_INTER_NODE_PORT};
     }
 
-    location ~ ^/\\.cluster/klog/[^/]+/admin/ {
+    location ~ ^${escaped_route_prefix}/[^/]+/admin/ {
         proxy_pass http://127.0.0.1:${KLOG_ADMIN_PORT};
     }
 
@@ -298,6 +311,7 @@ probe_endpoints() {
 
 run_remote_tests() {
   log "running klog remote integration tests"
+  export KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX
   (
     cd "${SRC_DIR}"
     cargo test -p buckyos-api --test klog_remote_tests -- --ignored --nocapture --test-threads=1

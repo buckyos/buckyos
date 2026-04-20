@@ -23,6 +23,10 @@ collections:
     type: json_map
     file_path: ./node_gateway_info.json#klog_cluster_info
     only_read_file: true
+  KLOG_CLUSTER_SETTINGS:
+    type: json_map
+    file_path: ./node_gateway_info.json#klog_cluster_settings
+    only_read_file: true
 
 stacks:
   node_rtcp:
@@ -98,6 +102,7 @@ servers:
               global SERVICE_ID="";
               global KLOG_CLUSTER_TARGET_NODE_NAME="";
               global KLOG_CLUSTER_TARGET_PORT="";
+              global KLOG_CLUSTER_ROUTE_PREFIX=$KLOG_CLUSTER_SETTINGS.route_prefix;
 
               if match $REQ.path "/kapi/kevent/*" then
                 return --from chain $(exec forward_to_kevent);
@@ -136,7 +141,10 @@ servers:
               global KLOG_CLUSTER_TARGET_NODE_NAME="";
               global KLOG_CLUSTER_TARGET_PORT="";
               eq $REQ.dest_port 3180 || return false;
-              match-reg --capture klog_hp $REQ.path "^/\\.cluster/klog/([^/]+)/(raft|inter|admin)(/.*)?$" || return false;
+              starts-with $REQ.path $KLOG_CLUSTER_ROUTE_PREFIX || return false;
+              local klog_prefix_len=$(strlen $KLOG_CLUSTER_ROUTE_PREFIX);
+              local klog_tail=$(slice $REQ.path "${klog_prefix_len}:");
+              match-reg --capture klog_hp $klog_tail "^/?([^/]+)/(raft|inter|admin)(/.*)?$" || return false;
               match-include $KLOG_CLUSTER_INFO $klog_hp[0] || return false;
 
               global KLOG_CLUSTER_TARGET_NODE_NAME=$KLOG_CLUSTER_INFO[$klog_hp[0]].node_name;

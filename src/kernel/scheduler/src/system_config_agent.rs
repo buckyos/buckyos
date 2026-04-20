@@ -27,6 +27,26 @@ const FIXED_SERVICE_WEIGHT: u32 = 100;
 const DEFAULT_REQUIRED_MEMORY: u64 = 32 * 1024 * 1024;
 const DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX: &str = "/.cluster/klog";
 
+fn normalize_klog_cluster_route_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX.to_string();
+    }
+
+    let with_leading_slash = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{}", trimmed)
+    };
+
+    let normalized = with_leading_slash.trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        return "/".to_string();
+    }
+
+    normalized
+}
+
 fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     match user_type {
         ApiUserType::Admin | ApiUserType::Root => UserType::Admin,
@@ -999,10 +1019,8 @@ fn extract_klog_cluster_route_prefix(input_system_config: &HashMap<String, Strin
         .get("cluster_network")
         .and_then(|v| v.get("gateway_route_prefix"))
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or(DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX)
-        .to_string()
+        .map(normalize_klog_cluster_route_prefix)
+        .unwrap_or_else(|| DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX.to_string())
 }
 
 fn build_klog_cluster_info(
@@ -2688,6 +2706,25 @@ mod tests {
         assert_eq!(remote.raft_port, 21011);
         assert_eq!(remote.inter_port, 21012);
         assert_eq!(remote.admin_port, 21013);
+    }
+
+    #[test]
+    fn test_extract_klog_cluster_route_prefix_normalizes_slashes() {
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "services/klog-service/settings".to_string(),
+            json!({
+                "cluster_network": {
+                    "gateway_route_prefix": "cluster/klog-test/"
+                }
+            })
+            .to_string(),
+        );
+
+        assert_eq!(
+            extract_klog_cluster_route_prefix(&input_system_config),
+            "/cluster/klog-test"
+        );
     }
 
     #[tokio::test]
