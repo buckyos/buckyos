@@ -10,6 +10,7 @@ export BUCKYOS_ROOT="${BUCKYOS_ROOT:-${REPO_ROOT}/.dev_buckyos_klog}"
 
 ZONE_HOST="${KLOG_ZONE_HOST:-test.buckyos.io}"
 KLOG_NODE_ID="${KLOG_NODE_ID:-1}"
+KLOG_NODE_NAME="${KLOG_NODE_NAME:-}"
 KLOG_RAFT_PORT="${KLOG_RAFT_PORT:-21001}"
 KLOG_INTER_NODE_PORT="${KLOG_INTER_NODE_PORT:-21002}"
 KLOG_ADMIN_PORT="${KLOG_ADMIN_PORT:-21003}"
@@ -94,6 +95,22 @@ ensure_local_buckycli() {
   chmod +x "${HOME}/buckycli/buckycli"
 }
 
+resolve_local_node_name() {
+  python3 - "${BUCKYOS_ROOT}" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+path = root / "etc" / "node_device_config.json"
+obj = json.loads(path.read_text())
+name = str(obj.get("name", "")).strip()
+if not name:
+    raise SystemExit(f"missing node name in {path}")
+print(name)
+PY
+}
+
 stop_local_node_daemon() {
   local daemon_pattern="${BUCKYOS_ROOT}/bin/node-daemon/node_daemon"
   local pids
@@ -113,9 +130,16 @@ stop_local_node_daemon() {
 ensure_klog_bundle() {
   local bundle_dir="${BUCKYOS_ROOT}/bin/klog-service"
   local config_file="${BUCKYOS_ROOT}/etc/klog-service.toml"
+  local helper_bin="${SRC_DIR}/target/debug/klog_daemon"
+  local rootfs_bin="${SRC_DIR}/rootfs/bin/klog-service/klog_daemon"
 
   mkdir -p "${bundle_dir}" "${BUCKYOS_ROOT}/etc"
-  cp "${SRC_DIR}/rootfs/bin/klog-service/klog_daemon" "${bundle_dir}/klog_daemon"
+  if [[ -x "${helper_bin}" ]]; then
+    log "using built helper klog_daemon from ${helper_bin}"
+    cp "${helper_bin}" "${bundle_dir}/klog_daemon"
+  else
+    cp "${rootfs_bin}" "${bundle_dir}/klog_daemon"
+  fi
   chmod +x "${bundle_dir}/klog_daemon"
 
   cat > "${bundle_dir}/kernel_pkg.toml" <<'EOF'
@@ -190,6 +214,7 @@ advertise_port = ${KLOG_RAFT_PORT}
 advertise_inter_port = ${KLOG_INTER_NODE_PORT}
 advertise_admin_port = ${KLOG_ADMIN_PORT}
 rpc_advertise_port = ${KLOG_RPC_PORT}
+advertise_node_name = "${KLOG_NODE_NAME}"
 enable_rpc_server = true
 
 [cluster_network]
@@ -213,6 +238,10 @@ start_local_buckyos() {
 }
 
 start_klog_service() {
+  if [[ -z "${KLOG_NODE_NAME}" ]]; then
+    KLOG_NODE_NAME="$(resolve_local_node_name)"
+  fi
+
   for _ in $(seq 1 20); do
     if port_ready 127.0.0.1 "${KLOG_RPC_PORT}" && port_ready 127.0.0.1 "${KLOG_ADMIN_PORT}"; then
       log "klog-service already managed by node-daemon; skipping helper bootstrap"
