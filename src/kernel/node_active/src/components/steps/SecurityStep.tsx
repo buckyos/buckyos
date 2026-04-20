@@ -28,7 +28,6 @@ import {
   register_sn_user,
   resolveEnabledFeatures,
   WEB3_BASE_HOST,
-  validate_bucky_username,
 } from "../../../active_lib";
 import { WalletUser, WizardData } from "../../types";
 
@@ -40,7 +39,7 @@ type Props = {
   walletUser?: WalletUser;
 };
 
-type NameStatus = "idle" | "checking" | "ok" | "taken" | "tooShort" | "invalid";
+type NameStatus = "idle" | "checking" | "ok" | "taken" | "invalid";
 
 const SecurityStep = ({
   wizardData,
@@ -78,23 +77,28 @@ const SecurityStep = ({
     }
 
     const trimmedUsername = username.trim().toLowerCase();
-    if (trimmedUsername.length <= 4) {
-      setNameStatus(trimmedUsername.length > 0 ? "tooShort" : "idle");
-      return;
-    }
-
-    const validation = validate_bucky_username(trimmedUsername);
-    if (!validation.valid) {
-      setNameStatus("invalid");
+    if (!trimmedUsername) {
+      setNameStatus("idle");
       return;
     }
 
     let cancelled = false;
     setNameStatus("checking");
     check_bucky_username(trimmedUsername)
-      .then((available) => {
+      .then((result) => {
         if (!cancelled) {
-          setNameStatus(available ? "ok" : "taken");
+          const normalizedName =
+            typeof result.normalized_name === "string" && result.normalized_name.trim()
+              ? result.normalized_name.trim()
+              : trimmedUsername;
+          if (normalizedName !== trimmedUsername) {
+            setUsername(normalizedName);
+          }
+          if (result.valid) {
+            setNameStatus("ok");
+            return;
+          }
+          setNameStatus(result.reason === "already_exists" ? "taken" : "invalid");
         }
       })
       .catch(() => {
@@ -172,9 +176,6 @@ const SecurityStep = ({
     if (nameStatus === "taken") {
       return <Chip size="small" color="error" label={t("error_name_taken")} />;
     }
-    if (nameStatus === "tooShort") {
-      return <Chip size="small" color="warning" label={t("error_name_too_short")} />;
-    }
     if (nameStatus === "invalid") {
       return (
         <Chip
@@ -233,7 +234,7 @@ const SecurityStep = ({
             ? true
             : nameStatus === "taken"
             ? false
-            : await check_bucky_username(normalizedUsername);
+            : (await check_bucky_username(normalizedUsername)).valid;
         if (isUsernameAvailable) {
           const registerResult = await register_sn_user(
             normalizedUsername,

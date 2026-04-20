@@ -23,7 +23,6 @@ import {
   SN_BASE_HOST,
   WEB3_BASE_HOST,
   isValidDomain,
-  validate_bucky_username,
 } from "../../../active_lib";
 
 type Props = {
@@ -49,16 +48,8 @@ const DomainStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
     setFormError("");
 
     if (mode === "bucky") {
-      if (username.length <= 4) {
-        setFormError(t("error_name_too_short") || "");
-        return;
-      }
-
-      const validation = validate_bucky_username(username);
-      if (!validation.valid) {
-        setFormError(
-          t("error_name_invalid") || "Only lowercase letters and numbers are supported.",
-        );
+      if (!username) {
+        setFormError(t("username_placeholder") || "");
         return;
       }
 
