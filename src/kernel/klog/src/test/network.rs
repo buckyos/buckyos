@@ -1,5 +1,5 @@
 use crate::network::{KNetworkClient, RaftRequest, RaftRequestType, RaftResponse};
-use crate::{KClusterTransportConfig, KNode, KNodeId, KTypeConfig};
+use crate::{KClusterTransportConfig, KClusterTransportMode, KNode, KNodeId, KTypeConfig};
 use axum::Router;
 use axum::body::Bytes;
 use axum::http::{StatusCode, header};
@@ -65,6 +65,57 @@ fn test_client(server: &TestHttpServer) -> KNetworkClient {
     KNetworkClient::new(1, 2, node, KClusterTransportConfig::default())
 }
 
+fn gateway_proxy_client(server: &TestHttpServer, node_name: &str) -> KNetworkClient {
+    let node = KNode {
+        id: 2,
+        addr: "192.0.2.2".to_string(),
+        port: 21001,
+        inter_port: 21002,
+        admin_port: 21003,
+        rpc_port: 4070,
+        node_name: Some(node_name.to_string()),
+    };
+    KNetworkClient::new(
+        1,
+        2,
+        node,
+        KClusterTransportConfig {
+            mode: KClusterTransportMode::GatewayProxy,
+            gateway_addr: server.addr.to_string(),
+            gateway_route_prefix: "/.cluster/klog".to_string(),
+        },
+    )
+}
+
+fn hybrid_client(server: &TestHttpServer, direct_port: u16, node_name: &str) -> KNetworkClient {
+    let node = KNode {
+        id: 2,
+        addr: "127.0.0.1".to_string(),
+        port: direct_port,
+        inter_port: direct_port,
+        admin_port: direct_port,
+        rpc_port: 4070,
+        node_name: Some(node_name.to_string()),
+    };
+    KNetworkClient::new(
+        1,
+        2,
+        node,
+        KClusterTransportConfig {
+            mode: KClusterTransportMode::Hybrid,
+            gateway_addr: server.addr.to_string(),
+            gateway_route_prefix: "/.cluster/klog".to_string(),
+        },
+    )
+}
+
+fn unused_local_port() -> anyhow::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    Ok(port)
+}
+
 fn vote_request() -> VoteRequest<KNodeId> {
     VoteRequest::new(Vote::new(3, 1), None)
 }
@@ -128,6 +179,85 @@ async fn test_network_vote_success_roundtrip() -> anyhow::Result<()> {
     assert_eq!(resp.vote, Vote::new(3, 2));
     assert!(resp.vote_granted);
     assert!(resp.last_log_id.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_network_vote_success_roundtrip_via_gateway_proxy() -> anyhow::Result<()> {
+    let app = Router::new().route(
+        "/.cluster/klog/node-2/raft/vote",
+        post(|body: Bytes| async move {
+            let req = match RaftRequest::deserialize(&body) {
+                Ok(req) => req,
+                Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+            };
+
+            match req {
+                RaftRequest::Vote(v) => {
+                    if v.vote != Vote::new(3, 1) {
+                        return (StatusCode::BAD_REQUEST, "unexpected vote request")
+                            .into_response();
+                    }
+                }
+                _ => return (StatusCode::BAD_REQUEST, "unexpected request type").into_response(),
+            }
+
+            let resp = RaftResponse::Vote(VoteResponse::new(Vote::new(3, 2), None, true));
+            let bytes = resp.serialize().expect("serialize response");
+            octet_stream_response(StatusCode::OK, bytes)
+        }),
+    );
+
+    let Some(server) = TestHttpServer::try_start(app).await? else {
+        return Ok(());
+    };
+    let mut client = gateway_proxy_client(&server, "node-2");
+    let resp = client
+        .vote(vote_request(), RPCOption::new(Duration::from_secs(1)))
+        .await?;
+
+    assert_eq!(resp.vote, Vote::new(3, 2));
+    assert!(resp.vote_granted);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_network_vote_hybrid_fallback_to_gateway_proxy() -> anyhow::Result<()> {
+    let app = Router::new().route(
+        "/.cluster/klog/node-2/raft/vote",
+        post(|body: Bytes| async move {
+            let req = match RaftRequest::deserialize(&body) {
+                Ok(req) => req,
+                Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+            };
+
+            match req {
+                RaftRequest::Vote(v) => {
+                    if v.vote != Vote::new(3, 1) {
+                        return (StatusCode::BAD_REQUEST, "unexpected vote request")
+                            .into_response();
+                    }
+                }
+                _ => return (StatusCode::BAD_REQUEST, "unexpected request type").into_response(),
+            }
+
+            let resp = RaftResponse::Vote(VoteResponse::new(Vote::new(4, 2), None, true));
+            let bytes = resp.serialize().expect("serialize response");
+            octet_stream_response(StatusCode::OK, bytes)
+        }),
+    );
+
+    let Some(server) = TestHttpServer::try_start(app).await? else {
+        return Ok(());
+    };
+    let direct_port = unused_local_port()?;
+    let mut client = hybrid_client(&server, direct_port, "node-2");
+    let resp = client
+        .vote(vote_request(), RPCOption::new(Duration::from_secs(1)))
+        .await?;
+
+    assert_eq!(resp.vote, Vote::new(4, 2));
+    assert!(resp.vote_granted);
     Ok(())
 }
 
