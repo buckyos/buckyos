@@ -992,12 +992,20 @@ impl AgentSessionMgr {
         default_remote: Option<&str>,
     ) -> Result<Arc<Mutex<AgentSession>>, AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
+        let normalized_default_remote =
+            normalize_optional_string(default_remote.map(str::to_string));
         if let Some(existing) = self.get_session(session_id.as_str()).await {
             let mut guard = existing.lock().await;
             self.hydrate_session_runtime_context(&mut guard);
-            let defaulted = self.ensure_default_behavior_if_empty(&mut guard);
+            let mut should_save = self.ensure_default_behavior_if_empty(&mut guard);
+            if guard.default_remote.is_none() {
+                if let Some(default_remote) = normalized_default_remote.clone() {
+                    guard.default_remote = Some(default_remote);
+                    should_save = true;
+                }
+            }
             drop(guard);
-            if defaulted {
+            if should_save {
                 self.save_session(session_id.as_str()).await?;
             }
             return Ok(existing);
@@ -1026,7 +1034,7 @@ impl AgentSessionMgr {
         if let Some(title) = normalize_optional_string(title) {
             session.title = title;
         }
-        session.default_remote = normalize_optional_string(default_remote.map(str::to_string));
+        session.default_remote = normalized_default_remote;
         let record = session.to_record(true);
         self.write_session_record(&record).await?;
 
@@ -1655,6 +1663,47 @@ mod tests {
             .expect("list workspace records");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].record_type, WorklogRecordType::FunctionRecord);
+    }
+
+    #[tokio::test]
+    async fn ensure_session_backfills_missing_default_remote_for_existing_session() {
+        let temp = tempdir().expect("create tempdir");
+        let mgr = AgentSessionMgr::new(
+            "agent.test",
+            temp.path().join("sessions"),
+            "ui_default".to_string(),
+            "work_default".to_string(),
+        )
+        .await
+        .expect("create session manager");
+
+        mgr.ensure_session("ui-demo", None, None, None)
+            .await
+            .expect("create session without default remote");
+        mgr.ensure_session("ui-demo", None, None, Some("did:bns:alice"))
+            .await
+            .expect("backfill default remote");
+
+        let session = mgr
+            .get_session("ui-demo")
+            .await
+            .expect("session should exist");
+        let guard = session.lock().await;
+        assert_eq!(guard.default_remote.as_deref(), Some("did:bns:alice"));
+        drop(guard);
+
+        let raw = fs::read_to_string(
+            mgr.session_file_path("ui-demo")
+                .expect("resolve session file path"),
+        )
+        .await
+        .expect("read session file");
+        let record: OpenDanAgentSessionRecord =
+            serde_json::from_str(&raw).expect("parse session record");
+        assert_eq!(
+            record.meta["runtime_state"]["default_remote"].as_str(),
+            Some("did:bns:alice")
+        );
     }
 
     #[test]

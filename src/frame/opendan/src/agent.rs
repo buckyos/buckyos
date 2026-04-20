@@ -616,13 +616,14 @@ impl AIAgent {
             return Ok(());
         }
 
+        let default_remote = self.default_reply_audience();
         let session = self
             .session_mgr
             .ensure_session(
                 SELF_CHECK_SESSION_ID,
                 Some(SELF_CHECK_SESSION_TITLE.to_string()),
                 Some(AGENT_BEHAVIOR_SELF_CHECK),
-                None,
+                default_remote.as_deref(),
             )
             .await
             .map_err(|err| anyhow!("ensure self-check session failed: {err}"))?;
@@ -2953,8 +2954,12 @@ impl AIAgent {
         let default_audience = {
             let guard = session.lock().await;
             guard.default_remote.clone()
-        };
-        (default_audience, None)
+        }
+        .or_else(|| self.default_reply_audience());
+        let source_tunnel_did = self
+            .resolve_preferred_reply_tunnel(default_audience.as_deref())
+            .await;
+        (default_audience, source_tunnel_did)
     }
 
     fn should_append_worklog_for_trace(trace: &SessionRuntimeContext) -> bool {
@@ -3633,6 +3638,32 @@ impl AIAgent {
         self.contact_mgr_owner_did
             .as_ref()
             .unwrap_or(&self.msg_owner_did)
+    }
+
+    fn default_reply_audience(&self) -> Option<String> {
+        self.contact_mgr_owner_did
+            .as_ref()
+            .map(|did| did.to_string())
+    }
+
+    async fn resolve_preferred_reply_tunnel(&self, audience: Option<&str>) -> Option<DID> {
+        let audience = audience.map(str::trim).filter(|value| !value.is_empty())?;
+        let target_did = DID::from_str(audience).ok()?;
+        let msg_center = self.deps.msg_center.as_ref()?;
+        let binding = match msg_center
+            .get_preferred_binding(target_did, self.contact_mgr_owner_did.clone())
+            .await
+        {
+            Ok(binding) => binding,
+            Err(err) => {
+                debug!(
+                    "agent.reply_preferred_tunnel_lookup_failed: did={:?} audience={} err={}",
+                    self.did, audience, err
+                );
+                return None;
+            }
+        };
+        DID::from_str(binding.tunnel_id.as_str()).ok()
     }
 
     fn parse_owner_did_for_msg_center(&self) -> Option<DID> {
@@ -5891,6 +5922,7 @@ system: "self check behavior"
 
         let mut cfg = AIAgentConfig::new(agent_root);
         cfg.agent_did = Some("did:opendan:test-agent".to_string());
+        cfg.agent_owner_did = Some("did:bns:alice".to_string());
 
         let msg_queue = Arc::new(MsgQueueClient::new_in_process(
             Box::new(TestMsgQueue::new()),
@@ -5946,6 +5978,7 @@ system: "self check behavior"
         assert_eq!(guard.current_behavior, AGENT_BEHAVIOR_SELF_CHECK);
         assert_eq!(guard.state, SessionState::Ready);
         assert_eq!(guard.title, SELF_CHECK_SESSION_TITLE);
+        assert_eq!(guard.default_remote.as_deref(), Some("did:bns:alice"));
         assert!(
             self_check_last_trigger_ms(&guard.meta).unwrap_or_default()
                 >= current_time.timestamp_millis().max(0) as u64
