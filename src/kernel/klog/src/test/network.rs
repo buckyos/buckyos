@@ -1,5 +1,5 @@
 use crate::network::{KNetworkClient, RaftRequest, RaftRequestType, RaftResponse};
-use crate::{KClusterTransportMode, KNode, KNodeId, KTypeConfig};
+use crate::{KClusterTransportConfig, KNode, KNodeId, KTypeConfig};
 use axum::Router;
 use axum::body::Bytes;
 use axum::http::{StatusCode, header};
@@ -60,8 +60,9 @@ fn test_client(server: &TestHttpServer) -> KNetworkClient {
         inter_port: server.addr.port(),
         admin_port: server.addr.port(),
         rpc_port: server.addr.port(),
+        node_name: None,
     };
-    KNetworkClient::new(1, 2, node, KClusterTransportMode::Direct)
+    KNetworkClient::new(1, 2, node, KClusterTransportConfig::default())
 }
 
 fn vote_request() -> VoteRequest<KNodeId> {

@@ -6,7 +6,7 @@ use super::request::{
 use crate::error::{KLogErrorEnvelope, KLogServiceError, generate_trace_id};
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
-use crate::{KClusterTransportMode, KNode, KNodeId, KRaftRef};
+use crate::{KClusterTransportConfig, KClusterTransportMode, KNode, KNodeId, KRaftRef};
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
@@ -47,6 +47,7 @@ struct AddLearnerQuery {
     inter_port: Option<u16>,
     admin_port: Option<u16>,
     rpc_port: Option<u16>,
+    node_name: Option<String>,
     blocking: Option<bool>,
 }
 
@@ -80,7 +81,7 @@ pub struct KNetworkServer {
     admin_local_only: bool,
     cluster_name: String,
     cluster_id: String,
-    transport_mode: KClusterTransportMode,
+    transport: KClusterTransportConfig,
 }
 
 impl KNetworkServer {
@@ -94,7 +95,7 @@ impl KNetworkServer {
             admin_local_only: false,
             cluster_name: "klog".to_string(),
             cluster_id: "klog".to_string(),
-            transport_mode: KClusterTransportMode::Direct,
+            transport: KClusterTransportConfig::default(),
         }
     }
 
@@ -128,7 +129,12 @@ impl KNetworkServer {
     }
 
     pub fn with_cluster_transport_mode(mut self, transport_mode: KClusterTransportMode) -> Self {
-        self.transport_mode = transport_mode;
+        self.transport.mode = transport_mode;
+        self
+    }
+
+    pub fn with_cluster_transport_config(mut self, transport: KClusterTransportConfig) -> Self {
+        self.transport = transport;
         self
     }
 
@@ -161,11 +167,11 @@ impl KNetworkServer {
             raft: self.raft.clone(),
             write_service: self.state_store_manager.clone().map(|state_store_manager| {
                 KLogWriteService::new("KNetworkServer", self.raft.clone(), state_store_manager)
-                    .with_transport_mode(self.transport_mode)
+                    .with_transport_config(self.transport.clone())
             }),
             query_service: self.state_store_manager.clone().map(|state_store_manager| {
                 KLogQueryService::new("KNetworkServer", self.raft.clone(), state_store_manager)
-                    .with_transport_mode(self.transport_mode)
+                    .with_transport_config(self.transport.clone())
             }),
             admin_local_only: self.admin_local_only,
             cluster_name: self.cluster_name.clone(),
@@ -679,10 +685,17 @@ impl KNetworkServer {
                 .admin_port
                 .unwrap_or_else(|| query.inter_port.unwrap_or(query.port)),
             rpc_port: query.rpc_port.unwrap_or(query.port),
+            node_name: query
+                .node_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.to_string()),
         };
         info!(
-            "KNetworkServer admin add-learner request: node_id={}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
+            "KNetworkServer admin add-learner request: node_id={}, node_name={:?}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
             query.node_id,
+            node.node_name.as_deref(),
             query.addr,
             query.port,
             node.inter_port,

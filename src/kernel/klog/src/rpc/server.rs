@@ -8,7 +8,7 @@ use crate::network::{
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
 use crate::{
-    KClusterTransportMode, KRaftRef,
+    KClusterTransportConfig, KClusterTransportMode, KRaftRef,
     rpc::{
         KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_JSON_RPC_VERSION,
         KLOG_RPC_ERR_INTERNAL, KLOG_RPC_ERR_INVALID_PARAMS, KLOG_RPC_ERR_INVALID_REQUEST,
@@ -103,7 +103,7 @@ pub struct KRpcServer {
     raft: KRaftRef,
     state_store_manager: KLogStateStoreManagerRef,
     policy: KRpcServerPolicy,
-    transport_mode: KClusterTransportMode,
+    transport: KClusterTransportConfig,
 }
 
 impl KRpcServer {
@@ -117,7 +117,7 @@ impl KRpcServer {
             raft,
             state_store_manager,
             policy: KRpcServerPolicy::default(),
-            transport_mode: KClusterTransportMode::Direct,
+            transport: KClusterTransportConfig::default(),
         }
     }
 
@@ -127,7 +127,12 @@ impl KRpcServer {
     }
 
     pub fn with_cluster_transport_mode(mut self, transport_mode: KClusterTransportMode) -> Self {
-        self.transport_mode = transport_mode;
+        self.transport.mode = transport_mode;
+        self
+    }
+
+    pub fn with_cluster_transport_config(mut self, transport: KClusterTransportConfig) -> Self {
+        self.transport = transport;
         self
     }
 
@@ -145,13 +150,13 @@ impl KRpcServer {
                 self.raft.clone(),
                 self.state_store_manager.clone(),
             )
-            .with_transport_mode(self.transport_mode),
+            .with_transport_config(self.transport.clone()),
             query_service: KLogQueryService::new(
                 "KRpcServer",
                 self.raft.clone(),
                 self.state_store_manager.clone(),
             )
-            .with_transport_mode(self.transport_mode),
+            .with_transport_config(self.transport.clone()),
         };
 
         self.policy.append.validate("append")?;

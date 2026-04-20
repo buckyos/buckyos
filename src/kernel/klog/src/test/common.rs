@@ -267,6 +267,7 @@ pub(crate) fn sample_membership(node_id: KNodeId) -> Membership<KNodeId, KNode> 
             inter_port: 3002,
             admin_port: 3003,
             rpc_port: 3001,
+            node_name: None,
         },
     );
 

@@ -28,6 +28,7 @@ pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftR
                 } else {
                     0
                 },
+                node_name: cfg.advertise_node_name.clone(),
             },
         );
         match raft.initialize(members).await {
@@ -249,13 +250,17 @@ async fn join_and_promote_once(
             q.append_pair("inter_port", &cfg.advertise_inter_port.to_string());
             q.append_pair("admin_port", &cfg.advertise_admin_port.to_string());
             q.append_pair("rpc_port", &advertised_rpc_port.to_string());
+            if let Some(node_name) = cfg.advertise_node_name.as_deref() {
+                q.append_pair("node_name", node_name);
+            }
             q.append_pair("blocking", if cfg.join_blocking { "true" } else { "false" });
         }
 
         info!(
-            "Auto-join add-learner: admin_target={}, node_id={}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
+            "Auto-join add-learner: admin_target={}, node_id={}, node_name={:?}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
             admin_target,
             cfg.node_id,
+            cfg.advertise_node_name.as_deref(),
             cfg.advertise_addr,
             cfg.advertise_port,
             cfg.advertise_inter_port,
@@ -523,6 +528,7 @@ mod tests {
             inter_port: 21002,
             admin_port: 21003,
             rpc_port: 31001,
+            node_name: None,
         };
         let target = admin_target_from_node(&node);
         assert_eq!(target, "127.0.0.1:21003");
@@ -537,6 +543,7 @@ mod tests {
             inter_port: 0,
             admin_port: 0,
             rpc_port: 31001,
+            node_name: None,
         };
         let target = admin_target_from_node(&node);
         assert_eq!(target, "127.0.0.1:21001");
@@ -570,6 +577,7 @@ mod tests {
             advertise_inter_port: 21002,
             advertise_admin_port: 21003,
             rpc_advertise_port: 21101,
+            advertise_node_name: None,
             data_dir: PathBuf::from("/tmp/klog_cluster_test"),
             cluster_name: cluster_name.to_string(),
             cluster_id: cluster_id.to_string(),

@@ -1,5 +1,6 @@
 use crate::constants::{
     DEFAULT_ADMIN_LOCAL_ONLY, DEFAULT_ADMIN_PORT, DEFAULT_ADVERTISE_ADDR, DEFAULT_AUTO_BOOTSTRAP,
+    DEFAULT_CLUSTER_GATEWAY_ADDR, DEFAULT_CLUSTER_GATEWAY_ROUTE_PREFIX,
     DEFAULT_CLUSTER_NETWORK_MODE, DEFAULT_ENABLE_RPC_SERVER, DEFAULT_INTER_NODE_PORT,
     DEFAULT_JOIN_BLOCKING, DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
     DEFAULT_JOIN_RETRY_INITIAL_INTERVAL_MS, DEFAULT_JOIN_RETRY_JITTER_RATIO,
@@ -14,9 +15,10 @@ use crate::constants::{
     DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT, DEFAULT_RPC_LISTEN_HOST,
     DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS, DEFAULT_STATE_STORE_SYNC_WRITE,
     ENV_ADMIN_ADVERTISE_PORT, ENV_ADMIN_LISTEN_ADDR, ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR,
-    ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID,
-    ENV_CLUSTER_NAME, ENV_CLUSTER_NETWORK_MODE, ENV_CONFIG_FILE, ENV_DATA_DIR,
-    ENV_ENABLE_RPC_SERVER, ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING,
+    ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_NODE_NAME, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP,
+    ENV_CLUSTER_GATEWAY_ADDR, ENV_CLUSTER_GATEWAY_ROUTE_PREFIX, ENV_CLUSTER_ID, ENV_CLUSTER_NAME,
+    ENV_CLUSTER_NETWORK_MODE, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
+    ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING,
     ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS, ENV_JOIN_RETRY_INITIAL_INTERVAL_MS,
     ENV_JOIN_RETRY_JITTER_RATIO, ENV_JOIN_RETRY_MAX_ATTEMPTS, ENV_JOIN_RETRY_MAX_INTERVAL_MS,
     ENV_JOIN_RETRY_MULTIPLIER, ENV_JOIN_RETRY_REQUEST_TIMEOUT_MS, ENV_JOIN_RETRY_SHUFFLE_TARGETS,
@@ -292,10 +294,16 @@ impl Default for KLogJoinRetryConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KLogClusterNetworkConfig {
     /// Cluster internal transport mode.
     pub mode: KClusterTransportMode,
+
+    /// Local gateway/proxy address used by proxy and hybrid modes.
+    pub gateway_addr: String,
+
+    /// Gateway route prefix used by proxy and hybrid modes.
+    pub gateway_route_prefix: String,
 }
 
 impl Default for KLogClusterNetworkConfig {
@@ -303,6 +311,8 @@ impl Default for KLogClusterNetworkConfig {
         Self {
             mode: KClusterTransportMode::parse(DEFAULT_CLUSTER_NETWORK_MODE)
                 .expect("DEFAULT_CLUSTER_NETWORK_MODE must be valid"),
+            gateway_addr: DEFAULT_CLUSTER_GATEWAY_ADDR.to_string(),
+            gateway_route_prefix: DEFAULT_CLUSTER_GATEWAY_ROUTE_PREFIX.to_string(),
         }
     }
 }
@@ -341,6 +351,9 @@ pub struct KLogRuntimeConfig {
 
     /// Advertised client RPC port, set to 0 when RPC server is disabled.
     pub rpc_advertise_port: u16,
+
+    /// Stable advertised node name used for gateway/proxy cluster routing.
+    pub advertise_node_name: Option<String>,
 
     /// Root data directory for raft log, state store and snapshots.
     pub data_dir: PathBuf,
@@ -414,6 +427,9 @@ pub struct KLogNetworkConfigPatch {
 
     /// Optional override for advertised client RPC port.
     pub rpc_advertise_port: Option<u16>,
+
+    /// Optional override for advertised stable node name.
+    pub advertise_node_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -444,6 +460,12 @@ pub struct KLogClusterConfigPatch {
 pub struct KLogClusterNetworkConfigPatch {
     /// Optional cluster internal transport mode.
     pub mode: Option<KClusterTransportMode>,
+
+    /// Optional local gateway/proxy address for cluster transport.
+    pub gateway_addr: Option<String>,
+
+    /// Optional gateway route prefix for cluster transport.
+    pub gateway_route_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -632,6 +654,7 @@ impl KLogRuntimeConfig {
                 advertise_inter_port: parse_env_u16(ENV_ADVERTISE_INTER_PORT)?,
                 advertise_admin_port: parse_env_u16(ENV_ADMIN_ADVERTISE_PORT)?,
                 rpc_advertise_port: parse_env_u16(ENV_RPC_ADVERTISE_PORT)?,
+                advertise_node_name: parse_env_string(ENV_ADVERTISE_NODE_NAME)?,
             }),
             storage: Some(KLogStorageConfigPatch {
                 data_dir: parse_env_pathbuf(ENV_DATA_DIR)?,
@@ -644,6 +667,8 @@ impl KLogRuntimeConfig {
             }),
             cluster_network: Some(KLogClusterNetworkConfigPatch {
                 mode: parse_env_cluster_transport_mode(ENV_CLUSTER_NETWORK_MODE)?,
+                gateway_addr: parse_env_string(ENV_CLUSTER_GATEWAY_ADDR)?,
+                gateway_route_prefix: parse_env_string(ENV_CLUSTER_GATEWAY_ROUTE_PREFIX)?,
             }),
             join: Some(KLogJoinConfigPatch {
                 targets: parse_env_string_list(ENV_JOIN_TARGETS)?,
@@ -838,6 +863,10 @@ impl KLogRuntimeConfig {
             .advertise_admin_port
             .or_else(|| parse_port_from_addr(&admin_listen_addr))
             .unwrap_or(DEFAULT_ADMIN_PORT);
+        let advertise_node_name = network
+            .advertise_node_name
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         if advertise_admin_port == advertise_port {
             let msg = format!(
                 "Invalid config: network.advertise_admin_port ({}) must not equal network.advertise_port ({})",
@@ -850,6 +879,26 @@ impl KLogRuntimeConfig {
             let msg = format!(
                 "Invalid config: network.advertise_admin_port ({}) must not equal network.advertise_inter_port ({})",
                 advertise_admin_port, advertise_inter_port
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if let Some(node_name) = advertise_node_name.as_ref()
+            && node_name.contains('/')
+        {
+            let msg = format!(
+                "Invalid config: network.advertise_node_name ({}) must not contain '/'",
+                node_name
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if cluster_network_cfg.mode != KClusterTransportMode::Direct
+            && advertise_node_name.is_none()
+        {
+            let msg = format!(
+                "Missing required field: network.advertise_node_name for cluster_network.mode={}",
+                cluster_network_cfg.mode
             );
             error!("{}", msg);
             return Err(msg);
@@ -873,6 +922,7 @@ impl KLogRuntimeConfig {
             advertise_inter_port,
             advertise_admin_port,
             rpc_advertise_port: network.rpc_advertise_port.unwrap_or(DEFAULT_RPC_PORT),
+            advertise_node_name,
             data_dir: storage.data_dir.unwrap_or(default_data_dir),
             cluster_name,
             cluster_id,
@@ -931,13 +981,27 @@ fn merge_cluster_network_config(
             KClusterTransportMode::parse(DEFAULT_CLUSTER_NETWORK_MODE)
                 .expect("DEFAULT_CLUSTER_NETWORK_MODE must be valid"),
         ),
+        gateway_addr: patch
+            .gateway_addr
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| DEFAULT_CLUSTER_GATEWAY_ADDR.to_string()),
+        gateway_route_prefix: patch
+            .gateway_route_prefix
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| DEFAULT_CLUSTER_GATEWAY_ROUTE_PREFIX.to_string()),
     };
 
-    if cfg.mode != KClusterTransportMode::Direct {
-        let msg = format!(
-            "Unsupported cluster_network.mode={}: only direct is supported in the current build",
-            cfg.mode
-        );
+    if cfg.gateway_addr.trim().is_empty() {
+        let msg = format!("Invalid cluster_network.gateway_addr: gateway_addr must not be empty");
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.gateway_route_prefix.trim().is_empty() {
+        let msg =
+            "Invalid cluster_network.gateway_route_prefix: gateway_route_prefix must not be empty"
+                .to_string();
         error!("{}", msg);
         return Err(msg);
     }
@@ -1363,6 +1427,7 @@ admin_listen_addr = "127.0.0.1:22003"
 enable_rpc_server = false
 rpc_listen_addr = "0.0.0.0:22101"
 advertise_addr = "10.2.3.4"
+advertise_node_name = "node-full"
 advertise_port = 22001
 advertise_inter_port = 22002
 advertise_admin_port = 22003
@@ -1379,6 +1444,8 @@ auto_bootstrap = false
 
 [cluster_network]
 mode = "direct"
+gateway_addr = "127.0.0.1:4180"
+gateway_route_prefix = "/.cluster/klog-test"
 
 [join]
 targets = ["127.0.0.1:21001", "127.0.0.1:21002"]
@@ -1436,6 +1503,7 @@ concurrency = 128
         assert!(!cfg.enable_rpc_server);
         assert_eq!(cfg.rpc_listen_addr, "0.0.0.0:22101");
         assert_eq!(cfg.advertise_addr, "10.2.3.4");
+        assert_eq!(cfg.advertise_node_name.as_deref(), Some("node-full"));
         assert_eq!(cfg.advertise_port, 22001);
         assert_eq!(cfg.advertise_inter_port, 22002);
         assert_eq!(cfg.advertise_admin_port, 22003);
@@ -1445,6 +1513,11 @@ concurrency = 128
         assert_eq!(cfg.cluster_id, "cluster_a_id");
         assert!(!cfg.auto_bootstrap);
         assert_eq!(cfg.cluster_network.mode, KClusterTransportMode::Direct);
+        assert_eq!(cfg.cluster_network.gateway_addr, "127.0.0.1:4180");
+        assert_eq!(
+            cfg.cluster_network.gateway_route_prefix,
+            "/.cluster/klog-test"
+        );
         assert!(!cfg.state_store_sync_write);
         assert_eq!(
             cfg.join_targets,
@@ -1533,6 +1606,7 @@ id = "cluster_partial_id"
         assert_eq!(cfg.enable_rpc_server, DEFAULT_ENABLE_RPC_SERVER);
         assert_eq!(cfg.rpc_listen_addr, default_rpc_listen_addr());
         assert_eq!(cfg.advertise_addr, "192.168.2.7");
+        assert_eq!(cfg.advertise_node_name, None);
         assert_eq!(cfg.advertise_port, DEFAULT_RAFT_PORT);
         assert_eq!(cfg.advertise_inter_port, DEFAULT_INTER_NODE_PORT);
         assert_eq!(cfg.advertise_admin_port, DEFAULT_ADMIN_PORT);
@@ -1542,6 +1616,14 @@ id = "cluster_partial_id"
         assert_eq!(cfg.cluster_id, "cluster_partial_id");
         assert_eq!(cfg.auto_bootstrap, DEFAULT_AUTO_BOOTSTRAP);
         assert_eq!(cfg.cluster_network.mode, KClusterTransportMode::Direct);
+        assert_eq!(
+            cfg.cluster_network.gateway_addr,
+            DEFAULT_CLUSTER_GATEWAY_ADDR
+        );
+        assert_eq!(
+            cfg.cluster_network.gateway_route_prefix,
+            DEFAULT_CLUSTER_GATEWAY_ROUTE_PREFIX
+        );
         assert_eq!(cfg.state_store_sync_write, DEFAULT_STATE_STORE_SYNC_WRITE);
         assert!(cfg.join_targets.is_empty());
         assert_eq!(cfg.join_blocking, DEFAULT_JOIN_BLOCKING);
@@ -1700,8 +1782,44 @@ targets = ["127.0.0.1:21001"]
     }
 
     #[test]
-    fn test_from_file_cluster_network_non_direct_rejected() {
-        let file = unique_test_file("cluster_network_non_direct");
+    fn test_from_file_cluster_network_gateway_proxy_accepted() {
+        let file = unique_test_file("cluster_network_gateway_proxy");
+        let content = r#"
+node_id = 9
+
+[network]
+advertise_node_name = "node-gateway"
+
+[cluster]
+name = "cluster_transport"
+id = "cluster_transport_id"
+
+[cluster_network]
+mode = "gateway_proxy"
+gateway_addr = "127.0.0.1:4180"
+gateway_route_prefix = "/.cluster/klog-proxy"
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let cfg = KLogRuntimeConfig::from_file(&file)
+            .expect("cluster_network.mode=gateway_proxy should be accepted");
+        assert_eq!(
+            cfg.cluster_network.mode,
+            KClusterTransportMode::GatewayProxy
+        );
+        assert_eq!(cfg.cluster_network.gateway_addr, "127.0.0.1:4180");
+        assert_eq!(
+            cfg.cluster_network.gateway_route_prefix,
+            "/.cluster/klog-proxy"
+        );
+        assert_eq!(cfg.advertise_node_name.as_deref(), Some("node-gateway"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn test_from_file_cluster_network_non_direct_requires_node_name() {
+        let file = unique_test_file("cluster_network_non_direct_requires_node_name");
         let content = r#"
 node_id = 9
 
@@ -1710,13 +1828,13 @@ name = "cluster_transport"
 id = "cluster_transport_id"
 
 [cluster_network]
-mode = "gateway_proxy"
+mode = "hybrid"
 "#;
         std::fs::write(&file, content).expect("write file");
 
         let err = KLogRuntimeConfig::from_file(&file)
-            .expect_err("cluster_network.mode=gateway_proxy must fail in current build");
-        assert!(err.contains("only direct is supported"));
+            .expect_err("cluster_network.mode=hybrid without advertise_node_name must fail");
+        assert!(err.contains("network.advertise_node_name"));
 
         let _ = std::fs::remove_file(&file);
     }
@@ -1754,6 +1872,7 @@ id = "cluster_admin_conflict_id"
                 enable_rpc_server: Some(false),
                 rpc_listen_addr: Some("0.0.0.0:23101".to_string()),
                 advertise_addr: Some("172.20.0.3".to_string()),
+                advertise_node_name: Some("node-buckyos".to_string()),
                 advertise_port: Some(23001),
                 advertise_inter_port: Some(23002),
                 advertise_admin_port: Some(23003),
@@ -1798,6 +1917,8 @@ id = "cluster_admin_conflict_id"
             }),
             cluster_network: Some(KLogClusterNetworkConfigPatch {
                 mode: Some(KClusterTransportMode::Direct),
+                gateway_addr: Some("127.0.0.1:5180".to_string()),
+                gateway_route_prefix: Some("/.cluster/klog-buckyos".to_string()),
             }),
             admin: Some(KLogAdminConfigPatch {
                 local_only: Some(false),
@@ -1816,6 +1937,7 @@ id = "cluster_admin_conflict_id"
         assert!(!cfg.enable_rpc_server);
         assert_eq!(cfg.rpc_listen_addr, "0.0.0.0:23101");
         assert_eq!(cfg.advertise_addr, "172.20.0.3");
+        assert_eq!(cfg.advertise_node_name.as_deref(), Some("node-buckyos"));
         assert_eq!(cfg.advertise_port, 23001);
         assert_eq!(cfg.advertise_inter_port, 23002);
         assert_eq!(cfg.advertise_admin_port, 23003);
@@ -1825,6 +1947,11 @@ id = "cluster_admin_conflict_id"
         assert_eq!(cfg.cluster_id, "bk-id");
         assert!(!cfg.auto_bootstrap);
         assert_eq!(cfg.cluster_network.mode, KClusterTransportMode::Direct);
+        assert_eq!(cfg.cluster_network.gateway_addr, "127.0.0.1:5180");
+        assert_eq!(
+            cfg.cluster_network.gateway_route_prefix,
+            "/.cluster/klog-buckyos"
+        );
         assert!(!cfg.state_store_sync_write);
         assert_eq!(cfg.join_targets, vec!["10.0.0.1:21001".to_string()]);
         assert!(cfg.join_blocking);

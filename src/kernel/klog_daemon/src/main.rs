@@ -10,6 +10,7 @@ use buckyos_api::{
 };
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::KLogRuntimeConfig;
+use klog::KClusterTransportConfig;
 use klog::logs::RocksDbLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
 use klog::rpc::KRpcServer;
@@ -158,7 +159,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, cluster_network_mode={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
+        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, advertise_node_name={:?}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, cluster_network_mode={}, cluster_gateway_addr={}, cluster_gateway_route_prefix={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
         cfg.node_id,
         cfg.listen_addr,
         cfg.inter_node_listen_addr,
@@ -170,12 +171,15 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         cfg.advertise_inter_port,
         cfg.advertise_admin_port,
         cfg.rpc_advertise_port,
+        cfg.advertise_node_name.as_deref(),
         cfg.data_dir.display(),
         cfg.cluster_name,
         cfg.cluster_id,
         cfg.auto_bootstrap,
         cfg.state_store_sync_write,
         cfg.cluster_network.mode,
+        cfg.cluster_network.gateway_addr,
+        cfg.cluster_network.gateway_route_prefix,
         cfg.join_targets,
         cfg.join_blocking,
         cfg.join_target_role,
@@ -272,11 +276,17 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         raft_config.election_timeout_max,
         raft_config.heartbeat_interval
     );
+    let cluster_transport = KClusterTransportConfig {
+        mode: cfg.cluster_network.mode,
+        gateway_addr: cfg.cluster_network.gateway_addr.clone(),
+        gateway_route_prefix: cfg.cluster_network.gateway_route_prefix.clone(),
+        ..Default::default()
+    };
 
     let raft = openraft::Raft::new(
         cfg.node_id,
         Arc::new(raft_config),
-        KNetworkFactory::new(cfg.node_id, cfg.cluster_network.mode),
+        KNetworkFactory::new(cfg.node_id, cluster_transport.clone()),
         log_storage,
         state_machine,
     )
@@ -293,7 +303,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         .with_admin_addr(cfg.admin_listen_addr.clone())
         .with_state_store_manager(state_store_manager.clone())
         .with_admin_local_only(cfg.admin_local_only)
-        .with_cluster_transport_mode(cfg.cluster_network.mode)
+        .with_cluster_transport_config(cluster_transport.clone())
         .with_cluster_identity(cfg.cluster_name.clone(), cfg.cluster_id.clone());
     info!(
         "Starting network server: raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}",
@@ -308,7 +318,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         Some(
             KRpcServer::new(cfg.rpc_listen_addr.clone(), raft, state_store_manager)
                 .with_policy(cfg.rpc.into())
-                .with_cluster_transport_mode(cfg.cluster_network.mode),
+                .with_cluster_transport_config(cluster_transport),
         )
     } else {
         warn!("Client RPC server is disabled by config");

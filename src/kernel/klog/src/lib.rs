@@ -141,6 +141,23 @@ impl std::fmt::Display for KClusterTransportMode {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KClusterTransportConfig {
+    pub mode: KClusterTransportMode,
+    pub gateway_addr: String,
+    pub gateway_route_prefix: String,
+}
+
+impl Default for KClusterTransportConfig {
+    fn default() -> Self {
+        Self {
+            mode: KClusterTransportMode::Direct,
+            gateway_addr: "127.0.0.1:3180".to_string(),
+            gateway_route_prefix: "/.cluster/klog".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KNode {
     pub id: KNodeId,
@@ -156,6 +173,9 @@ pub struct KNode {
     /// Client-facing json-rpc port.
     #[serde(default)]
     pub rpc_port: u16,
+    /// Stable node name for gateway/proxy routing.
+    #[serde(default)]
+    pub node_name: Option<String>,
 }
 
 declare_raft_types!(
