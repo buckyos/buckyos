@@ -10,7 +10,7 @@ use buckyos_api::{
 };
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::KLogRuntimeConfig;
-use klog::KClusterTransportConfig;
+use klog::{KClusterTransportConfig, KClusterTransportMode};
 use klog::logs::RocksDbLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
 use klog::rpc::KRpcServer;
@@ -98,6 +98,11 @@ async fn init_buckyos_runtime_if_needed(cfg: &mut KLogRuntimeConfig) -> Result<(
         error!("{}", msg);
         msg
     })?;
+    validate_buckyos_cluster_transport_identity(
+        cfg.cluster_network.mode,
+        cfg.advertise_node_name.as_deref(),
+        runtime.device_config.as_ref().map(|device| device.name.as_str()),
+    )?;
     runtime.set_main_service_port(rpc_port).await;
 
     let runtime_data_dir = runtime.get_data_folder().map_err(|e| {
@@ -147,6 +152,48 @@ async fn init_buckyos_runtime_if_needed(cfg: &mut KLogRuntimeConfig) -> Result<(
 fn parse_port_from_addr(addr: &str) -> Option<u16> {
     let (_, port_str) = addr.rsplit_once(':')?;
     port_str.parse::<u16>().ok()
+}
+
+fn validate_buckyos_cluster_transport_identity(
+    transport_mode: KClusterTransportMode,
+    advertise_node_name: Option<&str>,
+    runtime_node_name: Option<&str>,
+) -> Result<(), String> {
+    if transport_mode == KClusterTransportMode::Direct {
+        return Ok(());
+    }
+
+    let runtime_node_name = runtime_node_name.ok_or_else(|| {
+        let msg = format!(
+            "Missing BuckyOS runtime node identity for cluster_network.mode={}",
+            transport_mode
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    let advertise_node_name = advertise_node_name.ok_or_else(|| {
+        let msg = format!(
+            "Missing network.advertise_node_name for cluster_network.mode={} under BuckyOS runtime",
+            transport_mode
+        );
+        error!("{}", msg);
+        msg
+    })?;
+
+    if advertise_node_name != runtime_node_name {
+        let msg = format!(
+            "Invalid cluster transport identity: cluster_network.mode={}, advertise_node_name={} must equal BuckyOS node name {}",
+            transport_mode, advertise_node_name, runtime_node_name
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    info!(
+        "Validated BuckyOS cluster transport identity: cluster_network.mode={}, advertise_node_name={}, runtime_node_name={}",
+        transport_mode, advertise_node_name, runtime_node_name
+    );
+    Ok(())
 }
 
 async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
@@ -326,4 +373,38 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     };
 
     run_server_lifecycle(network_server, rpc_server, join_task).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_buckyos_cluster_transport_identity_direct_skips_check() {
+        validate_buckyos_cluster_transport_identity(
+            KClusterTransportMode::Direct,
+            None,
+            None,
+        )
+        .expect("direct mode should skip node identity validation");
+    }
+
+    #[test]
+    fn test_validate_buckyos_cluster_transport_identity_non_direct_requires_match() {
+        validate_buckyos_cluster_transport_identity(
+            KClusterTransportMode::GatewayProxy,
+            Some("ood1"),
+            Some("ood1"),
+        )
+        .expect("matching advertise_node_name should be accepted");
+
+        let err = validate_buckyos_cluster_transport_identity(
+            KClusterTransportMode::Hybrid,
+            Some("ood2"),
+            Some("ood1"),
+        )
+        .expect_err("mismatched advertise_node_name should be rejected");
+        assert!(err.contains("advertise_node_name=ood2"));
+        assert!(err.contains("BuckyOS node name ood1"));
+    }
 }

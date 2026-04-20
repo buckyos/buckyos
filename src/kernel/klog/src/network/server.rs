@@ -79,10 +79,10 @@ fn cluster_proxy_route(
 
     let normalized_prefix = normalize_cluster_proxy_route_prefix(route_prefix)?;
     if normalized_prefix == "/" {
-        Ok(format!("/:node_name/{}/{}", plane.as_str(), path_suffix))
+        Ok(format!("/{{node_name}}/{}/{}", plane.as_str(), path_suffix))
     } else {
         Ok(format!(
-            "{}/:node_name/{}/{}",
+            "{}/{{node_name}}/{}/{}",
             normalized_prefix,
             plane.as_str(),
             path_suffix
@@ -1146,7 +1146,10 @@ fn parse_voter_ids_csv(raw: &str) -> Result<Vec<KNodeId>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_voter_ids_csv;
+    use super::{
+        KClusterTransportModePlane, cluster_proxy_route, normalize_cluster_proxy_route_prefix,
+        parse_voter_ids_csv,
+    };
 
     #[test]
     fn test_parse_voter_ids_csv_ok() {
@@ -1164,5 +1167,25 @@ mod tests {
     fn test_parse_voter_ids_csv_invalid_rejected() {
         let err = parse_voter_ids_csv("1,a").expect_err("invalid voter should fail");
         assert!(err.contains("invalid node id"));
+    }
+
+    #[test]
+    fn test_normalize_cluster_proxy_route_prefix_trims_trailing_slash() {
+        assert_eq!(
+            normalize_cluster_proxy_route_prefix("/.cluster/klog/")
+                .expect("normalize route prefix"),
+            "/.cluster/klog"
+        );
+    }
+
+    #[test]
+    fn test_cluster_proxy_route_uses_axum_path_param_syntax() {
+        let route = cluster_proxy_route(
+            "/.cluster/klog",
+            KClusterTransportModePlane::Admin,
+            "/klog/admin/cluster-state",
+        )
+        .expect("build cluster proxy route");
+        assert_eq!(route, "/.cluster/klog/{node_name}/admin/cluster-state");
     }
 }

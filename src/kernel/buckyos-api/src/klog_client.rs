@@ -14,6 +14,12 @@ use std::time::Duration;
 pub const KLOG_SERVICE_UNIQUE_ID: &str = "klog-service";
 pub const KLOG_SERVICE_NAME: &str = "klog-service";
 pub const KLOG_SERVICE_PORT: u16 = 4070;
+pub const KLOG_CLUSTER_RAFT_SERVICE_NAME: &str = "raft";
+pub const KLOG_CLUSTER_INTER_SERVICE_NAME: &str = "inter";
+pub const KLOG_CLUSTER_ADMIN_SERVICE_NAME: &str = "admin";
+pub const KLOG_CLUSTER_RAFT_PORT: u16 = 21001;
+pub const KLOG_CLUSTER_INTER_PORT: u16 = 21002;
+pub const KLOG_CLUSTER_ADMIN_PORT: u16 = 21003;
 
 pub fn generate_klog_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -27,6 +33,10 @@ pub fn generate_klog_service_doc() -> AppDoc {
     )
     .show_name("Kernel Log Service")
     .selector_type(SelectorType::Random)
+    .service_port("www", KLOG_SERVICE_PORT)
+    .service_port(KLOG_CLUSTER_RAFT_SERVICE_NAME, KLOG_CLUSTER_RAFT_PORT)
+    .service_port(KLOG_CLUSTER_INTER_SERVICE_NAME, KLOG_CLUSTER_INTER_PORT)
+    .service_port(KLOG_CLUSTER_ADMIN_SERVICE_NAME, KLOG_CLUSTER_ADMIN_PORT)
     .build()
     .unwrap()
 }
@@ -177,5 +187,11 @@ mod tests {
             ::klog::rpc::KLOG_JSON_RPC_SERVICE_PATH,
             "/kapi/klog-service"
         );
+        assert_eq!(KLOG_CLUSTER_RAFT_SERVICE_NAME, "raft");
+        assert_eq!(KLOG_CLUSTER_INTER_SERVICE_NAME, "inter");
+        assert_eq!(KLOG_CLUSTER_ADMIN_SERVICE_NAME, "admin");
+        assert_eq!(KLOG_CLUSTER_RAFT_PORT, 21001);
+        assert_eq!(KLOG_CLUSTER_INTER_PORT, 21002);
+        assert_eq!(KLOG_CLUSTER_ADMIN_PORT, 21003);
     }
 }

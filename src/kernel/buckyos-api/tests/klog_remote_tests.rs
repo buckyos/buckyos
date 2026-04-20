@@ -2,12 +2,14 @@ use buckyos_api::{
     init_buckyos_api_runtime, BuckyOSRuntimeType, KLogAppendRequest, KLogLevel,
     KLogMetaDeleteRequest, KLogMetaPutRequest, KLogMetaQueryRequest, KLogQueryRequest,
 };
+use klog::network::KLogClusterStateResponse;
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TEST_APP_ID: &str = "buckycli";
 const TEST_REQUEST_NODE_ID: u64 = 9_001;
 const TEST_TIMEOUT_SECS: u64 = 15;
+const TEST_NODE_GATEWAY_BASE_URL: &str = "http://127.0.0.1:3180";
 
 fn unique_suffix(prefix: &str) -> String {
     let now = SystemTime::now()
@@ -23,6 +25,14 @@ async fn init_logged_in_runtime(
         init_buckyos_api_runtime(TEST_APP_ID, None, BuckyOSRuntimeType::AppClient).await?;
     runtime.login().await?;
     Ok(runtime)
+}
+
+fn require_runtime_node_name(runtime: &buckyos_api::BuckyOSRuntime) -> String {
+    runtime
+        .device_config
+        .as_ref()
+        .map(|device| device.name.clone())
+        .expect("runtime missing device_config.name")
 }
 
 #[tokio::test]
@@ -216,5 +226,50 @@ async fn runtime_klog_03_request_id_dedup() {
     assert!(
         item.message.contains("runtime-dedup-original"),
         "dedup should preserve the original append content"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires real BuckyOS runtime login context and node-gateway cluster route on 127.0.0.1:3180"]
+async fn runtime_klog_04_cluster_state_via_node_gateway() {
+    let runtime = init_logged_in_runtime()
+        .await
+        .expect("init/login runtime for node-gateway cluster-state");
+    let node_name = require_runtime_node_name(&runtime);
+    let url = format!(
+        "{}/.cluster/klog/{}/admin/cluster-state",
+        TEST_NODE_GATEWAY_BASE_URL, node_name
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(TEST_TIMEOUT_SECS))
+        .build()
+        .expect("build reqwest client");
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .expect("send cluster-state request through node gateway");
+    let status = response.status();
+    let body = response.bytes().await.expect("read cluster-state response");
+    assert!(
+        status.is_success(),
+        "cluster-state request failed: status={}, body={}",
+        status,
+        String::from_utf8_lossy(&body)
+    );
+
+    let state: KLogClusterStateResponse =
+        serde_json::from_slice(&body).expect("parse cluster-state response");
+    assert_eq!(state.cluster_name, "test.buckyos.io");
+    assert_eq!(state.cluster_id, "test.buckyos.io");
+    assert_eq!(state.current_leader, Some(state.node_id));
+    assert!(
+        state.voters.contains(&state.node_id),
+        "cluster-state voters should contain local node_id"
+    );
+    assert!(
+        state.nodes.contains_key(&state.node_id),
+        "cluster-state nodes should contain local node entry"
     );
 }

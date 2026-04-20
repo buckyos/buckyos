@@ -1,19 +1,7 @@
 use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use buckyos_api::msg_queue::{
-    generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
-};
-use buckyos_api::{
-    generate_aicc_service_doc, generate_control_panel_service_doc, generate_klog_service_doc,
-    generate_msg_center_service_doc, generate_opendan_service_doc, generate_repo_service_doc,
-    generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc,
-    generate_verify_hub_service_doc, AppDoc, AppServiceSpec, AppType, GatewaySettings,
-    GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SelectorType,
-    ServiceExposeConfig, ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo,
-    ServiceInstanceState, ServiceNode, ServiceState, SubPkgDesc, UserContactSettings,
-    UserSettings, UserState, UserTunnelBinding, UserType, KLOG_SERVICE_PORT,
-    KLOG_SERVICE_UNIQUE_ID, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
-    SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID, generate_kmsg_service_doc,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
@@ -21,17 +9,30 @@ use buckyos_api::{
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID,
 };
+use buckyos_api::{
+    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KLOG_CLUSTER_ADMIN_PORT,
+    KLOG_CLUSTER_ADMIN_SERVICE_NAME, KLOG_CLUSTER_INTER_PORT, KLOG_CLUSTER_INTER_SERVICE_NAME,
+    KLOG_CLUSTER_RAFT_PORT, KLOG_CLUSTER_RAFT_SERVICE_NAME, KLOG_SERVICE_PORT,
+    KLOG_SERVICE_UNIQUE_ID, KernelServiceSpec, NodeConfig, NodeState, OPENDAN_SERVICE_PORT,
+    OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SelectorType, ServiceExposeConfig,
+    ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState,
+    ServiceNode, ServiceState, SubPkgDesc, UserContactSettings, UserSettings, UserState,
+    UserTunnelBinding, UserType, VERIFY_HUB_UNIQUE_ID, generate_aicc_service_doc,
+    generate_control_panel_service_doc, generate_klog_service_doc, generate_msg_center_service_doc,
+    generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
+    generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
+};
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{
-    generate_ed25519_key_pair, load_private_key, AgentDocument, OwnerConfig, VerifyHubInfo,
-    ZoneBootConfig, ZoneConfig, DID,
+    AgentDocument, DID, OwnerConfig, VerifyHubInfo, ZoneBootConfig, ZoneConfig,
+    generate_ed25519_key_pair, load_private_key,
 };
 use package_lib::PackageId;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
@@ -327,9 +328,7 @@ impl SystemConfigBuilder {
 
     pub async fn add_klog(&mut self) -> Result<&mut Self> {
         let service_doc = generate_klog_service_doc();
-        let config =
-            build_kernel_service_spec(KLOG_SERVICE_UNIQUE_ID, KLOG_SERVICE_PORT, 1, service_doc)
-                .await?;
+        let config = build_klog_service_spec(service_doc).await?;
         self.insert_json("services/klog-service/spec", &config)?;
         Ok(self)
     }
@@ -1095,6 +1094,37 @@ async fn build_kernel_service_spec(
     })
 }
 
+async fn build_klog_service_spec(service_doc: AppDoc) -> Result<KernelServiceSpec> {
+    let mut config =
+        build_kernel_service_spec(KLOG_SERVICE_UNIQUE_ID, KLOG_SERVICE_PORT, 1, service_doc)
+            .await?;
+    config.install_config.expose_config.insert(
+        KLOG_CLUSTER_RAFT_SERVICE_NAME.to_string(),
+        ServiceExposeConfig {
+            sub_hostname: Vec::new(),
+            expose_uri: None,
+            expose_port: Some(KLOG_CLUSTER_RAFT_PORT),
+        },
+    );
+    config.install_config.expose_config.insert(
+        KLOG_CLUSTER_INTER_SERVICE_NAME.to_string(),
+        ServiceExposeConfig {
+            sub_hostname: Vec::new(),
+            expose_uri: None,
+            expose_port: Some(KLOG_CLUSTER_INTER_PORT),
+        },
+    );
+    config.install_config.expose_config.insert(
+        KLOG_CLUSTER_ADMIN_SERVICE_NAME.to_string(),
+        ServiceExposeConfig {
+            sub_hostname: Vec::new(),
+            expose_uri: None,
+            expose_port: Some(KLOG_CLUSTER_ADMIN_PORT),
+        },
+    );
+    Ok(config)
+}
+
 fn attach_current_platform_service_pkg(service_doc: &mut AppDoc) {
     let current_pkg = SubPkgDesc::new(service_doc.get_package_id().to_string());
 
@@ -1228,12 +1258,16 @@ impl StartConfigSummary {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_aicc_settings, build_aicc_settings_with_sn_models, build_default_jarvis_agent_spec,
-        build_kernel_service_spec, build_msg_center_settings, build_zone_user_contact_settings,
-        extract_model_ids_from_response, StartConfigSummary, SystemConfigBuilder,
+        StartConfigSummary, SystemConfigBuilder, build_aicc_settings,
+        build_aicc_settings_with_sn_models, build_default_jarvis_agent_spec,
+        build_kernel_service_spec, build_klog_service_spec, build_msg_center_settings,
+        build_zone_user_contact_settings, extract_model_ids_from_response,
     };
     use buckyos_api::{
-        generate_verify_hub_service_doc, AppDoc, AppServiceSpec, AppType, OPENDAN_SERVICE_PORT,
+        AppDoc, AppServiceSpec, AppType, KLOG_CLUSTER_ADMIN_PORT, KLOG_CLUSTER_ADMIN_SERVICE_NAME,
+        KLOG_CLUSTER_INTER_PORT, KLOG_CLUSTER_INTER_SERVICE_NAME, KLOG_CLUSTER_RAFT_PORT,
+        KLOG_CLUSTER_RAFT_SERVICE_NAME, KLOG_SERVICE_PORT, OPENDAN_SERVICE_PORT,
+        generate_klog_service_doc, generate_verify_hub_service_doc,
     };
     use name_lib::DID;
     use serde_json::json;
@@ -1676,6 +1710,43 @@ mod tests {
         assert_eq!(
             spec.service_doc.pkg_list.get_app_pkg_id().as_deref(),
             Some("verify-hub")
+        );
+    }
+
+    #[test]
+    fn build_klog_service_spec_exposes_cluster_ports() {
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        let spec = rt
+            .block_on(build_klog_service_spec(generate_klog_service_doc()))
+            .expect("build klog kernel service spec");
+
+        assert_eq!(
+            spec.install_config
+                .expose_config
+                .get("www")
+                .and_then(|cfg| cfg.expose_port),
+            Some(KLOG_SERVICE_PORT)
+        );
+        assert_eq!(
+            spec.install_config
+                .expose_config
+                .get(KLOG_CLUSTER_RAFT_SERVICE_NAME)
+                .and_then(|cfg| cfg.expose_port),
+            Some(KLOG_CLUSTER_RAFT_PORT)
+        );
+        assert_eq!(
+            spec.install_config
+                .expose_config
+                .get(KLOG_CLUSTER_INTER_SERVICE_NAME)
+                .and_then(|cfg| cfg.expose_port),
+            Some(KLOG_CLUSTER_INTER_PORT)
+        );
+        assert_eq!(
+            spec.install_config
+                .expose_config
+                .get(KLOG_CLUSTER_ADMIN_SERVICE_NAME)
+                .and_then(|cfg| cfg.expose_port),
+            Some(KLOG_CLUSTER_ADMIN_PORT)
         );
     }
 

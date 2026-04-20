@@ -47,6 +47,12 @@ wait_for_port() {
   fail "timeout waiting ${name} on ${host}:${port}"
 }
 
+port_ready() {
+  local host="$1"
+  local port="$2"
+  bash -lc "</dev/tcp/${host}/${port}" >/dev/null 2>&1
+}
+
 ensure_host_resolution() {
   python3 - "$ZONE_HOST" <<'PY'
 import socket
@@ -78,6 +84,22 @@ ensure_local_buckycli() {
   mkdir -p "${HOME}/buckycli"
   cp "${SRC_DIR}/rootfs/bin/buckycli/buckycli" "${HOME}/buckycli/buckycli"
   chmod +x "${HOME}/buckycli/buckycli"
+}
+
+stop_local_node_daemon() {
+  local daemon_pattern="${BUCKYOS_ROOT}/bin/node-daemon/node_daemon"
+  local pids
+  pids="$(pgrep -f "${daemon_pattern}" || true)"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+
+  log "stopping node-daemon before helper klog-service bootstrap: pids=${pids//$'\n'/,}"
+  while IFS= read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    kill "${pid}" 2>/dev/null || true
+  done <<< "${pids}"
+  sleep 2
 }
 
 ensure_klog_bundle() {
@@ -180,10 +202,22 @@ start_local_buckyos() {
 }
 
 start_klog_service() {
+  for _ in $(seq 1 20); do
+    if port_ready 127.0.0.1 "${KLOG_RPC_PORT}" && port_ready 127.0.0.1 "${KLOG_ADMIN_PORT}"; then
+      log "klog-service already managed by node-daemon; skipping helper bootstrap"
+      return 0
+    fi
+    sleep 1
+  done
+
+  log "klog-service is not ready from node-daemon; starting helper bundle"
+  stop_local_node_daemon
   local bundle_dir="${BUCKYOS_ROOT}/bin/klog-service"
+  ensure_klog_bundle
   "${bundle_dir}/stop" || true
   "${bundle_dir}/start"
-  wait_for_port "klog-service" 127.0.0.1 "${KLOG_RPC_PORT}"
+  wait_for_port "klog-service rpc" 127.0.0.1 "${KLOG_RPC_PORT}"
+  wait_for_port "klog-service admin" 127.0.0.1 "${KLOG_ADMIN_PORT}"
 }
 
 ensure_port_free() {
@@ -218,6 +252,18 @@ server {
 
     location /kapi/klog-service {
         proxy_pass http://127.0.0.1:${KLOG_RPC_PORT};
+    }
+
+    location ~ ^/\\.cluster/klog/[^/]+/raft/ {
+        proxy_pass http://127.0.0.1:${KLOG_RAFT_PORT};
+    }
+
+    location ~ ^/\\.cluster/klog/[^/]+/inter/ {
+        proxy_pass http://127.0.0.1:${KLOG_INTER_NODE_PORT};
+    }
+
+    location ~ ^/\\.cluster/klog/[^/]+/admin/ {
+        proxy_pass http://127.0.0.1:${KLOG_ADMIN_PORT};
     }
 
     location / {
