@@ -128,7 +128,7 @@ servers:
                 else
                   echo "oauth failed";
                   local full_url = "https://${REQ.host}/${REQ.uri}";
-                  local oauth_login_url=$(append "${CONTROL_PANEL_URL}login?redirect_url=" $(url_encode $full_url));
+                  local oauth_login_url=$(append "${CONTROL_PANEL_URL}login?redirect_url=" $full_url);
                   redirect $oauth_login_url;
                 end
               end
@@ -144,21 +144,22 @@ servers:
               starts-with $REQ.path $KLOG_CLUSTER_ROUTE_PREFIX || return false;
               local klog_prefix_len=$(strlen $KLOG_CLUSTER_ROUTE_PREFIX);
               local klog_tail=$(slice $REQ.path "${klog_prefix_len}:");
-              match-reg --capture klog_hp $klog_tail "^/?([^/]+)/(raft|inter|admin)(/.*)?$" || return false;
-              match-include $KLOG_CLUSTER_INFO $klog_hp[0] || return false;
-
-              global KLOG_CLUSTER_TARGET_NODE_NAME=$KLOG_CLUSTER_INFO[$klog_hp[0]].node_name;
-              if eq $klog_hp[1] "raft" then
-                global KLOG_CLUSTER_TARGET_PORT=$KLOG_CLUSTER_INFO[$klog_hp[0]].raft_port;
-                return true;
-              end
-              if eq $klog_hp[1] "inter" then
-                global KLOG_CLUSTER_TARGET_PORT=$KLOG_CLUSTER_INFO[$klog_hp[0]].inter_port;
-                return true;
-              end
-              if eq $klog_hp[1] "admin" then
-                global KLOG_CLUSTER_TARGET_PORT=$KLOG_CLUSTER_INFO[$klog_hp[0]].admin_port;
-                return true;
+              for node_name, node_info in $KLOG_CLUSTER_INFO then
+                if starts-with $klog_tail $(append "/" $node_name "/raft") then
+                  global KLOG_CLUSTER_TARGET_NODE_NAME=$node_info.node_name;
+                  global KLOG_CLUSTER_TARGET_PORT=$node_info.raft_port;
+                  return true;
+                end
+                if starts-with $klog_tail $(append "/" $node_name "/inter") then
+                  global KLOG_CLUSTER_TARGET_NODE_NAME=$node_info.node_name;
+                  global KLOG_CLUSTER_TARGET_PORT=$node_info.inter_port;
+                  return true;
+                end
+                if starts-with $klog_tail $(append "/" $node_name "/admin") then
+                  global KLOG_CLUSTER_TARGET_NODE_NAME=$node_info.node_name;
+                  global KLOG_CLUSTER_TARGET_PORT=$node_info.admin_port;
+                  return true;
+                end
               end
               global KLOG_CLUSTER_TARGET_NODE_NAME="";
               global KLOG_CLUSTER_TARGET_PORT="";
