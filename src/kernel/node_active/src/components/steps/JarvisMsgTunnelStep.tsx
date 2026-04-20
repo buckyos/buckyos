@@ -60,9 +60,9 @@ const JarvisMsgTunnelStep = ({
         if (!url) {
             return;
         }
-        const runtimeType = buckyos.getRuntimeType?.();
-        console.info("runtimeType", runtimeType);
-        if (runtimeType === RuntimeType.AppRuntime) {
+        const isAppRuntime = buckyos.getRuntimeType?.() === RuntimeType.AppRuntime;
+        console.info("isAppRuntime", isAppRuntime);
+        if (isAppRuntime) {
             console.info("openExternal via buckyos.openExternalUrl", {
                 url
             });

@@ -85,12 +85,13 @@ const AIProviderStep = ({ wizardData, onUpdate, onNext, onBack }: Props) => {
     };
 
     const openTutorial = () => {
+        const isAppRuntime = buckyos.getRuntimeType?.() === RuntimeType.AppRuntime;
+        console.info("isAppRuntime", isAppRuntime);
+
         if (!AI_PROVIDER_TUTORIAL_URL) {
             return;
         }
-        const runtimeType = buckyos.getRuntimeType?.();
-        console.info("runtimeType", runtimeType);
-        if (runtimeType === RuntimeType.AppRuntime) {
+        if (isAppRuntime) {
             console.info("openExternal via buckyos.openExternalUrl", {
                 AI_PROVIDER_TUTORIAL_URL
             });
