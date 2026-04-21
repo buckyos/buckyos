@@ -46,9 +46,10 @@ buckyos-devtest 2zone_sn snapshot init
 将当前代码库中的 BuckyOS 组件构建并部署到虚拟机。
 
 ```bash
-# 0. 本地Build,Install
-buckyos-build 
-buckyos-install
+# 0. 本地 Build Linux 版本，再安装到 rootfs
+# Apple Silicon 主机使用 aarch64；Intel/AMD64 主机使用 amd64
+uv run ./buckyos-build.py aarch64
+uv run ./buckyos-install.py --all
 
 # 1. 编译并安装所有配置的 App
 # 脚本会自动执行 build -> push -> install 流程
@@ -78,8 +79,8 @@ buckyos-devtest  2zone_sn run alice "python3 /opt/testcases/test_demo.py"
 
 **场景 A：修改了代码，需要更新软件**
 ```bash
-buckyos-build
-buckyos-update
+# Apple Silicon 主机使用 aarch64；Intel/AMD64 主机使用 amd64
+uv run ./buckyos-build.py aarch64
 # 增量更新（执行 update 流程，通常比完整 install 快）
 buckyos-devtest 2zone_sn update
 

@@ -18,13 +18,17 @@
 
 ### 通用流程
 
-- 构建(cargo update && buckyos-build)
+- 构建(cargo update && uv run ./buckyos-build.py <linux-arch>)
 - 制作rootfs
-  - buckyos-install
-  - make_config.py release
+  - uv run ./buckyos-install.py --all
+  - uv run ./make_config.py release
   - 集成其它组件: download artifact 
     - 每个artifact通常是由另一个CI流程制作的
     - artifact通常已经有数字签名，最好是已经发布
+
+其中 `<linux-arch>` 必须显式指定 Linux 目标:
+- Apple Silicon 主机使用 `aarch64`
+- Intel/AMD64 主机使用 `amd64`
 - 对rootfs里的必要组件进行数字签名
 - 使用目标平台配置，制作安装包 
 - 对安装包进行数字签名（这个能在git action完成么？）
@@ -103,6 +107,4 @@ Windows / OSX 平台通过BuckyOS Desktop Service分发
 - 出厂预装安装，
 - 使用该发行版支持的软件包安装(deb, rpm, pkg)
 - 下载一个.sh脚本安装 (类似rustup)
-
-
 
