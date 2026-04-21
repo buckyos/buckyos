@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 use clap::{Arg, ArgMatches, Command};
 use futures::prelude::*;
 use log::*;
-use named_store::NamedStoreMgr;
+use named_store::NamedDataMgr as NamedStoreMgr;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_value, json, Value};
 use simplelog::*;
@@ -1720,7 +1720,7 @@ mod tests {
                 1,
                 vec![StoreTarget {
                     store_id,
-                    device_did: None,
+                    device_did: String::new(),
                     capacity: None,
                     used: None,
                     readonly: false,

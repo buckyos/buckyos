@@ -21,7 +21,7 @@ use tokio::sync::{OnceCell, RwLock};
 
 use name_client::*;
 use name_lib::*;
-use named_store::NamedStoreMgr;
+use named_store::NamedDataMgr as NamedStoreMgr;
 
 use crate::aicc_client::*;
 use crate::app_mgr::*;
@@ -269,7 +269,8 @@ impl BuckyOSRuntime {
                 let config_path = get_buckyos_root_dir()
                     .join("storage")
                     .join("named_store.json");
-                NamedStoreMgr::get_store_mgr(config_path.as_path())
+                let http_backend_links = HashMap::new();
+                NamedStoreMgr::get_store_mgr(config_path.as_path(), &http_backend_links)
                     .await
                     .map_err(|e| {
                         RPCErrors::ReasonError(format!(

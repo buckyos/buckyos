@@ -9,7 +9,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use kRPC::RPCErrors;
 use log::{info, warn};
-use named_store::NamedStoreMgr;
+use named_store::NamedDataMgr as NamedStoreMgr;
 use ndn_lib::{
     build_named_object_by_json, build_obj_id, ActionObject, FileObject, NamedObject, ObjId,
     StoreMode, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,

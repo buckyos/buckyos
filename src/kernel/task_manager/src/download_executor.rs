@@ -3,6 +3,7 @@ use buckyos_api::{get_buckyos_api_runtime, AppDoc, Task, TaskStatus, TASK_MANAGE
 use buckyos_kit::get_buckyos_service_data_dir;
 use lazy_static::lazy_static;
 use log::{error, info, warn};
+use named_store::NamedDataMgr as NamedStoreMgr;
 use ndn_lib::{
     cyfs_get_obj_id_from_url, FileObject, NdnAction, NdnError, ObjId, ProgressCallbackResult,
     OBJ_TYPE_PKG,
@@ -526,7 +527,7 @@ fn download_mode(objid: Option<&ObjId>) -> &'static str {
 
 fn build_ndn_client(
     session_token: &str,
-    named_store: Option<named_store::NamedStoreMgr>,
+    named_store: Option<NamedStoreMgr>,
     download_options: &Value,
 ) -> std::result::Result<CyfsNdnClient, String> {
     let mut builder = CyfsNdnClient::builder();
@@ -748,7 +749,7 @@ async fn pull_named_store_download(
     task_id: i64,
     download_url: &str,
     objid: &ObjId,
-    store_mgr: &named_store::NamedStoreMgr,
+    store_mgr: &NamedStoreMgr,
     download_options: &Value,
     progress_callback: Option<Arc<Mutex<ndn_lib::NdnProgressCallback>>>,
 ) -> std::result::Result<CyfsPullResult, String> {
@@ -839,7 +840,7 @@ async fn pull_direct_to_named_store(
     client: &CyfsNdnClient,
     download_url: &str,
     objid: &ObjId,
-    store_mgr: &named_store::NamedStoreMgr,
+    store_mgr: &NamedStoreMgr,
     progress_callback: Option<Arc<Mutex<ndn_lib::NdnProgressCallback>>>,
 ) -> std::result::Result<CyfsPullResult, String> {
     info!(
@@ -890,7 +891,7 @@ async fn pull_wrapped_file_object_to_named_store(
     download_url: &str,
     verified: VerifiedJsonObject,
     file_obj: FileObject,
-    store_mgr: &named_store::NamedStoreMgr,
+    store_mgr: &NamedStoreMgr,
     download_options: &Value,
     progress_callback: Option<Arc<Mutex<ndn_lib::NdnProgressCallback>>>,
 ) -> std::result::Result<CyfsPullResult, String> {
@@ -937,7 +938,7 @@ async fn pull_sub_pkg_to_named_store(
     client: &CyfsNdnClient,
     download_url: &str,
     objid: &ObjId,
-    store_mgr: &named_store::NamedStoreMgr,
+    store_mgr: &NamedStoreMgr,
     download_options: &Value,
 ) -> std::result::Result<CyfsPullResult, String> {
     if objid.is_chunk() || objid.is_chunk_list() || objid.is_file_object() {
@@ -1014,7 +1015,7 @@ async fn pull_app_doc_to_named_store(
     download_url: &str,
     verified: VerifiedJsonObject,
     app_doc: AppDoc,
-    store_mgr: &named_store::NamedStoreMgr,
+    store_mgr: &NamedStoreMgr,
     download_options: &Value,
 ) -> std::result::Result<CyfsPullResult, String> {
     ensure_task_can_continue(store.clone(), task_id).await?;

@@ -28,7 +28,7 @@ use http_body_util::combinators::BoxBody;
 use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
 use log::{info, warn};
 use name_lib::decode_jwt_claim_without_verify;
-use named_store::{NamedLocalStore, NamedStoreMgr, StoreLayout, StoreTarget};
+use named_store::{NamedDataMgr as NamedStoreMgr, NamedLocalStore, StoreLayout, StoreTarget};
 use ndn_lib::{
     build_obj_id, load_named_object_from_obj_str, verify_named_object, ActionObject, ChunkId,
     InclusionProof, NamedObject, ObjId, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,
@@ -1164,7 +1164,7 @@ async fn create_ready_check_store_mgr(
             1,
             vec![StoreTarget {
                 store_id,
-                device_did: None,
+                device_did: String::new(),
                 capacity: None,
                 used: None,
                 readonly: false,
