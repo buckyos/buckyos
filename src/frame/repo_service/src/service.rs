@@ -28,7 +28,7 @@ use http_body_util::combinators::BoxBody;
 use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
 use log::{info, warn};
 use name_lib::decode_jwt_claim_without_verify;
-use named_store::{NamedDataMgr as NamedStoreMgr, NamedLocalStore, StoreLayout, StoreTarget};
+use named_store::{NamedDataMgr, NamedLocalStore, StoreLayout, StoreTarget};
 use ndn_lib::{
     build_obj_id, load_named_object_from_obj_str, verify_named_object, ActionObject, ChunkId,
     InclusionProof, NamedObject, ObjId, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,
@@ -80,7 +80,7 @@ impl RepoService {
         Ok(service)
     }
 
-    async fn get_named_store_mgr(&self) -> std::result::Result<NamedStoreMgr, RPCErrors> {
+    async fn get_named_store_mgr(&self) -> std::result::Result<NamedDataMgr, RPCErrors> {
         if let Ok(runtime) = get_buckyos_api_runtime() {
             return runtime.get_named_store().await.map_err(|err| {
                 RPCErrors::ReasonError(format!("open system named store failed: {err}"))
@@ -1145,7 +1145,7 @@ fn validate_receipt(
 
 async fn create_ready_check_store_mgr(
     store_root: &Path,
-) -> std::result::Result<NamedStoreMgr, RPCErrors> {
+) -> std::result::Result<NamedDataMgr, RPCErrors> {
     let store = NamedLocalStore::get_named_store_by_path(store_root.to_path_buf())
         .await
         .map_err(|err| {
@@ -1157,7 +1157,7 @@ async fn create_ready_check_store_mgr(
     let store_id = store.store_id().to_string();
     let store_ref = Arc::new(tokio::sync::Mutex::new(store));
 
-    let store_mgr = NamedStoreMgr::new();
+    let store_mgr = NamedDataMgr::new();
     store_mgr.register_store(store_ref).await;
     store_mgr
         .add_layout(StoreLayout::new(

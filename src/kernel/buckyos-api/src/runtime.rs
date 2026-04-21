@@ -21,7 +21,7 @@ use tokio::sync::{OnceCell, RwLock};
 
 use name_client::*;
 use name_lib::*;
-use named_store::NamedDataMgr as NamedStoreMgr;
+use named_store::NamedDataMgr;
 
 use crate::aicc_client::*;
 use crate::app_mgr::*;
@@ -179,7 +179,7 @@ pub struct BuckyOSRuntime {
     pub refresh_token: Arc<RwLock<String>>,
     trust_keys: Arc<RwLock<HashMap<String, DecodingKey>>>,
     last_update_service_info_time: RwLock<u64>,
-    named_store_mgr: OnceCell<NamedStoreMgr>,
+    named_store_mgr: OnceCell<NamedDataMgr>,
     system_config_client: OnceCell<Arc<SystemConfigClient>>,
     background_task_status:
         Arc<RwLock<HashMap<RuntimeBackgroundTaskKind, RuntimeBackgroundTaskStatus>>>,
@@ -262,15 +262,15 @@ impl BuckyOSRuntime {
         *main_service_port = port;
     }
 
-    pub async fn get_named_store(&self) -> Result<NamedStoreMgr> {
-        let store_mgr: &NamedStoreMgr = self
+    pub async fn get_named_store(&self) -> Result<NamedDataMgr> {
+        let store_mgr: &NamedDataMgr = self
             .named_store_mgr
             .get_or_try_init(|| async {
                 let config_path = get_buckyos_root_dir()
                     .join("storage")
                     .join("named_store.json");
                 let http_backend_links = HashMap::new();
-                NamedStoreMgr::get_store_mgr(config_path.as_path(), &http_backend_links)
+                NamedDataMgr::get_store_mgr(config_path.as_path(), &http_backend_links)
                     .await
                     .map_err(|e| {
                         RPCErrors::ReasonError(format!(

@@ -1,6 +1,6 @@
 use crate::error::{WorkflowError, WorkflowResult};
 use async_trait::async_trait;
-use named_store::NamedDataMgr as NamedStoreMgr;
+use named_store::NamedDataMgr;
 use ndn_lib::ObjId;
 use serde::Serialize;
 use serde_json::Value;
@@ -49,11 +49,11 @@ impl WorkflowObjectStore for InMemoryObjectStore {
 
 #[derive(Clone)]
 pub struct NamedStoreObjectStore {
-    store: NamedStoreMgr,
+    store: NamedDataMgr,
 }
 
 impl NamedStoreObjectStore {
-    pub fn new(store: NamedStoreMgr) -> Self {
+    pub fn new(store: NamedDataMgr) -> Self {
         Self { store }
     }
 }

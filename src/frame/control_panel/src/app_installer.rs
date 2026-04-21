@@ -9,7 +9,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use kRPC::RPCErrors;
 use log::{info, warn};
-use named_store::NamedDataMgr as NamedStoreMgr;
+use named_store::NamedDataMgr;
 use ndn_lib::{
     build_named_object_by_json, build_obj_id, ActionObject, FileObject, NamedObject, ObjId,
     StoreMode, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,
@@ -1885,7 +1885,7 @@ impl AppInstaller {
 
     async fn package_source_to_payload(
         &self,
-        named_store: &NamedStoreMgr,
+        named_store: &NamedDataMgr,
         temp_root: &Path,
         source: &PackageSource,
         archive_base_name: &str,

@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 use clap::{Arg, ArgMatches, Command};
 use futures::prelude::*;
 use log::*;
-use named_store::NamedDataMgr as NamedStoreMgr;
+use named_store::NamedDataMgr;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_value, json, Value};
 use simplelog::*;
@@ -305,7 +305,7 @@ fn resolve_static_dir_pkg_id(app_info: &serde_json::Map<String, Value>) -> Resul
 async fn index_static_dir_pkg_meta_from_named_store(
     pkg_env_path: &Path,
     resolved_pkg_id: &str,
-    store_mgr: &NamedStoreMgr,
+    store_mgr: &NamedDataMgr,
 ) -> Result<bool> {
     let package_id = PackageId::parse(resolved_pkg_id).map_err(|err| {
         NodeDaemonErrors::ReasonError(format!(
@@ -1706,14 +1706,14 @@ mod tests {
         })
     }
 
-    async fn create_test_store_mgr(base_dir: &Path) -> NamedStoreMgr {
+    async fn create_test_store_mgr(base_dir: &Path) -> NamedDataMgr {
         let store = NamedLocalStore::get_named_store_by_path(base_dir.join("named_store"))
             .await
             .unwrap();
         let store_id = store.store_id().to_string();
         let store_ref = Arc::new(tokio::sync::Mutex::new(store));
 
-        let store_mgr = NamedStoreMgr::new();
+        let store_mgr = NamedDataMgr::new();
         store_mgr.register_store(store_ref).await;
         store_mgr
             .add_layout(StoreLayout::new(
