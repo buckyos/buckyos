@@ -226,7 +226,23 @@ impl OpenAIProvider {
     }
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
-        if model.starts_with("gpt-4.1-mini") {
+        if model.starts_with("gpt-5.4-pro") {
+            (30.0, 180.0)
+        } else if model.starts_with("gpt-5.4-mini") {
+            (0.75, 4.50)
+        } else if model.starts_with("gpt-5.4-nano") {
+            (0.20, 1.25)
+        } else if model.starts_with("gpt-5.4") {
+            (2.50, 15.00)
+        } else if model.starts_with("gpt-5-pro") {
+            (15.00, 120.00)
+        } else if model.starts_with("gpt-5-mini") {
+            (0.25, 2.00)
+        } else if model.starts_with("gpt-5-nano") || model.starts_with("gpt-5-nono") {
+            (0.05, 0.40)
+        } else if model.starts_with("gpt-5") {
+            (1.25, 10.00)
+        } else if model.starts_with("gpt-4.1-mini") {
             (0.40, 1.60)
         } else if model.starts_with("gpt-4.1") {
             (2.00, 8.00)
@@ -307,6 +323,44 @@ impl OpenAIProvider {
     fn estimate_text2image_cost(req: &CompleteRequest, model: &str) -> Option<f64> {
         let per_image = if model.starts_with("dall-e-2") {
             0.02
+        } else if model.starts_with("gpt-image-1") {
+            let quality = req
+                .payload
+                .options
+                .as_ref()
+                .and_then(|value| value.get("quality"))
+                .and_then(|value| value.as_str())
+                .or_else(|| {
+                    req.payload
+                        .input_json
+                        .as_ref()
+                        .and_then(|value| value.get("quality"))
+                        .and_then(|value| value.as_str())
+                })
+                .unwrap_or("medium");
+            let size = req
+                .payload
+                .options
+                .as_ref()
+                .and_then(|value| value.get("size"))
+                .and_then(|value| value.as_str())
+                .or_else(|| {
+                    req.payload
+                        .input_json
+                        .as_ref()
+                        .and_then(|value| value.get("size"))
+                        .and_then(|value| value.as_str())
+                })
+                .unwrap_or("1024x1024");
+            match (quality, size) {
+                ("low", "1024x1536") | ("low", "1536x1024") => 0.016,
+                ("medium", "1024x1536") | ("medium", "1536x1024") => 0.063,
+                ("high", "1024x1536") | ("high", "1536x1024") => 0.25,
+                ("low", _) => 0.011,
+                ("high", _) => 0.167,
+                (_, "1024x1536") | (_, "1536x1024") => 0.063,
+                _ => 0.042,
+            }
         } else if model.starts_with("dall-e-3") {
             let quality = req
                 .payload
@@ -2088,6 +2142,23 @@ mod tests {
         )
     }
 
+    fn build_text2image_request(options: Option<Value>) -> CompleteRequest {
+        CompleteRequest::new(
+            Capability::Text2Image,
+            ModelSpec::new("text2image.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                Some("draw a test image".to_string()),
+                vec![],
+                vec![],
+                vec![],
+                None,
+                options,
+            ),
+            None,
+        )
+    }
+
     #[test]
     fn estimate_tokens_uses_max_tokens_first() {
         let request = build_llm_request(Some(json!({
@@ -2127,6 +2198,62 @@ mod tests {
 
         let (_input_tokens, output_tokens) = OpenAIProvider::estimate_tokens(&request);
         assert_eq!(output_tokens, 512);
+    }
+
+    #[test]
+    fn price_table_covers_current_gpt5_family_models() {
+        assert_eq!(OpenAIProvider::price_per_1m_tokens("gpt-5"), (1.25, 10.0));
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5-mini"),
+            (0.25, 2.0)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5-nano"),
+            (0.05, 0.4)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5-nono"),
+            (0.05, 0.4)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5-pro"),
+            (15.0, 120.0)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.4"),
+            (2.5, 15.0)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.4-mini"),
+            (0.75, 4.5)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.4-nano"),
+            (0.20, 1.25)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.4-pro"),
+            (30.0, 180.0)
+        );
+    }
+
+    #[test]
+    fn estimate_text2image_cost_supports_gpt_image_1_quality_and_size() {
+        let medium_square = build_text2image_request(None);
+        assert_eq!(
+            OpenAIProvider::estimate_text2image_cost(&medium_square, "gpt-image-1"),
+            Some(0.042)
+        );
+
+        let high_landscape = build_text2image_request(Some(json!({
+            "quality": "high",
+            "size": "1536x1024",
+            "n": 2
+        })));
+        assert_eq!(
+            OpenAIProvider::estimate_text2image_cost(&high_landscape, "gpt-image-1"),
+            Some(0.5)
+        );
     }
 
     #[test]

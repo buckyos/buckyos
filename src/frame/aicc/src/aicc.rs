@@ -10,7 +10,7 @@ use buckyos_api::{
 };
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -24,6 +24,7 @@ const EWMA_ALPHA: f64 = 0.2;
 const AICC_TASK_TYPE: &str = "aicc.compute";
 const AICC_TASK_EVENT_RETENTION: usize = 64;
 const REDACTED_BASE64_PLACEHOLDER: &str = "[redacted_base64]";
+const SN_OPENAI_FREE_CREDIT_USD: f64 = 15.0;
 
 #[derive(Clone, Debug, Default)]
 pub struct InvokeCtx {
@@ -114,6 +115,80 @@ impl ProviderInstance {
 pub struct CostEstimate {
     pub estimated_cost_usd: Option<f64>,
     pub estimated_latency_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct SnOpenAIBillingAdjustment {
+    raw_cost_usd: f64,
+    billed_cost_usd: f64,
+    credit_applied_usd: f64,
+    remaining_credit_usd: f64,
+}
+
+#[derive(Clone, Default)]
+struct SnOpenAIBillingLedger {
+    spent_raw_cost_usd: Arc<RwLock<HashMap<String, f64>>>,
+}
+
+impl SnOpenAIBillingLedger {
+    fn preview_billed_cost(
+        &self,
+        tenant_id: &str,
+        provider_type: &str,
+        raw_cost_usd: Option<f64>,
+    ) -> Option<f64> {
+        let raw_cost_usd = raw_cost_usd?.max(0.0);
+        if provider_type != "sn-openai" {
+            return Some(raw_cost_usd);
+        }
+
+        let spent_raw_cost_usd = self
+            .spent_raw_cost_usd
+            .read()
+            .ok()
+            .and_then(|items| items.get(tenant_id).copied())
+            .unwrap_or(0.0)
+            .max(0.0);
+        Some(
+            Self::adjust_from_spent(spent_raw_cost_usd, raw_cost_usd)
+                .billed_cost_usd
+                .max(0.0),
+        )
+    }
+
+    fn apply_charge(
+        &self,
+        tenant_id: &str,
+        provider_type: &str,
+        raw_cost_usd: Option<f64>,
+    ) -> Option<SnOpenAIBillingAdjustment> {
+        if provider_type != "sn-openai" {
+            return None;
+        }
+
+        let raw_cost_usd = raw_cost_usd?.max(0.0);
+        let mut spent = self.spent_raw_cost_usd.write().ok()?;
+        let spent_raw_cost_usd = spent.get(tenant_id).copied().unwrap_or(0.0).max(0.0);
+        let adjustment = Self::adjust_from_spent(spent_raw_cost_usd, raw_cost_usd);
+        spent.insert(tenant_id.to_string(), spent_raw_cost_usd + raw_cost_usd);
+        Some(adjustment)
+    }
+
+    fn adjust_from_spent(
+        spent_raw_cost_usd: f64,
+        raw_cost_usd: f64,
+    ) -> SnOpenAIBillingAdjustment {
+        let remaining_credit_usd = (SN_OPENAI_FREE_CREDIT_USD - spent_raw_cost_usd).max(0.0);
+        let credit_applied_usd = raw_cost_usd.min(remaining_credit_usd).max(0.0);
+        let billed_cost_usd = (raw_cost_usd - credit_applied_usd).max(0.0);
+
+        SnOpenAIBillingAdjustment {
+            raw_cost_usd,
+            billed_cost_usd,
+            credit_applied_usd,
+            remaining_credit_usd: (remaining_credit_usd - credit_applied_usd).max(0.0),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -865,6 +940,7 @@ impl RouteDecision {
 pub struct Router;
 
 impl Router {
+    #[allow(dead_code)]
     pub fn route(
         &self,
         tenant_id: &str,
@@ -873,6 +949,27 @@ impl Router {
         registry: &Registry,
         route_cfg: &RouteConfig,
         model_catalog: &ModelCatalog,
+    ) -> std::result::Result<RouteDecision, RPCErrors> {
+        self.route_with_billing(
+            tenant_id,
+            req,
+            snapshot,
+            registry,
+            route_cfg,
+            model_catalog,
+            None,
+        )
+    }
+
+    fn route_with_billing(
+        &self,
+        tenant_id: &str,
+        req: &CompleteRequest,
+        snapshot: &RegistrySnapshot,
+        registry: &Registry,
+        route_cfg: &RouteConfig,
+        model_catalog: &ModelCatalog,
+        sn_openai_billing: Option<&SnOpenAIBillingLedger>,
     ) -> std::result::Result<RouteDecision, RPCErrors> {
         if snapshot.candidates.is_empty() {
             return Err(reason_error(
@@ -979,8 +1076,17 @@ impl Router {
             };
 
             let estimate = provider.estimate_cost(req, provider_model.as_str());
+            let effective_estimated_cost = sn_openai_billing
+                .and_then(|billing| {
+                    billing.preview_billed_cost(
+                        tenant_id,
+                        provider_type,
+                        estimate.estimated_cost_usd,
+                    )
+                })
+                .or(estimate.estimated_cost_usd);
             if let Some(max_cost) = req.requirements.max_cost_usd {
-                if let Some(estimated_cost) = estimate.estimated_cost_usd {
+                if let Some(estimated_cost) = effective_estimated_cost {
                     if estimated_cost > max_cost {
                         debug!(
                             "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=estimated_cost_exceeds_limit estimated_cost_usd={} max_cost_usd={}",
@@ -1022,7 +1128,7 @@ impl Router {
             scored.push(ScoredRouteCandidate {
                 instance_id: candidate.instance.instance_id.clone(),
                 provider_model,
-                cost: estimate.estimated_cost_usd.unwrap_or(1.0).max(0.0),
+                cost: effective_estimated_cost.unwrap_or(1.0).max(0.0),
                 latency: predicted_latency_ms.max(0.0),
                 load: candidate.metrics.in_flight as f64,
                 error: candidate.metrics.ewma_error_rate.clamp(0.0, 1.0),
@@ -1120,6 +1226,7 @@ pub struct AIComputeCenter {
     registry: Registry,
     router: Router,
     route_cfg: Arc<RwLock<RouteConfig>>,
+    sn_openai_billing: SnOpenAIBillingLedger,
     model_catalog: ModelCatalog,
     resource_resolver: Arc<dyn ResourceResolver>,
     sink_factory: Arc<dyn TaskEventSinkFactory>,
@@ -1162,6 +1269,7 @@ impl AIComputeCenter {
             registry,
             router: Router,
             route_cfg: Arc::new(RwLock::new(RouteConfig::default())),
+            sn_openai_billing: SnOpenAIBillingLedger::default(),
             model_catalog,
             resource_resolver: Arc::new(PassthroughResourceResolver),
             sink_factory: Arc::new(DefaultTaskEventSinkFactory),
@@ -1211,6 +1319,44 @@ impl AIComputeCenter {
 
     pub fn set_url_scheme_allowlist(&mut self, scheme_allowlist: HashSet<String>) {
         self.url_scheme_allowlist = scheme_allowlist;
+    }
+
+    fn apply_billing_to_summary(
+        &self,
+        ctx: &InvokeCtx,
+        provider_type: &str,
+        summary: &mut AiResponseSummary,
+    ) {
+        let Some(cost) = summary.cost.clone() else {
+            return;
+        };
+        let Some(adjustment) =
+            self.sn_openai_billing
+                .apply_charge(ctx.tenant_id.as_str(), provider_type, Some(cost.amount))
+        else {
+            return;
+        };
+
+        summary.cost = Some(buckyos_api::AiCost {
+            amount: adjustment.billed_cost_usd,
+            currency: cost.currency,
+        });
+
+        let extra_value = summary.extra.get_or_insert_with(|| Value::Object(Map::new()));
+        if !extra_value.is_object() {
+            *extra_value = Value::Object(Map::new());
+        }
+        if let Value::Object(extra) = extra_value {
+            extra.insert(
+                "billing".to_string(),
+                json!({
+                    "raw_cost_usd": adjustment.raw_cost_usd,
+                    "billed_cost_usd": adjustment.billed_cost_usd,
+                    "sn_openai_credit_applied_usd": adjustment.credit_applied_usd,
+                    "sn_openai_credit_remaining_usd": adjustment.remaining_credit_usd,
+                }),
+            );
+        }
     }
 
     pub async fn complete(
@@ -1292,13 +1438,14 @@ impl AIComputeCenter {
             request.requirements.max_latency_ms
         );
 
-        let decision = match self.router.route(
+        let decision = match self.router.route_with_billing(
             invoke_ctx.tenant_id.as_str(),
             &request,
             &snapshot,
             &self.registry,
             &route_cfg,
             &self.model_catalog,
+            Some(&self.sn_openai_billing),
         ) {
             Ok(result) => result,
             Err(error) => {
@@ -1573,7 +1720,14 @@ impl AIComputeCenter {
             let elapsed_ms = started_at.elapsed().as_millis() as f64;
 
             match result {
-                Ok(start_result) => {
+                Ok(mut start_result) => {
+                    if let ProviderStartResult::Immediate(summary) = &mut start_result {
+                        self.apply_billing_to_summary(
+                            ctx,
+                            provider.instance().provider_type.as_str(),
+                            summary,
+                        );
+                    }
                     self.registry
                         .record_start_success(attempt.instance_id.as_str(), elapsed_ms);
                     match &start_result {
@@ -2304,6 +2458,7 @@ mod tests {
         instance: ProviderInstance,
         cost: CostEstimate,
         start_results: Mutex<VecDeque<std::result::Result<ProviderStartResult, ProviderError>>>,
+        start_call_count: std::sync::atomic::AtomicUsize,
         canceled: Mutex<Vec<String>>,
     }
 
@@ -2317,8 +2472,13 @@ mod tests {
                 instance,
                 cost,
                 start_results: Mutex::new(start_results.into_iter().collect()),
+                start_call_count: std::sync::atomic::AtomicUsize::new(0),
                 canceled: Mutex::new(vec![]),
             }
+        }
+
+        fn start_calls(&self) -> usize {
+            self.start_call_count.load(AtomicOrdering::Relaxed)
         }
     }
 
@@ -2339,6 +2499,8 @@ mod tests {
             _req: ResolvedRequest,
             _sink: Arc<dyn TaskEventSink>,
         ) -> std::result::Result<ProviderStartResult, ProviderError> {
+            self.start_call_count
+                .fetch_add(1, AtomicOrdering::Relaxed);
             let mut queue = self.start_results.lock().unwrap();
             queue
                 .pop_front()
@@ -2726,6 +2888,148 @@ mod tests {
                 .pointer("/aicc/rootid")
                 .and_then(|value| value.as_str()),
             Some("session-xyz")
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_prefers_sn_openai_when_free_credit_covers_estimated_cost() {
+        let registry = Registry::default();
+        let catalog = ModelCatalog::default();
+        catalog.set_mapping(
+            Capability::LlmRouter,
+            "llm.plan.default",
+            "sn-openai",
+            "gpt-5-mini",
+        );
+        catalog.set_mapping(
+            Capability::LlmRouter,
+            "llm.plan.default",
+            "openai",
+            "gpt-5-mini",
+        );
+
+        let sn_provider = Arc::new(MockProvider::new(
+            mock_instance("sn-openai-1", "sn-openai"),
+            CostEstimate {
+                estimated_cost_usd: Some(0.20),
+                estimated_latency_ms: Some(80),
+            },
+            vec![Ok(ProviderStartResult::Started)],
+        ));
+        let paid_provider = Arc::new(MockProvider::new(
+            mock_instance("openai-1", "openai"),
+            CostEstimate {
+                estimated_cost_usd: Some(0.05),
+                estimated_latency_ms: Some(20),
+            },
+            vec![Ok(ProviderStartResult::Started)],
+        ));
+        registry.add_provider(sn_provider.clone());
+        registry.add_provider(paid_provider.clone());
+
+        let center = center_with_taskmgr(registry, catalog);
+        center.update_route_config(RouteConfig {
+            global_weights: RouteWeights {
+                w_cost: 1.0,
+                w_latency: 0.0,
+                w_load: 0.0,
+                w_error: 0.0,
+            },
+            ..RouteConfig::default()
+        });
+
+        let mut request = base_request();
+        request.requirements.max_cost_usd = Some(0.10);
+        let response = center
+            .handle_complete(request, RPCContext::default())
+            .await
+            .expect("complete should succeed");
+
+        assert_eq!(response.status, CompleteStatus::Running);
+        assert_eq!(sn_provider.start_calls(), 1);
+        assert_eq!(paid_provider.start_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn complete_applies_sn_openai_free_credit_before_reporting_cost() {
+        let registry = Registry::default();
+        let catalog = ModelCatalog::default();
+        catalog.set_mapping(
+            Capability::LlmRouter,
+            "llm.plan.default",
+            "sn-openai",
+            "gpt-5-mini",
+        );
+
+        let provider = Arc::new(MockProvider::new(
+            mock_instance("sn-openai-1", "sn-openai"),
+            CostEstimate {
+                estimated_cost_usd: Some(2.0),
+                estimated_latency_ms: Some(100),
+            },
+            vec![
+                Ok(ProviderStartResult::Immediate(AiResponseSummary {
+                    text: Some("first".to_string()),
+                    tool_calls: vec![],
+                    artifacts: vec![],
+                    usage: None,
+                    cost: Some(buckyos_api::AiCost {
+                        amount: 2.0,
+                        currency: "USD".to_string(),
+                    }),
+                    finish_reason: Some("stop".to_string()),
+                    provider_task_ref: None,
+                    extra: None,
+                })),
+                Ok(ProviderStartResult::Immediate(AiResponseSummary {
+                    text: Some("second".to_string()),
+                    tool_calls: vec![],
+                    artifacts: vec![],
+                    usage: None,
+                    cost: Some(buckyos_api::AiCost {
+                        amount: 14.0,
+                        currency: "USD".to_string(),
+                    }),
+                    finish_reason: Some("stop".to_string()),
+                    provider_task_ref: None,
+                    extra: None,
+                })),
+            ],
+        ));
+        registry.add_provider(provider);
+
+        let center = center_with_taskmgr(registry, catalog);
+
+        let mut first_request = base_request();
+        first_request.requirements.max_cost_usd = Some(20.0);
+        let first = center
+            .handle_complete(first_request, RPCContext::default())
+            .await
+            .expect("first complete should succeed");
+        assert_eq!(first.status, CompleteStatus::Succeeded);
+        assert_eq!(
+            first.result.as_ref().and_then(|summary| summary.cost.as_ref()).map(|cost| cost.amount),
+            Some(0.0)
+        );
+        assert_eq!(
+            first.result
+                .as_ref()
+                .and_then(|summary| summary.extra.as_ref())
+                .and_then(|extra| extra.pointer("/billing/sn_openai_credit_applied_usd"))
+                .and_then(|value| value.as_f64()),
+            Some(2.0)
+        );
+
+        let mut second_request = base_request();
+        second_request.requirements.max_cost_usd = Some(20.0);
+        let second = center
+            .handle_complete(second_request, RPCContext::default())
+            .await
+            .expect("second complete should succeed");
+        assert_eq!(second.status, CompleteStatus::Succeeded);
+        assert_eq!(
+            second.result.as_ref().and_then(|summary| summary.cost.as_ref()).map(|cost| cost.amount),
+            Some(1.0)
         );
     }
 
