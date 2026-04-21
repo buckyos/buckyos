@@ -136,8 +136,34 @@ jobs:
       - name: Setup Linux system packages
         if: ${{ matrix.needs_musl }}
         run: |
+          set -euxo pipefail
           sudo apt update
-          sudo apt install -y musl-tools
+          sudo apt install -y musl-tools g++ binutils
+
+          tool_dir="$RUNNER_TEMP/musl-toolchain-bin"
+          mkdir -p "$tool_dir"
+
+          native_gxx="$(command -v x86_64-linux-gnu-g++ || command -v g++)"
+          native_ar="$(command -v x86_64-linux-gnu-ar || command -v ar)"
+          native_ranlib="$(command -v x86_64-linux-gnu-ranlib || command -v ranlib)"
+
+          cat > "$tool_dir/x86_64-linux-musl-g++" <<EOF
+          #!/bin/sh
+          exec "$native_gxx" "\$@" -specs /usr/lib/x86_64-linux-musl/musl-gcc.specs
+          EOF
+          chmod +x "$tool_dir/x86_64-linux-musl-g++"
+
+          ln -sf "$native_ar" "$tool_dir/x86_64-linux-musl-ar"
+          ln -sf "$native_ranlib" "$tool_dir/x86_64-linux-musl-ranlib"
+          ln -sf "$tool_dir/x86_64-linux-musl-g++" "$tool_dir/musl-g++"
+          ln -sf "$tool_dir/x86_64-linux-musl-ar" "$tool_dir/musl-ar"
+          ln -sf "$tool_dir/x86_64-linux-musl-ranlib" "$tool_dir/musl-ranlib"
+          echo "$tool_dir" >> "$GITHUB_PATH"
+
+          command -v x86_64-linux-musl-gcc
+          command -v x86_64-linux-musl-g++
+          command -v x86_64-linux-musl-ar
+          command -v x86_64-linux-musl-ranlib
 
       - name: Setup OpenSSL (macOS)
         if: ${{ runner.os == 'macOS' }}
