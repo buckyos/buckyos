@@ -173,6 +173,109 @@ async fn add_learner_with_retry_node_name(
     }
 }
 
+fn gateway_admin_url(
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    path_suffix: &str,
+) -> Result<reqwest::Url, String> {
+    let normalized_prefix = route_prefix.trim_end_matches('/');
+    let normalized_suffix = path_suffix.trim_start_matches('/');
+    reqwest::Url::parse(&format!(
+        "http://{}/{}/{}/admin/{}",
+        gateway_addr,
+        normalized_prefix.trim_start_matches('/'),
+        node_name,
+        normalized_suffix
+    ))
+    .map_err(|e| format!("invalid gateway admin url: {}", e))
+}
+
+async fn fetch_cluster_state_via_gateway(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+) -> Result<ClusterState, String> {
+    let url = gateway_admin_url(gateway_addr, route_prefix, node_name, "cluster-state")?;
+    let resp = client
+        .get(url.clone())
+        .send()
+        .await
+        .map_err(|e| format!("request {} failed: {}", url, e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_else(|_| String::new());
+        return Err(format!("request {} returned {}: {}", url, status, body));
+    }
+    resp.json::<ClusterState>()
+        .await
+        .map_err(|e| format!("decode {} failed: {}", url, e))
+}
+
+async fn post_add_learner_via_gateway(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    leader_node_name: &str,
+    node_id: u64,
+    node_name: &str,
+    addr: &str,
+    port: u16,
+    blocking: bool,
+) -> Result<(), String> {
+    let mut url = gateway_admin_url(gateway_addr, route_prefix, leader_node_name, "add-learner")?;
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.append_pair("node_id", &node_id.to_string());
+        qp.append_pair("node_name", node_name);
+        qp.append_pair("addr", addr);
+        qp.append_pair("port", &port.to_string());
+        qp.append_pair("blocking", if blocking { "true" } else { "false" });
+    }
+    let resp = client
+        .post(url.clone())
+        .send()
+        .await
+        .map_err(|e| format!("request {} failed: {}", url, e))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_else(|_| String::new());
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(format!("request {} returned {}: {}", url, status, body))
+    }
+}
+
+async fn post_remove_learner_via_gateway(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    leader_node_name: &str,
+    node_id: u64,
+) -> Result<(), String> {
+    let mut url = gateway_admin_url(
+        gateway_addr,
+        route_prefix,
+        leader_node_name,
+        "remove-learner",
+    )?;
+    url.query_pairs_mut()
+        .append_pair("node_id", &node_id.to_string());
+    let resp = client
+        .post(url.clone())
+        .send()
+        .await
+        .map_err(|e| format!("request {} failed: {}", url, e))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_else(|_| String::new());
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(format!("request {} returned {}: {}", url, status, body))
+    }
+}
+
 fn pick_unused_port(exclude: &HashSet<u16>) -> Result<u16, String> {
     for _ in 0..200 {
         let candidate =
@@ -754,6 +857,264 @@ async fn test_two_node_hybrid_two_voter_falls_back_to_gateway_but_still_loses_qu
             return Err(format!(
                 "surviving voter {} unexpectedly accepted append without quorum in hybrid mode",
                 survivor_id
+            ));
+        }
+
+        Ok(())
+    }
+    .await;
+
+    for n in &mut nodes {
+        n.stop().await;
+    }
+    drop(gateway);
+    result
+}
+
+#[tokio::test]
+async fn test_two_node_gateway_proxy_admin_cluster_state_roundtrip() -> Result<(), String> {
+    if !can_bind_localhost() {
+        eprintln!(
+            "skip two-node gateway admin cluster-state test: localhost bind is not available"
+        );
+        return Ok(());
+    }
+
+    let raft_ports = choose_unique_ports(2)?;
+    let raft_ports = [raft_ports[0], raft_ports[1]];
+    let node_defs = build_two_node_defs(&raft_ports)?;
+    let cluster_name = format!(
+        "klog_two_node_gateway_admin_state_{}_{}",
+        node_defs[0].0, node_defs[1].0
+    );
+    let node_names = ["ood1", "ood2"];
+    let route_prefix = "/.cluster/klog-it-two-node-admin-state";
+    let gateway = spawn_gateway_proxy(
+        route_prefix,
+        HashMap::from([
+            (
+                "ood1".to_string(),
+                TestGatewayNodeTarget {
+                    raft_port: node_defs[0].0,
+                    inter_port: node_defs[0].1,
+                    admin_port: node_defs[0].2,
+                },
+            ),
+            (
+                "ood2".to_string(),
+                TestGatewayNodeTarget {
+                    raft_port: node_defs[1].0,
+                    inter_port: node_defs[1].1,
+                    admin_port: node_defs[1].2,
+                },
+            ),
+        ]),
+    )
+    .await?;
+    let options = make_two_node_transport_options(
+        KClusterTransportMode::GatewayProxy,
+        gateway.addr.as_str(),
+        route_prefix,
+        &node_names,
+    );
+    let mut nodes = Vec::new();
+    nodes.push(
+        spawn_node_on_ports_with_options(
+            1,
+            node_defs[0].0,
+            node_defs[0].1,
+            node_defs[0].2,
+            node_defs[0].3,
+            &cluster_name,
+            true,
+            &[],
+            "voter",
+            &options[0],
+        )
+        .await?,
+    );
+    wait_single_node_leader(node_defs[0].0, 1, Duration::from_secs(20)).await?;
+    nodes.push(
+        spawn_node_on_ports_with_options(
+            2,
+            node_defs[1].0,
+            node_defs[1].1,
+            node_defs[1].2,
+            node_defs[1].3,
+            &cluster_name,
+            false,
+            &[],
+            "learner",
+            &options[1],
+        )
+        .await?,
+    );
+
+    let result = async {
+        add_learner_with_retry_node_name(
+            &[node_defs[0].0],
+            2,
+            node_names[1],
+            node_defs[1].0,
+            Duration::from_secs(45),
+        )
+        .await?;
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(4))
+            .build()
+            .map_err(|e| format!("failed to build http client: {}", e))?;
+        let state1 =
+            fetch_cluster_state_via_gateway(&client, &gateway.addr, route_prefix, node_names[0])
+                .await?;
+        let state2 =
+            fetch_cluster_state_via_gateway(&client, &gateway.addr, route_prefix, node_names[1])
+                .await?;
+
+        for (label, state) in [("ood1", state1), ("ood2", state2)] {
+            if state.current_leader != Some(1) || state.voters != vec![1] || state.learners != vec![2]
+            {
+                return Err(format!(
+                    "unexpected gateway cluster-state on {}: leader={:?}, voters={:?}, learners={:?}",
+                    label, state.current_leader, state.voters, state.learners
+                ));
+            }
+        }
+
+        Ok(())
+    }
+    .await;
+
+    for n in &mut nodes {
+        n.stop().await;
+    }
+    drop(gateway);
+    result
+}
+
+#[tokio::test]
+async fn test_two_node_gateway_proxy_admin_add_and_remove_learner_roundtrip() -> Result<(), String>
+{
+    if !can_bind_localhost() {
+        eprintln!(
+            "skip two-node gateway admin add/remove learner test: localhost bind is not available"
+        );
+        return Ok(());
+    }
+
+    let raft_ports = choose_unique_ports(2)?;
+    let raft_ports = [raft_ports[0], raft_ports[1]];
+    let node_defs = build_two_node_defs(&raft_ports)?;
+    let cluster_name = format!(
+        "klog_two_node_gateway_admin_change_{}_{}",
+        node_defs[0].0, node_defs[1].0
+    );
+    let node_names = ["ood1", "ood2"];
+    let route_prefix = "/.cluster/klog-it-two-node-admin-change";
+    let gateway = spawn_gateway_proxy(
+        route_prefix,
+        HashMap::from([
+            (
+                "ood1".to_string(),
+                TestGatewayNodeTarget {
+                    raft_port: node_defs[0].0,
+                    inter_port: node_defs[0].1,
+                    admin_port: node_defs[0].2,
+                },
+            ),
+            (
+                "ood2".to_string(),
+                TestGatewayNodeTarget {
+                    raft_port: node_defs[1].0,
+                    inter_port: node_defs[1].1,
+                    admin_port: node_defs[1].2,
+                },
+            ),
+        ]),
+    )
+    .await?;
+    let options = make_two_node_transport_options(
+        KClusterTransportMode::GatewayProxy,
+        gateway.addr.as_str(),
+        route_prefix,
+        &node_names,
+    );
+    let mut nodes = Vec::new();
+    nodes.push(
+        spawn_node_on_ports_with_options(
+            1,
+            node_defs[0].0,
+            node_defs[0].1,
+            node_defs[0].2,
+            node_defs[0].3,
+            &cluster_name,
+            true,
+            &[],
+            "voter",
+            &options[0],
+        )
+        .await?,
+    );
+    wait_single_node_leader(node_defs[0].0, 1, Duration::from_secs(20)).await?;
+    nodes.push(
+        spawn_node_on_ports_with_options(
+            2,
+            node_defs[1].0,
+            node_defs[1].1,
+            node_defs[1].2,
+            node_defs[1].3,
+            &cluster_name,
+            false,
+            &[],
+            "learner",
+            &options[1],
+        )
+        .await?,
+    );
+
+    let result = async {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(4))
+            .build()
+            .map_err(|e| format!("failed to build http client: {}", e))?;
+
+        post_add_learner_via_gateway(
+            &client,
+            &gateway.addr,
+            route_prefix,
+            node_names[0],
+            2,
+            node_names[1],
+            "127.0.0.1",
+            node_defs[1].0,
+            true,
+        )
+        .await?;
+        let _ = wait_cluster_membership(
+            &[node_defs[0].0, node_defs[1].0],
+            &[1],
+            &[2],
+            Duration::from_secs(50),
+        )
+        .await?;
+
+        post_remove_learner_via_gateway(&client, &gateway.addr, route_prefix, node_names[0], 2)
+            .await?;
+        let _ = wait_cluster_membership(
+            &[node_defs[0].0],
+            &[1],
+            &[],
+            Duration::from_secs(50),
+        )
+        .await?;
+
+        let leader_state =
+            fetch_cluster_state_via_gateway(&client, &gateway.addr, route_prefix, node_names[0])
+                .await?;
+        if leader_state.voters != vec![1] || !leader_state.learners.is_empty() {
+            return Err(format!(
+                "unexpected leader membership after gateway remove-learner: voters={:?}, learners={:?}",
+                leader_state.voters, leader_state.learners
             ));
         }
 
