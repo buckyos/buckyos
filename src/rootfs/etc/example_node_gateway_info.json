@@ -99,6 +99,28 @@
         "ood2" : "rtcp://ood2.test.buckyos.io/",
         "ood3" : "rtcp://ood3.test.buckyos.io/"
     },
+    "cluster_route_map": {
+        "klog-service": {
+            "route_prefix": "/.cluster/klog",
+            "ingress_port": 3180,
+            "nodes": {
+                "ood1": {
+                    "ports": {
+                        "raft": 21001,
+                        "inter": 21002,
+                        "admin": 21003
+                    }
+                },
+                "ood2": {
+                    "ports": {
+                        "raft": 21011,
+                        "inter": 21012,
+                        "admin": 21013
+                    }
+                }
+            }
+        }
+    },
     "trust_key": {
         "verify-hub": "Wo0udCICmiQtnLwzpfulTbFEDvtT5UHNP-MZvnQ3dns",
         "ood1": "s9j6X2zwk1DPjFt60z65LeBJN1DCTsqgeh15iF6Zmd4"

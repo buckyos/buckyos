@@ -11,6 +11,9 @@
     "node_route_map": {
      
     },
+    "cluster_route_map": {
+
+    },
     "trust_key": {
        
     }

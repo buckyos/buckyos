@@ -706,31 +706,24 @@ struct NodeGatewayInfo {
     node_route_map: HashMap<String, String>,
     trust_key: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    klog_cluster_info: HashMap<String, NodeGatewayKlogClusterNodeEntry>,
-    #[serde(default)]
-    klog_cluster_settings: NodeGatewayKlogClusterSettings,
+    cluster_route_map: HashMap<String, NodeGatewayClusterRouteEntry>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct NodeGatewayKlogClusterNodeEntry {
-    node_name: String,
-    raft_port: u16,
-    inter_port: u16,
-    admin_port: u16,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct NodeGatewayKlogClusterSettings {
+struct NodeGatewayClusterRouteEntry {
     route_prefix: String,
+    ingress_port: u16,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    nodes: HashMap<String, NodeGatewayClusterRouteNodeEntry>,
 }
 
-impl Default for NodeGatewayKlogClusterSettings {
-    fn default() -> Self {
-        Self {
-            route_prefix: DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX.to_string(),
-        }
-    }
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeGatewayClusterRouteNodeEntry {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    ports: HashMap<String, u16>,
 }
+
+const DEFAULT_NODE_GATEWAY_HTTP_PORT: u16 = 3180;
 
 fn get_device_list(
     input_system_config: &HashMap<String, String>,
@@ -1023,12 +1016,11 @@ fn extract_klog_cluster_route_prefix(input_system_config: &HashMap<String, Strin
         .unwrap_or_else(|| DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX.to_string())
 }
 
-fn build_klog_cluster_info(
+fn build_klog_cluster_route_entry(
     scheduler_ctx: &NodeScheduler,
-) -> HashMap<String, NodeGatewayKlogClusterNodeEntry> {
-    let mut raft_ports = HashMap::new();
-    let mut inter_ports = HashMap::new();
-    let mut admin_ports = HashMap::new();
+    input_system_config: &HashMap<String, String>,
+) -> Option<NodeGatewayClusterRouteEntry> {
+    let mut node_ports: HashMap<String, HashMap<String, u16>> = HashMap::new();
 
     for (service_info_id, service_info) in scheduler_ctx.service_infos.iter() {
         let (spec_id, service_name) = get_spec_id_from_service_info_id(service_info_id);
@@ -1036,71 +1028,64 @@ fn build_klog_cluster_info(
             continue;
         }
 
+        let plane_name = match service_name.as_str() {
+            KLOG_CLUSTER_RAFT_SERVICE_NAME => "raft",
+            KLOG_CLUSTER_INTER_SERVICE_NAME => "inter",
+            KLOG_CLUSTER_ADMIN_SERVICE_NAME => "admin",
+            _ => continue,
+        };
+
         let Some(selector) = build_service_selector(service_info, service_name.as_str()) else {
             continue;
         };
 
-        match service_name.as_str() {
-            KLOG_CLUSTER_RAFT_SERVICE_NAME => {
-                for (node_name, target) in selector {
-                    raft_ports.insert(node_name, target.port);
-                }
-            }
-            KLOG_CLUSTER_INTER_SERVICE_NAME => {
-                for (node_name, target) in selector {
-                    inter_ports.insert(node_name, target.port);
-                }
-            }
-            KLOG_CLUSTER_ADMIN_SERVICE_NAME => {
-                for (node_name, target) in selector {
-                    admin_ports.insert(node_name, target.port);
-                }
-            }
-            _ => {}
+        for (node_name, target) in selector {
+            node_ports
+                .entry(node_name)
+                .or_default()
+                .insert(plane_name.to_string(), target.port);
         }
     }
 
-    let mut node_names = HashSet::new();
-    node_names.extend(raft_ports.keys().cloned());
-    node_names.extend(inter_ports.keys().cloned());
-    node_names.extend(admin_ports.keys().cloned());
-
-    let mut result = HashMap::new();
-    for node_name in node_names {
-        let Some(raft_port) = raft_ports.get(&node_name).copied() else {
+    let mut nodes = HashMap::new();
+    for (node_name, ports) in node_ports {
+        if !ports.contains_key("raft") {
             warn!(
                 "skip klog cluster gateway entry for node {} because raft port is missing",
                 node_name
             );
             continue;
-        };
-        let Some(inter_port) = inter_ports.get(&node_name).copied() else {
+        }
+        if !ports.contains_key("inter") {
             warn!(
                 "skip klog cluster gateway entry for node {} because inter port is missing",
                 node_name
             );
             continue;
-        };
-        let Some(admin_port) = admin_ports.get(&node_name).copied() else {
+        }
+        if !ports.contains_key("admin") {
             warn!(
                 "skip klog cluster gateway entry for node {} because admin port is missing",
                 node_name
             );
             continue;
-        };
+        }
 
-        result.insert(
+        nodes.insert(
             node_name.clone(),
-            NodeGatewayKlogClusterNodeEntry {
-                node_name,
-                raft_port,
-                inter_port,
-                admin_port,
-            },
+            NodeGatewayClusterRouteNodeEntry { ports },
         );
     }
 
-    result
+    if nodes.is_empty() {
+        return None;
+    }
+
+    Some(NodeGatewayClusterRouteEntry {
+        route_prefix: extract_klog_cluster_route_prefix(input_system_config),
+        ingress_port: DEFAULT_NODE_GATEWAY_HTTP_PORT,
+        nodes,
+    })
 }
 
 pub(crate) async fn update_node_gateway_info(
@@ -1112,6 +1097,12 @@ pub(crate) async fn update_node_gateway_info(
     let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
     let device_list = get_device_list(input_system_config)?;
     let zone_host = zone_config.id.to_host_name();
+    let mut cluster_route_map = HashMap::new();
+    if let Some(klog_cluster_route) =
+        build_klog_cluster_route_entry(scheduler_ctx, input_system_config)
+    {
+        cluster_route_map.insert(KLOG_SERVICE_UNIQUE_ID.to_string(), klog_cluster_route);
+    }
 
     let mut node_gateway_info = NodeGatewayInfo {
         node_info: NodeGatewayNodeInfo {
@@ -1122,10 +1113,7 @@ pub(crate) async fn update_node_gateway_info(
         service_info: HashMap::new(),
         node_route_map: build_node_route_map(node_id, &zone_host, &device_list),
         trust_key: build_trust_keys(node_id, &zone_config, &device_list),
-        klog_cluster_info: build_klog_cluster_info(scheduler_ctx),
-        klog_cluster_settings: NodeGatewayKlogClusterSettings {
-            route_prefix: extract_klog_cluster_route_prefix(input_system_config),
-        },
+        cluster_route_map,
     };
 
     for (service_info_id, service_info) in scheduler_ctx.service_infos.iter() {
@@ -2565,7 +2553,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_node_gateway_info_adds_klog_cluster_entries() {
+    async fn test_update_node_gateway_info_adds_klog_cluster_route_entry() {
         let zone_config = create_test_zone_config();
         let device_ood1 = create_test_device_info("ood1", None);
         let device_ood2 = create_test_device_info("ood2", Some(2981));
@@ -2691,21 +2679,22 @@ mod tests {
         };
         let gateway_info: NodeGatewayInfo = serde_json::from_str(gateway_info_str).unwrap();
 
-        assert_eq!(
-            gateway_info.klog_cluster_settings.route_prefix,
-            "/.cluster/klog"
-        );
-        let local = gateway_info.klog_cluster_info.get("ood1").unwrap();
-        assert_eq!(local.node_name, "ood1");
-        assert_eq!(local.raft_port, 21001);
-        assert_eq!(local.inter_port, 21002);
-        assert_eq!(local.admin_port, 21003);
+        let klog_cluster_route = gateway_info
+            .cluster_route_map
+            .get(KLOG_SERVICE_UNIQUE_ID)
+            .unwrap();
+        assert_eq!(klog_cluster_route.route_prefix, "/.cluster/klog");
+        assert_eq!(klog_cluster_route.ingress_port, DEFAULT_NODE_GATEWAY_HTTP_PORT);
 
-        let remote = gateway_info.klog_cluster_info.get("ood2").unwrap();
-        assert_eq!(remote.node_name, "ood2");
-        assert_eq!(remote.raft_port, 21011);
-        assert_eq!(remote.inter_port, 21012);
-        assert_eq!(remote.admin_port, 21013);
+        let local = klog_cluster_route.nodes.get("ood1").unwrap();
+        assert_eq!(local.ports.get("raft"), Some(&21001));
+        assert_eq!(local.ports.get("inter"), Some(&21002));
+        assert_eq!(local.ports.get("admin"), Some(&21003));
+
+        let remote = klog_cluster_route.nodes.get("ood2").unwrap();
+        assert_eq!(remote.ports.get("raft"), Some(&21011));
+        assert_eq!(remote.ports.get("inter"), Some(&21012));
+        assert_eq!(remote.ports.get("admin"), Some(&21013));
     }
 
     #[test]

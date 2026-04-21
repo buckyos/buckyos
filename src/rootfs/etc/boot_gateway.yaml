@@ -19,13 +19,9 @@ collections:
     type: json_map
     file_path: ./node_gateway_info.json#node_info
     only_read_file: true
-  KLOG_CLUSTER_INFO:
+  CLUSTER_ROUTE_MAP:
     type: json_map
-    file_path: ./node_gateway_info.json#klog_cluster_info
-    only_read_file: true
-  KLOG_CLUSTER_SETTINGS:
-    type: json_map
-    file_path: ./node_gateway_info.json#klog_cluster_settings
+    file_path: ./node_gateway_info.json#cluster_route_map
     only_read_file: true
 
 stacks:
@@ -102,8 +98,6 @@ servers:
               global SERVICE_ID="";
               global KLOG_CLUSTER_TARGET_NODE_NAME="";
               global KLOG_CLUSTER_TARGET_PORT="";
-              global KLOG_CLUSTER_ROUTE_PREFIX=$KLOG_CLUSTER_SETTINGS.route_prefix;
-
               if match $REQ.path "/kapi/kevent/*" then
                 return --from chain $(exec forward_to_kevent);
               end
@@ -140,26 +134,22 @@ servers:
             block: |
               global KLOG_CLUSTER_TARGET_NODE_NAME="";
               global KLOG_CLUSTER_TARGET_PORT="";
+              match-include $CLUSTER_ROUTE_MAP "klog-service" || return false;
+              local klog_cluster_route=$CLUSTER_ROUTE_MAP["klog-service"];
               local request_dest_port = "";
               if !eq $REQ.dest_port "" then
                 local request_dest_port = $REQ.dest_port;
               elif ends-with $REQ.host ":3180" then
                 local request_dest_port = "3180";
               end
-              eq $request_dest_port "3180" || return false;
+              eq $request_dest_port "${klog_cluster_route.ingress_port}" || return false;
               map-create klog_target_match;
               match-reg --capture klog_target_match $REQ.path "^/.cluster/klog/([a-zA-Z0-9_-]+)/(raft|inter|admin).*" || return false;
               local target_node_name=$klog_target_match[1];
               local target_plane=$klog_target_match[2];
-              global KLOG_CLUSTER_TARGET_NODE_NAME=${KLOG_CLUSTER_INFO[$target_node_name].node_name};
-              eq $KLOG_CLUSTER_TARGET_NODE_NAME "" && return false;
-              if eq $target_plane "raft" then
-                global KLOG_CLUSTER_TARGET_PORT=${KLOG_CLUSTER_INFO[$target_node_name].raft_port};
-              elif eq $target_plane "inter" then
-                global KLOG_CLUSTER_TARGET_PORT=${KLOG_CLUSTER_INFO[$target_node_name].inter_port};
-              elif eq $target_plane "admin" then
-                global KLOG_CLUSTER_TARGET_PORT=${KLOG_CLUSTER_INFO[$target_node_name].admin_port};
-              end
+              match-include $klog_cluster_route.nodes $target_node_name || return false;
+              global KLOG_CLUSTER_TARGET_NODE_NAME=$target_node_name;
+              global KLOG_CLUSTER_TARGET_PORT=${klog_cluster_route.nodes[$target_node_name].ports[$target_plane]};
               eq $KLOG_CLUSTER_TARGET_PORT "" && return false;
               return true;
 
