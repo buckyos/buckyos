@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TEST_TARGET_DIR="${REPO_ROOT}/src/target/test_klog_gateway_rpc"
 
 wait_for_port() {
   local name="$1"
@@ -36,5 +37,5 @@ wait_for_port "klog-service rpc" 127.0.0.1 4070
 wait_for_port "klog-service admin" 127.0.0.1 21003
 
 echo "[run] cargo run --manifest-path test/test_klog_gateway_rpc/Cargo.toml"
-CARGO_TARGET_DIR="${REPO_ROOT}/target/test_klog_gateway_rpc" \
+CARGO_TARGET_DIR="${TEST_TARGET_DIR}" \
   cargo run --manifest-path test/test_klog_gateway_rpc/Cargo.toml

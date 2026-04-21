@@ -47,6 +47,8 @@ src/rootfs/bin/control-panel/i18n.d.ts
 src/rootfs/_buckycli_tmp/
 src/_scripts/
 src/target
+/target/
+/test/**/target/
 rootfs/_buckycli_tmp/
 
 src/rootfs/bin/node_active/

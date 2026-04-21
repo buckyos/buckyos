@@ -140,30 +140,28 @@ servers:
             block: |
               global KLOG_CLUSTER_TARGET_NODE_NAME="";
               global KLOG_CLUSTER_TARGET_PORT="";
-              eq $REQ.dest_port 3180 || return false;
-              starts-with $REQ.path $KLOG_CLUSTER_ROUTE_PREFIX || return false;
-              local klog_prefix_len=$(strlen $KLOG_CLUSTER_ROUTE_PREFIX);
-              local klog_tail=$(slice $REQ.path "${klog_prefix_len}:");
-              for node_name, node_info in $KLOG_CLUSTER_INFO then
-                if starts-with $klog_tail $(append "/" $node_name "/raft") then
-                  global KLOG_CLUSTER_TARGET_NODE_NAME=$node_info.node_name;
-                  global KLOG_CLUSTER_TARGET_PORT=$node_info.raft_port;
-                  return true;
-                end
-                if starts-with $klog_tail $(append "/" $node_name "/inter") then
-                  global KLOG_CLUSTER_TARGET_NODE_NAME=$node_info.node_name;
-                  global KLOG_CLUSTER_TARGET_PORT=$node_info.inter_port;
-                  return true;
-                end
-                if starts-with $klog_tail $(append "/" $node_name "/admin") then
-                  global KLOG_CLUSTER_TARGET_NODE_NAME=$node_info.node_name;
-                  global KLOG_CLUSTER_TARGET_PORT=$node_info.admin_port;
-                  return true;
-                end
+              local request_dest_port = "";
+              if !eq $REQ.dest_port "" then
+                local request_dest_port = $REQ.dest_port;
+              elif ends-with $REQ.host ":3180" then
+                local request_dest_port = "3180";
               end
-              global KLOG_CLUSTER_TARGET_NODE_NAME="";
-              global KLOG_CLUSTER_TARGET_PORT="";
-              return false;
+              eq $request_dest_port "3180" || return false;
+              map-create klog_target_match;
+              match-reg --capture klog_target_match $REQ.path "^/.cluster/klog/([a-zA-Z0-9_-]+)/(raft|inter|admin).*" || return false;
+              local target_node_name=$klog_target_match[1];
+              local target_plane=$klog_target_match[2];
+              global KLOG_CLUSTER_TARGET_NODE_NAME=${KLOG_CLUSTER_INFO[$target_node_name].node_name};
+              eq $KLOG_CLUSTER_TARGET_NODE_NAME "" && return false;
+              if eq $target_plane "raft" then
+                global KLOG_CLUSTER_TARGET_PORT=${KLOG_CLUSTER_INFO[$target_node_name].raft_port};
+              elif eq $target_plane "inter" then
+                global KLOG_CLUSTER_TARGET_PORT=${KLOG_CLUSTER_INFO[$target_node_name].inter_port};
+              elif eq $target_plane "admin" then
+                global KLOG_CLUSTER_TARGET_PORT=${KLOG_CLUSTER_INFO[$target_node_name].admin_port};
+              end
+              eq $KLOG_CLUSTER_TARGET_PORT "" && return false;
+              return true;
 
           get_app_info_from_req:
             # 尝试通过域名解析得到appid

@@ -27,7 +27,8 @@ members = [
 
     "./tools/buckycli", 
     "./test/test_rbac",
-    "./test/test_control_panel_rpc"
+    "./test/test_control_panel_rpc",
+    "../test/test_klog_gateway_rpc"
 ]
 
 exclude = [
