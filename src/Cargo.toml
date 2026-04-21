@@ -52,10 +52,10 @@ named_store = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "name
 ndn-toolkit = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-toolkit", branch = "beta2.2" }
 package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", branch = "beta2.2" }
 
-cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "main" }
-cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "main" }
-cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "main" }
-server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "main" }
+cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "beta2.2" }
+cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "beta2.2" }
+cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "beta2.2" }
+server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "beta2.2" }
 
 # Common async runtime and utilities
 tokio = { version = "1.49.0", features = ["full"] }
@@ -133,6 +133,7 @@ tempfile = "3.24.0"
 
 [patch.crates-io]
 grammers-session = { path = "patches/grammers-session-0.8.0" }
+
 
 [profile.release]
 # Reduce final binary size.
