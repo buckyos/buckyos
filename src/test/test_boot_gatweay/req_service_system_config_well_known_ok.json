@@ -1,0 +1,14 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/.well-known/did.json",
+      "host": "api.test.buckyos.io",
+      "url": "https://api.test.buckyos.io/.well-known/did.json"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

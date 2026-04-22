@@ -1,0 +1,16 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/index.html",
+      "host": "files-xxx",
+      "uri": "/index.html",
+      "url": "https://files-xxx/index.html",
+      "Cookie": "test=123; buckyos_session_token=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXItbWFpbiIsImFwcGlkIjoiZmlsZWJyb3dzZXIiLCJzdWIiOiJkZWJ1Zy11c2VyIiwiZXhwIjoyMDU4ODM4OTM5fQ.vtPYqhdaJcfjml69rrf6LoKMYGU-2FHaO9aM7HNTsM6-EVtL9NJAilq1TRQW8e2SCjhrpxReQlWiTwAEOX6gDg"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

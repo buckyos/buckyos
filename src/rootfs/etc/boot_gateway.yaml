@@ -126,15 +126,30 @@ servers:
             # host 必须精确匹配 app_id.${THIS_ZONE_HOST} 或 app_id-${THIS_ZONE_HOST} 格式
             priority: 120
             block: |
-              if $REQ.host == $THIS_ZONE_HOST then
+              app_lookup_key="";
+              if eq $REQ.host $THIS_ZONE_HOST then
+                app_lookup_key="_";
+              elif ends-with $REQ.host ".${THIS_ZONE_HOST}" then
+                app_lookup_key=$REQ.host;
+                replace $app_lookup_key ".${THIS_ZONE_HOST}" "";
+                local expected_host=$(append $app_lookup_key ".${THIS_ZONE_HOST}");
+                eq $REQ.host $expected_host || return false;
                 map-create hp;
-                map-add hp 1 "_";
+                match-reg --capture hp $app_lookup_key "^([a-zA-Z0-9_]+)\$" || return false;
+                eq $hp[1] $app_lookup_key || return false;
+              elif ends-with $REQ.host "-${THIS_ZONE_HOST}" then
+                app_lookup_key=$REQ.host;
+                replace $app_lookup_key "-${THIS_ZONE_HOST}" "";
+                local expected_host=$(append $app_lookup_key "-${THIS_ZONE_HOST}");
+                eq $REQ.host $expected_host || return false;
+                map-create hp;
+                match-reg --capture hp $app_lookup_key "^([a-zA-Z0-9_]+)\$" || return false;
+                eq $hp[1] $app_lookup_key || return false;
               else
-                map-create hp;
-                match-reg --capture hp $REQ.host "^([a-zA-Z0-9_]+)[-.]" || return false;
+                return false;
               end
-              match-include $APP_INFO $hp[1] || return false;
-              local app_info=$APP_INFO[$hp[1]];
+              match-include $APP_INFO $app_lookup_key || return false;
+              local app_info=$APP_INFO[$app_lookup_key];
               if match-include $app_info "service_id" then
                 #echo "app_info is a service ${app_info.service_id}";
                 global SERVICE_ID=$app_info.service_id;
@@ -151,41 +166,34 @@ servers:
             # 找到会设置SERVICE_ID和TARGET_SERVICE_INFO
             priority: 130
             block: |
-              sys_service_id = "";
               if match $REQ.path "/1.0/identifiers/*" then
-                sys_service_id="system_config";
-              end
-              if match $REQ.path "/.well-known/*" then
-                sys_service_id="system_config";
-              end
-              if match $REQ.path "/sso_callback" then
-                sys_service_id="control-panel";
-              end
-              if match $REQ.path "/sso_refresh" then
-                sys_service_id="control-panel";
-              end
-              if match $REQ.path "/sso_logout" then
-                sys_service_id="control-panel";
-              end
-              if match $REQ.path "/ndm/*" then
-                sys_service_id="control-panel";
-              end
-              if !eq $sys_service_id "" then
-                global TARGET_SERVICE_INFO=$SERVICE_INFO[$sys_service_id];
-                global SERVICE_ID=$sys_service_id;
-                return true;
+                global SERVICE_ID="system_config";
+              elif match $REQ.path "/.well-known/*" then
+                global SERVICE_ID="system_config";
+              elif match $REQ.path "/sso_callback" then
+                global SERVICE_ID="control-panel";
+              elif match $REQ.path "/sso_refresh" then
+                global SERVICE_ID="control-panel";
+              elif match $REQ.path "/sso_logout" then
+                global SERVICE_ID="control-panel";
+              elif match $REQ.path "/ndm/*" then
+                global SERVICE_ID="control-panel";
+              else
+                map-create krpc_hp;
+                match-reg --capture krpc_hp $REQ.path "^/kapi/([a-zA-Z0-9_-]+)(/.*)?" || return false;
+                match-include $SERVICE_INFO $krpc_hp[1] || return false;
+                global TARGET_SERVICE_INFO=$SERVICE_INFO[$krpc_hp[1]];
+                global SERVICE_ID=$krpc_hp[1];
+                return $krpc_hp[1];
               end
 
-              map-create krpc_hp;
-              match-reg --capture krpc_hp $REQ.path "^/kapi/([a-zA-Z0-9_-]+)(/.*)?" || return false;
-              match-include $SERVICE_INFO $krpc_hp[1] || return false;
-              global TARGET_SERVICE_INFO=$SERVICE_INFO[$krpc_hp[1]];
-              global SERVICE_ID=$krpc_hp[1];
-              return $krpc_hp[1];
+              match-include $SERVICE_INFO $SERVICE_ID || return false;
+              global TARGET_SERVICE_INFO=$SERVICE_INFO[$SERVICE_ID];
+              return true;
 
           check_oauth:
             # 判断是否需要在网关做OAuth2.0认证
-            # 如果app的sdk_version>=10，表示app自己处理认证，网关不需要介入
+            # 当前只对 public app 直接放行，其余 app 依赖 buckyos_session_token
             priority: 135
             block: |
               eq $TARGET_APP_INFO.access_mode "public" && return true;
@@ -237,7 +245,7 @@ servers:
                 call-server $TARGET_APP_INFO.dir_pkg_id;
               else
                 eq $TARGET_APP_INFO.node_id $THIS_NODE_ID && forward "http://127.0.0.1:${TARGET_APP_INFO.port}";
-                forward "${NODE_ROUTE_MAP[$TARGET_APP_INFO.nodeid]}:${TARGET_APP_INFO.port}";
+                forward "${NODE_ROUTE_MAP[$TARGET_APP_INFO.node_id]}:${TARGET_APP_INFO.port}";
               end
 
           forward_to_public:

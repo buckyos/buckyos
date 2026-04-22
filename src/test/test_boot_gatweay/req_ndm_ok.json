@@ -1,0 +1,14 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/ndm/status",
+      "host": "api.test.buckyos.io",
+      "url": "https://api.test.buckyos.io/ndm/status"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

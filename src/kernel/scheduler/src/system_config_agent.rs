@@ -1686,6 +1686,68 @@ mod tests {
         }
     }
 
+    fn create_expected_node_gateway_info_for_files_app(
+        zone_config: &ZoneConfig,
+        input_system_config: &HashMap<String, String>,
+    ) -> NodeGatewayInfo {
+        let zone_host = zone_config.id.to_host_name();
+        let device_list = get_device_list(input_system_config).unwrap();
+        let control_panel_selector = HashMap::from([(
+            "ood1".to_string(),
+            NodeGatewaySelectorTarget {
+                port: 4020,
+                weight: FIXED_SERVICE_WEIGHT,
+            },
+        )]);
+        let system_config_selector = build_fixed_selector_from_oods(zone_config, SYSTEM_CONFIG_SERVICE_PORT);
+
+        let mut service_info = HashMap::new();
+        service_info.insert(
+            "control-panel".to_string(),
+            NodeGatewayServiceInfoEntry {
+                selector: control_panel_selector.clone(),
+            },
+        );
+        service_info.insert(
+            "system_config".to_string(),
+            NodeGatewayServiceInfoEntry {
+                selector: system_config_selector,
+            },
+        );
+
+        let files_entry = NodeGatewayAppEntry::App(NodeGatewayAppInfoEntry {
+            app_id: "files".to_string(),
+            sdk_version: 10,
+            access_mode: NodeGatewayAccessMode::Private,
+            node_id: Some("ood2".to_string()),
+            port: Some(10160),
+            dir_pkg_id: None,
+            dir_pkg_objid: None,
+            block_services: vec![],
+        });
+        let control_panel_entry = NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
+            service_id: "control-panel".to_string(),
+            selector: control_panel_selector,
+        });
+
+        let mut app_info = HashMap::new();
+        app_info.insert("files".to_string(), files_entry);
+        app_info.insert("sys".to_string(), control_panel_entry.clone());
+        app_info.insert("_".to_string(), control_panel_entry.clone());
+        app_info.insert("www".to_string(), control_panel_entry);
+
+        NodeGatewayInfo {
+            node_info: NodeGatewayNodeInfo {
+                this_node_id: "ood1".to_string(),
+                this_zone_host: zone_host.clone(),
+            },
+            app_info,
+            service_info,
+            node_route_map: build_node_route_map("ood1", &zone_host, &device_list),
+            trust_key: build_trust_keys("ood1", zone_config, &device_list),
+        }
+    }
+
     #[tokio::test]
     async fn test_build_schedule_plan_skips_snapshot_persist_when_only_schedule_time_changes() {
         let zone_config = create_test_zone_config();
@@ -2379,38 +2441,11 @@ mod tests {
             KVAction::Update(value) => value,
             other => panic!("unexpected kv action: {:?}", other),
         };
-        println!("gateway_info_str: {}", gateway_info_str);
         let gateway_info: NodeGatewayInfo = serde_json::from_str(gateway_info_str).unwrap();
+        let expected_gateway_info =
+            create_expected_node_gateway_info_for_files_app(&zone_config, &input_system_config);
 
-        assert_eq!(gateway_info.node_info.this_node_id, "ood1");
-        assert_eq!(gateway_info.node_info.this_zone_host, "test.buckyos.io");
-        assert_eq!(
-            gateway_info.node_route_map.get("ood2").unwrap(),
-            "rtcp://ood2.test.buckyos.io:2981/"
-        );
-        assert!(gateway_info.trust_key.contains_key("verify-hub"));
-        assert!(gateway_info.trust_key.contains_key("ood1"));
-
-        let system_config = gateway_info.service_info.get("system_config").unwrap();
-        assert_eq!(system_config.selector.get("ood1").unwrap().port, 3200);
-        assert_eq!(system_config.selector.get("ood2").unwrap().port, 3200);
-
-        let files = match gateway_info.app_info.get("files").unwrap() {
-            NodeGatewayAppEntry::App(entry) => entry,
-            _ => panic!("files should resolve to an app entry"),
-        };
-        assert_eq!(files.app_id, "files");
-        assert_eq!(files.node_id.as_deref(), Some("ood2"));
-        assert_eq!(files.port, Some(10160));
-        assert_eq!(files.dir_pkg_id, None);
-        assert_eq!(files.sdk_version, 10);
-
-        let sys = match gateway_info.app_info.get("sys").unwrap() {
-            NodeGatewayAppEntry::Service(entry) => entry,
-            _ => panic!("sys should resolve to a service entry"),
-        };
-        assert_eq!(sys.service_id, "control-panel");
-        assert_eq!(sys.selector.get("ood1").unwrap().port, 4020);
+        assert_eq!(gateway_info, expected_gateway_info);
     }
 
     #[tokio::test]
