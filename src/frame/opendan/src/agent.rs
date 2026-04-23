@@ -488,6 +488,12 @@ impl AIAgent {
 
         let mut self_check_handle = None;
         if self.cfg.self_check_timer_secs > 0 {
+            info!(
+                "agent.self_check_timer.enabled: agent={} did={} interval_secs={}",
+                self.agent_name,
+                self.did.to_string(),
+                self.cfg.self_check_timer_secs
+            );
             let timer_agent = self.clone();
             self_check_handle = Some(task::spawn(async move {
                 timer_agent.run_self_check_timer_loop().await;
@@ -568,10 +574,17 @@ impl AIAgent {
         current_time: DateTime<Utc>,
     ) -> Result<()> {
         if !behavior_exists(&self.behavior_roots, AGENT_BEHAVIOR_SELF_CHECK).await {
-            debug!(
-                "agent.self_check_timer.skip_missing_behavior: agent={} tick={} behavior={}",
-                self.agent_name, tick, AGENT_BEHAVIOR_SELF_CHECK
-            );
+            if tick <= 3 || tick % 60 == 0 {
+                info!(
+                    "agent.self_check_timer.skip_missing_behavior: agent={} tick={} behavior={} note=place self_check.yaml in behaviors directory to enable timer-triggered wakeups",
+                    self.agent_name, tick, AGENT_BEHAVIOR_SELF_CHECK
+                );
+            } else {
+                debug!(
+                    "agent.self_check_timer.skip_missing_behavior: agent={} tick={} behavior={}",
+                    self.agent_name, tick, AGENT_BEHAVIOR_SELF_CHECK
+                );
+            }
             return Ok(());
         }
 
@@ -589,14 +602,26 @@ impl AIAgent {
             return Ok(());
         }
         let mut retained_memory_items = Vec::new();
+        let mut scanned_memory_count = 0usize;
         let mut temporal_candidate_count = 0usize;
         let mut exact_time_hit_count = 0usize;
         let mut coarse_time_hit_count = 0usize;
+        let mut untimed_reminder_samples = Vec::new();
         for item in memory_items {
+            scanned_memory_count = scanned_memory_count.saturating_add(1);
             let matched =
                 match_self_check_memory_item(&item, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
             if matched.has_explicit_time {
                 temporal_candidate_count = temporal_candidate_count.saturating_add(1);
+            } else if untimed_reminder_samples.len() < 3
+                && is_reminder_memory_key(item.key.as_str())
+            {
+                untimed_reminder_samples.push(format!(
+                    "{}|type={}|summary={}",
+                    item.key,
+                    item.type_name,
+                    compact_text_for_log(item.summary.as_str(), 72)
+                ));
             }
             if matched.exact_time_hit {
                 exact_time_hit_count = exact_time_hit_count.saturating_add(1);
@@ -608,12 +633,15 @@ impl AIAgent {
                 retained_memory_items.push(item);
             }
         }
-        if temporal_candidate_count == 0 {
-            debug!(
-                "agent.self_check_timer.skip_no_explicit_time: agent={} tick={}",
-                self.agent_name, tick
+        if temporal_candidate_count == 0 && (tick <= 3 || tick % 30 == 0) {
+            info!(
+                "agent.self_check_timer.no_explicit_time_candidate: agent={} tick={} memory_items={} reminder_samples={:?} force_interval_ms={} note=no memory has exact trigger time; self-check can still run via periodic force trigger",
+                self.agent_name,
+                tick,
+                scanned_memory_count,
+                untimed_reminder_samples,
+                SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS
             );
-            return Ok(());
         }
 
         let default_remote = self.default_reply_audience();
@@ -628,7 +656,15 @@ impl AIAgent {
             .await
             .map_err(|err| anyhow!("ensure self-check session failed: {err}"))?;
 
-        let (session_id, should_save, should_trigger, session_state, last_trigger_ms, force_due) = {
+        let (
+            session_id,
+            should_save,
+            should_trigger,
+            session_state,
+            last_trigger_ms,
+            since_last_trigger_ms,
+            force_due,
+        ) = {
             let mut guard = session.lock().await;
             let last_trigger_ms = self_check_last_trigger_ms(&guard.meta).unwrap_or(0);
             let since_last_trigger = now_ms.saturating_sub(last_trigger_ms);
@@ -641,6 +677,7 @@ impl AIAgent {
                     false,
                     guard.state,
                     last_trigger_ms,
+                    since_last_trigger,
                     force_due,
                 )
             } else if retained_memory_items.is_empty() && !force_due {
@@ -650,6 +687,7 @@ impl AIAgent {
                     false,
                     guard.state,
                     last_trigger_ms,
+                    since_last_trigger,
                     force_due,
                 )
             } else if last_trigger_ms > 0 && since_last_trigger < SELF_CHECK_MIN_TRIGGER_INTERVAL_MS
@@ -660,6 +698,7 @@ impl AIAgent {
                     false,
                     guard.state,
                     last_trigger_ms,
+                    since_last_trigger,
                     force_due,
                 )
             } else if !force_due && last_trigger_ms > 0 {
@@ -669,6 +708,7 @@ impl AIAgent {
                     false,
                     guard.state,
                     last_trigger_ms,
+                    since_last_trigger,
                     force_due,
                 )
             } else {
@@ -685,6 +725,7 @@ impl AIAgent {
                     true,
                     guard.state,
                     last_trigger_ms,
+                    since_last_trigger,
                     force_due,
                 )
             }
@@ -715,20 +756,35 @@ impl AIAgent {
                 .map_err(|err| anyhow!("save self-check session failed: {err}"))?;
         }
         if should_trigger {
+            let trigger_reason = if exact_time_hit_count > 0 {
+                "exact_time_hit"
+            } else if coarse_time_hit_count > 0 {
+                "coarse_time_hit"
+            } else if force_due && last_trigger_ms == 0 {
+                "force_initial"
+            } else if force_due {
+                "force_interval"
+            } else {
+                "retained_memory"
+            };
             info!(
-                "agent.self_check_timer.triggered: agent={} tick={} session_id={} retained_memory_items={} temporal_candidates={} exact_hits={} coarse_hits={} force_due={}",
+                "agent.self_check_timer.triggered: agent={} tick={} session_id={} reason={} retained_memory_items={} temporal_candidates={} exact_hits={} coarse_hits={} last_trigger_ms={} since_last_trigger_ms={} force_due={} force_interval_ms={}",
                 self.agent_name,
                 tick,
                 session_id,
+                trigger_reason,
                 retained_memory_items.len(),
                 temporal_candidate_count,
                 exact_time_hit_count,
                 coarse_time_hit_count,
-                force_due
+                last_trigger_ms,
+                since_last_trigger_ms,
+                force_due,
+                SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS
             );
         } else {
             debug!(
-                "agent.self_check_timer.not_triggered: agent={} tick={} session_id={} state={:?} retained_memory_items={} temporal_candidates={} exact_hits={} coarse_hits={} last_trigger_ms={} force_due={}",
+                "agent.self_check_timer.not_triggered: agent={} tick={} session_id={} state={:?} retained_memory_items={} temporal_candidates={} exact_hits={} coarse_hits={} last_trigger_ms={} since_last_trigger_ms={} force_due={} force_interval_ms={}",
                 self.agent_name,
                 tick,
                 session_id,
@@ -738,7 +794,9 @@ impl AIAgent {
                 exact_time_hit_count,
                 coarse_time_hit_count,
                 last_trigger_ms,
-                force_due
+                since_last_trigger_ms,
+                force_due,
+                SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS
             );
         }
 
@@ -2757,6 +2815,35 @@ impl AIAgent {
                     "agent.set_memory failed: did={:?} key={} err={}",
                     self.did, key, err
                 );
+                continue;
+            }
+
+            let parsed_content = parse_memory_content_for_self_check(content.as_str());
+            let reminder_like = is_reminder_memory_key(key)
+                || is_reminder_memory_content(&parsed_content);
+            if reminder_like {
+                let has_explicit_time =
+                    memory_has_self_check_explicit_time(key, &parsed_content, Utc::now());
+                if has_explicit_time {
+                    info!(
+                        "agent.set_memory.reminder_precise_time_detected: did={:?} behavior={} session_id={} key={} content_preview={}",
+                        self.did,
+                        trace.behavior,
+                        trace.session_id,
+                        key,
+                        compact_text_for_log(content.as_str(), 120),
+                    );
+                } else {
+                    info!(
+                        "agent.set_memory.reminder_without_precise_time: did={:?} behavior={} session_id={} key={} content_preview={} force_interval_ms={} note=not eligible for exact-time trigger; self-check may process it on periodic force trigger",
+                        self.did,
+                        trace.behavior,
+                        trace.session_id,
+                        key,
+                        compact_text_for_log(content.as_str(), 120),
+                        SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS,
+                    );
+                }
             }
         }
     }
@@ -4648,6 +4735,52 @@ fn compact_text_for_log(value: &str, max_chars: usize) -> String {
     }
 }
 
+fn is_reminder_memory_key(key: &str) -> bool {
+    let normalized = key.trim().to_ascii_lowercase();
+    normalized.contains("reminder") || normalized.contains("remind")
+}
+
+fn is_reminder_memory_content(value: &Json) -> bool {
+    match value {
+        Json::String(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            normalized.contains("reminder") || normalized.contains("remind")
+        }
+        Json::Object(map) => {
+            for field in ["type", "kind", "title", "summary", "content"] {
+                let Some(raw) = map.get(field).and_then(Json::as_str) else {
+                    continue;
+                };
+                let normalized = raw.trim().to_ascii_lowercase();
+                if normalized.contains("reminder") || normalized.contains("remind") {
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn parse_memory_content_for_self_check(content: &str) -> Json {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Json::String(String::new());
+    }
+    serde_json::from_str::<Json>(trimmed).unwrap_or_else(|_| Json::String(trimmed.to_string()))
+}
+
+fn memory_has_self_check_explicit_time(
+    key: &str,
+    content: &Json,
+    current_time: DateTime<Utc>,
+) -> bool {
+    let key_match = match_self_check_memory_key(key, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
+    let value_match =
+        match_self_check_memory_value(content, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
+    key_match.has_explicit_time || value_match.has_explicit_time
+}
+
 fn self_check_last_trigger_ms(meta: &Json) -> Option<u64> {
     meta.as_object()
         .and_then(|map| map.get(SELF_CHECK_META_LAST_TRIGGER_MS))
@@ -4740,9 +4873,85 @@ fn match_self_check_memory_value(
                 out.coarse_time_hit |= nested.coarse_time_hit;
             }
         }
+        Json::String(text) => {
+            let text_match = match_self_check_text(text.as_str(), current_time, exact_window_ms);
+            out.has_explicit_time |= text_match.has_explicit_time;
+            out.retained |= text_match.retained;
+            out.exact_time_hit |= text_match.exact_time_hit;
+            out.coarse_time_hit |= text_match.coarse_time_hit;
+        }
         _ => {}
     }
     out
+}
+
+fn match_self_check_text(
+    text: &str,
+    current_time: DateTime<Utc>,
+    exact_window_ms: u64,
+) -> SelfCheckMemoryMatch {
+    let mut out = SelfCheckMemoryMatch::default();
+    let current_ms = current_time.timestamp_millis().max(0) as u64;
+
+    if let Some(ts_ms) = scan_text_for_absolute_timestamp_ms(text) {
+        out.has_explicit_time = true;
+        let hit = current_ms.abs_diff(ts_ms) <= exact_window_ms;
+        out.exact_time_hit |= hit;
+        out.retained |= hit;
+    }
+
+    if let Some((date, _, date_end)) = extract_self_check_date_span_from_text(text) {
+        out.has_explicit_time = true;
+        if let Some((hour, minute)) = extract_self_check_time_of_day_from_key(text, date_end) {
+            if let Some(ts_ms) = build_local_datetime_timestamp_ms(date, hour, minute) {
+                let hit = current_ms.abs_diff(ts_ms) <= exact_window_ms;
+                out.exact_time_hit |= hit;
+                out.retained |= hit;
+            } else {
+                out.coarse_time_hit = true;
+                out.retained = true;
+            }
+        } else {
+            out.coarse_time_hit = true;
+            out.retained = true;
+        }
+    }
+
+    out
+}
+
+fn scan_text_for_absolute_timestamp_ms(text: &str) -> Option<u64> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(direct) = parse_self_check_exact_timestamp_ms(&Json::String(trimmed.to_string())) {
+        return Some(direct);
+    }
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    let len = chars.len();
+    let mut start = 0usize;
+    while start < len {
+        if chars[start].is_ascii_digit()
+            && start + 10 <= len
+            && chars[start + 4] == '-'
+            && chars[start + 7] == '-'
+        {
+            for window in [25usize, 19, 16, 10] {
+                if start + window > len {
+                    continue;
+                }
+                let candidate: String = chars[start..start + window].iter().collect();
+                if let Some(parsed) =
+                    parse_self_check_exact_timestamp_ms(&Json::String(candidate.clone()))
+                {
+                    return Some(parsed);
+                }
+            }
+        }
+        start += 1;
+    }
+    None
 }
 
 fn is_self_check_time_field(key: &str) -> bool {
@@ -4766,6 +4975,18 @@ fn is_self_check_time_field(key: &str) -> bool {
             | "occur_at"
             | "occur_time"
             | "remind_at"
+            | "remind"
+            | "reminder_at"
+            | "reminder_time"
+            | "when"
+            | "at"
+            | "next_check"
+            | "next_check_at"
+            | "next_run"
+            | "next_run_at"
+            | "next_trigger"
+            | "next_reminder"
+            | "next_reminder_at"
             | "timestamp"
             | "ts"
     )
@@ -6014,7 +6235,7 @@ system: "self check behavior"
     }
 
     #[tokio::test]
-    async fn self_check_tick_skips_untimed_memory_items() {
+    async fn self_check_tick_force_triggers_when_memory_not_empty() {
         let temp = tempdir().expect("create tempdir");
         let agent_root = temp.path().join("agent");
         fs::create_dir_all(agent_root.join("behaviors"))
@@ -6040,6 +6261,9 @@ system: "self check behavior"
         let mut cfg = AIAgentConfig::new(agent_root);
         cfg.agent_did = Some("did:opendan:test-agent".to_string());
 
+        let msg_queue = Arc::new(MsgQueueClient::new_in_process(
+            Box::new(TestMsgQueue::new()),
+        ));
         let taskmgr = Arc::new(buckyos_api::TaskManagerClient::new_in_process(Box::new(
             MockTaskMgrHandler {
                 counter: Mutex::new(0),
@@ -6051,7 +6275,7 @@ system: "self check behavior"
             AIAgentDeps {
                 taskmgr,
                 msg_center: None,
-                msg_queue: None,
+                msg_queue: Some(msg_queue.clone()),
             },
         )
         .await
@@ -6077,8 +6301,58 @@ system: "self check behavior"
             .await
             .expect("run self-check tick");
 
-        let session = agent.session_mgr.get_session(SELF_CHECK_SESSION_ID).await;
-        assert!(session.is_none());
+        let session = agent
+            .session_mgr
+            .get_session(SELF_CHECK_SESSION_ID)
+            .await
+            .expect("self-check session should be force-triggered even without explicit time");
+        let guard = session.lock().await;
+        assert_eq!(guard.current_behavior, AGENT_BEHAVIOR_SELF_CHECK);
+        assert_eq!(guard.state, SessionState::Ready);
+        assert!(self_check_last_trigger_ms(&guard.meta).unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn self_check_text_match_handles_embedded_datetime() {
+        let current_time = match Local.with_ymd_and_hms(2026, 3, 24, 10, 0, 5) {
+            chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
+            chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
+            chrono::LocalResult::None => panic!("build local current time"),
+        };
+
+        let exact = match_self_check_text(
+            "reminder: dentist at 2026-03-24 10:00 please confirm",
+            current_time,
+            SELF_CHECK_EXACT_TIME_WINDOW_MS,
+        );
+        assert!(exact.has_explicit_time, "embedded YYYY-MM-DD HH:MM must count");
+        assert!(exact.retained);
+        assert!(exact.exact_time_hit);
+
+        let miss = match_self_check_text(
+            "reminder: dentist at 2026-03-24 10:02 please confirm",
+            current_time,
+            SELF_CHECK_EXACT_TIME_WINDOW_MS,
+        );
+        assert!(miss.has_explicit_time);
+        assert!(!miss.exact_time_hit);
+
+        let coarse = match_self_check_text(
+            "Dentist appointment on 2026-03-24, location downtown",
+            current_time,
+            SELF_CHECK_EXACT_TIME_WINDOW_MS,
+        );
+        assert!(coarse.has_explicit_time);
+        assert!(coarse.retained);
+        assert!(coarse.coarse_time_hit);
+
+        let none = match_self_check_text(
+            "remind me in 5 minutes to move around",
+            current_time,
+            SELF_CHECK_EXACT_TIME_WINDOW_MS,
+        );
+        assert!(!none.has_explicit_time);
+        assert!(!none.retained);
     }
 
     #[tokio::test]
