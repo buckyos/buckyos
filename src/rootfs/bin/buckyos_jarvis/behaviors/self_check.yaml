@@ -244,7 +244,7 @@ memory:
   session_step_records: { max_percent: 1, skip_last_n: 1 }
 
 input: |
-  __OPENDAN_VAR(new_event, $new_event)
+  __OPENDAN_VAR(new_event, $new_event.1)
   __OPENDAN_VAR(last_step, $last_step)
   {% if last_step %}
   # Last Step Record:

@@ -2456,7 +2456,11 @@ fn collect_plain_placeholder_vars(template: &str) -> Vec<String> {
         };
         let placeholder = template[content_start..close_pos].trim();
         if is_variable_name(placeholder) {
-            let name = placeholder.to_string();
+            let name = placeholder
+                .split('.')
+                .next()
+                .unwrap_or(placeholder)
+                .to_string();
             if seen.insert(name.clone()) {
                 vars.push(name);
             }
@@ -2992,6 +2996,24 @@ mod tests {
             parse_pull_limit_from_key("new_event.$99999", "new_event", DEFAULT_NEW_EVENT_MAX_PULL),
             4096
         );
+    }
+
+    #[test]
+    fn prepare_prompt_template_uses_root_var_for_dotted_placeholder() {
+        let prepared = prepare_prompt_template("name={{owner.show_name}}");
+
+        assert!(prepared.starts_with("__OPENDAN_VAR(owner, $owner)"));
+        assert!(!prepared.contains("__OPENDAN_VAR(owner.show_name"));
+    }
+
+    #[test]
+    fn prepare_prompt_template_does_not_redeclare_declared_root_var() {
+        let prepared = prepare_prompt_template(
+            "__OPENDAN_VAR(new_event, $new_event.1)\n{{new_event.eventdata.current_time}}",
+        );
+
+        assert_eq!(prepared.matches("__OPENDAN_VAR(new_event, $new_event.1)").count(), 1);
+        assert!(!prepared.contains("__OPENDAN_VAR(new_event.eventdata.current_time"));
     }
 
     #[test]
