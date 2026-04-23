@@ -228,6 +228,59 @@ impl AgentMemory {
             .join("\n")
     }
 
+    /// Return all live (valid) memory entries as `(key, content)` pairs sorted by key.
+    /// No tag filter, no token-budget truncation, no ranking — the symmetric counterpart
+    /// of `set_memory`.
+    pub async fn list_entries(&self) -> Result<Vec<(String, Json)>, AgentToolError> {
+        let state_map = self.read_state_map().await?;
+        let mut entries: Vec<(String, Json)> = state_map
+            .into_iter()
+            .filter(|(_, env)| env.valid)
+            .map(|(key, env)| (key, env.content))
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(entries)
+    }
+
+    /// Same as `list_entries`, but reads the on-disk state file directly given an
+    /// agent root path — for callers that don't hold an `AgentMemory` handle.
+    /// Returns an empty vector when no state file exists yet.
+    pub async fn list_entries_from_disk(
+        agent_root: &Path,
+    ) -> Result<Vec<(String, Json)>, AgentToolError> {
+        let state_path = agent_root
+            .join(DEFAULT_MEMORY_DIR_NAME)
+            .join(DEFAULT_STATE_FILE_NAME);
+        let content = match fs::read_to_string(&state_path).await {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(AgentToolError::ExecFailed(format!(
+                    "read memory state failed: path={} err={err}",
+                    state_path.display()
+                )));
+            }
+        };
+        let mut entries = Vec::<(String, Json)>::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let envelope = serde_json::from_str::<MemoryEnvelope>(trimmed).map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "parse memory state failed: path={} err={err}",
+                    state_path.display()
+                ))
+            })?;
+            if envelope.valid {
+                entries.push((envelope.key, envelope.content));
+            }
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(entries)
+    }
+
     pub async fn compact(&self) -> Result<Json, AgentToolError> {
         let _guard = self.inner.write_lock.lock().await;
         self.compact_locked().await
@@ -891,6 +944,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_entries_returns_all_valid_pairs_sorted() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&root))
+            .await
+            .expect("create memory");
+
+        memory
+            .set_memory(
+                "/reminder/owner/dentist",
+                "Dentist appointment at 3pm",
+                json!({"kind":"chat","name":"r","retrieved_at":"2026-02-22T10:00:00Z","locator":"u"}),
+            )
+            .await
+            .expect("set reminder");
+        memory
+            .set_memory(
+                "/user/alice/birthday",
+                r#"{"summary":"March 15"}"#,
+                json!({"kind":"chat","name":"r","retrieved_at":"2026-02-22T10:00:00Z","locator":"u"}),
+            )
+            .await
+            .expect("set birthday");
+        memory
+            .set_memory(
+                "/tombstone/me",
+                "to be deleted",
+                json!({"kind":"chat","name":"r","retrieved_at":"2026-02-22T10:00:00Z","locator":"u"}),
+            )
+            .await
+            .expect("set tombstone");
+        memory
+            .remove_memory(
+                "/tombstone/me",
+                json!({"kind":"chat","name":"r","retrieved_at":"2026-02-22T10:00:01Z","locator":"u"}),
+            )
+            .await
+            .expect("remove tombstone");
+
+        let live = memory.list_entries().await.expect("list_entries");
+        let keys: Vec<&str> = live.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["/reminder/owner/dentist", "/user/alice/birthday"]);
+
+        let from_disk = AgentMemory::list_entries_from_disk(&root)
+            .await
+            .expect("list_entries_from_disk");
+        assert_eq!(live, from_disk);
+    }
+
+    #[tokio::test]
+    async fn list_entries_from_disk_returns_empty_when_no_state_file() {
+        let temp = tempdir().expect("create tempdir");
+        let entries = AgentMemory::list_entries_from_disk(temp.path())
+            .await
+            .expect("list_entries_from_disk on empty");
+        assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
     async fn set_memory_without_leading_slash_is_normalized() {
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().to_path_buf();
@@ -919,6 +1031,7 @@ mod tests {
             .await
             .expect("load memory");
         let memory_text = AgentMemory::render_memory_items(&loaded);
+        println!("memory_text: {}", memory_text);
         assert!(memory_text.contains("user_profile/location"));
     }
 
@@ -952,6 +1065,7 @@ mod tests {
             .await
             .expect("load memory");
         let memory_text = AgentMemory::render_memory_items(&loaded);
+
 
         assert!(!memory_text.contains("user/calendar/meeting"));
         assert!(
