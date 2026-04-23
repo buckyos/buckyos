@@ -9,6 +9,7 @@ system: |
 
   <<owner_info>>
   __OPENDAN_ENV($owner)__
+  用户所在时区: {{user_local_timezone}}
   <</owner_info>>
  
   <<process_rules>>
