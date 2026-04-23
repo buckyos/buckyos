@@ -56,6 +56,7 @@ jobs:
           ln -sf "$tool_dir/x86_64-linux-musl-ar" "$tool_dir/musl-ar"
           ln -sf "$tool_dir/x86_64-linux-musl-ranlib" "$tool_dir/musl-ranlib"
           echo "$tool_dir" >> "$GITHUB_PATH"
+          export PATH="$tool_dir:$PATH"
 
           command -v x86_64-linux-musl-gcc
           command -v x86_64-linux-musl-g++
