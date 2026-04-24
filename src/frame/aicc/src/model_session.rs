@@ -473,6 +473,18 @@ mod tests {
         }
     }
 
+    fn item_weight(config: &SessionConfig, path: &str, item_name: &str) -> f64 {
+        config
+            .node(path)
+            .unwrap()
+            .items
+            .as_ref()
+            .unwrap()
+            .get(item_name)
+            .unwrap()
+            .weight
+    }
+
     #[test]
     fn items_override_default_items() {
         let default_items: LogicalItems = [(
@@ -544,6 +556,286 @@ mod tests {
             .unwrap();
         assert_eq!(item.target, "gpt-5.2@openai_primary");
         assert_eq!(item.weight, 3.0);
+    }
+
+    #[test]
+    fn session_patch_reprioritizes_interactive_agent_without_touching_background_jobs() {
+        let parent = SessionConfig {
+            logical_tree: [(
+                "llm".to_string(),
+                LogicalNode {
+                    children: [(
+                        "agent".to_string(),
+                        LogicalNode {
+                            children: [
+                                (
+                                    "chat".to_string(),
+                                    node_with_items(vec![
+                                        ("quality", "llm.gpt5", 5.0),
+                                        ("fast_local", "llm.local", 1.0),
+                                        ("budget", "llm.mini", 0.5),
+                                    ]),
+                                ),
+                                (
+                                    "background_summary".to_string(),
+                                    node_with_items(vec![
+                                        ("budget", "llm.mini", 6.0),
+                                        ("quality", "llm.gpt5", 1.0),
+                                        ("fast_local", "llm.local", 0.5),
+                                    ]),
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                            ..Default::default()
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let child = SessionConfig {
+            logical_tree: [(
+                "llm".to_string(),
+                LogicalNode {
+                    children: [(
+                        "agent".to_string(),
+                        LogicalNode {
+                            children: [(
+                                "chat".to_string(),
+                                LogicalNode {
+                                    item_overrides: Some(
+                                        [
+                                            (
+                                                "quality".to_string(),
+                                                ModelItemPatch {
+                                                    target: None,
+                                                    weight: Some(2.0),
+                                                },
+                                            ),
+                                            (
+                                                "fast_local".to_string(),
+                                                ModelItemPatch {
+                                                    target: None,
+                                                    weight: Some(8.0),
+                                                },
+                                            ),
+                                            (
+                                                "budget".to_string(),
+                                                ModelItemPatch {
+                                                    target: None,
+                                                    weight: Some(0.0),
+                                                },
+                                            ),
+                                        ]
+                                        .into_iter()
+                                        .collect(),
+                                    ),
+                                    ..Default::default()
+                                },
+                            )]
+                            .into_iter()
+                            .collect(),
+                            ..Default::default()
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let merged = merge_session_config(&parent, &child).unwrap();
+
+        assert_eq!(item_weight(&merged, "llm.agent.chat", "fast_local"), 8.0);
+        assert_eq!(item_weight(&merged, "llm.agent.chat", "quality"), 2.0);
+        assert_eq!(item_weight(&merged, "llm.agent.chat", "budget"), 0.0);
+        assert_eq!(
+            merged
+                .node("llm.agent.chat")
+                .unwrap()
+                .items
+                .as_ref()
+                .unwrap()
+                .get("fast_local")
+                .unwrap()
+                .target,
+            "llm.local"
+        );
+        assert_eq!(
+            item_weight(&merged, "llm.agent.background_summary", "budget"),
+            6.0
+        );
+        assert_eq!(
+            item_weight(&merged, "llm.agent.background_summary", "quality"),
+            1.0
+        );
+    }
+
+    #[test]
+    fn session_patch_can_bias_exact_provider_for_one_logical_path() {
+        let parent = SessionConfig {
+            global_exact_model_weights: [
+                ("gpt-5.2@openai_primary".to_string(), 1.0),
+                ("gpt-5.2@openai_backup".to_string(), 1.0),
+                ("claude-sonnet@anthropic".to_string(), 1.0),
+            ]
+            .into_iter()
+            .collect(),
+            logical_tree: [(
+                "llm".to_string(),
+                LogicalNode {
+                    children: [
+                        ("gpt5".to_string(), LogicalNode::default()),
+                        ("planning".to_string(), LogicalNode::default()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let child = SessionConfig {
+            logical_tree: [(
+                "llm".to_string(),
+                LogicalNode {
+                    children: [(
+                        "gpt5".to_string(),
+                        LogicalNode {
+                            exact_model_weights: [
+                                ("gpt-5.2@openai_primary".to_string(), 0.25),
+                                ("gpt-5.2@openai_backup".to_string(), 5.0),
+                            ]
+                            .into_iter()
+                            .collect(),
+                            ..Default::default()
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let merged = merge_session_config(&parent, &child).unwrap();
+
+        assert_eq!(
+            merged.node_exact_weight("llm.gpt5", "gpt-5.2@openai_backup"),
+            5.0
+        );
+        assert_eq!(
+            merged.node_exact_weight("llm.gpt5", "gpt-5.2@openai_primary"),
+            0.25
+        );
+        assert_eq!(
+            merged.node_exact_weight("llm.planning", "gpt-5.2@openai_backup"),
+            1.0
+        );
+        assert_eq!(
+            merged.node_exact_weight("llm.gpt5", "claude-sonnet@anthropic"),
+            1.0
+        );
+    }
+
+    #[test]
+    fn session_store_keeps_priority_patches_isolated_by_session_id() {
+        let global = SessionConfig {
+            logical_tree: [(
+                "llm".to_string(),
+                LogicalNode {
+                    children: [(
+                        "chat".to_string(),
+                        node_with_items(vec![
+                            ("quality", "llm.gpt5", 5.0),
+                            ("fast_local", "llm.local", 1.0),
+                        ]),
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let store = SessionConfigStore::new(global, Duration::from_secs(30)).unwrap();
+        let initial_interactive = store.get_or_create("interactive-agent").unwrap();
+        let patch = SessionConfig {
+            logical_tree: [(
+                "llm".to_string(),
+                LogicalNode {
+                    children: [(
+                        "chat".to_string(),
+                        LogicalNode {
+                            item_overrides: Some(
+                                [
+                                    (
+                                        "quality".to_string(),
+                                        ModelItemPatch {
+                                            target: None,
+                                            weight: Some(1.0),
+                                        },
+                                    ),
+                                    (
+                                        "fast_local".to_string(),
+                                        ModelItemPatch {
+                                            target: None,
+                                            weight: Some(10.0),
+                                        },
+                                    ),
+                                ]
+                                .into_iter()
+                                .collect(),
+                            ),
+                            ..Default::default()
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let interactive = store
+            .patch(
+                "interactive-agent",
+                patch,
+                Some(initial_interactive.revision.as_str()),
+            )
+            .unwrap();
+        let background = store.get_or_create("background-worker").unwrap();
+
+        assert_eq!(
+            item_weight(&interactive.config, "llm.chat", "fast_local"),
+            10.0
+        );
+        assert_eq!(item_weight(&interactive.config, "llm.chat", "quality"), 1.0);
+        assert_eq!(item_weight(&background.config, "llm.chat", "quality"), 5.0);
+        assert_eq!(
+            item_weight(&background.config, "llm.chat", "fast_local"),
+            1.0
+        );
     }
 
     #[test]
