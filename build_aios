@@ -539,6 +539,21 @@ resolve_x86_64_musl_cc() {
     return
   fi
 
+  # Fallback lookup paths for installations not on PATH:
+  # - Homebrew FiloSottile/musl-cross is keg-only on macOS.
+  # - devenv.py extracts musl.cc tarballs under /opt/musl-cross/<target>-cross/.
+  local candidate
+  for candidate in \
+    /opt/homebrew/opt/musl-cross/bin/x86_64-linux-musl-gcc \
+    /usr/local/opt/musl-cross/bin/x86_64-linux-musl-gcc \
+    /opt/musl-cross/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc \
+    /opt/musl-cross/bin/x86_64-linux-musl-gcc; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return
+    fi
+  done
+
   return 1
 }
 
@@ -552,6 +567,18 @@ resolve_x86_64_musl_cxx() {
     command -v musl-g++
     return
   fi
+
+  local candidate
+  for candidate in \
+    /opt/homebrew/opt/musl-cross/bin/x86_64-linux-musl-g++ \
+    /usr/local/opt/musl-cross/bin/x86_64-linux-musl-g++ \
+    /opt/musl-cross/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++ \
+    /opt/musl-cross/bin/x86_64-linux-musl-g++; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return
+    fi
+  done
 
   return 1
 }
@@ -567,10 +594,19 @@ resolve_aarch64_musl_cc() {
     return
   fi
 
-  if [[ -x /opt/musl-cross/bin/aarch64-linux-musl-gcc ]]; then
-    echo "/opt/musl-cross/bin/aarch64-linux-musl-gcc"
-    return
-  fi
+  local candidate
+  for candidate in \
+    /opt/homebrew/opt/musl-cross/bin/aarch64-linux-musl-gcc \
+    /usr/local/opt/musl-cross/bin/aarch64-linux-musl-gcc \
+    /opt/homebrew/opt/aarch64-unknown-linux-musl/bin/aarch64-linux-musl-gcc \
+    /usr/local/opt/aarch64-unknown-linux-musl/bin/aarch64-linux-musl-gcc \
+    /opt/musl-cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc \
+    /opt/musl-cross/bin/aarch64-linux-musl-gcc; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return
+    fi
+  done
 
   return 1
 }
@@ -595,8 +631,7 @@ resolve_aarch64_musl_tool() {
   return 1
 }
 
-append_x86_64_musl_env_lines() {
-  local -n env_lines_ref="$1"
+get_x86_64_musl_env_lines() {
   local x86_64_musl_cc
   local x86_64_musl_cxx
   local tool_bin_dir
@@ -611,7 +646,7 @@ Linux builds in this repository are fully static. Install a musl toolchain that 
   - or `musl-gcc` in PATH
 then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   if ! "$x86_64_musl_cc" -dumpmachine >/dev/null 2>&1; then
@@ -619,28 +654,28 @@ EOF
 Resolved musl compiler is not runnable: $x86_64_musl_cc
 Ensure the full x86_64 musl toolchain is installed, then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   tool_bin_dir="$(dirname "$x86_64_musl_cc")"
-  env_lines_ref+=("PATH=$tool_bin_dir:$PATH")
-  env_lines_ref+=("CC_x86_64_unknown_linux_musl=$x86_64_musl_cc")
-  env_lines_ref+=("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$x86_64_musl_cc")
+  printf '%s\n' "PATH=$tool_bin_dir:$PATH"
+  printf '%s\n' "CC_x86_64_unknown_linux_musl=$x86_64_musl_cc"
+  printf '%s\n' "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$x86_64_musl_cc"
 
   if x86_64_musl_ar="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
     x86_64-linux-musl-ar x86_64-linux-musl-gcc-ar ar)"; then
-    env_lines_ref+=("AR_x86_64_unknown_linux_musl=$x86_64_musl_ar")
+    printf '%s\n' "AR_x86_64_unknown_linux_musl=$x86_64_musl_ar"
   fi
 
   if x86_64_musl_ranlib="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
     x86_64-linux-musl-ranlib x86_64-linux-musl-gcc-ranlib ranlib)"; then
-    env_lines_ref+=("RANLIB_x86_64_unknown_linux_musl=$x86_64_musl_ranlib")
+    printf '%s\n' "RANLIB_x86_64_unknown_linux_musl=$x86_64_musl_ranlib"
   fi
 
   if x86_64_musl_cxx="$(resolve_x86_64_musl_cxx)"; then
-    env_lines_ref+=("CXX_x86_64_unknown_linux_musl=$x86_64_musl_cxx")
+    printf '%s\n' "CXX_x86_64_unknown_linux_musl=$x86_64_musl_cxx"
   else
-    log "x86_64 musl C++ compiler not found; crates with C++ deps (for example rocksdb) require x86_64-linux-musl-g++ or musl-g++"
+    log "x86_64 musl C++ compiler not found; crates with C++ deps (for example rocksdb) require x86_64-linux-musl-g++ or musl-g++" >&2
   fi
 }
 
@@ -660,7 +695,7 @@ that provides one of:
   - `/opt/musl-cross/bin/aarch64-linux-musl-gcc`
 then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   if ! "$aarch64_musl_cc" -dumpmachine >/dev/null 2>&1; then
@@ -670,7 +705,7 @@ This usually means the toolchain is installed in a non-standard location but its
 support files are incomplete or unavailable. Ensure the full aarch64 musl toolchain
 is installed, then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   tool_bin_dir="$(dirname "$aarch64_musl_cc")"
@@ -705,7 +740,7 @@ that provides one of:
   - `/opt/musl-cross/bin/aarch64-linux-musl-gcc`
 then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   if [[ "$line" == "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc" ]]; then
@@ -722,7 +757,7 @@ that provides one of:
   - `/opt/musl-cross/bin/aarch64-linux-musl-gcc`
 then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -799,13 +834,21 @@ build_runtime_binaries() {
       normalized_line="$(rewrite_env_line "$line")"
       normalized_env_lines+=("$normalized_line")
     done
+    local extra_line
+    local extra_lines_output=""
     if [[ "$rust_target" == "x86_64-unknown-linux-musl" ]]; then
-      append_x86_64_musl_env_lines normalized_env_lines
+      if ! extra_lines_output="$(get_x86_64_musl_env_lines)"; then
+        exit 1
+      fi
     elif [[ "$rust_target" == "aarch64-unknown-linux-musl" ]]; then
-      local extra_line
+      if ! extra_lines_output="$(get_aarch64_musl_env_lines)"; then
+        exit 1
+      fi
+    fi
+    if [[ -n "$extra_lines_output" ]]; then
       while IFS= read -r extra_line; do
         [[ -n "$extra_line" ]] && normalized_env_lines+=("$extra_line")
-      done < <(get_aarch64_musl_env_lines)
+      done <<< "$extra_lines_output"
     fi
     env_cmd+=("${normalized_env_lines[@]}")
   fi
@@ -986,7 +1029,11 @@ main() {
   log "Cargo target dir: $cargo_target_dir ($cargo_target_mode)"
   log "Runtime packages: $(package_list_to_string "${RUNTIME_PACKAGES[@]}")"
   if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then
-    log "Workspace packages: $(package_list_to_string "${WORKSPACE_PACKAGES[@]}")"
+    if [[ ${#WORKSPACE_PACKAGES[@]} -gt 0 ]]; then
+      log "Workspace packages: $(package_list_to_string "${WORKSPACE_PACKAGES[@]}")"
+    else
+      log "Workspace packages: (none)"
+    fi
   else
     log "Workspace packages: skipped (--runtime-only)"
   fi

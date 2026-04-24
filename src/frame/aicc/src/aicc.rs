@@ -1,12 +1,13 @@
+use crate::aicc_usage_log_db::AiccUsageLogDb;
 use crate::complete_request_queue::QUEUE_STATUS_QUEUED;
 use ::kRPC::*;
 use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    AiResponseSummary, AiccHandler, CancelResponse, Capability, CompleteRequest, CompleteResponse,
-    CompleteStatus, CreateTaskOptions, Feature, ResourceRef, TaskManagerClient, TaskStatus,
-    AICC_SERVICE_SERVICE_NAME,
+    AiResponseSummary, AiccHandler, AiccUsageEvent, CancelResponse, Capability, CompleteRequest,
+    CompleteResponse, CompleteStatus, CreateTaskOptions, Feature, ResourceRef, TaskManagerClient,
+    TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -401,6 +402,163 @@ impl TaskEventSink for DeferredTaskEventSink {
             delegate.emit(event).await?;
         }
         Ok(())
+    }
+}
+
+/// Snapshot of everything the usage-log writer needs to build one durable
+/// `aicc_usage_event` row. Captured once at routing time so the wrapping sink
+/// can persist usage without re-reading the request on every event.
+#[derive(Clone, Debug)]
+struct UsageLogContext {
+    external_task_id: String,
+    tenant_id: String,
+    caller_app_id: Option<String>,
+    capability: String,
+    request_model: String,
+    provider_model: String,
+    idempotency_key: Option<String>,
+}
+
+/// Wraps an underlying task event sink. When a `Final` event flows through it
+/// and the provider reported `usage`, a row is written to the usage-log db
+/// exactly once. Missing `usage` on a successful Final is logged as a
+/// protocol error per section 5 of the requirements doc — we do not invent
+/// placeholder usage rows.
+struct UsageLoggingSink {
+    inner: Arc<dyn TaskEventSink>,
+    db: Arc<AiccUsageLogDb>,
+    context: UsageLogContext,
+}
+
+impl UsageLoggingSink {
+    fn new(
+        inner: Arc<dyn TaskEventSink>,
+        db: Arc<AiccUsageLogDb>,
+        context: UsageLogContext,
+    ) -> Self {
+        Self { inner, db, context }
+    }
+
+    async fn record_usage(&self, data: &Value) {
+        let summary = match data.get("summary") {
+            Some(value) => value,
+            None => {
+                warn!(
+                    "aicc.usage_log skipped: task_id={} tenant={} reason=missing_summary",
+                    self.context.external_task_id, self.context.tenant_id
+                );
+                return;
+            }
+        };
+
+        let usage = match summary.get("usage") {
+            Some(value) if !value.is_null() => value.clone(),
+            _ => {
+                warn!(
+                    "aicc.usage_log skipped: task_id={} tenant={} reason=missing_usage_protocol_error",
+                    self.context.external_task_id, self.context.tenant_id
+                );
+                return;
+            }
+        };
+
+        let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
+        let output_tokens = usage.get("output_tokens").and_then(Value::as_u64);
+        let total_tokens = usage.get("total_tokens").and_then(Value::as_u64);
+        let request_units = usage.get("request_units").and_then(Value::as_u64);
+
+        let finance_snapshot = build_finance_snapshot(summary);
+
+        let event = AiccUsageEvent {
+            event_id: format!("usage-{}", self.context.external_task_id),
+            tenant_id: self.context.tenant_id.clone(),
+            caller_app_id: self.context.caller_app_id.clone(),
+            task_id: self.context.external_task_id.clone(),
+            idempotency_key: self.context.idempotency_key.clone(),
+            capability: self.context.capability.clone(),
+            request_model: self.context.request_model.clone(),
+            provider_model: self.context.provider_model.clone(),
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            request_units,
+            usage_json: usage,
+            finance_snapshot_json: finance_snapshot,
+            created_at_ms: now_ms() as i64,
+        };
+
+        match self.db.insert_usage_event(&event).await {
+            Ok(true) => {
+                info!(
+                    "aicc.usage_log wrote: task_id={} tenant={} provider_model={} input_tokens={:?} output_tokens={:?}",
+                    event.task_id,
+                    event.tenant_id,
+                    event.provider_model,
+                    event.input_tokens,
+                    event.output_tokens
+                );
+            }
+            Ok(false) => {
+                info!(
+                    "aicc.usage_log duplicate_skipped: task_id={} tenant={} idempotency_key={:?}",
+                    event.task_id, event.tenant_id, event.idempotency_key
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "aicc.usage_log write_failed: task_id={} tenant={} err={}",
+                    event.task_id, event.tenant_id, err
+                );
+            }
+        }
+    }
+}
+
+fn build_finance_snapshot(summary: &Value) -> Option<Value> {
+    let mut snapshot = Map::new();
+    if let Some(cost) = summary.get("cost") {
+        if let Some(amount) = cost.get("amount") {
+            snapshot.insert("amount".to_string(), amount.clone());
+        }
+        if let Some(currency) = cost.get("currency") {
+            snapshot.insert("currency".to_string(), currency.clone());
+        }
+    }
+    if let Some(provider_task_ref) = summary.get("provider_task_ref") {
+        if !provider_task_ref.is_null() {
+            snapshot.insert("provider_trace_id".to_string(), provider_task_ref.clone());
+        }
+    }
+    if let Some(extra) = summary.get("extra") {
+        if let Some(billing) = extra.get("billing") {
+            snapshot.insert("billing".to_string(), billing.clone());
+        }
+    }
+    if snapshot.is_empty() {
+        None
+    } else {
+        Some(Value::Object(snapshot))
+    }
+}
+
+#[async_trait]
+impl TaskEventSink for UsageLoggingSink {
+    fn event_ref(&self) -> Option<String> {
+        self.inner.event_ref()
+    }
+
+    async fn emit(&self, event: TaskEvent) -> std::result::Result<(), RPCErrors> {
+        if matches!(event.kind, TaskEventKind::Final) {
+            if let Some(data) = event.data.as_ref() {
+                self.record_usage(data).await;
+            } else {
+                warn!(
+                    "aicc.usage_log skipped: task_id={} tenant={} reason=missing_event_data",
+                    self.context.external_task_id, self.context.tenant_id
+                );
+            }
+        }
+        self.inner.emit(event).await
     }
 }
 
@@ -1236,6 +1394,7 @@ pub struct AIComputeCenter {
     base64_max_bytes: usize,
     base64_mime_allowlist: HashSet<String>,
     url_scheme_allowlist: HashSet<String>,
+    usage_log_db: Option<Arc<AiccUsageLogDb>>,
 }
 
 impl Default for AIComputeCenter {
@@ -1279,7 +1438,16 @@ impl AIComputeCenter {
             base64_max_bytes: DEFAULT_BASE64_MAX_BYTES,
             base64_mime_allowlist,
             url_scheme_allowlist,
+            usage_log_db: None,
         }
+    }
+
+    pub fn set_usage_log_db(&mut self, db: Arc<AiccUsageLogDb>) {
+        self.usage_log_db = Some(db);
+    }
+
+    pub fn usage_log_db(&self) -> Option<Arc<AiccUsageLogDb>> {
+        self.usage_log_db.clone()
     }
 
     pub fn registry(&self) -> &Registry {
@@ -1490,6 +1658,24 @@ impl AIComputeCenter {
             decision.fallback_instance_ids,
             route_attempts
         );
+
+        // Once we know the final provider model we can wrap the sink with a
+        // usage-log layer: any Final event flowing through it (immediate call
+        // or long-task completion) writes one durable row.
+        let event_sink: Arc<dyn TaskEventSink> = if let Some(db) = self.usage_log_db.clone() {
+            let context = UsageLogContext {
+                external_task_id: external_task_id.clone(),
+                tenant_id: invoke_ctx.tenant_id.clone(),
+                caller_app_id: invoke_ctx.caller_app_id.clone(),
+                capability: capability_name(&request.capability).to_string(),
+                request_model: request.model.alias.clone(),
+                provider_model: decision.provider_model.clone(),
+                idempotency_key: request.idempotency_key.clone(),
+            };
+            Arc::new(UsageLoggingSink::new(event_sink, db, context))
+        } else {
+            event_sink
+        };
 
         let start_result = self
             .start_with_fallback(
@@ -2186,6 +2372,18 @@ fn merge_task_data_with_event(data: &mut serde_json::Value, event: &TaskEvent) {
             );
         }
         TaskEventKind::Started | TaskEventKind::Queued => {}
+    }
+}
+
+fn capability_name(capability: &Capability) -> &'static str {
+    match capability {
+        Capability::LlmRouter => "llm_router",
+        Capability::Text2Image => "text2image",
+        Capability::Text2Video => "text2video",
+        Capability::Text2Voice => "text2voice",
+        Capability::Image2Text => "image2text",
+        Capability::Voice2Text => "voice2text",
+        Capability::Video2Text => "video2text",
     }
 }
 

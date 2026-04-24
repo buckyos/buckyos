@@ -23,3 +23,7 @@ reqwest = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 name-lib = { workspace = true }
 sha2 = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

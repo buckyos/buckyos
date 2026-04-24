@@ -790,12 +790,30 @@ class Bootstrapper:
         self.ensure_deno()
         self.ensure_tmux()
 
+        if not self.args.skip_cross_tools:
+            self.ensure_macos_musl_cross()
+
         if not self.args.skip_buckyos_dir:
             self.ensure_buckyos_directory()
 
         rustup_prefix = self.capture_text(["brew", "--prefix", "rustup"])
         if rustup_prefix:
             self.notes.append(f"If rustup is not found in terminal, add {rustup_prefix}/bin to PATH")
+
+    def ensure_macos_musl_cross(self) -> None:
+        """Install FiloSottile/musl-cross so Linux musl cross-compilation works on macOS.
+
+        The formula is keg-only; build_aios auto-detects binaries under
+        /opt/homebrew/opt/musl-cross/bin (or /usr/local/opt/musl-cross/bin on Intel),
+        so no PATH changes are required.
+        """
+        if self.package_installed("musl-cross"):
+            return
+        self.install_packages(["FiloSottile/musl-cross/musl-cross"])
+        self.notes.append(
+            "Installed FiloSottile/musl-cross (keg-only); build_aios discovers it under "
+            "/opt/homebrew/opt/musl-cross/bin without PATH changes."
+        )
 
     def install_windows_environment(self) -> None:
         self.update_package_index()
@@ -951,6 +969,9 @@ class Bootstrapper:
         if self.system == "Linux" and not self.args.skip_cross_tools:
             self.run([rustup, "target", "add", "x86_64-unknown-linux-musl"])
             self.run([rustup, "target", "add", "aarch64-unknown-linux-gnu"])
+            self.run([rustup, "target", "add", "aarch64-unknown-linux-musl"])
+        if self.system == "Darwin" and not self.args.skip_cross_tools:
+            self.run([rustup, "target", "add", "x86_64-unknown-linux-musl"])
             self.run([rustup, "target", "add", "aarch64-unknown-linux-musl"])
         if self.system == "Windows" and not self.args.skip_msvc:
             host_arch = platform.machine().lower()

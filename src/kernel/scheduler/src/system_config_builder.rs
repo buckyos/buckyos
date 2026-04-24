@@ -326,13 +326,17 @@ impl SystemConfigBuilder {
 
     pub async fn add_aicc(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
         let service_doc = generate_aicc_service_doc();
-        let service_spec = build_kernel_service_spec(
+        let mut service_spec = build_kernel_service_spec(
             AICC_SERVICE_UNIQUE_ID,
             AICC_SERVICE_SERVICE_PORT,
             1,
             service_doc,
         )
         .await?;
+        service_spec.install_config.rdb_instances.insert(
+            buckyos_api::AICC_USAGE_LOG_RDB_INSTANCE_ID.to_string(),
+            buckyos_api::aicc_usage_log_default_rdb_instance_config(),
+        );
         self.insert_json("services/aicc/spec", &service_spec)?;
         let sn_openai_models = if config.llm_router_enabled() {
             fetch_sn_openai_models(config.user_name.as_str()).await

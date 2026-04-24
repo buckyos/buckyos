@@ -1,4 +1,5 @@
 mod aicc;
+mod aicc_usage_log_db;
 mod claude;
 mod claude_protocol;
 mod complete_request_queue;
@@ -27,6 +28,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::aicc::AIComputeCenter;
+use crate::aicc_usage_log_db::AiccUsageLogDb;
 use crate::claude::register_claude_providers;
 use crate::gimini::register_google_gimini_providers;
 use crate::minimax::register_minimax_providers;
@@ -272,6 +274,19 @@ pub async fn start_aicc_service(mut center: AIComputeCenter) -> Result<()> {
 
     set_buckyos_api_runtime(runtime)
         .map_err(|err| anyhow::anyhow!("register aicc runtime failed: {}", err))?;
+
+    match AiccUsageLogDb::open_from_service_spec().await {
+        Ok(db) => {
+            info!("aicc usage-log db opened");
+            center.set_usage_log_db(Arc::new(db));
+        }
+        Err(err) => {
+            warn!(
+                "open aicc usage-log db failed, usage events will not be persisted: {}",
+                err
+            );
+        }
+    }
 
     let server = AiccHttpServer::new(center);
 
