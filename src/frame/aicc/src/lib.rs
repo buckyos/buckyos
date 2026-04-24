@@ -5,6 +5,11 @@ pub mod claude_protocol;
 pub mod complete_request_queue;
 pub mod gimini;
 pub mod minimax;
+pub mod model_registry;
+pub mod model_router;
+pub mod model_scheduler;
+pub mod model_session;
+pub mod model_types;
 pub mod openai;
 pub mod openai_protocol;
 
