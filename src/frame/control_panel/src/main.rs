@@ -29,7 +29,7 @@ use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use http::{Method, StatusCode, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use log::info;
-use named_store::{NamedStoreMgrZoneGateway, NdmZoneGatewayConfig};
+use named_store::{NamedDataMgrZoneGateway, NdmZoneGatewayConfig};
 use serde_json::*;
 use server_runner::*;
 use std::collections::{HashMap, VecDeque};
@@ -205,7 +205,7 @@ struct ControlPanelServer {
     docker_overview_refresh_lock: Arc<Mutex<()>>,
     file_manager: Arc<file_manager::BuckyFileServer>,
     app_installer: app_installer::AppInstaller,
-    ndm_gateway: Option<Arc<NamedStoreMgrZoneGateway>>,
+    ndm_gateway: Option<Arc<NamedDataMgrZoneGateway>>,
 }
 
 impl ControlPanelServer {
@@ -1183,7 +1183,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
                 cache_dir: ndm_cache_dir,
                 ..Default::default()
             };
-            let ndm_gw = Arc::new(NamedStoreMgrZoneGateway::new(
+            let ndm_gw = Arc::new(NamedDataMgrZoneGateway::new(
                 Arc::new(store_mgr),
                 ndm_config,
             ));
