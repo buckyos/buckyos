@@ -644,8 +644,7 @@ EOF
   fi
 }
 
-append_aarch64_musl_env_lines() {
-  local -n env_lines_ref="$1"
+get_aarch64_musl_env_lines() {
   local aarch64_musl_cc
   local tool_bin_dir
   local aarch64_musl_ar
@@ -675,16 +674,16 @@ EOF
   fi
 
   tool_bin_dir="$(dirname "$aarch64_musl_cc")"
-  env_lines_ref+=("PATH=$tool_bin_dir:$PATH")
+  printf '%s\n' "PATH=$tool_bin_dir:$PATH"
 
   if aarch64_musl_ar="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
     aarch64-linux-musl-ar aarch64-linux-musl-gcc-ar ar)"; then
-    env_lines_ref+=("AR_aarch64_unknown_linux_musl=$aarch64_musl_ar")
+    printf '%s\n' "AR_aarch64_unknown_linux_musl=$aarch64_musl_ar"
   fi
 
   if aarch64_musl_ranlib="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
     aarch64-linux-musl-ranlib aarch64-linux-musl-gcc-ranlib ranlib)"; then
-    env_lines_ref+=("RANLIB_aarch64_unknown_linux_musl=$aarch64_musl_ranlib")
+    printf '%s\n' "RANLIB_aarch64_unknown_linux_musl=$aarch64_musl_ranlib"
   fi
 }
 
@@ -803,7 +802,10 @@ build_runtime_binaries() {
     if [[ "$rust_target" == "x86_64-unknown-linux-musl" ]]; then
       append_x86_64_musl_env_lines normalized_env_lines
     elif [[ "$rust_target" == "aarch64-unknown-linux-musl" ]]; then
-      append_aarch64_musl_env_lines normalized_env_lines
+      local extra_line
+      while IFS= read -r extra_line; do
+        [[ -n "$extra_line" ]] && normalized_env_lines+=("$extra_line")
+      done < <(get_aarch64_musl_env_lines)
     fi
     env_cmd+=("${normalized_env_lines[@]}")
   fi
@@ -957,7 +959,9 @@ main() {
   resolve_default_image_name
   resolve_version_tag
   python_bin="$(resolve_python)"
-  mapfile -t target_arches < <(resolve_selected_arches)
+  while IFS= read -r _arch_line; do
+    target_arches+=("$_arch_line")
+  done < <(resolve_selected_arches)
 
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_aios.XXXXXX")"
   trap "rm -rf '$tmp_root'" EXIT

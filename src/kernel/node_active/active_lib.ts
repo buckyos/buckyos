@@ -196,6 +196,13 @@ export type SnBindZoneConfigResult = JsonValue & {
     code: number;
 };
 
+export type CheckBuckyUsernameResult = JsonValue & {
+    valid: boolean;
+    reason?: string;
+    message?: string;
+    normalized_name?: string;
+};
+
 export async function register_sn_user(user_name:string,pwd_hash:string,active_code:string): Promise<SnLoginResult> {
     let rpc_client = create_sn_rpc_client(SN_AUTH_API_URL);
     let result: JsonValue = await rpc_client.call("auth.register",{
@@ -270,29 +277,10 @@ export async function check_sn_active_code(sn_active_code:string) : Promise<bool
     return valid;
 }
 
-export async function check_bucky_username(check_bucky_username:string) : Promise<boolean> {
-    const validation = validate_bucky_username(check_bucky_username);
-    if (!validation.valid) {
-        return false;
-    }
+export async function check_bucky_username(check_bucky_username:string) : Promise<CheckBuckyUsernameResult> {
     let rpc_client = create_sn_rpc_client(SN_AUTH_API_URL);
-    let result: JsonValue = await rpc_client.call("auth.check_username",{username:check_bucky_username});
-    let valid = result["valid"];
-    return valid;
-}
-
-export function validate_bucky_username(username:string):{valid:boolean; reason?:string} {
-    const trimmed = username.trim().toLowerCase();
-    if (trimmed.length <= 4) {
-        return {valid:false, reason:"too_short"};
-    }
-    if (trimmed.length > 32) {
-        return {valid:false, reason:"too_long"};
-    }
-    if (!/^[a-z0-9]+$/.test(trimmed)) {
-        return {valid:false, reason:"invalid_chars"};
-    }
-    return {valid:true};
+    let result: JsonValue = await rpc_client.call("auth.check_username",{name:check_bucky_username});
+    return result as CheckBuckyUsernameResult;
 }
 
 export async function generate_key_pair():Promise<[JsonValue,string,string]> {
@@ -518,11 +506,6 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
     if (need_sn) {
         let user_domain = null;
         if (data.sn_user_name == null || data.sn_user_name == "") {
-            return false;
-        }
-        const validation = validate_bucky_username(data.sn_user_name);
-        if (!validation.valid) {
-            console.error("Invalid sn_user_name format", validation.reason);
             return false;
         }
         sn_url = SN_API_URL;

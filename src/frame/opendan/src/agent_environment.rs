@@ -7,7 +7,7 @@ use std::sync::Arc;
 use buckyos_api::{
     get_buckyos_api_runtime, Contact, MsgRecord, OpenDanAgentSessionRecord, TaskManagerClient,
 };
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Datelike, Local, Timelike, Utc};
 use log::{debug, warn};
 use name_lib::DID;
 use ndn_lib::MsgObject;
@@ -26,7 +26,7 @@ use crate::agent::{AIAgent, InputQueueKind};
 use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
 use crate::agent_tool::{
     get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
-    AgentToolError, AgentToolManager,
+    AgentMemory, AgentToolError, AgentToolManager,
 };
 use crate::step_record::LLMStepPromptRenderOptions;
 use crate::workspace::{
@@ -293,6 +293,21 @@ impl AgentEnvironment {
         }
         if k == "current_behavior" || k == "behavior_name" {
             return Ok(Some(behavior_name));
+        }
+        if k == "user_local_timezone" {
+            return Ok(Some(format_user_local_timezone(Local::now())));
+        }
+        if k == "memory_notes" {
+            let Some(agent_root) = session_root_dir.parent().map(Path::to_path_buf) else {
+                warn!(
+                    "agent_env.memory_notes resolve_failed: session={} session_root_dir={} reason=no_parent",
+                    session_id,
+                    session_root_dir.display()
+                );
+                return Ok(None);
+            };
+            let entries = AgentMemory::list_entries_from_disk(&agent_root).await?;
+            return Ok(Some(render_memory_notes(&entries)));
         }
         if k == "owner" || k.starts_with("owner.") {
             return Ok(load_owner_value_for_prompt(k).await);
@@ -872,10 +887,53 @@ fn resolve_variable(name: &str, ctx: &PromptTemplateContext) -> Option<String> {
         "new_msg" => clean_optional_text(ctx.new_msg.as_deref()),
         "new_event" => clean_optional_text(ctx.new_event.as_deref()),
         "session_id" => clean_optional_text(ctx.session_id.as_deref()),
+        "user_local_timezone" => Some(format_user_local_timezone(Local::now())),
         _ => ctx
             .runtime_kv
             .get(name)
             .and_then(json_value_to_compact_text),
+    }
+}
+
+fn format_user_local_timezone(now: DateTime<Local>) -> String {
+    format!("UTC{}", now.format("%:z"))
+}
+
+fn render_memory_notes(entries: &[(String, Json)]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (key, content) in entries {
+        let value_text = render_memory_value_for_notes(content);
+        if value_text.contains('\n') {
+            out.push_str("- ");
+            out.push_str(key);
+            out.push_str(":\n");
+            for line in value_text.lines() {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        } else {
+            out.push_str("- ");
+            out.push_str(key);
+            out.push_str(": ");
+            out.push_str(value_text.as_str());
+            out.push('\n');
+        }
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+fn render_memory_value_for_notes(value: &Json) -> String {
+    match value {
+        Json::String(text) => text.clone(),
+        Json::Null => String::new(),
+        _ => serde_json::to_string(value).unwrap_or_default(),
     }
 }
 
@@ -2456,7 +2514,11 @@ fn collect_plain_placeholder_vars(template: &str) -> Vec<String> {
         };
         let placeholder = template[content_start..close_pos].trim();
         if is_variable_name(placeholder) {
-            let name = placeholder.to_string();
+            let name = placeholder
+                .split('.')
+                .next()
+                .unwrap_or(placeholder)
+                .to_string();
             if seen.insert(name.clone()) {
                 vars.push(name);
             }
@@ -2485,7 +2547,7 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_tool::{AgentToolResult, TodoTool, TodoToolConfig};
+    use crate::agent_tool::{AgentMemoryConfig, AgentToolResult, TodoTool, TodoToolConfig};
     use crate::behavior::BehaviorLLMResult;
     use crate::step_record::LLMStepRecord;
     use crate::workspace::WorkshopWorkspaceRecord;
@@ -2995,6 +3057,24 @@ mod tests {
     }
 
     #[test]
+    fn prepare_prompt_template_uses_root_var_for_dotted_placeholder() {
+        let prepared = prepare_prompt_template("name={{owner.show_name}}");
+
+        assert!(prepared.starts_with("__OPENDAN_VAR(owner, $owner)"));
+        assert!(!prepared.contains("__OPENDAN_VAR(owner.show_name"));
+    }
+
+    #[test]
+    fn prepare_prompt_template_does_not_redeclare_declared_root_var() {
+        let prepared = prepare_prompt_template(
+            "__OPENDAN_VAR(new_event, $new_event.1)\n{{new_event.eventdata.current_time}}",
+        );
+
+        assert_eq!(prepared.matches("__OPENDAN_VAR(new_event, $new_event.1)").count(), 1);
+        assert!(!prepared.contains("__OPENDAN_VAR(new_event.eventdata.current_time"));
+    }
+
+    #[test]
     fn render_new_msg_prefers_from_name_as_sender() {
         let record: MsgRecord = serde_json::from_value(json!({
             "record_id": "rid-1",
@@ -3280,6 +3360,112 @@ mod tests {
             .expect("text mode should return string");
 
         assert_eq!(rendered, "Event=/taskmgr/new/task_001");
+    }
+
+    #[tokio::test]
+    async fn render_text_replaces_user_local_timezone_variable() {
+        let root = tempdir().expect("create temp dir");
+        let env = AgentEnvironment::new(root.path())
+            .await
+            .expect("create env");
+        let ctx = PromptTemplateContext::default();
+
+        let rendered = env
+            .render_prompt_template("TZ={{user_local_timezone}}", TemplateRenderMode::Text, &ctx)
+            .await
+            .expect("render template")
+            .expect("text mode should return string");
+
+        let expected = format!("TZ=UTC{}", Local::now().format("%:z"));
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn user_local_timezone_format_uses_utc_prefix() {
+        let formatted = format_user_local_timezone(Local::now());
+        assert!(
+            formatted.starts_with("UTC"),
+            "expected UTC prefix, got {formatted}"
+        );
+        assert!(
+            formatted.contains(':'),
+            "expected colon-separated offset, got {formatted}"
+        );
+    }
+
+    #[test]
+    fn render_memory_notes_handles_strings_objects_and_multiline() {
+        let entries = vec![
+            (
+                "/reminder/owner/dentist".to_string(),
+                Json::String("Dentist appointment at 3pm".to_string()),
+            ),
+            (
+                "/user/alice/profile".to_string(),
+                json!({"city":"Cupertino","timezone":"PT"}),
+            ),
+            (
+                "/notes/multiline".to_string(),
+                Json::String("first\nsecond".to_string()),
+            ),
+        ];
+        let rendered = render_memory_notes(&entries);
+        assert!(rendered.contains("- /reminder/owner/dentist: Dentist appointment at 3pm"));
+        assert!(rendered.contains("- /user/alice/profile: {"));
+        assert!(rendered.contains("\"city\":\"Cupertino\""));
+        assert!(rendered.contains("- /notes/multiline:\n    first\n    second"));
+        assert!(!rendered.ends_with('\n'));
+    }
+
+    #[test]
+    fn render_memory_notes_returns_empty_for_no_entries() {
+        assert!(render_memory_notes(&[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_value_from_session_memory_notes_renders_live_entries() {
+        let root = tempdir().expect("create temp dir");
+        let agent_root = root.path().to_path_buf();
+        let memory = AgentMemory::new(AgentMemoryConfig::new(&agent_root))
+            .await
+            .expect("create memory");
+        memory
+            .set_memory(
+                "/reminder/owner/dentist",
+                "Dentist appointment at 3pm",
+                json!({"kind":"chat","name":"r","retrieved_at":"2026-02-22T10:00:00Z","locator":"u"}),
+            )
+            .await
+            .expect("set reminder");
+        memory
+            .set_memory(
+                "/user/alice/birthday",
+                "March 15",
+                json!({"kind":"chat","name":"r","retrieved_at":"2026-02-22T10:00:00Z","locator":"u"}),
+            )
+            .await
+            .expect("set birthday");
+
+        let sessions_dir = agent_root.join("sessions");
+        let session = Arc::new(Mutex::new(AgentSession::new(
+            "work-memory-notes",
+            "did:test:agent",
+            Some("plan"),
+        )));
+        {
+            let mut guard = session.lock().await;
+            guard.session_root_dir = sessions_dir;
+        }
+
+        let rendered = AgentEnvironment::load_value_from_session(session, "memory_notes")
+            .await
+            .expect("load memory_notes")
+            .expect("text mode should return string");
+
+        assert_eq!(
+            rendered,
+            "- /reminder/owner/dentist: Dentist appointment at 3pm\n- /user/alice/birthday: March 15"
+        );
     }
 
     #[tokio::test]

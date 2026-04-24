@@ -4,7 +4,7 @@ Section: utils
 Priority: optional
 Architecture: {{architecture}}
 Maintainer: buckyos.org
-Depends: python3,curl,openssl,psmisc,docker.io
+Depends: python3,curl,openssl,psmisc,docker.io | docker-ce | moby-engine
 Description: buckyos system software.
  include node_daemon,node_active,cyfs_gateway,app_loader,system_config_service,verify_hub.
  with default config files.

@@ -660,7 +660,10 @@ impl AgentSession {
     }
 
     pub fn should_ready_by_wait_timeout(&self, now_ms: u64) -> bool {
-        if self.state != SessionState::WaitForMsg && self.state != SessionState::WaitForEvent {
+        if self.state != SessionState::Wait
+            && self.state != SessionState::WaitForMsg
+            && self.state != SessionState::WaitForEvent
+        {
             return false;
         }
         self.wait_details
@@ -701,6 +704,7 @@ impl AgentSession {
 
         if self.state == SessionState::WaitForMsg && item.msg.is_some() {
             self.updated_at_ms = now_ms();
+            self.wait_details = None;
             self.state = SessionState::Ready;
             info!(
                 "{} will wakeup session:{} from WaitForMsg",
@@ -710,6 +714,7 @@ impl AgentSession {
         }
         if self.state == SessionState::WaitForEvent && item.event_id.is_some() {
             self.updated_at_ms = now_ms();
+            self.wait_details = None;
             self.state = SessionState::Ready;
             info!(
                 "{} will wakeup session:{} from WaitForEvent",
@@ -719,6 +724,7 @@ impl AgentSession {
         }
         if self.state == SessionState::Wait || self.state == SessionState::End {
             self.updated_at_ms = now_ms();
+            self.wait_details = None;
             self.state = SessionState::Ready;
             debug!(
                 "{} will wakeup session:{} by input",
@@ -986,12 +992,20 @@ impl AgentSessionMgr {
         default_remote: Option<&str>,
     ) -> Result<Arc<Mutex<AgentSession>>, AgentToolError> {
         let session_id = sanitize_session_id(session_id)?;
+        let normalized_default_remote =
+            normalize_optional_string(default_remote.map(str::to_string));
         if let Some(existing) = self.get_session(session_id.as_str()).await {
             let mut guard = existing.lock().await;
             self.hydrate_session_runtime_context(&mut guard);
-            let defaulted = self.ensure_default_behavior_if_empty(&mut guard);
+            let mut should_save = self.ensure_default_behavior_if_empty(&mut guard);
+            if guard.default_remote.is_none() {
+                if let Some(default_remote) = normalized_default_remote.clone() {
+                    guard.default_remote = Some(default_remote);
+                    should_save = true;
+                }
+            }
             drop(guard);
-            if defaulted {
+            if should_save {
                 self.save_session(session_id.as_str()).await?;
             }
             return Ok(existing);
@@ -1020,7 +1034,7 @@ impl AgentSessionMgr {
         if let Some(title) = normalize_optional_string(title) {
             session.title = title;
         }
-        session.default_remote = normalize_optional_string(default_remote.map(str::to_string));
+        session.default_remote = normalized_default_remote;
         let record = session.to_record(true);
         self.write_session_record(&record).await?;
 
@@ -1184,6 +1198,7 @@ impl AgentSessionMgr {
         for session in sessions {
             let mut guard = session.lock().await;
             if guard.state == SessionState::Ready {
+                guard.wait_details = None;
                 if let Some(local_workspace_id) = guard
                     .local_workspace_id
                     .as_deref()
@@ -1650,6 +1665,47 @@ mod tests {
         assert_eq!(records[0].record_type, WorklogRecordType::FunctionRecord);
     }
 
+    #[tokio::test]
+    async fn ensure_session_backfills_missing_default_remote_for_existing_session() {
+        let temp = tempdir().expect("create tempdir");
+        let mgr = AgentSessionMgr::new(
+            "agent.test",
+            temp.path().join("sessions"),
+            "ui_default".to_string(),
+            "work_default".to_string(),
+        )
+        .await
+        .expect("create session manager");
+
+        mgr.ensure_session("ui-demo", None, None, None)
+            .await
+            .expect("create session without default remote");
+        mgr.ensure_session("ui-demo", None, None, Some("did:bns:alice"))
+            .await
+            .expect("backfill default remote");
+
+        let session = mgr
+            .get_session("ui-demo")
+            .await
+            .expect("session should exist");
+        let guard = session.lock().await;
+        assert_eq!(guard.default_remote.as_deref(), Some("did:bns:alice"));
+        drop(guard);
+
+        let raw = fs::read_to_string(
+            mgr.session_file_path("ui-demo")
+                .expect("resolve session file path"),
+        )
+        .await
+        .expect("read session file");
+        let record: OpenDanAgentSessionRecord =
+            serde_json::from_str(&raw).expect("parse session record");
+        assert_eq!(
+            record.meta["runtime_state"]["default_remote"].as_str(),
+            Some("did:bns:alice")
+        );
+    }
+
     #[test]
     fn build_worklog_record_from_runtime_context_infers_core_fields() {
         let trace = SessionRuntimeContext {
@@ -1737,6 +1793,20 @@ mod tests {
         let restored = AgentSession::from_record(record);
         assert_eq!(restored.step_num, 42);
         assert_eq!(restored.step_index, 7);
+    }
+
+    #[test]
+    fn wait_timeout_can_wake_generic_wait_state() {
+        let mut session = AgentSession::new("s-wait-timeout", "did:opendan:test", Some("DO"));
+        session.state = SessionState::Wait;
+        session.wait_details = Some(SessionWaitDetails {
+            filter: Json::Null,
+            deadline_ms: Some(123),
+            note: Some("retry later".to_string()),
+        });
+
+        assert!(session.should_ready_by_wait_timeout(123));
+        assert!(!session.should_ready_by_wait_timeout(122));
     }
 
     #[tokio::test]

@@ -863,9 +863,9 @@ async fn keep_cyfs_gateway_service(
         let mut need_keep_tunnel_to_sn = false;
         if sn.is_some() {
             need_keep_tunnel_to_sn = true;
-            if device_doc.net_id.is_some() {
-                let net_id = device_doc.net_id.as_ref().unwrap();
-                if net_id == "wan" {
+            // wan and wan_dyn are publicly reachable routes and should not keep tunnel to SN.
+            if let Some(net_id) = device_doc.net_id.as_ref() {
+                if net_id.starts_with("wan") {
                     need_keep_tunnel_to_sn = false;
                 }
             }

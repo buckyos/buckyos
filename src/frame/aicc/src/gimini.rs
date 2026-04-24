@@ -198,7 +198,17 @@ impl GoogleGiminiProvider {
 
     fn estimate_text2image_cost(req: &CompleteRequest, model: &str) -> Option<f64> {
         let lowered = model.to_ascii_lowercase();
-        let per_image = if lowered.contains("2.5") { 0.04 } else { 0.03 };
+        let per_image = if lowered.contains("2.5-flash-image") {
+            0.039
+        } else if lowered.contains("2.0-flash-exp-image-generation")
+            || lowered.contains("2.0-flash-preview-image-generation")
+        {
+            0.03
+        } else if lowered.contains("2.5") {
+            0.04
+        } else {
+            0.03
+        };
         Some((Self::estimate_image_count(req) as f64) * per_image)
     }
 
@@ -1444,6 +1454,25 @@ pub fn register_google_gimini_providers(
 mod tests {
     use super::*;
     use crate::aicc::ModelCatalog;
+    use buckyos_api::{AiPayload, ModelSpec, Requirements};
+    use serde_json::json;
+
+    fn build_text2image_request(options: Option<Value>) -> CompleteRequest {
+        CompleteRequest::new(
+            Capability::Text2Image,
+            ModelSpec::new("text2image.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                Some("draw a banana".to_string()),
+                vec![],
+                vec![],
+                vec![],
+                None,
+                options,
+            ),
+            None,
+        )
+    }
 
     #[test]
     fn build_gimini_instances_infers_image_models() {
@@ -1543,6 +1572,27 @@ mod tests {
 
         assert_eq!(code_alias.as_deref(), Some("gemini-2.5-flash"));
         assert!(removed_alias.is_none());
+    }
+
+    #[test]
+    fn estimate_text2image_cost_covers_current_image_models() {
+        let preview = build_text2image_request(Some(json!({ "n": 2 })));
+        assert_eq!(
+            GoogleGiminiProvider::estimate_text2image_cost(
+                &preview,
+                "gemini-2.5-flash-image-preview"
+            ),
+            Some(0.078)
+        );
+
+        let legacy = build_text2image_request(None);
+        assert_eq!(
+            GoogleGiminiProvider::estimate_text2image_cost(
+                &legacy,
+                "gemini-2.0-flash-exp-image-generation"
+            ),
+            Some(0.03)
+        );
     }
 
     #[test]
