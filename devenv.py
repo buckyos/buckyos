@@ -110,6 +110,13 @@ LINUX_CROSS_PACKAGE_CHOICES = {
     "zypper": [["musl"], ["gcc-aarch64-linux-gnu"], ["cross-aarch64-gcc13", "cross-aarch64-binutils"]],
 }
 
+MUSL_CROSS_INSTALL_ROOT = Path("/opt/musl-cross")
+MUSL_CROSS_BASE_URL = "https://musl.cc"
+MUSL_CROSS_TOOLCHAINS = [
+    ("x86_64-linux-musl", "x86_64-linux-musl-cross"),
+    ("aarch64-linux-musl", "aarch64-linux-musl-cross"),
+]
+
 LINUX_BINDGEN_PACKAGE_CHOICES = {
     "apt-get": [["clang", "libclang-dev", "llvm-dev"]],
     "dnf": [
@@ -754,6 +761,7 @@ class Bootstrapper:
         if not self.args.skip_cross_tools:
             for choices in LINUX_CROSS_PACKAGE_CHOICES[self.package_manager]:
                 self.install_first_resolved_set("cross-compilation dependencies", [choices], optional=True)
+            self.ensure_linux_full_musl_toolchain()
             self.check_linux_static_tooling()
         self.check_linux_bindgen_tooling()
 
@@ -824,6 +832,75 @@ class Bootstrapper:
 
         self.ensure_rust_toolchain()
         self.notes.append("For Linux target cross-compilation on Windows, consider using WSL2")
+
+    def musl_toolchain_complete(self, prefix: str) -> bool:
+        for tool in ("gcc", "g++", "ar", "ranlib"):
+            name = f"{prefix}-{tool}"
+            if shutil.which(name):
+                continue
+            if (MUSL_CROSS_INSTALL_ROOT / f"{prefix}-cross" / "bin" / name).exists():
+                continue
+            return False
+        return True
+
+    def ensure_linux_full_musl_toolchain(self) -> None:
+        for prefix, archive_name in MUSL_CROSS_TOOLCHAINS:
+            if self.musl_toolchain_complete(prefix):
+                continue
+            try:
+                self.install_musl_cross_archive(archive_name)
+            except BootstrapError as error:
+                self.warnings.append(str(error))
+
+    def install_musl_cross_archive(self, archive_name: str) -> None:
+        archive_url = f"{MUSL_CROSS_BASE_URL}/{archive_name}.tgz"
+        install_dir = MUSL_CROSS_INSTALL_ROOT / archive_name
+
+        if self.args.dry_run:
+            self.print_command(["curl", "-fsSLO", archive_url])
+            self.print_command(["sudo", "mkdir", "-p", str(MUSL_CROSS_INSTALL_ROOT)])
+            self.print_command(
+                ["sudo", "tar", "-xzf", f"{archive_name}.tgz", "-C", str(MUSL_CROSS_INSTALL_ROOT)]
+            )
+            self.print_command(
+                ["sudo", "ln", "-sfn", f"{install_dir}/bin/<tool>", "/usr/local/bin/<tool>"]
+            )
+            return
+
+        if not install_dir.exists():
+            with tempfile.TemporaryDirectory(prefix="buckyos-musl-") as temp_dir:
+                archive_path = Path(temp_dir) / f"{archive_name}.tgz"
+                try:
+                    self.download_file(archive_url, archive_path)
+                except Exception as error:
+                    raise BootstrapError(
+                        f"Failed to download musl cross toolchain from {archive_url}: {error}"
+                    ) from error
+
+                self.run(self.require_unix_privilege(["mkdir", "-p", str(MUSL_CROSS_INSTALL_ROOT)]))
+                self.run(
+                    self.require_unix_privilege(
+                        ["tar", "-xzf", str(archive_path), "-C", str(MUSL_CROSS_INSTALL_ROOT)]
+                    )
+                )
+
+        bin_dir = install_dir / "bin"
+        if not bin_dir.exists():
+            raise BootstrapError(
+                f"musl cross toolchain {archive_name} extracted without a bin/ directory at {install_dir}"
+            )
+
+        for binary_path in sorted(bin_dir.iterdir()):
+            if not (binary_path.is_file() or binary_path.is_symlink()):
+                continue
+            link_path = Path("/usr/local/bin") / binary_path.name
+            self.run(
+                self.require_unix_privilege(
+                    ["ln", "-sfn", str(binary_path), str(link_path)]
+                )
+            )
+
+        self.notes.append(f"Installed musl cross toolchain at {install_dir}")
 
     def check_linux_static_tooling(self) -> None:
         if not shutil.which("musl-gcc") and not shutil.which("x86_64-linux-musl-gcc"):
