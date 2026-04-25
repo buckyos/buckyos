@@ -3,6 +3,7 @@ mod common;
 use aicc::{CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry};
 use buckyos_api::{Capability, CompleteStatus};
 use common::*;
+use serde_json::json;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -150,6 +151,129 @@ async fn start_02_fatal_error_no_fallback() {
         0,
         "assert_eq failed in start_02_fatal_error_no_fallback: expected left == right; check this scenario's routing/status/error-code branch."
     );
+}
+
+#[tokio::test]
+async fn start_retryable_error_respects_runtime_failover_false() {
+    let registry = Registry::default();
+    let catalog = ModelCatalog::default();
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-b",
+        "m-b",
+    );
+    let p1 = Arc::new(MockProvider::new(
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
+        CostEstimate {
+            estimated_cost_usd: Some(0.01),
+            estimated_latency_ms: Some(100),
+        },
+        vec![Err(ProviderError::retryable("temp"))],
+    ));
+    let p2 = Arc::new(MockProvider::new(
+        mock_instance(
+            "p-b",
+            "provider-b",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
+        CostEstimate {
+            estimated_cost_usd: Some(0.02),
+            estimated_latency_ms: Some(200),
+        },
+        vec![Ok(ProviderStartResult::Started)],
+    ));
+    registry.add_provider(p1.clone());
+    registry.add_provider(p2.clone());
+    let center = center_with_taskmgr(registry, catalog);
+
+    let mut req = base_request();
+    req.requirements.extra = Some(json!({"runtime_failover": false}));
+    let response = center
+        .complete(req, rpc_ctx_with_tenant(Some("tenant-a")))
+        .await
+        .expect("complete should return");
+
+    assert_eq!(response.status, CompleteStatus::Failed);
+    assert_eq!(p1.start_calls(), 1);
+    assert_eq!(p2.start_calls(), 0);
+}
+
+#[tokio::test]
+async fn request_session_config_patch_updates_session_policy() {
+    let registry = Registry::default();
+    let catalog = ModelCatalog::default();
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-a",
+        "m-a",
+    );
+    catalog.set_mapping(
+        Capability::LlmRouter,
+        "llm.plan.default",
+        "provider-b",
+        "m-b",
+    );
+    let slow_cheap = Arc::new(MockProvider::new(
+        mock_instance(
+            "p-a",
+            "provider-a",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
+        CostEstimate {
+            estimated_cost_usd: Some(0.001),
+            estimated_latency_ms: Some(1000),
+        },
+        vec![Ok(ProviderStartResult::Started)],
+    ));
+    let fast = Arc::new(MockProvider::new(
+        mock_instance(
+            "p-b",
+            "provider-b",
+            vec![Capability::LlmRouter],
+            vec!["plan".into()],
+        ),
+        CostEstimate {
+            estimated_cost_usd: Some(0.002),
+            estimated_latency_ms: Some(10),
+        },
+        vec![Ok(ProviderStartResult::Started)],
+    ));
+    registry.add_provider(slow_cheap.clone());
+    registry.add_provider(fast.clone());
+    let center = center_with_taskmgr(registry, catalog);
+
+    let mut req = base_request();
+    req.payload.options = Some(json!({"session_id": "s-policy"}));
+    req.requirements.extra = Some(json!({
+        "session_config_patch": {
+            "policy": {
+                "profile": "latency_first"
+            }
+        }
+    }));
+    let response = center
+        .complete(req, rpc_ctx_with_tenant(Some("tenant-a")))
+        .await
+        .expect("complete should return");
+
+    assert_eq!(response.status, CompleteStatus::Running);
+    assert_eq!(slow_cheap.start_calls(), 0);
+    assert_eq!(fast.start_calls(), 1);
 }
 
 #[tokio::test]

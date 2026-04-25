@@ -66,6 +66,7 @@ impl<'a> ModelRouter<'a> {
             session_sticky_hit: false,
             scheduler_profile: request.policy.profile.clone(),
             runtime_failover_count: 0,
+            user_summary: None,
             warnings: Vec::new(),
         };
 
@@ -152,6 +153,9 @@ impl<'a> ModelRouter<'a> {
         trace.candidate_count_before_filter += raw.len();
         let filtered = self.apply_hard_filters(raw, policy, trace);
         trace.candidate_count_after_filter += filtered.len();
+        if !filtered.is_empty() {
+            trace.resolved_logical_path = Some(logical_path.to_string());
+        }
         Ok(select_highest_priority(filtered))
     }
 
@@ -203,6 +207,7 @@ impl<'a> ModelRouter<'a> {
             trace.candidate_count_after_filter += filtered.len();
             let selected = select_highest_priority(filtered);
             if !selected.is_empty() {
+                trace.resolved_logical_path = Some(next.clone());
                 return Ok(selected);
             }
 

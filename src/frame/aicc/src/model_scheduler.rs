@@ -1,5 +1,6 @@
 use crate::model_types::{
     ModelCandidate, ProviderType, RankedCandidateTrace, RoutePolicy, SchedulerProfile,
+    SchedulerProfileWeights,
 };
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -28,11 +29,24 @@ impl StickyBindingStore {
     }
 
     pub fn set(&mut self, key: StickyBindingKey, candidate: &ModelCandidate) {
+        self.set_binding(
+            key,
+            candidate.exact_model.clone(),
+            candidate.provider_instance_name.clone(),
+        );
+    }
+
+    pub fn set_binding(
+        &mut self,
+        key: StickyBindingKey,
+        exact_model: String,
+        provider_instance_name: String,
+    ) {
         self.bindings.insert(
             key,
             StickyBinding {
-                exact_model: candidate.exact_model.clone(),
-                provider_instance_name: candidate.provider_instance_name.clone(),
+                exact_model,
+                provider_instance_name,
             },
         );
     }
@@ -128,33 +142,90 @@ fn score_candidates(candidates: &[ModelCandidate], policy: &RoutePolicy) -> Vec<
                     1.0
                 };
 
-            let score = match policy.profile {
-                SchedulerProfile::CostFirst => {
-                    0.55 * cost + 0.15 * latency + 0.15 * risk + 0.10 * quality
-                }
-                SchedulerProfile::LatencyFirst => {
-                    0.20 * cost + 0.45 * latency + 0.20 * risk + 0.10 * quality
-                }
-                SchedulerProfile::QualityFirst => {
-                    0.15 * cost + 0.10 * latency + 0.20 * risk + 0.50 * quality
-                }
-                SchedulerProfile::Balanced => {
-                    0.25 * cost + 0.25 * latency + 0.25 * risk + 0.25 * quality
-                }
-                SchedulerProfile::LocalFirst => {
-                    0.70 * local_penalty + 0.12 * cost + 0.08 * latency + 0.10 * quality
-                }
-                SchedulerProfile::StrictLocal => {
-                    10.0 * local_penalty + 0.12 * cost + 0.08 * latency + 0.10 * quality
-                }
-            };
+            let weights = policy
+                .scheduler_profiles
+                .as_ref()
+                .and_then(|profiles| profiles.weights_for(&policy.profile))
+                .cloned()
+                .unwrap_or_else(|| default_weights(&policy.profile));
+            let preference = 1.0 - candidate.exact_model_weight.clamp(0.0, 1.0);
+            let cache = 0.0;
+            let score = weights.cost * cost
+                + weights.latency * latency
+                + weights.reliability * risk
+                + weights.quality * quality
+                + weights.preference * preference
+                + weights.cache * cache
+                + weights.local * local_penalty;
 
             ScoredCandidate { candidate, score }
         })
         .collect()
 }
 
+fn default_weights(profile: &SchedulerProfile) -> SchedulerProfileWeights {
+    match profile {
+        SchedulerProfile::CostFirst => SchedulerProfileWeights {
+            cost: 0.55,
+            latency: 0.15,
+            reliability: 0.15,
+            quality: 0.10,
+            preference: 0.05,
+            cache: 0.10,
+            local: 0.0,
+        },
+        SchedulerProfile::LatencyFirst => SchedulerProfileWeights {
+            cost: 0.20,
+            latency: 0.45,
+            reliability: 0.20,
+            quality: 0.10,
+            preference: 0.05,
+            cache: 0.10,
+            local: 0.0,
+        },
+        SchedulerProfile::QualityFirst => SchedulerProfileWeights {
+            cost: 0.15,
+            latency: 0.10,
+            reliability: 0.20,
+            quality: 0.50,
+            preference: 0.05,
+            cache: 0.10,
+            local: 0.0,
+        },
+        SchedulerProfile::Balanced => SchedulerProfileWeights {
+            cost: 0.25,
+            latency: 0.25,
+            reliability: 0.25,
+            quality: 0.25,
+            preference: 0.05,
+            cache: 0.10,
+            local: 0.0,
+        },
+        SchedulerProfile::LocalFirst => SchedulerProfileWeights {
+            cost: 0.12,
+            latency: 0.08,
+            reliability: 0.0,
+            quality: 0.10,
+            preference: 0.0,
+            cache: 0.0,
+            local: 0.70,
+        },
+        SchedulerProfile::StrictLocal => SchedulerProfileWeights {
+            cost: 0.12,
+            latency: 0.08,
+            reliability: 0.0,
+            quality: 0.10,
+            preference: 0.0,
+            cache: 0.0,
+            local: 10.0,
+        },
+    }
+}
+
 fn cost_value(candidate: &ModelCandidate) -> f64 {
+    if let Some(estimate) = candidate.dynamic_cost_estimate.as_ref() {
+        return estimate.estimated_cost_usd.max(0.0);
+    }
     candidate
         .metadata
         .pricing
@@ -255,7 +326,8 @@ mod tests {
     use super::*;
     use crate::model_types::{
         ApiType, CostClass, LatencyClass, ModelAttributes, ModelCandidate, ModelCapabilities,
-        ModelHealth, ModelMetadata, ModelPricing, ProviderType, QuotaState,
+        ModelHealth, ModelMetadata, ModelPricing, ProviderType, QuotaState, SchedulerProfileConfig,
+        SchedulerProfileWeights,
     };
 
     fn candidate(
@@ -402,5 +474,30 @@ mod tests {
 
         assert!(!result.sticky_hit);
         assert_eq!(result.selected.provider_instance_name, "local");
+    }
+
+    #[test]
+    fn profile_weights_can_be_overridden_by_policy() {
+        let policy = RoutePolicy {
+            profile: SchedulerProfile::CostFirst,
+            scheduler_profiles: Some(SchedulerProfileConfig {
+                cost_first: Some(SchedulerProfileWeights {
+                    cost: 0.0,
+                    latency: 0.0,
+                    reliability: 0.0,
+                    quality: 1.0,
+                    preference: 0.0,
+                    cache: 0.0,
+                    local: 0.0,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = ModelScheduler
+            .schedule(&candidates(), &policy, None, None)
+            .unwrap();
+
+        assert_eq!(result.selected.provider_instance_name, "quality");
     }
 }

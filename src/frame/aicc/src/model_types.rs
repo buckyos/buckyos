@@ -551,11 +551,40 @@ impl Default for SchedulerProfile {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct LockedValue<T> {
     pub value: T,
     #[serde(default)]
     pub locked: bool,
+}
+
+impl<'de, T> Deserialize<'de> for LockedValue<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum LockedValueSerde<T> {
+            Raw(T),
+            Object {
+                value: T,
+                #[serde(default)]
+                locked: bool,
+            },
+        }
+
+        match LockedValueSerde::deserialize(deserializer)? {
+            LockedValueSerde::Raw(value) => Ok(Self {
+                value,
+                locked: false,
+            }),
+            LockedValueSerde::Object { value, locked } => Ok(Self { value, locked }),
+        }
+    }
 }
 
 impl<T> LockedValue<T> {
@@ -579,6 +608,8 @@ pub struct PolicyConfig {
     #[serde(default)]
     pub profile: Option<LockedValue<SchedulerProfile>>,
     #[serde(default)]
+    pub scheduler_profiles: Option<LockedValue<SchedulerProfileConfig>>,
+    #[serde(default)]
     pub local_only: Option<LockedValue<bool>>,
     #[serde(default)]
     pub allow_fallback: Option<LockedValue<bool>>,
@@ -596,10 +627,81 @@ pub struct PolicyConfig {
     pub max_estimated_cost_usd: Option<LockedValue<f64>>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SchedulerProfileConfig {
+    #[serde(default)]
+    pub cost_first: Option<SchedulerProfileWeights>,
+    #[serde(default)]
+    pub latency_first: Option<SchedulerProfileWeights>,
+    #[serde(default)]
+    pub quality_first: Option<SchedulerProfileWeights>,
+    #[serde(default)]
+    pub balanced: Option<SchedulerProfileWeights>,
+    #[serde(default)]
+    pub local_first: Option<SchedulerProfileWeights>,
+    #[serde(default)]
+    pub strict_local: Option<SchedulerProfileWeights>,
+}
+
+impl SchedulerProfileConfig {
+    pub fn weights_for(&self, profile: &SchedulerProfile) -> Option<&SchedulerProfileWeights> {
+        match profile {
+            SchedulerProfile::CostFirst => self.cost_first.as_ref(),
+            SchedulerProfile::LatencyFirst => self.latency_first.as_ref(),
+            SchedulerProfile::QualityFirst => self.quality_first.as_ref(),
+            SchedulerProfile::Balanced => self.balanced.as_ref(),
+            SchedulerProfile::LocalFirst => self.local_first.as_ref(),
+            SchedulerProfile::StrictLocal => self.strict_local.as_ref(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SchedulerProfileWeights {
+    #[serde(default)]
+    pub cost: f64,
+    #[serde(default)]
+    pub latency: f64,
+    #[serde(default)]
+    pub reliability: f64,
+    #[serde(default)]
+    pub quality: f64,
+    #[serde(default)]
+    pub preference: f64,
+    #[serde(default)]
+    pub cache: f64,
+    #[serde(default)]
+    pub local: f64,
+}
+
+impl SchedulerProfileWeights {
+    pub fn validate(&self) -> Result<(), RouteError> {
+        for value in [
+            self.cost,
+            self.latency,
+            self.reliability,
+            self.quality,
+            self.preference,
+            self.cache,
+            self.local,
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(RouteError::new(
+                    RouteErrorCode::SessionConfigInvalid,
+                    "scheduler profile weights must be non-negative finite numbers",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RoutePolicy {
     #[serde(default)]
     pub profile: SchedulerProfile,
+    #[serde(default)]
+    pub scheduler_profiles: Option<SchedulerProfileConfig>,
     #[serde(default)]
     pub local_only: bool,
     #[serde(default = "default_true")]
@@ -636,6 +738,7 @@ impl Default for RoutePolicy {
             allowed_provider_instances: Vec::new(),
             max_estimated_cost_usd: None,
             fallback: None,
+            scheduler_profiles: None,
         }
     }
 }
@@ -645,6 +748,9 @@ impl RoutePolicy {
         let mut policy = RoutePolicy::default();
         if let Some(value) = config.profile.as_ref() {
             policy.profile = value.value.clone();
+        }
+        if let Some(value) = config.scheduler_profiles.as_ref() {
+            policy.scheduler_profiles = Some(value.value.clone());
         }
         if let Some(value) = config.local_only.as_ref() {
             policy.local_only = value.value;
@@ -693,6 +799,8 @@ pub struct ModelCandidate {
     pub exact_model_weight: f64,
     #[serde(default)]
     pub route_paths: Vec<String>,
+    #[serde(default)]
+    pub dynamic_cost_estimate: Option<CostEstimateOutput>,
 }
 
 impl ModelCandidate {
@@ -708,6 +816,7 @@ impl ModelCandidate {
             priority_path: Vec::new(),
             exact_model_weight: 1.0,
             route_paths: Vec::new(),
+            dynamic_cost_estimate: None,
         })
     }
 }
@@ -774,7 +883,27 @@ pub struct RouteTrace {
     #[serde(default)]
     pub runtime_failover_count: u64,
     #[serde(default)]
+    pub user_summary: Option<UserFacingRouteSummary>,
+    #[serde(default)]
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserFacingRouteSummary {
+    pub display_name: String,
+    pub model_family: String,
+    pub provider_origin: UserFacingProviderOrigin,
+    pub reason_short: String,
+    pub was_fallback: bool,
+    pub was_failover: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserFacingProviderOrigin {
+    Cloud,
+    Local,
+    ProxyUnknown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

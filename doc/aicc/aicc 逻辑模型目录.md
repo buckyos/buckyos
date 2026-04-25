@@ -59,14 +59,13 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 | `video.extend` | `video + prompt` | `video` | 视频续写 |
 | `video.upscale` | `video + scale` | `video` | 视频超分 |
 
-### 1.5 Agent Runtime 类
+### 1.5 Agent Runtime Support 类
 
 | api_type | 输入 | 输出 | 说明 |
 |---|---|---|---|
 | `agent.computer_use` | `screenshot + 任务` | `action[]`(click/type/scroll) | 桌面/浏览器操作 |
-| `agent.browser` | `url + 任务` | `result + page_state` | 浏览器自动化(Browserbase 类) |
-| `agent.code_exec` | `code + runtime` | `stdout/stderr/files` | 沙盒代码执行(E2B、Modal、Docker) |
 
+这个方向还在高速发展，占位为主
 ---
 
 ## 二、一级逻辑目录与 API Type 对应
@@ -161,8 +160,7 @@ video
 ```
 agent_runtime
 ├── computer_use   # api_type: agent.computer_use
-├── browser        # api_type: agent.browser
-└── code_exec      # api_type: agent.code_exec
+
 ```
 
 ---
@@ -377,17 +375,6 @@ video
 | `hunyuan-video@local` | hunyuan_video | video.txt2video |
 | `topaz-video-upscale@topaz` | topaz_video | video.upscale |
 
-### 3.7 `agent_runtime` 家族目录
-
-```
-agent_runtime
-├── anthropic_cu   # Anthropic Computer Use
-├── browserbase    # Browserbase
-├── e2b            # E2B 沙盒
-├── modal          # Modal 沙盒
-├── docker_local   # 本地 Docker 沙盒(BuckyOS 自带)
-└── playwright     # Playwright 本地浏览器
-```
 
 ---
 

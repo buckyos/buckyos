@@ -3,6 +3,12 @@ use crate::model_types::{
     RouteError, RouteErrorCode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+use tokio::sync::Notify;
+
+pub const DEFAULT_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, Default)]
 pub struct ModelRegistry {
@@ -16,10 +22,30 @@ impl ModelRegistry {
     }
 
     pub fn apply_inventory(&mut self, inventory: ProviderInventory) -> Result<(), RouteError> {
+        self.apply_inventory_if_changed(inventory).map(|_| ())
+    }
+
+    pub fn apply_inventory_if_changed(
+        &mut self,
+        inventory: ProviderInventory,
+    ) -> Result<bool, RouteError> {
         validate_inventory(&inventory)?;
-        self.inventories
-            .insert(inventory.provider_instance_name.clone(), inventory);
-        self.rebuild_index()
+        let provider_instance_name = inventory.provider_instance_name.clone();
+        if let (Some(current), Some(next_revision)) = (
+            self.inventories.get(provider_instance_name.as_str()),
+            inventory.inventory_revision.as_deref(),
+        ) {
+            if current.inventory_revision.as_deref() == Some(next_revision) {
+                return Ok(false);
+            }
+        }
+
+        let mut inventories = self.inventories.clone();
+        inventories.insert(provider_instance_name, inventory);
+        let exact_index = build_exact_index(inventories.values())?;
+        self.inventories = inventories;
+        self.exact_index = exact_index;
+        Ok(true)
     }
 
     pub fn remove_inventory(&mut self, provider_instance_name: &str) -> Result<(), RouteError> {
@@ -69,26 +95,111 @@ impl ModelRegistry {
     }
 
     fn rebuild_index(&mut self) -> Result<(), RouteError> {
-        let mut next = HashMap::new();
-        for inventory in self.inventories.values() {
-            for model in inventory.models.iter() {
-                for api_type in model.api_types.iter() {
-                    let candidate = ModelCandidate::from_metadata(model.clone(), api_type.clone())?;
-                    let key = (model.exact_model.clone(), api_type.clone());
-                    if next.insert(key.clone(), candidate).is_some() {
-                        return Err(RouteError::new(
-                            RouteErrorCode::SessionConfigInvalid,
-                            format!(
-                                "duplicate exact model '{}' for api type '{:?}'",
-                                key.0, key.1
-                            ),
-                        ));
-                    }
+        self.exact_index = build_exact_index(self.inventories.values())?;
+        Ok(())
+    }
+}
+
+fn build_exact_index<'a>(
+    inventories: impl Iterator<Item = &'a ProviderInventory>,
+) -> Result<HashMap<(String, ApiType), ModelCandidate>, RouteError> {
+    let mut next = HashMap::new();
+    for inventory in inventories {
+        validate_inventory(inventory)?;
+        for model in inventory.models.iter() {
+            for api_type in model.api_types.iter() {
+                let candidate = ModelCandidate::from_metadata(model.clone(), api_type.clone())?;
+                let key = (model.exact_model.clone(), api_type.clone());
+                if next.insert(key.clone(), candidate).is_some() {
+                    return Err(RouteError::new(
+                        RouteErrorCode::SessionConfigInvalid,
+                        format!(
+                            "duplicate exact model '{}' for api type '{:?}'",
+                            key.0, key.1
+                        ),
+                    ));
                 }
             }
         }
-        self.exact_index = next;
-        Ok(())
+    }
+    Ok(next)
+}
+
+pub struct InventoryRefreshScheduler {
+    registry: Arc<RwLock<ModelRegistry>>,
+    inventory_source: Arc<dyn Fn() -> Vec<ProviderInventory> + Send + Sync>,
+    interval: Duration,
+    notify: Notify,
+    started: AtomicBool,
+}
+
+impl InventoryRefreshScheduler {
+    pub fn new(
+        registry: Arc<RwLock<ModelRegistry>>,
+        inventory_source: Arc<dyn Fn() -> Vec<ProviderInventory> + Send + Sync>,
+        interval: Duration,
+    ) -> Self {
+        Self {
+            registry,
+            inventory_source,
+            interval,
+            notify: Notify::new(),
+            started: AtomicBool::new(false),
+        }
+    }
+
+    pub fn refresh_once(&self) -> Result<usize, RouteError> {
+        let inventories = (self.inventory_source)();
+        let active_providers = inventories
+            .iter()
+            .map(|inventory| inventory.provider_instance_name.clone())
+            .collect::<HashSet<_>>();
+        let mut changed = 0;
+        let mut registry = self.registry.write().map_err(|_| {
+            RouteError::new(
+                RouteErrorCode::ProviderUnavailable,
+                "registry lock poisoned",
+            )
+        })?;
+        for inventory in inventories {
+            if registry.apply_inventory_if_changed(inventory)? {
+                changed += 1;
+            }
+        }
+        let stale_providers = registry
+            .inventories()
+            .filter(|inventory| !active_providers.contains(&inventory.provider_instance_name))
+            .map(|inventory| inventory.provider_instance_name.clone())
+            .collect::<Vec<_>>();
+        for provider in stale_providers {
+            registry.remove_inventory(provider.as_str())?;
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
+    pub fn inventory_changed(&self) {
+        self.notify.notify_one();
+    }
+
+    pub fn start(self: &Arc<Self>) {
+        if self.started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let scheduler = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(scheduler.interval);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let _ = scheduler.refresh_once();
+                    }
+                    _ = scheduler.notify.notified() => {
+                        let _ = scheduler.refresh_once();
+                    }
+                }
+            }
+        });
     }
 }
 

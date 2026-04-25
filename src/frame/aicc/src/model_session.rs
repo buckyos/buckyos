@@ -3,7 +3,7 @@ use crate::model_types::{
     RouteErrorCode,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -190,6 +190,9 @@ fn merge_policy_config(base: &mut PolicyConfig, patch: &PolicyConfig) {
     if patch.profile.is_some() {
         base.profile = patch.profile.clone();
     }
+    if patch.scheduler_profiles.is_some() {
+        base.scheduler_profiles = patch.scheduler_profiles.clone();
+    }
     if patch.local_only.is_some() {
         base.local_only = patch.local_only.clone();
     }
@@ -237,6 +240,7 @@ fn reject_locked_policy_patch(
         };
     }
     check_locked!(profile);
+    check_locked!(scheduler_profiles);
     check_locked!(local_only);
     check_locked!(allow_fallback);
     check_locked!(allow_exact_model_fallback);
@@ -283,6 +287,21 @@ fn validate_policy_values(policy: &PolicyConfig) -> Result<(), RouteError> {
     if let Some(LockedValue { value, .. }) = policy.max_estimated_cost_usd.as_ref() {
         validate_weight(*value)?;
     }
+    if let Some(LockedValue { value, .. }) = policy.scheduler_profiles.as_ref() {
+        for weights in [
+            value.cost_first.as_ref(),
+            value.latency_first.as_ref(),
+            value.quality_first.as_ref(),
+            value.balanced.as_ref(),
+            value.local_first.as_ref(),
+            value.strict_local.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            weights.validate()?;
+        }
+    }
     Ok(())
 }
 
@@ -314,6 +333,7 @@ pub struct SessionConfigStore {
     global: SessionConfig,
     ttl: Duration,
     sessions: Mutex<BTreeMap<String, SessionState>>,
+    expired_revisions: Mutex<BTreeSet<String>>,
     revision_counter: AtomicU64,
 }
 
@@ -324,6 +344,7 @@ impl SessionConfigStore {
             global,
             ttl,
             sessions: Mutex::new(BTreeMap::new()),
+            expired_revisions: Mutex::new(BTreeSet::new()),
             revision_counter: AtomicU64::new(1),
         })
     }
@@ -362,7 +383,7 @@ impl SessionConfigStore {
         config.validate()?;
         let mut sessions = self.sessions.lock().expect("session store lock");
         self.drop_expired_locked(&mut sessions, expected_revision)?;
-        check_expected_revision(sessions.get(session_id), expected_revision)?;
+        self.check_expected_revision(sessions.get(session_id), expected_revision)?;
         let revision = self.next_revision();
         config.revision = Some(revision.clone());
         sessions.insert(
@@ -384,7 +405,7 @@ impl SessionConfigStore {
     ) -> Result<StoredSessionConfig, RouteError> {
         let mut sessions = self.sessions.lock().expect("session store lock");
         self.drop_expired_locked(&mut sessions, expected_revision)?;
-        check_expected_revision(sessions.get(session_id), expected_revision)?;
+        self.check_expected_revision(sessions.get(session_id), expected_revision)?;
         let current = sessions
             .get(session_id)
             .map(|state| state.config.clone())
@@ -415,13 +436,29 @@ impl SessionConfigStore {
     ) -> Result<(), RouteError> {
         let now = Instant::now();
         let mut expired_expected = false;
+        let mut expired_revision_values = Vec::new();
         sessions.retain(|_, state| {
             let expired = state.expires_at <= now;
             if expired && expected_revision == Some(state.revision.as_str()) {
                 expired_expected = true;
             }
+            if expired {
+                expired_revision_values.push(state.revision.clone());
+            }
             !expired
         });
+        if !expired_revision_values.is_empty() {
+            if let Ok(mut revisions) = self.expired_revisions.lock() {
+                revisions.extend(expired_revision_values);
+                while revisions.len() > 1024 {
+                    if let Some(first) = revisions.iter().next().cloned() {
+                        revisions.remove(&first);
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
         if expired_expected {
             return Err(RouteError::new(
                 RouteErrorCode::SessionConfigExpired,
@@ -430,27 +467,39 @@ impl SessionConfigStore {
         }
         Ok(())
     }
-}
 
-fn check_expected_revision(
-    state: Option<&SessionState>,
-    expected_revision: Option<&str>,
-) -> Result<(), RouteError> {
-    if let Some(expected) = expected_revision {
-        let Some(state) = state else {
-            return Err(RouteError::new(
-                RouteErrorCode::SessionConfigExpired,
-                "expected session config revision is no longer available",
-            ));
-        };
-        if state.revision != expected {
-            return Err(RouteError::new(
-                RouteErrorCode::SessionConfigConflict,
-                "session config revision conflict",
-            ));
+    fn check_expected_revision(
+        &self,
+        state: Option<&SessionState>,
+        expected_revision: Option<&str>,
+    ) -> Result<(), RouteError> {
+        if let Some(expected) = expected_revision {
+            if self
+                .expired_revisions
+                .lock()
+                .map(|revisions| revisions.contains(expected))
+                .unwrap_or(false)
+            {
+                return Err(RouteError::new(
+                    RouteErrorCode::SessionConfigExpired,
+                    "expected session config revision has expired",
+                ));
+            }
+            let Some(state) = state else {
+                return Err(RouteError::new(
+                    RouteErrorCode::SessionConfigExpired,
+                    "expected session config revision is no longer available",
+                ));
+            };
+            if state.revision != expected {
+                return Err(RouteError::new(
+                    RouteErrorCode::SessionConfigConflict,
+                    "session config revision conflict",
+                ));
+            }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -910,6 +959,25 @@ mod tests {
             SessionConfigStore::new(SessionConfig::default(), Duration::from_millis(1)).unwrap();
         let stored = store.get_or_create("s1").unwrap();
         thread::sleep(Duration::from_millis(5));
+
+        let err = store
+            .patch(
+                "s1",
+                SessionConfig::default(),
+                Some(stored.revision.as_str()),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, RouteErrorCode::SessionConfigExpired);
+    }
+
+    #[test]
+    fn expired_revision_stays_expired_after_session_is_recreated() {
+        let store =
+            SessionConfigStore::new(SessionConfig::default(), Duration::from_millis(1)).unwrap();
+        let stored = store.get_or_create("s1").unwrap();
+        thread::sleep(Duration::from_millis(5));
+        let recreated = store.get_or_create("s1").unwrap();
+        assert_ne!(stored.revision, recreated.revision);
 
         let err = store
             .patch(

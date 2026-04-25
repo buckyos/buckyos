@@ -1,14 +1,17 @@
 use crate::aicc_usage_log_db::AiccUsageLogDb;
 use crate::complete_request_queue::QUEUE_STATUS_QUEUED;
-use crate::model_registry::ModelRegistry;
+use crate::model_registry::{
+    InventoryRefreshScheduler, ModelRegistry, DEFAULT_INVENTORY_REFRESH_INTERVAL,
+};
 use crate::model_router::{ModelRouter, RouteRequest};
 use crate::model_scheduler::{ModelScheduler, StickyBindingKey, StickyBindingStore};
-use crate::model_session::SessionConfig;
+use crate::model_session::{merge_session_config, SessionConfig, SessionConfigStore};
 use crate::model_types::{
     ApiType, CostClass, CostEstimateInput, CostEstimateOutput, HealthStatus, LatencyClass,
     ModelAttributes, ModelCandidate, ModelCapabilities, ModelHealth, ModelMetadata, ModelPricing,
-    PricingMode, PrivacyClass, ProviderInventory, ProviderOrigin, ProviderType,
-    ProviderTypeTrustedSource, QuotaState, RequiredModelFeatures, RoutePolicy,
+    PolicyConfig, PricingMode, PrivacyClass, ProviderInventory, ProviderOrigin, ProviderType,
+    ProviderTypeTrustedSource, QuotaState, RequiredModelFeatures, RoutePolicy, RouteTrace,
+    UserFacingProviderOrigin, UserFacingRouteSummary,
 };
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -26,7 +29,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex as AsyncMutex;
 
 const DEFAULT_FALLBACK_LIMIT: usize = 2;
@@ -210,10 +213,7 @@ impl SnOpenAIBillingLedger {
         Some(adjustment)
     }
 
-    fn adjust_from_spent(
-        spent_raw_cost_usd: f64,
-        raw_cost_usd: f64,
-    ) -> SnOpenAIBillingAdjustment {
+    fn adjust_from_spent(spent_raw_cost_usd: f64, raw_cost_usd: f64) -> SnOpenAIBillingAdjustment {
         let remaining_credit_usd = (SN_OPENAI_FREE_CREDIT_USD - spent_raw_cost_usd).max(0.0);
         let credit_applied_usd = raw_cost_usd.min(remaining_credit_usd).max(0.0);
         let billed_cost_usd = (raw_cost_usd - credit_applied_usd).max(0.0);
@@ -950,7 +950,10 @@ impl Registry {
     }
 
     pub fn provider_count(&self) -> usize {
-        self.entries.read().map(|entries| entries.len()).unwrap_or(0)
+        self.entries
+            .read()
+            .map(|entries| entries.len())
+            .unwrap_or(0)
     }
 
     pub fn inventory(&self, provider_instance_name: &str) -> Option<ProviderInventory> {
@@ -1140,6 +1143,7 @@ impl ModelCatalog {
 struct RouteAttempt {
     instance_id: String,
     provider_model: String,
+    exact_model: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1148,6 +1152,9 @@ pub struct RouteDecision {
     pub fallback_instance_ids: Vec<String>,
     pub provider_model: String,
     attempts: Vec<RouteAttempt>,
+    route_trace: Arc<Mutex<RouteTrace>>,
+    runtime_failover_enabled: bool,
+    sticky_key: Option<StickyBindingKey>,
 }
 
 impl RouteDecision {
@@ -1337,6 +1344,10 @@ impl Router {
         let attempts = scored
             .into_iter()
             .map(|item| RouteAttempt {
+                exact_model: exact_model_name(
+                    item.provider_model.as_str(),
+                    item.instance_id.as_str(),
+                ),
                 instance_id: item.instance_id,
                 provider_model: item.provider_model,
             })
@@ -1364,7 +1375,39 @@ impl Router {
             fallback_instance_ids,
             provider_model: primary.provider_model.clone(),
             attempts: final_attempts,
+            route_trace: Arc::new(Mutex::new(legacy_route_trace(
+                req.model.alias.clone(),
+                api_type_for_capability(&req.capability).unwrap_or(ApiType::LlmChat),
+            ))),
+            runtime_failover_enabled: true,
+            sticky_key: None,
         })
+    }
+}
+
+fn legacy_route_trace(model: String, api_type: ApiType) -> RouteTrace {
+    RouteTrace {
+        request_id: String::new(),
+        session_id: None,
+        session_config_revision: None,
+        session_config_updated: false,
+        api_type,
+        requested_model: model,
+        requested_model_type: crate::model_types::RequestedModelType::Logical,
+        resolved_logical_path: None,
+        selected_exact_model: None,
+        selected_provider_instance_name: None,
+        candidate_count_before_filter: 0,
+        candidate_count_after_filter: 0,
+        filtered_candidates: Vec::new(),
+        ranked_candidates: Vec::new(),
+        fallback_applied: false,
+        fallback_chain: Vec::new(),
+        session_sticky_hit: false,
+        scheduler_profile: Default::default(),
+        runtime_failover_count: 0,
+        user_summary: None,
+        warnings: Vec::new(),
     }
 }
 
@@ -1437,6 +1480,39 @@ fn route_policy_from_request(request: &CompleteRequest) -> RoutePolicy {
     policy
 }
 
+fn apply_policy_config_to_route_policy(policy: &mut RoutePolicy, config: &PolicyConfig) {
+    if let Some(value) = config.profile.as_ref() {
+        policy.profile = value.value.clone();
+    }
+    if let Some(value) = config.scheduler_profiles.as_ref() {
+        policy.scheduler_profiles = Some(value.value.clone());
+    }
+    if let Some(value) = config.local_only.as_ref() {
+        policy.local_only = value.value;
+    }
+    if let Some(value) = config.allow_fallback.as_ref() {
+        policy.allow_fallback = value.value;
+    }
+    if let Some(value) = config.allow_exact_model_fallback.as_ref() {
+        policy.allow_exact_model_fallback = value.value;
+    }
+    if let Some(value) = config.runtime_failover.as_ref() {
+        policy.runtime_failover = value.value;
+    }
+    if let Some(value) = config.explain.as_ref() {
+        policy.explain = value.value;
+    }
+    if let Some(value) = config.blocked_provider_instances.as_ref() {
+        policy.blocked_provider_instances = value.value.clone();
+    }
+    if let Some(value) = config.allowed_provider_instances.as_ref() {
+        policy.allowed_provider_instances = value.value.clone();
+    }
+    if let Some(value) = config.max_estimated_cost_usd.as_ref() {
+        policy.max_estimated_cost_usd = Some(value.value);
+    }
+}
+
 fn required_model_features(features: &[Feature]) -> RequiredModelFeatures {
     let mut required = RequiredModelFeatures::default();
     for feature in features {
@@ -1452,7 +1528,12 @@ fn required_model_features(features: &[Feature]) -> RequiredModelFeatures {
 }
 
 fn estimate_request_tokens(request: &CompleteRequest) -> (u64, u64) {
-    let mut text_len = request.payload.text.as_ref().map(|text| text.len()).unwrap_or(0);
+    let mut text_len = request
+        .payload
+        .text
+        .as_ref()
+        .map(|text| text.len())
+        .unwrap_or(0);
     for message in request.payload.messages.iter() {
         text_len = text_len.saturating_add(message.content.len());
     }
@@ -1550,9 +1631,15 @@ pub fn provider_model_metadata(
         logical_mounts,
         capabilities: ModelCapabilities {
             streaming: features.iter().any(|item| item == "streaming"),
-            tool_call: features.iter().any(|item| item == buckyos_api::features::TOOL_CALLING),
-            json_schema: features.iter().any(|item| item == buckyos_api::features::JSON_OUTPUT),
-            vision: features.iter().any(|item| item == buckyos_api::features::VISION),
+            tool_call: features
+                .iter()
+                .any(|item| item == buckyos_api::features::TOOL_CALLING),
+            json_schema: features
+                .iter()
+                .any(|item| item == buckyos_api::features::JSON_OUTPUT),
+            vision: features
+                .iter()
+                .any(|item| item == buckyos_api::features::VISION),
             max_context_tokens: None,
         },
         attributes: ModelAttributes {
@@ -1595,6 +1682,8 @@ pub struct AIComputeCenter {
     model_catalog: ModelCatalog,
     model_registry: Arc<RwLock<ModelRegistry>>,
     session_config: Arc<RwLock<SessionConfig>>,
+    session_config_store: Arc<RwLock<SessionConfigStore>>,
+    inventory_refresh_scheduler: Arc<InventoryRefreshScheduler>,
     model_scheduler: ModelScheduler,
     sticky_bindings: Arc<Mutex<StickyBindingStore>>,
     resource_resolver: Arc<dyn ResourceResolver>,
@@ -1641,14 +1730,32 @@ impl AIComputeCenter {
             }
         }
 
+        let model_registry = Arc::new(RwLock::new(model_registry));
+        let global_session_config = default_global_session_config();
+        let session_config_store =
+            SessionConfigStore::new(global_session_config.clone(), Duration::from_secs(60 * 60))
+                .expect("default session config store should be valid");
+        let inventory_registry = model_registry.clone();
+        let inventory_source_registry = registry.clone();
+        let inventory_refresh_scheduler = Arc::new(InventoryRefreshScheduler::new(
+            inventory_registry,
+            Arc::new(move || inventory_source_registry.inventories()),
+            DEFAULT_INVENTORY_REFRESH_INTERVAL,
+        ));
+        if tokio::runtime::Handle::try_current().is_ok() {
+            inventory_refresh_scheduler.start();
+        }
+
         Self {
             registry,
             router: Router,
             route_cfg: Arc::new(RwLock::new(RouteConfig::default())),
             sn_openai_billing: SnOpenAIBillingLedger::default(),
             model_catalog,
-            model_registry: Arc::new(RwLock::new(model_registry)),
-            session_config: Arc::new(RwLock::new(default_global_session_config())),
+            model_registry,
+            session_config: Arc::new(RwLock::new(global_session_config)),
+            session_config_store: Arc::new(RwLock::new(session_config_store)),
+            inventory_refresh_scheduler,
             model_scheduler: ModelScheduler,
             sticky_bindings: Arc::new(Mutex::new(StickyBindingStore::default())),
             resource_resolver: Arc::new(PassthroughResourceResolver),
@@ -1694,7 +1801,23 @@ impl AIComputeCenter {
 
     pub fn set_session_config(&self, config: SessionConfig) {
         if let Ok(mut current) = self.session_config.write() {
-            *current = config;
+            *current = config.clone();
+        }
+        if let Ok(mut store) = self.session_config_store.write() {
+            match SessionConfigStore::new(config, Duration::from_secs(60 * 60)) {
+                Ok(next) => *store = next,
+                Err(err) => warn!("aicc.session_config_store.rebuild_failed err={}", err),
+            }
+        }
+    }
+
+    pub fn inventory_changed(&self, _provider_instance_name: &str) {
+        self.inventory_refresh_scheduler.inventory_changed();
+        if let Err(err) = self.inventory_refresh_scheduler.refresh_once() {
+            warn!(
+                "aicc.model_registry.inventory_changed_refresh_failed err={}",
+                err
+            );
         }
     }
 
@@ -1739,11 +1862,24 @@ impl AIComputeCenter {
         let api_type = api_type_for_capability(&request.capability).ok_or_else(|| {
             reason_error(
                 "unsupported_capability",
-                format!("capability '{:?}' is not supported by model router", request.capability),
+                format!(
+                    "capability '{:?}' is not supported by model router",
+                    request.capability
+                ),
             )
         })?;
+        if let Err(err) = self.inventory_refresh_scheduler.refresh_once() {
+            warn!(
+                "aicc.model_registry.refresh_before_route_failed err={}",
+                err
+            );
+        }
         let session_id = extract_session_id_from_complete_request(request);
+        let (effective_session_config, session_config_updated, session_config_revision) = self
+            .resolve_request_session_config(request, session_id.as_deref())
+            .map_err(route_error_to_rpc)?;
         let mut policy = route_policy_from_request(request);
+        apply_policy_config_to_route_policy(&mut policy, &effective_session_config.policy);
         if route_cfg.fallback_limit == 0 {
             policy.runtime_failover = false;
         }
@@ -1752,27 +1888,24 @@ impl AIComputeCenter {
             .model_registry
             .read()
             .map_err(|_| reason_error("internal_error", "model registry lock poisoned"))?;
-        let session_config = self
-            .session_config
-            .read()
-            .map_err(|_| reason_error("internal_error", "session config lock poisoned"))?;
-        let router = ModelRouter::new(&registry, &session_config);
+        let router = ModelRouter::new(&registry, &effective_session_config);
         let resolution = router.resolve(RouteRequest {
             request_id: request_id.to_string(),
             session_id: session_id.clone(),
             api_type: api_type.clone(),
             model: request.model.alias.clone(),
             policy: policy.clone(),
-            session_config_revision: session_config.revision.clone(),
-            session_config_updated: false,
+            session_config_revision,
+            session_config_updated,
         });
-        drop(session_config);
         drop(registry);
 
         let mut resolution = resolution.map_err(route_error_to_rpc)?;
         self.apply_dynamic_cost_estimates(tenant_id, request, &mut resolution.candidates);
+        self.apply_dynamic_budget_filters(&mut resolution, &policy)
+            .map_err(route_error_to_rpc)?;
 
-        let sticky_key = session_id.map(|session_id| StickyBindingKey {
+        let sticky_key = session_id.clone().map(|session_id| StickyBindingKey {
             session_id,
             logical_model: request.model.alias.clone(),
             api_type,
@@ -1787,7 +1920,7 @@ impl AIComputeCenter {
                 &resolution.candidates,
                 &policy,
                 Some(&mut sticky_store),
-                sticky_key,
+                sticky_key.clone(),
             )
             .ok_or_else(|| reason_error("no_provider_available", "no route candidate generated"))?;
         drop(sticky_store);
@@ -1797,6 +1930,10 @@ impl AIComputeCenter {
             Some(scheduled.selected.provider_instance_name.clone());
         resolution.trace.session_sticky_hit = scheduled.sticky_hit;
         resolution.trace.ranked_candidates = scheduled.ranked_candidates;
+        resolution.trace.user_summary = Some(user_summary_for_route(
+            &resolution.trace,
+            &scheduled.selected,
+        ));
 
         debug!(
             "aicc.route.trace task_id={} trace={}",
@@ -1805,7 +1942,6 @@ impl AIComputeCenter {
                 .unwrap_or_else(|err| format!("{{\"serialize_error\":\"{}\"}}", err))
         );
 
-        let fallback_limit = route_cfg.fallback_limit.max(1);
         let selected_provider_model = self
             .legacy_catalog_provider_model(
                 tenant_id,
@@ -1817,26 +1953,31 @@ impl AIComputeCenter {
         let mut attempts = vec![RouteAttempt {
             instance_id: scheduled.selected.provider_instance_name.clone(),
             provider_model: selected_provider_model.clone(),
+            exact_model: scheduled.selected.exact_model.clone(),
         }];
-        for candidate in resolution.candidates.iter() {
-            if candidate.exact_model == scheduled.selected.exact_model {
-                continue;
+        if policy.runtime_failover {
+            let fallback_limit = route_cfg.fallback_limit;
+            for candidate in resolution.candidates.iter() {
+                if candidate.exact_model == scheduled.selected.exact_model {
+                    continue;
+                }
+                if attempts.len() > fallback_limit {
+                    break;
+                }
+                let provider_model = self
+                    .legacy_catalog_provider_model(
+                        tenant_id,
+                        &request.capability,
+                        request.model.alias.as_str(),
+                        candidate.provider_instance_name.as_str(),
+                    )
+                    .unwrap_or_else(|| candidate.provider_model_id.clone());
+                attempts.push(RouteAttempt {
+                    instance_id: candidate.provider_instance_name.clone(),
+                    provider_model,
+                    exact_model: candidate.exact_model.clone(),
+                });
             }
-            if attempts.len() > fallback_limit {
-                break;
-            }
-            let provider_model = self
-                .legacy_catalog_provider_model(
-                    tenant_id,
-                    &request.capability,
-                    request.model.alias.as_str(),
-                    candidate.provider_instance_name.as_str(),
-                )
-                .unwrap_or_else(|| candidate.provider_model_id.clone());
-            attempts.push(RouteAttempt {
-                instance_id: candidate.provider_instance_name.clone(),
-                provider_model,
-            });
         }
 
         let fallback_instance_ids = attempts
@@ -1850,7 +1991,62 @@ impl AIComputeCenter {
             fallback_instance_ids,
             provider_model: selected_provider_model,
             attempts,
+            route_trace: Arc::new(Mutex::new(resolution.trace)),
+            runtime_failover_enabled: policy.runtime_failover,
+            sticky_key,
         })
+    }
+
+    fn resolve_request_session_config(
+        &self,
+        request: &CompleteRequest,
+        session_id: Option<&str>,
+    ) -> std::result::Result<(SessionConfig, bool, Option<String>), crate::model_types::RouteError>
+    {
+        let request_config = extract_session_config(request, "session_config")?;
+        let request_patch = extract_session_config(request, "session_config_patch")?;
+        let expected_revision = extract_expected_session_config_revision(request);
+
+        if let Some(session_id) = session_id {
+            let store = self.session_config_store.read().map_err(|_| {
+                crate::model_types::RouteError::new(
+                    crate::model_types::RouteErrorCode::ProviderUnavailable,
+                    "session config store lock poisoned",
+                )
+            })?;
+            let stored = if let Some(config) = request_config {
+                store.replace(session_id, config, expected_revision.as_deref())?
+            } else if let Some(patch) = request_patch {
+                store.patch(session_id, patch, expected_revision.as_deref())?
+            } else {
+                store.get_or_create(session_id)?
+            };
+            return Ok((
+                stored.config,
+                expected_revision.is_some() || extract_has_session_config_update(request),
+                Some(stored.revision),
+            ));
+        }
+
+        let global = self.session_config.read().map_err(|_| {
+            crate::model_types::RouteError::new(
+                crate::model_types::RouteErrorCode::ProviderUnavailable,
+                "session config lock poisoned",
+            )
+        })?;
+        let mut config = global.clone();
+        drop(global);
+        let mut updated = false;
+        if let Some(request_config) = request_config {
+            config = request_config;
+            updated = true;
+        }
+        if let Some(patch) = request_patch {
+            config = merge_session_config(&config, &patch)?;
+            updated = true;
+        }
+        config.validate()?;
+        Ok((config.clone(), updated, config.revision.clone()))
     }
 
     fn legacy_catalog_provider_model(
@@ -1864,8 +2060,12 @@ impl AIComputeCenter {
         if inventory.provider_driver.is_empty() {
             return None;
         }
-        self.model_catalog
-            .resolve(tenant_id, capability, alias, inventory.provider_driver.as_str())
+        self.model_catalog.resolve(
+            tenant_id,
+            capability,
+            alias,
+            inventory.provider_driver.as_str(),
+        )
     }
 
     fn apply_dynamic_cost_estimates(
@@ -1904,11 +2104,50 @@ impl AIComputeCenter {
                 )
                 .unwrap_or(estimate.estimated_cost_usd);
             candidate.metadata.pricing.estimated_cost_usd = Some(effective_cost.max(0.0));
+            candidate.dynamic_cost_estimate = Some(CostEstimateOutput {
+                estimated_cost_usd: effective_cost.max(0.0),
+                pricing_mode: estimate.pricing_mode,
+                quota_state: estimate.quota_state.clone(),
+                confidence: estimate.confidence,
+                estimated_latency_ms: estimate.estimated_latency_ms,
+            });
             if let Some(latency) = estimate.estimated_latency_ms {
                 candidate.metadata.health.p95_latency_ms = Some(latency);
             }
             candidate.metadata.health.quota_state = estimate.quota_state;
         }
+    }
+
+    fn apply_dynamic_budget_filters(
+        &self,
+        resolution: &mut crate::model_router::RouteResolution,
+        policy: &RoutePolicy,
+    ) -> std::result::Result<(), crate::model_types::RouteError> {
+        let before = resolution.candidates.len();
+        resolution.candidates.retain(|candidate| {
+            if candidate.metadata.health.quota_state == QuotaState::Exhausted {
+                return false;
+            }
+            if let Some(max_cost) = policy.max_estimated_cost_usd {
+                let cost = candidate
+                    .dynamic_cost_estimate
+                    .as_ref()
+                    .map(|estimate| estimate.estimated_cost_usd)
+                    .or(candidate.metadata.pricing.estimated_cost_usd);
+                if cost.map(|value| value > max_cost).unwrap_or(false) {
+                    return false;
+                }
+            }
+            true
+        });
+        if resolution.candidates.is_empty() && before > 0 {
+            return Err(crate::model_types::RouteError::new(
+                crate::model_types::RouteErrorCode::BudgetExceeded,
+                "all candidates were rejected by dynamic cost or quota estimates",
+            ));
+        }
+        resolution.trace.candidate_count_after_filter = resolution.candidates.len();
+        Ok(())
     }
 
     fn apply_billing_to_summary(
@@ -1920,10 +2159,11 @@ impl AIComputeCenter {
         let Some(cost) = summary.cost.clone() else {
             return;
         };
-        let Some(adjustment) =
-            self.sn_openai_billing
-                .apply_charge(ctx.tenant_id.as_str(), provider_driver, Some(cost.amount))
-        else {
+        let Some(adjustment) = self.sn_openai_billing.apply_charge(
+            ctx.tenant_id.as_str(),
+            provider_driver,
+            Some(cost.amount),
+        ) else {
             return;
         };
 
@@ -1932,7 +2172,9 @@ impl AIComputeCenter {
             currency: cost.currency,
         });
 
-        let extra_value = summary.extra.get_or_insert_with(|| Value::Object(Map::new()));
+        let extra_value = summary
+            .extra
+            .get_or_insert_with(|| Value::Object(Map::new()));
         if !extra_value.is_object() {
             *extra_value = Value::Object(Map::new());
         }
@@ -2301,11 +2543,28 @@ impl AIComputeCenter {
             task_id, ctx.tenant_id, ctx.trace_id
         );
 
-        for attempt in decision.attempts() {
+        for (attempt_index, attempt) in decision.attempts().iter().enumerate() {
             let provider = self.registry.get_provider(attempt.instance_id.as_str());
             let Some(provider) = provider else {
                 continue;
             };
+            if attempt_index > 0 {
+                if let Ok(mut trace) = decision.route_trace.lock() {
+                    trace.runtime_failover_count = trace.runtime_failover_count.saturating_add(1);
+                    trace.selected_exact_model = Some(attempt.exact_model.clone());
+                    trace.selected_provider_instance_name = Some(attempt.instance_id.clone());
+                    if let Some(summary) = trace.user_summary.as_mut() {
+                        summary.display_name = attempt
+                            .exact_model
+                            .rsplit_once('@')
+                            .map(|(model, provider)| format!("{} ({})", model, provider))
+                            .unwrap_or_else(|| attempt.exact_model.clone());
+                        summary.was_failover = true;
+                        summary.reason_short =
+                            "runtime failover selected next provider".to_string();
+                    }
+                }
+            }
             info!(
                 "aicc.provider.start task_id={} tenant={} trace_id={:?} instance_id={} provider_model={}",
                 task_id, ctx.tenant_id, ctx.trace_id, attempt.instance_id, attempt.provider_model
@@ -2338,6 +2597,17 @@ impl AIComputeCenter {
                     }
                     self.registry
                         .record_start_success(attempt.instance_id.as_str(), elapsed_ms);
+                    if attempt_index > 0 {
+                        if let Some(sticky_key) = decision.sticky_key.clone() {
+                            if let Ok(mut sticky) = self.sticky_bindings.lock() {
+                                sticky.set_binding(
+                                    sticky_key,
+                                    attempt.exact_model.clone(),
+                                    attempt.instance_id.clone(),
+                                );
+                            }
+                        }
+                    }
                     match &start_result {
                         ProviderStartResult::Immediate(summary) => {
                             let summary_log =
@@ -2380,6 +2650,16 @@ impl AIComputeCenter {
                             );
                         }
                     }
+                    if let Ok(trace) = decision.route_trace.lock() {
+                        debug!(
+                            "aicc.route.trace.final task_id={} trace={}",
+                            task_id,
+                            serde_json::to_string(&*trace).unwrap_or_else(|err| format!(
+                                "{{\"serialize_error\":\"{}\"}}",
+                                err
+                            ))
+                        );
+                    }
                     return Ok((start_result, attempt.instance_id.clone()));
                 }
                 Err(error) => {
@@ -2397,7 +2677,7 @@ impl AIComputeCenter {
                         error
                     );
                     last_err = Some(error.clone());
-                    if !error.is_retryable() {
+                    if !error.is_retryable() || !decision.runtime_failover_enabled {
                         break;
                     }
                 }
@@ -2619,6 +2899,59 @@ fn json_non_empty_string(value: Option<&serde_json::Value>) -> Option<String> {
         .map(|item| item.to_string())
 }
 
+fn request_control_value<'a>(request: &'a CompleteRequest, key: &str) -> Option<&'a Value> {
+    request
+        .requirements
+        .extra
+        .as_ref()
+        .and_then(|value| value.get(key))
+        .or_else(|| {
+            request
+                .payload
+                .options
+                .as_ref()
+                .and_then(|value| value.get(key))
+        })
+        .or_else(|| {
+            request
+                .payload
+                .input_json
+                .as_ref()
+                .and_then(|value| value.get(key))
+        })
+}
+
+fn extract_session_config(
+    request: &CompleteRequest,
+    key: &str,
+) -> std::result::Result<Option<SessionConfig>, crate::model_types::RouteError> {
+    let Some(value) = request_control_value(request, key) else {
+        return Ok(None);
+    };
+    let config = serde_json::from_value::<SessionConfig>(value.clone()).map_err(|err| {
+        crate::model_types::RouteError::new(
+            crate::model_types::RouteErrorCode::SessionConfigInvalid,
+            format!("{} is invalid: {}", key, err),
+        )
+    })?;
+    config.validate()?;
+    Ok(Some(config))
+}
+
+fn extract_expected_session_config_revision(request: &CompleteRequest) -> Option<String> {
+    request_control_value(request, "expected_session_config_revision")
+        .or_else(|| request_control_value(request, "expected_revision"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn extract_has_session_config_update(request: &CompleteRequest) -> bool {
+    request_control_value(request, "session_config").is_some()
+        || request_control_value(request, "session_config_patch").is_some()
+}
+
 fn extract_session_id_from_complete_request(request: &CompleteRequest) -> Option<String> {
     let from_options = request.payload.options.as_ref().and_then(|options| {
         json_non_empty_string(options.get("session_id"))
@@ -2634,6 +2967,58 @@ fn extract_session_id_from_complete_request(request: &CompleteRequest) -> Option
         .or_else(|| {
             json_non_empty_string(input.and_then(|value| value.pointer("/session/session_id")))
         })
+}
+
+fn user_summary_for_route(
+    trace: &RouteTrace,
+    candidate: &ModelCandidate,
+) -> UserFacingRouteSummary {
+    let display_name = candidate
+        .exact_model
+        .rsplit_once('@')
+        .map(|(model, provider)| format!("{} ({})", model, provider))
+        .unwrap_or_else(|| candidate.exact_model.clone());
+    let model_family = trace
+        .resolved_logical_path
+        .as_ref()
+        .or(Some(&trace.requested_model))
+        .and_then(|model| model.split('.').last())
+        .filter(|item| !item.is_empty())
+        .unwrap_or(candidate.provider_model_id.as_str())
+        .to_string();
+    let provider_origin = match candidate.metadata.attributes.provider_type {
+        ProviderType::LocalInference => UserFacingProviderOrigin::Local,
+        ProviderType::CloudApi => UserFacingProviderOrigin::Cloud,
+        ProviderType::ProxyUnknown => UserFacingProviderOrigin::ProxyUnknown,
+    };
+    let reason_short = if trace.session_sticky_hit {
+        "hit session binding"
+    } else if trace.runtime_failover_count > 0 {
+        "runtime failover selected next provider"
+    } else if trace.fallback_applied {
+        "fallback policy selected available model"
+    } else {
+        match trace.scheduler_profile {
+            crate::model_types::SchedulerProfile::CostFirst => "selected by lowest cost policy",
+            crate::model_types::SchedulerProfile::LatencyFirst => {
+                "selected by lowest latency policy"
+            }
+            crate::model_types::SchedulerProfile::QualityFirst => {
+                "selected by highest quality policy"
+            }
+            crate::model_types::SchedulerProfile::Balanced => "selected by balanced policy",
+            crate::model_types::SchedulerProfile::LocalFirst => "selected by local-first policy",
+            crate::model_types::SchedulerProfile::StrictLocal => "selected by strict local policy",
+        }
+    };
+    UserFacingRouteSummary {
+        display_name,
+        model_family,
+        provider_origin,
+        reason_short: reason_short.to_string(),
+        was_fallback: trace.fallback_applied,
+        was_failover: trace.runtime_failover_count > 0,
+    }
 }
 
 fn extract_rootid_from_complete_request(request: &CompleteRequest) -> Option<String> {
@@ -3122,8 +3507,7 @@ mod tests {
             _req: ResolvedRequest,
             _sink: Arc<dyn TaskEventSink>,
         ) -> std::result::Result<ProviderStartResult, ProviderError> {
-            self.start_call_count
-                .fetch_add(1, AtomicOrdering::Relaxed);
+            self.start_call_count.fetch_add(1, AtomicOrdering::Relaxed);
             let mut queue = self.start_results.lock().unwrap();
             queue
                 .pop_front()
@@ -3649,11 +4033,16 @@ mod tests {
             .expect("first complete should succeed");
         assert_eq!(first.status, CompleteStatus::Succeeded);
         assert_eq!(
-            first.result.as_ref().and_then(|summary| summary.cost.as_ref()).map(|cost| cost.amount),
+            first
+                .result
+                .as_ref()
+                .and_then(|summary| summary.cost.as_ref())
+                .map(|cost| cost.amount),
             Some(0.0)
         );
         assert_eq!(
-            first.result
+            first
+                .result
                 .as_ref()
                 .and_then(|summary| summary.extra.as_ref())
                 .and_then(|extra| extra.pointer("/billing/sn_openai_credit_applied_usd"))
@@ -3669,7 +4058,11 @@ mod tests {
             .expect("second complete should succeed");
         assert_eq!(second.status, CompleteStatus::Succeeded);
         assert_eq!(
-            second.result.as_ref().and_then(|summary| summary.cost.as_ref()).map(|cost| cost.amount),
+            second
+                .result
+                .as_ref()
+                .and_then(|summary| summary.cost.as_ref())
+                .map(|cost| cost.amount),
             Some(1.0)
         );
     }
