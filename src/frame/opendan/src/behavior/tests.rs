@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use buckyos_api::{
-    value_to_object_map, AiResponseSummary, AiToolCall, AiUsage, AiccClient, CompleteRequest,
-    CompleteResponse, CompleteStatus, Task, TaskManagerClient, TaskPermissions, TaskStatus,
+    value_to_object_map, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiResponseSummary,
+    AiToolCall, AiUsage, AiccClient, Task, TaskManagerClient, TaskPermissions, TaskStatus,
 };
 use serde_json::{json, Value as Json};
 use tempfile::tempdir;
@@ -132,9 +132,9 @@ async fn run_step_with_tool_followup() {
             status: TaskStatus::Completed,
             progress: 1.0,
             message: Some("done".to_string()),
-            data: serde_json::to_value(CompleteResponse::new(
+            data: serde_json::to_value(AiMethodResponse::new(
                 "".to_string(),
-                CompleteStatus::Succeeded,
+                AiMethodStatus::Succeeded,
                 Some(AiResponseSummary {
                     text: None,
                     tool_calls: vec![AiToolCall {
@@ -163,15 +163,15 @@ async fn run_step_with_tool_followup() {
     );
 
     let responses = Arc::new(Mutex::new(VecDeque::from(vec![
-        CompleteResponse::new(
+        AiMethodResponse::new(
             aicc_async_task_id.to_string(),
-            CompleteStatus::Running,
+            AiMethodStatus::Running,
             None,
             None,
         ),
-        CompleteResponse::new(
+        AiMethodResponse::new(
             "".to_string(),
-            CompleteStatus::Succeeded,
+            AiMethodStatus::Succeeded,
             Some(AiResponseSummary {
                 text: Some(
                     "<response><next_behavior>END</next_behavior><reply>done</reply></response>"
@@ -192,7 +192,7 @@ async fn run_step_with_tool_followup() {
             None,
         ),
     ])));
-    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let requests = Arc::new(Mutex::new(Vec::<AiMethodRequest>::new()));
 
     let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
         responses: responses.clone(),
@@ -323,13 +323,13 @@ async fn run_step_resolves_prefixed_running_aicc_task_id_from_task_data() {
         },
     );
 
-    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![AiMethodResponse::new(
         external_aicc_task_id.to_string(),
-        CompleteStatus::Running,
+        AiMethodStatus::Running,
         None,
         None,
     )])));
-    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let requests = Arc::new(Mutex::new(Vec::<AiMethodRequest>::new()));
 
     let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
         responses: responses.clone(),
@@ -391,9 +391,9 @@ system: test_rule
 
 #[tokio::test]
 async fn run_step_accepts_succeeded_response_with_string_task_id() {
-    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![AiMethodResponse::new(
         "aicc-1770927904938-1".to_string(),
-        CompleteStatus::Succeeded,
+        AiMethodStatus::Succeeded,
         Some(AiResponseSummary {
             text: Some("<response><next_behavior>END</next_behavior></response>".to_string()),
             tool_calls: vec![],
@@ -410,7 +410,7 @@ async fn run_step_accepts_succeeded_response_with_string_task_id() {
         }),
         None,
     )])));
-    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let requests = Arc::new(Mutex::new(Vec::<AiMethodRequest>::new()));
 
     let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
         responses: responses.clone(),
@@ -474,9 +474,9 @@ system: test_rule
 
 #[tokio::test]
 async fn run_step_sets_behavior_task_as_parent_for_aicc_requests() {
-    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![AiMethodResponse::new(
         "aicc-1770927904938-42".to_string(),
-        CompleteStatus::Succeeded,
+        AiMethodStatus::Succeeded,
         Some(AiResponseSummary {
             text: Some("<response><next_behavior>END</next_behavior></response>".to_string()),
             tool_calls: vec![],
@@ -493,7 +493,7 @@ async fn run_step_sets_behavior_task_as_parent_for_aicc_requests() {
         }),
         None,
     )])));
-    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let requests = Arc::new(Mutex::new(Vec::<AiMethodRequest>::new()));
     let tasks = Arc::new(Mutex::new(HashMap::<i64, Task>::new()));
 
     let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
@@ -600,9 +600,9 @@ system: test_rule
 
 #[tokio::test]
 async fn run_step_uses_session_id_as_task_rootid_when_present() {
-    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![AiMethodResponse::new(
         "aicc-1770927904938-77".to_string(),
-        CompleteStatus::Succeeded,
+        AiMethodStatus::Succeeded,
         Some(AiResponseSummary {
             text: Some("<response><next_behavior>END</next_behavior></response>".to_string()),
             tool_calls: vec![],
@@ -619,7 +619,7 @@ async fn run_step_uses_session_id_as_task_rootid_when_present() {
         }),
         None,
     )])));
-    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let requests = Arc::new(Mutex::new(Vec::<AiMethodRequest>::new()));
     let tasks = Arc::new(Mutex::new(HashMap::<i64, Task>::new()));
 
     let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
@@ -724,9 +724,9 @@ system: test_rule
 
 #[tokio::test]
 async fn run_step_returns_provider_error_when_summary_has_no_text_and_no_tools() {
-    let responses = Arc::new(Mutex::new(VecDeque::from(vec![CompleteResponse::new(
+    let responses = Arc::new(Mutex::new(VecDeque::from(vec![AiMethodResponse::new(
         "aicc-1770927904938-88".to_string(),
-        CompleteStatus::Succeeded,
+        AiMethodStatus::Succeeded,
         Some(AiResponseSummary {
             text: None,
             tool_calls: vec![],
@@ -745,7 +745,7 @@ async fn run_step_returns_provider_error_when_summary_has_no_text_and_no_tools()
         }),
         None,
     )])));
-    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let requests = Arc::new(Mutex::new(Vec::<AiMethodRequest>::new()));
     let tasks = Arc::new(Mutex::new(HashMap::<i64, Task>::new()));
 
     let aicc = Arc::new(AiccClient::new_in_process(Box::new(MockAicc {
@@ -853,9 +853,9 @@ fn run_actions_for_test(actions: &DoActions) -> Vec<Observation> {
 async fn run_step_then_run_actions_followup() {
     let task_store = Arc::new(Mutex::new(HashMap::<i64, Task>::new()));
     let responses = Arc::new(Mutex::new(VecDeque::from(vec![
-        CompleteResponse::new(
+        AiMethodResponse::new(
             "".to_string(),
-            CompleteStatus::Succeeded,
+            AiMethodStatus::Succeeded,
             Some(AiResponseSummary {
                 text: Some(
                     r#"<response><actions mode="failed_end"><command>echo hello</command></actions></response>"#
@@ -875,9 +875,9 @@ async fn run_step_then_run_actions_followup() {
             }),
             None,
         ),
-        CompleteResponse::new(
+        AiMethodResponse::new(
             "".to_string(),
-            CompleteStatus::Succeeded,
+            AiMethodStatus::Succeeded,
             Some(AiResponseSummary {
                 text: Some(
                     r#"<response><next_behavior>END</next_behavior><actions mode="failed_end"></actions></response>"#
@@ -898,7 +898,7 @@ async fn run_step_then_run_actions_followup() {
             None,
         ),
     ])));
-    let requests = Arc::new(Mutex::new(Vec::<CompleteRequest>::new()));
+    let requests = Arc::new(Mutex::new(Vec::<AiMethodRequest>::new()));
     let behavior_cfg = load_behavior_config_yaml_for_test(
         "on_wakeup",
         r#"

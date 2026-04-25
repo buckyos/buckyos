@@ -10,7 +10,7 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    features, AiCost, AiResponseSummary, AiToolCall, AiUsage, Capability, CompleteRequest, Feature,
+    features, AiCost, AiMethodRequest, AiResponseSummary, AiToolCall, AiUsage, Capability, Feature,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
@@ -69,7 +69,7 @@ impl ClaudeProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::LlmRouter],
+            capabilities: vec![Capability::Llm],
             features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
@@ -122,7 +122,7 @@ impl ClaudeProvider {
         }
     }
 
-    fn estimate_tokens(req: &CompleteRequest) -> (u64, u64) {
+    fn estimate_tokens(req: &AiMethodRequest) -> (u64, u64) {
         let mut text_len = 0usize;
 
         if let Some(text) = req.payload.text.as_ref() {
@@ -210,7 +210,7 @@ impl ClaudeProvider {
         &self,
         ctx: &crate::aicc::InvokeCtx,
         provider_model: &str,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         let (request_obj, _ignored) = convert_complete_request(req, provider_model)?;
         let request_value = Value::Object(request_obj.clone());
@@ -333,7 +333,7 @@ impl Provider for ClaudeProvider {
         _sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         match req.request.capability {
-            Capability::LlmRouter => {
+            Capability::Llm => {
                 self.start_llm(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
@@ -541,14 +541,14 @@ fn register_default_aliases(
 ) {
     for model in models.iter() {
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             model.as_str(),
             provider_type,
             model.as_str(),
         );
 
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             format!("llm.{}", model),
             provider_type,
             model.as_str(),
@@ -563,7 +563,7 @@ fn register_default_aliases(
             "llm.code.default",
         ] {
             center.model_catalog().set_mapping(
-                Capability::LlmRouter,
+                Capability::Llm,
                 alias,
                 provider_type,
                 default_model,
@@ -579,7 +579,7 @@ fn register_custom_aliases(
 ) {
     for (alias, model) in alias_map.iter() {
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             alias.as_str(),
             provider_type,
             model.as_str(),

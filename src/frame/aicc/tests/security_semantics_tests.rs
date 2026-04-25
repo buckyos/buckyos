@@ -5,7 +5,7 @@ use aicc::{
     Router, TaskEventKind, TenantRouteConfig,
 };
 use buckyos_api::{
-    AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus,
+    AiMethodStatus, AiResponseSummary, Capability, ResourceRef, TaskFilter, TaskStatus,
 };
 use common::*;
 use std::collections::HashMap;
@@ -20,17 +20,12 @@ fn setup_route_provider(
     cost: f64,
     latency_ms: u64,
 ) {
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        provider_type,
-        model,
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", provider_type, model);
     let provider = Arc::new(MockProvider::new(
         mock_instance(
             instance_id,
             provider_type,
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".to_string()],
         ),
         CostEstimate {
@@ -51,17 +46,12 @@ fn setup_route_provider(
 async fn sec_01_cancel_reject_cross_tenant() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -95,17 +85,12 @@ async fn sec_01_cancel_reject_cross_tenant() {
 async fn sec_02_cancel_accept_same_tenant() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -139,12 +124,7 @@ async fn sec_02_cancel_accept_same_tenant() {
 async fn sec_03_resource_invalid_from_resolver() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     let sink = Arc::new(CollectingSinkFactory::new());
     let mut center = AIComputeCenter::new(registry, catalog);
     center.set_task_event_sink_factory(sink.clone());
@@ -155,7 +135,7 @@ async fn sec_03_resource_invalid_from_resolver() {
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -164,18 +144,15 @@ async fn sec_03_resource_invalid_from_resolver() {
         },
         vec![Ok(ProviderStartResult::Started)],
     )));
-    center.model_catalog().set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    center
+        .model_catalog()
+        .set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
 
     let response = center
         .complete(base_request(), rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    assert_eq!(response.status, CompleteStatus::Failed, "assert_eq failed in sec_03_resource_invalid_from_resolver: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(response.status, AiMethodStatus::Failed, "assert_eq failed in sec_03_resource_invalid_from_resolver: expected left == right; check this scenario's routing/status/error-code branch.");
     assert_eq!(extract_error_code(&sink.events_for(&response.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in sec_03_resource_invalid_from_resolver: expected left == right; check this scenario's routing/status/error-code branch.");
 }
 
@@ -201,6 +178,6 @@ async fn sec_04_base64_policy_enforced() {
         .complete(req, rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    assert_eq!(response.status, CompleteStatus::Failed, "assert_eq failed in sec_04_base64_policy_enforced: expected left == right; check this scenario's routing/status/error-code branch.");
+    assert_eq!(response.status, AiMethodStatus::Failed, "assert_eq failed in sec_04_base64_policy_enforced: expected left == right; check this scenario's routing/status/error-code branch.");
     assert_eq!(extract_error_code(&sink.events_for(&response.task_id)).as_deref(), Some("resource_invalid"), "assert_eq failed in sec_04_base64_policy_enforced: expected left == right; check this scenario's routing/status/error-code branch.");
 }

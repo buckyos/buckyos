@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    features, AiArtifact, AiCost, AiResponseSummary, AiUsage, Capability, CompleteRequest, Feature,
+    features, AiArtifact, AiCost, AiMethodRequest, AiResponseSummary, AiUsage, Capability, Feature,
     ResourceRef,
 };
 use log::{info, warn};
@@ -106,7 +106,7 @@ impl GoogleGiminiProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::LlmRouter, Capability::Text2Image],
+            capabilities: vec![Capability::Llm, Capability::Image],
             features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
@@ -176,7 +176,7 @@ impl GoogleGiminiProvider {
         }
     }
 
-    fn estimate_tokens(req: &CompleteRequest) -> (u64, u64) {
+    fn estimate_tokens(req: &AiMethodRequest) -> (u64, u64) {
         let mut text_len = 0usize;
 
         if let Some(text) = req.payload.text.as_ref() {
@@ -220,7 +220,7 @@ impl GoogleGiminiProvider {
         (input_tokens.max(1), output_tokens.max(1))
     }
 
-    fn estimate_image_count(req: &CompleteRequest) -> u64 {
+    fn estimate_image_count(req: &AiMethodRequest) -> u64 {
         req.payload
             .options
             .as_ref()
@@ -251,7 +251,7 @@ impl GoogleGiminiProvider {
             .max(1)
     }
 
-    fn estimate_text2image_cost(req: &CompleteRequest, model: &str) -> Option<f64> {
+    fn estimate_text2image_cost(req: &AiMethodRequest, model: &str) -> Option<f64> {
         let lowered = model.to_ascii_lowercase();
         let per_image = if lowered.contains("2.5-flash-image") {
             0.039
@@ -288,7 +288,7 @@ impl GoogleGiminiProvider {
         }
     }
 
-    fn build_contents(&self, req: &CompleteRequest) -> Result<Vec<Value>, ProviderError> {
+    fn build_contents(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
         let mut contents = vec![];
 
         for msg in req.payload.messages.iter() {
@@ -379,7 +379,7 @@ impl GoogleGiminiProvider {
         }
     }
 
-    fn extract_text2image_prompt(req: &CompleteRequest) -> Option<String> {
+    fn extract_text2image_prompt(req: &AiMethodRequest) -> Option<String> {
         if let Some(text) = req
             .payload
             .text
@@ -823,7 +823,7 @@ impl GoogleGiminiProvider {
         &self,
         ctx: &crate::aicc::InvokeCtx,
         provider_model: &str,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
         let contents = self.build_contents(req)?;
         let mut request_obj = Map::new();
@@ -953,7 +953,7 @@ impl GoogleGiminiProvider {
         &self,
         ctx: &crate::aicc::InvokeCtx,
         provider_model: &str,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
         let mut request_obj = Map::new();
         if let Some(input_json) = req.payload.input_json.as_ref() {
@@ -1138,11 +1138,11 @@ impl Provider for GoogleGiminiProvider {
         _sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         match req.request.capability {
-            Capability::LlmRouter => {
+            Capability::Llm => {
                 self.start_llm(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
-            Capability::Text2Image => {
+            Capability::Image => {
                 self.start_text2image(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
@@ -1382,14 +1382,14 @@ fn register_default_aliases(
             continue;
         }
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             model.as_str(),
             provider_type,
             model.as_str(),
         );
 
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             format!("llm.{}", model),
             provider_type,
             model.as_str(),
@@ -1404,7 +1404,7 @@ fn register_default_aliases(
             "llm.code.default",
         ] {
             center.model_catalog().set_mapping(
-                Capability::LlmRouter,
+                Capability::Llm,
                 alias,
                 provider_type,
                 default_model,
@@ -1414,7 +1414,7 @@ fn register_default_aliases(
 
     for model in image_models.iter() {
         center.model_catalog().set_mapping(
-            Capability::Text2Image,
+            Capability::Image,
             model.as_str(),
             provider_type,
             model.as_str(),
@@ -1425,7 +1425,7 @@ fn register_default_aliases(
             format!("image.{}", model),
         ] {
             center.model_catalog().set_mapping(
-                Capability::Text2Image,
+                Capability::Image,
                 alias,
                 provider_type,
                 model.as_str(),
@@ -1442,7 +1442,7 @@ fn register_default_aliases(
             "t2i.nano_banana",
         ] {
             center.model_catalog().set_mapping(
-                Capability::Text2Image,
+                Capability::Image,
                 alias,
                 provider_type,
                 default_image_model,
@@ -1462,9 +1462,9 @@ fn register_custom_aliases(
             || normalized_alias.starts_with("t2i.")
             || normalized_alias.starts_with("image.")
         {
-            Capability::Text2Image
+            Capability::Image
         } else {
-            Capability::LlmRouter
+            Capability::Llm
         };
         center.model_catalog().set_mapping(
             capability,
@@ -1521,9 +1521,9 @@ mod tests {
     use buckyos_api::{AiPayload, ModelSpec, Requirements};
     use serde_json::json;
 
-    fn build_text2image_request(options: Option<Value>) -> CompleteRequest {
-        CompleteRequest::new(
-            Capability::Text2Image,
+    fn build_text2image_request(options: Option<Value>) -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Image,
             ModelSpec::new("text2image.default".to_string(), None),
             Requirements::default(),
             AiPayload::new(
@@ -1591,13 +1591,13 @@ mod tests {
 
         let llm = center.model_catalog().resolve(
             "",
-            &Capability::LlmRouter,
+            &Capability::Llm,
             "llm.plan.default",
             "google-gimini",
         );
         let image = center.model_catalog().resolve(
             "",
-            &Capability::Text2Image,
+            &Capability::Image,
             "text2image.nano_banana",
             "google-gimini",
         );
@@ -1624,13 +1624,13 @@ mod tests {
 
         let code_alias = center.model_catalog().resolve(
             "",
-            &Capability::LlmRouter,
+            &Capability::Llm,
             "llm.code.default",
             "google-gimini",
         );
         let removed_alias = center.model_catalog().resolve(
             "",
-            &Capability::LlmRouter,
+            &Capability::Llm,
             "llm.json.default",
             "google-gimini",
         );

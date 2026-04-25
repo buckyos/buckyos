@@ -4,7 +4,7 @@ use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, RouteConfig,
     RouteWeights, Router, TaskEventKind, TenantRouteConfig,
 };
-use buckyos_api::{AiResponseSummary, AiccServerHandler, Capability, CompleteStatus};
+use buckyos_api::{AiMethodStatus, AiResponseSummary, AiccServerHandler, Capability};
 use common::*;
 use kRPC::{RPCContext, RPCHandler, RPCRequest, RPCResult};
 use serde_json::json;
@@ -20,9 +20,9 @@ fn add_llm(
     lat: u64,
     r: std::result::Result<ProviderStartResult, ProviderError>,
 ) -> Arc<MockProvider> {
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", ptype, "m");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", ptype, "m");
     let p = Arc::new(MockProvider::new(
-        mock_instance(id, ptype, vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(id, ptype, vec![Capability::Llm], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(cost),
             estimated_latency_ms: Some(lat),
@@ -58,7 +58,7 @@ async fn stream_01_started_then_poll_receives_incremental_chunks() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     assert!(!s.events_for(&resp.task_id).is_empty());
 }
 
@@ -87,7 +87,7 @@ async fn stream_02_incremental_chunks_are_append_only() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     let e1 = s.events_for(&resp.task_id);
     assert_eq!(e1.len(), 1, "started response should emit one event");
     assert!(matches!(e1[0].kind, TaskEventKind::Started));
@@ -171,7 +171,7 @@ async fn stream_04_started_must_not_fallback() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     assert_eq!(p1.start_calls(), 1);
     assert_eq!(p2.start_calls(), 0);
 }
@@ -271,7 +271,7 @@ async fn stream_07_stream_timeout_classified_retryable_before_started() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -309,7 +309,7 @@ async fn stream_08_stream_final_snapshot_consistent_with_chunks() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Succeeded);
+    assert_eq!(resp.status, AiMethodStatus::Succeeded);
     let summary = resp
         .result
         .as_ref()

@@ -1,5 +1,5 @@
 use crate::aicc::ProviderError;
-use buckyos_api::{features, AiToolSpec, CompleteRequest, RespFormat};
+use buckyos_api::{features, AiMethodRequest, AiToolSpec, RespFormat};
 use serde_json::{json, Map, Value};
 
 const OPENAI_OPTION_ALLOWLIST: &[&str] = &[
@@ -444,13 +444,13 @@ pub(crate) fn merge_options(
 
 pub(crate) fn merge_requirements_response_format(
     target: &mut Map<String, Value>,
-    req: &CompleteRequest,
+    req: &AiMethodRequest,
 ) {
     if has_text_format(target) {
         return;
     }
 
-    let json_output_required = req.requirements.resp_foramt == RespFormat::Json
+    let json_output_required = req.requirements.resp_format == RespFormat::Json
         || req
             .requirements
             .must_features
@@ -504,9 +504,9 @@ mod tests {
     };
     use serde_json::json;
 
-    fn base_request() -> CompleteRequest {
-        CompleteRequest::new(
-            Capability::LlmRouter,
+    fn base_request() -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new("llm.default".to_string(), None),
             Requirements::default(),
             AiPayload::default(),
@@ -798,7 +798,7 @@ mod tests {
     fn merge_requirements_response_format_sets_json_object_for_json() {
         let mut target = Map::new();
         let mut req = base_request();
-        req.requirements.resp_foramt = RespFormat::Json;
+        req.requirements.resp_format = RespFormat::Json;
 
         merge_requirements_response_format(&mut target, &req);
 
@@ -844,7 +844,7 @@ mod tests {
             }),
         );
         let mut req = base_request();
-        req.requirements.resp_foramt = RespFormat::Json;
+        req.requirements.resp_format = RespFormat::Json;
 
         merge_requirements_response_format(&mut target, &req);
 

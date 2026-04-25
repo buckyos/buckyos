@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    features, AiMessage, AiPayload, BoxKind, Capability, CompleteRequest, ModelSpec,
+    features, AiMessage, AiMethodRequest, AiPayload, BoxKind, Capability, ModelSpec,
     MsgRecordWithObject, Requirements,
 };
 use chrono::{DateTime, Utc};
@@ -65,7 +65,7 @@ impl PromptBuilder {
         tokenizer: &dyn Tokenizer,
         session: Option<Arc<Mutex<AgentSession>>>,
         memory: Option<AgentMemory>,
-    ) -> Result<CompleteRequest, String> {
+    ) -> Result<AiMethodRequest, String> {
         let mut env_context = build_env_context(input);
         let loaded_tools = Vec::new();
         let output_protocol_text = cfg.output_protocol.to_prompt_text();
@@ -132,8 +132,8 @@ impl PromptBuilder {
             json!(cfg.llm.model_policy.temperature),
         );
 
-        let req = CompleteRequest::new(
-            Capability::LlmRouter,
+        let req = AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new(cfg.llm.model_policy.preferred.clone(), None),
             Requirements::new(must_features, None, None, None),
             AiPayload::new(
@@ -156,7 +156,7 @@ impl PromptBuilder {
     }
 }
 
-pub fn render_complete_request_prompt(request: &CompleteRequest) -> String {
+pub fn render_complete_request_prompt(request: &AiMethodRequest) -> String {
     let mut parts = Vec::<String>::new();
 
     if let Some(text) = request

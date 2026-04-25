@@ -154,10 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owne
 /// this into `install_config.rdb_instances` when bootstrapping the service.
 pub fn msg_center_default_rdb_instance_config() -> RdbInstanceConfig {
     let mut schema = HashMap::new();
-    schema.insert(
-        RdbBackend::Sqlite,
-        MSG_CENTER_RDB_SCHEMA_SQLITE.to_string(),
-    );
+    schema.insert(RdbBackend::Sqlite, MSG_CENTER_RDB_SCHEMA_SQLITE.to_string());
     schema.insert(
         RdbBackend::Postgres,
         MSG_CENTER_RDB_SCHEMA_POSTGRES.to_string(),

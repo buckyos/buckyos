@@ -4,7 +4,7 @@ use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, RouteConfig,
     RouteWeights, Router, TenantRouteConfig,
 };
-use buckyos_api::{AiResponseSummary, AiccServerHandler, Capability, CompleteStatus};
+use buckyos_api::{AiMethodStatus, AiResponseSummary, AiccServerHandler, Capability};
 use common::*;
 use kRPC::{RPCContext, RPCHandler, RPCRequest, RPCResult};
 use serde_json::json;
@@ -20,9 +20,9 @@ fn add_llm(
     lat: u64,
     r: std::result::Result<ProviderStartResult, ProviderError>,
 ) -> Arc<MockProvider> {
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", ptype, "m");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", ptype, "m");
     let p = Arc::new(MockProvider::new(
-        mock_instance(id, ptype, vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(id, ptype, vec![Capability::Llm], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(cost),
             estimated_latency_ms: Some(lat),
@@ -72,7 +72,7 @@ fn sched_01_cost_weight_prefers_low_cost() {
             .route(
                 "tenant-a",
                 &base_request(),
-                &r.snapshot(Capability::LlmRouter),
+                &r.snapshot(Capability::Llm),
                 &r,
                 &cfg,
                 &c
@@ -122,7 +122,7 @@ fn sched_02_latency_weight_prefers_low_latency() {
             .route(
                 "tenant-a",
                 &base_request(),
-                &r.snapshot(Capability::LlmRouter),
+                &r.snapshot(Capability::Llm),
                 &r,
                 &cfg,
                 &c
@@ -175,7 +175,7 @@ fn sched_03_load_weight_prefers_less_in_flight() {
             .route(
                 "tenant-a",
                 &base_request(),
-                &r.snapshot(Capability::LlmRouter),
+                &r.snapshot(Capability::Llm),
                 &r,
                 &cfg,
                 &c
@@ -226,7 +226,7 @@ fn sched_04_error_weight_prefers_low_error_rate() {
             .route(
                 "tenant-a",
                 &base_request(),
-                &r.snapshot(Capability::LlmRouter),
+                &r.snapshot(Capability::Llm),
                 &r,
                 &cfg,
                 &c
@@ -266,7 +266,7 @@ fn sched_05_fallback_limit_respected() {
             .route(
                 "tenant-a",
                 &base_request(),
-                &r.snapshot(Capability::LlmRouter),
+                &r.snapshot(Capability::Llm),
                 &r,
                 &cfg,
                 &c
@@ -330,7 +330,7 @@ fn sched_06_tenant_weight_override_global() {
             .route(
                 "tenant-a",
                 &base_request(),
-                &r.snapshot(Capability::LlmRouter),
+                &r.snapshot(Capability::Llm),
                 &r,
                 &cfg,
                 &c
@@ -382,7 +382,7 @@ fn sched_07_tenant_allow_deny_combination() {
             .route(
                 "tenant-a",
                 &base_request(),
-                &r.snapshot(Capability::LlmRouter),
+                &r.snapshot(Capability::Llm),
                 &r,
                 &cfg,
                 &c
@@ -416,7 +416,7 @@ fn sched_08_alias_mapping_under_strategy() {
             .route(
                 "tenant-a",
                 &base_request(),
-                &r.snapshot(Capability::LlmRouter),
+                &r.snapshot(Capability::Llm),
                 &r,
                 &RouteConfig::default(),
                 &c
@@ -460,7 +460,7 @@ fn sched_01_effect_priority_prefers_higher_quality_when_budget_allows() {
         .route(
             "tenant-a",
             &base_request(),
-            &r.snapshot(Capability::LlmRouter),
+            &r.snapshot(Capability::Llm),
             &r,
             &cfg,
             &c,
@@ -502,7 +502,7 @@ fn sched_02_cost_priority_prefers_lower_cost_under_same_capability() {
         .route(
             "tenant-a",
             &base_request(),
-            &r.snapshot(Capability::LlmRouter),
+            &r.snapshot(Capability::Llm),
             &r,
             &cfg,
             &c,
@@ -544,7 +544,7 @@ fn sched_03_free_quota_priority_prefers_quota_provider_first() {
         .route(
             "tenant-a",
             &base_request(),
-            &r.snapshot(Capability::LlmRouter),
+            &r.snapshot(Capability::Llm),
             &r,
             &cfg,
             &c,
@@ -588,7 +588,7 @@ fn sched_04_agent_tier_policy_routes_to_expected_provider_group() {
         .route(
             "tenant-a",
             &base_request(),
-            &r.snapshot(Capability::LlmRouter),
+            &r.snapshot(Capability::Llm),
             &r,
             &cfg,
             &c,
@@ -601,13 +601,13 @@ fn sched_04_agent_tier_policy_routes_to_expected_provider_group() {
 fn sched_05_master_feature_local_required_filters_non_local() {
     let r = Registry::default();
     let c = ModelCatalog::default();
-    c.set_mapping(Capability::LlmRouter, "llm.plan.default", "local", "m");
-    c.set_mapping(Capability::LlmRouter, "llm.plan.default", "remote", "m");
+    c.set_mapping(Capability::Llm, "llm.plan.default", "local", "m");
+    c.set_mapping(Capability::Llm, "llm.plan.default", "remote", "m");
     r.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-local",
             "local",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["local".into()],
         ),
         CostEstimate {
@@ -620,7 +620,7 @@ fn sched_05_master_feature_local_required_filters_non_local() {
         mock_instance(
             "p-remote",
             "remote",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -635,7 +635,7 @@ fn sched_05_master_feature_local_required_filters_non_local() {
         .route(
             "tenant-a",
             &req,
-            &r.snapshot(Capability::LlmRouter),
+            &r.snapshot(Capability::Llm),
             &r,
             &RouteConfig::default(),
             &c,
@@ -672,7 +672,7 @@ fn sched_06_optional_features_do_not_break_primary_selection() {
         .route(
             "tenant-a",
             &req,
-            &r.snapshot(Capability::LlmRouter),
+            &r.snapshot(Capability::Llm),
             &r,
             &RouteConfig::default(),
             &c,
@@ -707,7 +707,7 @@ fn sched_07_multi_provider_same_model_priority_stable() {
         .route(
             "tenant-a",
             &base_request(),
-            &r.snapshot(Capability::LlmRouter),
+            &r.snapshot(Capability::Llm),
             &r,
             &RouteConfig::default(),
             &c,
@@ -762,7 +762,7 @@ fn sched_08_tenant_policy_overrides_global_strategy() {
         .route(
             "tenant-a",
             &base_request(),
-            &r.snapshot(Capability::LlmRouter),
+            &r.snapshot(Capability::Llm),
             &r,
             &cfg,
             &c,

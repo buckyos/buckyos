@@ -1,7 +1,7 @@
 mod common;
 
 use aicc::{CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry};
-use buckyos_api::{Capability, CompleteStatus};
+use buckyos_api::{AiMethodStatus, Capability};
 use common::*;
 use serde_json::json;
 use std::sync::Arc;
@@ -15,23 +15,13 @@ use std::sync::Arc;
 async fn start_01_retryable_error_then_fallback_success() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-b",
-        "m-b",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-b", "m-b");
     let p1 = Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -44,7 +34,7 @@ async fn start_01_retryable_error_then_fallback_success() {
         mock_instance(
             "p-b",
             "provider-b",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -63,7 +53,7 @@ async fn start_01_retryable_error_then_fallback_success() {
         .expect("complete should return");
     assert_eq!(
         response.status,
-        CompleteStatus::Running,
+        AiMethodStatus::Running,
         "assert_eq failed in start_01_retryable_error_then_fallback_success: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(
@@ -87,23 +77,13 @@ async fn start_01_retryable_error_then_fallback_success() {
 async fn start_02_fatal_error_no_fallback() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-b",
-        "m-b",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-b", "m-b");
     let p1 = Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -116,7 +96,7 @@ async fn start_02_fatal_error_no_fallback() {
         mock_instance(
             "p-b",
             "provider-b",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -138,7 +118,7 @@ async fn start_02_fatal_error_no_fallback() {
         .expect("complete should return");
     assert_eq!(
         response.status,
-        CompleteStatus::Failed,
+        AiMethodStatus::Failed,
         "assert_eq failed in start_02_fatal_error_no_fallback: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(
@@ -157,23 +137,13 @@ async fn start_02_fatal_error_no_fallback() {
 async fn start_retryable_error_respects_runtime_failover_false() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-b",
-        "m-b",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-b", "m-b");
     let p1 = Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -186,7 +156,7 @@ async fn start_retryable_error_respects_runtime_failover_false() {
         mock_instance(
             "p-b",
             "provider-b",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -206,7 +176,7 @@ async fn start_retryable_error_respects_runtime_failover_false() {
         .await
         .expect("complete should return");
 
-    assert_eq!(response.status, CompleteStatus::Failed);
+    assert_eq!(response.status, AiMethodStatus::Failed);
     assert_eq!(p1.start_calls(), 1);
     assert_eq!(p2.start_calls(), 0);
 }
@@ -215,23 +185,13 @@ async fn start_retryable_error_respects_runtime_failover_false() {
 async fn request_session_config_patch_updates_session_policy() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-b",
-        "m-b",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-b", "m-b");
     let slow_cheap = Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -244,7 +204,7 @@ async fn request_session_config_patch_updates_session_policy() {
         mock_instance(
             "p-b",
             "provider-b",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -271,7 +231,7 @@ async fn request_session_config_patch_updates_session_policy() {
         .await
         .expect("complete should return");
 
-    assert_eq!(response.status, CompleteStatus::Running);
+    assert_eq!(response.status, AiMethodStatus::Running);
     assert_eq!(slow_cheap.start_calls(), 0);
     assert_eq!(fast.start_calls(), 1);
 }
@@ -285,23 +245,13 @@ async fn request_session_config_patch_updates_session_policy() {
 async fn start_03_started_must_stop_fallback() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-b",
-        "m-b",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-b", "m-b");
     let p1 = Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -314,7 +264,7 @@ async fn start_03_started_must_stop_fallback() {
         mock_instance(
             "p-b",
             "provider-b",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -333,7 +283,7 @@ async fn start_03_started_must_stop_fallback() {
         .expect("complete should return");
     assert_eq!(
         response.status,
-        CompleteStatus::Running,
+        AiMethodStatus::Running,
         "assert_eq failed in start_03_started_must_stop_fallback: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(
@@ -357,23 +307,13 @@ async fn start_03_started_must_stop_fallback() {
 async fn start_04_queued_no_fallback() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-b",
-        "m-b",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-b", "m-b");
     let p1 = Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -386,7 +326,7 @@ async fn start_04_queued_no_fallback() {
         mock_instance(
             "p-b",
             "provider-b",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -405,7 +345,7 @@ async fn start_04_queued_no_fallback() {
         .expect("complete should return");
     assert_eq!(
         response.status,
-        CompleteStatus::Running,
+        AiMethodStatus::Running,
         "assert_eq failed in start_04_queued_no_fallback: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(
@@ -429,23 +369,13 @@ async fn start_04_queued_no_fallback() {
 async fn start_05_all_candidates_failed_provider_start_failed() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-b",
-        "m-b",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-b", "m-b");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -458,7 +388,7 @@ async fn start_05_all_candidates_failed_provider_start_failed() {
         mock_instance(
             "p-b",
             "provider-b",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -478,7 +408,7 @@ async fn start_05_all_candidates_failed_provider_start_failed() {
         .expect("complete should return");
     assert_eq!(
         response.status,
-        CompleteStatus::Failed,
+        AiMethodStatus::Failed,
         "assert_eq failed in start_05_all_candidates_failed_provider_start_failed: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(
@@ -503,9 +433,9 @@ async fn start_06_fallback_respects_limit() {
         ("p-c", "provider-c", "m-c", 0.03),
         ("p-d", "provider-d", "m-d", 0.04),
     ] {
-        catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", ptype, model);
+        catalog.set_mapping(Capability::Llm, "llm.plan.default", ptype, model);
         registry.add_provider(Arc::new(MockProvider::new(
-            mock_instance(id, ptype, vec![Capability::LlmRouter], vec!["plan".into()]),
+            mock_instance(id, ptype, vec![Capability::Llm], vec!["plan".into()]),
             CostEstimate {
                 estimated_cost_usd: Some(cost),
                 estimated_latency_ms: Some(100),
@@ -528,7 +458,7 @@ async fn start_06_fallback_respects_limit() {
         .expect("complete should return");
     assert_eq!(
         response.status,
-        CompleteStatus::Failed,
+        AiMethodStatus::Failed,
         "assert_eq failed in start_06_fallback_respects_limit: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(

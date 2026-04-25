@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use buckyos_api::CompleteRequest;
+use buckyos_api::AiMethodRequest;
 use log::warn;
 use quick_xml::de::from_str as xml_from_str;
 use serde::{Deserialize, Serialize};
@@ -678,7 +678,7 @@ pub struct LLMTrackingInfo {
     pub track: TrackInfo,
     pub tool_trace: Vec<ToolExecRecord>,
     pub raw_output: LLMOutput,
-    pub prompt_request: CompleteRequest,
+    pub prompt_request: AiMethodRequest,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

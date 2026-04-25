@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use buckyos_api::{
-    AiPayload, Capability, CompleteRequest, ModelSpec, MsgRecordWithObject, Requirements,
+    AiMethodRequest, AiPayload, Capability, ModelSpec, MsgRecordWithObject, Requirements,
 };
 use chrono::{DateTime, Utc};
 use log::warn;
@@ -72,7 +72,7 @@ pub struct LLMStepRecord {
     //pub new_event : Vec<EventRecord>,
     pub input: String,
     #[serde(default = "empty_complete_request")]
-    pub llm_prompt: CompleteRequest,
+    pub llm_prompt: AiMethodRequest,
     pub llm_result: BehaviorLLMResult,
     pub action_result: HashMap<String, AgentToolResult>,
     pub error: Option<String>,
@@ -352,9 +352,9 @@ pub fn render_prompt_text_from_records_with_tokenizer(
     render_prompt_text_from_records_impl(records, options, Some(tokenizer))
 }
 
-fn empty_complete_request() -> CompleteRequest {
-    CompleteRequest::new(
-        Capability::LlmRouter,
+fn empty_complete_request() -> AiMethodRequest {
+    AiMethodRequest::new(
+        Capability::Llm,
         ModelSpec::new(String::new(), None),
         Requirements::new(vec![], None, None, None),
         AiPayload::default(),
@@ -954,8 +954,8 @@ mod tests {
             action_completed_at_ms: 3,
             new_msg: vec![],
             input: format!("input-{step_num}"),
-            llm_prompt: CompleteRequest::new(
-                Capability::LlmRouter,
+            llm_prompt: AiMethodRequest::new(
+                Capability::Llm,
                 ModelSpec::new("llm.default".to_string(), None),
                 Requirements::new(vec![], None, None, None),
                 AiPayload::new(

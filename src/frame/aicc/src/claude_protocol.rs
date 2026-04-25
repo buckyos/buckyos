@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::aicc::ProviderError;
-use buckyos_api::{AiToolSpec, CompleteRequest, ResourceRef};
+use buckyos_api::{AiMethodRequest, AiToolSpec, ResourceRef};
 use serde_json::{json, Map, Value};
 
 const CLAUDE_OPTION_ALLOWLIST: &[&str] = &[
@@ -576,7 +576,7 @@ pub(crate) fn merge_options(
     Ok((ignored, extra_messages))
 }
 
-fn build_fallback_content(req: &CompleteRequest) -> Result<Option<String>, ProviderError> {
+fn build_fallback_content(req: &AiMethodRequest) -> Result<Option<String>, ProviderError> {
     let mut content = req
         .payload
         .text
@@ -616,7 +616,7 @@ fn build_fallback_content(req: &CompleteRequest) -> Result<Option<String>, Provi
     }
 }
 
-fn build_messages(req: &CompleteRequest) -> Result<(Option<String>, Vec<Value>), ProviderError> {
+fn build_messages(req: &AiMethodRequest) -> Result<(Option<String>, Vec<Value>), ProviderError> {
     let mut system_parts = vec![];
     let mut messages = vec![];
 
@@ -670,7 +670,7 @@ fn build_messages(req: &CompleteRequest) -> Result<(Option<String>, Vec<Value>),
     Ok((system, messages))
 }
 
-fn resolve_provider_model(req: &CompleteRequest, provider_model: &str) -> Option<String> {
+fn resolve_provider_model(req: &AiMethodRequest, provider_model: &str) -> Option<String> {
     if !provider_model.trim().is_empty() {
         return Some(provider_model.trim().to_string());
     }
@@ -691,7 +691,7 @@ fn resolve_provider_model(req: &CompleteRequest, provider_model: &str) -> Option
 }
 
 pub(crate) fn convert_complete_request(
-    req: &CompleteRequest,
+    req: &AiMethodRequest,
     provider_model: &str,
 ) -> Result<(Map<String, Value>, Vec<String>), ProviderError> {
     let model = resolve_provider_model(req, provider_model)
@@ -736,13 +736,13 @@ pub(crate) fn convert_complete_request(
 mod tests {
     use super::*;
     use buckyos_api::{
-        value_to_object_map, AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest,
+        value_to_object_map, AiMessage, AiMethodRequest, AiPayload, AiToolSpec, Capability,
         ModelSpec, Requirements,
     };
 
-    fn base_request() -> CompleteRequest {
-        CompleteRequest::new(
-            Capability::LlmRouter,
+    fn base_request() -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new(
                 "llm.default".to_string(),
                 Some("claude-3-5-sonnet-20241022".to_string()),

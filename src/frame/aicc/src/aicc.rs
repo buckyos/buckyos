@@ -18,9 +18,9 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    AiResponseSummary, AiccHandler, AiccUsageEvent, CancelResponse, Capability, CompleteRequest,
-    CompleteResponse, CompleteStatus, CreateTaskOptions, Feature, ResourceRef, TaskManagerClient,
-    TaskStatus, AICC_SERVICE_SERVICE_NAME,
+    AiMethodRequest, AiMethodResponse, AiMethodStatus, AiResponseSummary, AiccHandler,
+    AiccUsageEvent, CancelResponse, Capability, CreateTaskOptions, Feature, ResourceRef,
+    TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -277,11 +277,11 @@ pub enum ProviderStartResult {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedRequest {
-    pub request: CompleteRequest,
+    pub request: AiMethodRequest,
 }
 
 impl ResolvedRequest {
-    pub fn new(request: CompleteRequest) -> Self {
+    pub fn new(request: AiMethodRequest) -> Self {
         Self { request }
     }
 }
@@ -641,7 +641,7 @@ impl InitialTaskState {
 impl AIComputeCenter {
     async fn resolve_task_scope(
         &self,
-        request: &CompleteRequest,
+        request: &AiMethodRequest,
         invoke_ctx: &InvokeCtx,
         external_task_id: &str,
     ) -> std::result::Result<TaskScope, RPCErrors> {
@@ -690,7 +690,7 @@ impl AIComputeCenter {
     async fn create_provider_task(
         &self,
         external_task_id: &str,
-        request: &CompleteRequest,
+        request: &AiMethodRequest,
         invoke_ctx: &InvokeCtx,
         event_ref: Option<&str>,
         decision: &RouteDecision,
@@ -830,7 +830,7 @@ pub trait ResourceResolver: Send + Sync {
     async fn resolve(
         &self,
         _ctx: &InvokeCtx,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
     ) -> std::result::Result<ResolvedRequest, RPCErrors>;
 }
 
@@ -842,7 +842,7 @@ impl ResourceResolver for PassthroughResourceResolver {
     async fn resolve(
         &self,
         _ctx: &InvokeCtx,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
     ) -> std::result::Result<ResolvedRequest, RPCErrors> {
         Ok(ResolvedRequest::new(req.clone()))
     }
@@ -1173,7 +1173,7 @@ impl Router {
     pub fn route(
         &self,
         tenant_id: &str,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
         snapshot: &RegistrySnapshot,
         registry: &Registry,
         route_cfg: &RouteConfig,
@@ -1193,7 +1193,7 @@ impl Router {
     fn route_with_billing(
         &self,
         tenant_id: &str,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
         snapshot: &RegistrySnapshot,
         registry: &Registry,
         route_cfg: &RouteConfig,
@@ -1436,13 +1436,11 @@ fn inventory_supports_capability(inventory: &ProviderInventory, capability: &Cap
 
 fn api_type_for_capability(capability: &Capability) -> Option<ApiType> {
     match capability {
-        Capability::LlmRouter => Some(ApiType::LlmChat),
-        Capability::Text2Image => Some(ApiType::ImageTextToImage),
-        Capability::Image2Text => Some(ApiType::ImageToImage),
-        Capability::Text2Voice
-        | Capability::Voice2Text
-        | Capability::Text2Video
-        | Capability::Video2Text => Some(ApiType::LlmCompletion),
+        Capability::Llm => Some(ApiType::LlmChat),
+        Capability::Image => Some(ApiType::ImageTextToImage),
+        Capability::Vision => Some(ApiType::ImageToImage),
+        Capability::Audio | Capability::Video => Some(ApiType::LlmCompletion),
+        Capability::Embedding | Capability::Rerank | Capability::Agent => None,
     }
 }
 
@@ -1462,7 +1460,7 @@ fn route_error_to_rpc(error: crate::model_types::RouteError) -> RPCErrors {
     reason_error(code, error.to_string())
 }
 
-fn route_policy_from_request(request: &CompleteRequest) -> RoutePolicy {
+fn route_policy_from_request(request: &AiMethodRequest) -> RoutePolicy {
     let mut policy = RoutePolicy {
         required_features: required_model_features(&request.requirements.must_features),
         max_estimated_cost_usd: request.requirements.max_cost_usd,
@@ -1529,7 +1527,7 @@ fn required_model_features(features: &[Feature]) -> RequiredModelFeatures {
     required
 }
 
-fn estimate_request_tokens(request: &CompleteRequest) -> (u64, u64) {
+fn estimate_request_tokens(request: &AiMethodRequest) -> (u64, u64) {
     let mut text_len = request
         .payload
         .text
@@ -1857,7 +1855,7 @@ impl AIComputeCenter {
     fn route_request(
         &self,
         tenant_id: &str,
-        request: &CompleteRequest,
+        request: &AiMethodRequest,
         route_cfg: &RouteConfig,
         request_id: &str,
     ) -> std::result::Result<RouteDecision, RPCErrors> {
@@ -2001,7 +1999,7 @@ impl AIComputeCenter {
 
     fn resolve_request_session_config(
         &self,
-        request: &CompleteRequest,
+        request: &AiMethodRequest,
         session_id: Option<&str>,
     ) -> std::result::Result<(SessionConfig, bool, Option<String>), crate::model_types::RouteError>
     {
@@ -2073,7 +2071,7 @@ impl AIComputeCenter {
     fn apply_dynamic_cost_estimates(
         &self,
         tenant_id: &str,
-        request: &CompleteRequest,
+        request: &AiMethodRequest,
         candidates: &mut [ModelCandidate],
     ) {
         let (input_tokens, output_tokens) = estimate_request_tokens(request);
@@ -2195,9 +2193,9 @@ impl AIComputeCenter {
 
     pub async fn complete(
         &self,
-        request: CompleteRequest,
+        request: AiMethodRequest,
         rpc_ctx: RPCContext,
-    ) -> std::result::Result<CompleteResponse, RPCErrors> {
+    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
         let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
         info!(
             "aicc.complete received: tenant={} caller_app={:?} capability={:?} model_alias={} idempotency_key={:?}",
@@ -2226,9 +2224,9 @@ impl AIComputeCenter {
                 error.to_string(),
             )
             .await;
-            return Ok(CompleteResponse::new(
+            return Ok(AiMethodResponse::new(
                 external_task_id,
-                CompleteStatus::Failed,
+                AiMethodStatus::Failed,
                 None,
                 event_ref,
             ));
@@ -2244,9 +2242,9 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                return Ok(CompleteResponse::new(
+                return Ok(AiMethodResponse::new(
                     external_task_id,
-                    CompleteStatus::Failed,
+                    AiMethodStatus::Failed,
                     None,
                     event_ref,
                 ));
@@ -2296,9 +2294,9 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                return Ok(CompleteResponse::new(
+                return Ok(AiMethodResponse::new(
                     external_task_id,
-                    CompleteStatus::Failed,
+                    AiMethodStatus::Failed,
                     None,
                     event_ref,
                 ));
@@ -2373,9 +2371,9 @@ impl AIComputeCenter {
                 .await;
                 self.emit_task_final(event_sink, external_task_id.as_str(), &summary)
                     .await;
-                Ok(CompleteResponse::new(
+                Ok(AiMethodResponse::new(
                     external_task_id,
-                    CompleteStatus::Succeeded,
+                    AiMethodStatus::Succeeded,
                     Some(summary),
                     event_ref,
                 ))
@@ -2405,9 +2403,9 @@ impl AIComputeCenter {
                 );
                 self.emit_task_started(event_sink, external_task_id.as_str(), instance_id.as_str())
                     .await;
-                Ok(CompleteResponse::new(
+                Ok(AiMethodResponse::new(
                     external_task_id,
-                    CompleteStatus::Running,
+                    AiMethodStatus::Running,
                     None,
                     event_ref,
                 ))
@@ -2437,9 +2435,9 @@ impl AIComputeCenter {
                 );
                 self.emit_task_queued(event_sink, external_task_id.as_str(), position)
                     .await;
-                Ok(CompleteResponse::new(
+                Ok(AiMethodResponse::new(
                     external_task_id,
-                    CompleteStatus::Running,
+                    AiMethodStatus::Running,
                     None,
                     event_ref,
                 ))
@@ -2453,9 +2451,9 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                Ok(CompleteResponse::new(
+                Ok(AiMethodResponse::new(
                     external_task_id,
-                    CompleteStatus::Failed,
+                    AiMethodStatus::Failed,
                     None,
                     event_ref,
                 ))
@@ -2700,7 +2698,7 @@ impl AIComputeCenter {
         Err(reason_error("provider_start_failed", reason))
     }
 
-    fn validate_request(&self, req: &CompleteRequest) -> std::result::Result<(), RPCErrors> {
+    fn validate_request(&self, req: &AiMethodRequest) -> std::result::Result<(), RPCErrors> {
         if req.model.alias.trim().is_empty() {
             return Err(reason_error("bad_request", "model.alias must not be empty"));
         }
@@ -2876,11 +2874,13 @@ impl AIComputeCenter {
 
 #[async_trait]
 impl AiccHandler for AIComputeCenter {
-    async fn handle_complete(
+    async fn handle_method(
         &self,
-        request: CompleteRequest,
+        method: &str,
+        request: AiMethodRequest,
         ctx: RPCContext,
-    ) -> std::result::Result<CompleteResponse, RPCErrors> {
+    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+        let _ = method;
         self.complete(request, ctx).await
     }
 
@@ -2901,7 +2901,7 @@ fn json_non_empty_string(value: Option<&serde_json::Value>) -> Option<String> {
         .map(|item| item.to_string())
 }
 
-fn request_control_value<'a>(request: &'a CompleteRequest, key: &str) -> Option<&'a Value> {
+fn request_control_value<'a>(request: &'a AiMethodRequest, key: &str) -> Option<&'a Value> {
     request
         .requirements
         .extra
@@ -2924,7 +2924,7 @@ fn request_control_value<'a>(request: &'a CompleteRequest, key: &str) -> Option<
 }
 
 fn extract_session_config(
-    request: &CompleteRequest,
+    request: &AiMethodRequest,
     key: &str,
 ) -> std::result::Result<Option<SessionConfig>, crate::model_types::RouteError> {
     let Some(value) = request_control_value(request, key) else {
@@ -2940,7 +2940,7 @@ fn extract_session_config(
     Ok(Some(config))
 }
 
-fn extract_expected_session_config_revision(request: &CompleteRequest) -> Option<String> {
+fn extract_expected_session_config_revision(request: &AiMethodRequest) -> Option<String> {
     request_control_value(request, "expected_session_config_revision")
         .or_else(|| request_control_value(request, "expected_revision"))
         .and_then(|value| value.as_str())
@@ -2949,12 +2949,12 @@ fn extract_expected_session_config_revision(request: &CompleteRequest) -> Option
         .map(|value| value.to_string())
 }
 
-fn extract_has_session_config_update(request: &CompleteRequest) -> bool {
+fn extract_has_session_config_update(request: &AiMethodRequest) -> bool {
     request_control_value(request, "session_config").is_some()
         || request_control_value(request, "session_config_patch").is_some()
 }
 
-fn extract_session_id_from_complete_request(request: &CompleteRequest) -> Option<String> {
+fn extract_session_id_from_complete_request(request: &AiMethodRequest) -> Option<String> {
     let from_options = request.payload.options.as_ref().and_then(|options| {
         json_non_empty_string(options.get("session_id"))
             .or_else(|| json_non_empty_string(options.get("owner_session_id")))
@@ -3023,7 +3023,7 @@ fn user_summary_for_route(
     }
 }
 
-fn extract_rootid_from_complete_request(request: &CompleteRequest) -> Option<String> {
+fn extract_rootid_from_complete_request(request: &AiMethodRequest) -> Option<String> {
     request.payload.options.as_ref().and_then(|options| {
         json_non_empty_string(options.get("rootid"))
             .or_else(|| json_non_empty_string(options.get("root_id")))
@@ -3041,7 +3041,7 @@ fn resolve_default_rootid(invoke_ctx: &InvokeCtx) -> String {
 }
 
 fn build_initial_aicc_task_data(
-    request: &CompleteRequest,
+    request: &AiMethodRequest,
     external_task_id: &str,
     event_ref: Option<&str>,
     invoke_ctx: &InvokeCtx,
@@ -3186,13 +3186,14 @@ fn merge_task_data_with_event(data: &mut serde_json::Value, event: &TaskEvent) {
 
 fn capability_name(capability: &Capability) -> &'static str {
     match capability {
-        Capability::LlmRouter => "llm_router",
-        Capability::Text2Image => "text2image",
-        Capability::Text2Video => "text2video",
-        Capability::Text2Voice => "text2voice",
-        Capability::Image2Text => "image2text",
-        Capability::Voice2Text => "voice2text",
-        Capability::Video2Text => "video2text",
+        Capability::Llm => "llm",
+        Capability::Embedding => "embedding",
+        Capability::Rerank => "rerank",
+        Capability::Image => "image",
+        Capability::Vision => "vision",
+        Capability::Audio => "audio",
+        Capability::Video => "video",
+        Capability::Agent => "agent",
     }
 }
 
@@ -3255,8 +3256,8 @@ fn extract_error_code(error: &RPCErrors) -> String {
 mod tests {
     use super::*;
     use buckyos_api::{
-        AiPayload, CompleteTaskOptions, CreateTaskOptions, ModelSpec, Requirements, Task,
-        TaskFilter, TaskManagerClient, TaskManagerHandler, TaskStatus,
+        AiPayload, AiTaskOptions, CreateTaskOptions, ModelSpec, Requirements, Task, TaskFilter,
+        TaskManagerClient, TaskManagerHandler, TaskStatus,
     };
     use serde_json::json;
     use std::collections::{HashMap, VecDeque};
@@ -3527,9 +3528,9 @@ mod tests {
         }
     }
 
-    fn base_request() -> CompleteRequest {
-        CompleteRequest::new(
-            Capability::LlmRouter,
+    fn base_request() -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new("llm.plan.default".to_string(), None),
             Requirements::new(vec!["plan".to_string()], Some(3000), Some(0.1), None),
             AiPayload::new(
@@ -3552,7 +3553,7 @@ mod tests {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::LlmRouter],
+            capabilities: vec![Capability::Llm],
             features: vec!["plan".to_string()],
             endpoint: Some("http://127.0.0.1:8080".to_string()),
             plugin_key: None,
@@ -3615,7 +3616,7 @@ mod tests {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             "llm.plan.default",
             "provider-a",
             "gpt-4o-mini",
@@ -3639,11 +3640,11 @@ mod tests {
 
         let center = center_with_taskmgr(registry, catalog);
         let response = center
-            .handle_complete(
+            .complete(
                 base_request(),
                 RPCContext::from_request(
                     &RPCRequest {
-                        method: "complete".to_string(),
+                        method: "llm.chat".to_string(),
                         params: json!({}),
                         seq: 1,
                         token: None,
@@ -3655,7 +3656,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status, CompleteStatus::Succeeded);
+        assert_eq!(response.status, AiMethodStatus::Succeeded);
         assert_eq!(
             response
                 .result
@@ -3696,13 +3697,13 @@ mod tests {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             "llm.plan.default",
             "provider-a",
             "gpt-4o-mini",
         );
         catalog.set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             "llm.plan.default",
             "provider-b",
             "gpt-4.1-mini",
@@ -3725,11 +3726,11 @@ mod tests {
 
         let center = center_with_taskmgr(registry, catalog);
         let response = center
-            .handle_complete(base_request(), RPCContext::default())
+            .complete(base_request(), RPCContext::default())
             .await
             .unwrap();
 
-        assert_eq!(response.status, CompleteStatus::Running);
+        assert_eq!(response.status, AiMethodStatus::Running);
         assert!(!response.task_id.is_empty());
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
@@ -3759,7 +3760,7 @@ mod tests {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             "llm.plan.default",
             "provider-a",
             "gpt-4o-mini",
@@ -3774,10 +3775,10 @@ mod tests {
 
         let center = center_with_taskmgr(registry, catalog);
         let response = center
-            .handle_complete(base_request(), RPCContext::default())
+            .complete(base_request(), RPCContext::default())
             .await
             .expect("complete should return queued task");
-        assert_eq!(response.status, CompleteStatus::Running);
+        assert_eq!(response.status, AiMethodStatus::Running);
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = taskmgr
@@ -3815,7 +3816,7 @@ mod tests {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             "llm.plan.default",
             "provider-a",
             "gpt-4o-mini",
@@ -3840,14 +3841,14 @@ mod tests {
             )
             .await
             .expect("create parent task");
-        let request = base_request().with_task_options(Some(CompleteTaskOptions {
+        let request = base_request().with_task_options(Some(AiTaskOptions {
             parent_id: Some(parent_task.id),
         }));
         let response = center
-            .handle_complete(request, RPCContext::default())
+            .complete(request, RPCContext::default())
             .await
             .expect("complete should succeed");
-        assert_eq!(response.status, CompleteStatus::Running);
+        assert_eq!(response.status, AiMethodStatus::Running);
 
         let tasks = taskmgr
             .list_tasks(None, None, None)
@@ -3870,7 +3871,7 @@ mod tests {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             "llm.plan.default",
             "provider-a",
             "gpt-4o-mini",
@@ -3892,10 +3893,10 @@ mod tests {
         }
 
         let response = center
-            .handle_complete(request, RPCContext::default())
+            .complete(request, RPCContext::default())
             .await
             .expect("complete should succeed");
-        assert_eq!(response.status, CompleteStatus::Running);
+        assert_eq!(response.status, AiMethodStatus::Running);
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = taskmgr
@@ -3932,17 +3933,12 @@ mod tests {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             "llm.plan.default",
             "sn-ai-provider",
             "gpt-5-mini",
         );
-        catalog.set_mapping(
-            Capability::LlmRouter,
-            "llm.plan.default",
-            "openai",
-            "gpt-5-mini",
-        );
+        catalog.set_mapping(Capability::Llm, "llm.plan.default", "openai", "gpt-5-mini");
 
         let sn_provider = Arc::new(MockProvider::new(
             mock_instance("sn-ai-provider-1", "sn-ai-provider"),
@@ -3971,11 +3967,11 @@ mod tests {
         let mut request = base_request();
         request.requirements.max_cost_usd = Some(0.10);
         let response = center
-            .handle_complete(request, RPCContext::default())
+            .complete(request, RPCContext::default())
             .await
             .expect("complete should succeed");
 
-        assert_eq!(response.status, CompleteStatus::Running);
+        assert_eq!(response.status, AiMethodStatus::Running);
         assert_eq!(sn_provider.start_calls(), 1);
         assert_eq!(paid_provider.start_calls(), 0);
     }
@@ -3985,7 +3981,7 @@ mod tests {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             "llm.plan.default",
             "sn-ai-provider",
             "gpt-5-mini",
@@ -4030,10 +4026,10 @@ mod tests {
         let mut first_request = base_request();
         first_request.requirements.max_cost_usd = Some(20.0);
         let first = center
-            .handle_complete(first_request, RPCContext::default())
+            .complete(first_request, RPCContext::default())
             .await
             .expect("first complete should succeed");
-        assert_eq!(first.status, CompleteStatus::Succeeded);
+        assert_eq!(first.status, AiMethodStatus::Succeeded);
         assert_eq!(
             first
                 .result
@@ -4055,10 +4051,10 @@ mod tests {
         let mut second_request = base_request();
         second_request.requirements.max_cost_usd = Some(20.0);
         let second = center
-            .handle_complete(second_request, RPCContext::default())
+            .complete(second_request, RPCContext::default())
             .await
             .expect("second complete should succeed");
-        assert_eq!(second.status, CompleteStatus::Succeeded);
+        assert_eq!(second.status, AiMethodStatus::Succeeded);
         assert_eq!(
             second
                 .result
@@ -4076,10 +4072,10 @@ mod tests {
         let center = center_with_taskmgr(registry, catalog);
 
         let response = center
-            .handle_complete(base_request(), RPCContext::default())
+            .complete(base_request(), RPCContext::default())
             .await
             .expect("complete should return failed response");
-        assert_eq!(response.status, CompleteStatus::Failed);
+        assert_eq!(response.status, AiMethodStatus::Failed);
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = taskmgr
@@ -4094,7 +4090,7 @@ mod tests {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             "llm.plan.default",
             "provider-a",
             "gpt-4o-mini",
@@ -4113,11 +4109,8 @@ mod tests {
             token: Some("tenant-alice".to_string()),
             ..Default::default()
         };
-        let start_response = center
-            .handle_complete(base_request(), alice_ctx)
-            .await
-            .unwrap();
-        assert_eq!(start_response.status, CompleteStatus::Running);
+        let start_response = center.complete(base_request(), alice_ctx).await.unwrap();
+        assert_eq!(start_response.status, AiMethodStatus::Running);
 
         let bob_ctx = RPCContext {
             token: Some("tenant-bob".to_string()),

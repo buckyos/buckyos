@@ -3,7 +3,7 @@ mod common;
 use aicc::{
     AIComputeCenter, CostEstimate, ModelCatalog, ProviderStartResult, Registry, TaskEventKind,
 };
-use buckyos_api::{AiResponseSummary, Capability, CompleteStatus, TaskFilter, TaskStatus};
+use buckyos_api::{AiMethodStatus, AiResponseSummary, Capability, TaskFilter, TaskStatus};
 use common::*;
 use std::sync::Arc;
 
@@ -16,17 +16,12 @@ use std::sync::Arc;
 async fn task_01_immediate_persists_completed() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -46,7 +41,7 @@ async fn task_01_immediate_persists_completed() {
         .unwrap();
     assert_eq!(
         response.status,
-        CompleteStatus::Succeeded,
+        AiMethodStatus::Succeeded,
         "assert_eq failed in task_01_immediate_persists_completed: expected left == right; check this scenario's routing/status/error-code branch."
     );
 
@@ -80,17 +75,12 @@ async fn task_01_immediate_persists_completed() {
 async fn task_02_started_persists_running_and_binding() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     let provider = Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -108,7 +98,7 @@ async fn task_02_started_persists_running_and_binding() {
         .unwrap();
     assert_eq!(
         response.status,
-        CompleteStatus::Running,
+        AiMethodStatus::Running,
         "assert_eq failed in task_02_started_persists_running_and_binding: expected left == right; check this scenario's routing/status/error-code branch."
     );
     let cancel = center
@@ -138,17 +128,12 @@ async fn task_02_started_persists_running_and_binding() {
 async fn task_03_queued_persists_pending_and_position() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -212,7 +197,7 @@ async fn task_04_emit_error_event_with_code() {
         .unwrap();
     assert_eq!(
         response.status,
-        CompleteStatus::Failed,
+        AiMethodStatus::Failed,
         "assert_eq failed in task_04_emit_error_event_with_code: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(

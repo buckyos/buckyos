@@ -510,7 +510,7 @@ async fn proto_t2i_01_prompt_from_text() {
     }])
     .await;
     let provider = openai_provider(base_url, 500);
-    let mut req = base_request_for(Capability::Text2Image, "text2image.default");
+    let mut req = base_request_for(Capability::Image, "text2image.default");
     req.payload.text = Some("draw a cat".to_string());
     req.payload.messages = vec![];
     req.payload.options = Some(serde_json::json!({"size":"1024x1024"}));
@@ -552,7 +552,7 @@ async fn proto_t2i_04_artifact_url_format() {
     }])
     .await;
     let provider = openai_provider(base_url, 500);
-    let mut req = base_request_for(Capability::Text2Image, "text2image.default");
+    let mut req = base_request_for(Capability::Image, "text2image.default");
     req.payload.text = Some("draw a cat".to_string());
     let res = provider
         .start(
@@ -591,7 +591,7 @@ async fn proto_t2i_03_prompt_from_options() {
     }])
     .await;
     let provider = openai_provider(base_url, 500);
-    let mut req = base_request_for(Capability::Text2Image, "text2image.default");
+    let mut req = base_request_for(Capability::Image, "text2image.default");
     req.payload.text = None;
     req.payload.options = Some(serde_json::json!({"prompt":"draw from options"}));
     let res = provider
@@ -632,7 +632,7 @@ async fn proto_t2i_02_prompt_from_messages() {
     }])
     .await;
     let provider = openai_provider(base_url, 500);
-    let mut req = base_request_for(Capability::Text2Image, "text2image.default");
+    let mut req = base_request_for(Capability::Image, "text2image.default");
     req.payload.text = None;
     req.payload.messages = vec![buckyos_api::AiMessage::new(
         "user".to_string(),

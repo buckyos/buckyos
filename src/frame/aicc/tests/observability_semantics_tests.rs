@@ -88,17 +88,12 @@ async fn obs_02_log_redaction_no_prompt_or_base64() {
 async fn obs_01_provider_start_failed_code() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {

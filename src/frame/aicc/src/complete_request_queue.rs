@@ -12,18 +12,18 @@ pub enum QueueAdmission {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CompleteRequestQueueStats {
+pub struct AiMethodRequestQueueStats {
     pub max_in_flight: usize,
     pub in_flight: usize,
     pub queued: usize,
 }
 
 #[derive(Clone)]
-pub struct CompleteRequestQueue {
+pub struct AiMethodRequestQueue {
     inner: Arc<QueueInner>,
 }
 
-impl CompleteRequestQueue {
+impl AiMethodRequestQueue {
     pub fn new(max_in_flight: usize) -> Self {
         Self {
             inner: Arc::new(QueueInner {
@@ -73,13 +73,13 @@ impl CompleteRequestQueue {
         }
     }
 
-    pub fn stats(&self) -> CompleteRequestQueueStats {
+    pub fn stats(&self) -> AiMethodRequestQueueStats {
         let state = self
             .inner
             .state
             .lock()
             .expect("queue lock should be available");
-        CompleteRequestQueueStats {
+        AiMethodRequestQueueStats {
             max_in_flight: self.inner.max_in_flight,
             in_flight: state.in_flight,
             queued: state.waiters.len(),
@@ -141,7 +141,7 @@ struct QueuedWaiter {
 }
 
 pub struct QueueTicket {
-    queue: CompleteRequestQueue,
+    queue: AiMethodRequestQueue,
     ticket_id: u64,
     waiter: Option<Arc<QueuedWaiter>>,
     admission: QueueAdmission,
@@ -193,7 +193,7 @@ impl Drop for QueueTicket {
 }
 
 pub struct QueuePermit {
-    queue: CompleteRequestQueue,
+    queue: AiMethodRequestQueue,
     released: bool,
 }
 
@@ -214,7 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn queue_holds_fifo_order_when_capacity_is_full() {
-        let queue = CompleteRequestQueue::new(2);
+        let queue = AiMethodRequestQueue::new(2);
         let t1 = queue.enqueue();
         let t2 = queue.enqueue();
         let t3 = queue.enqueue();
@@ -241,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_queued_ticket_removes_it_from_waiters() {
-        let queue = CompleteRequestQueue::new(1);
+        let queue = AiMethodRequestQueue::new(1);
         let t1 = queue.enqueue();
         let t2 = queue.enqueue();
         let t3 = queue.enqueue();
@@ -269,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_promoted_ticket_releases_slot() {
-        let queue = CompleteRequestQueue::new(1);
+        let queue = AiMethodRequestQueue::new(1);
         let t1 = queue.enqueue();
         let t2 = queue.enqueue();
         let p1 = t1.wait_for_turn().await;

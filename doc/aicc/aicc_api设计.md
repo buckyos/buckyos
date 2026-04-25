@@ -4,7 +4,7 @@
 更新基线：`2026-04-25`
 配套文档：
 
-- `doc/aicc/aicc_api建议.md`
+
 - `doc/aicc/aicc 逻辑模型目录.md`
 - `doc/aicc/aicc_router.md`
 - `doc/aicc/update_aicc_settings_via_system_config.md`

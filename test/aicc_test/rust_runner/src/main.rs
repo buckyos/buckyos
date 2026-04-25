@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use buckyos_api::{
-    AiMessage, AiPayload, AiccClient, Capability, CompleteRequest, ModelSpec, Requirements,
+    ai_methods, AiMessage, AiPayload, AiccClient, AiMethodRequest, AiMethodStatus, Capability,
+    ModelSpec, Requirements,
 };
 use clap::{Parser, Subcommand};
 use ::kRPC::{kRPC, RPCContext};
@@ -52,13 +53,13 @@ struct CancelOutput {
     accepted: bool,
 }
 
-fn request(args: &CommonArgs) -> CompleteRequest {
+fn request(args: &CommonArgs) -> AiMethodRequest {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    CompleteRequest::new(
-        Capability::LlmRouter,
+    AiMethodRequest::new(
+        Capability::Llm,
         ModelSpec::new(args.model_alias.clone(), None),
         Requirements::new(vec![], Some(10_000), Some(0.2), None),
         AiPayload::new(
@@ -76,11 +77,11 @@ fn request(args: &CommonArgs) -> CompleteRequest {
     )
 }
 
-fn status_to_string(status: &buckyos_api::CompleteStatus) -> &'static str {
+fn status_to_string(status: &AiMethodStatus) -> &'static str {
     match status {
-        buckyos_api::CompleteStatus::Succeeded => "succeeded",
-        buckyos_api::CompleteStatus::Running => "running",
-        buckyos_api::CompleteStatus::Failed => "failed",
+        AiMethodStatus::Succeeded => "succeeded",
+        AiMethodStatus::Running => "running",
+        AiMethodStatus::Failed => "failed",
     }
 }
 
@@ -102,7 +103,7 @@ async fn build_client(args: &CommonArgs) -> AiccClient {
 
 async fn run_complete(args: CommonArgs) -> Result<()> {
     let client = build_client(&args).await;
-    let response = client.complete(request(&args)).await?;
+    let response = client.call_method(ai_methods::LLM_CHAT, request(&args)).await?;
     if response.task_id.trim().is_empty() {
         return Err(anyhow!("missing task_id in complete response"));
     }
@@ -117,7 +118,7 @@ async fn run_complete(args: CommonArgs) -> Result<()> {
 
 async fn run_cancel(args: CommonArgs) -> Result<()> {
     let client = build_client(&args).await;
-    let started = client.complete(request(&args)).await?;
+    let started = client.call_method(ai_methods::LLM_CHAT, request(&args)).await?;
     if started.task_id.trim().is_empty() {
         return Err(anyhow!("missing task_id before cancel"));
     }

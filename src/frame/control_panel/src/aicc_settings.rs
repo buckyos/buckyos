@@ -1,8 +1,8 @@
 use crate::{ChatMessageView, ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    get_buckyos_api_runtime, AiMessage, AiPayload, BoxKind, Capability, CompleteRequest, ModelSpec,
-    Requirements, SystemConfigClient,
+    ai_methods, get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, BoxKind,
+    Capability, ModelSpec, Requirements, SystemConfigClient,
 };
 use log::info;
 use name_lib::DID;
@@ -935,8 +935,8 @@ impl ControlPanelServer {
             RPCErrors::ReasonError(format!("init aicc client failed: {}", error))
         })?;
 
-        let request = CompleteRequest::new(
-            Capability::LlmRouter,
+        let request = AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new(alias.to_string(), None),
             Requirements::default(),
             AiPayload::new(
@@ -957,7 +957,7 @@ impl ControlPanelServer {
             None,
         );
 
-        match aicc.complete(request).await {
+        match aicc.call_method(ai_methods::LLM_CHAT, request).await {
             Ok(result) => Ok(RPCResponse::new(
                 RPCResult::Success(json!({
                     "providerId": provider_id,
@@ -1072,8 +1072,8 @@ impl ControlPanelServer {
             RPCErrors::ReasonError(format!("init aicc client failed: {}", error))
         })?;
         let peer_did_string = peer_did.to_string();
-        let request = CompleteRequest::new(
-            Capability::LlmRouter,
+        let request = AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new(model_alias.clone(), None),
             Requirements::default(),
             AiPayload::new(
@@ -1095,7 +1095,7 @@ impl ControlPanelServer {
         );
 
         let result = aicc
-            .complete(request)
+            .call_method(ai_methods::LLM_CHAT, request)
             .await
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         let summary = result

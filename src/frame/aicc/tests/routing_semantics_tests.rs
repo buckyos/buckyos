@@ -5,7 +5,7 @@ use aicc::{
     Router, TaskEventKind, TenantRouteConfig,
 };
 use buckyos_api::{
-    AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus,
+    AiMethodStatus, AiResponseSummary, Capability, ResourceRef, TaskFilter, TaskStatus,
 };
 use common::*;
 use std::collections::HashMap;
@@ -20,17 +20,12 @@ fn setup_route_provider(
     cost: f64,
     latency_ms: u64,
 ) {
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        provider_type,
-        model,
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", provider_type, model);
     let provider = Arc::new(MockProvider::new(
         mock_instance(
             instance_id,
             provider_type,
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".to_string()],
         ),
         CostEstimate {
@@ -56,7 +51,7 @@ fn route_01_mapped_primary_with_fallback() {
 
     let router = Router;
     let req = base_request();
-    let snapshot = registry.snapshot(Capability::LlmRouter);
+    let snapshot = registry.snapshot(Capability::Llm);
     let decision = router
         .route(
             "tenant-a",
@@ -85,7 +80,7 @@ fn route_02_alias_unmapped_returns_model_alias_not_mapped() {
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".to_string()],
         ),
         CostEstimate {
@@ -97,7 +92,7 @@ fn route_02_alias_unmapped_returns_model_alias_not_mapped() {
     registry.add_provider(provider);
 
     let req = base_request();
-    let snapshot = registry.snapshot(Capability::LlmRouter);
+    let snapshot = registry.snapshot(Capability::Llm);
     let err = Router
         .route(
             "tenant-a",
@@ -120,17 +115,12 @@ fn route_02_alias_unmapped_returns_model_alias_not_mapped() {
 fn route_03_must_features_filtered_out() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     let provider = Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["json_output".to_string()],
         ),
         CostEstimate {
@@ -142,7 +132,7 @@ fn route_03_must_features_filtered_out() {
     registry.add_provider(provider);
 
     let req = base_request();
-    let snapshot = registry.snapshot(Capability::LlmRouter);
+    let snapshot = registry.snapshot(Capability::Llm);
     let err = Router
         .route(
             "tenant-a",
@@ -178,7 +168,7 @@ fn route_04_tenant_allow_provider_types() {
         },
     );
     let req = base_request();
-    let snapshot = registry.snapshot(Capability::LlmRouter);
+    let snapshot = registry.snapshot(Capability::Llm);
     let decision = Router
         .route("tenant-a", &req, &snapshot, &registry, &cfg, &catalog)
         .expect("route should succeed");
@@ -207,7 +197,7 @@ fn route_05_tenant_deny_provider_types() {
         },
     );
     let req = base_request();
-    let snapshot = registry.snapshot(Capability::LlmRouter);
+    let snapshot = registry.snapshot(Capability::Llm);
     let decision = Router
         .route("tenant-a", &req, &snapshot, &registry, &cfg, &catalog)
         .expect("route should succeed");
@@ -227,7 +217,7 @@ fn route_06_max_cost_filter() {
 
     let mut req = base_request();
     req.requirements.max_cost_usd = Some(0.01);
-    let snapshot = registry.snapshot(Capability::LlmRouter);
+    let snapshot = registry.snapshot(Capability::Llm);
     let err = Router
         .route(
             "tenant-a",
@@ -254,7 +244,7 @@ fn route_07_max_latency_filter() {
 
     let mut req = base_request();
     req.requirements.max_latency_ms = Some(500);
-    let snapshot = registry.snapshot(Capability::LlmRouter);
+    let snapshot = registry.snapshot(Capability::Llm);
     let err = Router
         .route(
             "tenant-a",
@@ -288,14 +278,14 @@ fn route_08_tenant_mapping_override_global() {
     );
     catalog.set_tenant_mapping(
         "tenant-a",
-        Capability::LlmRouter,
+        Capability::Llm,
         "llm.plan.default",
         "provider-a",
         "m-tenant",
     );
 
     let req = base_request();
-    let snapshot = registry.snapshot(Capability::LlmRouter);
+    let snapshot = registry.snapshot(Capability::Llm);
     let decision = Router
         .route(
             "tenant-a",
@@ -319,14 +309,14 @@ async fn route_08_tenant_mapping_override_global_on_complete() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
     catalog.set_mapping(
-        Capability::LlmRouter,
+        Capability::Llm,
         "llm.plan.default",
         "provider-a",
         "global-model",
     );
     catalog.set_tenant_mapping(
         "tenant-x",
-        Capability::LlmRouter,
+        Capability::Llm,
         "llm.plan.default",
         "provider-a",
         "tenant-model",
@@ -335,7 +325,7 @@ async fn route_08_tenant_mapping_override_global_on_complete() {
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".to_string()],
         ),
         CostEstimate {

@@ -14,17 +14,12 @@ use std::sync::Arc;
 async fn conc_01_task_id_uniqueness_under_concurrency() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -73,12 +68,7 @@ async fn conc_01_task_id_uniqueness_under_concurrency() {
 async fn conc_02_registry_hot_update_route_consistency() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     let router = Router;
     let req = base_request();
 
@@ -88,7 +78,7 @@ async fn conc_02_registry_hot_update_route_consistency() {
             mock_instance(
                 id.as_str(),
                 "provider-a",
-                vec![Capability::LlmRouter],
+                vec![Capability::Llm],
                 vec!["plan".into()],
             ),
             CostEstimate {
@@ -98,7 +88,7 @@ async fn conc_02_registry_hot_update_route_consistency() {
             vec![Ok(ProviderStartResult::Started)],
         )));
 
-        let snapshot = registry.snapshot(Capability::LlmRouter);
+        let snapshot = registry.snapshot(Capability::Llm);
         let result = router.route(
             "tenant-a",
             &req,

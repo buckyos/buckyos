@@ -5,7 +5,7 @@ use aicc::{
     Router, TaskEventKind, TenantRouteConfig,
 };
 use buckyos_api::{
-    AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus,
+    AiMethodStatus, AiResponseSummary, Capability, ResourceRef, TaskFilter, TaskStatus,
 };
 use common::*;
 use std::collections::HashMap;
@@ -20,17 +20,12 @@ fn setup_route_provider(
     cost: f64,
     latency_ms: u64,
 ) {
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        provider_type,
-        model,
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", provider_type, model);
     let provider = Arc::new(MockProvider::new(
         mock_instance(
             instance_id,
             provider_type,
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".to_string()],
         ),
         CostEstimate {
@@ -182,17 +177,12 @@ async fn proto_url_05_invalid_url_format_rejected() {
 async fn proto_sec_04_idempotency_key_preserved() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -418,7 +408,7 @@ async fn proto_sec_01_no_base64_in_logs() {
         mock_instance(
             "p2",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -493,7 +483,7 @@ async fn proto_res_01_named_object_passthrough_preserved() {
         .complete(req, rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     let taskmgr = center.task_manager_client().unwrap();
     let tasks = taskmgr
         .list_tasks(None::<TaskFilter>, None, None)
@@ -645,12 +635,12 @@ async fn proto_res_06_base64_to_url_translation_for_url_only_provider() {
 async fn proto_res_07_provider_base64_unsupported_error_classified() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p1",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -769,13 +759,13 @@ async fn proto_res_09_mime_hint_consistency_after_translation() {
 async fn proto_res_10_no_sensitive_resource_literal_in_provider_logs() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m");
     let secret = openai_b64(&[3, 3, 3, 3, 9, 9]);
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p1",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {

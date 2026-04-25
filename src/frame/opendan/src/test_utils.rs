@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use buckyos_api::{
-    AiccHandler, CancelResponse, CompleteRequest, CompleteResponse, CreateTaskOptions, Task,
+    AiMethodRequest, AiMethodResponse, AiccHandler, CancelResponse, CreateTaskOptions, Task,
     TaskFilter, TaskManagerHandler, TaskPermissions, TaskStatus,
 };
 use kRPC::{RPCContext, RPCErrors, Result as KRPCResult};
@@ -194,17 +194,18 @@ impl TaskManagerHandler for MockTaskMgrHandler {
 }
 
 pub struct MockAicc {
-    pub responses: Arc<Mutex<VecDeque<CompleteResponse>>>,
-    pub requests: Arc<Mutex<Vec<CompleteRequest>>>,
+    pub responses: Arc<Mutex<VecDeque<AiMethodResponse>>>,
+    pub requests: Arc<Mutex<Vec<AiMethodRequest>>>,
 }
 
 #[async_trait]
 impl AiccHandler for MockAicc {
-    async fn handle_complete(
+    async fn handle_method(
         &self,
-        request: CompleteRequest,
+        _method: &str,
+        request: AiMethodRequest,
         _ctx: RPCContext,
-    ) -> KRPCResult<CompleteResponse> {
+    ) -> KRPCResult<AiMethodResponse> {
         self.requests.lock().expect("requests lock").push(request);
         self.responses
             .lock()

@@ -3,7 +3,8 @@ use ::kRPC::*;
 use async_trait::async_trait;
 use name_lib::DID;
 use ndn_lib::ObjId;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -12,16 +13,81 @@ pub const AICC_SERVICE_UNIQUE_ID: &str = "aicc";
 pub const AICC_SERVICE_SERVICE_NAME: &str = "aicc";
 pub const AICC_SERVICE_SERVICE_PORT: u16 = 4040;
 
+pub mod ai_methods {
+    pub const LLM_CHAT: &str = "llm.chat";
+    pub const LLM_COMPLETION: &str = "llm.completion";
+    pub const EMBEDDING_TEXT: &str = "embedding.text";
+    pub const EMBEDDING_MULTIMODAL: &str = "embedding.multimodal";
+    pub const RERANK: &str = "rerank";
+    pub const IMAGE_TXT2IMG: &str = "image.txt2img";
+    pub const IMAGE_IMG2IMG: &str = "image.img2img";
+    pub const IMAGE_INPAINT: &str = "image.inpaint";
+    pub const IMAGE_UPSCALE: &str = "image.upscale";
+    pub const IMAGE_BG_REMOVE: &str = "image.bg_remove";
+    pub const VISION_OCR: &str = "vision.ocr";
+    pub const VISION_CAPTION: &str = "vision.caption";
+    pub const VISION_DETECT: &str = "vision.detect";
+    pub const VISION_SEGMENT: &str = "vision.segment";
+    pub const AUDIO_TTS: &str = "audio.tts";
+    pub const AUDIO_ASR: &str = "audio.asr";
+    pub const AUDIO_MUSIC: &str = "audio.music";
+    pub const AUDIO_ENHANCE: &str = "audio.enhance";
+    pub const VIDEO_TXT2VIDEO: &str = "video.txt2video";
+    pub const VIDEO_IMG2VIDEO: &str = "video.img2video";
+    pub const VIDEO_VIDEO2VIDEO: &str = "video.video2video";
+    pub const VIDEO_EXTEND: &str = "video.extend";
+    pub const VIDEO_UPSCALE: &str = "video.upscale";
+    pub const AGENT_COMPUTER_USE: &str = "agent.computer_use";
+
+    pub const CANCEL: &str = "cancel";
+    pub const RELOAD_SETTINGS: &str = "reload_settings";
+    pub const SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
+    pub const QUOTA_QUERY: &str = "quota.query";
+    pub const PROVIDER_LIST: &str = "provider.list";
+    pub const PROVIDER_HEALTH: &str = "provider.health";
+
+    pub fn is_ai_method(method: &str) -> bool {
+        matches!(
+            method,
+            LLM_CHAT
+                | LLM_COMPLETION
+                | EMBEDDING_TEXT
+                | EMBEDDING_MULTIMODAL
+                | RERANK
+                | IMAGE_TXT2IMG
+                | IMAGE_IMG2IMG
+                | IMAGE_INPAINT
+                | IMAGE_UPSCALE
+                | IMAGE_BG_REMOVE
+                | VISION_OCR
+                | VISION_CAPTION
+                | VISION_DETECT
+                | VISION_SEGMENT
+                | AUDIO_TTS
+                | AUDIO_ASR
+                | AUDIO_MUSIC
+                | AUDIO_ENHANCE
+                | VIDEO_TXT2VIDEO
+                | VIDEO_IMG2VIDEO
+                | VIDEO_VIDEO2VIDEO
+                | VIDEO_EXTEND
+                | VIDEO_UPSCALE
+                | AGENT_COMPUTER_USE
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "lowercase")]
 pub enum Capability {
-    LlmRouter,
-    Text2Image,
-    Text2Video,
-    Text2Voice,
-    Image2Text,
-    Voice2Text,
-    Video2Text,
+    Llm,
+    Embedding,
+    Rerank,
+    Image,
+    Vision,
+    Audio,
+    Video,
+    Agent,
 }
 
 pub type Feature = String;
@@ -46,8 +112,8 @@ pub enum RespFormat {
     Json,
 }
 
-fn is_default_resp_foramt(resp_foramt: &RespFormat) -> bool {
-    matches!(resp_foramt, RespFormat::Text)
+fn is_default_resp_format(resp_format: &RespFormat) -> bool {
+    matches!(resp_format, RespFormat::Text)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -105,8 +171,8 @@ pub struct Requirements {
     pub max_latency_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_cost_usd: Option<f64>,
-    #[serde(default, skip_serializing_if = "is_default_resp_foramt")]
-    pub resp_foramt: RespFormat,
+    #[serde(default, skip_serializing_if = "is_default_resp_format")]
+    pub resp_format: RespFormat,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }
@@ -122,8 +188,57 @@ impl Requirements {
             must_features,
             max_latency_ms,
             max_cost_usd,
-            resp_foramt: RespFormat::default(),
+            resp_format: RespFormat::default(),
             extra,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RoutePolicyProfile {
+    Cheap,
+    Fast,
+    #[default]
+    Balanced,
+    Quality,
+}
+
+fn is_default_route_policy_profile(profile: &RoutePolicyProfile) -> bool {
+    matches!(profile, RoutePolicyProfile::Balanced)
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutePolicy {
+    #[serde(default, skip_serializing_if = "is_default_route_policy_profile")]
+    pub profile: RoutePolicyProfile,
+    #[serde(default = "default_allow_fallback")]
+    pub allow_fallback: bool,
+    #[serde(default = "default_runtime_failover")]
+    pub runtime_failover: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub explain: bool,
+}
+
+fn default_allow_fallback() -> bool {
+    true
+}
+
+fn default_runtime_failover() -> bool {
+    true
+}
+
+impl Default for RoutePolicy {
+    fn default() -> Self {
+        Self {
+            profile: RoutePolicyProfile::Balanced,
+            allow_fallback: true,
+            runtime_failover: true,
+            explain: false,
         }
     }
 }
@@ -155,19 +270,13 @@ impl AiMessage {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AiPayload {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<AiMessage>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_specs: Vec<AiToolSpec>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_json: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Value>,
 }
 
@@ -175,7 +284,7 @@ impl AiPayload {
     pub fn new(
         text: Option<String>,
         messages: Vec<AiMessage>,
-        tool_calls: Vec<AiToolSpec>,
+        tool_specs: Vec<AiToolSpec>,
         resources: Vec<ResourceRef>,
         input_json: Option<Value>,
         options: Option<Value>,
@@ -183,11 +292,114 @@ impl AiPayload {
         Self {
             text,
             messages,
-            tool_specs: tool_calls,
+            tool_specs,
             resources,
             input_json,
             options,
         }
+    }
+
+    fn protocol_input_json(&self) -> Value {
+        let mut input_json = match self.input_json.clone() {
+            Some(Value::Object(map)) => map,
+            Some(value) => {
+                let mut map = serde_json::Map::new();
+                map.insert("value".to_string(), value);
+                map
+            }
+            None => serde_json::Map::new(),
+        };
+
+        if let Some(text) = self.text.as_ref() {
+            input_json
+                .entry("text".to_string())
+                .or_insert_with(|| Value::String(text.clone()));
+        }
+        if !self.messages.is_empty() && !input_json.contains_key("messages") {
+            if let Ok(value) = serde_json::to_value(&self.messages) {
+                input_json.insert("messages".to_string(), value);
+            }
+        }
+        if !self.tool_specs.is_empty() && !input_json.contains_key("tool_specs") {
+            if let Ok(value) = serde_json::to_value(&self.tool_specs) {
+                input_json.insert("tool_specs".to_string(), value);
+            }
+        }
+
+        Value::Object(input_json)
+    }
+}
+
+impl Default for AiPayload {
+    fn default() -> Self {
+        Self {
+            text: None,
+            messages: vec![],
+            tool_specs: vec![],
+            resources: vec![],
+            input_json: Some(json!({})),
+            options: Some(json!({})),
+        }
+    }
+}
+
+impl Serialize for AiPayload {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let options = self.options.clone().unwrap_or_else(|| json!({}));
+        let mut state = serializer.serialize_struct("AiPayload", 3)?;
+        state.serialize_field("input_json", &self.protocol_input_json())?;
+        state.serialize_field("resources", &self.resources)?;
+        state.serialize_field("options", &options)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for AiPayload {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct AiPayloadHelper {
+            #[serde(default)]
+            input_json: Option<Value>,
+            #[serde(default)]
+            resources: Vec<ResourceRef>,
+            #[serde(default)]
+            options: Option<Value>,
+        }
+
+        let helper = AiPayloadHelper::deserialize(deserializer)?;
+        let mut payload = Self {
+            text: None,
+            messages: vec![],
+            tool_specs: vec![],
+            resources: helper.resources,
+            input_json: helper.input_json,
+            options: helper.options,
+        };
+        if let Some(body) = payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.as_object())
+        {
+            payload.text = body
+                .get("text")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
+            payload.messages = body
+                .get("messages")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or_default();
+            payload.tool_specs = body
+                .get("tool_specs")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or_default();
+        }
+        Ok(payload)
     }
 }
 
@@ -245,24 +457,26 @@ pub struct AiResponseSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CompleteRequest {
+pub struct AiMethodRequest {
     pub capability: Capability,
     pub model: ModelSpec,
     pub requirements: Requirements,
     pub payload: AiPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<RoutePolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_options: Option<CompleteTaskOptions>,
+    pub task_options: Option<AiTaskOptions>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CompleteTaskOptions {
+pub struct AiTaskOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<i64>,
 }
 
-impl CompleteRequest {
+impl AiMethodRequest {
     pub fn new(
         capability: Capability,
         model: ModelSpec,
@@ -275,45 +489,51 @@ impl CompleteRequest {
             model,
             requirements,
             payload,
+            policy: None,
             idempotency_key,
             task_options: None,
         }
     }
 
-    pub fn with_task_options(mut self, task_options: Option<CompleteTaskOptions>) -> Self {
+    pub fn with_policy(mut self, policy: Option<RoutePolicy>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    pub fn with_task_options(mut self, task_options: Option<AiTaskOptions>) -> Self {
         self.task_options = task_options;
         self
     }
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         serde_json::from_value(value).map_err(|error| {
-            RPCErrors::ParseRequestError(format!("Failed to parse CompleteRequest: {}", error))
+            RPCErrors::ParseRequestError(format!("Failed to parse AiMethodRequest: {}", error))
         })
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CompleteStatus {
+pub enum AiMethodStatus {
     Succeeded,
     Running,
     Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CompleteResponse {
+pub struct AiMethodResponse {
     pub task_id: String,
-    pub status: CompleteStatus,
+    pub status: AiMethodStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<AiResponseSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_ref: Option<String>,
 }
 
-impl CompleteResponse {
+impl AiMethodResponse {
     pub fn new(
         task_id: String,
-        status: CompleteStatus,
+        status: AiMethodStatus,
         result: Option<AiResponseSummary>,
         event_ref: Option<String>,
     ) -> Self {
@@ -382,26 +602,31 @@ impl AiccClient {
         }
     }
 
-    pub async fn complete(
+    pub async fn call_method(
         &self,
-        request: CompleteRequest,
-    ) -> std::result::Result<CompleteResponse, RPCErrors> {
+        method: &str,
+        request: AiMethodRequest,
+    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+        if !ai_methods::is_ai_method(method) {
+            return Err(RPCErrors::UnknownMethod(method.to_string()));
+        }
+
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
-                handler.handle_complete(request, ctx).await
+                handler.handle_method(method, request, ctx).await
             }
             Self::KRPC(client) => {
                 let req_json = serde_json::to_value(&request).map_err(|error| {
                     RPCErrors::ReasonError(format!(
-                        "Failed to serialize CompleteRequest: {}",
+                        "Failed to serialize AiMethodRequest: {}",
                         error
                     ))
                 })?;
-                let result = client.call("complete", req_json).await?;
+                let result = client.call(method, req_json).await?;
                 serde_json::from_value(result).map_err(|error| {
                     RPCErrors::ParserResponseError(format!(
-                        "Failed to parse complete response: {}",
+                        "Failed to parse AI method response: {}",
                         error
                     ))
                 })
@@ -434,11 +659,12 @@ impl AiccClient {
 
 #[async_trait]
 pub trait AiccHandler: Send + Sync {
-    async fn handle_complete(
+    async fn handle_method(
         &self,
-        request: CompleteRequest,
+        method: &str,
+        request: AiMethodRequest,
         ctx: RPCContext,
-    ) -> std::result::Result<CompleteResponse, RPCErrors>;
+    ) -> std::result::Result<AiMethodResponse, RPCErrors>;
 
     async fn handle_cancel(
         &self,
@@ -466,15 +692,16 @@ impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
         let trace_id = req.trace_id.clone();
         let ctx = RPCContext::from_request(&req, ip_from);
 
-        let result = match req.method.as_str() {
-            "complete" => {
-                let complete_req = CompleteRequest::from_json(req.params)?;
-                let result = self.0.handle_complete(complete_req, ctx).await?;
-                RPCResult::Success(json!(result))
-            }
-            "cancel" => {
+        let method = req.method.clone();
+        let result = match method.as_str() {
+            ai_methods::CANCEL => {
                 let cancel_req = CancelRequest::from_json(req.params)?;
                 let result = self.0.handle_cancel(&cancel_req.task_id, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            method if ai_methods::is_ai_method(method) => {
+                let method_req = AiMethodRequest::from_json(req.params)?;
+                let result = self.0.handle_method(method, method_req, ctx).await?;
                 RPCResult::Success(json!(result))
             }
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
@@ -512,7 +739,8 @@ mod tests {
 
     #[derive(Default, Debug)]
     struct MockCalls {
-        complete: Option<CompleteRequest>,
+        method: Option<String>,
+        request: Option<AiMethodRequest>,
         cancel_task_id: Option<String>,
     }
 
@@ -531,16 +759,18 @@ mod tests {
 
     #[async_trait]
     impl AiccHandler for MockAicc {
-        async fn handle_complete(
+        async fn handle_method(
             &self,
-            request: CompleteRequest,
+            method: &str,
+            request: AiMethodRequest,
             _ctx: RPCContext,
-        ) -> std::result::Result<CompleteResponse, RPCErrors> {
+        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
             let mut calls = self.calls.lock().unwrap();
-            calls.complete = Some(request);
-            Ok(CompleteResponse::new(
+            calls.method = Some(method.to_string());
+            calls.request = Some(request);
+            Ok(AiMethodResponse::new(
                 "task-001".to_string(),
-                CompleteStatus::Succeeded,
+                AiMethodStatus::Succeeded,
                 Some(AiResponseSummary {
                     text: Some("mock result".to_string()),
                     tool_calls: vec![],
@@ -573,9 +803,9 @@ mod tests {
         }
     }
 
-    fn sample_complete_request() -> CompleteRequest {
-        CompleteRequest::new(
-            Capability::LlmRouter,
+    fn sample_method_request() -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new("llm.plan.default".to_string(), None),
             Requirements::new(vec![features::PLAN.to_string()], Some(3000), None, None),
             AiPayload::new(
@@ -592,7 +822,15 @@ mod tests {
                     ),
                     ResourceRef::named_object(ObjId::new("chunk:123456").unwrap()),
                 ],
-                None,
+                Some(json!({
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "summarize this commit"
+                        }
+                    ],
+                    "text": "write a release note"
+                })),
                 Some(json!({"temperature": 0.3})),
             ),
             Some("idem-1".to_string()),
@@ -606,18 +844,43 @@ mod tests {
         println!("json: {}", json_str);
     }
 
+    #[test]
+    fn test_protocol_field_names() {
+        let mut request = sample_method_request();
+        request.requirements.resp_format = RespFormat::Json;
+        request.policy = Some(RoutePolicy::default());
+
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value.pointer("/capability"), Some(&json!("llm")));
+        assert_eq!(
+            value.pointer("/requirements/resp_format"),
+            Some(&json!("json"))
+        );
+        assert!(value.pointer("/requirements/resp_foramt").is_none());
+        assert!(value.pointer("/payload/text").is_none());
+        assert!(value.pointer("/payload/messages").is_none());
+        assert!(value.pointer("/payload/tool_specs").is_none());
+        assert_eq!(
+            value.pointer("/payload/input_json/messages/0/content"),
+            Some(&json!("summarize this commit"))
+        );
+    }
+
     #[tokio::test]
     async fn test_in_process_client_with_mock() {
         let mock = MockAicc::new();
         let calls = mock.calls.clone();
         let client = AiccClient::new_in_process(Box::new(mock));
 
-        let request = sample_complete_request();
-        let complete_result = client.complete(request.clone()).await.unwrap();
-        assert_eq!(complete_result.task_id, "task-001");
-        assert_eq!(complete_result.status, CompleteStatus::Succeeded);
+        let request = sample_method_request();
+        let method_result = client
+            .call_method(ai_methods::LLM_CHAT, request.clone())
+            .await
+            .unwrap();
+        assert_eq!(method_result.task_id, "task-001");
+        assert_eq!(method_result.status, AiMethodStatus::Succeeded);
         assert_eq!(
-            complete_result
+            method_result
                 .result
                 .as_ref()
                 .and_then(|summary| summary.text.as_ref())
@@ -630,7 +893,8 @@ mod tests {
         assert!(cancel_result.accepted);
 
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.complete, Some(request));
+        assert_eq!(calls.method.as_deref(), Some(ai_methods::LLM_CHAT));
+        assert_eq!(calls.request, Some(request));
         assert_eq!(calls.cancel_task_id.as_deref(), Some("task-001"));
     }
 
@@ -641,20 +905,20 @@ mod tests {
         let rpc_handler = AiccServerHandler::new(mock);
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 
-        let request = sample_complete_request();
-        let complete_req = RPCRequest {
-            method: "complete".to_string(),
+        let request = sample_method_request();
+        let method_req = RPCRequest {
+            method: ai_methods::LLM_CHAT.to_string(),
             params: serde_json::to_value(&request).unwrap(),
             seq: 9,
             token: None,
             trace_id: None,
         };
-        let complete_resp = rpc_handler.handle_rpc_call(complete_req, ip).await.unwrap();
-        match complete_resp.result {
+        let method_resp = rpc_handler.handle_rpc_call(method_req, ip).await.unwrap();
+        match method_resp.result {
             RPCResult::Success(value) => {
-                let complete_result: CompleteResponse = serde_json::from_value(value).unwrap();
-                assert_eq!(complete_result.task_id, "task-001");
-                assert_eq!(complete_result.status, CompleteStatus::Succeeded);
+                let method_result: AiMethodResponse = serde_json::from_value(value).unwrap();
+                assert_eq!(method_result.task_id, "task-001");
+                assert_eq!(method_result.status, AiMethodStatus::Succeeded);
             }
             _ => panic!("Expected success response"),
         }
@@ -677,7 +941,8 @@ mod tests {
         }
 
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.complete, Some(request));
+        assert_eq!(calls.method.as_deref(), Some(ai_methods::LLM_CHAT));
+        assert_eq!(calls.request, Some(request));
         assert_eq!(calls.cancel_task_id.as_deref(), Some("task-001"));
     }
 }

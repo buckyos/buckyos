@@ -12,7 +12,7 @@ use aicc::{
 use async_trait::async_trait;
 use base64::Engine as _;
 use buckyos_api::{
-    AiPayload, Capability, CompleteRequest, CreateTaskOptions, ModelSpec, Requirements,
+    AiMethodRequest, AiPayload, Capability, CreateTaskOptions, ModelSpec, Requirements,
     ResourceRef, Task, TaskFilter, TaskManagerClient, TaskManagerHandler, TaskStatus,
 };
 use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
@@ -27,9 +27,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, OnceCell};
 
-pub fn base_request() -> CompleteRequest {
-    CompleteRequest::new(
-        Capability::LlmRouter,
+pub fn base_request() -> AiMethodRequest {
+    AiMethodRequest::new(
+        Capability::Llm,
         ModelSpec::new("llm.plan.default".to_string(), None),
         Requirements::new(vec!["plan".to_string()], Some(3000), Some(0.2), None),
         AiPayload::new(
@@ -45,14 +45,14 @@ pub fn base_request() -> CompleteRequest {
 }
 
 #[allow(dead_code)]
-pub fn request_with_resource(resource: ResourceRef) -> CompleteRequest {
+pub fn request_with_resource(resource: ResourceRef) -> AiMethodRequest {
     let mut req = base_request();
     req.payload.resources = vec![resource];
     req
 }
 
-pub fn base_request_for(capability: Capability, alias: &str) -> CompleteRequest {
-    CompleteRequest::new(
+pub fn base_request_for(capability: Capability, alias: &str) -> AiMethodRequest {
+    AiMethodRequest::new(
         capability,
         ModelSpec::new(alias.to_string(), None),
         Requirements::new(vec!["plan".to_string()], Some(3000), Some(0.2), None),
@@ -187,13 +187,14 @@ fn mock_inventory(instance: &ProviderInstance, cost: &CostEstimate) -> ProviderI
     let mut models = Vec::new();
     for capability in instance.capabilities.iter() {
         let (api_type, mount, provider_model_id) = match capability {
-            Capability::LlmRouter => (ApiType::LlmChat, "llm.plan.default", "m"),
-            Capability::Text2Image => (ApiType::ImageTextToImage, "text2image.default", "m"),
-            Capability::Image2Text => (ApiType::ImageToImage, "i2t.default", "m"),
-            Capability::Voice2Text => (ApiType::LlmCompletion, "v2t.default", "m"),
-            Capability::Video2Text => (ApiType::LlmCompletion, "v2t.default", "m"),
-            Capability::Text2Voice => (ApiType::LlmCompletion, "t2v.default", "m"),
-            Capability::Text2Video => (ApiType::LlmCompletion, "t2v.default", "m"),
+            Capability::Llm => (ApiType::LlmChat, "llm.plan.default", "m"),
+            Capability::Image => (ApiType::ImageTextToImage, "text2image.default", "m"),
+            Capability::Vision => (ApiType::ImageToImage, "i2t.default", "m"),
+            Capability::Audio => (ApiType::LlmCompletion, "t2v.default", "m"),
+            Capability::Video => (ApiType::LlmCompletion, "t2v.default", "m"),
+            Capability::Embedding => (ApiType::Embedding, "embedding.default", "m"),
+            Capability::Rerank => (ApiType::LlmCompletion, "rerank.default", "m"),
+            Capability::Agent => (ApiType::LlmCompletion, "agent.default", "m"),
         };
         models.push(provider_model_metadata(
             instance.provider_instance_name.as_str(),
@@ -507,7 +508,7 @@ impl ResourceResolver for FailingResolver {
     async fn resolve(
         &self,
         _ctx: &InvokeCtx,
-        _req: &CompleteRequest,
+        _req: &AiMethodRequest,
     ) -> std::result::Result<ResolvedRequest, RPCErrors> {
         Err(RPCErrors::ReasonError(self.message.clone()))
     }
@@ -578,7 +579,7 @@ pub fn string_set(values: &[&str]) -> HashSet<String> {
 
 pub fn localhost_ctx_from_request() -> RPCContext {
     let req = kRPC::RPCRequest {
-        method: "complete".to_string(),
+        method: "llm.chat".to_string(),
         params: json!({}),
         seq: 1,
         token: None,

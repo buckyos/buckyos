@@ -17,8 +17,8 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    features, value_to_object_map, AiArtifact, AiCost, AiResponseSummary, AiToolCall, AiUsage,
-    Capability, CompleteRequest, ResourceRef,
+    features, value_to_object_map, AiArtifact, AiCost, AiMethodRequest, AiResponseSummary,
+    AiToolCall, AiUsage, Capability, ResourceRef,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use log::{error, info, warn};
@@ -145,7 +145,7 @@ impl OpenAIProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::LlmRouter, Capability::Text2Image],
+            capabilities: vec![Capability::Llm, Capability::Image],
             features: default_features(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
@@ -517,7 +517,7 @@ impl OpenAIProvider {
         }
     }
 
-    fn estimate_tokens(req: &CompleteRequest) -> (u64, u64) {
+    fn estimate_tokens(req: &AiMethodRequest) -> (u64, u64) {
         let mut text_len = 0usize;
 
         if let Some(text) = req.payload.text.as_ref() {
@@ -563,7 +563,7 @@ impl OpenAIProvider {
         (input_tokens.max(1), output_tokens.max(1))
     }
 
-    fn estimate_image_count(req: &CompleteRequest) -> u64 {
+    fn estimate_image_count(req: &AiMethodRequest) -> u64 {
         req.payload
             .options
             .as_ref()
@@ -580,7 +580,7 @@ impl OpenAIProvider {
             .max(1)
     }
 
-    fn estimate_text2image_cost(req: &CompleteRequest, model: &str) -> Option<f64> {
+    fn estimate_text2image_cost(req: &AiMethodRequest, model: &str) -> Option<f64> {
         let per_image = if model.starts_with("dall-e-2") {
             0.02
         } else if model.starts_with("gpt-image-1") {
@@ -662,7 +662,7 @@ impl OpenAIProvider {
         })
     }
 
-    fn build_messages(&self, req: &CompleteRequest) -> Result<Vec<Value>, ProviderError> {
+    fn build_messages(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
         let mut messages = vec![];
 
         for msg in req.payload.messages.iter() {
@@ -733,7 +733,7 @@ impl OpenAIProvider {
         Ok(messages)
     }
 
-    fn build_chat_messages(req: &CompleteRequest) -> Result<Vec<Value>, ProviderError> {
+    fn build_chat_messages(req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
         let mut messages = vec![];
 
         for msg in req.payload.messages.iter() {
@@ -1360,7 +1360,7 @@ impl OpenAIProvider {
         Err("sse stream ended without response payload".to_string())
     }
 
-    fn extract_text2image_prompt(req: &CompleteRequest) -> Option<String> {
+    fn extract_text2image_prompt(req: &AiMethodRequest) -> Option<String> {
         if let Some(text) = req
             .payload
             .text
@@ -1497,7 +1497,7 @@ impl OpenAIProvider {
 
     fn merge_requirements_tools(
         target: &mut Map<String, Value>,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
     ) -> Result<(), ProviderError> {
         let web_search_required = req
             .requirements
@@ -1658,7 +1658,7 @@ impl OpenAIProvider {
         &self,
         ctx: &crate::aicc::InvokeCtx,
         provider_model: &str,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
         let mut request_obj = Map::new();
         request_obj.insert(
@@ -1841,7 +1841,7 @@ impl OpenAIProvider {
         &self,
         ctx: &crate::aicc::InvokeCtx,
         provider_model: &str,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
         let mut request_obj = Map::new();
         request_obj.insert(
@@ -2025,11 +2025,11 @@ impl Provider for OpenAIProvider {
         _sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         match req.request.capability {
-            Capability::LlmRouter => {
+            Capability::Llm => {
                 self.start_llm(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
-            Capability::Text2Image => {
+            Capability::Image => {
                 self.start_text2image(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
@@ -2259,14 +2259,14 @@ fn register_default_aliases(
             continue;
         }
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             model.as_str(),
             provider_type,
             model.as_str(),
         );
 
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             format!("llm.{}", model),
             provider_type,
             model.as_str(),
@@ -2281,7 +2281,7 @@ fn register_default_aliases(
             "llm.code.default",
         ] {
             center.model_catalog().set_mapping(
-                Capability::LlmRouter,
+                Capability::Llm,
                 alias,
                 provider_type,
                 default_model,
@@ -2291,7 +2291,7 @@ fn register_default_aliases(
 
     for model in image_models.iter() {
         center.model_catalog().set_mapping(
-            Capability::Text2Image,
+            Capability::Image,
             model.as_str(),
             provider_type,
             model.as_str(),
@@ -2303,7 +2303,7 @@ fn register_default_aliases(
             format!("image.{}", model),
         ] {
             center.model_catalog().set_mapping(
-                Capability::Text2Image,
+                Capability::Image,
                 alias,
                 provider_type,
                 model.as_str(),
@@ -2314,7 +2314,7 @@ fn register_default_aliases(
     if let Some(default_image_model) = default_image_model {
         for alias in ["text2image.default", "t2i.default", "image.default"] {
             center.model_catalog().set_mapping(
-                Capability::Text2Image,
+                Capability::Image,
                 alias,
                 provider_type,
                 default_image_model,
@@ -2334,9 +2334,9 @@ fn register_custom_aliases(
             || normalized_alias.starts_with("t2i.")
             || normalized_alias.starts_with("image.")
         {
-            Capability::Text2Image
+            Capability::Image
         } else {
-            Capability::LlmRouter
+            Capability::Llm
         };
         center.model_catalog().set_mapping(
             capability,
@@ -2385,9 +2385,9 @@ mod tests {
     use buckyos_api::{AiPayload, ModelSpec, Requirements};
     use serde_json::json;
 
-    fn build_llm_request(options: Option<Value>) -> CompleteRequest {
-        CompleteRequest::new(
-            Capability::LlmRouter,
+    fn build_llm_request(options: Option<Value>) -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new("llm.default".to_string(), None),
             Requirements::default(),
             AiPayload::new(
@@ -2402,9 +2402,9 @@ mod tests {
         )
     }
 
-    fn build_text2image_request(options: Option<Value>) -> CompleteRequest {
-        CompleteRequest::new(
-            Capability::Text2Image,
+    fn build_text2image_request(options: Option<Value>) -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Image,
             ModelSpec::new("text2image.default".to_string(), None),
             Requirements::default(),
             AiPayload::new(
@@ -3002,18 +3002,14 @@ data: [DONE]
         ]);
         register_custom_aliases(&center, "openai", &aliases);
 
-        let llm = center.model_catalog().resolve(
-            "",
-            &Capability::LlmRouter,
-            "llm.plan.default",
-            "openai",
-        );
-        let image = center.model_catalog().resolve(
-            "",
-            &Capability::Text2Image,
-            "text2image.poster",
-            "openai",
-        );
+        let llm =
+            center
+                .model_catalog()
+                .resolve("", &Capability::Llm, "llm.plan.default", "openai");
+        let image =
+            center
+                .model_catalog()
+                .resolve("", &Capability::Image, "text2image.poster", "openai");
         assert_eq!(llm.as_deref(), Some("gpt-4o-mini"));
         assert_eq!(image.as_deref(), Some("dall-e-3"));
     }
@@ -3032,18 +3028,14 @@ data: [DONE]
             None,
         );
 
-        let code_alias = center.model_catalog().resolve(
-            "",
-            &Capability::LlmRouter,
-            "llm.code.default",
-            "openai",
-        );
-        let removed_alias = center.model_catalog().resolve(
-            "",
-            &Capability::LlmRouter,
-            "llm.json.default",
-            "openai",
-        );
+        let code_alias =
+            center
+                .model_catalog()
+                .resolve("", &Capability::Llm, "llm.code.default", "openai");
+        let removed_alias =
+            center
+                .model_catalog()
+                .resolve("", &Capability::Llm, "llm.json.default", "openai");
 
         assert_eq!(code_alias.as_deref(), Some("gpt-4o-mini"));
         assert!(removed_alias.is_none());

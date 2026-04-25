@@ -4,7 +4,7 @@ use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, RouteConfig,
     RouteWeights, Router, TenantRouteConfig,
 };
-use buckyos_api::{AiResponseSummary, AiccServerHandler, Capability, CompleteStatus};
+use buckyos_api::{AiMethodStatus, AiResponseSummary, AiccServerHandler, Capability};
 use common::*;
 use kRPC::{RPCContext, RPCHandler, RPCRequest, RPCResult};
 use serde_json::json;
@@ -20,9 +20,9 @@ fn add_llm(
     lat: u64,
     r: std::result::Result<ProviderStartResult, ProviderError>,
 ) -> Arc<MockProvider> {
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", ptype, "m");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", ptype, "m");
     let p = Arc::new(MockProvider::new(
-        mock_instance(id, ptype, vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(id, ptype, vec![Capability::Llm], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(cost),
             estimated_latency_ms: Some(lat),
@@ -61,7 +61,7 @@ async fn proto_llm_01_messages_format_valid() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -93,7 +93,7 @@ async fn proto_llm_02_input_json_format_valid() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -124,7 +124,7 @@ async fn proto_llm_03_tool_specs_format_valid() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -155,7 +155,7 @@ async fn proto_llm_04_temperature_boundary_valid() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -168,16 +168,16 @@ async fn proto_llm_04_temperature_boundary_valid() {
 async fn proto_v2t_01_language_param_respected() {
     let r = Registry::default();
     let c = ModelCatalog::default();
-    c.set_mapping(Capability::Voice2Text, "v2t.default", "a", "m");
+    c.set_mapping(Capability::Audio, "v2t.default", "a", "m");
     r.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p1", "a", vec![Capability::Voice2Text], vec!["plan".into()]),
+        mock_instance("p1", "a", vec![Capability::Audio], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
         vec![Ok(ProviderStartResult::Started)],
     )));
-    let mut req = base_request_for(Capability::Voice2Text, "v2t.default");
+    let mut req = base_request_for(Capability::Audio, "v2t.default");
     req.payload.options = Some(json!({"language":"zh-CN"}));
     req.payload.resources = vec![buckyos_api::ResourceRef::Url {
         url: "https://example.com/a.wav".into(),
@@ -190,7 +190,7 @@ async fn proto_v2t_01_language_param_respected() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -203,16 +203,16 @@ async fn proto_v2t_01_language_param_respected() {
 async fn proto_v2t_02_hotword_param_respected() {
     let r = Registry::default();
     let c = ModelCatalog::default();
-    c.set_mapping(Capability::Video2Text, "v2t.default", "a", "m");
+    c.set_mapping(Capability::Video, "v2t.default", "a", "m");
     r.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p1", "a", vec![Capability::Video2Text], vec!["plan".into()]),
+        mock_instance("p1", "a", vec![Capability::Video], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
         vec![Ok(ProviderStartResult::Started)],
     )));
-    let mut req = base_request_for(Capability::Video2Text, "v2t.default");
+    let mut req = base_request_for(Capability::Video, "v2t.default");
     req.payload.options = Some(json!({"hotword":"buckyos"}));
     req.payload.resources = vec![buckyos_api::ResourceRef::Url {
         url: "https://example.com/a.mp4".into(),
@@ -225,7 +225,7 @@ async fn proto_v2t_02_hotword_param_respected() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -238,16 +238,16 @@ async fn proto_v2t_02_hotword_param_respected() {
 async fn proto_t2v_01_text_length_limit() {
     let r = Registry::default();
     let c = ModelCatalog::default();
-    c.set_mapping(Capability::Text2Voice, "t2v.default", "a", "m");
+    c.set_mapping(Capability::Audio, "t2v.default", "a", "m");
     r.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p1", "a", vec![Capability::Text2Voice], vec!["plan".into()]),
+        mock_instance("p1", "a", vec![Capability::Audio], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
         vec![Ok(ProviderStartResult::Started)],
     )));
-    let mut req = base_request_for(Capability::Text2Voice, "t2v.default");
+    let mut req = base_request_for(Capability::Audio, "t2v.default");
     req.payload.text = Some("hello".repeat(20));
     let center = center_with_taskmgr(r, c);
     assert_eq!(
@@ -256,7 +256,7 @@ async fn proto_t2v_01_text_length_limit() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -269,16 +269,16 @@ async fn proto_t2v_01_text_length_limit() {
 async fn proto_t2v_02_voice_param_respected() {
     let r = Registry::default();
     let c = ModelCatalog::default();
-    c.set_mapping(Capability::Text2Voice, "t2v.default", "a", "m");
+    c.set_mapping(Capability::Audio, "t2v.default", "a", "m");
     r.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p1", "a", vec![Capability::Text2Voice], vec!["plan".into()]),
+        mock_instance("p1", "a", vec![Capability::Audio], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
         vec![Ok(ProviderStartResult::Started)],
     )));
-    let mut req = base_request_for(Capability::Text2Voice, "t2v.default");
+    let mut req = base_request_for(Capability::Audio, "t2v.default");
     req.payload.options = Some(json!({"voice":"alloy"}));
     let center = center_with_taskmgr(r, c);
     assert_eq!(
@@ -287,7 +287,7 @@ async fn proto_t2v_02_voice_param_respected() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -295,16 +295,16 @@ async fn proto_t2v_02_voice_param_respected() {
 async fn proto_t2v_01_voice_param_format_valid() {
     let r = Registry::default();
     let c = ModelCatalog::default();
-    c.set_mapping(Capability::Text2Voice, "t2v.default", "a", "m");
+    c.set_mapping(Capability::Audio, "t2v.default", "a", "m");
     r.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p1", "a", vec![Capability::Text2Voice], vec!["plan".into()]),
+        mock_instance("p1", "a", vec![Capability::Audio], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
         vec![Ok(ProviderStartResult::Started)],
     )));
-    let mut req = base_request_for(Capability::Text2Voice, "t2v.default");
+    let mut req = base_request_for(Capability::Audio, "t2v.default");
     req.payload.options = Some(json!({"voice":"alloy","model":"tts-1"}));
     let center = center_with_taskmgr(r, c);
     assert_eq!(
@@ -313,7 +313,7 @@ async fn proto_t2v_01_voice_param_format_valid() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Running
+        AiMethodStatus::Running
     );
 }
 
@@ -321,9 +321,9 @@ async fn proto_t2v_01_voice_param_format_valid() {
 async fn proto_t2v_02_output_artifact_url_format() {
     let r = Registry::default();
     let c = ModelCatalog::default();
-    c.set_mapping(Capability::Text2Voice, "t2v.default", "a", "m");
+    c.set_mapping(Capability::Audio, "t2v.default", "a", "m");
     r.add_provider(Arc::new(MockProvider::new(
-        mock_instance("p1", "a", vec![Capability::Text2Voice], vec!["plan".into()]),
+        mock_instance("p1", "a", vec![Capability::Audio], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
@@ -347,10 +347,10 @@ async fn proto_t2v_02_output_artifact_url_format() {
             extra: None,
         }))],
     )));
-    let req = base_request_for(Capability::Text2Voice, "t2v.default");
+    let req = base_request_for(Capability::Audio, "t2v.default");
     let center = center_with_taskmgr(r, c);
     let resp = center.complete(req, RPCContext::default()).await.unwrap();
-    assert_eq!(resp.status, CompleteStatus::Succeeded);
+    assert_eq!(resp.status, AiMethodStatus::Succeeded);
     let artifact = resp
         .result
         .as_ref()
@@ -381,7 +381,7 @@ async fn proto_mix_01_text_plus_resource_valid() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Failed
+        AiMethodStatus::Failed
     );
 }
 
@@ -406,7 +406,7 @@ async fn proto_mix_02_messages_plus_resource_valid() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Failed
+        AiMethodStatus::Failed
     );
 }
 
@@ -431,7 +431,7 @@ async fn proto_mix_03_input_json_plus_resource_valid() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Failed
+        AiMethodStatus::Failed
     );
 }
 
@@ -564,19 +564,19 @@ async fn proto_mix_03_workflow_mixed_resource_modes() {
         },
     ];
     let resp = center.complete(req, RPCContext::default()).await.unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
 }
 
 #[tokio::test]
 async fn proto_mix_04_cross_capability_resource_passthrough() {
     let r = Registry::default();
     let c = ModelCatalog::default();
-    c.set_mapping(Capability::Image2Text, "i2t.default", "a", "m");
+    c.set_mapping(Capability::Vision, "i2t.default", "a", "m");
     r.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p1",
             "a",
-            vec![Capability::Image2Text],
+            vec![Capability::Vision],
             vec!["plan".into(), "vision".into()],
         ),
         CostEstimate {
@@ -586,13 +586,13 @@ async fn proto_mix_04_cross_capability_resource_passthrough() {
         vec![Ok(ProviderStartResult::Started)],
     )));
     let center = center_with_taskmgr(r, c);
-    let mut req = base_request_for(Capability::Image2Text, "i2t.default");
+    let mut req = base_request_for(Capability::Vision, "i2t.default");
     req.payload.resources = vec![buckyos_api::ResourceRef::Url {
         url: "https://example.com/1.png".into(),
         mime_hint: Some("image/png".into()),
     }];
     let resp = center.complete(req, RPCContext::default()).await.unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
 }
 
 #[tokio::test]

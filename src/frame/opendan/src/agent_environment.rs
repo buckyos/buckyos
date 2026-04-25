@@ -25,8 +25,8 @@ use buckyos_api::msg_queue::Message;
 use crate::agent::{AIAgent, InputQueueKind};
 use crate::agent_session::{AgentSession, AgentSessionMgr, SessionInputItem};
 use crate::agent_tool::{
-    get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
-    AgentMemory, AgentToolError, AgentToolManager,
+    get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref, AgentMemory,
+    AgentToolError, AgentToolManager,
 };
 use crate::step_record::LLMStepPromptRenderOptions;
 use crate::workspace::{
@@ -2552,7 +2552,7 @@ mod tests {
     use crate::step_record::LLMStepRecord;
     use crate::workspace::WorkshopWorkspaceRecord;
     use buckyos_api::{
-        AccessGroupLevel, AccountBinding, AiMessage, AiPayload, Capability, CompleteRequest,
+        AccessGroupLevel, AccountBinding, AiMessage, AiMethodRequest, AiPayload, Capability,
         Contact, ContactSource, ModelSpec, Requirements,
     };
     use serde_json::json;
@@ -2765,8 +2765,8 @@ mod tests {
                     action_completed_at_ms: 3,
                     new_msg: vec![],
                     input: "task".to_string(),
-                    llm_prompt: CompleteRequest::new(
-                        Capability::LlmRouter,
+                    llm_prompt: AiMethodRequest::new(
+                        Capability::Llm,
                         ModelSpec::new("llm.default".to_string(), None),
                         Requirements::new(vec![], None, None, None),
                         AiPayload::new(
@@ -2806,8 +2806,8 @@ mod tests {
                     action_completed_at_ms: 6,
                     new_msg: vec![],
                     input: "continue".to_string(),
-                    llm_prompt: CompleteRequest::new(
-                        Capability::LlmRouter,
+                    llm_prompt: AiMethodRequest::new(
+                        Capability::Llm,
                         ModelSpec::new("llm.default".to_string(), None),
                         Requirements::new(vec![], None, None, None),
                         AiPayload::new(
@@ -3070,7 +3070,12 @@ mod tests {
             "__OPENDAN_VAR(new_event, $new_event.1)\n{{new_event.eventdata.current_time}}",
         );
 
-        assert_eq!(prepared.matches("__OPENDAN_VAR(new_event, $new_event.1)").count(), 1);
+        assert_eq!(
+            prepared
+                .matches("__OPENDAN_VAR(new_event, $new_event.1)")
+                .count(),
+            1
+        );
         assert!(!prepared.contains("__OPENDAN_VAR(new_event.eventdata.current_time"));
     }
 

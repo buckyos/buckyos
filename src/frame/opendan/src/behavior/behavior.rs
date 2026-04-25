@@ -7,9 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use buckyos_api::get_buckyos_api_runtime;
 use buckyos_api::{
-    value_to_object_map, AiToolCall, AiccClient, CompleteRequest, CompleteResponse, CompleteStatus,
-    CompleteTaskOptions, CreateTaskOptions, TaskFilter, TaskManagerClient, TaskStatus,
-    AICC_SERVICE_SERVICE_NAME,
+    ai_methods, value_to_object_map, AiMethodRequest, AiMethodResponse, AiMethodStatus,
+    AiTaskOptions, AiToolCall, AiccClient, CreateTaskOptions, TaskFilter, TaskManagerClient,
+    TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
 use serde_json::{json, Map, Value as Json};
 
@@ -394,7 +394,7 @@ impl LLMBehavior {
 
     async fn do_inference_once(
         &self,
-        base_req: CompleteRequest,
+        base_req: AiMethodRequest,
         tool_ctx: Option<ToolContext>,
         behavior_task_id: i64,
     ) -> Result<(TokenUsage, LLMRawResponse, String), LLMComputeError> {
@@ -403,7 +403,10 @@ impl LLMBehavior {
         let aicc_client = self.deps.aicc.clone();
         #[cfg(not(test))]
         let aicc_client = Self::get_aicc_client().await?;
-        let resp = aicc_client.complete(req).await.map_err(map_aicc_error)?;
+        let resp = aicc_client
+            .call_method(ai_methods::LLM_CHAT, req)
+            .await
+            .map_err(map_aicc_error)?;
         let llm_task_id = resp.task_id.clone();
         let (usage, raw) = self
             .resolve_aicc_complete_response(resp, &self.cfg.model_policy.preferred)
@@ -425,15 +428,15 @@ impl LLMBehavior {
 
     async fn resolve_aicc_complete_response(
         &self,
-        response: CompleteResponse,
+        response: AiMethodResponse,
         fallback_model: &str,
     ) -> Result<(TokenUsage, LLMRawResponse), LLMComputeError> {
         match response.status {
             // AICC may return a non-empty string task_id (e.g. "aicc-...") even for
             // immediate results. For succeeded status, consume response.result directly.
-            CompleteStatus::Succeeded => parse_aicc_complete_response(response, fallback_model),
+            AiMethodStatus::Succeeded => parse_aicc_complete_response(response, fallback_model),
             // Only running status should go through async task observation.
-            CompleteStatus::Running => {
+            AiMethodStatus::Running => {
                 let aicc_task_id = response.task_id.trim();
                 if aicc_task_id.is_empty() {
                     return Err(LLMComputeError::Provider(
@@ -443,7 +446,7 @@ impl LLMBehavior {
                 self.wait_and_load_aicc_task_result(aicc_task_id, fallback_model)
                     .await
             }
-            CompleteStatus::Failed => Err(LLMComputeError::Provider(
+            AiMethodStatus::Failed => Err(LLMComputeError::Provider(
                 "aicc complete status is Failed".to_string(),
             )),
         }
@@ -553,10 +556,10 @@ pub struct AiccRequestBuilder;
 
 impl AiccRequestBuilder {
     pub fn build(
-        mut base_req: CompleteRequest,
+        mut base_req: AiMethodRequest,
         tool_ctx: Option<ToolContext>,
         parent_task_id: Option<i64>,
-    ) -> CompleteRequest {
+    ) -> AiMethodRequest {
         if let Some(ctx) = tool_ctx {
             let mut tool_messages = Vec::new();
             let assistant_msg = json!({ "tool_calls": ctx.tool_calls });
@@ -589,7 +592,7 @@ impl AiccRequestBuilder {
             }
         }
 
-        base_req.with_task_options(parent_task_id.map(|parent_id| CompleteTaskOptions {
+        base_req.with_task_options(parent_task_id.map(|parent_id| AiTaskOptions {
             parent_id: Some(parent_id),
         }))
     }
@@ -607,10 +610,10 @@ fn map_aicc_error(err: kRPC::RPCErrors) -> LLMComputeError {
 }
 
 fn parse_aicc_complete_response(
-    response: CompleteResponse,
+    response: AiMethodResponse,
     fallback_model: &str,
 ) -> Result<(TokenUsage, LLMRawResponse), LLMComputeError> {
-    if response.status != CompleteStatus::Succeeded {
+    if response.status != AiMethodStatus::Succeeded {
         return Err(LLMComputeError::Provider(format!(
             "aicc complete status is {:?}",
             response.status
@@ -628,7 +631,7 @@ fn parse_aicc_result_from_task_data(
     data: serde_json::Value,
     fallback_model: &str,
 ) -> Result<(TokenUsage, LLMRawResponse), LLMComputeError> {
-    if let Ok(resp) = serde_json::from_value::<CompleteResponse>(data.clone()) {
+    if let Ok(resp) = serde_json::from_value::<AiMethodResponse>(data.clone()) {
         return parse_aicc_complete_response(resp, fallback_model);
     }
 
