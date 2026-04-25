@@ -1,9 +1,13 @@
 #![allow(dead_code)]
 
 use aicc::{
-    AIComputeCenter, CostEstimate, InvokeCtx, ModelCatalog, Provider, ProviderError,
-    ProviderInstance, ProviderStartResult, Registry, ResolvedRequest, ResourceResolver,
-    RouteConfig, TaskEvent, TaskEventSink, TaskEventSinkFactory,
+    provider_model_metadata, AIComputeCenter, CostEstimate, InvokeCtx, ModelCatalog, Provider,
+    ProviderError, ProviderInstance, ProviderStartResult, Registry, ResolvedRequest,
+    ResourceResolver, RouteConfig, TaskEvent, TaskEventSink, TaskEventSinkFactory,
+};
+use aicc::model_types::{
+    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory,
+    ProviderOrigin, ProviderType, ProviderTypeTrustedSource, QuotaState,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -79,8 +83,12 @@ pub fn mock_instance(
     features: Vec<String>,
 ) -> ProviderInstance {
     ProviderInstance {
-        instance_id: instance_id.to_string(),
-        provider_type: provider_type.to_string(),
+        provider_instance_name: instance_id.to_string(),
+        provider_type: ProviderType::CloudApi,
+        provider_driver: provider_type.to_string(),
+        provider_origin: ProviderOrigin::SystemConfig,
+        provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+        provider_type_revision: None,
         capabilities,
         features,
         endpoint: Some("http://127.0.0.1:8080".to_string()),
@@ -92,6 +100,7 @@ pub fn mock_instance(
 #[allow(dead_code)]
 pub struct MockProvider {
     instance: ProviderInstance,
+    inventory: ProviderInventory,
     cost: CostEstimate,
     start_results: Mutex<VecDeque<std::result::Result<ProviderStartResult, ProviderError>>>,
     start_calls: AtomicUsize,
@@ -105,8 +114,10 @@ impl MockProvider {
         cost: CostEstimate,
         start_results: Vec<std::result::Result<ProviderStartResult, ProviderError>>,
     ) -> Self {
+        let inventory = mock_inventory(&instance, &cost);
         Self {
             instance,
+            inventory,
             cost,
             start_results: Mutex::new(start_results.into_iter().collect()),
             start_calls: AtomicUsize::new(0),
@@ -127,12 +138,22 @@ impl MockProvider {
 
 #[async_trait]
 impl Provider for MockProvider {
-    fn instance(&self) -> &ProviderInstance {
-        &self.instance
+    fn inventory(&self) -> ProviderInventory {
+        self.inventory.clone()
     }
 
-    fn estimate_cost(&self, _req: &CompleteRequest, _provider_model: &str) -> CostEstimate {
-        self.cost.clone()
+    fn legacy_instance(&self) -> Option<&ProviderInstance> {
+        Some(&self.instance)
+    }
+
+    fn estimate_cost(&self, _input: &CostEstimateInput) -> CostEstimateOutput {
+        CostEstimateOutput {
+            estimated_cost_usd: self.cost.estimated_cost_usd.unwrap_or(1.0),
+            pricing_mode: PricingMode::Unknown,
+            quota_state: QuotaState::Unknown,
+            confidence: 0.0,
+            estimated_latency_ms: self.cost.estimated_latency_ms,
+        }
     }
 
     async fn start(
@@ -159,6 +180,43 @@ impl Provider for MockProvider {
             .expect("canceled lock")
             .push(task_id.to_string());
         Ok(())
+    }
+}
+
+fn mock_inventory(instance: &ProviderInstance, cost: &CostEstimate) -> ProviderInventory {
+    let mut models = Vec::new();
+    for capability in instance.capabilities.iter() {
+        let (api_type, mount, provider_model_id) = match capability {
+            Capability::LlmRouter => (ApiType::LlmChat, "llm.plan.default", "m"),
+            Capability::Text2Image => (ApiType::ImageTextToImage, "text2image.default", "m"),
+            Capability::Image2Text => (ApiType::ImageToImage, "i2t.default", "m"),
+            Capability::Voice2Text => (ApiType::LlmCompletion, "v2t.default", "m"),
+            Capability::Video2Text => (ApiType::LlmCompletion, "v2t.default", "m"),
+            Capability::Text2Voice => (ApiType::LlmCompletion, "t2v.default", "m"),
+            Capability::Text2Video => (ApiType::LlmCompletion, "t2v.default", "m"),
+        };
+        models.push(provider_model_metadata(
+            instance.provider_instance_name.as_str(),
+            instance.provider_type.clone(),
+            provider_model_id,
+            api_type,
+            vec![mount.to_string()],
+            &instance.features,
+            cost.estimated_cost_usd,
+            cost.estimated_latency_ms,
+        ));
+    }
+
+    ProviderInventory {
+        provider_instance_name: instance.provider_instance_name.clone(),
+        provider_type: instance.provider_type.clone(),
+        provider_driver: instance.provider_driver.clone(),
+        provider_origin: instance.provider_origin.clone(),
+        provider_type_trusted_source: instance.provider_type_trusted_source.clone(),
+        provider_type_revision: instance.provider_type_revision.clone(),
+        version: None,
+        inventory_revision: Some("test".to_string()),
+        models,
     }
 }
 

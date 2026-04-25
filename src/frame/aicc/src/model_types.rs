@@ -106,6 +106,101 @@ impl Default for ProviderType {
     }
 }
 
+impl fmt::Display for ProviderType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::LocalInference => "local_inference",
+            Self::CloudApi => "cloud_api",
+            Self::ProxyUnknown => "proxy_unknown",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderOrigin {
+    SystemConfig,
+    UserConfig,
+    BuiltIn,
+    ProviderClaimed,
+    Unknown,
+}
+
+impl Default for ProviderOrigin {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderTypeTrustedSource {
+    SystemConfig,
+    AdminOverride,
+    ProviderInventory,
+    DefaultUnknown,
+}
+
+impl Default for ProviderTypeTrustedSource {
+    fn default() -> Self {
+        Self::DefaultUnknown
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingMode {
+    PerToken,
+    Subscription,
+    FreeQuota,
+    Unknown,
+}
+
+impl Default for PricingMode {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CostEstimateInput {
+    pub api_type: ApiType,
+    pub exact_model: String,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub estimated_output_tokens: Option<u64>,
+    #[serde(default)]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub request_features: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CostEstimateOutput {
+    pub estimated_cost_usd: f64,
+    #[serde(default)]
+    pub pricing_mode: PricingMode,
+    #[serde(default)]
+    pub quota_state: QuotaState,
+    pub confidence: f64,
+    #[serde(default)]
+    pub estimated_latency_ms: Option<u64>,
+}
+
+impl Default for CostEstimateOutput {
+    fn default() -> Self {
+        Self {
+            estimated_cost_usd: 1.0,
+            pricing_mode: PricingMode::Unknown,
+            quota_state: QuotaState::Unknown,
+            confidence: 0.0,
+            estimated_latency_ms: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthStatus {
@@ -339,6 +434,14 @@ pub struct ProviderInventory {
     pub provider_instance_name: String,
     #[serde(default)]
     pub provider_type: ProviderType,
+    #[serde(default)]
+    pub provider_driver: String,
+    #[serde(default)]
+    pub provider_origin: ProviderOrigin,
+    #[serde(default)]
+    pub provider_type_trusted_source: ProviderTypeTrustedSource,
+    #[serde(default)]
+    pub provider_type_revision: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]

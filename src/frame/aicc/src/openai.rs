@@ -1,6 +1,11 @@
 use crate::aicc::{
-    AIComputeCenter, CostEstimate, Provider, ProviderError, ProviderInstance, ProviderStartResult,
-    ResolvedRequest, TaskEventSink,
+    image_logical_mounts, llm_logical_mounts, provider_model_metadata,
+    provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
+    ProviderStartResult, ResolvedRequest, TaskEventSink,
+};
+use crate::model_types::{
+    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory,
+    ProviderOrigin, ProviderTypeTrustedSource, QuotaState,
 };
 use crate::openai_protocol::{
     merge_options, merge_requirements_response_format, merge_tool_calls,
@@ -62,8 +67,9 @@ const OPENAI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct OpenAIInstanceConfig {
-    pub instance_id: String,
+    pub provider_instance_name: String,
     pub provider_type: String,
+    pub provider_driver: String,
     pub base_url: String,
     pub auth_mode: String,
     pub timeout_ms: u64,
@@ -78,6 +84,7 @@ pub struct OpenAIInstanceConfig {
 #[derive(Debug, Clone)]
 pub struct OpenAIProvider {
     instance: ProviderInstance,
+    inventory: ProviderInventory,
     client: Client,
     auth_mode: OpenAIAuthMode,
     base_url: String,
@@ -112,19 +119,67 @@ impl OpenAIProvider {
             .build()
             .context("failed to build reqwest client for openai provider")?;
 
+        let provider_type = provider_type_from_settings(cfg.provider_type.as_str());
+        let provider_instance_name = cfg.provider_instance_name.clone();
+        let provider_driver = cfg.provider_driver.clone();
         let instance = ProviderInstance {
-            instance_id: cfg.instance_id,
-            provider_type: cfg.provider_type,
+            provider_instance_name: provider_instance_name.clone(),
+            provider_type: provider_type.clone(),
+            provider_driver: provider_driver.clone(),
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
             capabilities: vec![Capability::LlmRouter, Capability::Text2Image],
-            features: cfg.features,
+            features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
+        };
+        let mut models = Vec::new();
+        for model in cfg
+            .models
+            .iter()
+            .filter(|model| !is_text2image_model_name(model))
+        {
+            models.push(provider_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::LlmChat,
+                llm_logical_mounts(provider_driver.as_str(), model.as_str()),
+                &cfg.features,
+                Some(0.01),
+                Some(1200),
+            ));
+        }
+        for model in cfg.image_models.iter() {
+            models.push(provider_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::ImageTextToImage,
+                image_logical_mounts(provider_driver.as_str(), model.as_str()),
+                &cfg.features,
+                Some(0.04),
+                Some(5000),
+            ));
+        }
+        let inventory = ProviderInventory {
+            provider_instance_name,
+            provider_type,
+            provider_driver,
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
+            version: None,
+            inventory_revision: Some("settings-v1".to_string()),
+            models,
         };
 
         let auth_mode = Self::parse_auth_mode(cfg.auth_mode.as_str(), openai_api_token)?;
 
         Ok(Self {
             instance,
+            inventory,
             client,
             auth_mode,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
@@ -1290,8 +1345,8 @@ impl OpenAIProvider {
             .map_err(|err| {
                 let retryable = err.is_timeout() || err.is_connect();
                 error!(
-                    "aicc.openai.http_send_failed instance_id={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err_chain={}",
-                    self.instance.instance_id,
+                    "aicc.openai.http_send_failed provider_instance_name={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err_chain={}",
+                    self.instance.provider_instance_name,
                     self.instance.provider_type,
                     url,
                     retryable,
@@ -1301,8 +1356,8 @@ impl OpenAIProvider {
                     Self::format_error_chain(&err)
                 );
                 eprintln!(
-                    "aicc.openai.http_send_failed instance_id={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err_chain={}",
-                    self.instance.instance_id,
+                    "aicc.openai.http_send_failed provider_instance_name={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err_chain={}",
+                    self.instance.provider_instance_name,
                     self.instance.provider_type,
                     url,
                     retryable,
@@ -1334,8 +1389,8 @@ impl OpenAIProvider {
             .to_ascii_lowercase();
         let raw_body = response.text().await.map_err(|err| {
             error!(
-                "aicc.openai.response_decode_failed instance_id={} provider_type={} url={} status={} content_type={} content_encoding={} err={}",
-                self.instance.instance_id,
+                "aicc.openai.response_decode_failed provider_instance_name={} provider_type={} url={} status={} content_type={} content_encoding={} err={}",
+                self.instance.provider_instance_name,
                 self.instance.provider_type,
                 url,
                 status.as_u16(),
@@ -1377,8 +1432,8 @@ impl OpenAIProvider {
         };
         let body: Value = body_parse_result.map_err(|err| {
             error!(
-                "aicc.openai.response_parse_failed instance_id={} provider_type={} url={} status={} err={}",
-                self.instance.instance_id,
+                "aicc.openai.response_parse_failed provider_instance_name={} provider_type={} url={} status={} err={}",
+                self.instance.provider_instance_name,
                 self.instance.provider_type,
                 url,
                 status.as_u16(),
@@ -1428,15 +1483,15 @@ impl OpenAIProvider {
         }
         if !ignored_options.is_empty() {
             warn!(
-                "aicc.openai ignored unsupported llm options: instance_id={} model={} trace_id={:?} ignored={:?}",
-                self.instance.instance_id, provider_model, ctx.trace_id, ignored_options
+                "aicc.openai ignored unsupported llm options: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name, provider_model, ctx.trace_id, ignored_options
             );
         }
 
         let request_log = Value::Object(request_obj.clone()).to_string();
         info!(
-            "aicc.openai.llm.input instance_id={} model={} trace_id={:?} request={}",
-            self.instance.instance_id, provider_model, ctx.trace_id, request_log
+            "aicc.openai.llm.input provider_instance_name={} model={} trace_id={:?} request={}",
+            self.instance.provider_instance_name, provider_model, ctx.trace_id, request_log
         );
 
         let url = if self.use_chat_completions_endpoint() {
@@ -1452,8 +1507,8 @@ impl OpenAIProvider {
                 if let Some(param) = Self::extract_unsupported_request_param(&body) {
                     if Self::remove_retryable_unsupported_option(&mut request_obj, param.as_str()) {
                         warn!(
-                            "aicc.openai.llm.retry_without_option instance_id={} model={} trace_id={:?} param={} response={}",
-                            self.instance.instance_id,
+                            "aicc.openai.llm.retry_without_option provider_instance_name={} model={} trace_id={:?} param={} response={}",
+                            self.instance.provider_instance_name,
                             provider_model,
                             ctx.trace_id,
                             param,
@@ -1470,8 +1525,8 @@ impl OpenAIProvider {
 
         if !status.is_success() {
             warn!(
-                "aicc.openai.llm.output instance_id={} model={} trace_id={:?} status={} response={}",
-                self.instance.instance_id,
+                "aicc.openai.llm.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+                self.instance.provider_instance_name,
                 provider_model,
                 ctx.trace_id,
                 status.as_u16(),
@@ -1492,8 +1547,8 @@ impl OpenAIProvider {
             ));
         }
         info!(
-            "aicc.openai.llm.output instance_id={} model={} trace_id={:?} status={} response={}",
-            self.instance.instance_id,
+            "aicc.openai.llm.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+            self.instance.provider_instance_name,
             provider_model,
             ctx.trace_id,
             status.as_u16(),
@@ -1506,8 +1561,8 @@ impl OpenAIProvider {
             Self::incomplete_output_error(&body, content.as_deref(), tool_choices.as_slice())
         {
             warn!(
-                "aicc.openai.llm.incomplete_output instance_id={} model={} trace_id={:?} err={}",
-                self.instance.instance_id, provider_model, ctx.trace_id, err
+                "aicc.openai.llm.incomplete_output provider_instance_name={} model={} trace_id={:?} err={}",
+                self.instance.provider_instance_name, provider_model, ctx.trace_id, err
             );
             return Err(err);
         }
@@ -1618,15 +1673,15 @@ impl OpenAIProvider {
         }
         if !ignored_options.is_empty() {
             warn!(
-                "aicc.openai ignored unsupported text2image options: instance_id={} model={} trace_id={:?} ignored={:?}",
-                self.instance.instance_id, provider_model, ctx.trace_id, ignored_options
+                "aicc.openai ignored unsupported text2image options: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name, provider_model, ctx.trace_id, ignored_options
             );
         }
 
         let request_log = Value::Object(request_obj.clone()).to_string();
         info!(
-            "aicc.openai.text2image.input instance_id={} model={} trace_id={:?} request={}",
-            self.instance.instance_id, provider_model, ctx.trace_id, request_log
+            "aicc.openai.text2image.input provider_instance_name={} model={} trace_id={:?} request={}",
+            self.instance.provider_instance_name, provider_model, ctx.trace_id, request_log
         );
 
         let url = format!("{}/images/generations", self.base_url);
@@ -1635,8 +1690,8 @@ impl OpenAIProvider {
 
         if !status.is_success() {
             warn!(
-                "aicc.openai.text2image.output instance_id={} model={} trace_id={:?} status={} response={}",
-                self.instance.instance_id,
+                "aicc.openai.text2image.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+                self.instance.provider_instance_name,
                 provider_model,
                 ctx.trace_id,
                 status.as_u16(),
@@ -1657,8 +1712,8 @@ impl OpenAIProvider {
             ));
         }
         info!(
-            "aicc.openai.text2image.output instance_id={} model={} trace_id={:?} status={} response={}",
-            self.instance.instance_id,
+            "aicc.openai.text2image.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+            self.instance.provider_instance_name,
             provider_model,
             ctx.trace_id,
             status.as_u16(),
@@ -1710,19 +1765,24 @@ impl OpenAIProvider {
 
 #[async_trait]
 impl Provider for OpenAIProvider {
-    fn instance(&self) -> &ProviderInstance {
-        &self.instance
+    fn inventory(&self) -> ProviderInventory {
+        self.inventory.clone()
     }
 
-    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate {
-        if req.capability == Capability::Text2Image {
-            return CostEstimate {
-                estimated_cost_usd: Self::estimate_text2image_cost(req, provider_model),
+    fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
+        let provider_model = provider_model_from_exact(input.exact_model.as_str());
+        if input.api_type == ApiType::ImageTextToImage {
+            return CostEstimateOutput {
+                estimated_cost_usd: 0.04,
+                pricing_mode: PricingMode::PerToken,
+                quota_state: QuotaState::Normal,
+                confidence: 0.5,
                 estimated_latency_ms: Some(5000),
             };
         }
 
-        let (input_tokens, output_tokens) = Self::estimate_tokens(req);
+        let input_tokens = input.input_tokens.max(1);
+        let output_tokens = input.estimated_output_tokens.unwrap_or(1024).max(1);
         let usage = AiUsage {
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
@@ -1731,10 +1791,14 @@ impl Provider for OpenAIProvider {
 
         let estimated_cost_usd = self
             .estimate_cost_for_usage(provider_model, &usage)
-            .map(|cost| cost.amount);
+            .map(|cost| cost.amount)
+            .unwrap_or(1.0);
 
-        CostEstimate {
+        CostEstimateOutput {
             estimated_cost_usd,
+            pricing_mode: PricingMode::PerToken,
+            quota_state: QuotaState::Normal,
+            confidence: 0.7,
             estimated_latency_ms: Some(1200),
         }
     }
@@ -1771,6 +1835,13 @@ impl Provider for OpenAIProvider {
     }
 }
 
+fn provider_model_from_exact(exact_model: &str) -> &str {
+    exact_model
+        .rsplit_once('@')
+        .map(|(model, _)| model)
+        .unwrap_or(exact_model)
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct OpenAISettings {
     #[serde(default = "default_openai_enabled")]
@@ -1786,9 +1857,11 @@ struct OpenAISettings {
 #[derive(Debug, Clone, Deserialize)]
 struct SettingsOpenAIInstanceConfig {
     #[serde(default = "default_instance_id")]
-    instance_id: String,
+    provider_instance_name: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
+    #[serde(default = "default_provider_driver")]
+    provider_driver: String,
     #[serde(default = "default_base_url")]
     base_url: String,
     #[serde(default = "default_auth_mode")]
@@ -1818,6 +1891,10 @@ fn default_instance_id() -> String {
 }
 
 fn default_provider_type() -> String {
+    "cloud_api".to_string()
+}
+
+fn default_provider_driver() -> String {
     "openai".to_string()
 }
 
@@ -1891,8 +1968,9 @@ fn parse_openai_settings(settings: &Value) -> Result<Option<OpenAISettings>> {
 fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanceConfig>> {
     let raw_instances = if settings.instances.is_empty() {
         vec![SettingsOpenAIInstanceConfig {
-            instance_id: default_instance_id(),
+            provider_instance_name: default_instance_id(),
             provider_type: default_provider_type(),
+            provider_driver: default_provider_driver(),
             base_url: default_base_url(),
             auth_mode: default_auth_mode(),
             timeout_ms: default_timeout_ms(),
@@ -1916,7 +1994,7 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
         if models.is_empty() {
             return Err(anyhow!(
                 "openai instance {} has no models configured",
-                raw_instance.instance_id
+                raw_instance.provider_instance_name
             ));
         }
 
@@ -1950,8 +2028,9 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
         };
 
         instances.push(OpenAIInstanceConfig {
-            instance_id: raw_instance.instance_id,
+            provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
+            provider_driver: raw_instance.provider_driver,
             base_url: raw_instance.base_url,
             auth_mode: raw_instance.auth_mode,
             timeout_ms: raw_instance.timeout_ms,
@@ -2070,8 +2149,6 @@ fn register_custom_aliases(
 
 pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value) -> Result<usize> {
     let Some(openai_settings) = parse_openai_settings(settings)? else {
-        center.registry().clear();
-        center.model_catalog().clear();
         info!("aicc openai provider is disabled (settings.openai missing or disabled)");
         return Ok(0);
     };
@@ -2083,32 +2160,20 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
         prepared.push((config.clone(), Arc::new(provider)));
     }
 
-    center.registry().clear();
-    center.model_catalog().clear();
-
     for (config, provider) in prepared.into_iter() {
-        center.registry().add_provider(provider);
-
-        register_default_aliases(
-            center,
-            config.provider_type.as_str(),
-            &config.models,
-            config.default_model.as_deref(),
-            &config.image_models,
-            config.default_image_model.as_deref(),
-        );
-
-        register_custom_aliases(
-            center,
-            config.provider_type.as_str(),
-            &openai_settings.alias_map,
-        );
-        register_custom_aliases(center, config.provider_type.as_str(), &config.alias_map);
+        let inventory = center.registry().add_provider(provider);
+        center
+            .model_registry()
+            .write()
+            .map_err(|_| anyhow!("model registry lock poisoned"))?
+            .apply_inventory(inventory)
+            .map_err(|err| anyhow!("failed to apply openai inventory: {}", err))?;
 
         info!(
-            "registered openai instance id={} provider_type={} base_url={} models={:?} image_models={:?}",
-            config.instance_id,
+            "registered openai provider_instance_name={} provider_type={} provider_driver={} base_url={} models={:?} image_models={:?}",
+            config.provider_instance_name,
             config.provider_type,
+            config.provider_driver,
             config.base_url,
             config.models,
             config.image_models
@@ -2562,8 +2627,9 @@ data: [DONE]
             api_token: "token".to_string(),
             alias_map: HashMap::new(),
             instances: vec![SettingsOpenAIInstanceConfig {
-                instance_id: "openai-1".to_string(),
-                provider_type: "openai".to_string(),
+                provider_instance_name: "openai-1".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 base_url: default_base_url(),
                 auth_mode: default_auth_mode(),
                 timeout_ms: default_timeout_ms(),
@@ -2602,8 +2668,9 @@ data: [DONE]
             api_token: String::new(),
             alias_map: HashMap::new(),
             instances: vec![SettingsOpenAIInstanceConfig {
-                instance_id: "sn-openai-1".to_string(),
-                provider_type: "sn-openai".to_string(),
+                provider_instance_name: "sn-openai-1".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "sn-openai".to_string(),
                 base_url: "https://sn.buckyos.ai/v1".to_string(),
                 auth_mode: DEVICE_JWT_AUTH_MODE.to_string(),
                 timeout_ms: default_timeout_ms(),
@@ -2625,8 +2692,9 @@ data: [DONE]
     fn use_chat_completions_endpoint_detects_custom_sn_path() {
         let provider = OpenAIProvider::new(
             OpenAIInstanceConfig {
-                instance_id: "sn-openai-1".to_string(),
-                provider_type: "sn-openai".to_string(),
+                provider_instance_name: "sn-openai-1".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "sn-openai".to_string(),
                 base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
                 auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),

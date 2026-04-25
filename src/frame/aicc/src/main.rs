@@ -5,6 +5,11 @@ mod claude_protocol;
 mod complete_request_queue;
 mod gimini;
 mod minimax;
+mod model_registry;
+mod model_router;
+mod model_scheduler;
+mod model_session;
+mod model_types;
 mod openai;
 mod openai_protocol;
 
@@ -50,7 +55,7 @@ fn apply_provider_settings(
     settings: &serde_json::Value,
 ) -> Result<usize> {
     center.registry().clear();
-    center.model_catalog().clear();
+    center.reset_model_routes();
 
     let mut registered_total = 0usize;
     let mut errors = vec![];

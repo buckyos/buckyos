@@ -1,8 +1,12 @@
 use crate::aicc::{
-    AIComputeCenter, CostEstimate, Provider, ProviderError, ProviderInstance, ProviderStartResult,
-    ResolvedRequest, TaskEventSink,
+    llm_logical_mounts, provider_model_metadata, provider_type_from_settings, AIComputeCenter,
+    Provider, ProviderError, ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::claude_protocol::convert_complete_request;
+use crate::model_types::{
+    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory,
+    ProviderOrigin, ProviderTypeTrustedSource, QuotaState,
+};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
@@ -22,8 +26,9 @@ const DEFAULT_CLAUDE_MODELS: &str = "claude-3-7-sonnet-20250219,claude-3-5-haiku
 
 #[derive(Debug, Clone)]
 pub struct ClaudeInstanceConfig {
-    pub instance_id: String,
+    pub provider_instance_name: String,
     pub provider_type: String,
+    pub provider_driver: String,
     pub base_url: String,
     pub timeout_ms: u64,
     pub models: Vec<String>,
@@ -35,6 +40,7 @@ pub struct ClaudeInstanceConfig {
 #[derive(Debug, Clone)]
 pub struct ClaudeProvider {
     instance: ProviderInstance,
+    inventory: ProviderInventory,
     client: Client,
     api_token: String,
     base_url: String,
@@ -53,17 +59,52 @@ impl ClaudeProvider {
             .build()
             .context("failed to build reqwest client for claude provider")?;
 
+        let provider_type = provider_type_from_settings(cfg.provider_type.as_str());
+        let provider_instance_name = cfg.provider_instance_name.clone();
+        let provider_driver = cfg.provider_driver.clone();
         let instance = ProviderInstance {
-            instance_id: cfg.instance_id,
-            provider_type: cfg.provider_type,
+            provider_instance_name: provider_instance_name.clone(),
+            provider_type: provider_type.clone(),
+            provider_driver: provider_driver.clone(),
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
             capabilities: vec![Capability::LlmRouter],
-            features: cfg.features,
+            features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
+        };
+        let models = cfg
+            .models
+            .iter()
+            .map(|model| {
+                provider_model_metadata(
+                    provider_instance_name.as_str(),
+                    provider_type.clone(),
+                    model.as_str(),
+                    ApiType::LlmChat,
+                    llm_logical_mounts(provider_driver.as_str(), model.as_str()),
+                    &cfg.features,
+                    Some(0.01),
+                    Some(1800),
+                )
+            })
+            .collect::<Vec<_>>();
+        let inventory = ProviderInventory {
+            provider_instance_name,
+            provider_type,
+            provider_driver,
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
+            version: None,
+            inventory_revision: Some("settings-v1".to_string()),
+            models,
         };
 
         Ok(Self {
             instance,
+            inventory,
             client,
             api_token,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
@@ -201,8 +242,8 @@ impl ClaudeProvider {
                 .unwrap_or("claude api returned non-success status")
                 .to_string();
             warn!(
-                "aicc.claude.llm.error instance_id={} model={} trace_id={:?} status={} body={}",
-                self.instance.instance_id,
+                "aicc.claude.llm.error provider_instance_name={} model={} trace_id={:?} status={} body={}",
+                self.instance.provider_instance_name,
                 provider_model,
                 ctx.trace_id,
                 status.as_u16(),
@@ -258,22 +299,28 @@ impl ClaudeProvider {
 
 #[async_trait]
 impl Provider for ClaudeProvider {
-    fn instance(&self) -> &ProviderInstance {
-        &self.instance
+    fn inventory(&self) -> ProviderInventory {
+        self.inventory.clone()
     }
 
-    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate {
-        let (input_tokens, output_tokens) = Self::estimate_tokens(req);
+    fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
+        let provider_model = provider_model_from_exact(input.exact_model.as_str());
+        let input_tokens = input.input_tokens.max(1);
+        let output_tokens = input.estimated_output_tokens.unwrap_or(1024).max(1);
         let usage = AiUsage {
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
             total_tokens: Some(input_tokens.saturating_add(output_tokens)),
         };
 
-        CostEstimate {
+        CostEstimateOutput {
             estimated_cost_usd: self
                 .estimate_cost_for_usage(provider_model, &usage)
-                .map(|cost| cost.amount),
+                .map(|cost| cost.amount)
+                .unwrap_or(1.0),
+            pricing_mode: PricingMode::PerToken,
+            quota_state: QuotaState::Normal,
+            confidence: 0.7,
             estimated_latency_ms: Some(1800),
         }
     }
@@ -306,6 +353,13 @@ impl Provider for ClaudeProvider {
     }
 }
 
+fn provider_model_from_exact(exact_model: &str) -> &str {
+    exact_model
+        .rsplit_once('@')
+        .map(|(model, _)| model)
+        .unwrap_or(exact_model)
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct ClaudeSettings {
     #[serde(default = "default_claude_enabled")]
@@ -321,9 +375,11 @@ struct ClaudeSettings {
 #[derive(Debug, Clone, Deserialize)]
 struct SettingsClaudeInstanceConfig {
     #[serde(default = "default_instance_id")]
-    instance_id: String,
+    provider_instance_name: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
+    #[serde(default = "default_provider_driver")]
+    provider_driver: String,
     #[serde(default = "default_base_url")]
     base_url: String,
     #[serde(default = "default_timeout_ms")]
@@ -347,6 +403,10 @@ fn default_instance_id() -> String {
 }
 
 fn default_provider_type() -> String {
+    "cloud_api".to_string()
+}
+
+fn default_provider_driver() -> String {
     "claude".to_string()
 }
 
@@ -421,8 +481,9 @@ fn parse_claude_settings(settings: &Value) -> Result<Option<ClaudeSettings>> {
 fn build_claude_instances(settings: &ClaudeSettings) -> Result<Vec<ClaudeInstanceConfig>> {
     let raw_instances = if settings.instances.is_empty() {
         vec![SettingsClaudeInstanceConfig {
-            instance_id: default_instance_id(),
+            provider_instance_name: default_instance_id(),
             provider_type: default_provider_type(),
+            provider_driver: default_provider_driver(),
             base_url: default_base_url(),
             timeout_ms: default_timeout_ms(),
             models: vec![],
@@ -443,7 +504,7 @@ fn build_claude_instances(settings: &ClaudeSettings) -> Result<Vec<ClaudeInstanc
         if models.is_empty() {
             return Err(anyhow!(
                 "claude instance {} has no models configured",
-                raw_instance.instance_id
+                raw_instance.provider_instance_name
             ));
         }
 
@@ -457,8 +518,9 @@ fn build_claude_instances(settings: &ClaudeSettings) -> Result<Vec<ClaudeInstanc
         };
 
         instances.push(ClaudeInstanceConfig {
-            instance_id: raw_instance.instance_id,
+            provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
+            provider_driver: raw_instance.provider_driver,
             base_url: raw_instance.base_url,
             timeout_ms: raw_instance.timeout_ms,
             models,
@@ -553,23 +615,21 @@ pub fn register_claude_providers(center: &AIComputeCenter, settings: &Value) -> 
     }
 
     for (config, provider) in prepared.into_iter() {
-        center.registry().add_provider(provider);
-        register_default_aliases(
-            center,
-            config.provider_type.as_str(),
-            &config.models,
-            config.default_model.as_deref(),
-        );
-        register_custom_aliases(
-            center,
-            config.provider_type.as_str(),
-            &claude_settings.alias_map,
-        );
-        register_custom_aliases(center, config.provider_type.as_str(), &config.alias_map);
+        let inventory = center.registry().add_provider(provider);
+        center
+            .model_registry()
+            .write()
+            .map_err(|_| anyhow!("model registry lock poisoned"))?
+            .apply_inventory(inventory)
+            .map_err(|err| anyhow!("failed to apply claude inventory: {}", err))?;
 
         info!(
-            "registered claude instance id={} provider_type={} base_url={} models={:?}",
-            config.instance_id, config.provider_type, config.base_url, config.models,
+            "registered claude provider_instance_name={} provider_type={} provider_driver={} base_url={} models={:?}",
+            config.provider_instance_name,
+            config.provider_type,
+            config.provider_driver,
+            config.base_url,
+            config.models,
         );
     }
 
@@ -579,7 +639,6 @@ pub fn register_claude_providers(center: &AIComputeCenter, settings: &Value) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aicc::ModelCatalog;
 
     #[test]
     fn build_claude_instances_uses_defaults() {
@@ -592,7 +651,8 @@ mod tests {
 
         let instances = build_claude_instances(&settings).expect("instances should build");
         assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].provider_type, "claude");
+        assert_eq!(instances[0].provider_type, "cloud_api");
+        assert_eq!(instances[0].provider_driver, "claude");
         assert_eq!(
             instances[0].default_model.as_deref(),
             Some("claude-3-7-sonnet-20250219")
@@ -600,16 +660,17 @@ mod tests {
     }
 
     #[test]
-    fn register_claude_aliases_exposes_defaults() {
-        let center = AIComputeCenter::new(Default::default(), ModelCatalog::default());
+    fn register_claude_inventory_exposes_default_mounts() {
+        let center = AIComputeCenter::default();
         let settings = json!({
             "claude": {
                 "enabled": true,
                 "api_token": "token",
                 "instances": [
                     {
-                        "instance_id": "claude-main",
-                        "provider_type": "claude",
+                        "provider_instance_name": "claude-main",
+                        "provider_type": "cloud_api",
+                        "provider_driver": "claude",
                         "base_url": "https://api.anthropic.com/v1",
                         "models": ["claude-3-7-sonnet-20250219"],
                         "default_model": "claude-3-7-sonnet-20250219"
@@ -621,10 +682,13 @@ mod tests {
         let count = register_claude_providers(&center, &settings).expect("register should work");
         assert_eq!(count, 1);
 
-        let resolved = center
-            .model_catalog()
-            .resolve("", &Capability::LlmRouter, "llm.plan.default", "claude")
-            .expect("default alias should resolve");
-        assert_eq!(resolved, "claude-3-7-sonnet-20250219");
+        let items = center
+            .model_registry()
+            .read()
+            .expect("model registry lock")
+            .default_items_for_path("llm.claude");
+        assert!(items
+            .values()
+            .any(|item| item.target == "claude-3-7-sonnet-20250219@claude-main"));
     }
 }

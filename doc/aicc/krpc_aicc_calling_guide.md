@@ -180,8 +180,9 @@ AICC(MiniMax) 会调用：
     "api_token": "mock-openai-token",
     "instances": [
       {
-        "instance_id": "openai-mock-1",
-        "provider_type": "openai",
+        "provider_instance_name": "openai-mock-1",
+        "provider_type": "cloud_api",
+        "provider_driver": "openai",
         "base_url": "http://127.0.0.1:18080/v1",
         "models": ["gpt-4o-mini"],
         "default_model": "gpt-4o-mini"
@@ -193,8 +194,9 @@ AICC(MiniMax) 会调用：
     "api_key": "mock-gemini-key",
     "instances": [
       {
-        "instance_id": "gemini-mock-1",
-        "provider_type": "google-gimini",
+        "provider_instance_name": "gemini-mock-1",
+        "provider_type": "cloud_api",
+        "provider_driver": "google-gimini",
         "base_url": "http://127.0.0.1:18081/v1beta",
         "models": ["gemini-2.5-flash"],
         "default_model": "gemini-2.5-flash"
@@ -206,8 +208,9 @@ AICC(MiniMax) 会调用：
     "api_token": "mock-minimax-token",
     "instances": [
       {
-        "instance_id": "minimax-mock-1",
-        "provider_type": "minimax",
+        "provider_instance_name": "minimax-mock-1",
+        "provider_type": "cloud_api",
+        "provider_driver": "minimax",
         "base_url": "http://127.0.0.1:18082/anthropic/v1",
         "models": ["MiniMax-M2.5"],
         "default_model": "MiniMax-M2.5"

@@ -39,12 +39,15 @@ AICC 的 Provider 接口定义在 `src/frame/aicc/src/aicc.rs`，核心约束是
 
 建议直接参照 `claude.rs` / `minimax.rs` 的结构：
 
-- `XXXInstanceConfig`：实例级配置（`instance_id`、`provider_type`、`base_url`、`timeout_ms`、`models`、`default_model`、`features`、`alias_map`）
+- `XXXInstanceConfig`：实例级配置（`provider_instance_name`、`provider_type`、`provider_driver`、`base_url`、`timeout_ms`、`models`、`default_model`、`features`）
+  - `provider_type` 是可信部署类型，常见值为 `cloud_api` / `local_inference` / `proxy_unknown`
+  - `provider_driver` 表示厂商/实现名，例如 `openai`、`claude`、`google-gimini`、`minimax`
 - `XXXProvider`：
   - `instance: ProviderInstance`
+  - `inventory: ProviderInventory`
   - `client: reqwest::Client`
   - `api_token`、`base_url`
-- `new(cfg, api_token)` 中组装 `ProviderInstance`，声明支持的 capability（例如 `Capability::LlmRouter`）。
+- `new(cfg, api_token)` 中组装 `ProviderInstance` 和 `ProviderInventory`，每个模型必须声明 exact model name（`<provider_model_id>@<provider_instance_name>`）、`api_types`、`logical_mounts`、capability、pricing、health。
 
 ## 步骤 2：实现 Provider 协议转换层（建议独立文件）
 
@@ -80,20 +83,15 @@ Claude 就走了这条路线：`claude.rs` 调用 `claude_protocol::convert_comp
 
 建议支持 `api_key`/`api_token` 双别名，降低配置迁移成本（Claude 已实现）。
 
-## 步骤 5：注册 Provider 到 Registry 和 ModelCatalog
+## 步骤 5：注册 Provider 到 Registry 和 ModelRegistry
 
 新增 `register_<provider>_providers(center, settings)`：
 
 - 创建 Provider 实例并 `center.registry().add_provider(provider)`
-- 注册默认 alias（至少覆盖）：
-  - `llm.<model>`
-  - `llm.default`
-  - `llm.chat.default`
-  - `llm.plan.default`
-  - `llm.code.default`
-- 注册自定义 `alias_map`（全局 + 实例级）
+- 把 `add_provider` 返回的 `ProviderInventory` 写入 `center.model_registry().write()?.apply_inventory(inventory)`
+- 不再向 `ModelCatalog` 写 alias；默认路由由 inventory 里的 `logical_mounts` 和 `SessionConfig` 决定
 
-如果 Provider 支持多 capability（如 `LlmRouter + Text2Image`），alias 注册时要按 alias 前缀路由到正确 capability（见 `openai.rs` / `gimini.rs`）。
+如果 Provider 支持多 capability（如 `LlmRouter + Text2Image`），inventory 中要为不同模型声明正确的 `ApiType` 和 logical mount（见 `openai.rs` / `gimini.rs`）。
 
 ## 步骤 6：把模块接进启动链路
 
@@ -113,7 +111,7 @@ Claude 就走了这条路线：`claude.rs` 调用 `claude_protocol::convert_comp
 
 - `src/kernel/scheduler/src/system_config_builder.rs`
   - 在 `build_aicc_settings()` 插入 `<provider>` 配置块
-  - 给出 `alias_map` + `instances` 的默认样例
+  - 给出 `instances` 的默认样例
 
 这样用户在安装/启动后就能直接得到结构正确的 settings。
 
@@ -170,22 +168,16 @@ Claude 在 `8d169271` 就是按这套补齐。
   "myprovider": {
     "enabled": true,
     "api_token": "YOUR_TOKEN",
-    "alias_map": {
-      "llm.default": "model-a",
-      "myprovider-fast": "model-b"
-    },
     "instances": [
       {
-        "instance_id": "myprovider-default",
-        "provider_type": "myprovider",
+        "provider_instance_name": "myprovider-default",
+        "provider_type": "cloud_api",
+        "provider_driver": "myprovider",
         "base_url": "https://api.example.com/v1",
         "timeout_ms": 60000,
         "models": ["model-a", "model-b"],
         "default_model": "model-a",
-        "features": ["plan", "json_output", "tool_calling"],
-        "alias_map": {
-          "llm.plan.default": "model-a"
-        }
+        "features": ["plan", "json_output", "tool_calling"]
       }
     ]
   }
@@ -196,10 +188,10 @@ Claude 在 `8d169271` 就是按这套补齐。
 
 ## 5. 常见坑（按出现频率）
 
-- 只注册了 Provider，没注册 alias：路由会报 `model_alias_not_mapped`
-- alias 绑定到了错误 capability：看起来“有映射”，实际仍不可路由
+- 只注册了 Provider，没写入 `ModelRegistry`：路由会报 `no_provider_available`
+- inventory 的 `api_types` / `logical_mounts` 写错：看起来“有模型”，实际仍不可路由
 - 把 4xx 都标 retryable：会导致无意义重试放大故障
-- `provider_type` 不一致（settings 和代码中不一致）：`ModelCatalog.resolve()` 命不中
+- 把厂商名继续写进 `provider_type`：`provider_type` 应是可信部署类型，厂商名放到 `provider_driver`
 - 忘记在 `main.rs` 接入 `register_*`：Provider 文件存在但永远不会启用
 - 只改了 AICC 没改 control_panel：后端可用但 UI 不可配置/不可观测
 
@@ -207,7 +199,7 @@ Claude 在 `8d169271` 就是按这套补齐。
 
 1. 复制 `claude.rs` 为模板改名，先跑通 `LlmRouter`
 2. 接入 `lib.rs` + `main.rs` 注册链路
-3. 补 settings 解析与 alias 注册
+3. 补 settings 解析与 inventory 注册
 4. 先写 adapter 4 条协议测试（200/429/400/网络错误）
 5. 最后补细节能力（tool calling、json_output、多 capability）
 

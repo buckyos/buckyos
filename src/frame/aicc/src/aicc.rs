@@ -1,5 +1,15 @@
 use crate::aicc_usage_log_db::AiccUsageLogDb;
 use crate::complete_request_queue::QUEUE_STATUS_QUEUED;
+use crate::model_registry::ModelRegistry;
+use crate::model_router::{ModelRouter, RouteRequest};
+use crate::model_scheduler::{ModelScheduler, StickyBindingKey, StickyBindingStore};
+use crate::model_session::SessionConfig;
+use crate::model_types::{
+    ApiType, CostClass, CostEstimateInput, CostEstimateOutput, HealthStatus, LatencyClass,
+    ModelAttributes, ModelCandidate, ModelCapabilities, ModelHealth, ModelMetadata, ModelPricing,
+    PricingMode, PrivacyClass, ProviderInventory, ProviderOrigin, ProviderType,
+    ProviderTypeTrustedSource, QuotaState, RequiredModelFeatures, RoutePolicy,
+};
 use ::kRPC::*;
 use async_trait::async_trait;
 use base64::engine::general_purpose;
@@ -92,8 +102,12 @@ fn redacted_summary_value(summary: &AiResponseSummary) -> Value {
 
 #[derive(Clone, Debug)]
 pub struct ProviderInstance {
-    pub instance_id: String,
-    pub provider_type: String,
+    pub provider_instance_name: String,
+    pub provider_type: ProviderType,
+    pub provider_driver: String,
+    pub provider_origin: ProviderOrigin,
+    pub provider_type_trusted_source: ProviderTypeTrustedSource,
+    pub provider_type_revision: Option<String>,
     pub capabilities: Vec<Capability>,
     pub features: Vec<Feature>,
     pub endpoint: Option<String>,
@@ -118,6 +132,27 @@ pub struct CostEstimate {
     pub estimated_latency_ms: Option<u64>,
 }
 
+impl From<&CostEstimateOutput> for CostEstimate {
+    fn from(value: &CostEstimateOutput) -> Self {
+        Self {
+            estimated_cost_usd: Some(value.estimated_cost_usd),
+            estimated_latency_ms: value.estimated_latency_ms,
+        }
+    }
+}
+
+impl From<CostEstimate> for CostEstimateOutput {
+    fn from(value: CostEstimate) -> Self {
+        Self {
+            estimated_cost_usd: value.estimated_cost_usd.unwrap_or(1.0),
+            pricing_mode: PricingMode::Unknown,
+            quota_state: QuotaState::Unknown,
+            confidence: 0.0,
+            estimated_latency_ms: value.estimated_latency_ms,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct SnOpenAIBillingAdjustment {
     raw_cost_usd: f64,
@@ -135,11 +170,11 @@ impl SnOpenAIBillingLedger {
     fn preview_billed_cost(
         &self,
         tenant_id: &str,
-        provider_type: &str,
-        raw_cost_usd: Option<f64>,
+        provider_driver: &str,
+        raw_cost_usd: f64,
     ) -> Option<f64> {
-        let raw_cost_usd = raw_cost_usd?.max(0.0);
-        if provider_type != "sn-openai" {
+        let raw_cost_usd = raw_cost_usd.max(0.0);
+        if provider_driver != "sn-openai" {
             return Some(raw_cost_usd);
         }
 
@@ -160,10 +195,10 @@ impl SnOpenAIBillingLedger {
     fn apply_charge(
         &self,
         tenant_id: &str,
-        provider_type: &str,
+        provider_driver: &str,
         raw_cost_usd: Option<f64>,
     ) -> Option<SnOpenAIBillingAdjustment> {
-        if provider_type != "sn-openai" {
+        if provider_driver != "sn-openai" {
             return None;
         }
 
@@ -812,8 +847,11 @@ impl ResourceResolver for PassthroughResourceResolver {
 
 #[async_trait]
 pub trait Provider: Send + Sync {
-    fn instance(&self) -> &ProviderInstance;
-    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate;
+    fn inventory(&self) -> ProviderInventory;
+    fn legacy_instance(&self) -> Option<&ProviderInstance> {
+        None
+    }
+    fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput;
     async fn start(
         &self,
         ctx: InvokeCtx,
@@ -834,14 +872,14 @@ pub struct ProviderMetrics {
 
 #[derive(Clone)]
 struct ProviderEntry {
-    instance: ProviderInstance,
+    inventory: ProviderInventory,
     provider: Arc<dyn Provider>,
     metrics: ProviderMetrics,
 }
 
 #[derive(Clone, Debug)]
 pub struct RegistryCandidate {
-    pub instance: ProviderInstance,
+    pub inventory: ProviderInventory,
     pub metrics: ProviderMetrics,
 }
 
@@ -856,28 +894,29 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn add_provider(&self, provider: Arc<dyn Provider>) {
-        let instance = provider.instance().clone();
+    pub fn add_provider(&self, provider: Arc<dyn Provider>) -> ProviderInventory {
+        let inventory = provider.inventory();
         let mut entries = self
             .entries
             .write()
             .expect("registry lock should be available");
         entries.insert(
-            instance.instance_id.clone(),
+            inventory.provider_instance_name.clone(),
             ProviderEntry {
-                instance,
+                inventory: inventory.clone(),
                 provider,
                 metrics: ProviderMetrics::default(),
             },
         );
+        inventory
     }
 
-    pub fn remove_instance(&self, instance_id: &str) {
+    pub fn remove_instance(&self, provider_instance_name: &str) {
         let mut entries = self
             .entries
             .write()
             .expect("registry lock should be available");
-        entries.remove(instance_id);
+        entries.remove(provider_instance_name);
     }
 
     pub fn clear(&self) {
@@ -895,9 +934,9 @@ impl Registry {
             .expect("registry lock should be available");
         let candidates = entries
             .values()
-            .filter(|entry| entry.instance.supports_capability(&capability))
+            .filter(|entry| inventory_supports_capability(&entry.inventory, &capability))
             .map(|entry| RegistryCandidate {
-                instance: entry.instance.clone(),
+                inventory: entry.inventory.clone(),
                 metrics: entry.metrics.clone(),
             })
             .collect::<Vec<_>>();
@@ -908,6 +947,29 @@ impl Registry {
     pub fn get_provider(&self, instance_id: &str) -> Option<Arc<dyn Provider>> {
         let entries = self.entries.read().ok()?;
         entries.get(instance_id).map(|entry| entry.provider.clone())
+    }
+
+    pub fn provider_count(&self) -> usize {
+        self.entries.read().map(|entries| entries.len()).unwrap_or(0)
+    }
+
+    pub fn inventory(&self, provider_instance_name: &str) -> Option<ProviderInventory> {
+        let entries = self.entries.read().ok()?;
+        entries
+            .get(provider_instance_name)
+            .map(|entry| entry.inventory.clone())
+    }
+
+    pub fn inventories(&self) -> Vec<ProviderInventory> {
+        self.entries
+            .read()
+            .map(|entries| {
+                entries
+                    .values()
+                    .map(|entry| entry.inventory.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn mark_start_begin(&self, instance_id: &str) {
@@ -1150,10 +1212,18 @@ impl Router {
 
         let mut alias_mapped = false;
         let mut scored = vec![];
+        let (input_tokens, output_tokens) = estimate_request_tokens(req);
 
         for candidate in snapshot.candidates.iter() {
-            let instance_id = candidate.instance.instance_id.as_str();
-            let provider_type = candidate.instance.provider_type.as_str();
+            let instance_id = candidate.inventory.provider_instance_name.as_str();
+            let Some(provider) = registry.get_provider(instance_id) else {
+                continue;
+            };
+            let legacy_instance = provider.legacy_instance();
+            let provider_type = legacy_instance
+                .map(|instance| instance.provider_driver.as_str())
+                .filter(|value| !value.is_empty())
+                .unwrap_or(candidate.inventory.provider_driver.as_str());
             let provider_model = model_catalog.resolve(
                 tenant_id,
                 &req.capability,
@@ -1164,98 +1234,44 @@ impl Router {
                 alias_mapped = true;
             }
 
-            if !candidate
-                .instance
-                .supports_features(&req.requirements.must_features)
-            {
-                debug!(
-                    "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=missing_required_features required={:?} provider_features={:?}",
-                    tenant_id,
-                    req.capability,
-                    req.model.alias,
-                    instance_id,
-                    provider_type,
-                    req.requirements.must_features,
-                    candidate.instance.features
-                );
-                continue;
+            if let Some(instance) = legacy_instance {
+                if !instance.supports_features(&req.requirements.must_features) {
+                    continue;
+                }
             }
 
             if let Some(allow) = allow_set.as_ref() {
                 if !allow.contains(provider_type) {
-                    debug!(
-                        "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=provider_not_in_allow_list allow={:?}",
-                        tenant_id,
-                        req.capability,
-                        req.model.alias,
-                        instance_id,
-                        provider_type,
-                        allow
-                    );
                     continue;
                 }
             }
             if let Some(deny) = deny_set.as_ref() {
                 if deny.contains(provider_type) {
-                    debug!(
-                        "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=provider_in_deny_list deny={:?}",
-                        tenant_id,
-                        req.capability,
-                        req.model.alias,
-                        instance_id,
-                        provider_type,
-                        deny
-                    );
                     continue;
                 }
             }
 
             let Some(provider_model) = provider_model else {
-                debug!(
-                    "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=model_alias_not_mapped",
-                    tenant_id,
-                    req.capability,
-                    req.model.alias,
-                    instance_id,
-                    provider_type
-                );
-                continue;
-            };
-            let Some(provider) = registry.get_provider(instance_id) else {
-                debug!(
-                    "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=provider_not_found_in_registry",
-                    tenant_id,
-                    req.capability,
-                    req.model.alias,
-                    instance_id,
-                    provider_type
-                );
                 continue;
             };
 
-            let estimate = provider.estimate_cost(req, provider_model.as_str());
-            let effective_estimated_cost = sn_openai_billing
-                .and_then(|billing| {
-                    billing.preview_billed_cost(
-                        tenant_id,
-                        provider_type,
-                        estimate.estimated_cost_usd,
-                    )
-                })
-                .or(estimate.estimated_cost_usd);
+            let estimate = provider.estimate_cost(&CostEstimateInput {
+                api_type: api_type_for_capability(&req.capability).unwrap_or(ApiType::LlmChat),
+                exact_model: exact_model_name(provider_model.as_str(), instance_id),
+                input_tokens,
+                estimated_output_tokens: Some(output_tokens),
+                cached_input_tokens: None,
+                request_features: req.requirements.must_features.clone(),
+            });
+            let compat_estimate = CostEstimate::from(&estimate);
+            let effective_estimated_cost = compat_estimate.estimated_cost_usd.and_then(|cost| {
+                sn_openai_billing
+                    .and_then(|billing| billing.preview_billed_cost(tenant_id, provider_type, cost))
+                    .or(Some(cost))
+            });
             if let Some(max_cost) = req.requirements.max_cost_usd {
                 if let Some(estimated_cost) = effective_estimated_cost {
                     if estimated_cost > max_cost {
-                        debug!(
-                            "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=estimated_cost_exceeds_limit estimated_cost_usd={} max_cost_usd={}",
-                            tenant_id,
-                            req.capability,
-                            req.model.alias,
-                            instance_id,
-                            provider_type,
-                            estimated_cost,
-                            max_cost
-                        );
                         continue;
                     }
                 }
@@ -1264,27 +1280,17 @@ impl Router {
             let predicted_latency_ms = if candidate.metrics.ewma_latency_ms > 0.0 {
                 candidate.metrics.ewma_latency_ms
             } else {
-                estimate.estimated_latency_ms.unwrap_or(0) as f64
+                compat_estimate.estimated_latency_ms.unwrap_or(0) as f64
             };
 
             if let Some(max_latency_ms) = req.requirements.max_latency_ms {
                 if predicted_latency_ms > max_latency_ms as f64 {
-                    debug!(
-                        "aicc.routing.candidate_dropped tenant={} capability={:?} model_alias={} instance_id={} provider_type={} reason=predicted_latency_exceeds_limit predicted_latency_ms={} max_latency_ms={}",
-                        tenant_id,
-                        req.capability,
-                        req.model.alias,
-                        instance_id,
-                        provider_type,
-                        predicted_latency_ms,
-                        max_latency_ms
-                    );
                     continue;
                 }
             }
 
             scored.push(ScoredRouteCandidate {
-                instance_id: candidate.instance.instance_id.clone(),
+                instance_id: instance_id.to_string(),
                 provider_model,
                 cost: effective_estimated_cost.unwrap_or(1.0).max(0.0),
                 latency: predicted_latency_ms.max(0.0),
@@ -1373,6 +1379,207 @@ struct ScoredRouteCandidate {
     score: f64,
 }
 
+fn inventory_supports_capability(inventory: &ProviderInventory, capability: &Capability) -> bool {
+    let Some(api_type) = api_type_for_capability(capability) else {
+        return false;
+    };
+    inventory
+        .models
+        .iter()
+        .any(|model| model.api_types.iter().any(|item| item == &api_type))
+}
+
+fn api_type_for_capability(capability: &Capability) -> Option<ApiType> {
+    match capability {
+        Capability::LlmRouter => Some(ApiType::LlmChat),
+        Capability::Text2Image => Some(ApiType::ImageTextToImage),
+        Capability::Image2Text => Some(ApiType::ImageToImage),
+        Capability::Text2Voice
+        | Capability::Voice2Text
+        | Capability::Text2Video
+        | Capability::Video2Text => Some(ApiType::LlmCompletion),
+    }
+}
+
+fn route_error_to_rpc(error: crate::model_types::RouteError) -> RPCErrors {
+    let code = match error.code {
+        crate::model_types::RouteErrorCode::NoCandidate => "no_provider_available",
+        crate::model_types::RouteErrorCode::ModelNotFound => "model_alias_not_mapped",
+        crate::model_types::RouteErrorCode::InvalidModelName => "bad_request",
+        crate::model_types::RouteErrorCode::BudgetExceeded => "max_cost_exceeded",
+        crate::model_types::RouteErrorCode::ContextTooLong => "context_too_long",
+        crate::model_types::RouteErrorCode::FeatureUnsupported => "no_provider_available",
+        crate::model_types::RouteErrorCode::ExactModelUnavailable
+        | crate::model_types::RouteErrorCode::ProviderUnavailable
+        | crate::model_types::RouteErrorCode::PolicyRejected => "no_provider_available",
+        _ => error.code.as_str(),
+    };
+    reason_error(code, error.to_string())
+}
+
+fn route_policy_from_request(request: &CompleteRequest) -> RoutePolicy {
+    let mut policy = RoutePolicy {
+        required_features: required_model_features(&request.requirements.must_features),
+        max_estimated_cost_usd: request.requirements.max_cost_usd,
+        ..Default::default()
+    };
+    if let Some(extra) = request.requirements.extra.as_ref() {
+        if let Some(local_only) = extra.get("local_only").and_then(Value::as_bool) {
+            policy.local_only = local_only;
+        }
+        if let Some(allow_fallback) = extra.get("allow_fallback").and_then(Value::as_bool) {
+            policy.allow_fallback = allow_fallback;
+        }
+        if let Some(runtime_failover) = extra.get("runtime_failover").and_then(Value::as_bool) {
+            policy.runtime_failover = runtime_failover;
+        }
+    }
+    policy
+}
+
+fn required_model_features(features: &[Feature]) -> RequiredModelFeatures {
+    let mut required = RequiredModelFeatures::default();
+    for feature in features {
+        match feature.as_str() {
+            buckyos_api::features::TOOL_CALLING => required.tool_call = true,
+            buckyos_api::features::JSON_OUTPUT => required.json_schema = true,
+            buckyos_api::features::VISION => required.vision = true,
+            "streaming" => required.streaming = true,
+            _ => {}
+        }
+    }
+    required
+}
+
+fn estimate_request_tokens(request: &CompleteRequest) -> (u64, u64) {
+    let mut text_len = request.payload.text.as_ref().map(|text| text.len()).unwrap_or(0);
+    for message in request.payload.messages.iter() {
+        text_len = text_len.saturating_add(message.content.len());
+    }
+    let input_tokens = ((text_len as f64) / 4.0).ceil().max(1.0) as u64;
+    let output_tokens = request
+        .payload
+        .options
+        .as_ref()
+        .and_then(|value| value.get("max_tokens").and_then(Value::as_u64))
+        .unwrap_or(1024)
+        .max(1);
+    (input_tokens, output_tokens)
+}
+
+fn default_global_session_config() -> SessionConfig {
+    SessionConfig {
+        revision: Some("builtin-aicc-router-v1".to_string()),
+        ..Default::default()
+    }
+}
+
+pub fn provider_type_from_settings(value: &str) -> ProviderType {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "local_inference" | "local" => ProviderType::LocalInference,
+        "cloud_api" | "cloud" => ProviderType::CloudApi,
+        "proxy_unknown" | "proxy" | "unknown" | "" => ProviderType::ProxyUnknown,
+        _ => ProviderType::ProxyUnknown,
+    }
+}
+
+pub fn exact_model_name(provider_model_id: &str, provider_instance_name: &str) -> String {
+    format!("{}@{}", provider_model_id, provider_instance_name)
+}
+
+pub fn llm_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec<String> {
+    let mut mounts = vec![format!(
+        "llm.{}",
+        provider_driver
+            .trim()
+            .replace("google-", "")
+            .replace('_', "-")
+    )];
+    let lowered = provider_model_id.to_ascii_lowercase();
+    for family in ["gpt5", "gpt-5", "claude", "gemini", "gimini", "minimax"] {
+        if lowered.contains(family) {
+            let normalized = family.replace('-', "");
+            let mount = if normalized == "gimini" {
+                "llm.gemini".to_string()
+            } else {
+                format!("llm.{}", normalized)
+            };
+            if !mounts.iter().any(|item| item == &mount) {
+                mounts.push(mount);
+            }
+        }
+    }
+    mounts
+}
+
+pub fn image_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec<String> {
+    let driver_mount = format!(
+        "image.txt2image.{}",
+        provider_driver
+            .trim()
+            .replace("google-", "")
+            .replace('_', "-")
+    );
+    let mut mounts = vec![driver_mount];
+    let lowered = provider_model_id.to_ascii_lowercase();
+    if lowered.contains("gpt") {
+        mounts.push("image.txt2image.gpt_image".to_string());
+    } else if lowered.contains("dall-e") {
+        mounts.push("image.txt2image.dalle".to_string());
+    } else if lowered.contains("gemini") || lowered.contains("gimini") {
+        mounts.push("image.txt2image.gemini".to_string());
+    }
+    mounts
+}
+
+pub fn provider_model_metadata(
+    provider_instance_name: &str,
+    provider_type: ProviderType,
+    provider_model_id: &str,
+    api_type: ApiType,
+    logical_mounts: Vec<String>,
+    features: &[Feature],
+    estimated_cost_usd: Option<f64>,
+    estimated_latency_ms: Option<u64>,
+) -> ModelMetadata {
+    ModelMetadata {
+        provider_model_id: provider_model_id.to_string(),
+        exact_model: exact_model_name(provider_model_id, provider_instance_name),
+        parameter_scale: None,
+        api_types: vec![api_type],
+        logical_mounts,
+        capabilities: ModelCapabilities {
+            streaming: features.iter().any(|item| item == "streaming"),
+            tool_call: features.iter().any(|item| item == buckyos_api::features::TOOL_CALLING),
+            json_schema: features.iter().any(|item| item == buckyos_api::features::JSON_OUTPUT),
+            vision: features.iter().any(|item| item == buckyos_api::features::VISION),
+            max_context_tokens: None,
+        },
+        attributes: ModelAttributes {
+            provider_type: provider_type.clone(),
+            local: provider_type == ProviderType::LocalInference,
+            privacy: if provider_type == ProviderType::LocalInference {
+                PrivacyClass::Local
+            } else {
+                PrivacyClass::Cloud
+            },
+            quality_score: Some(0.7),
+            latency_class: LatencyClass::Unknown,
+            cost_class: CostClass::Unknown,
+        },
+        pricing: ModelPricing {
+            estimated_cost_usd,
+            ..Default::default()
+        },
+        health: ModelHealth {
+            status: HealthStatus::Available,
+            p95_latency_ms: estimated_latency_ms,
+            quota_state: QuotaState::Normal,
+            ..Default::default()
+        },
+    }
+}
+
 #[derive(Clone, Debug)]
 struct TaskBinding {
     tenant_id: String,
@@ -1386,6 +1593,10 @@ pub struct AIComputeCenter {
     route_cfg: Arc<RwLock<RouteConfig>>,
     sn_openai_billing: SnOpenAIBillingLedger,
     model_catalog: ModelCatalog,
+    model_registry: Arc<RwLock<ModelRegistry>>,
+    session_config: Arc<RwLock<SessionConfig>>,
+    model_scheduler: ModelScheduler,
+    sticky_bindings: Arc<Mutex<StickyBindingStore>>,
     resource_resolver: Arc<dyn ResourceResolver>,
     sink_factory: Arc<dyn TaskEventSinkFactory>,
     taskmgr: Option<Arc<TaskManagerClient>>,
@@ -1423,6 +1634,12 @@ impl AIComputeCenter {
             .into_iter()
             .map(|item| item.to_string())
             .collect::<HashSet<_>>();
+        let mut model_registry = ModelRegistry::new();
+        for inventory in registry.inventories() {
+            if let Err(err) = model_registry.apply_inventory(inventory) {
+                warn!("aicc.model_registry.apply_inventory_failed err={}", err);
+            }
+        }
 
         Self {
             registry,
@@ -1430,6 +1647,10 @@ impl AIComputeCenter {
             route_cfg: Arc::new(RwLock::new(RouteConfig::default())),
             sn_openai_billing: SnOpenAIBillingLedger::default(),
             model_catalog,
+            model_registry: Arc::new(RwLock::new(model_registry)),
+            session_config: Arc::new(RwLock::new(default_global_session_config())),
+            model_scheduler: ModelScheduler,
+            sticky_bindings: Arc::new(Mutex::new(StickyBindingStore::default())),
             resource_resolver: Arc::new(PassthroughResourceResolver),
             sink_factory: Arc::new(DefaultTaskEventSinkFactory),
             taskmgr: None,
@@ -1456,6 +1677,25 @@ impl AIComputeCenter {
 
     pub fn model_catalog(&self) -> &ModelCatalog {
         &self.model_catalog
+    }
+
+    pub fn model_registry(&self) -> &Arc<RwLock<ModelRegistry>> {
+        &self.model_registry
+    }
+
+    pub fn reset_model_routes(&self) {
+        if let Ok(mut registry) = self.model_registry.write() {
+            registry.clear();
+        }
+        if let Ok(mut sticky) = self.sticky_bindings.lock() {
+            *sticky = StickyBindingStore::default();
+        }
+    }
+
+    pub fn set_session_config(&self, config: SessionConfig) {
+        if let Ok(mut current) = self.session_config.write() {
+            *current = config;
+        }
     }
 
     pub fn update_route_config(&self, new_cfg: RouteConfig) {
@@ -1489,10 +1729,192 @@ impl AIComputeCenter {
         self.url_scheme_allowlist = scheme_allowlist;
     }
 
+    fn route_request(
+        &self,
+        tenant_id: &str,
+        request: &CompleteRequest,
+        route_cfg: &RouteConfig,
+        request_id: &str,
+    ) -> std::result::Result<RouteDecision, RPCErrors> {
+        let api_type = api_type_for_capability(&request.capability).ok_or_else(|| {
+            reason_error(
+                "unsupported_capability",
+                format!("capability '{:?}' is not supported by model router", request.capability),
+            )
+        })?;
+        let session_id = extract_session_id_from_complete_request(request);
+        let mut policy = route_policy_from_request(request);
+        if route_cfg.fallback_limit == 0 {
+            policy.runtime_failover = false;
+        }
+
+        let registry = self
+            .model_registry
+            .read()
+            .map_err(|_| reason_error("internal_error", "model registry lock poisoned"))?;
+        let session_config = self
+            .session_config
+            .read()
+            .map_err(|_| reason_error("internal_error", "session config lock poisoned"))?;
+        let router = ModelRouter::new(&registry, &session_config);
+        let resolution = router.resolve(RouteRequest {
+            request_id: request_id.to_string(),
+            session_id: session_id.clone(),
+            api_type: api_type.clone(),
+            model: request.model.alias.clone(),
+            policy: policy.clone(),
+            session_config_revision: session_config.revision.clone(),
+            session_config_updated: false,
+        });
+        drop(session_config);
+        drop(registry);
+
+        let mut resolution = resolution.map_err(route_error_to_rpc)?;
+        self.apply_dynamic_cost_estimates(tenant_id, request, &mut resolution.candidates);
+
+        let sticky_key = session_id.map(|session_id| StickyBindingKey {
+            session_id,
+            logical_model: request.model.alias.clone(),
+            api_type,
+        });
+        let mut sticky_store = self
+            .sticky_bindings
+            .lock()
+            .map_err(|_| reason_error("internal_error", "sticky binding lock poisoned"))?;
+        let scheduled = self
+            .model_scheduler
+            .schedule(
+                &resolution.candidates,
+                &policy,
+                Some(&mut sticky_store),
+                sticky_key,
+            )
+            .ok_or_else(|| reason_error("no_provider_available", "no route candidate generated"))?;
+        drop(sticky_store);
+
+        resolution.trace.selected_exact_model = Some(scheduled.selected.exact_model.clone());
+        resolution.trace.selected_provider_instance_name =
+            Some(scheduled.selected.provider_instance_name.clone());
+        resolution.trace.session_sticky_hit = scheduled.sticky_hit;
+        resolution.trace.ranked_candidates = scheduled.ranked_candidates;
+
+        debug!(
+            "aicc.route.trace task_id={} trace={}",
+            request_id,
+            serde_json::to_string(&resolution.trace)
+                .unwrap_or_else(|err| format!("{{\"serialize_error\":\"{}\"}}", err))
+        );
+
+        let fallback_limit = route_cfg.fallback_limit.max(1);
+        let selected_provider_model = self
+            .legacy_catalog_provider_model(
+                tenant_id,
+                &request.capability,
+                request.model.alias.as_str(),
+                scheduled.selected.provider_instance_name.as_str(),
+            )
+            .unwrap_or_else(|| scheduled.selected.provider_model_id.clone());
+        let mut attempts = vec![RouteAttempt {
+            instance_id: scheduled.selected.provider_instance_name.clone(),
+            provider_model: selected_provider_model.clone(),
+        }];
+        for candidate in resolution.candidates.iter() {
+            if candidate.exact_model == scheduled.selected.exact_model {
+                continue;
+            }
+            if attempts.len() > fallback_limit {
+                break;
+            }
+            let provider_model = self
+                .legacy_catalog_provider_model(
+                    tenant_id,
+                    &request.capability,
+                    request.model.alias.as_str(),
+                    candidate.provider_instance_name.as_str(),
+                )
+                .unwrap_or_else(|| candidate.provider_model_id.clone());
+            attempts.push(RouteAttempt {
+                instance_id: candidate.provider_instance_name.clone(),
+                provider_model,
+            });
+        }
+
+        let fallback_instance_ids = attempts
+            .iter()
+            .skip(1)
+            .map(|item| item.instance_id.clone())
+            .collect::<Vec<_>>();
+
+        Ok(RouteDecision {
+            primary_instance_id: scheduled.selected.provider_instance_name,
+            fallback_instance_ids,
+            provider_model: selected_provider_model,
+            attempts,
+        })
+    }
+
+    fn legacy_catalog_provider_model(
+        &self,
+        tenant_id: &str,
+        capability: &Capability,
+        alias: &str,
+        provider_instance_name: &str,
+    ) -> Option<String> {
+        let inventory = self.registry.inventory(provider_instance_name)?;
+        if inventory.provider_driver.is_empty() {
+            return None;
+        }
+        self.model_catalog
+            .resolve(tenant_id, capability, alias, inventory.provider_driver.as_str())
+    }
+
+    fn apply_dynamic_cost_estimates(
+        &self,
+        tenant_id: &str,
+        request: &CompleteRequest,
+        candidates: &mut [ModelCandidate],
+    ) {
+        let (input_tokens, output_tokens) = estimate_request_tokens(request);
+        for candidate in candidates.iter_mut() {
+            let Some(provider) = self
+                .registry
+                .get_provider(candidate.provider_instance_name.as_str())
+            else {
+                continue;
+            };
+            let estimate = provider.estimate_cost(&CostEstimateInput {
+                api_type: candidate.api_type.clone(),
+                exact_model: candidate.exact_model.clone(),
+                input_tokens,
+                estimated_output_tokens: Some(output_tokens),
+                cached_input_tokens: None,
+                request_features: request.requirements.must_features.clone(),
+            });
+            let provider_driver = self
+                .registry
+                .inventory(candidate.provider_instance_name.as_str())
+                .map(|inventory| inventory.provider_driver)
+                .unwrap_or_default();
+            let effective_cost = self
+                .sn_openai_billing
+                .preview_billed_cost(
+                    tenant_id,
+                    provider_driver.as_str(),
+                    estimate.estimated_cost_usd,
+                )
+                .unwrap_or(estimate.estimated_cost_usd);
+            candidate.metadata.pricing.estimated_cost_usd = Some(effective_cost.max(0.0));
+            if let Some(latency) = estimate.estimated_latency_ms {
+                candidate.metadata.health.p95_latency_ms = Some(latency);
+            }
+            candidate.metadata.health.quota_state = estimate.quota_state;
+        }
+    }
+
     fn apply_billing_to_summary(
         &self,
         ctx: &InvokeCtx,
-        provider_type: &str,
+        provider_driver: &str,
         summary: &mut AiResponseSummary,
     ) {
         let Some(cost) = summary.cost.clone() else {
@@ -1500,7 +1922,7 @@ impl AIComputeCenter {
         };
         let Some(adjustment) =
             self.sn_openai_billing
-                .apply_charge(ctx.tenant_id.as_str(), provider_type, Some(cost.amount))
+                .apply_charge(ctx.tenant_id.as_str(), provider_driver, Some(cost.amount))
         else {
             return;
         };
@@ -1587,7 +2009,6 @@ impl AIComputeCenter {
             }
         };
 
-        let snapshot = self.registry.snapshot(request.capability.clone());
         let route_cfg = self
             .route_cfg
             .read()
@@ -1600,20 +2021,17 @@ impl AIComputeCenter {
             invoke_ctx.caller_app_id,
             request.capability,
             request.model.alias,
-            snapshot.candidates.len(),
+            self.registry.provider_count(),
             request.requirements.must_features,
             request.requirements.max_cost_usd,
             request.requirements.max_latency_ms
         );
 
-        let decision = match self.router.route_with_billing(
+        let decision = match self.route_request(
             invoke_ctx.tenant_id.as_str(),
             &request,
-            &snapshot,
-            &self.registry,
             &route_cfg,
-            &self.model_catalog,
-            Some(&self.sn_openai_billing),
+            external_task_id.as_str(),
         ) {
             Ok(result) => result,
             Err(error) => {
@@ -1623,7 +2041,7 @@ impl AIComputeCenter {
                     invoke_ctx.tenant_id,
                     request.capability,
                     request.model.alias,
-                    snapshot.candidates.len(),
+                    self.registry.provider_count(),
                     error
                 );
                 let code = extract_error_code(&error);
@@ -1910,7 +2328,11 @@ impl AIComputeCenter {
                     if let ProviderStartResult::Immediate(summary) = &mut start_result {
                         self.apply_billing_to_summary(
                             ctx,
-                            provider.instance().provider_type.as_str(),
+                            self.registry
+                                .inventory(attempt.instance_id.as_str())
+                                .map(|inventory| inventory.provider_driver)
+                                .unwrap_or_default()
+                                .as_str(),
                             summary,
                         );
                     }
@@ -2654,7 +3076,8 @@ mod tests {
     #[derive(Debug)]
     struct MockProvider {
         instance: ProviderInstance,
-        cost: CostEstimate,
+        inventory: ProviderInventory,
+        cost: CostEstimateOutput,
         start_results: Mutex<VecDeque<std::result::Result<ProviderStartResult, ProviderError>>>,
         start_call_count: std::sync::atomic::AtomicUsize,
         canceled: Mutex<Vec<String>>,
@@ -2663,11 +3086,13 @@ mod tests {
     impl MockProvider {
         fn new(
             instance: ProviderInstance,
-            cost: CostEstimate,
+            cost: CostEstimateOutput,
             start_results: Vec<std::result::Result<ProviderStartResult, ProviderError>>,
         ) -> Self {
+            let inventory = mock_inventory(&instance);
             Self {
                 instance,
+                inventory,
                 cost,
                 start_results: Mutex::new(start_results.into_iter().collect()),
                 start_call_count: std::sync::atomic::AtomicUsize::new(0),
@@ -2682,11 +3107,11 @@ mod tests {
 
     #[async_trait]
     impl Provider for MockProvider {
-        fn instance(&self) -> &ProviderInstance {
-            &self.instance
+        fn inventory(&self) -> ProviderInventory {
+            self.inventory.clone()
         }
 
-        fn estimate_cost(&self, _req: &CompleteRequest, _provider_model: &str) -> CostEstimate {
+        fn estimate_cost(&self, _input: &CostEstimateInput) -> CostEstimateOutput {
             self.cost.clone()
         }
 
@@ -2735,8 +3160,12 @@ mod tests {
 
     fn mock_instance(instance_id: &str, provider_type: &str) -> ProviderInstance {
         ProviderInstance {
-            instance_id: instance_id.to_string(),
-            provider_type: provider_type.to_string(),
+            provider_instance_name: instance_id.to_string(),
+            provider_type: ProviderType::CloudApi,
+            provider_driver: provider_type.to_string(),
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
             capabilities: vec![Capability::LlmRouter],
             features: vec!["plan".to_string()],
             endpoint: Some("http://127.0.0.1:8080".to_string()),
@@ -2744,8 +3173,49 @@ mod tests {
         }
     }
 
+    fn mock_inventory(instance: &ProviderInstance) -> ProviderInventory {
+        ProviderInventory {
+            provider_instance_name: instance.provider_instance_name.clone(),
+            provider_type: instance.provider_type.clone(),
+            provider_driver: instance.provider_driver.clone(),
+            provider_origin: instance.provider_origin.clone(),
+            provider_type_trusted_source: instance.provider_type_trusted_source.clone(),
+            provider_type_revision: None,
+            version: None,
+            inventory_revision: Some("test".to_string()),
+            models: vec![provider_model_metadata(
+                instance.provider_instance_name.as_str(),
+                instance.provider_type.clone(),
+                "gpt-4o-mini",
+                ApiType::LlmChat,
+                vec!["llm.plan.default".to_string()],
+                &instance.features,
+                Some(0.001),
+                Some(100),
+            )],
+        }
+    }
+
+    fn cost(estimated_cost_usd: f64, estimated_latency_ms: u64) -> CostEstimateOutput {
+        CostEstimateOutput {
+            estimated_cost_usd,
+            pricing_mode: PricingMode::PerToken,
+            quota_state: QuotaState::Normal,
+            confidence: 1.0,
+            estimated_latency_ms: Some(estimated_latency_ms),
+        }
+    }
+
     fn center_with_taskmgr(registry: Registry, catalog: ModelCatalog) -> AIComputeCenter {
         let mut center = AIComputeCenter::new(registry, catalog);
+        for inventory in center.registry().inventories() {
+            center
+                .model_registry()
+                .write()
+                .expect("model registry lock")
+                .apply_inventory(inventory)
+                .expect("mock inventory should be valid");
+        }
         let taskmgr = TaskManagerClient::new_in_process(Box::new(MockTaskMgrHandler {
             counter: Mutex::new(0),
             tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -2767,10 +3237,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(
             mock_instance("provider-a-1", "provider-a"),
-            CostEstimate {
-                estimated_cost_usd: Some(0.001),
-                estimated_latency_ms: Some(200),
-            },
+            cost(0.001, 200),
             vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
                 text: Some("ok".to_string()),
                 tool_calls: vec![],
@@ -2857,20 +3324,14 @@ mod tests {
 
         let p1 = Arc::new(MockProvider::new(
             mock_instance("provider-a-1", "provider-a"),
-            CostEstimate {
-                estimated_cost_usd: Some(0.001),
-                estimated_latency_ms: Some(100),
-            },
+            cost(0.001, 100),
             vec![Err(ProviderError::retryable(
                 "upstream temporary unavailable",
             ))],
         ));
         let p2 = Arc::new(MockProvider::new(
             mock_instance("provider-b-1", "provider-b"),
-            CostEstimate {
-                estimated_cost_usd: Some(0.002),
-                estimated_latency_ms: Some(250),
-            },
+            cost(0.002, 250),
             vec![Ok(ProviderStartResult::Started)],
         ));
         registry.add_provider(p1);
@@ -2920,10 +3381,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(
             mock_instance("provider-a-1", "provider-a"),
-            CostEstimate {
-                estimated_cost_usd: Some(0.001),
-                estimated_latency_ms: Some(100),
-            },
+            cost(0.001, 100),
             vec![Ok(ProviderStartResult::Queued { position: 3 })],
         ));
         registry.add_provider(provider);
@@ -2978,10 +3436,7 @@ mod tests {
         );
         let provider = Arc::new(MockProvider::new(
             mock_instance("provider-a-1", "provider-a"),
-            CostEstimate {
-                estimated_cost_usd: Some(0.001),
-                estimated_latency_ms: Some(200),
-            },
+            cost(0.001, 200),
             vec![Ok(ProviderStartResult::Started)],
         ));
         registry.add_provider(provider);
@@ -3036,10 +3491,7 @@ mod tests {
         );
         let provider = Arc::new(MockProvider::new(
             mock_instance("provider-a-1", "provider-a"),
-            CostEstimate {
-                estimated_cost_usd: Some(0.001),
-                estimated_latency_ms: Some(120),
-            },
+            cost(0.001, 120),
             vec![Ok(ProviderStartResult::Started)],
         ));
         registry.add_provider(provider);
@@ -3108,18 +3560,12 @@ mod tests {
 
         let sn_provider = Arc::new(MockProvider::new(
             mock_instance("sn-openai-1", "sn-openai"),
-            CostEstimate {
-                estimated_cost_usd: Some(0.20),
-                estimated_latency_ms: Some(80),
-            },
+            cost(0.20, 80),
             vec![Ok(ProviderStartResult::Started)],
         ));
         let paid_provider = Arc::new(MockProvider::new(
             mock_instance("openai-1", "openai"),
-            CostEstimate {
-                estimated_cost_usd: Some(0.05),
-                estimated_latency_ms: Some(20),
-            },
+            cost(0.05, 20),
             vec![Ok(ProviderStartResult::Started)],
         ));
         registry.add_provider(sn_provider.clone());
@@ -3161,10 +3607,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(
             mock_instance("sn-openai-1", "sn-openai"),
-            CostEstimate {
-                estimated_cost_usd: Some(2.0),
-                estimated_latency_ms: Some(100),
-            },
+            cost(2.0, 100),
             vec![
                 Ok(ProviderStartResult::Immediate(AiResponseSummary {
                     text: Some("first".to_string()),
@@ -3264,10 +3707,7 @@ mod tests {
 
         let provider = Arc::new(MockProvider::new(
             mock_instance("provider-a-1", "provider-a"),
-            CostEstimate {
-                estimated_cost_usd: Some(0.001),
-                estimated_latency_ms: Some(100),
-            },
+            cost(0.001, 100),
             vec![Ok(ProviderStartResult::Started)],
         ));
         registry.add_provider(provider);

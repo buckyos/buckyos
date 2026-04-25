@@ -535,6 +535,10 @@ mod tests {
             .apply_inventory(ProviderInventory {
                 provider_instance_name: "openai_primary".to_string(),
                 provider_type: ProviderType::CloudApi,
+                provider_driver: "openai".to_string(),
+                provider_origin: Default::default(),
+                provider_type_trusted_source: Default::default(),
+                provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
                 models: vec![metadata(
@@ -549,6 +553,10 @@ mod tests {
             .apply_inventory(ProviderInventory {
                 provider_instance_name: "anthropic".to_string(),
                 provider_type: ProviderType::CloudApi,
+                provider_driver: "claude".to_string(),
+                provider_origin: Default::default(),
+                provider_type_trusted_source: Default::default(),
+                provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
                 models: vec![metadata(
@@ -563,6 +571,10 @@ mod tests {
             .apply_inventory(ProviderInventory {
                 provider_instance_name: "local".to_string(),
                 provider_type: ProviderType::LocalInference,
+                provider_driver: "local".to_string(),
+                provider_origin: Default::default(),
+                provider_type_trusted_source: Default::default(),
+                provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
                 models: vec![metadata(

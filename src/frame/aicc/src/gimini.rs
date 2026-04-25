@@ -1,6 +1,11 @@
 use crate::aicc::{
-    AIComputeCenter, CostEstimate, Provider, ProviderError, ProviderInstance, ProviderStartResult,
-    ResolvedRequest, TaskEventSink,
+    image_logical_mounts, llm_logical_mounts, provider_model_metadata,
+    provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
+    ProviderStartResult, ResolvedRequest, TaskEventSink,
+};
+use crate::model_types::{
+    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory,
+    ProviderOrigin, ProviderTypeTrustedSource, QuotaState,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -56,8 +61,9 @@ const GIMINI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct GoogleGiminiInstanceConfig {
-    pub instance_id: String,
+    pub provider_instance_name: String,
     pub provider_type: String,
+    pub provider_driver: String,
     pub base_url: String,
     pub timeout_ms: u64,
     pub models: Vec<String>,
@@ -71,6 +77,7 @@ pub struct GoogleGiminiInstanceConfig {
 #[derive(Debug, Clone)]
 pub struct GoogleGiminiProvider {
     instance: ProviderInstance,
+    inventory: ProviderInventory,
     client: Client,
     api_token: String,
     base_url: String,
@@ -89,17 +96,65 @@ impl GoogleGiminiProvider {
             .build()
             .context("failed to build reqwest client for google gimini provider")?;
 
+        let provider_type = provider_type_from_settings(cfg.provider_type.as_str());
+        let provider_instance_name = cfg.provider_instance_name.clone();
+        let provider_driver = cfg.provider_driver.clone();
         let instance = ProviderInstance {
-            instance_id: cfg.instance_id,
-            provider_type: cfg.provider_type,
+            provider_instance_name: provider_instance_name.clone(),
+            provider_type: provider_type.clone(),
+            provider_driver: provider_driver.clone(),
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
             capabilities: vec![Capability::LlmRouter, Capability::Text2Image],
-            features: cfg.features,
+            features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
+        };
+        let mut models = Vec::new();
+        for model in cfg
+            .models
+            .iter()
+            .filter(|model| !is_text2image_model_name(model))
+        {
+            models.push(provider_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::LlmChat,
+                llm_logical_mounts(provider_driver.as_str(), model.as_str()),
+                &cfg.features,
+                Some(0.01),
+                Some(1400),
+            ));
+        }
+        for model in cfg.image_models.iter() {
+            models.push(provider_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::ImageTextToImage,
+                image_logical_mounts(provider_driver.as_str(), model.as_str()),
+                &cfg.features,
+                Some(0.04),
+                Some(6000),
+            ));
+        }
+        let inventory = ProviderInventory {
+            provider_instance_name,
+            provider_type,
+            provider_driver,
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
+            version: None,
+            inventory_revision: Some("settings-v1".to_string()),
+            models,
         };
 
         Ok(Self {
             instance,
+            inventory,
             client,
             api_token,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
@@ -793,15 +848,15 @@ impl GoogleGiminiProvider {
 
         if !ignored_options.is_empty() {
             warn!(
-                "aicc.gimini ignored unsupported llm options: instance_id={} model={} trace_id={:?} ignored={:?}",
-                self.instance.instance_id, provider_model, ctx.trace_id, ignored_options
+                "aicc.gimini ignored unsupported llm options: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name, provider_model, ctx.trace_id, ignored_options
             );
         }
 
         let request_log = Value::Object(request_obj.clone()).to_string();
         info!(
-            "aicc.gimini.llm.input instance_id={} model={} trace_id={:?} request={}",
-            self.instance.instance_id, provider_model, ctx.trace_id, request_log
+            "aicc.gimini.llm.input provider_instance_name={} model={} trace_id={:?} request={}",
+            self.instance.provider_instance_name, provider_model, ctx.trace_id, request_log
         );
 
         let (status, body, latency_ms) = self
@@ -811,8 +866,8 @@ impl GoogleGiminiProvider {
 
         if !status.is_success() {
             warn!(
-                "aicc.gimini.llm.output instance_id={} model={} trace_id={:?} status={} response={}",
-                self.instance.instance_id,
+                "aicc.gimini.llm.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+                self.instance.provider_instance_name,
                 provider_model,
                 ctx.trace_id,
                 status.as_u16(),
@@ -834,8 +889,8 @@ impl GoogleGiminiProvider {
         }
 
         info!(
-            "aicc.gimini.llm.output instance_id={} model={} trace_id={:?} status={} response={}",
-            self.instance.instance_id,
+            "aicc.gimini.llm.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+            self.instance.provider_instance_name,
             provider_model,
             ctx.trace_id,
             status.as_u16(),
@@ -920,8 +975,8 @@ impl GoogleGiminiProvider {
         }
         if !ignored_options.is_empty() {
             warn!(
-                "aicc.gimini ignored unsupported text2image options: instance_id={} model={} trace_id={:?} ignored={:?}",
-                self.instance.instance_id, provider_model, ctx.trace_id, ignored_options
+                "aicc.gimini ignored unsupported text2image options: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name, provider_model, ctx.trace_id, ignored_options
             );
         }
 
@@ -950,8 +1005,8 @@ impl GoogleGiminiProvider {
 
         let request_log = Value::Object(request_obj.clone()).to_string();
         info!(
-            "aicc.gimini.text2image.input instance_id={} model={} trace_id={:?} request={}",
-            self.instance.instance_id, provider_model, ctx.trace_id, request_log
+            "aicc.gimini.text2image.input provider_instance_name={} model={} trace_id={:?} request={}",
+            self.instance.provider_instance_name, provider_model, ctx.trace_id, request_log
         );
 
         let (status, body, latency_ms) = self
@@ -961,8 +1016,8 @@ impl GoogleGiminiProvider {
 
         if !status.is_success() {
             warn!(
-                "aicc.gimini.text2image.output instance_id={} model={} trace_id={:?} status={} response={}",
-                self.instance.instance_id,
+                "aicc.gimini.text2image.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+                self.instance.provider_instance_name,
                 provider_model,
                 ctx.trace_id,
                 status.as_u16(),
@@ -984,8 +1039,8 @@ impl GoogleGiminiProvider {
         }
 
         info!(
-            "aicc.gimini.text2image.output instance_id={} model={} trace_id={:?} status={} response={}",
-            self.instance.instance_id,
+            "aicc.gimini.text2image.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+            self.instance.provider_instance_name,
             provider_model,
             ctx.trace_id,
             status.as_u16(),
@@ -1037,19 +1092,24 @@ impl GoogleGiminiProvider {
 
 #[async_trait]
 impl Provider for GoogleGiminiProvider {
-    fn instance(&self) -> &ProviderInstance {
-        &self.instance
+    fn inventory(&self) -> ProviderInventory {
+        self.inventory.clone()
     }
 
-    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate {
-        if req.capability == Capability::Text2Image {
-            return CostEstimate {
-                estimated_cost_usd: Self::estimate_text2image_cost(req, provider_model),
+    fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
+        let provider_model = provider_model_from_exact(input.exact_model.as_str());
+        if input.api_type == ApiType::ImageTextToImage {
+            return CostEstimateOutput {
+                estimated_cost_usd: 0.04,
+                pricing_mode: PricingMode::PerToken,
+                quota_state: QuotaState::Normal,
+                confidence: 0.5,
                 estimated_latency_ms: Some(6000),
             };
         }
 
-        let (input_tokens, output_tokens) = Self::estimate_tokens(req);
+        let input_tokens = input.input_tokens.max(1);
+        let output_tokens = input.estimated_output_tokens.unwrap_or(1024).max(1);
         let usage = AiUsage {
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
@@ -1058,10 +1118,14 @@ impl Provider for GoogleGiminiProvider {
 
         let estimated_cost_usd = self
             .estimate_cost_for_usage(provider_model, &usage)
-            .map(|cost| cost.amount);
+            .map(|cost| cost.amount)
+            .unwrap_or(1.0);
 
-        CostEstimate {
+        CostEstimateOutput {
             estimated_cost_usd,
+            pricing_mode: PricingMode::PerToken,
+            quota_state: QuotaState::Normal,
+            confidence: 0.7,
             estimated_latency_ms: Some(1400),
         }
     }
@@ -1098,6 +1162,13 @@ impl Provider for GoogleGiminiProvider {
     }
 }
 
+fn provider_model_from_exact(exact_model: &str) -> &str {
+    exact_model
+        .rsplit_once('@')
+        .map(|(model, _)| model)
+        .unwrap_or(exact_model)
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct GiminiSettings {
     #[serde(default = "default_gimini_enabled")]
@@ -1113,9 +1184,11 @@ struct GiminiSettings {
 #[derive(Debug, Clone, Deserialize)]
 struct SettingsGoogleGiminiInstanceConfig {
     #[serde(default = "default_instance_id")]
-    instance_id: String,
+    provider_instance_name: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
+    #[serde(default = "default_provider_driver")]
+    provider_driver: String,
     #[serde(default = "default_base_url")]
     base_url: String,
     #[serde(default = "default_timeout_ms")]
@@ -1143,6 +1216,10 @@ fn default_instance_id() -> String {
 }
 
 fn default_provider_type() -> String {
+    "cloud_api".to_string()
+}
+
+fn default_provider_driver() -> String {
     "google-gimini".to_string()
 }
 
@@ -1216,8 +1293,9 @@ fn parse_gimini_settings(settings: &Value) -> Result<Option<GiminiSettings>> {
 fn build_gimini_instances(settings: &GiminiSettings) -> Result<Vec<GoogleGiminiInstanceConfig>> {
     let raw_instances = if settings.instances.is_empty() {
         vec![SettingsGoogleGiminiInstanceConfig {
-            instance_id: default_instance_id(),
+            provider_instance_name: default_instance_id(),
             provider_type: default_provider_type(),
+            provider_driver: default_provider_driver(),
             base_url: default_base_url(),
             timeout_ms: default_timeout_ms(),
             models: vec![],
@@ -1240,7 +1318,7 @@ fn build_gimini_instances(settings: &GiminiSettings) -> Result<Vec<GoogleGiminiI
         if models.is_empty() {
             return Err(anyhow!(
                 "gimini instance {} has no models configured",
-                raw_instance.instance_id
+                raw_instance.provider_instance_name
             ));
         }
 
@@ -1274,8 +1352,9 @@ fn build_gimini_instances(settings: &GiminiSettings) -> Result<Vec<GoogleGiminiI
         };
 
         instances.push(GoogleGiminiInstanceConfig {
-            instance_id: raw_instance.instance_id,
+            provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
+            provider_driver: raw_instance.provider_driver,
             base_url: raw_instance.base_url,
             timeout_ms: raw_instance.timeout_ms,
             models,
@@ -1419,28 +1498,19 @@ pub fn register_google_gimini_providers(
     }
 
     for (config, provider) in prepared.into_iter() {
-        center.registry().add_provider(provider);
-
-        register_default_aliases(
-            center,
-            config.provider_type.as_str(),
-            &config.models,
-            config.default_model.as_deref(),
-            &config.image_models,
-            config.default_image_model.as_deref(),
-        );
-
-        register_custom_aliases(
-            center,
-            config.provider_type.as_str(),
-            &gimini_settings.alias_map,
-        );
-        register_custom_aliases(center, config.provider_type.as_str(), &config.alias_map);
+        let inventory = center.registry().add_provider(provider);
+        center
+            .model_registry()
+            .write()
+            .map_err(|_| anyhow!("model registry lock poisoned"))?
+            .apply_inventory(inventory)
+            .map_err(|err| anyhow!("failed to apply gimini inventory: {}", err))?;
 
         info!(
-            "registered google gimini instance id={} provider_type={} base_url={} models={:?} image_models={:?}",
-            config.instance_id,
+            "registered google gimini provider_instance_name={} provider_type={} provider_driver={} base_url={} models={:?} image_models={:?}",
+            config.provider_instance_name,
             config.provider_type,
+            config.provider_driver,
             config.base_url,
             config.models,
             config.image_models
@@ -1481,8 +1551,9 @@ mod tests {
             api_token: "token".to_string(),
             alias_map: HashMap::new(),
             instances: vec![SettingsGoogleGiminiInstanceConfig {
-                instance_id: "gimini-1".to_string(),
-                provider_type: "google-gimini".to_string(),
+                provider_instance_name: "gimini-1".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "google-gimini".to_string(),
                 base_url: default_base_url(),
                 timeout_ms: default_timeout_ms(),
                 models: vec![

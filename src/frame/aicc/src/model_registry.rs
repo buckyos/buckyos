@@ -27,6 +27,11 @@ impl ModelRegistry {
         self.rebuild_index()
     }
 
+    pub fn clear(&mut self) {
+        self.inventories.clear();
+        self.exact_index.clear();
+    }
+
     pub fn inventory_revision(&self, provider_instance_name: &str) -> Option<&str> {
         self.inventories
             .get(provider_instance_name)
@@ -197,6 +202,10 @@ mod tests {
         ProviderInventory {
             provider_instance_name: provider.to_string(),
             provider_type: ProviderType::CloudApi,
+            provider_driver: "test".to_string(),
+            provider_origin: Default::default(),
+            provider_type_trusted_source: Default::default(),
+            provider_type_revision: None,
             version: None,
             inventory_revision: Some(revision.to_string()),
             models,

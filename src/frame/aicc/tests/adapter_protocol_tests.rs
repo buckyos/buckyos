@@ -12,8 +12,9 @@ use std::sync::Arc;
 fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
     OpenAIProvider::new(
         OpenAIInstanceConfig {
-            instance_id: "openai-test".to_string(),
-            provider_type: "openai".to_string(),
+            provider_instance_name: "openai-test".to_string(),
+            provider_type: "cloud_api".to_string(),
+            provider_driver: "openai".to_string(),
             base_url,
             auth_mode: "bearer".to_string(),
             timeout_ms,
@@ -32,8 +33,9 @@ fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
 fn gimini_provider(base_url: String, timeout_ms: u64) -> GoogleGiminiProvider {
     GoogleGiminiProvider::new(
         GoogleGiminiInstanceConfig {
-            instance_id: "gimini-test".to_string(),
-            provider_type: "google-gimini".to_string(),
+            provider_instance_name: "gimini-test".to_string(),
+            provider_type: "cloud_api".to_string(),
+            provider_driver: "google-gimini".to_string(),
             base_url,
             timeout_ms,
             models: vec!["gemini-2.5-flash".to_string()],
@@ -51,8 +53,9 @@ fn gimini_provider(base_url: String, timeout_ms: u64) -> GoogleGiminiProvider {
 fn claude_provider(base_url: String, timeout_ms: u64) -> ClaudeProvider {
     ClaudeProvider::new(
         ClaudeInstanceConfig {
-            instance_id: "claude-test".to_string(),
-            provider_type: "claude".to_string(),
+            provider_instance_name: "claude-test".to_string(),
+            provider_type: "cloud_api".to_string(),
+            provider_driver: "claude".to_string(),
             base_url,
             timeout_ms,
             models: vec!["claude-3-7-sonnet-20250219".to_string()],
