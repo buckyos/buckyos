@@ -875,7 +875,6 @@ pub struct ProviderMetrics {
 
 #[derive(Clone)]
 struct ProviderEntry {
-    inventory: ProviderInventory,
     provider: Arc<dyn Provider>,
     metrics: ProviderMetrics,
 }
@@ -906,7 +905,6 @@ impl Registry {
         entries.insert(
             inventory.provider_instance_name.clone(),
             ProviderEntry {
-                inventory: inventory.clone(),
                 provider,
                 metrics: ProviderMetrics::default(),
             },
@@ -937,10 +935,11 @@ impl Registry {
             .expect("registry lock should be available");
         let candidates = entries
             .values()
-            .filter(|entry| inventory_supports_capability(&entry.inventory, &capability))
+            .map(|entry| (entry.provider.inventory(), entry.metrics.clone()))
+            .filter(|(inventory, _)| inventory_supports_capability(inventory, &capability))
             .map(|entry| RegistryCandidate {
-                inventory: entry.inventory.clone(),
-                metrics: entry.metrics.clone(),
+                inventory: entry.0,
+                metrics: entry.1,
             })
             .collect::<Vec<_>>();
 
@@ -963,7 +962,7 @@ impl Registry {
         let entries = self.entries.read().ok()?;
         entries
             .get(provider_instance_name)
-            .map(|entry| entry.inventory.clone())
+            .map(|entry| entry.provider.inventory())
     }
 
     pub fn inventories(&self) -> Vec<ProviderInventory> {
@@ -972,7 +971,7 @@ impl Registry {
             .map(|entries| {
                 entries
                     .values()
-                    .map(|entry| entry.inventory.clone())
+                    .map(|entry| entry.provider.inventory())
                     .collect()
             })
             .unwrap_or_default()

@@ -18,7 +18,7 @@ use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
     features, value_to_object_map, AiArtifact, AiCost, AiResponseSummary, AiToolCall, AiUsage,
-    Capability, CompleteRequest, Feature, ResourceRef,
+    Capability, CompleteRequest, ResourceRef,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use log::{error, info, warn};
@@ -27,16 +27,23 @@ use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error as _;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use tokio::time;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nono,gpt-5-pro";
-const DEFAULT_OPENAI_IMAGE_MODELS: &str = "dall-e-3,dall-e-2";
+const DEFAULT_OPENAI_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
+const DEFAULT_SN_AI_PROVIDER_MODELS: &str = "gpt-5.4,gpt-5.4-mini,gpt-5.4-nano,gpt-5.4-pro";
+const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
+const DEFAULT_OPENAI_PROVIDER_DRIVER: &str = "openai";
+const SN_AI_PROVIDER_DRIVER: &str = "sn-ai-provider";
+const DEFAULT_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const DEFAULT_AUTH_MODE: &str = "bearer";
 const DEVICE_JWT_AUTH_MODE: &str = "device_jwt";
 const DEFAULT_DEVICE_AUTH_APP_ID: &str = "aicc";
@@ -69,31 +76,37 @@ const OPENAI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
 pub struct OpenAIInstanceConfig {
     pub provider_instance_name: String,
     pub provider_type: String,
-    pub provider_driver: String,
     pub base_url: String,
     pub auth_mode: String,
     pub timeout_ms: u64,
-    pub models: Vec<String>,
-    pub default_model: Option<String>,
-    pub image_models: Vec<String>,
-    pub default_image_model: Option<String>,
-    pub features: Vec<Feature>,
-    pub alias_map: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct OpenAIProvider {
     instance: ProviderInstance,
-    inventory: ProviderInventory,
+    inventory: Arc<RwLock<ProviderInventory>>,
     client: Client,
     auth_mode: OpenAIAuthMode,
     base_url: String,
+    provider_type: crate::model_types::ProviderType,
+    provider_driver: String,
 }
 
 #[derive(Debug, Clone)]
 enum OpenAIAuthMode {
     Bearer(String),
     DeviceJwt,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIModelsResponse {
+    #[serde(default)]
+    data: Vec<OpenAIModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIModelEntry {
+    id: String,
 }
 
 impl OpenAIProvider {
@@ -121,7 +134,10 @@ impl OpenAIProvider {
 
         let provider_type = provider_type_from_settings(cfg.provider_type.as_str());
         let provider_instance_name = cfg.provider_instance_name.clone();
-        let provider_driver = cfg.provider_driver.clone();
+        let provider_driver = default_provider_driver_for_instance(
+            cfg.provider_instance_name.as_str(),
+            cfg.base_url.as_str(),
+        );
         let instance = ProviderInstance {
             provider_instance_name: provider_instance_name.clone(),
             provider_type: provider_type.clone(),
@@ -130,60 +146,216 @@ impl OpenAIProvider {
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             capabilities: vec![Capability::LlmRouter, Capability::Text2Image],
-            features: cfg.features.clone(),
+            features: default_features(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
-        let mut models = Vec::new();
-        for model in cfg
-            .models
-            .iter()
-            .filter(|model| !is_text2image_model_name(model))
-        {
-            models.push(provider_model_metadata(
-                provider_instance_name.as_str(),
-                provider_type.clone(),
-                model.as_str(),
-                ApiType::LlmChat,
-                llm_logical_mounts(provider_driver.as_str(), model.as_str()),
-                &cfg.features,
-                Some(0.01),
-                Some(1200),
-            ));
-        }
-        for model in cfg.image_models.iter() {
-            models.push(provider_model_metadata(
-                provider_instance_name.as_str(),
-                provider_type.clone(),
-                model.as_str(),
-                ApiType::ImageTextToImage,
-                image_logical_mounts(provider_driver.as_str(), model.as_str()),
-                &cfg.features,
-                Some(0.04),
-                Some(5000),
-            ));
-        }
-        let inventory = ProviderInventory {
-            provider_instance_name,
-            provider_type,
-            provider_driver,
-            provider_origin: ProviderOrigin::SystemConfig,
-            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
-            provider_type_revision: None,
-            version: None,
-            inventory_revision: Some("settings-v1".to_string()),
-            models,
-        };
+        let inventory = Self::default_inventory(
+            provider_instance_name.as_str(),
+            provider_type.clone(),
+            provider_driver.as_str(),
+        );
 
         let auth_mode = Self::parse_auth_mode(cfg.auth_mode.as_str(), openai_api_token)?;
 
         Ok(Self {
             instance,
-            inventory,
+            inventory: Arc::new(RwLock::new(inventory)),
             client,
             auth_mode,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
+            provider_type,
+            provider_driver,
         })
+    }
+
+    pub fn start_inventory_refresh(self: Arc<Self>) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+
+        tokio::spawn(async move {
+            if let Err(err) = self.refresh_inventory_once().await {
+                warn!(
+                    "aicc.openai.inventory.initial_refresh_failed provider_instance_name={} err={}",
+                    self.instance.provider_instance_name, err
+                );
+            }
+
+            let mut interval = time::interval(DEFAULT_INVENTORY_REFRESH_INTERVAL);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if let Err(err) = self.refresh_inventory_once().await {
+                    warn!(
+                        "aicc.openai.inventory.refresh_failed provider_instance_name={} err={}",
+                        self.instance.provider_instance_name, err
+                    );
+                }
+            }
+        });
+    }
+
+    async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
+        let endpoint = self.models_endpoint();
+        let token = self.build_inventory_auth_token()?;
+        let response = self
+            .client
+            .get(endpoint.as_str())
+            .bearer_auth(token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "openai inventory refresh failed status={} body={}",
+                status,
+                body
+            ));
+        }
+
+        let body = response
+            .json::<OpenAIModelsResponse>()
+            .await
+            .context("failed to parse openai models response")?;
+        let (llm_models, image_models) = normalize_remote_model_ids(body.data);
+        if llm_models.is_empty() && image_models.is_empty() {
+            return Err(anyhow!(
+                "openai inventory refresh returned no supported models"
+            ));
+        }
+
+        let inventory = self.build_inventory_from_models(
+            llm_models.as_slice(),
+            image_models.as_slice(),
+            Some(inventory_revision(
+                llm_models.as_slice(),
+                image_models.as_slice(),
+            )),
+        );
+        {
+            let mut current = self
+                .inventory
+                .write()
+                .map_err(|_| anyhow!("openai inventory lock poisoned"))?;
+            *current = inventory.clone();
+        }
+        info!(
+            "aicc.openai.inventory.refreshed provider_instance_name={} models={}",
+            self.instance.provider_instance_name,
+            inventory.models.len()
+        );
+        Ok(inventory)
+    }
+
+    fn models_endpoint(&self) -> String {
+        let lower = self.base_url.to_ascii_lowercase();
+        if lower.ends_with("/chat/completions") {
+            let prefix = &self.base_url[..self.base_url.len() - "/chat/completions".len()];
+            return format!("{}/models", prefix.trim_end_matches('/'));
+        }
+        if lower.ends_with("/responses") || lower.ends_with("/images/generations") {
+            if let Some((prefix, _)) = self.base_url.rsplit_once('/') {
+                return format!("{}/models", prefix.trim_end_matches('/'));
+            }
+        }
+        format!("{}/models", self.base_url.trim_end_matches('/'))
+    }
+
+    fn default_inventory(
+        provider_instance_name: &str,
+        provider_type: crate::model_types::ProviderType,
+        provider_driver: &str,
+    ) -> ProviderInventory {
+        let (models, image_models) = if provider_driver == SN_AI_PROVIDER_DRIVER {
+            (
+                normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_MODELS)),
+                normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS)),
+            )
+        } else {
+            (
+                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS)),
+                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_IMAGE_MODELS)),
+            )
+        };
+
+        Self::build_inventory(
+            provider_instance_name,
+            provider_type,
+            provider_driver,
+            models.as_slice(),
+            image_models.as_slice(),
+            Some("default-v1".to_string()),
+        )
+    }
+
+    fn build_inventory_from_models(
+        &self,
+        models: &[String],
+        image_models: &[String],
+        revision: Option<String>,
+    ) -> ProviderInventory {
+        Self::build_inventory(
+            self.instance.provider_instance_name.as_str(),
+            self.provider_type.clone(),
+            self.provider_driver.as_str(),
+            models,
+            image_models,
+            revision,
+        )
+    }
+
+    fn build_inventory(
+        provider_instance_name: &str,
+        provider_type: crate::model_types::ProviderType,
+        provider_driver: &str,
+        models: &[String],
+        image_models: &[String],
+        revision: Option<String>,
+    ) -> ProviderInventory {
+        let features = default_features();
+        let mut metadata = Vec::new();
+        for model in models
+            .iter()
+            .filter(|model| !is_text2image_model_name(model))
+        {
+            metadata.push(provider_model_metadata(
+                provider_instance_name,
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::LlmChat,
+                llm_logical_mounts(provider_driver, model.as_str()),
+                features.as_slice(),
+                Some(0.01),
+                Some(1200),
+            ));
+        }
+        for model in image_models.iter() {
+            metadata.push(provider_model_metadata(
+                provider_instance_name,
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::ImageTextToImage,
+                image_logical_mounts(provider_driver, model.as_str()),
+                features.as_slice(),
+                Some(0.04),
+                Some(5000),
+            ));
+        }
+
+        ProviderInventory {
+            provider_instance_name: provider_instance_name.to_string(),
+            provider_type,
+            provider_driver: provider_driver.to_string(),
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
+            version: None,
+            inventory_revision: revision,
+            models: metadata,
+        }
     }
 
     fn parse_auth_mode(auth_mode: &str, openai_api_token: &str) -> Result<OpenAIAuthMode> {
@@ -206,6 +378,39 @@ impl OpenAIProvider {
             DEFAULT_AUTH_MODE,
             DEVICE_JWT_AUTH_MODE
         ))
+    }
+
+    fn build_inventory_auth_token(&self) -> Result<String> {
+        match &self.auth_mode {
+            OpenAIAuthMode::Bearer(token) => Ok(token.clone()),
+            OpenAIAuthMode::DeviceJwt => {
+                let private_key_path = Self::resolve_private_key_path();
+                let private_key = load_private_key(private_key_path.as_path()).map_err(|err| {
+                    anyhow!(
+                        "openai device_jwt inventory auth failed to load private key '{}': {}",
+                        private_key_path.display(),
+                        err
+                    )
+                })?;
+                let now = buckyos_get_unix_timestamp();
+                let subject = Self::read_default_device_subject();
+                let claims = RPCSessionToken {
+                    token_type: RPCSessionTokenType::JWT,
+                    token: None,
+                    aud: None,
+                    exp: Some(now + 60 * 15),
+                    iss: Some(subject.clone()),
+                    jti: None,
+                    session: None,
+                    sub: Some(subject),
+                    appid: Some(DEFAULT_DEVICE_AUTH_APP_ID.to_string()),
+                    extra: HashMap::new(),
+                };
+                claims
+                    .generate_jwt(None, &private_key)
+                    .map_err(|err| anyhow!("openai device_jwt inventory auth failed: {}", err))
+            }
+        }
     }
 
     fn read_default_device_subject() -> String {
@@ -1766,7 +1971,16 @@ impl OpenAIProvider {
 #[async_trait]
 impl Provider for OpenAIProvider {
     fn inventory(&self) -> ProviderInventory {
-        self.inventory.clone()
+        self.inventory
+            .read()
+            .map(|inventory| inventory.clone())
+            .unwrap_or_else(|_| {
+                Self::default_inventory(
+                    self.instance.provider_instance_name.as_str(),
+                    self.provider_type.clone(),
+                    self.provider_driver.as_str(),
+                )
+            })
     }
 
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
@@ -1849,8 +2063,6 @@ struct OpenAISettings {
     #[serde(default)]
     api_token: String,
     #[serde(default)]
-    alias_map: HashMap<String, String>,
-    #[serde(default)]
     instances: Vec<SettingsOpenAIInstanceConfig>,
 }
 
@@ -1860,26 +2072,12 @@ struct SettingsOpenAIInstanceConfig {
     provider_instance_name: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
-    #[serde(default = "default_provider_driver")]
-    provider_driver: String,
     #[serde(default = "default_base_url")]
     base_url: String,
     #[serde(default = "default_auth_mode")]
     auth_mode: String,
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
-    #[serde(default)]
-    models: Vec<String>,
-    #[serde(default)]
-    default_model: Option<String>,
-    #[serde(default)]
-    image_models: Vec<String>,
-    #[serde(default)]
-    default_image_model: Option<String>,
-    #[serde(default)]
-    features: Vec<String>,
-    #[serde(default)]
-    alias_map: HashMap<String, String>,
 }
 
 fn default_openai_enabled() -> bool {
@@ -1894,10 +2092,6 @@ fn default_provider_type() -> String {
     "cloud_api".to_string()
 }
 
-fn default_provider_driver() -> String {
-    "openai".to_string()
-}
-
 fn default_base_url() -> String {
     DEFAULT_OPENAI_BASE_URL.to_string()
 }
@@ -1910,6 +2104,16 @@ fn default_auth_mode() -> String {
     DEFAULT_AUTH_MODE.to_string()
 }
 
+fn default_provider_driver_for_instance(provider_instance_name: &str, base_url: &str) -> String {
+    let instance = provider_instance_name.to_ascii_lowercase();
+    let endpoint = base_url.to_ascii_lowercase();
+    if instance.contains(SN_AI_PROVIDER_DRIVER) || endpoint.contains("sn.buckyos.ai") {
+        SN_AI_PROVIDER_DRIVER.to_string()
+    } else {
+        DEFAULT_OPENAI_PROVIDER_DRIVER.to_string()
+    }
+}
+
 fn default_features() -> Vec<String> {
     vec![
         features::PLAN.to_string(),
@@ -1920,7 +2124,57 @@ fn default_features() -> Vec<String> {
 }
 
 fn is_text2image_model_name(model: &str) -> bool {
-    model.trim().to_ascii_lowercase().starts_with("dall-e")
+    let normalized = model.trim().to_ascii_lowercase();
+    normalized.starts_with("dall-e") || normalized == "gpt-image-1"
+}
+
+fn is_supported_llm_model_name(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    if normalized.is_empty() || is_text2image_model_name(normalized.as_str()) {
+        return false;
+    }
+
+    normalized.starts_with("gpt-")
+        || normalized.starts_with("chatgpt-")
+        || normalized.starts_with("o1")
+        || normalized.starts_with("o3")
+        || normalized.starts_with("o4")
+}
+
+fn normalize_remote_model_ids(entries: Vec<OpenAIModelEntry>) -> (Vec<String>, Vec<String>) {
+    let mut llm_seen = HashSet::<String>::new();
+    let mut image_seen = HashSet::<String>::new();
+    let mut llm_models = Vec::new();
+    let mut image_models = Vec::new();
+
+    for entry in entries.into_iter() {
+        let model = entry.id.trim();
+        if model.is_empty() {
+            continue;
+        }
+        let key = model.to_ascii_lowercase();
+        if is_text2image_model_name(model) {
+            if image_seen.insert(key) {
+                image_models.push(model.to_string());
+            }
+        } else if is_supported_llm_model_name(model) && llm_seen.insert(key) {
+            llm_models.push(model.to_string());
+        }
+    }
+
+    (llm_models, image_models)
+}
+
+fn inventory_revision(models: &[String], image_models: &[String]) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    models.hash(&mut hasher);
+    image_models.hash(&mut hasher);
+    format!(
+        "models-{}-{}-{:x}",
+        models.len(),
+        image_models.len(),
+        hasher.finish()
+    )
 }
 
 fn normalize_model_list(models: Vec<String>) -> Vec<String> {
@@ -1970,16 +2224,9 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
         vec![SettingsOpenAIInstanceConfig {
             provider_instance_name: default_instance_id(),
             provider_type: default_provider_type(),
-            provider_driver: default_provider_driver(),
             base_url: default_base_url(),
             auth_mode: default_auth_mode(),
             timeout_ms: default_timeout_ms(),
-            models: vec![],
-            default_model: None,
-            image_models: vec![],
-            default_image_model: None,
-            features: vec![],
-            alias_map: HashMap::new(),
         }]
     } else {
         settings.instances.clone()
@@ -1987,59 +2234,12 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
 
     let mut instances = vec![];
     for raw_instance in raw_instances.into_iter() {
-        let mut models = normalize_model_list(raw_instance.models);
-        if models.is_empty() {
-            models = normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS));
-        }
-        if models.is_empty() {
-            return Err(anyhow!(
-                "openai instance {} has no models configured",
-                raw_instance.provider_instance_name
-            ));
-        }
-
-        let default_model = raw_instance
-            .default_model
-            .or_else(|| {
-                models
-                    .iter()
-                    .find(|model| !is_text2image_model_name(model))
-                    .cloned()
-            })
-            .or_else(|| models.first().cloned());
-        let mut image_models = normalize_model_list(raw_instance.image_models);
-        if image_models.is_empty() {
-            image_models = models
-                .iter()
-                .filter(|model| is_text2image_model_name(model))
-                .cloned()
-                .collect::<Vec<_>>();
-        }
-        if image_models.is_empty() {
-            image_models = normalize_model_list(parse_csv_list(DEFAULT_OPENAI_IMAGE_MODELS));
-        }
-        let default_image_model = raw_instance
-            .default_image_model
-            .or_else(|| image_models.first().cloned());
-        let features = if raw_instance.features.is_empty() {
-            default_features()
-        } else {
-            raw_instance.features
-        };
-
         instances.push(OpenAIInstanceConfig {
             provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
-            provider_driver: raw_instance.provider_driver,
             base_url: raw_instance.base_url,
             auth_mode: raw_instance.auth_mode,
             timeout_ms: raw_instance.timeout_ms,
-            models,
-            default_model,
-            image_models,
-            default_image_model,
-            features,
-            alias_map: raw_instance.alias_map,
         });
     }
 
@@ -2156,8 +2356,9 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
     let api_token = openai_settings.api_token.trim().to_string();
     let mut prepared = Vec::<(OpenAIInstanceConfig, Arc<dyn Provider>)>::new();
     for config in instances.iter() {
-        let provider = OpenAIProvider::new(config.clone(), api_token.as_str())?;
-        prepared.push((config.clone(), Arc::new(provider)));
+        let provider = Arc::new(OpenAIProvider::new(config.clone(), api_token.as_str())?);
+        provider.clone().start_inventory_refresh();
+        prepared.push((config.clone(), provider));
     }
 
     for (config, provider) in prepared.into_iter() {
@@ -2612,44 +2813,23 @@ data: [DONE]
     }
 
     #[test]
-    fn build_openai_instances_infers_image_models_from_dalle() {
+    fn build_openai_instances_uses_simplified_runtime_inventory_config() {
         let settings = OpenAISettings {
             enabled: true,
             api_token: "token".to_string(),
-            alias_map: HashMap::new(),
             instances: vec![SettingsOpenAIInstanceConfig {
                 provider_instance_name: "openai-1".to_string(),
                 provider_type: "cloud_api".to_string(),
-                provider_driver: "openai".to_string(),
                 base_url: default_base_url(),
                 auth_mode: default_auth_mode(),
                 timeout_ms: default_timeout_ms(),
-                models: vec!["gpt-4o-mini".to_string(), "dall-e-3".to_string()],
-                default_model: None,
-                image_models: vec![],
-                default_image_model: None,
-                features: vec![],
-                alias_map: HashMap::new(),
             }],
         };
 
         let instances = build_openai_instances(&settings).expect("instances should be built");
         assert_eq!(instances.len(), 1);
-        assert_eq!(
-            instances[0].default_model.as_deref(),
-            Some("gpt-4o-mini"),
-            "llm default should prefer non-image model"
-        );
-        assert_eq!(
-            instances[0].image_models,
-            vec!["dall-e-3".to_string()],
-            "image models should infer from configured dall-e model"
-        );
-        assert_eq!(
-            instances[0].default_image_model.as_deref(),
-            Some("dall-e-3"),
-            "image default should point to inferred image model"
-        );
+        assert_eq!(instances[0].provider_instance_name, "openai-1");
+        assert_eq!(instances[0].base_url, DEFAULT_OPENAI_BASE_URL);
     }
 
     #[test]
@@ -2657,20 +2837,12 @@ data: [DONE]
         let settings = OpenAISettings {
             enabled: true,
             api_token: String::new(),
-            alias_map: HashMap::new(),
             instances: vec![SettingsOpenAIInstanceConfig {
                 provider_instance_name: "sn-ai-provider-1".to_string(),
                 provider_type: "cloud_api".to_string(),
-                provider_driver: "sn-ai-provider".to_string(),
                 base_url: "https://sn.buckyos.ai/v1".to_string(),
                 auth_mode: DEVICE_JWT_AUTH_MODE.to_string(),
                 timeout_ms: default_timeout_ms(),
-                models: vec!["gpt-5-mini".to_string()],
-                default_model: Some("gpt-5-mini".to_string()),
-                image_models: vec![],
-                default_image_model: None,
-                features: vec![],
-                alias_map: HashMap::new(),
             }],
         };
 
@@ -2685,21 +2857,58 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "sn-ai-provider-1".to_string(),
                 provider_type: "cloud_api".to_string(),
-                provider_driver: "sn-ai-provider".to_string(),
                 base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
                 auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
-                models: vec!["gpt-5-mini".to_string()],
-                default_model: Some("gpt-5-mini".to_string()),
-                image_models: vec![],
-                default_image_model: None,
-                features: vec![],
-                alias_map: HashMap::new(),
             },
             "token",
         )
         .expect("provider should be built");
         assert!(provider.use_chat_completions_endpoint());
+    }
+
+    #[test]
+    fn default_inventory_uses_provider_instance_exact_model_names() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-primary".to_string(),
+                provider_type: "cloud_api".to_string(),
+                base_url: default_base_url(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let inventory = provider.inventory();
+        assert_eq!(inventory.provider_driver, "openai");
+        assert!(inventory
+            .models
+            .iter()
+            .any(|model| model.exact_model == "gpt-5@openai-primary"));
+        assert!(inventory
+            .models
+            .iter()
+            .any(|model| model.exact_model == "gpt-image-1@openai-primary"));
+    }
+
+    #[test]
+    fn remote_model_inventory_filters_supported_model_types() {
+        let (llm_models, image_models) = normalize_remote_model_ids(vec![
+            OpenAIModelEntry {
+                id: "gpt-5.2".to_string(),
+            },
+            OpenAIModelEntry {
+                id: "text-embedding-3-large".to_string(),
+            },
+            OpenAIModelEntry {
+                id: "gpt-image-1".to_string(),
+            },
+        ]);
+
+        assert_eq!(llm_models, vec!["gpt-5.2".to_string()]);
+        assert_eq!(image_models, vec!["gpt-image-1".to_string()]);
     }
 
     #[test]
