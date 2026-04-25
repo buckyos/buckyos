@@ -35,11 +35,11 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 
 const DEFAULT_OOD_ID: &str = "ood1";
-const DEFAULT_SN_OPENAI_MODELS: &[&str] =
+const DEFAULT_SN_AI_PROVIDER_MODELS: &[&str] =
     &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
-const DEFAULT_SN_OPENAI_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
-const SN_OPENAI_MODELS_API: &str = "https://sn.buckyos.ai/api/v1/ai/models";
-const SN_OPENAI_RESPONSES_API: &str = "https://sn.buckyos.ai/api/v1/ai/";
+const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
+const SN_AI_PROVIDER_MODELS_API: &str = "https://sn.buckyos.ai/api/v1/ai/models";
+const SN_AI_PROVIDER_RESPONSES_API: &str = "https://sn.buckyos.ai/api/v1/ai/";
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AIProviderConfigSummary {
@@ -338,12 +338,12 @@ impl SystemConfigBuilder {
             buckyos_api::aicc_usage_log_default_rdb_instance_config(),
         );
         self.insert_json("services/aicc/spec", &service_spec)?;
-        let sn_openai_models = if config.llm_router_enabled() {
-            fetch_sn_openai_models(config.user_name.as_str()).await
+        let sn_ai_provider_models = if config.llm_router_enabled() {
+            fetch_sn_ai_provider_models(config.user_name.as_str()).await
         } else {
             None
         };
-        let settings = build_aicc_settings_with_sn_models(config, sn_openai_models.as_deref());
+        let settings = build_aicc_settings_with_sn_models(config, sn_ai_provider_models.as_deref());
         self.insert_json_if_absent("services/aicc/settings", &settings)?;
         Ok(self)
     }
@@ -686,12 +686,14 @@ fn build_aicc_settings(config: &StartConfigSummary) -> Value {
 
 fn build_aicc_settings_with_sn_models(
     config: &StartConfigSummary,
-    sn_openai_models: Option<&[String]>,
+    sn_ai_provider_models: Option<&[String]>,
 ) -> Value {
     const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
     let mut settings = serde_json::Map::new();
     let mut openai_alias_map = serde_json::Map::new();
     let mut openai_instances = Vec::<Value>::new();
+    let mut sn_ai_provider_alias_map = serde_json::Map::new();
+    let mut sn_ai_provider_instances = Vec::<Value>::new();
     let openai_api_token =
         trim_to_option(config.ai_provider_config.openai_api_token.as_str()).unwrap_or_default();
 
@@ -712,36 +714,37 @@ fn build_aicc_settings_with_sn_models(
     }
 
     if config.llm_router_enabled() {
-        let sn_model_settings = build_sn_openai_model_settings(sn_openai_models);
-        if !openai_alias_map.contains_key("llm.default") {
-            openai_alias_map.insert(
+        let sn_model_settings = build_sn_ai_provider_model_settings(sn_ai_provider_models);
+        if !sn_ai_provider_alias_map.contains_key("llm.default") {
+            sn_ai_provider_alias_map.insert(
                 "llm.default".to_string(),
                 json!(sn_model_settings.default_model.as_str()),
             );
         }
-        if !openai_alias_map.contains_key("llm.chat.default") {
-            openai_alias_map.insert(
+        if !sn_ai_provider_alias_map.contains_key("llm.chat.default") {
+            sn_ai_provider_alias_map.insert(
                 "llm.chat.default".to_string(),
                 json!(sn_model_settings.default_model.as_str()),
             );
         }
-        if !openai_alias_map.contains_key("llm.plan.default") {
-            openai_alias_map.insert(
+        if !sn_ai_provider_alias_map.contains_key("llm.plan.default") {
+            sn_ai_provider_alias_map.insert(
                 "llm.plan.default".to_string(),
                 json!(sn_model_settings.plan_default_model.as_str()),
             );
         }
-        if !openai_alias_map.contains_key("llm.code.default") {
-            openai_alias_map.insert(
+        if !sn_ai_provider_alias_map.contains_key("llm.code.default") {
+            sn_ai_provider_alias_map.insert(
                 "llm.code.default".to_string(),
                 json!(sn_model_settings.default_model.as_str()),
             );
         }
 
-        openai_instances.push(json!({
-            "instance_id": "sn-openai-default",
-            "provider_type": "sn-openai",
-            "base_url": SN_OPENAI_RESPONSES_API,
+        sn_ai_provider_instances.push(json!({
+            "provider_instance_name": "sn-ai-provider-default",
+            "provider_type": "cloud_api",
+            "provider_driver": "sn-ai-provider",
+            "base_url": SN_AI_PROVIDER_RESPONSES_API,
             "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
             "models": sn_model_settings.models,
             "default_model": sn_model_settings.default_model,
@@ -760,6 +763,18 @@ fn build_aicc_settings_with_sn_models(
                 "api_token": openai_api_token,
                 "alias_map": Value::Object(openai_alias_map),
                 "instances": openai_instances
+            }),
+        );
+    }
+
+    if !sn_ai_provider_instances.is_empty() {
+        settings.insert(
+            "sn-ai-provider".to_string(),
+            json!({
+                "enabled": true,
+                "api_token": "",
+                "alias_map": Value::Object(sn_ai_provider_alias_map),
+                "instances": sn_ai_provider_instances
             }),
         );
     }
@@ -832,7 +847,7 @@ fn build_aicc_settings_with_sn_models(
 }
 
 #[derive(Debug)]
-struct SnOpenAIModelSettings {
+struct SnAIProviderModelSettings {
     models: Vec<String>,
     default_model: String,
     plan_default_model: String,
@@ -840,8 +855,10 @@ struct SnOpenAIModelSettings {
     default_image_model: String,
 }
 
-fn build_sn_openai_model_settings(sn_openai_models: Option<&[String]>) -> SnOpenAIModelSettings {
-    let mut models = sn_openai_models
+fn build_sn_ai_provider_model_settings(
+    sn_ai_provider_models: Option<&[String]>,
+) -> SnAIProviderModelSettings {
+    let mut models = sn_ai_provider_models
         .unwrap_or(&[])
         .iter()
         .map(|item| item.trim())
@@ -849,7 +866,7 @@ fn build_sn_openai_model_settings(sn_openai_models: Option<&[String]>) -> SnOpen
         .map(|item| item.to_string())
         .collect::<Vec<_>>();
     if models.is_empty() {
-        models = DEFAULT_SN_OPENAI_MODELS
+        models = DEFAULT_SN_AI_PROVIDER_MODELS
             .iter()
             .map(|item| item.to_string())
             .collect::<Vec<_>>();
@@ -866,7 +883,7 @@ fn build_sn_openai_model_settings(sn_openai_models: Option<&[String]>) -> SnOpen
         .cloned()
         .collect::<Vec<_>>();
     if image_models.is_empty() {
-        image_models = DEFAULT_SN_OPENAI_IMAGE_MODELS
+        image_models = DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS
             .iter()
             .map(|item| item.to_string())
             .collect::<Vec<_>>();
@@ -875,7 +892,7 @@ fn build_sn_openai_model_settings(sn_openai_models: Option<&[String]>) -> SnOpen
         pick_preferred_model(image_models.as_slice(), &["dall-e-3", "gpt-image-1"])
             .unwrap_or_else(|| image_models[0].clone());
 
-    SnOpenAIModelSettings {
+    SnAIProviderModelSettings {
         models,
         default_model,
         plan_default_model,
@@ -901,24 +918,24 @@ fn is_image_model(model_id: &str) -> bool {
         || value.contains("vision")
 }
 
-async fn fetch_sn_openai_models(user_name: &str) -> Option<Vec<String>> {
-    match fetch_sn_openai_models_impl(user_name).await {
+async fn fetch_sn_ai_provider_models(user_name: &str) -> Option<Vec<String>> {
+    match fetch_sn_ai_provider_models_impl(user_name).await {
         Ok(models) => Some(models),
         Err(err) => {
             warn!(
-                "fetch sn-openai models from {} failed: {}",
-                SN_OPENAI_MODELS_API, err
+                "fetch sn-ai-provider models from {} failed: {}",
+                SN_AI_PROVIDER_MODELS_API, err
             );
             None
         }
     }
 }
 
-async fn fetch_sn_openai_models_impl(user_name: &str) -> Result<Vec<String>> {
+async fn fetch_sn_ai_provider_models_impl(user_name: &str) -> Result<Vec<String>> {
     let token = build_device_jwt_token_for_sn(user_name)?;
     let client = Client::new();
     let response = client
-        .get(SN_OPENAI_MODELS_API)
+        .get(SN_AI_PROVIDER_MODELS_API)
         .bearer_auth(token)
         .send()
         .await
@@ -931,7 +948,10 @@ async fn fetch_sn_openai_models_impl(user_name: &str) -> Result<Vec<String>> {
         .text()
         .await
         .map_err(|err| anyhow!("failed to read models response body: {}", err))?;
-    info!("sn-openai models endpoint raw response: {}", response_text);
+    info!(
+        "sn-ai-provider models endpoint raw response: {}",
+        response_text
+    );
     let body: Value = serde_json::from_str(response_text.as_str())
         .map_err(|err| anyhow!("invalid models response json: {}", err))?;
     let models = extract_model_ids_from_response(&body);
@@ -939,7 +959,11 @@ async fn fetch_sn_openai_models_impl(user_name: &str) -> Result<Vec<String>> {
         return Err(anyhow!("models response does not contain model ids"));
     }
 
-    info!("fetched {} sn-openai models: {:?}", models.len(), models);
+    info!(
+        "fetched {} sn-ai-provider models: {:?}",
+        models.len(),
+        models
+    );
     Ok(models)
 }
 
@@ -1348,24 +1372,31 @@ mod tests {
 
         let settings = build_aicc_settings(&summary);
 
-        assert_eq!(settings["openai"]["enabled"], true);
+        assert_eq!(settings["sn-ai-provider"]["enabled"], true);
         assert_eq!(
-            settings["openai"]["instances"][0]["instance_id"],
-            "sn-openai-default"
+            settings["sn-ai-provider"]["instances"][0]["provider_instance_name"],
+            "sn-ai-provider-default"
         );
         assert_eq!(
-            settings["openai"]["instances"][0]["provider_type"],
-            "sn-openai"
+            settings["sn-ai-provider"]["instances"][0]["provider_type"],
+            "cloud_api"
         );
         assert_eq!(
-            settings["openai"]["instances"][0]["base_url"],
+            settings["sn-ai-provider"]["instances"][0]["provider_driver"],
+            "sn-ai-provider"
+        );
+        assert_eq!(
+            settings["sn-ai-provider"]["instances"][0]["base_url"],
             "https://sn.buckyos.ai/api/v1/ai/"
         );
         assert_eq!(
-            settings["openai"]["instances"][0]["auth_mode"],
+            settings["sn-ai-provider"]["instances"][0]["auth_mode"],
             "device_jwt"
         );
-        assert_eq!(settings["openai"]["alias_map"]["llm.plan.default"], "gpt-5.4");
+        assert_eq!(
+            settings["sn-ai-provider"]["alias_map"]["llm.plan.default"],
+            "gpt-5.4"
+        );
     }
 
     #[test]
@@ -1388,10 +1419,10 @@ mod tests {
         let settings = build_aicc_settings(&summary);
 
         assert_eq!(summary.llm_router_enabled(), true);
-        assert_eq!(settings["openai"]["enabled"], true);
+        assert_eq!(settings["sn-ai-provider"]["enabled"], true);
         assert_eq!(
-            settings["openai"]["instances"][0]["instance_id"],
-            "sn-openai-default"
+            settings["sn-ai-provider"]["instances"][0]["provider_instance_name"],
+            "sn-ai-provider-default"
         );
     }
 
@@ -1435,11 +1466,11 @@ mod tests {
         let settings = build_aicc_settings_with_sn_models(&summary, Some(sn_models.as_slice()));
 
         assert_eq!(
-            settings["openai"]["instances"][0]["models"],
+            settings["sn-ai-provider"]["instances"][0]["models"],
             json!(["gpt-5", "gpt-5-mini", "gpt-image-1"])
         );
         assert_eq!(
-            settings["openai"]["instances"][0]["default_image_model"],
+            settings["sn-ai-provider"]["instances"][0]["default_image_model"],
             "gpt-image-1"
         );
     }

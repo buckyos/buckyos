@@ -15,9 +15,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Once};
 
 use buckyos_api::{
-    aicc_usage_log_default_rdb_instance_config, get_rdb_instance, AiccUsageEvent, QueryUsageRequest,
-    QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow,
-    UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
+    aicc_usage_log_default_rdb_instance_config, get_rdb_instance, AiccUsageEvent,
+    QueryUsageRequest, QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow,
+    UsageGroupedRow, UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
     AICC_SERVICE_SERVICE_NAME, AICC_USAGE_LOG_RDB_INSTANCE_ID, AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
     AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
 };
@@ -116,12 +116,13 @@ impl AiccUsageLogDb {
     }
 
     async fn apply_schema(&self, override_ddl: Option<&str>) -> Result<(), RPCErrors> {
-        let ddl: &str = override_ddl
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(match self.backend() {
-                RdbBackend::Sqlite => AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
-                RdbBackend::Postgres => AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
-            });
+        let ddl: &str =
+            override_ddl
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(match self.backend() {
+                    RdbBackend::Sqlite => AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
+                    RdbBackend::Postgres => AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
+                });
         for statement in split_sql_statements(ddl) {
             self.pool().execute(statement.as_str()).await.map_err(|e| {
                 RPCErrors::ReasonError(format!("apply aicc usage-log schema failed: {}", e))
@@ -248,7 +249,12 @@ WHERE created_at_ms >= ? AND created_at_ms < ?
         );
         let mut string_binds: Vec<String> = vec![];
 
-        push_eq_filter(&mut sql, &mut string_binds, "tenant_id", &req.filters.tenant_id);
+        push_eq_filter(
+            &mut sql,
+            &mut string_binds,
+            "tenant_id",
+            &req.filters.tenant_id,
+        );
         push_eq_filter(
             &mut sql,
             &mut string_binds,
@@ -267,7 +273,12 @@ WHERE created_at_ms >= ? AND created_at_ms < ?
             "provider_model",
             &req.filters.provider_model,
         );
-        push_eq_filter(&mut sql, &mut string_binds, "capability", &req.filters.capability);
+        push_eq_filter(
+            &mut sql,
+            &mut string_binds,
+            "capability",
+            &req.filters.capability,
+        );
         push_eq_filter(&mut sql, &mut string_binds, "task_id", &req.filters.task_id);
         push_eq_filter(
             &mut sql,
@@ -354,7 +365,9 @@ fn decode_row(row: &AnyRow) -> Result<AiccUsageEvent, RPCErrors> {
         ))
     };
     let event_id: String = row.try_get("event_id").map_err(|e| decode("event_id", e))?;
-    let tenant_id: String = row.try_get("tenant_id").map_err(|e| decode("tenant_id", e))?;
+    let tenant_id: String = row
+        .try_get("tenant_id")
+        .map_err(|e| decode("tenant_id", e))?;
     let caller_app_id: Option<String> = row
         .try_get("caller_app_id")
         .map_err(|e| decode("caller_app_id", e))?;
@@ -362,7 +375,9 @@ fn decode_row(row: &AnyRow) -> Result<AiccUsageEvent, RPCErrors> {
     let idempotency_key: Option<String> = row
         .try_get("idempotency_key")
         .map_err(|e| decode("idempotency_key", e))?;
-    let capability: String = row.try_get("capability").map_err(|e| decode("capability", e))?;
+    let capability: String = row
+        .try_get("capability")
+        .map_err(|e| decode("capability", e))?;
     let request_model: String = row
         .try_get("request_model")
         .map_err(|e| decode("request_model", e))?;
@@ -381,7 +396,9 @@ fn decode_row(row: &AnyRow) -> Result<AiccUsageEvent, RPCErrors> {
     let request_units: Option<i64> = row
         .try_get("request_units")
         .map_err(|e| decode("request_units", e))?;
-    let usage_json_str: String = row.try_get("usage_json").map_err(|e| decode("usage_json", e))?;
+    let usage_json_str: String = row
+        .try_get("usage_json")
+        .map_err(|e| decode("usage_json", e))?;
     let finance_snapshot_str: Option<String> = row
         .try_get("finance_snapshot_json")
         .map_err(|e| decode("finance_snapshot_json", e))?;
@@ -452,10 +469,12 @@ fn group_events(events: &[AiccUsageEvent], group_by: &[UsageQueryGroup]) -> Vec<
     let mut buckets: HashMap<Vec<String>, UsageGroupedRow> = HashMap::new();
     for event in events {
         let key = build_group_key(event, group_by);
-        let row = buckets.entry(key.clone()).or_insert_with(|| UsageGroupedRow {
-            group: build_group_map(event, group_by),
-            aggregate: UsageAggregate::default(),
-        });
+        let row = buckets
+            .entry(key.clone())
+            .or_insert_with(|| UsageGroupedRow {
+                group: build_group_map(event, group_by),
+                aggregate: UsageAggregate::default(),
+            });
         accumulate(&mut row.aggregate, event);
     }
     let mut rows: Vec<UsageGroupedRow> = buckets.into_values().collect();
@@ -616,7 +635,13 @@ mod tests {
         (db, dir)
     }
 
-    fn sample_event(suffix: &str, model: &str, now_ms: i64, input: u64, output: u64) -> AiccUsageEvent {
+    fn sample_event(
+        suffix: &str,
+        model: &str,
+        now_ms: i64,
+        input: u64,
+        output: u64,
+    ) -> AiccUsageEvent {
         AiccUsageEvent {
             event_id: format!("evt-{}", suffix),
             tenant_id: "alice".to_string(),

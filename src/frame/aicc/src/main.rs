@@ -12,6 +12,7 @@ mod model_session;
 mod model_types;
 mod openai;
 mod openai_protocol;
+mod sn_ai_provider;
 
 use ::kRPC::*;
 use anyhow::Result;
@@ -38,6 +39,7 @@ use crate::claude::register_claude_providers;
 use crate::gimini::register_google_gimini_providers;
 use crate::minimax::register_minimax_providers;
 use crate::openai::register_openai_llm_providers;
+use crate::sn_ai_provider::register_sn_ai_provider;
 
 const AICC_SERVICE_MAIN_PORT: u16 = 4040;
 const METHOD_RELOAD_SETTINGS: &str = "reload_settings";
@@ -66,6 +68,15 @@ fn apply_provider_settings(
         }
         Err(err) => {
             errors.push(format!("openai: {}", err));
+        }
+    }
+
+    match register_sn_ai_provider(center, settings) {
+        Ok(count) => {
+            registered_total = registered_total.saturating_add(count);
+        }
+        Err(err) => {
+            errors.push(format!("sn-ai-provider: {}", err));
         }
     }
 

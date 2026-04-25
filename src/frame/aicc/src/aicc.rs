@@ -38,7 +38,7 @@ const EWMA_ALPHA: f64 = 0.2;
 const AICC_TASK_TYPE: &str = "aicc.compute";
 const AICC_TASK_EVENT_RETENTION: usize = 64;
 const REDACTED_BASE64_PLACEHOLDER: &str = "[redacted_base64]";
-const SN_OPENAI_FREE_CREDIT_USD: f64 = 15.0;
+const SN_AI_PROVIDER_FREE_CREDIT_USD: f64 = 15.0;
 
 #[derive(Clone, Debug, Default)]
 pub struct InvokeCtx {
@@ -157,7 +157,7 @@ impl From<CostEstimate> for CostEstimateOutput {
 }
 
 #[derive(Clone, Debug)]
-struct SnOpenAIBillingAdjustment {
+struct SnAIProviderBillingAdjustment {
     raw_cost_usd: f64,
     billed_cost_usd: f64,
     credit_applied_usd: f64,
@@ -165,11 +165,11 @@ struct SnOpenAIBillingAdjustment {
 }
 
 #[derive(Clone, Default)]
-struct SnOpenAIBillingLedger {
+struct SnAIProviderBillingLedger {
     spent_raw_cost_usd: Arc<RwLock<HashMap<String, f64>>>,
 }
 
-impl SnOpenAIBillingLedger {
+impl SnAIProviderBillingLedger {
     fn preview_billed_cost(
         &self,
         tenant_id: &str,
@@ -177,7 +177,7 @@ impl SnOpenAIBillingLedger {
         raw_cost_usd: f64,
     ) -> Option<f64> {
         let raw_cost_usd = raw_cost_usd.max(0.0);
-        if provider_driver != "sn-openai" {
+        if provider_driver != "sn-ai-provider" {
             return Some(raw_cost_usd);
         }
 
@@ -200,8 +200,8 @@ impl SnOpenAIBillingLedger {
         tenant_id: &str,
         provider_driver: &str,
         raw_cost_usd: Option<f64>,
-    ) -> Option<SnOpenAIBillingAdjustment> {
-        if provider_driver != "sn-openai" {
+    ) -> Option<SnAIProviderBillingAdjustment> {
+        if provider_driver != "sn-ai-provider" {
             return None;
         }
 
@@ -213,12 +213,15 @@ impl SnOpenAIBillingLedger {
         Some(adjustment)
     }
 
-    fn adjust_from_spent(spent_raw_cost_usd: f64, raw_cost_usd: f64) -> SnOpenAIBillingAdjustment {
-        let remaining_credit_usd = (SN_OPENAI_FREE_CREDIT_USD - spent_raw_cost_usd).max(0.0);
+    fn adjust_from_spent(
+        spent_raw_cost_usd: f64,
+        raw_cost_usd: f64,
+    ) -> SnAIProviderBillingAdjustment {
+        let remaining_credit_usd = (SN_AI_PROVIDER_FREE_CREDIT_USD - spent_raw_cost_usd).max(0.0);
         let credit_applied_usd = raw_cost_usd.min(remaining_credit_usd).max(0.0);
         let billed_cost_usd = (raw_cost_usd - credit_applied_usd).max(0.0);
 
-        SnOpenAIBillingAdjustment {
+        SnAIProviderBillingAdjustment {
             raw_cost_usd,
             billed_cost_usd,
             credit_applied_usd,
@@ -1196,7 +1199,7 @@ impl Router {
         registry: &Registry,
         route_cfg: &RouteConfig,
         model_catalog: &ModelCatalog,
-        sn_openai_billing: Option<&SnOpenAIBillingLedger>,
+        sn_ai_provider_billing: Option<&SnAIProviderBillingLedger>,
     ) -> std::result::Result<RouteDecision, RPCErrors> {
         if snapshot.candidates.is_empty() {
             return Err(reason_error(
@@ -1272,7 +1275,7 @@ impl Router {
             });
             let compat_estimate = CostEstimate::from(&estimate);
             let effective_estimated_cost = compat_estimate.estimated_cost_usd.and_then(|cost| {
-                sn_openai_billing
+                sn_ai_provider_billing
                     .and_then(|billing| billing.preview_billed_cost(tenant_id, provider_type, cost))
                     .or(Some(cost))
             });
@@ -1678,7 +1681,7 @@ pub struct AIComputeCenter {
     registry: Registry,
     router: Router,
     route_cfg: Arc<RwLock<RouteConfig>>,
-    sn_openai_billing: SnOpenAIBillingLedger,
+    sn_ai_provider_billing: SnAIProviderBillingLedger,
     model_catalog: ModelCatalog,
     model_registry: Arc<RwLock<ModelRegistry>>,
     session_config: Arc<RwLock<SessionConfig>>,
@@ -1750,7 +1753,7 @@ impl AIComputeCenter {
             registry,
             router: Router,
             route_cfg: Arc::new(RwLock::new(RouteConfig::default())),
-            sn_openai_billing: SnOpenAIBillingLedger::default(),
+            sn_ai_provider_billing: SnAIProviderBillingLedger::default(),
             model_catalog,
             model_registry,
             session_config: Arc::new(RwLock::new(global_session_config)),
@@ -2096,7 +2099,7 @@ impl AIComputeCenter {
                 .map(|inventory| inventory.provider_driver)
                 .unwrap_or_default();
             let effective_cost = self
-                .sn_openai_billing
+                .sn_ai_provider_billing
                 .preview_billed_cost(
                     tenant_id,
                     provider_driver.as_str(),
@@ -2159,7 +2162,7 @@ impl AIComputeCenter {
         let Some(cost) = summary.cost.clone() else {
             return;
         };
-        let Some(adjustment) = self.sn_openai_billing.apply_charge(
+        let Some(adjustment) = self.sn_ai_provider_billing.apply_charge(
             ctx.tenant_id.as_str(),
             provider_driver,
             Some(cost.amount),
@@ -2184,8 +2187,8 @@ impl AIComputeCenter {
                 json!({
                     "raw_cost_usd": adjustment.raw_cost_usd,
                     "billed_cost_usd": adjustment.billed_cost_usd,
-                    "sn_openai_credit_applied_usd": adjustment.credit_applied_usd,
-                    "sn_openai_credit_remaining_usd": adjustment.remaining_credit_usd,
+                    "sn_ai_provider_credit_applied_usd": adjustment.credit_applied_usd,
+                    "sn_ai_provider_credit_remaining_usd": adjustment.remaining_credit_usd,
                 }),
             );
         }
@@ -3926,13 +3929,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_prefers_sn_openai_when_free_credit_covers_estimated_cost() {
+    async fn complete_prefers_sn_ai_provider_when_free_credit_covers_estimated_cost() {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
             Capability::LlmRouter,
             "llm.plan.default",
-            "sn-openai",
+            "sn-ai-provider",
             "gpt-5-mini",
         );
         catalog.set_mapping(
@@ -3943,7 +3946,7 @@ mod tests {
         );
 
         let sn_provider = Arc::new(MockProvider::new(
-            mock_instance("sn-openai-1", "sn-openai"),
+            mock_instance("sn-ai-provider-1", "sn-ai-provider"),
             cost(0.20, 80),
             vec![Ok(ProviderStartResult::Started)],
         ));
@@ -3979,18 +3982,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_applies_sn_openai_free_credit_before_reporting_cost() {
+    async fn complete_applies_sn_ai_provider_free_credit_before_reporting_cost() {
         let registry = Registry::default();
         let catalog = ModelCatalog::default();
         catalog.set_mapping(
             Capability::LlmRouter,
             "llm.plan.default",
-            "sn-openai",
+            "sn-ai-provider",
             "gpt-5-mini",
         );
 
         let provider = Arc::new(MockProvider::new(
-            mock_instance("sn-openai-1", "sn-openai"),
+            mock_instance("sn-ai-provider-1", "sn-ai-provider"),
             cost(2.0, 100),
             vec![
                 Ok(ProviderStartResult::Immediate(AiResponseSummary {
@@ -4045,7 +4048,7 @@ mod tests {
                 .result
                 .as_ref()
                 .and_then(|summary| summary.extra.as_ref())
-                .and_then(|extra| extra.pointer("/billing/sn_openai_credit_applied_usd"))
+                .and_then(|extra| extra.pointer("/billing/sn_ai_provider_credit_applied_usd"))
                 .and_then(|value| value.as_f64()),
             Some(2.0)
         );

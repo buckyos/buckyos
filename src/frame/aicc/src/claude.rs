@@ -4,8 +4,8 @@ use crate::aicc::{
 };
 use crate::claude_protocol::convert_complete_request;
 use crate::model_types::{
-    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory,
-    ProviderOrigin, ProviderTypeTrustedSource, QuotaState,
+    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
+    ProviderTypeTrustedSource, QuotaState,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -616,21 +616,16 @@ pub fn register_claude_providers(center: &AIComputeCenter, settings: &Value) -> 
 
     for (config, provider) in prepared.into_iter() {
         let inventory = center.registry().add_provider(provider);
+        info!(
+            "registered claude base_url={} inventory={:?}",
+            config.base_url, inventory
+        );
         center
             .model_registry()
             .write()
             .map_err(|_| anyhow!("model registry lock poisoned"))?
             .apply_inventory(inventory)
             .map_err(|err| anyhow!("failed to apply claude inventory: {}", err))?;
-
-        info!(
-            "registered claude provider_instance_name={} provider_type={} provider_driver={} base_url={} models={:?}",
-            config.provider_instance_name,
-            config.provider_type,
-            config.provider_driver,
-            config.base_url,
-            config.models,
-        );
     }
 
     Ok(instances.len())

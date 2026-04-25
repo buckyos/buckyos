@@ -1699,7 +1699,8 @@ mod tests {
                 weight: FIXED_SERVICE_WEIGHT,
             },
         )]);
-        let system_config_selector = build_fixed_selector_from_oods(zone_config, SYSTEM_CONFIG_SERVICE_PORT);
+        let system_config_selector =
+            build_fixed_selector_from_oods(zone_config, SYSTEM_CONFIG_SERVICE_PORT);
 
         let mut service_info = HashMap::new();
         service_info.insert(

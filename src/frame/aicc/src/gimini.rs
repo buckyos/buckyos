@@ -1,11 +1,11 @@
 use crate::aicc::{
-    image_logical_mounts, llm_logical_mounts, provider_model_metadata,
-    provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
-    ProviderStartResult, ResolvedRequest, TaskEventSink,
+    image_logical_mounts, llm_logical_mounts, provider_model_metadata, provider_type_from_settings,
+    AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderStartResult,
+    ResolvedRequest, TaskEventSink,
 };
 use crate::model_types::{
-    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory,
-    ProviderOrigin, ProviderTypeTrustedSource, QuotaState,
+    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
+    ProviderTypeTrustedSource, QuotaState,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -1499,22 +1499,16 @@ pub fn register_google_gimini_providers(
 
     for (config, provider) in prepared.into_iter() {
         let inventory = center.registry().add_provider(provider);
+        info!(
+            "registered google gimini base_url={} inventory={:?}",
+            config.base_url, inventory
+        );
         center
             .model_registry()
             .write()
             .map_err(|_| anyhow!("model registry lock poisoned"))?
             .apply_inventory(inventory)
             .map_err(|err| anyhow!("failed to apply gimini inventory: {}", err))?;
-
-        info!(
-            "registered google gimini provider_instance_name={} provider_type={} provider_driver={} base_url={} models={:?} image_models={:?}",
-            config.provider_instance_name,
-            config.provider_type,
-            config.provider_driver,
-            config.base_url,
-            config.models,
-            config.image_models
-        );
     }
 
     Ok(instances.len())

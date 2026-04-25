@@ -10,7 +10,7 @@
   - `TS SDK`
 - 从 `aicc_gateway_workflow_remote_tests.rs` 迁移的复杂场景：
   - OpenAI
-  - SN OpenAI
+  - SN AI Provider
   - Gemini
   - Claude
   - 都会执行 `workflow_complex_scenario_protocol_mix`（复杂 DAG + JSON 输出 + stream）
@@ -22,7 +22,7 @@
 
 关键规则：
 
-- `sn-openai` 始终执行（不需要 api-key）
+- `sn-ai-provider` 始终执行（不需要 api-key）
 - `openai/gemini/claude` 未提供 key 时，该 provider 的用例会显示为 `skipped`
 
 ## 运行

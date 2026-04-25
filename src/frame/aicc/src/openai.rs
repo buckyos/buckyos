@@ -1,11 +1,11 @@
 use crate::aicc::{
-    image_logical_mounts, llm_logical_mounts, provider_model_metadata,
-    provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
-    ProviderStartResult, ResolvedRequest, TaskEventSink,
+    image_logical_mounts, llm_logical_mounts, provider_model_metadata, provider_type_from_settings,
+    AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderStartResult,
+    ResolvedRequest, TaskEventSink,
 };
 use crate::model_types::{
-    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory,
-    ProviderOrigin, ProviderTypeTrustedSource, QuotaState,
+    ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
+    ProviderTypeTrustedSource, QuotaState,
 };
 use crate::openai_protocol::{
     merge_options, merge_requirements_response_format, merge_tool_calls,
@@ -1856,7 +1856,7 @@ struct OpenAISettings {
 
 #[derive(Debug, Clone, Deserialize)]
 struct SettingsOpenAIInstanceConfig {
-    #[serde(default = "default_instance_id")]
+    #[serde(default = "default_instance_id", alias = "instance_id")]
     provider_instance_name: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
@@ -2162,22 +2162,16 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
 
     for (config, provider) in prepared.into_iter() {
         let inventory = center.registry().add_provider(provider);
+        info!(
+            "registered openai base_url={} inventory={:?}",
+            config.base_url, inventory
+        );
         center
             .model_registry()
             .write()
             .map_err(|_| anyhow!("model registry lock poisoned"))?
             .apply_inventory(inventory)
             .map_err(|err| anyhow!("failed to apply openai inventory: {}", err))?;
-
-        info!(
-            "registered openai provider_instance_name={} provider_type={} provider_driver={} base_url={} models={:?} image_models={:?}",
-            config.provider_instance_name,
-            config.provider_type,
-            config.provider_driver,
-            config.base_url,
-            config.models,
-            config.image_models
-        );
     }
 
     Ok(instances.len())
@@ -2284,10 +2278,7 @@ mod tests {
             OpenAIProvider::price_per_1m_tokens("gpt-5-pro"),
             (15.0, 120.0)
         );
-        assert_eq!(
-            OpenAIProvider::price_per_1m_tokens("gpt-5.4"),
-            (2.5, 15.0)
-        );
+        assert_eq!(OpenAIProvider::price_per_1m_tokens("gpt-5.4"), (2.5, 15.0));
         assert_eq!(
             OpenAIProvider::price_per_1m_tokens("gpt-5.4-mini"),
             (0.75, 4.5)
@@ -2668,9 +2659,9 @@ data: [DONE]
             api_token: String::new(),
             alias_map: HashMap::new(),
             instances: vec![SettingsOpenAIInstanceConfig {
-                provider_instance_name: "sn-openai-1".to_string(),
+                provider_instance_name: "sn-ai-provider-1".to_string(),
                 provider_type: "cloud_api".to_string(),
-                provider_driver: "sn-openai".to_string(),
+                provider_driver: "sn-ai-provider".to_string(),
                 base_url: "https://sn.buckyos.ai/v1".to_string(),
                 auth_mode: DEVICE_JWT_AUTH_MODE.to_string(),
                 timeout_ms: default_timeout_ms(),
@@ -2692,9 +2683,9 @@ data: [DONE]
     fn use_chat_completions_endpoint_detects_custom_sn_path() {
         let provider = OpenAIProvider::new(
             OpenAIInstanceConfig {
-                provider_instance_name: "sn-openai-1".to_string(),
+                provider_instance_name: "sn-ai-provider-1".to_string(),
                 provider_type: "cloud_api".to_string(),
-                provider_driver: "sn-openai".to_string(),
+                provider_driver: "sn-ai-provider".to_string(),
                 base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
                 auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),

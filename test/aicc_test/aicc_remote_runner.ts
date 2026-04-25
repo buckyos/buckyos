@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buckyos, RuntimeType } from "buckyos/node";
 
 type Layer = "kRPC Direct" | "AiccClient (Rust)" | "TS SDK";
-type ProviderKind = "sn-openai" | "openai" | "gemini" | "claude";
+type ProviderKind = "sn-ai-provider" | "openai" | "gemini" | "claude";
 type CaseStatus = "passed" | "failed" | "partial" | "skipped";
 
 type CliOptions = {
@@ -97,7 +97,7 @@ const DEFAULT_GEMINI_BASE_URL =
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 const DEFAULT_CLAUDE_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_CLAUDE_MODEL = "claude-3-7-sonnet-latest";
-const DEFAULT_SN_OPENAI_BASE_URL = "https://sn.buckyos.ai/api/v1/ai/";
+const DEFAULT_SN_AI_PROVIDER_BASE_URL = "https://sn.buckyos.ai/api/v1/ai/";
 const COMPLEX_DAG_PROMPT = `You are a workflow planner.
 Return JSON only (no markdown).
 Generate a DAG plan for "product release multimedia package" with EXACTLY 6 steps.
@@ -279,7 +279,7 @@ async function loadOptionsFromConfig(argv: string[]): Promise<CliOptions> {
         claude: getConfigValue(cfg, ["api_keys.claude", "claude_api_key"]),
     };
     const providers: ProviderKind[] = [
-        "sn-openai",
+        "sn-ai-provider",
         "openai",
         "gemini",
         "claude",
@@ -582,7 +582,7 @@ function buildOpenAiProviderConfig(
     };
 }
 
-function buildSnOpenAiProviderConfig(
+function buildSnAiProviderConfig(
     caseConfig: RequiredCaseConfig,
 ): Record<string, unknown> {
     return {
@@ -590,9 +590,10 @@ function buildSnOpenAiProviderConfig(
         api_token: "",
         instances: [
             {
-                instance_id: "workflow-sn-openai-remote",
-                provider_type: "sn-openai",
-                base_url: DEFAULT_SN_OPENAI_BASE_URL,
+                provider_instance_name: "workflow-sn-ai-provider-remote",
+                provider_type: "cloud_api",
+                provider_driver: "sn-ai-provider",
+                base_url: DEFAULT_SN_AI_PROVIDER_BASE_URL,
                 auth_mode: "device_jwt",
                 timeout_ms: caseConfig.providerTimeoutMs,
                 models: [DEFAULT_OPENAI_MODEL],
@@ -702,8 +703,8 @@ async function resetAiccSettings(
         weights: caseConfig.weights,
     };
 
-    if (provider === "sn-openai") {
-        expected.openai = buildSnOpenAiProviderConfig(caseConfig);
+    if (provider === "sn-ai-provider") {
+        expected["sn-ai-provider"] = buildSnAiProviderConfig(caseConfig);
     } else if (provider === "openai") {
         expected.openai = buildOpenAiProviderConfig(
             caseConfig,
@@ -1822,7 +1823,7 @@ function createCases(): TestCase[] {
             },
         },
         {
-            id: "workflow_remote_02_sn_openai_complex_scenario_protocol_mix",
+            id: "workflow_remote_02_sn_ai_provider_complex_scenario_protocol_mix",
             layer: "TS SDK",
             requiresAuth: true,
             requiredConfig: {
@@ -1834,8 +1835,8 @@ function createCases(): TestCase[] {
                 ],
             },
             run: async (ctx, provider) => {
-                if (provider !== "sn-openai") {
-                    throw new SkippedCaseError("sn-openai-only workflow case");
+                if (provider !== "sn-ai-provider") {
+                    throw new SkippedCaseError("sn-ai-provider-only workflow case");
                 }
                 return runWorkflowProtocolMix(ctx, provider);
             },
