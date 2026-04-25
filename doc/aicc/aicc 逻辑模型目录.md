@@ -392,16 +392,16 @@ session_config:
     # ===== LLM =====
     llm.plan:
       items:
-        opus:    { target: llm.claude,   weight: 3.0 }
+        opus:    { target: llm.claude,   weight: 2.5 }
         gpt5:    { target: llm.gpt5,     weight: 2.5 }
-        gemini:  { target: llm.gemini,   weight: 2.0 }
-        deepseek:{ target: llm.deepseek, weight: 1.0 }
+        gemini:  { target: llm.gemini,   weight: 2.5 }
+        deepseek:{ target: llm.deepseek, weight: 1.5 }
       fallback: { mode: parent }
       profile: quality_first
 
     llm.code:
       items:
-        opus:     { target: llm.claude,    weight: 3.0 }
+        opus:     { target: llm.claude,    weight: 2.5 }
         gpt5:     { target: llm.gpt5,      weight: 2.5 }
         gemini:   { target: llm.gemini,    weight: 2.5 }
         kimi:     { target: llm.kimi,      weight: 2.0 }
@@ -412,7 +412,7 @@ session_config:
 
     llm.swift:
       items:
-        haiku:        { target: claude-haiku-4.5@anthropic, weight: 3.0 }
+        haiku:        { target: claude-haiku-4.5@anthropic, weight: 2.5 }
         flash_lite:   { target: gemini-3.1-flash-lite@google, weight: 2.5 }
         gpt5_nano:    { target: gpt-5.5-nano@openai, weight: 2.5 }
         qwen_local:   { target: qwen3.5-9b@local, weight: 2.0 }
@@ -421,17 +421,17 @@ session_config:
 
     llm.reason:
       items:
-        opus_thinking:  { target: claude-opus-4.7@anthropic, weight: 3.0 }
-        gpt5_xhigh:     { target: gpt-5.5@openai, weight: 3.0 }
+        opus_thinking:  { target: claude-opus-4.7@anthropic, weight: 2.5 }
+        gpt5_xhigh:     { target: gpt-5.5@openai, weight: 2.5 }
         grok:           { target: grok-4@xai, weight: 2.0 }
         kimi_thinking:  { target: kimi-k2-thinking@moonshot, weight: 2.0 }
-        deepseek_pro:   { target: deepseek-v4-pro@deepseek, weight: 1.5 }
+        deepseek_pro:   { target: deepseek-v4-pro@deepseek, weight: 2.0 }
       fallback: { mode: disabled }   # reason 任务不允许降级
       profile: quality_first
 
     llm.vision:
       items:
-        opus:   { target: claude-opus-4.7@anthropic, weight: 3.0 }
+        opus:   { target: claude-opus-4.7@anthropic, weight: 2.5 }
         gpt5:   { target: gpt-5.5@openai, weight: 2.5 }
         gemini: { target: gemini-3.1-pro@google, weight: 2.5 }
         qwen_vl:{ target: qwen3.5-vl-32b@local, weight: 1.0 }
@@ -439,7 +439,7 @@ session_config:
 
     llm.long:
       items:
-        scout:  { target: llama4-scout@local, weight: 3.0 }   # 10M context
+        scout:  { target: llama4-scout@local, weight: 2.0 }   # 10M context
         gemini: { target: gemini-3.1-pro@google, weight: 2.0 } # 1M
         sonnet: { target: claude-sonnet-4.6@anthropic, weight: 1.5 }
       fallback: { mode: parent }
@@ -454,7 +454,7 @@ session_config:
     # ===== Embedding =====
     embedding.text:
       items:
-        bge:       { target: bge-m3@local, weight: 3.0 }
+        bge:       { target: bge-m3@local, weight: 2.0 }
         voyage:    { target: voyage-3@voyageai, weight: 2.0 }
         openai:    { target: text-embedding-3-large@openai, weight: 1.0 }
       fallback: { mode: strict }   # 向量空间不通用
@@ -462,18 +462,18 @@ session_config:
     # ===== Image =====
     image.txt2img:
       items:
-        flux:     { target: image.flux,     weight: 3.0 }
+        flux:     { target: image.flux,     weight: 2.5 }
         seedream: { target: image.seedream, weight: 2.0 }
-        imagen:   { target: image.imagen,   weight: 1.5 }
+        imagen:   { target: image.imagen,   weight: 2.5 }
         sd_local: { target: image.sd,       weight: 1.0 }
       fallback: { mode: parent }
       profile: quality_first
 
     image.img2img:
       items:
-        kontext:  { target: image.flux_kontext, weight: 3.0 }
+        kontext:  { target: image.flux_kontext, weight: 2.0 }
         seedream: { target: image.seedream,     weight: 2.0 }
-        gpt_img:  { target: gpt-image-1@openai, weight: 1.5 }
+        gpt_img:  { target: gpt-image-1@openai, weight: 2.0 }
       fallback: { mode: parent }
 
     image.upscale:
@@ -485,7 +485,7 @@ session_config:
     # ===== Audio =====
     audio.tts:
       items:
-        eleven: { target: eleven-v3@elevenlabs, weight: 3.0 }
+        eleven: { target: eleven-v3@elevenlabs, weight: 2.5 }
         openai: { target: tts-1-hd@openai, weight: 2.0 }
         kokoro: { target: kokoro-82m@local, weight: 1.0 }
       fallback: { mode: strict }   # 音色不能换
@@ -493,7 +493,7 @@ session_config:
 
     audio.asr:
       items:
-        whisper_local: { target: whisper-large-v3@local, weight: 3.0 }
+        whisper_local: { target: whisper-large-v3@local, weight: 2.5 }
         sensevoice:    { target: sensevoice-small@local, weight: 2.0 }
         whisper_api:   { target: whisper-1@openai, weight: 1.0 }
       fallback: { mode: parent }
@@ -509,10 +509,6 @@ session_config:
       fallback: { mode: parent }
       profile: quality_first
 
-  global_exact_model_weights:
-    # 用户偏好:本地优先(隐私场景)
-    qwen3.5-9b@local: 1.5
-    bge-m3@local: 1.5
 
   policy:
     local_only: false
