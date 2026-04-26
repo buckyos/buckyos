@@ -51,11 +51,13 @@ pnpm run test:models
 - `Logical directory tree`：按 `.` 分段的统一目录树，叶子节点合并三个来源（参考前缀以区分）：
   - 裸 `xxx@provider`：来自 provider inventory 的 level-1 mount（`logical_mounts`）。
   - `[ref: name → llm.xxx]  (w=权重)`：来自 `SessionConfig.logical_tree` 的 level-2 item，
-    指向另一个 logical path。当前 AICC 启动 / reload 时会按
-    `doc/aicc/aicc 逻辑模型目录.md` 第 4 节、由 `default_logical_tree.rs` 自动构造
-    `llm.plan` / `llm.code` / `llm.swift` / `llm.reason` / `llm.vision` /
-    `llm.long` / `llm.fallback` 7 个 LLM level-2 节点；items 会按当前 inventory
-    过滤，缺失的 target（如 `llm.opus` 在没有 Anthropic Opus 模型的 zone）会被自动剔除。
+    指向另一个 logical path。AICC 启动 / reload 时按
+    `doc/aicc/aicc 逻辑模型目录.md` 第 4 节、由 `default_logical_tree.rs` **逐字**
+    构造 `llm.plan` / `llm.code` / `llm.swift` / `llm.reason` / `llm.vision` /
+    `llm.long` / `llm.fallback` 7 个 LLM level-2 节点（含 `opus` / `qwen_max` /
+    `deepseek` / `kimi` / `glm` / `grok` 等 item，即便当前 zone 没装对应 provider 也保留）。
+    路由时若某 item 解析不到底层模型，router 会按权重降级到下一个候选；item 列表
+    本身始终反映设计意图，方便对照 doc 验证树形态。
   - `[alias→ provider_type/provider_model]`：catalog 别名（旧机制）。
 
 ## 运行 fal provider 用例

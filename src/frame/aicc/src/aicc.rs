@@ -1997,36 +1997,18 @@ impl AIComputeCenter {
         }
     }
 
-    /// Build the default level-2 logical tree from the static templates and
-    /// install it via `set_session_config`. Items whose target mount is not
-    /// present in the current inventory are silently dropped, so adding a new
-    /// provider later auto-extends the tree on the next reload.
-    /// Returns the number of level-2 leaf nodes installed.
+    /// Install the default level-2 logical tree (per `doc/aicc/aicc 逻辑模型目录.md` §4)
+    /// via `set_session_config`. Items are kept verbatim from the doc — the
+    /// router skips unresolvable items at request time, but the directory tree
+    /// always reflects the designed intent. Returns the number of level-2 leaf
+    /// nodes installed.
     pub fn apply_default_logical_tree(&self) -> std::result::Result<usize, RPCErrors> {
-        let registry = self
-            .model_registry
-            .read()
-            .map_err(|_| reason_error("internal_error", "model registry lock poisoned"))?;
-
-        let mut available_targets: HashSet<String> = HashSet::new();
-        for inventory in registry.inventories() {
-            available_targets.insert(inventory.provider_instance_name.clone());
-            for model in inventory.models.iter() {
-                available_targets.insert(model.exact_model.clone());
-                for mount in model.logical_mounts.iter() {
-                    available_targets.insert(mount.clone());
-                }
-            }
-        }
-        drop(registry);
-
-        let config = crate::default_logical_tree::build_default_session_config(&available_targets);
+        let config = crate::default_logical_tree::build_default_session_config();
         let node_count = crate::default_logical_tree::level2_node_count(&config);
         self.set_session_config(config);
         info!(
-            "aicc.default_logical_tree.applied level2_nodes={} available_targets={}",
-            node_count,
-            available_targets.len()
+            "aicc.default_logical_tree.applied level2_nodes={}",
+            node_count
         );
         Ok(node_count)
     }

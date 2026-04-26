@@ -2,9 +2,10 @@
 //
 // Each template defines a task-oriented logical path (e.g. `llm.plan`) whose
 // items reference level-1 provider mounts (e.g. `llm.opus`, `llm.gpt-pro`).
-// The applied SessionConfig is filtered against the currently-registered
-// inventory so items whose target mount is not present are silently dropped —
-// adding a new provider later auto-extends the tree on the next reload.
+// The applied SessionConfig is a verbatim transcription of the doc — items
+// are NOT filtered against the current inventory, so the directory tree
+// always reflects the designed intent; the router falls back through items
+// at request time when an underlying provider is unavailable.
 //
 // Currently only LLM templates are populated; the doc's embedding/image/
 // audio/video sections still need usage-based subdivision before they can be
@@ -14,7 +15,7 @@ use crate::model_session::{LogicalNode, SessionConfig};
 use crate::model_types::{
     FallbackMode, FallbackRule, LockedValue, ModelItem, PolicyConfig, SchedulerProfile,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 pub const DEFAULT_LOGICAL_TREE_REVISION: &str = "builtin-aicc-router-v2";
 
@@ -165,25 +166,21 @@ fn descend_or_create<'a>(
     node
 }
 
-/// Build a SessionConfig containing the default level-2 logical tree, with
-/// items filtered to those whose `target` is present in `available_targets`.
-pub fn build_default_session_config(available_targets: &HashSet<String>) -> SessionConfig {
+/// Build a SessionConfig containing the default level-2 logical tree from the
+/// static templates verbatim. Items are NOT filtered against the current
+/// inventory — the directory tree always reflects the designed intent and the
+/// router skips unresolvable items at request time.
+pub fn build_default_session_config() -> SessionConfig {
     let mut tree: BTreeMap<String, LogicalNode> = BTreeMap::new();
     let mut applied_nodes = 0usize;
 
     for template in LLM_TEMPLATES {
         let mut items: BTreeMap<String, ModelItem> = BTreeMap::new();
         for item in template.items {
-            if !available_targets.contains(item.target) {
-                continue;
-            }
             items.insert(
                 item.name.to_string(),
                 ModelItem::new(item.target.to_string(), item.weight),
             );
-        }
-        if items.is_empty() {
-            continue;
         }
         let node = descend_or_create(&mut tree, template.path);
         node.items = Some(items);
@@ -224,71 +221,98 @@ pub fn level2_node_count(config: &SessionConfig) -> usize {
 mod tests {
     use super::*;
 
-    fn target_set(targets: &[&str]) -> HashSet<String> {
-        targets.iter().map(|item| item.to_string()).collect()
+    fn item_targets(items: &BTreeMap<String, ModelItem>) -> Vec<&str> {
+        let mut out: Vec<&str> = items.values().map(|item| item.target.as_str()).collect();
+        out.sort();
+        out
     }
 
     #[test]
-    fn empty_inventory_yields_empty_tree() {
-        let config = build_default_session_config(&HashSet::new());
-        assert!(config.logical_tree.is_empty());
-        assert_eq!(level2_node_count(&config), 0);
+    fn all_seven_llm_level2_nodes_present() {
+        let config = build_default_session_config();
+        let llm = config.logical_tree.get("llm").expect("llm root");
+        for child in [
+            "plan", "code", "swift", "reason", "vision", "long", "fallback",
+        ] {
+            assert!(
+                llm.children.contains_key(child),
+                "llm.{} should be present",
+                child
+            );
+        }
+        assert_eq!(level2_node_count(&config), 7);
     }
 
     #[test]
-    fn only_targets_present_in_inventory_are_kept() {
-        let available = target_set(&["llm.opus", "llm.gpt-pro", "llm.gemini-pro"]);
-        let config = build_default_session_config(&available);
-        let llm = config
+    fn llm_plan_matches_doc_section_4() {
+        let config = build_default_session_config();
+        let plan = config
             .logical_tree
             .get("llm")
-            .expect("llm root should exist");
-        let plan = llm.children.get("plan").expect("llm.plan should exist");
-        let items = plan.items.as_ref().expect("items present");
-        assert_eq!(items.len(), 3);
-        assert!(items.contains_key("opus"));
-        assert!(items.contains_key("gpt_pro"));
-        assert!(items.contains_key("gemini"));
-        assert!(!items.contains_key("qwen_max"));
+            .and_then(|node| node.children.get("plan"))
+            .and_then(|node| node.items.as_ref())
+            .expect("llm.plan items");
+        // Doc §4: llm.plan items = opus / gpt_pro / gemini / qwen_max / deepseek
+        let names: Vec<&str> = plan.keys().map(String::as_str).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec!["deepseek", "gemini", "gpt_pro", "opus", "qwen_max"]
+        );
+        assert_eq!(plan.get("opus").unwrap().target, "llm.opus");
+        assert_eq!(plan.get("opus").unwrap().weight, 2.5);
+        assert_eq!(plan.get("gpt_pro").unwrap().target, "llm.gpt-pro");
+        assert_eq!(plan.get("gemini").unwrap().target, "llm.gemini-pro");
+        assert_eq!(plan.get("gemini").unwrap().weight, 2.4);
+        assert_eq!(plan.get("qwen_max").unwrap().weight, 1.8);
+        assert_eq!(plan.get("deepseek").unwrap().target, "llm.deepseek-pro");
     }
 
     #[test]
-    fn templates_with_no_matching_target_are_dropped() {
-        // Only haiku is available — llm.swift keeps haiku, but llm.reason
-        // (which doesn't reference haiku) becomes empty and is dropped.
-        let available = target_set(&["llm.haiku"]);
-        let config = build_default_session_config(&available);
-        let llm = config.logical_tree.get("llm").expect("llm root");
-        assert!(llm.children.contains_key("swift"));
-        assert!(!llm.children.contains_key("reason"));
-        assert!(!llm.children.contains_key("plan"));
+    fn llm_swift_matches_doc_section_4() {
+        let config = build_default_session_config();
+        let swift = config
+            .logical_tree
+            .get("llm")
+            .and_then(|node| node.children.get("swift"))
+            .and_then(|node| node.items.as_ref())
+            .expect("llm.swift items");
+        let targets = item_targets(swift);
+        assert_eq!(
+            targets,
+            vec![
+                "llm.gemini-flash-lite",
+                "llm.glm-flash",
+                "llm.gpt-nano",
+                "llm.grok-fast",
+                "llm.haiku",
+                "llm.qwen-small",
+            ]
+        );
     }
 
     #[test]
     fn fallback_disabled_for_reason_and_fallback_paths() {
-        let available = target_set(&[
-            "llm.opus",
-            "llm.gpt-pro",
-            "llm.gemini-deepthink",
-            "llm.haiku",
-            "llm.gpt-nano",
-        ]);
-        let config = build_default_session_config(&available);
+        let config = build_default_session_config();
         let llm = config.logical_tree.get("llm").unwrap();
-        let reason = llm.children.get("reason").unwrap();
-        assert_eq!(
-            reason.fallback.as_ref().map(|rule| rule.mode.clone()),
-            Some(FallbackMode::Disabled)
-        );
-        let fallback = llm.children.get("fallback").unwrap();
-        assert_eq!(
-            fallback.fallback.as_ref().map(|rule| rule.mode.clone()),
-            Some(FallbackMode::Disabled)
-        );
-        let plan = llm.children.get("plan").unwrap();
-        assert_eq!(
-            plan.fallback.as_ref().map(|rule| rule.mode.clone()),
-            Some(FallbackMode::Parent)
-        );
+        for path in ["reason", "fallback"] {
+            let node = llm.children.get(path).unwrap();
+            assert_eq!(
+                node.fallback.as_ref().map(|rule| rule.mode.clone()),
+                Some(FallbackMode::Disabled),
+                "{} should have fallback mode disabled",
+                path
+            );
+        }
+        for path in ["plan", "code", "swift", "vision", "long"] {
+            let node = llm.children.get(path).unwrap();
+            assert_eq!(
+                node.fallback.as_ref().map(|rule| rule.mode.clone()),
+                Some(FallbackMode::Parent),
+                "{} should have fallback mode parent",
+                path
+            );
+        }
     }
 }
