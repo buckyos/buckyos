@@ -34,6 +34,41 @@ ensure_launchdaemon_docker() {
   fi
 }
 
+stop_buckyos_containers() {
+  echo "[buckyos] preinstall: stopping BuckyOS docker containers (best effort)"
+  local raw_container_ids
+  local container_ids
+  raw_container_ids="$(docker ps -aq --filter "label=buckyos.full_appid" 2>/dev/null || true)"
+  if [ -z "$raw_container_ids" ]; then
+    echo "[buckyos] preinstall: no BuckyOS docker containers found"
+    return
+  fi
+  container_ids=("${(@f)raw_container_ids}")
+
+  run_with_timeout 20 docker rm -f "${container_ids[@]}" >/dev/null 2>&1 || {
+    echo "[buckyos] preinstall: failed to remove BuckyOS docker containers" >&2
+  }
+}
+
+run_existing_stop_script() {
+  echo "[buckyos] preinstall: running existing stop script (best effort)"
+  if [ -f "$BUCKYOS_ROOT/bin/stop_osx.sh" ]; then
+    run_with_timeout 30 /bin/sh "$BUCKYOS_ROOT/bin/stop_osx.sh" >/dev/null 2>&1 || {
+      echo "[buckyos] preinstall: existing stop_osx.sh failed" >&2
+    }
+    return
+  fi
+
+  if [ -f "$BUCKYOS_ROOT/bin/stop.py" ] && command -v python3 >/dev/null 2>&1; then
+    run_with_timeout 30 python3 "$BUCKYOS_ROOT/bin/stop.py" >/dev/null 2>&1 || {
+      echo "[buckyos] preinstall: existing stop.py failed" >&2
+    }
+    return
+  fi
+
+  stop_buckyos_containers
+}
+
 ensure_launchdaemon_docker
 
 echo "[buckyos] preinstall: stopping service (best effort)"
@@ -49,6 +84,8 @@ if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ "$CONSOLE_USER" 
   fi
 fi
 rm -f "$AGENT_PLIST" >/dev/null 2>&1 || true
+
+run_existing_stop_script
 
 echo "[buckyos] preinstall: remove module paths (keep data)"
 # BEGIN AUTO-GENERATED: modules
@@ -72,6 +109,7 @@ rm -rf "$BUCKYOS_ROOT/etc/scheduler"
 rm -rf "$BUCKYOS_ROOT/etc/boot_gateway.yaml"
 rm -rf "$BUCKYOS_ROOT/bin/util.py"
 rm -rf "$BUCKYOS_ROOT/bin/stop.py"
+rm -rf "$BUCKYOS_ROOT/bin/stop_osx.sh"
 rm -rf "$BUCKYOS_ROOT/bin/buckyos_jarvis"
 rm -rf "$BUCKYOS_ROOT/bin/cyfs-gateway"
 rm -rf "$BUCKYOS_ROOT/bin/test-server"

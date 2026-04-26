@@ -664,6 +664,13 @@ def _copy_path(src: Path, dst: Path, *, dry_run: bool) -> None:
         shutil.copy2(src, dst)
 
 
+def _ensure_executable(path: Path, *, dry_run: bool) -> None:
+    print("[chmod +x]", path)
+    if dry_run or not path.exists():
+        return
+    path.chmod(path.stat().st_mode | 0o111)
+
+
 def _expected_desktop_app_path(target: TargetScript) -> Path | None:
     if target.platform_key == "macos":
         return target.build_root / "BuckyOSApp" / "BuckyOS.app"
@@ -874,6 +881,7 @@ def _prepare_common_build_root(
         cwd=SRC_DIR,
         dry_run=dry_run,
     )
+    _ensure_executable(buckyos_root / "bin" / "stop_osx.sh", dry_run=dry_run)
     _run_checked([python_exe, "make_config.py", "release", f"--rootfs={buckyos_root}"], cwd=SRC_DIR, dry_run=dry_run)
 
     _stage_desktop_app(

@@ -17,6 +17,28 @@ function Stop-BuckyProcess {
   }
 }
 
+function Stop-BuckyContainers {
+  try {
+    $containerIds = docker ps -aq --filter "label=buckyos.full_appid" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "Failed to list buckyos docker containers"
+      return
+    }
+
+    $containerIds = @($containerIds | Where-Object { $_ -and $_.Trim() -ne "" })
+    if ($containerIds.Count -eq 0) {
+      Write-Host "No buckyos docker containers found"
+      return
+    }
+
+    docker rm -f $containerIds | ForEach-Object {
+      Write-Host "$_ container removed"
+    }
+  } catch {
+    Write-Host "Failed to remove buckyos docker containers"
+  }
+}
+
 $processNames = @(
   "node-daemon",
   "node_daemon",
@@ -44,3 +66,5 @@ $processNames = @(
 foreach ($name in $processNames) {
   Stop-BuckyProcess -Name $name
 }
+
+Stop-BuckyContainers

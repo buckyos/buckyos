@@ -91,6 +91,7 @@ apps:
       util.py: bin/util.py
       stop.py: bin/stop.py
       stop.ps1: bin/stop.ps1
+      stop_osx.sh: bin/stop_osx.sh
       buckyos_jarvis: bin/buckyos_jarvis/
 
 
