@@ -32,6 +32,24 @@ cd test/aicc_test
 pnpm test
 ```
 
+## 运行 fal provider 用例
+
+`test_fal.ts` 覆盖 fal provider 提供的 3 个 ai method（`image.upscale` / `image.bg_remove` / `video.upscale`）。
+若远端 AICC 未配置 `settings.fal` 或 fal provider 不可用，相关用例会被自动标记为 SKIPPED，不会判失败。
+
+```bash
+cd test/aicc_test
+pnpm run test:fal
+```
+
+可选环境变量：
+
+- `FAL_TEST_IMAGE_URL` — image.upscale / image.bg_remove 输入图 URL
+- `FAL_TEST_VIDEO_URL` — video.upscale 输入视频 URL
+- `FAL_WAIT_TIMEOUT_MS` — 单用例超时（默认 240000）
+
+退出码：`0` 全部通过；`1` 有失败；`2` 全部 skipped（未配置 fal）。
+
 smoke 用例会通过 `../test_helpers/buckyos_client.ts` 的 `initTestRuntime()` 初始化标准 AppClient runtime，然后从 runtime 获取 AICC 和 task-manager client。
 
 ## 运行 remote runner

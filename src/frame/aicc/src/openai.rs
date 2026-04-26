@@ -8,8 +8,8 @@ use crate::model_types::{
     ProviderTypeTrustedSource, QuotaState,
 };
 use crate::openai_protocol::{
-    merge_options, merge_requirements_response_format, merge_tool_calls,
-    strip_incompatible_sampling_options,
+    apply_provider_model_defaults, merge_options, merge_requirements_response_format,
+    merge_tool_calls, strip_incompatible_sampling_options,
 };
 use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
 use anyhow::{anyhow, Context, Result};
@@ -37,7 +37,7 @@ use tokio::time;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nono,gpt-5-pro";
+const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nano,gpt-5-pro";
 const DEFAULT_OPENAI_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
 const DEFAULT_SN_AI_PROVIDER_MODELS: &str = "gpt-5.4,gpt-5.4-mini,gpt-5.4-nano,gpt-5.4-pro";
 const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
@@ -1774,9 +1774,15 @@ impl OpenAIProvider {
         if let Some(options) = req.payload.options.as_ref() {
             ignored_options.extend(merge_options(&mut request_obj, options)?);
         }
+        apply_provider_model_defaults(&mut request_obj, provider_model);
         let stripped_options =
             strip_incompatible_sampling_options(&mut request_obj, provider_model);
-        ignored_options.extend(stripped_options);
+        if !stripped_options.is_empty() {
+            info!(
+                "aicc.openai omitted incompatible llm options: provider_instance_name={} model={} trace_id={:?} omitted={:?}",
+                self.instance.provider_instance_name, provider_model, ctx.trace_id, stripped_options
+            );
+        }
         merge_requirements_response_format(&mut request_obj, req);
         merge_tool_calls(&mut request_obj, req.payload.tool_specs.as_slice())?;
         Self::merge_requirements_tools(&mut request_obj, req)?;
