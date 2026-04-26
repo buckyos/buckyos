@@ -5,6 +5,7 @@
   "scripts": {
     "smoke": "deno run --allow-net --allow-read --allow-env --unsafely-ignore-certificate-errors aicc_smoke.ts",
     "test:fal": "deno run --allow-net --allow-read --allow-env --unsafely-ignore-certificate-errors test_fal.ts",
+    "test:models": "deno run --allow-net --allow-read --allow-env --unsafely-ignore-certificate-errors test_list_models.ts",
     "remote": "node --experimental-strip-types aicc_remote_runner.ts",
     "test": "pnpm run smoke"
   },

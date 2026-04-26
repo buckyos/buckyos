@@ -189,14 +189,14 @@ AICC(MiniMax) 会调用：
       }
     ]
   },
-  "gimini": {
+  "gemini": {
     "enabled": true,
     "api_key": "mock-gemini-key",
     "instances": [
       {
         "provider_instance_name": "gemini-mock-1",
         "provider_type": "cloud_api",
-        "provider_driver": "google-gimini",
+        "provider_driver": "google-gemini",
         "base_url": "http://127.0.0.1:18081/v1beta",
         "models": ["gemini-2.5-flash"],
         "default_model": "gemini-2.5-flash"
@@ -223,7 +223,7 @@ AICC(MiniMax) 会调用：
 说明：
 
 - `openai.enabled` 默认可开启；`minimax.enabled` 默认是 `false`，要显式置 `true`
-- `gimini` 同时兼容 `gemini/google_gimini/google` 键名
+- `gemini` 是推荐键名；旧的 `gimini` / `google_gimini` 和 `google` 键名仍兼容
 - 配置更新后由服务端配置机制生效，无需额外调用 AICC 热加载方法
 
 ## 9. 快速联调建议

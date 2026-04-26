@@ -32,6 +32,26 @@ cd test/aicc_test
 pnpm test
 ```
 
+## 打印模型目录树
+
+`test_list_models.ts` 调用 aicc 服务的 `models.list` RPC，
+拉取当前所有 provider inventory 与聚合后的逻辑路径树，并以 ASCII 目录树打印。
+适合在排查路由问题、确认某个 logical path 是否被挂载时用。
+
+```bash
+cd test/aicc_test
+pnpm run test:models
+```
+
+输出包含三段：
+
+- `Providers`：每个 provider 实例下的 `exact_model` 与对应 `logical_mounts`。
+- `Catalog aliases`：`ModelCatalog` 里注册的 `alias → (provider_type, provider_model)` 映射，
+  例如 `llm.plan.default → openai/gpt-5-mini`、`claude/claude-3-7-sonnet-20250219`。
+- `Logical directory tree`：按 `.` 分段的逻辑路径树，叶子节点同时列出来自 inventory 的
+  `exact_model` 命中和 catalog 的 `[alias→ provider_type/provider_model]` 命中（两者来源不同：
+  前者是 provider 上报的物理挂载，后者是 catalog 里的人工别名）。
+
 ## 运行 fal provider 用例
 
 `test_fal.ts` 覆盖 fal provider 提供的 3 个 ai method（`image.upscale` / `image.bg_remove` / `video.upscale`）。

@@ -1148,6 +1148,49 @@ impl ModelCatalog {
             tenant_overrides.clear();
         }
     }
+
+    pub fn snapshot(&self) -> Vec<ModelCatalogEntry> {
+        let mut out = vec![];
+        if let Ok(mappings) = self.mappings.read() {
+            for (key, provider_model) in mappings.iter() {
+                out.push(ModelCatalogEntry {
+                    capability: key.capability.clone(),
+                    alias: key.alias.clone(),
+                    provider_type: key.provider_type.clone(),
+                    provider_model: provider_model.clone(),
+                    tenant_id: None,
+                });
+            }
+        }
+        if let Ok(tenant) = self.tenant_overrides.read() {
+            for ((tenant_id, key), provider_model) in tenant.iter() {
+                out.push(ModelCatalogEntry {
+                    capability: key.capability.clone(),
+                    alias: key.alias.clone(),
+                    provider_type: key.provider_type.clone(),
+                    provider_model: provider_model.clone(),
+                    tenant_id: Some(tenant_id.clone()),
+                });
+            }
+        }
+        out.sort_by(|left, right| {
+            left.alias
+                .cmp(&right.alias)
+                .then_with(|| left.provider_type.cmp(&right.provider_type))
+                .then_with(|| left.provider_model.cmp(&right.provider_model))
+        });
+        out
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ModelCatalogEntry {
+    pub capability: Capability,
+    pub alias: String,
+    pub provider_type: String,
+    pub provider_model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1675,13 +1718,44 @@ pub fn exact_model_name(provider_model_id: &str, provider_instance_name: &str) -
     format!("{}@{}", provider_model_id, provider_instance_name)
 }
 
+pub fn logical_mount_segment(value: &str) -> String {
+    let normalized = value
+        .trim()
+        .replace('/', "-")
+        .replace('_', "-")
+        .replace('.', "-")
+        .to_ascii_lowercase();
+    normalized
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn provider_driver_mount_segment(provider_driver: &str) -> String {
+    let normalized = provider_driver
+        .trim()
+        .replace('_', "-")
+        .to_ascii_lowercase();
+    let stripped = normalized
+        .strip_prefix("google-")
+        .unwrap_or(normalized.as_str());
+    match stripped {
+        "gimini" => "gemini".to_string(),
+        _ => logical_mount_segment(stripped),
+    }
+}
+
+fn add_unique_mount(mounts: &mut Vec<String>, mount: String) {
+    if !mount.is_empty() && !mounts.iter().any(|item| item == &mount) {
+        mounts.push(mount);
+    }
+}
+
 pub fn llm_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec<String> {
     let mut mounts = vec![format!(
         "llm.{}",
-        provider_driver
-            .trim()
-            .replace("google-", "")
-            .replace('_', "-")
+        provider_driver_mount_segment(provider_driver)
     )];
     let lowered = provider_model_id.to_ascii_lowercase();
     for family in ["gpt5", "gpt-5", "claude", "gemini", "gimini", "minimax"] {
@@ -1697,16 +1771,33 @@ pub fn llm_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec
             }
         }
     }
+    if lowered.contains("claude") {
+        if lowered.contains("opus") {
+            add_unique_mount(&mut mounts, "llm.opus".to_string());
+        } else if lowered.contains("sonnet") {
+            add_unique_mount(&mut mounts, "llm.sonnet".to_string());
+        } else if lowered.contains("haiku") {
+            add_unique_mount(&mut mounts, "llm.haiku".to_string());
+        }
+    }
+    if lowered.contains("gemini") || lowered.contains("gimini") {
+        if lowered.contains("deepthink") || lowered.contains("deep-think") {
+            add_unique_mount(&mut mounts, "llm.gemini-deepthink".to_string());
+        } else if lowered.contains("flash-lite") || lowered.contains("flash_lite") {
+            add_unique_mount(&mut mounts, "llm.gemini-flash-lite".to_string());
+        } else if lowered.contains("flash") {
+            add_unique_mount(&mut mounts, "llm.gemini-flash".to_string());
+        } else if lowered.contains("pro") {
+            add_unique_mount(&mut mounts, "llm.gemini-pro".to_string());
+        }
+    }
     mounts
 }
 
 pub fn image_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec<String> {
     let driver_mount = format!(
         "image.txt2img.{}",
-        provider_driver
-            .trim()
-            .replace("google-", "")
-            .replace('_', "-")
+        provider_driver_mount_segment(provider_driver)
     );
     let mut mounts = vec![driver_mount];
     let lowered = provider_model_id.to_ascii_lowercase();
@@ -1904,6 +1995,72 @@ impl AIComputeCenter {
         if let Ok(mut sticky) = self.sticky_bindings.lock() {
             *sticky = StickyBindingStore::default();
         }
+    }
+
+    pub fn dump_model_directory(&self) -> std::result::Result<Value, RPCErrors> {
+        let registry = self
+            .model_registry
+            .read()
+            .map_err(|_| reason_error("internal_error", "model registry lock poisoned"))?;
+
+        let mut providers: Vec<&ProviderInventory> = registry.inventories().collect();
+        providers.sort_by(|left, right| {
+            left.provider_instance_name
+                .cmp(&right.provider_instance_name)
+        });
+
+        let providers_json: Vec<Value> = providers
+            .iter()
+            .map(|inventory| {
+                let mut models: Vec<&ModelMetadata> = inventory.models.iter().collect();
+                models.sort_by(|left, right| left.exact_model.cmp(&right.exact_model));
+                let models_json: Vec<Value> = models
+                    .iter()
+                    .map(|model| {
+                        json!({
+                            "exact_model": model.exact_model,
+                            "provider_model_id": model.provider_model_id,
+                            "api_types": model.api_types,
+                            "logical_mounts": model.logical_mounts,
+                            "health": model.health.status,
+                            "quota": model.health.quota_state,
+                        })
+                    })
+                    .collect();
+                json!({
+                    "provider_instance_name": inventory.provider_instance_name,
+                    "provider_driver": inventory.provider_driver,
+                    "provider_type": inventory.provider_type,
+                    "version": inventory.version,
+                    "inventory_revision": inventory.inventory_revision,
+                    "models": models_json,
+                })
+            })
+            .collect();
+
+        let directory = registry.all_default_items();
+        let mut directory_json = Map::new();
+        for (logical_path, items) in directory.iter() {
+            let mut items_json = Map::new();
+            for (item_name, item) in items.iter() {
+                items_json.insert(
+                    item_name.clone(),
+                    json!({
+                        "target": item.target,
+                        "weight": item.weight,
+                    }),
+                );
+            }
+            directory_json.insert(logical_path.clone(), Value::Object(items_json));
+        }
+
+        let aliases = self.model_catalog.snapshot();
+
+        Ok(json!({
+            "providers": providers_json,
+            "directory": Value::Object(directory_json),
+            "aliases": aliases,
+        }))
     }
 
     pub fn set_session_config(&self, config: SessionConfig) {

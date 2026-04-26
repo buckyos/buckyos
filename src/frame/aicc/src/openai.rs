@@ -1,7 +1,7 @@
 use crate::aicc::{
-    exact_model_name, image_logical_mounts, provider_model_metadata, provider_type_from_settings,
-    AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderStartResult,
-    ResolvedRequest, TaskEventSink,
+    exact_model_name, image_logical_mounts, logical_mount_segment, provider_model_metadata,
+    provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
+    ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, ModelMetadata, PricingMode, PrivacyClass,
@@ -2984,14 +2984,8 @@ fn is_llm_api_type(api_type: &ApiType) -> bool {
 
 fn openai_llm_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec<String> {
     vec![
-        format!(
-            "llm.{}",
-            provider_driver
-                .trim()
-                .replace("google-", "")
-                .replace('_', "-")
-        ),
-        format!("llm.opoenai.{}", provider_model_id.trim().replace('_', "-")),
+        format!("llm.{}", logical_mount_segment(provider_driver)),
+        format!("llm.openai.{}", logical_mount_segment(provider_model_id)),
     ]
 }
 
@@ -3188,8 +3182,8 @@ fn openai_method_mounts(
         ApiType::AudioTts => "audio.tts",
         _ => api_type.namespace(),
     };
-    let driver = provider_driver.trim().replace('_', "-");
-    let model = provider_model_id.trim().replace('/', ".").replace('_', "-");
+    let driver = logical_mount_segment(provider_driver);
+    let model = logical_mount_segment(provider_model_id);
     vec![
         base.to_string(),
         format!("{}.{}", base, driver),
@@ -4121,11 +4115,11 @@ data: [DONE]
         );
 
         assert_model_mount(&inventory, "gpt-5.5", "llm.gpt", true);
-        assert_model_mount(&inventory, "gpt-5.5", "llm.opoenai.gpt-5.5", true);
+        assert_model_mount(&inventory, "gpt-5.5", "llm.openai.gpt-5-5", true);
         assert_model_mount(&inventory, "gpt-5.4", "llm.gpt", false);
-        assert_model_mount(&inventory, "gpt-5.4", "llm.opoenai.gpt-5.4", true);
+        assert_model_mount(&inventory, "gpt-5.4", "llm.openai.gpt-5-4", true);
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm.gpt-pro", true);
-        assert_model_mount(&inventory, "gpt-5.5-pro", "llm.opoenai.gpt-5.5-pro", true);
+        assert_model_mount(&inventory, "gpt-5.5-pro", "llm.openai.gpt-5-5-pro", true);
         assert_model_mount(&inventory, "gpt-5.4-pro", "llm.gpt-pro", false);
         assert_model_mount(&inventory, "gpt-5.4-mini", "llm.gpt-mini", true);
         assert_model_mount(&inventory, "gpt-5-mini", "llm.gpt-mini", false);
@@ -4175,9 +4169,9 @@ data: [DONE]
             .iter()
             .any(|model| model.exact_model == "gpt-5.5-pro@openai-primary"));
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm.gpt-pro", true);
-        assert_model_mount(&inventory, "gpt-5.5-pro", "llm.opoenai.gpt-5.5-pro", true);
+        assert_model_mount(&inventory, "gpt-5.5-pro", "llm.openai.gpt-5-5-pro", true);
         assert_model_mount(&inventory, "gpt-5.4-pro", "llm.gpt-pro", false);
-        assert_model_mount(&inventory, "gpt-5.4-pro", "llm.opoenai.gpt-5.4-pro", true);
+        assert_model_mount(&inventory, "gpt-5.4-pro", "llm.openai.gpt-5-4-pro", true);
         assert_model_mount(&inventory, "gpt-5.4-pro", "llm.remote-old", true);
     }
 

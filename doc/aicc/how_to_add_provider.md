@@ -41,7 +41,7 @@ AICC 的 Provider 接口定义在 `src/frame/aicc/src/aicc.rs`，核心约束是
 
 - `XXXInstanceConfig`：实例级配置（`provider_instance_name`、`provider_type`、`provider_driver`、`base_url`、`timeout_ms`、`models`、`default_model`、`features`）
   - `provider_type` 是可信部署类型，常见值为 `cloud_api` / `local_inference` / `proxy_unknown`
-  - `provider_driver` 表示厂商/实现名，例如 `openai`、`claude`、`google-gimini`、`minimax`
+  - `provider_driver` 表示厂商/实现名，例如 `openai`、`claude`、`google-gemini`、`minimax`
 - `XXXProvider`：
   - `instance: ProviderInstance`
   - `inventory: ProviderInventory`

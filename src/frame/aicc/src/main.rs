@@ -48,6 +48,8 @@ const METHOD_RELOAD_SETTINGS: &str = "reload_settings";
 const METHOD_SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
 const METHOD_REALOAD_SETTINGS: &str = "reaload_settings";
 const METHOD_SERVICE_REALOAD_SETTINGS: &str = "service.reaload_settings";
+const METHOD_MODELS_LIST: &str = "models.list";
+const METHOD_SERVICE_MODELS_LIST: &str = "service.models.list";
 const REDACTED_SECRET: &str = "***";
 
 struct AiccHttpServer {
@@ -170,6 +172,10 @@ impl AiccHttpServer {
         }
     }
 
+    fn handle_models_list(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
+        self.rpc_handler.0.dump_model_directory()
+    }
+
     async fn handle_reload_settings(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
         let runtime = get_buckyos_api_runtime()
             .map_err(|err| RPCErrors::ReasonError(format!("get runtime failed: {}", err)))?;
@@ -213,6 +219,14 @@ impl RPCHandler for AiccHttpServer {
             || req.method == METHOD_SERVICE_REALOAD_SETTINGS
         {
             let result = self.handle_reload_settings().await?;
+            return Ok(RPCResponse {
+                result: RPCResult::Success(result),
+                seq: req.seq,
+                trace_id: req.trace_id,
+            });
+        }
+        if req.method == METHOD_MODELS_LIST || req.method == METHOD_SERVICE_MODELS_LIST {
+            let result = self.handle_models_list()?;
             return Ok(RPCResponse {
                 result: RPCResult::Success(result),
                 seq: req.seq,

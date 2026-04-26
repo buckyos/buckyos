@@ -1,6 +1,7 @@
 use crate::aicc::{
-    llm_logical_mounts, provider_model_metadata, provider_type_from_settings, AIComputeCenter,
-    Provider, ProviderError, ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
+    llm_logical_mounts, logical_mount_segment, provider_model_metadata,
+    provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
+    ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::claude_protocol::convert_complete_request;
 use crate::model_types::{
@@ -529,11 +530,7 @@ fn claude_vision_mounts(api_type: ApiType, model: &str) -> Vec<String> {
     vec![
         base.to_string(),
         format!("{}.claude", base),
-        format!(
-            "{}.{}",
-            base,
-            model.trim().replace('/', ".").replace('_', "-")
-        ),
+        format!("{}.{}", base, logical_mount_segment(model)),
     ]
 }
 
@@ -853,7 +850,7 @@ mod tests {
                         "provider_type": "cloud_api",
                         "provider_driver": "claude",
                         "base_url": "https://api.anthropic.com/v1",
-                        "models": ["claude-3-7-sonnet-20250219"],
+                        "models": ["claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022"],
                         "default_model": "claude-3-7-sonnet-20250219"
                     }
                 ]
@@ -871,5 +868,21 @@ mod tests {
         assert!(items
             .values()
             .any(|item| item.target == "claude-3-7-sonnet-20250219@claude-main"));
+        let sonnet_items = center
+            .model_registry()
+            .read()
+            .expect("model registry lock")
+            .default_items_for_path("llm.sonnet");
+        assert!(sonnet_items
+            .values()
+            .any(|item| item.target == "claude-3-7-sonnet-20250219@claude-main"));
+        let haiku_items = center
+            .model_registry()
+            .read()
+            .expect("model registry lock")
+            .default_items_for_path("llm.haiku");
+        assert!(haiku_items
+            .values()
+            .any(|item| item.target == "claude-3-5-haiku-20241022@claude-main"));
     }
 }

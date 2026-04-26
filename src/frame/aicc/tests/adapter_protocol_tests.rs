@@ -28,7 +28,7 @@ fn gimini_provider(base_url: String, timeout_ms: u64) -> GoogleGiminiProvider {
         GoogleGiminiInstanceConfig {
             provider_instance_name: "gimini-test".to_string(),
             provider_type: "cloud_api".to_string(),
-            provider_driver: "google-gimini".to_string(),
+            provider_driver: "google-gemini".to_string(),
             base_url,
             timeout_ms,
             models: vec!["gemini-2.5-flash".to_string()],

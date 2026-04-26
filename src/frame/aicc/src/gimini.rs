@@ -1,7 +1,7 @@
 use crate::aicc::{
-    image_logical_mounts, llm_logical_mounts, provider_model_metadata, provider_type_from_settings,
-    AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderStartResult,
-    ResolvedRequest, TaskEventSink,
+    image_logical_mounts, llm_logical_mounts, logical_mount_segment, provider_model_metadata,
+    provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
+    ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
@@ -1266,7 +1266,7 @@ impl GoogleGiminiProvider {
         let mut extra = Map::new();
         extra.insert(
             "provider".to_string(),
-            Value::String("google_gimini".to_string()),
+            Value::String("google_gemini".to_string()),
         );
         extra.insert(
             "model".to_string(),
@@ -1406,7 +1406,7 @@ impl GoogleGiminiProvider {
         let mut extra = Map::new();
         extra.insert(
             "provider".to_string(),
-            Value::String("google_gimini".to_string()),
+            Value::String("google_gemini".to_string()),
         );
         extra.insert(
             "model".to_string(),
@@ -1481,7 +1481,7 @@ impl GoogleGiminiProvider {
         let mut extra = Map::new();
         extra.insert(
             "provider".to_string(),
-            Value::String("google_gimini".to_string()),
+            Value::String("google_gemini".to_string()),
         );
         extra.insert(
             "model".to_string(),
@@ -1749,7 +1749,7 @@ impl GoogleGiminiProvider {
         let mut extra = Map::new();
         extra.insert(
             "provider".to_string(),
-            Value::String("google_gimini".to_string()),
+            Value::String("google_gemini".to_string()),
         );
         extra.insert("method".to_string(), Value::String(method.to_string()));
         extra.insert(
@@ -1958,7 +1958,7 @@ fn default_gimini_enabled() -> bool {
 }
 
 fn default_instance_id() -> String {
-    "google-gimini-default".to_string()
+    "google-gemini-default".to_string()
 }
 
 fn default_provider_type() -> String {
@@ -1966,7 +1966,7 @@ fn default_provider_type() -> String {
 }
 
 fn default_provider_driver() -> String {
-    "google-gimini".to_string()
+    "google-gemini".to_string()
 }
 
 fn default_base_url() -> String {
@@ -2006,7 +2006,7 @@ fn gimini_method_mounts(api_type: ApiType, provider_model_id: &str) -> Vec<Strin
         ApiType::VideoExtend => "video.extend",
         _ => api_type.namespace(),
     };
-    let model = provider_model_id.trim().replace('/', ".").replace('_', "-");
+    let model = logical_mount_segment(provider_model_id);
     vec![
         base.to_string(),
         format!("{}.google", base),
@@ -2053,8 +2053,9 @@ fn parse_csv_list(value: &str) -> Vec<String> {
 
 fn parse_gimini_settings(settings: &Value) -> Result<Option<GiminiSettings>> {
     let raw = settings
-        .get("gimini")
-        .or_else(|| settings.get("gemini"))
+        .get("gemini")
+        .or_else(|| settings.get("google_gemini"))
+        .or_else(|| settings.get("gimini"))
         .or_else(|| settings.get("google_gimini"))
         .or_else(|| settings.get("google"));
     let Some(raw_settings) = raw else {
@@ -2071,6 +2072,22 @@ fn parse_gimini_settings(settings: &Value) -> Result<Option<GiminiSettings>> {
     }
 
     Ok(Some(gimini_settings))
+}
+
+fn normalize_legacy_gemini_instance_name(value: String) -> String {
+    if value == "google-gimini-default" {
+        "google-gemini-default".to_string()
+    } else {
+        value
+    }
+}
+
+fn normalize_legacy_gemini_driver(value: String) -> String {
+    if value == "google-gimini" {
+        "google-gemini".to_string()
+    } else {
+        value
+    }
 }
 
 fn build_gimini_instances(settings: &GiminiSettings) -> Result<Vec<GoogleGiminiInstanceConfig>> {
@@ -2135,9 +2152,11 @@ fn build_gimini_instances(settings: &GiminiSettings) -> Result<Vec<GoogleGiminiI
         };
 
         instances.push(GoogleGiminiInstanceConfig {
-            provider_instance_name: raw_instance.provider_instance_name,
+            provider_instance_name: normalize_legacy_gemini_instance_name(
+                raw_instance.provider_instance_name,
+            ),
             provider_type: raw_instance.provider_type,
-            provider_driver: raw_instance.provider_driver,
+            provider_driver: normalize_legacy_gemini_driver(raw_instance.provider_driver),
             base_url: raw_instance.base_url,
             timeout_ms: raw_instance.timeout_ms,
             models,
@@ -2349,6 +2368,7 @@ mod tests {
 
         let instances = build_gimini_instances(&settings).expect("instances should be built");
         assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].provider_driver, "google-gemini");
         assert_eq!(
             instances[0].default_model.as_deref(),
             Some("gemini-2.5-flash")
@@ -2357,6 +2377,64 @@ mod tests {
             instances[0].default_image_model.as_deref(),
             Some("gemini-2.0-flash-exp-image-generation")
         );
+    }
+
+    #[test]
+    fn build_gimini_instances_uses_gemini_default_names() {
+        let settings = GiminiSettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            alias_map: HashMap::new(),
+            instances: vec![],
+        };
+
+        let instances = build_gimini_instances(&settings).expect("instances should be built");
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].provider_instance_name, "google-gemini-default");
+        assert_eq!(instances[0].provider_driver, "google-gemini");
+    }
+
+    #[test]
+    fn register_gimini_inventory_exposes_stable_gemini_mounts() {
+        let center = AIComputeCenter::default();
+        let settings = json!({
+            "gemini": {
+                "enabled": true,
+                "api_token": "token",
+                "instances": [
+                    {
+                        "provider_instance_name": "google-gimini-default",
+                        "provider_type": "cloud_api",
+                        "provider_driver": "google-gimini",
+                        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                        "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
+                        "image_models": ["gemini-2.5-flash-image-preview"]
+                    }
+                ]
+            }
+        });
+
+        let count =
+            register_google_gimini_providers(&center, &settings).expect("register should work");
+        assert_eq!(count, 1);
+
+        let registry = center.model_registry().read().expect("model registry lock");
+        let flash_items = registry.default_items_for_path("llm.gemini-flash");
+        assert!(flash_items
+            .values()
+            .any(|item| { item.target == "gemini-2.5-flash@google-gemini-default" }));
+        let pro_items = registry.default_items_for_path("llm.gemini-pro");
+        assert!(pro_items
+            .values()
+            .any(|item| item.target == "gemini-2.5-pro@google-gemini-default"));
+        let legacy_items = registry.default_items_for_path("llm.gimini");
+        assert!(legacy_items.is_empty());
+        let image_items = registry.default_items_for_path("image.txt2img.gemini");
+        assert!(image_items
+            .values()
+            .any(|item| { item.target == "gemini-2.5-flash-image-preview@google-gemini-default" }));
+        let split_model_items = registry.default_items_for_path("image.img2img.gemini-2");
+        assert!(split_model_items.is_empty());
     }
 
     #[test]
@@ -2372,19 +2450,19 @@ mod tests {
                 "gemini-2.0-flash-exp-image-generation".to_string(),
             ),
         ]);
-        register_custom_aliases(&center, "google-gimini", &aliases);
+        register_custom_aliases(&center, "google-gemini", &aliases);
 
         let llm = center.model_catalog().resolve(
             "",
             &Capability::Llm,
             "llm.plan.default",
-            "google-gimini",
+            "google-gemini",
         );
         let image = center.model_catalog().resolve(
             "",
             &Capability::Image,
             "text2image.nano_banana",
-            "google-gimini",
+            "google-gemini",
         );
         assert_eq!(llm.as_deref(), Some("gemini-2.5-flash"));
         assert_eq!(
@@ -2400,7 +2478,7 @@ mod tests {
         let image_models = Vec::<String>::new();
         register_default_aliases(
             &center,
-            "google-gimini",
+            "google-gemini",
             &models,
             Some("gemini-2.5-flash"),
             &image_models,
@@ -2411,13 +2489,13 @@ mod tests {
             "",
             &Capability::Llm,
             "llm.code.default",
-            "google-gimini",
+            "google-gemini",
         );
         let removed_alias = center.model_catalog().resolve(
             "",
             &Capability::Llm,
             "llm.json.default",
-            "google-gimini",
+            "google-gemini",
         );
 
         assert_eq!(code_alias.as_deref(), Some("gemini-2.5-flash"));
