@@ -28,6 +28,10 @@ const DEFAULT_GIMINI_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_GIMINI_MODELS: &str = "gemini-2.5-flash,gemini-2.5-pro";
 const DEFAULT_GIMINI_IMAGE_MODELS: &str =
     "gemini-2.0-flash-exp-image-generation,gemini-2.5-flash-image-preview";
+const DEFAULT_GIMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001";
+const DEFAULT_GIMINI_TTS_MODELS: &str = "gemini-2.5-flash-preview-tts";
+const DEFAULT_GIMINI_MUSIC_MODELS: &str = "lyria-002";
+const DEFAULT_GIMINI_VIDEO_MODELS: &str = "veo-3.1-generate-preview";
 const GIMINI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
     "candidate_count",
     "max_output_tokens",
@@ -106,7 +110,14 @@ impl GoogleGiminiProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm, Capability::Image],
+            capabilities: vec![
+                Capability::Llm,
+                Capability::Embedding,
+                Capability::Image,
+                Capability::Vision,
+                Capability::Audio,
+                Capability::Video,
+            ],
             features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
@@ -117,7 +128,7 @@ impl GoogleGiminiProvider {
             .iter()
             .filter(|model| !is_text2image_model_name(model))
         {
-            models.push(provider_model_metadata(
+            let mut metadata = provider_model_metadata(
                 provider_instance_name.as_str(),
                 provider_type.clone(),
                 model.as_str(),
@@ -126,10 +137,24 @@ impl GoogleGiminiProvider {
                 &cfg.features,
                 Some(0.01),
                 Some(1400),
-            ));
+            );
+            for api_type in [
+                ApiType::VisionOcr,
+                ApiType::VisionCaption,
+                ApiType::VisionDetect,
+                ApiType::VisionSegment,
+            ] {
+                metadata.api_types.push(api_type.clone());
+                metadata
+                    .logical_mounts
+                    .extend(gimini_method_mounts(api_type, model.as_str()));
+            }
+            metadata.capabilities.vision = true;
+            metadata.logical_mounts = dedupe_strings(metadata.logical_mounts);
+            models.push(metadata);
         }
         for model in cfg.image_models.iter() {
-            models.push(provider_model_metadata(
+            let mut metadata = provider_model_metadata(
                 provider_instance_name.as_str(),
                 provider_type.clone(),
                 model.as_str(),
@@ -138,7 +163,80 @@ impl GoogleGiminiProvider {
                 &cfg.features,
                 Some(0.04),
                 Some(6000),
+            );
+            metadata.api_types.push(ApiType::ImageToImage);
+            metadata
+                .logical_mounts
+                .extend(gimini_method_mounts(ApiType::ImageToImage, model.as_str()));
+            metadata.logical_mounts = dedupe_strings(metadata.logical_mounts);
+            models.push(metadata);
+        }
+        for model in parse_csv_list(DEFAULT_GIMINI_EMBEDDING_MODELS) {
+            let mut metadata = provider_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::Embedding,
+                gimini_method_mounts(ApiType::Embedding, model.as_str()),
+                &cfg.features,
+                Some(0.0001),
+                Some(800),
+            );
+            metadata.api_types.push(ApiType::EmbeddingMultimodal);
+            metadata.logical_mounts.extend(gimini_method_mounts(
+                ApiType::EmbeddingMultimodal,
+                model.as_str(),
             ));
+            metadata.logical_mounts = dedupe_strings(metadata.logical_mounts);
+            models.push(metadata);
+        }
+        for model in parse_csv_list(DEFAULT_GIMINI_TTS_MODELS) {
+            models.push(provider_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::AudioTts,
+                gimini_method_mounts(ApiType::AudioTts, model.as_str()),
+                &cfg.features,
+                Some(0.01),
+                Some(3000),
+            ));
+        }
+        for model in parse_csv_list(DEFAULT_GIMINI_MUSIC_MODELS) {
+            models.push(provider_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::AudioMusic,
+                gimini_method_mounts(ApiType::AudioMusic, model.as_str()),
+                &cfg.features,
+                Some(0.10),
+                Some(60_000),
+            ));
+        }
+        for model in parse_csv_list(DEFAULT_GIMINI_VIDEO_MODELS) {
+            let mut metadata = provider_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::VideoTextToVideo,
+                gimini_method_mounts(ApiType::VideoTextToVideo, model.as_str()),
+                &cfg.features,
+                Some(0.50),
+                Some(120_000),
+            );
+            for api_type in [
+                ApiType::VideoImageToVideo,
+                ApiType::VideoToVideo,
+                ApiType::VideoExtend,
+            ] {
+                metadata.api_types.push(api_type.clone());
+                metadata
+                    .logical_mounts
+                    .extend(gimini_method_mounts(api_type, model.as_str()));
+            }
+            metadata.logical_mounts = dedupe_strings(metadata.logical_mounts);
+            models.push(metadata);
         }
         let inventory = ProviderInventory {
             provider_instance_name,
@@ -927,6 +1025,137 @@ impl GoogleGiminiProvider {
         Ok((status, body, latency_ms))
     }
 
+    async fn post_model_action(
+        &self,
+        provider_model: &str,
+        action: &str,
+        request_obj: &Map<String, Value>,
+    ) -> Result<(StatusCode, Value, u64), ProviderError> {
+        let url = format!("{}/models/{}:{}", self.base_url, provider_model, action);
+        let started_at = std::time::Instant::now();
+        let response = self
+            .client
+            .post(url.as_str())
+            .header("x-goog-api-key", self.api_token.as_str())
+            .json(request_obj)
+            .send()
+            .await
+            .map_err(|err| {
+                if err.is_timeout() || err.is_connect() {
+                    ProviderError::retryable(format!("google gimini request failed: {}", err))
+                } else {
+                    ProviderError::fatal(format!("google gimini request failed: {}", err))
+                }
+            })?;
+        let latency_ms = started_at.elapsed().as_millis() as u64;
+        let status = response.status();
+        let body: Value = response.json().await.map_err(|err| {
+            Self::classify_api_error(
+                status,
+                format!("failed to parse google gimini response body: {}", err),
+            )
+        })?;
+        Ok((status, body, latency_ms))
+    }
+
+    fn resource_from_input_json(req: &AiMethodRequest, keys: &[&str]) -> Option<ResourceRef> {
+        let input = req.payload.input_json.as_ref()?;
+        for key in keys {
+            if let Some(value) = input.get(*key) {
+                if let Ok(resource) = serde_json::from_value::<ResourceRef>(value.clone()) {
+                    return Some(resource);
+                }
+            }
+        }
+        None
+    }
+
+    fn resource_part(resource: &ResourceRef) -> Result<Value, ProviderError> {
+        match resource {
+            ResourceRef::Url { url, mime_hint } => Ok(json!({
+                "fileData": {
+                    "fileUri": url,
+                    "mimeType": mime_hint.as_deref().unwrap_or("application/octet-stream")
+                }
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "inlineData": {
+                    "mimeType": mime,
+                    "data": data_base64
+                }
+            })),
+            ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+                "google gimini provider cannot resolve named object resource {} without resolver bytes",
+                obj_id
+            ))),
+        }
+    }
+
+    fn prompt_for_method(method: &str, req: &AiMethodRequest) -> String {
+        if let Some(prompt) = Self::extract_text2image_prompt(req) {
+            return prompt;
+        }
+        match method {
+            ai_methods::VISION_OCR => "Extract readable text from the image and return structured OCR JSON.".to_string(),
+            ai_methods::VISION_CAPTION => "Caption the image concisely.".to_string(),
+            ai_methods::VISION_DETECT => "Detect objects in the image. Return JSON detections with label, score and bbox.".to_string(),
+            ai_methods::VISION_SEGMENT => "Segment the requested subject in the image. Return JSON masks or mask descriptions.".to_string(),
+            ai_methods::AUDIO_TTS => "Synthesize the requested text as speech.".to_string(),
+            ai_methods::AUDIO_MUSIC => "Generate music from the requested prompt.".to_string(),
+            _ => "Process the request.".to_string(),
+        }
+    }
+
+    fn parse_media_artifacts(body: &Value, default_mime: &str) -> Vec<AiArtifact> {
+        let mut artifacts = Vec::new();
+        if let Some(parts) = body
+            .pointer("/candidates/0/content/parts")
+            .and_then(|value| value.as_array())
+        {
+            for part in parts {
+                if let Some(inline_data) =
+                    part.get("inlineData").and_then(|value| value.as_object())
+                {
+                    if let Some(data_base64) =
+                        inline_data.get("data").and_then(|value| value.as_str())
+                    {
+                        let mime = inline_data
+                            .get("mimeType")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(default_mime);
+                        artifacts.push(AiArtifact {
+                            name: format!("artifact_{}", artifacts.len() + 1),
+                            resource: ResourceRef::Base64 {
+                                mime: mime.to_string(),
+                                data_base64: data_base64.to_string(),
+                            },
+                            mime: Some(mime.to_string()),
+                            metadata: None,
+                        });
+                    }
+                }
+                if let Some(file_data) = part.get("fileData").and_then(|value| value.as_object()) {
+                    if let Some(uri) = file_data.get("fileUri").and_then(|value| value.as_str()) {
+                        let mime = file_data
+                            .get("mimeType")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(default_mime);
+                        artifacts.push(AiArtifact {
+                            name: format!("artifact_{}", artifacts.len() + 1),
+                            resource: ResourceRef::Url {
+                                url: uri.to_string(),
+                                mime_hint: Some(mime.to_string()),
+                            },
+                            mime: Some(mime.to_string()),
+                            metadata: None,
+                        });
+                    }
+                }
+            }
+        }
+        artifacts
+    }
+
     async fn start_llm(
         &self,
         ctx: &crate::aicc::InvokeCtx,
@@ -1208,6 +1437,346 @@ impl GoogleGiminiProvider {
 
         Ok(ProviderStartResult::Immediate(summary))
     }
+
+    async fn start_image2image(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        req: &AiMethodRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image"]))
+            .ok_or_else(|| ProviderError::fatal("image.img2img requires an image resource"))?;
+        let prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
+            ProviderError::fatal("image.img2img requires prompt in payload text/input_json/options")
+        })?;
+        let mut request_obj = Map::new();
+        request_obj.insert(
+            "contents".to_string(),
+            json!([{
+                "role": "user",
+                "parts": [
+                    Self::resource_part(&resource)?,
+                    { "text": prompt }
+                ]
+            }]),
+        );
+        Self::ensure_generation_config(&mut request_obj)
+            .insert("responseModalities".to_string(), json!(["IMAGE"]));
+        let (status, body, latency_ms) = self
+            .post_generate_content(provider_model, &request_obj)
+            .await?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("google gimini image edit returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let (artifacts, text) = Self::parse_text2image_result(&body)?;
+        let mut extra = Map::new();
+        extra.insert(
+            "provider".to_string(),
+            Value::String("google_gimini".to_string()),
+        );
+        extra.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        extra.insert("latency_ms".to_string(), Value::from(latency_ms));
+        extra.insert(
+            "provider_io".to_string(),
+            json!({ "input": request_obj, "output": body }),
+        );
+        Ok(ProviderStartResult::Immediate(AiResponseSummary {
+            text,
+            artifacts,
+            finish_reason: Some("stop".to_string()),
+            extra: Some(Value::Object(extra)),
+            ..Default::default()
+        }))
+    }
+
+    async fn start_embedding(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        req: &AiMethodRequest,
+        multimodal: bool,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let text = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.pointer("/items/0/text"))
+            .and_then(|value| value.as_str())
+            .or(req.payload.text.as_deref())
+            .unwrap_or("");
+        let mut parts = Vec::new();
+        if !text.trim().is_empty() {
+            parts.push(json!({ "text": text }));
+        }
+        if multimodal {
+            if let Some(resource) = req
+                .payload
+                .resources
+                .first()
+                .cloned()
+                .or_else(|| Self::resource_from_input_json(req, &["image", "audio", "video"]))
+            {
+                parts.push(Self::resource_part(&resource)?);
+            }
+        }
+        if parts.is_empty() {
+            return Err(ProviderError::fatal(
+                "embedding request requires text or multimodal resource",
+            ));
+        }
+        let mut request_obj = Map::new();
+        request_obj.insert("content".to_string(), json!({ "parts": parts }));
+        if let Some(dimensions) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("dimensions"))
+            .cloned()
+        {
+            request_obj.insert("outputDimensionality".to_string(), dimensions);
+        }
+        let (status, body, latency_ms) = self
+            .post_model_action(provider_model, "embedContent", &request_obj)
+            .await?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("google gimini embedding returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let dimensions = body
+            .pointer("/embedding/values")
+            .and_then(|value| value.as_array())
+            .map(|items| items.len())
+            .unwrap_or(0);
+        let embedding_space_id =
+            format!("google-gemini:{}:{}:multimodal", provider_model, dimensions);
+        let mut extra = Map::new();
+        extra.insert(
+            "embedding".to_string(),
+            json!({
+                "data": [{
+                    "index": 0,
+                    "embedding": body.pointer("/embedding/values").cloned().unwrap_or(Value::Array(vec![])),
+                    "embedding_space_id": embedding_space_id
+                }],
+                "embedding_space_id": embedding_space_id,
+                "provider_io": { "input": request_obj, "output": body },
+                "latency_ms": latency_ms
+            }),
+        );
+        Ok(ProviderStartResult::Immediate(AiResponseSummary {
+            finish_reason: Some("stop".to_string()),
+            extra: Some(Value::Object(extra)),
+            ..Default::default()
+        }))
+    }
+
+    async fn start_vision(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        method: &str,
+        req: &AiMethodRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "document"]))
+            .ok_or_else(|| {
+                ProviderError::fatal("vision request requires image/document resource")
+            })?;
+        let request_obj = json!({
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    Self::resource_part(&resource)?,
+                    { "text": Self::prompt_for_method(method, req) }
+                ]
+            }],
+            "generationConfig": { "responseMimeType": "application/json" }
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        let (status, body, latency_ms) = self
+            .post_generate_content(provider_model, &request_obj)
+            .await?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("google gimini vision returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let text = Self::extract_text_content(&body);
+        let parsed = text
+            .as_ref()
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+            .unwrap_or_else(|| json!({ "text": text }));
+        let extra_key = match method {
+            ai_methods::VISION_OCR => "ocr",
+            ai_methods::VISION_DETECT => "detections",
+            ai_methods::VISION_SEGMENT => "segments",
+            _ => "captions",
+        };
+        let mut extra = Map::new();
+        extra.insert(extra_key.to_string(), parsed);
+        extra.insert("latency_ms".to_string(), Value::from(latency_ms));
+        extra.insert(
+            "provider_io".to_string(),
+            json!({ "input": request_obj, "output": body }),
+        );
+        Ok(ProviderStartResult::Immediate(AiResponseSummary {
+            text,
+            finish_reason: Some("stop".to_string()),
+            extra: Some(Value::Object(extra)),
+            ..Default::default()
+        }))
+    }
+
+    async fn start_audio_media(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        method: &str,
+        req: &AiMethodRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let prompt = Self::prompt_for_method(method, req);
+        let request_obj = json!({
+            "contents": [{
+                "role": "user",
+                "parts": [{ "text": prompt }]
+            }],
+            "generationConfig": { "responseModalities": ["AUDIO"] }
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        let (status, body, latency_ms) = self
+            .post_generate_content(provider_model, &request_obj)
+            .await?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("google gimini audio returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let artifacts = Self::parse_media_artifacts(&body, "audio/mpeg");
+        let mut extra = Map::new();
+        extra.insert("latency_ms".to_string(), Value::from(latency_ms));
+        extra.insert(
+            "provider_io".to_string(),
+            json!({ "input": request_obj, "output": body }),
+        );
+        Ok(ProviderStartResult::Immediate(AiResponseSummary {
+            artifacts,
+            finish_reason: Some("stop".to_string()),
+            extra: Some(Value::Object(extra)),
+            ..Default::default()
+        }))
+    }
+
+    async fn start_video(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        method: &str,
+        req: &AiMethodRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let mut instance = Map::new();
+        instance.insert(
+            "prompt".to_string(),
+            Value::String(Self::prompt_for_method(method, req)),
+        );
+        if let Some(resource) = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "video"]))
+        {
+            instance.insert("input".to_string(), Self::resource_part(&resource)?);
+        }
+        if let Some(handle) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("continuation_handle"))
+            .cloned()
+        {
+            instance.insert("continuation_handle".to_string(), handle);
+        }
+        let mut request_obj = Map::new();
+        request_obj.insert(
+            "instances".to_string(),
+            Value::Array(vec![Value::Object(instance)]),
+        );
+        if let Some(options) = req
+            .payload
+            .options
+            .clone()
+            .or_else(|| req.payload.input_json.clone())
+        {
+            request_obj.insert("parameters".to_string(), options);
+        }
+        let (status, body, latency_ms) = self
+            .post_model_action(provider_model, "predictLongRunning", &request_obj)
+            .await?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("google gimini video returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let mut extra = Map::new();
+        extra.insert(
+            "provider".to_string(),
+            Value::String("google_gimini".to_string()),
+        );
+        extra.insert("method".to_string(), Value::String(method.to_string()));
+        extra.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        extra.insert("latency_ms".to_string(), Value::from(latency_ms));
+        if let Some(name) = body.get("name").cloned() {
+            extra.insert("operation_name".to_string(), name.clone());
+            if method == ai_methods::VIDEO_EXTEND {
+                extra.insert("continuation_handle".to_string(), name);
+            }
+        }
+        extra.insert(
+            "provider_io".to_string(),
+            json!({ "input": request_obj, "output": body }),
+        );
+        Ok(ProviderStartResult::Immediate(AiResponseSummary {
+            provider_task_ref: extra
+                .get("operation_name")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string()),
+            finish_reason: Some("started".to_string()),
+            extra: Some(Value::Object(extra)),
+            ..Default::default()
+        }))
+    }
 }
 
 #[async_trait]
@@ -1218,7 +1787,10 @@ impl Provider for GoogleGiminiProvider {
 
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
         let provider_model = provider_model_from_exact(input.exact_model.as_str());
-        if input.api_type == ApiType::ImageTextToImage {
+        if matches!(
+            input.api_type,
+            ApiType::ImageTextToImage | ApiType::ImageToImage
+        ) {
             return CostEstimateOutput {
                 estimated_cost_usd: 0.04,
                 pricing_mode: PricingMode::PerToken,
@@ -1265,6 +1837,51 @@ impl Provider for GoogleGiminiProvider {
             ai_methods::IMAGE_TXT2IMG => {
                 self.start_text2image(&ctx, provider_model.as_str(), &req.request)
                     .await
+            }
+            ai_methods::IMAGE_IMG2IMG => {
+                self.start_image2image(&ctx, provider_model.as_str(), &req.request)
+                    .await
+            }
+            ai_methods::EMBEDDING_TEXT => {
+                self.start_embedding(&ctx, provider_model.as_str(), &req.request, false)
+                    .await
+            }
+            ai_methods::EMBEDDING_MULTIMODAL => {
+                self.start_embedding(&ctx, provider_model.as_str(), &req.request, true)
+                    .await
+            }
+            ai_methods::VISION_OCR
+            | ai_methods::VISION_CAPTION
+            | ai_methods::VISION_DETECT
+            | ai_methods::VISION_SEGMENT => {
+                self.start_vision(
+                    &ctx,
+                    provider_model.as_str(),
+                    req.method.as_str(),
+                    &req.request,
+                )
+                .await
+            }
+            ai_methods::AUDIO_TTS | ai_methods::AUDIO_MUSIC => {
+                self.start_audio_media(
+                    &ctx,
+                    provider_model.as_str(),
+                    req.method.as_str(),
+                    &req.request,
+                )
+                .await
+            }
+            ai_methods::VIDEO_TXT2VIDEO
+            | ai_methods::VIDEO_IMG2VIDEO
+            | ai_methods::VIDEO_VIDEO2VIDEO
+            | ai_methods::VIDEO_EXTEND => {
+                self.start_video(
+                    &ctx,
+                    provider_model.as_str(),
+                    req.method.as_str(),
+                    &req.request,
+                )
+                .await
             }
             method => Err(ProviderError::fatal(format!(
                 "google gimini provider does not support method '{}'",
@@ -1370,6 +1987,43 @@ fn default_features() -> Vec<String> {
 fn is_text2image_model_name(model: &str) -> bool {
     let lowered = model.trim().to_ascii_lowercase();
     lowered.contains("image") || lowered.contains("nano-banana")
+}
+
+fn gimini_method_mounts(api_type: ApiType, provider_model_id: &str) -> Vec<String> {
+    let base = match api_type {
+        ApiType::Embedding => "embedding.text",
+        ApiType::EmbeddingMultimodal => "embedding.multimodal",
+        ApiType::ImageToImage => "image.img2img",
+        ApiType::VisionOcr => "vision.ocr",
+        ApiType::VisionCaption => "vision.caption",
+        ApiType::VisionDetect => "vision.detect",
+        ApiType::VisionSegment => "vision.segment",
+        ApiType::AudioTts => "audio.tts",
+        ApiType::AudioMusic => "audio.music",
+        ApiType::VideoTextToVideo => "video.txt2video",
+        ApiType::VideoImageToVideo => "video.img2video",
+        ApiType::VideoToVideo => "video.video2video",
+        ApiType::VideoExtend => "video.extend",
+        _ => api_type.namespace(),
+    };
+    let model = provider_model_id.trim().replace('/', ".").replace('_', "-");
+    vec![
+        base.to_string(),
+        format!("{}.google", base),
+        format!("{}.gemini", base),
+        format!("{}.{}", base, model),
+    ]
+}
+
+fn dedupe_strings(values: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut result = Vec::new();
+    for value in values {
+        if seen.insert(value.clone()) {
+            result.push(value);
+        }
+    }
+    result
 }
 
 fn normalize_model_list(models: Vec<String>) -> Vec<String> {

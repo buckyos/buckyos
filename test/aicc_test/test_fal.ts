@@ -67,10 +67,14 @@ type CaseResult =
   | { status: "skipped"; method: string; reason: string }
   | { status: "failed"; method: string; error: string };
 
+// 默认测试输入选用稳定的公网公共资源（HEAD 200、体积合适）：
+//   - 图片: gstatic webp gallery 1.jpg（约 44KB,JPEG）
+//   - 视频: test-videos.co.uk Big Buck Bunny 360p 10s 样片（约 1MB,MP4）
+// 也可通过 FAL_TEST_IMAGE_URL / FAL_TEST_VIDEO_URL 覆盖。
 const FAL_TEST_IMAGE_URL = getEnv("FAL_TEST_IMAGE_URL") ??
-  "https://storage.googleapis.com/falserverless/example_inputs/upscale_image.jpg";
+  "https://www.gstatic.com/webp/gallery/1.jpg";
 const FAL_TEST_VIDEO_URL = getEnv("FAL_TEST_VIDEO_URL") ??
-  "https://storage.googleapis.com/falserverless/example_inputs/topaz_input.mp4";
+  "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4";
 const FAL_WAIT_TIMEOUT_MS = Number(
   getEnv("FAL_WAIT_TIMEOUT_MS") ?? "240000",
 );

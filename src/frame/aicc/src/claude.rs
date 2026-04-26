@@ -11,7 +11,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, features, AiCost, AiMethodRequest, AiResponseSummary, AiToolCall, AiUsage,
-    Capability, Feature,
+    Capability, Feature, ResourceRef,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
@@ -70,27 +70,34 @@ impl ClaudeProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm],
+            capabilities: vec![Capability::Llm, Capability::Vision],
             features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
-        let models = cfg
-            .models
-            .iter()
-            .map(|model| {
-                provider_model_metadata(
-                    provider_instance_name.as_str(),
-                    provider_type.clone(),
-                    model.as_str(),
-                    ApiType::LlmChat,
-                    llm_logical_mounts(provider_driver.as_str(), model.as_str()),
-                    &cfg.features,
-                    Some(0.01),
-                    Some(1800),
-                )
-            })
-            .collect::<Vec<_>>();
+        let mut models = Vec::new();
+        for model in cfg.models.iter() {
+            let mut metadata = provider_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model.as_str(),
+                ApiType::LlmChat,
+                llm_logical_mounts(provider_driver.as_str(), model.as_str()),
+                &cfg.features,
+                Some(0.01),
+                Some(1800),
+            );
+            metadata.api_types.push(ApiType::VisionCaption);
+            metadata.api_types.push(ApiType::VisionOcr);
+            metadata
+                .logical_mounts
+                .extend(claude_vision_mounts(ApiType::VisionCaption, model.as_str()));
+            metadata
+                .logical_mounts
+                .extend(claude_vision_mounts(ApiType::VisionOcr, model.as_str()));
+            metadata.capabilities.vision = true;
+            models.push(metadata);
+        }
         let inventory = ProviderInventory {
             provider_instance_name,
             provider_type,
@@ -310,6 +317,135 @@ impl ClaudeProvider {
             extra: Some(Value::Object(extra)),
         }))
     }
+
+    fn resource_from_input_json(req: &AiMethodRequest, keys: &[&str]) -> Option<ResourceRef> {
+        let input = req.payload.input_json.as_ref()?;
+        for key in keys {
+            if let Some(value) = input.get(*key) {
+                if let Ok(resource) = serde_json::from_value::<ResourceRef>(value.clone()) {
+                    return Some(resource);
+                }
+            }
+        }
+        None
+    }
+
+    fn image_block(resource: &ResourceRef) -> Result<Value, ProviderError> {
+        match resource {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "image",
+                "source": {
+                    "type": "url",
+                    "url": url
+                }
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": data_base64
+                }
+            })),
+            ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+                "claude provider cannot resolve named object resource {} without resolver bytes",
+                obj_id
+            ))),
+        }
+    }
+
+    fn vision_prompt(method: &str, req: &AiMethodRequest) -> String {
+        if let Some(prompt) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("prompt"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return prompt.to_string();
+        }
+        match method {
+            ai_methods::VISION_OCR => {
+                "Extract readable text from the image. Return concise plain text first, then JSON details if useful.".to_string()
+            }
+            _ => "Describe the image concisely.".to_string(),
+        }
+    }
+
+    async fn start_vision(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        method: &str,
+        req: &AiMethodRequest,
+    ) -> std::result::Result<ProviderStartResult, ProviderError> {
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "document"]))
+            .ok_or_else(|| ProviderError::fatal("vision request requires an image resource"))?;
+        let request_value = json!({
+            "model": provider_model,
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    Self::image_block(&resource)?,
+                    {
+                        "type": "text",
+                        "text": Self::vision_prompt(method, req)
+                    }
+                ]
+            }]
+        });
+        let endpoint = format!("{}/messages", self.base_url);
+        let response = self
+            .client
+            .post(&endpoint)
+            .header("content-type", "application/json")
+            .header("anthropic-version", "2023-06-01")
+            .header("x-api-key", self.api_token.as_str())
+            .json(&request_value)
+            .send()
+            .await
+            .map_err(|error| {
+                ProviderError::retryable(format!("claude vision request failed: {}", error))
+            })?;
+        let status = response.status();
+        let body = response.json::<Value>().await.map_err(|error| {
+            ProviderError::fatal(format!("claude vision response decode failed: {}", error))
+        })?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("claude vision api returned non-success status")
+                .to_string();
+            return Err(Self::classify_api_error(status, message));
+        }
+        let text = Self::extract_text_content(&body);
+        let mut extra = Map::new();
+        let key = if method == ai_methods::VISION_OCR {
+            "ocr"
+        } else {
+            "captions"
+        };
+        extra.insert(key.to_string(), json!({ "text": text }));
+        extra.insert(
+            "provider_io".to_string(),
+            json!({ "input": request_value, "output": body }),
+        );
+        Ok(ProviderStartResult::Immediate(AiResponseSummary {
+            text,
+            finish_reason: Some("stop".to_string()),
+            extra: Some(Value::Object(extra)),
+            ..Default::default()
+        }))
+    }
 }
 
 #[async_trait]
@@ -352,6 +488,15 @@ impl Provider for ClaudeProvider {
                 self.start_llm(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
+            ai_methods::VISION_CAPTION | ai_methods::VISION_OCR => {
+                self.start_vision(
+                    &ctx,
+                    provider_model.as_str(),
+                    req.method.as_str(),
+                    &req.request,
+                )
+                .await
+            }
             method => Err(ProviderError::fatal(format!(
                 "claude provider does not support method '{}'",
                 method
@@ -373,6 +518,23 @@ fn provider_model_from_exact(exact_model: &str) -> &str {
         .rsplit_once('@')
         .map(|(model, _)| model)
         .unwrap_or(exact_model)
+}
+
+fn claude_vision_mounts(api_type: ApiType, model: &str) -> Vec<String> {
+    let base = match api_type {
+        ApiType::VisionOcr => "vision.ocr",
+        ApiType::VisionCaption => "vision.caption",
+        _ => "vision",
+    };
+    vec![
+        base.to_string(),
+        format!("{}.claude", base),
+        format!(
+            "{}.{}",
+            base,
+            model.trim().replace('/', ".").replace('_', "-")
+        ),
+    ]
 }
 
 fn json_text_len(value: &Value) -> usize {

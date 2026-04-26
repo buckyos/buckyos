@@ -27,9 +27,10 @@ const DEFAULT_FAL_BASE_URL: &str = "https://fal.run";
 const DEFAULT_FAL_TIMEOUT_MS: u64 = 600_000;
 const FAL_PROVIDER_DRIVER: &str = "fal";
 
-const DEFAULT_IMAGE_UPSCALE_MODEL: &str = "fal-ai/clarity-upscaler";
+const DEFAULT_IMAGE_UPSCALE_MODEL: &str = "fal-ai/esrgan";
 const DEFAULT_IMAGE_BG_REMOVE_MODEL: &str = "fal-ai/imageutils/rembg";
-const DEFAULT_VIDEO_UPSCALE_MODEL: &str = "fal-ai/topaz/upscale/video";
+const DEFAULT_AUDIO_ENHANCE_MODEL: &str = "fal-ai/deepfilternet3";
+const DEFAULT_VIDEO_UPSCALE_MODEL: &str = "fal-ai/video-upscaler";
 
 #[derive(Debug, Clone)]
 pub struct FalInstanceConfig {
@@ -39,6 +40,7 @@ pub struct FalInstanceConfig {
     pub timeout_ms: u64,
     pub image_upscale_models: Vec<String>,
     pub image_bg_remove_models: Vec<String>,
+    pub audio_enhance_models: Vec<String>,
     pub video_upscale_models: Vec<String>,
 }
 
@@ -75,7 +77,7 @@ impl FalProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Image, Capability::Video],
+            capabilities: vec![Capability::Image, Capability::Audio, Capability::Video],
             features: vec![],
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
@@ -102,6 +104,17 @@ impl FalProvider {
                 logical_mounts_for_api(ApiType::ImageBgRemove, model_id.as_str()),
                 Some(0.01),
                 Some(4000),
+            ));
+        }
+        for model_id in cfg.audio_enhance_models.iter() {
+            models.push(build_model_metadata(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                model_id.as_str(),
+                ApiType::AudioEnhance,
+                logical_mounts_for_api(ApiType::AudioEnhance, model_id.as_str()),
+                Some(0.02),
+                Some(20_000),
             ));
         }
         for model_id in cfg.video_upscale_models.iter() {
@@ -247,7 +260,12 @@ impl FalProvider {
             }
         }
 
-        if let Some(options) = req.payload.options.as_ref().and_then(|value| value.as_object()) {
+        if let Some(options) = req
+            .payload
+            .options
+            .as_ref()
+            .and_then(|value| value.as_object())
+        {
             for (k, v) in options.iter() {
                 body.entry(k.clone()).or_insert_with(|| v.clone());
             }
@@ -257,6 +275,10 @@ impl FalProvider {
             ai_methods::IMAGE_UPSCALE | ai_methods::IMAGE_BG_REMOVE => {
                 let exists = body.contains_key("image_url");
                 ("image_url", exists)
+            }
+            ai_methods::AUDIO_ENHANCE => {
+                let exists = body.contains_key("audio_url");
+                ("audio_url", exists)
             }
             ai_methods::VIDEO_UPSCALE => {
                 let exists = body.contains_key("video_url");
@@ -357,6 +379,7 @@ impl FalProvider {
         let cost_amount = match method {
             ai_methods::IMAGE_UPSCALE => 0.05,
             ai_methods::IMAGE_BG_REMOVE => 0.01,
+            ai_methods::AUDIO_ENHANCE => 0.02,
             ai_methods::VIDEO_UPSCALE => 0.50,
             _ => 0.0,
         };
@@ -416,6 +439,7 @@ impl Provider for FalProvider {
         let (cost, latency) = match input.api_type {
             ApiType::ImageUpscale => (0.05, 8_000),
             ApiType::ImageBgRemove => (0.01, 4_000),
+            ApiType::AudioEnhance => (0.02, 20_000),
             ApiType::VideoUpscale => (0.50, 120_000),
             _ => (1.0, 5_000),
         };
@@ -438,6 +462,7 @@ impl Provider for FalProvider {
         match req.method.as_str() {
             ai_methods::IMAGE_UPSCALE
             | ai_methods::IMAGE_BG_REMOVE
+            | ai_methods::AUDIO_ENHANCE
             | ai_methods::VIDEO_UPSCALE => {
                 self.run_method(
                     &ctx,
@@ -510,6 +535,7 @@ fn logical_mounts_for_api(api_type: ApiType, provider_model_id: &str) -> Vec<Str
     let base = match api_type {
         ApiType::ImageUpscale => "image.upscale",
         ApiType::ImageBgRemove => "image.bg_remove",
+        ApiType::AudioEnhance => "audio.enhance",
         ApiType::VideoUpscale => "video.upscale",
         _ => "unknown",
     };
@@ -544,37 +570,39 @@ fn resource_to_url(resource: &ResourceRef) -> Option<String> {
 fn parse_fal_artifacts(method: &str, body: &Value) -> Vec<AiArtifact> {
     let mut artifacts = Vec::<AiArtifact>::new();
 
-    let collect_object = |obj: &Map<String, Value>, name: &str, default_mime: &str| -> Option<AiArtifact> {
-        let url = obj.get("url").and_then(|value| value.as_str())?;
-        let mime = obj
-            .get("content_type")
-            .and_then(|value| value.as_str())
-            .unwrap_or(default_mime)
-            .to_string();
-        let mut metadata = Map::new();
-        for (k, v) in obj.iter() {
-            if k == "url" {
-                continue;
+    let collect_object =
+        |obj: &Map<String, Value>, name: &str, default_mime: &str| -> Option<AiArtifact> {
+            let url = obj.get("url").and_then(|value| value.as_str())?;
+            let mime = obj
+                .get("content_type")
+                .and_then(|value| value.as_str())
+                .unwrap_or(default_mime)
+                .to_string();
+            let mut metadata = Map::new();
+            for (k, v) in obj.iter() {
+                if k == "url" {
+                    continue;
+                }
+                metadata.insert(k.clone(), v.clone());
             }
-            metadata.insert(k.clone(), v.clone());
-        }
-        let metadata_value = if metadata.is_empty() {
-            None
-        } else {
-            Some(Value::Object(metadata))
+            let metadata_value = if metadata.is_empty() {
+                None
+            } else {
+                Some(Value::Object(metadata))
+            };
+            Some(AiArtifact {
+                name: name.to_string(),
+                resource: ResourceRef::Url {
+                    url: url.to_string(),
+                    mime_hint: Some(mime.clone()),
+                },
+                mime: Some(mime),
+                metadata: metadata_value,
+            })
         };
-        Some(AiArtifact {
-            name: name.to_string(),
-            resource: ResourceRef::Url {
-                url: url.to_string(),
-                mime_hint: Some(mime.clone()),
-            },
-            mime: Some(mime),
-            metadata: metadata_value,
-        })
-    };
 
     let default_mime = match method {
+        ai_methods::AUDIO_ENHANCE => "audio/mpeg",
         ai_methods::VIDEO_UPSCALE => "video/mp4",
         _ => "image/png",
     };
@@ -591,7 +619,12 @@ fn parse_fal_artifacts(method: &str, body: &Value) -> Vec<AiArtifact> {
         }
     }
 
-    for (key, name) in &[("image", "image"), ("video", "video"), ("output", "output")] {
+    for (key, name) in &[
+        ("image", "image"),
+        ("audio", "audio"),
+        ("video", "video"),
+        ("output", "output"),
+    ] {
         if let Some(obj) = body.get(*key).and_then(|value| value.as_object()) {
             if let Some(artifact) = collect_object(obj, name, default_mime) {
                 artifacts.push(artifact);
@@ -636,6 +669,8 @@ struct SettingsFalInstanceConfig {
     image_upscale_models: Vec<String>,
     #[serde(default)]
     image_bg_remove_models: Vec<String>,
+    #[serde(default)]
+    audio_enhance_models: Vec<String>,
     #[serde(default)]
     video_upscale_models: Vec<String>,
 }
@@ -700,6 +735,7 @@ fn build_fal_instances(settings: &FalSettings) -> Result<Vec<FalInstanceConfig>>
             timeout_ms: default_timeout_ms(),
             image_upscale_models: vec![],
             image_bg_remove_models: vec![],
+            audio_enhance_models: vec![],
             video_upscale_models: vec![],
         }]
     } else {
@@ -716,6 +752,10 @@ fn build_fal_instances(settings: &FalSettings) -> Result<Vec<FalInstanceConfig>>
         if image_bg_remove_models.is_empty() {
             image_bg_remove_models = vec![DEFAULT_IMAGE_BG_REMOVE_MODEL.to_string()];
         }
+        let mut audio_enhance_models = normalize_model_list(raw.audio_enhance_models);
+        if audio_enhance_models.is_empty() {
+            audio_enhance_models = vec![DEFAULT_AUDIO_ENHANCE_MODEL.to_string()];
+        }
         let mut video_upscale_models = normalize_model_list(raw.video_upscale_models);
         if video_upscale_models.is_empty() {
             video_upscale_models = vec![DEFAULT_VIDEO_UPSCALE_MODEL.to_string()];
@@ -728,6 +768,7 @@ fn build_fal_instances(settings: &FalSettings) -> Result<Vec<FalInstanceConfig>>
             timeout_ms: raw.timeout_ms,
             image_upscale_models,
             image_bg_remove_models,
+            audio_enhance_models,
             video_upscale_models,
         });
     }
@@ -786,10 +827,17 @@ mod tests {
         };
         let instances = build_fal_instances(&settings).expect("instances");
         assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].image_upscale_models[0], DEFAULT_IMAGE_UPSCALE_MODEL);
+        assert_eq!(
+            instances[0].image_upscale_models[0],
+            DEFAULT_IMAGE_UPSCALE_MODEL
+        );
         assert_eq!(
             instances[0].image_bg_remove_models[0],
             DEFAULT_IMAGE_BG_REMOVE_MODEL
+        );
+        assert_eq!(
+            instances[0].audio_enhance_models[0],
+            DEFAULT_AUDIO_ENHANCE_MODEL
         );
         assert_eq!(
             instances[0].video_upscale_models[0],
@@ -824,6 +872,10 @@ mod tests {
         assert!(bg_items
             .values()
             .any(|item| item.target == format!("{}@fal-default", DEFAULT_IMAGE_BG_REMOVE_MODEL)));
+        let audio_items = registry.default_items_for_path("audio.enhance");
+        assert!(audio_items
+            .values()
+            .any(|item| item.target == format!("{}@fal-default", DEFAULT_AUDIO_ENHANCE_MODEL)));
         let video_items = registry.default_items_for_path("video.upscale");
         assert!(video_items
             .values()
@@ -861,9 +913,10 @@ mod tests {
                     "provider_instance_name": "fal-main",
                     "provider_type": "cloud_api",
                     "base_url": "https://fal.run",
-                    "image_upscale_models": ["fal-ai/clarity-upscaler"],
+                    "image_upscale_models": ["fal-ai/esrgan"],
                     "image_bg_remove_models": ["fal-ai/imageutils/rembg"],
-                    "video_upscale_models": ["fal-ai/topaz/upscale/video"]
+                    "audio_enhance_models": ["fal-ai/deepfilternet3"],
+                    "video_upscale_models": ["fal-ai/video-upscaler"]
                 }]
             }
         });
@@ -874,15 +927,19 @@ mod tests {
         let upscale_items = registry.default_items_for_path("image.upscale");
         assert!(upscale_items
             .values()
-            .any(|item| item.target == "fal-ai/clarity-upscaler@fal-main"));
+            .any(|item| item.target == "fal-ai/esrgan@fal-main"));
         let bg_items = registry.default_items_for_path("image.bg_remove");
         assert!(bg_items
             .values()
             .any(|item| item.target == "fal-ai/imageutils/rembg@fal-main"));
+        let audio_items = registry.default_items_for_path("audio.enhance");
+        assert!(audio_items
+            .values()
+            .any(|item| item.target == "fal-ai/deepfilternet3@fal-main"));
         let video_items = registry.default_items_for_path("video.upscale");
         assert!(video_items
             .values()
-            .any(|item| item.target == "fal-ai/topaz/upscale/video@fal-main"));
+            .any(|item| item.target == "fal-ai/video-upscaler@fal-main"));
     }
 
     #[test]
