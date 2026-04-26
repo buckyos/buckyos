@@ -3,6 +3,7 @@ pub mod aicc_usage_log_db;
 pub mod claude;
 pub mod claude_protocol;
 pub mod complete_request_queue;
+pub mod default_logical_tree;
 pub mod fal;
 pub mod gimini;
 pub mod minimax;

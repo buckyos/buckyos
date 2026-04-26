@@ -45,12 +45,18 @@ pnpm run test:models
 
 输出包含三段：
 
-- `Providers`：每个 provider 实例下的 `exact_model` 与对应 `logical_mounts`。
-- `Catalog aliases`：`ModelCatalog` 里注册的 `alias → (provider_type, provider_model)` 映射，
-  例如 `llm.plan.default → openai/gpt-5-mini`、`claude/claude-3-7-sonnet-20250219`。
-- `Logical directory tree`：按 `.` 分段的逻辑路径树，叶子节点同时列出来自 inventory 的
-  `exact_model` 命中和 catalog 的 `[alias→ provider_type/provider_model]` 命中（两者来源不同：
-  前者是 provider 上报的物理挂载，后者是 catalog 里的人工别名）。
+- `Providers`：每个 provider 实例下的 `exact_model` 与对应 `logical_mounts`（level-1 物理挂点）。
+- `Catalog aliases`：`ModelCatalog` 里注册的 `alias → (provider_type, provider_model)` 映射。
+  注：当前生产链路上 catalog 没人调 `set_mapping`，常态是空。
+- `Logical directory tree`：按 `.` 分段的统一目录树，叶子节点合并三个来源（参考前缀以区分）：
+  - 裸 `xxx@provider`：来自 provider inventory 的 level-1 mount（`logical_mounts`）。
+  - `[ref: name → llm.xxx]  (w=权重)`：来自 `SessionConfig.logical_tree` 的 level-2 item，
+    指向另一个 logical path。当前 AICC 启动 / reload 时会按
+    `doc/aicc/aicc 逻辑模型目录.md` 第 4 节、由 `default_logical_tree.rs` 自动构造
+    `llm.plan` / `llm.code` / `llm.swift` / `llm.reason` / `llm.vision` /
+    `llm.long` / `llm.fallback` 7 个 LLM level-2 节点；items 会按当前 inventory
+    过滤，缺失的 target（如 `llm.opus` 在没有 Anthropic Opus 模型的 zone）会被自动剔除。
+  - `[alias→ provider_type/provider_model]`：catalog 别名（旧机制）。
 
 ## 运行 fal provider 用例
 

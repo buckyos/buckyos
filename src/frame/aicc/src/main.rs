@@ -3,6 +3,7 @@ mod aicc_usage_log_db;
 mod claude;
 mod claude_protocol;
 mod complete_request_queue;
+mod default_logical_tree;
 mod fal;
 mod gimini;
 mod minimax;
@@ -133,6 +134,18 @@ fn apply_provider_settings(
             "all provider registrations failed: {}",
             errors.join(" | ")
         ));
+    }
+
+    match center.apply_default_logical_tree() {
+        Ok(node_count) => {
+            info!(
+                "aicc default level-2 logical tree applied: {} nodes",
+                node_count
+            );
+        }
+        Err(err) => {
+            warn!("aicc default logical tree apply failed: {}", err);
+        }
     }
 
     Ok(registered_total)

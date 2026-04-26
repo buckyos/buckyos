@@ -45,10 +45,31 @@ type AliasEntry = {
   tenant_id?: string;
 };
 
+type SessionItem = { target: string; weight?: number };
+type SessionItems = Record<string, SessionItem>;
+
+type SessionLogicalNode = {
+  children?: Record<string, SessionLogicalNode>;
+  items?: SessionItems | null;
+  item_overrides?: Record<string, SessionItem> | null;
+  exact_model_weights?: Record<string, number>;
+  fallback?: unknown;
+  policy?: unknown;
+};
+
+type SessionConfig = {
+  logical_tree?: Record<string, SessionLogicalNode>;
+  global_exact_model_weights?: Record<string, number>;
+  policy?: unknown;
+  revision?: string | null;
+  ttl_seconds?: number | null;
+};
+
 type ModelsListResponse = {
   providers: ProviderEntry[];
   directory: Directory;
   aliases: AliasEntry[];
+  session_config: SessionConfig;
 };
 
 type AliasLeaf = {
@@ -58,14 +79,61 @@ type AliasLeaf = {
   tenant_id?: string;
 };
 
+type SessionLeaf = {
+  name: string;
+  target: string;
+  weight: number;
+  source: "items" | "override";
+};
+
 type TreeNode = {
   children: Map<string, TreeNode>;
   items: DirectoryItems | null;
   aliases: AliasLeaf[];
+  sessionItems: SessionLeaf[];
 };
 
 function newNode(): TreeNode {
-  return { children: new Map(), items: null, aliases: [] };
+  return { children: new Map(), items: null, aliases: [], sessionItems: [] };
+}
+
+function flattenSessionTree(
+  prefix: string,
+  node: SessionLogicalNode,
+  sink: Map<string, SessionLeaf[]>,
+): void {
+  const leaves: SessionLeaf[] = [];
+  if (node.items) {
+    for (const [name, item] of Object.entries(node.items)) {
+      leaves.push({
+        name,
+        target: item.target,
+        weight: item.weight ?? 1.0,
+        source: "items",
+      });
+    }
+  }
+  if (node.item_overrides) {
+    for (const [name, item] of Object.entries(node.item_overrides)) {
+      leaves.push({
+        name,
+        target: item.target ?? name,
+        weight: item.weight ?? 1.0,
+        source: "override",
+      });
+    }
+  }
+  if (leaves.length > 0) {
+    const list = sink.get(prefix) ?? [];
+    list.push(...leaves);
+    sink.set(prefix, list);
+  }
+  if (node.children) {
+    for (const [childName, child] of Object.entries(node.children)) {
+      const childPath = prefix ? `${prefix}.${childName}` : childName;
+      flattenSessionTree(childPath, child, sink);
+    }
+  }
 }
 
 function descend(root: TreeNode, path: string): TreeNode {
@@ -82,7 +150,11 @@ function descend(root: TreeNode, path: string): TreeNode {
   return cursor;
 }
 
-function buildTree(directory: Directory, aliases: AliasEntry[]): TreeNode {
+function buildTree(
+  directory: Directory,
+  aliases: AliasEntry[],
+  sessionLeaves: Map<string, SessionLeaf[]>,
+): TreeNode {
   const root = newNode();
   const paths = Object.keys(directory).sort();
   for (const path of paths) {
@@ -97,6 +169,10 @@ function buildTree(directory: Directory, aliases: AliasEntry[]): TreeNode {
       provider_model: alias.provider_model,
       tenant_id: alias.tenant_id,
     });
+  }
+  for (const [path, leaves] of sessionLeaves.entries()) {
+    const node = descend(root, path);
+    node.sessionItems.push(...leaves);
   }
   return root;
 }
@@ -118,6 +194,16 @@ function renderTree(node: TreeNode, prefix: string, lines: string[]): void {
         const weight = item.weight === 1 ? "" : `  (w=${item.weight})`;
         leaves.push({ label: `${item.target}${weight}` });
       }
+    }
+    const sortedSession = [...child.sessionItems].sort((left, right) =>
+      left.name.localeCompare(right.name)
+    );
+    for (const session of sortedSession) {
+      const weight = session.weight === 1 ? "" : `  (w=${session.weight})`;
+      const tag = session.source === "override" ? "override" : "ref";
+      leaves.push({
+        label: `[${tag}: ${session.name} → ${session.target}]${weight}`,
+      });
     }
     for (const alias of child.aliases) {
       const tenant = alias.tenant_id ? `  tenant=${alias.tenant_id}` : "";
@@ -178,13 +264,22 @@ async function main(): Promise<void> {
   const providers = Array.isArray(result.providers) ? result.providers : [];
   const directory = result.directory ?? {};
   const aliases = Array.isArray(result.aliases) ? result.aliases : [];
+  const sessionConfig = result.session_config ?? {};
+  const sessionLeaves = new Map<string, SessionLeaf[]>();
+  if (sessionConfig.logical_tree) {
+    for (const [name, node] of Object.entries(sessionConfig.logical_tree)) {
+      flattenSessionTree(name, node, sessionLeaves);
+    }
+  }
 
   console.log("=== AICC Model Directory ===");
   console.log(`Zone: ${zoneHost}`);
   console.log(`User ID: ${userId}`);
   console.log(`Providers: ${providers.length}`);
-  console.log(`Logical paths: ${Object.keys(directory).length}`);
+  console.log(`Inventory mounts: ${Object.keys(directory).length}`);
   console.log(`Catalog aliases: ${aliases.length}`);
+  console.log(`Session-config nodes: ${sessionLeaves.size}`);
+  console.log(`Session-config revision: ${sessionConfig.revision ?? "<none>"}`);
 
   console.log("\n--- Providers ---");
   if (providers.length === 0) {
@@ -225,10 +320,15 @@ async function main(): Promise<void> {
   }
 
   console.log("\n--- Logical directory tree ---");
-  if (Object.keys(directory).length === 0 && aliases.length === 0) {
+  console.log(
+    "(legend: bare 'name@provider' = inventory mount; '[ref: name → llm.xxx] (w=...)' = SessionConfig 2-level item; '[alias→ ...]' = ModelCatalog mapping)",
+  );
+  const totalEntries = Object.keys(directory).length + aliases.length +
+    sessionLeaves.size;
+  if (totalEntries === 0) {
     console.log("(empty)");
   } else {
-    const tree = buildTree(directory, aliases);
+    const tree = buildTree(directory, aliases, sessionLeaves);
     const lines: string[] = [];
     renderTree(tree, "", lines);
     for (const line of lines) {

@@ -5,7 +5,7 @@ use crate::aicc::{
 };
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
-    ProviderTypeTrustedSource, QuotaState,
+    ProviderType, ProviderTypeTrustedSource, QuotaState,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -19,9 +19,11 @@ use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use tokio::time;
 
 const DEFAULT_GIMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_GIMINI_TIMEOUT_MS: u64 = 60_000;
@@ -32,6 +34,8 @@ const DEFAULT_GIMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001";
 const DEFAULT_GIMINI_TTS_MODELS: &str = "gemini-2.5-flash-preview-tts";
 const DEFAULT_GIMINI_MUSIC_MODELS: &str = "lyria-002";
 const DEFAULT_GIMINI_VIDEO_MODELS: &str = "veo-3.1-generate-preview";
+const DEFAULT_GIMINI_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+const GIMINI_MODELS_PAGE_SIZE: u32 = 1000;
 const GIMINI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
     "candidate_count",
     "max_output_tokens",
@@ -81,10 +85,71 @@ pub struct GoogleGiminiInstanceConfig {
 #[derive(Debug, Clone)]
 pub struct GoogleGiminiProvider {
     instance: ProviderInstance,
-    inventory: ProviderInventory,
+    inventory: Arc<RwLock<ProviderInventory>>,
     client: Client,
     api_token: String,
     base_url: String,
+    provider_type: ProviderType,
+    provider_driver: String,
+    provider_instance_name: String,
+    features: Vec<Feature>,
+}
+
+#[derive(Debug, Default)]
+struct GiminiModelBuckets {
+    llm: Vec<String>,
+    image: Vec<String>,
+    embedding: Vec<String>,
+    tts: Vec<String>,
+    music: Vec<String>,
+    video: Vec<String>,
+}
+
+impl GiminiModelBuckets {
+    fn is_empty(&self) -> bool {
+        self.llm.is_empty()
+            && self.image.is_empty()
+            && self.embedding.is_empty()
+            && self.tts.is_empty()
+            && self.music.is_empty()
+            && self.video.is_empty()
+    }
+
+    fn fingerprint(&self) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.llm.hash(&mut hasher);
+        self.image.hash(&mut hasher);
+        self.embedding.hash(&mut hasher);
+        self.tts.hash(&mut hasher);
+        self.music.hash(&mut hasher);
+        self.video.hash(&mut hasher);
+        format!(
+            "gimini-models-{}-{}-{}-{}-{}-{}-{:x}",
+            self.llm.len(),
+            self.image.len(),
+            self.embedding.len(),
+            self.tts.len(),
+            self.music.len(),
+            self.video.len(),
+            hasher.finish()
+        )
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GiminiModelsResponse {
+    #[serde(default)]
+    models: Vec<GiminiModelEntry>,
+    #[serde(default, alias = "nextPageToken")]
+    next_page_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GiminiModelEntry {
+    #[serde(default)]
+    name: String,
+    #[serde(default, alias = "supportedGenerationMethods")]
+    supported_generation_methods: Vec<String>,
 }
 
 impl GoogleGiminiProvider {
@@ -122,19 +187,58 @@ impl GoogleGiminiProvider {
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
+        let buckets = GiminiModelBuckets {
+            llm: cfg
+                .models
+                .iter()
+                .filter(|model| !is_text2image_model_name(model))
+                .cloned()
+                .collect(),
+            image: cfg.image_models.clone(),
+            embedding: parse_csv_list(DEFAULT_GIMINI_EMBEDDING_MODELS),
+            tts: parse_csv_list(DEFAULT_GIMINI_TTS_MODELS),
+            music: parse_csv_list(DEFAULT_GIMINI_MUSIC_MODELS),
+            video: parse_csv_list(DEFAULT_GIMINI_VIDEO_MODELS),
+        };
+        let inventory = Self::build_inventory_from_buckets(
+            provider_instance_name.as_str(),
+            provider_type.clone(),
+            provider_driver.as_str(),
+            &buckets,
+            cfg.features.as_slice(),
+            Some("settings-v1".to_string()),
+        );
+
+        Ok(Self {
+            instance,
+            inventory: Arc::new(RwLock::new(inventory)),
+            client,
+            api_token,
+            base_url: cfg.base_url.trim_end_matches('/').to_string(),
+            provider_type,
+            provider_driver,
+            provider_instance_name,
+            features: cfg.features,
+        })
+    }
+
+    fn build_inventory_from_buckets(
+        provider_instance_name: &str,
+        provider_type: ProviderType,
+        provider_driver: &str,
+        buckets: &GiminiModelBuckets,
+        features: &[Feature],
+        inventory_revision: Option<String>,
+    ) -> ProviderInventory {
         let mut models = Vec::new();
-        for model in cfg
-            .models
-            .iter()
-            .filter(|model| !is_text2image_model_name(model))
-        {
+        for model in buckets.llm.iter() {
             let mut metadata = provider_model_metadata(
-                provider_instance_name.as_str(),
+                provider_instance_name,
                 provider_type.clone(),
                 model.as_str(),
                 ApiType::LlmChat,
-                llm_logical_mounts(provider_driver.as_str(), model.as_str()),
-                &cfg.features,
+                llm_logical_mounts(provider_driver, model.as_str()),
+                features,
                 Some(0.01),
                 Some(1400),
             );
@@ -153,14 +257,14 @@ impl GoogleGiminiProvider {
             metadata.logical_mounts = dedupe_strings(metadata.logical_mounts);
             models.push(metadata);
         }
-        for model in cfg.image_models.iter() {
+        for model in buckets.image.iter() {
             let mut metadata = provider_model_metadata(
-                provider_instance_name.as_str(),
+                provider_instance_name,
                 provider_type.clone(),
                 model.as_str(),
                 ApiType::ImageTextToImage,
-                image_logical_mounts(provider_driver.as_str(), model.as_str()),
-                &cfg.features,
+                image_logical_mounts(provider_driver, model.as_str()),
+                features,
                 Some(0.04),
                 Some(6000),
             );
@@ -171,14 +275,14 @@ impl GoogleGiminiProvider {
             metadata.logical_mounts = dedupe_strings(metadata.logical_mounts);
             models.push(metadata);
         }
-        for model in parse_csv_list(DEFAULT_GIMINI_EMBEDDING_MODELS) {
+        for model in buckets.embedding.iter() {
             let mut metadata = provider_model_metadata(
-                provider_instance_name.as_str(),
+                provider_instance_name,
                 provider_type.clone(),
                 model.as_str(),
                 ApiType::Embedding,
                 gimini_method_mounts(ApiType::Embedding, model.as_str()),
-                &cfg.features,
+                features,
                 Some(0.0001),
                 Some(800),
             );
@@ -190,38 +294,38 @@ impl GoogleGiminiProvider {
             metadata.logical_mounts = dedupe_strings(metadata.logical_mounts);
             models.push(metadata);
         }
-        for model in parse_csv_list(DEFAULT_GIMINI_TTS_MODELS) {
+        for model in buckets.tts.iter() {
             models.push(provider_model_metadata(
-                provider_instance_name.as_str(),
+                provider_instance_name,
                 provider_type.clone(),
                 model.as_str(),
                 ApiType::AudioTts,
                 gimini_method_mounts(ApiType::AudioTts, model.as_str()),
-                &cfg.features,
+                features,
                 Some(0.01),
                 Some(3000),
             ));
         }
-        for model in parse_csv_list(DEFAULT_GIMINI_MUSIC_MODELS) {
+        for model in buckets.music.iter() {
             models.push(provider_model_metadata(
-                provider_instance_name.as_str(),
+                provider_instance_name,
                 provider_type.clone(),
                 model.as_str(),
                 ApiType::AudioMusic,
                 gimini_method_mounts(ApiType::AudioMusic, model.as_str()),
-                &cfg.features,
+                features,
                 Some(0.10),
                 Some(60_000),
             ));
         }
-        for model in parse_csv_list(DEFAULT_GIMINI_VIDEO_MODELS) {
+        for model in buckets.video.iter() {
             let mut metadata = provider_model_metadata(
-                provider_instance_name.as_str(),
+                provider_instance_name,
                 provider_type.clone(),
                 model.as_str(),
                 ApiType::VideoTextToVideo,
                 gimini_method_mounts(ApiType::VideoTextToVideo, model.as_str()),
-                &cfg.features,
+                features,
                 Some(0.50),
                 Some(120_000),
             );
@@ -238,25 +342,189 @@ impl GoogleGiminiProvider {
             metadata.logical_mounts = dedupe_strings(metadata.logical_mounts);
             models.push(metadata);
         }
-        let inventory = ProviderInventory {
-            provider_instance_name,
+        ProviderInventory {
+            provider_instance_name: provider_instance_name.to_string(),
             provider_type,
-            provider_driver,
+            provider_driver: provider_driver.to_string(),
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             version: None,
-            inventory_revision: Some("settings-v1".to_string()),
+            inventory_revision,
             models,
-        };
+        }
+    }
 
-        Ok(Self {
-            instance,
-            inventory,
-            client,
-            api_token,
-            base_url: cfg.base_url.trim_end_matches('/').to_string(),
-        })
+    pub fn start_inventory_refresh(self: Arc<Self>) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+
+        tokio::spawn(async move {
+            if let Err(err) = self.refresh_inventory_once().await {
+                warn!(
+                    "aicc.gimini.inventory.initial_refresh_failed provider_instance_name={} err={}",
+                    self.provider_instance_name, err
+                );
+            }
+
+            let mut interval = time::interval(DEFAULT_GIMINI_INVENTORY_REFRESH_INTERVAL);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if let Err(err) = self.refresh_inventory_once().await {
+                    warn!(
+                        "aicc.gimini.inventory.refresh_failed provider_instance_name={} err={}",
+                        self.provider_instance_name, err
+                    );
+                }
+            }
+        });
+    }
+
+    async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
+        let mut buckets = GiminiModelBuckets::default();
+        let mut llm_seen = HashSet::<String>::new();
+        let mut image_seen = HashSet::<String>::new();
+        let mut embedding_seen = HashSet::<String>::new();
+        let mut tts_seen = HashSet::<String>::new();
+        let mut music_seen = HashSet::<String>::new();
+        let mut video_seen = HashSet::<String>::new();
+        let mut page_token: Option<String> = None;
+
+        let endpoint = format!("{}/models", self.base_url);
+        let page_size = GIMINI_MODELS_PAGE_SIZE.to_string();
+        loop {
+            let mut request = self
+                .client
+                .get(endpoint.as_str())
+                .query(&[("key", self.api_token.as_str())])
+                .query(&[("pageSize", page_size.as_str())]);
+            if let Some(token) = page_token.as_deref() {
+                request = request.query(&[("pageToken", token)]);
+            }
+
+            let response = request
+                .send()
+                .await
+                .context("gimini inventory refresh request failed")?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!(
+                    "gimini inventory refresh failed status={} body={}",
+                    status,
+                    body
+                ));
+            }
+
+            let parsed = response
+                .json::<GiminiModelsResponse>()
+                .await
+                .context("failed to parse gimini models response")?;
+
+            for entry in parsed.models.iter() {
+                let id = strip_gimini_model_prefix(entry.name.as_str()).trim();
+                if id.is_empty() {
+                    continue;
+                }
+                let methods = entry
+                    .supported_generation_methods
+                    .iter()
+                    .map(|method| method.to_ascii_lowercase())
+                    .collect::<HashSet<_>>();
+                let key = id.to_ascii_lowercase();
+                match classify_gimini_model(id, &methods) {
+                    Some(GiminiModelKind::Llm) => {
+                        if llm_seen.insert(key) {
+                            buckets.llm.push(id.to_string());
+                        }
+                    }
+                    Some(GiminiModelKind::Image) => {
+                        if image_seen.insert(key) {
+                            buckets.image.push(id.to_string());
+                        }
+                    }
+                    Some(GiminiModelKind::Embedding) => {
+                        if embedding_seen.insert(key) {
+                            buckets.embedding.push(id.to_string());
+                        }
+                    }
+                    Some(GiminiModelKind::Tts) => {
+                        if tts_seen.insert(key) {
+                            buckets.tts.push(id.to_string());
+                        }
+                    }
+                    Some(GiminiModelKind::Music) => {
+                        if music_seen.insert(key) {
+                            buckets.music.push(id.to_string());
+                        }
+                    }
+                    Some(GiminiModelKind::Video) => {
+                        if video_seen.insert(key) {
+                            buckets.video.push(id.to_string());
+                        }
+                    }
+                    None => continue,
+                }
+            }
+
+            match parsed.next_page_token {
+                Some(token) if !token.is_empty() => page_token = Some(token),
+                _ => break,
+            }
+        }
+
+        if buckets.is_empty() {
+            return Err(anyhow!(
+                "gimini inventory refresh returned no supported models"
+            ));
+        }
+
+        // Categories that the API never returns (lyria/veo are typically not
+        // listed) fall back to defaults so we don't drop them on refresh.
+        if buckets.embedding.is_empty() {
+            buckets.embedding = parse_csv_list(DEFAULT_GIMINI_EMBEDDING_MODELS);
+        }
+        if buckets.tts.is_empty() {
+            buckets.tts = parse_csv_list(DEFAULT_GIMINI_TTS_MODELS);
+        }
+        if buckets.music.is_empty() {
+            buckets.music = parse_csv_list(DEFAULT_GIMINI_MUSIC_MODELS);
+        }
+        if buckets.video.is_empty() {
+            buckets.video = parse_csv_list(DEFAULT_GIMINI_VIDEO_MODELS);
+        }
+
+        let revision = Some(buckets.fingerprint());
+        let inventory = Self::build_inventory_from_buckets(
+            self.provider_instance_name.as_str(),
+            self.provider_type.clone(),
+            self.provider_driver.as_str(),
+            &buckets,
+            self.features.as_slice(),
+            revision,
+        );
+
+        {
+            let mut current = self
+                .inventory
+                .write()
+                .map_err(|_| anyhow!("gimini inventory lock poisoned"))?;
+            *current = inventory.clone();
+        }
+        info!(
+            "aicc.gimini.inventory.refreshed provider_instance_name={} llm={} image={} embedding={} tts={} music={} video={}",
+            self.provider_instance_name,
+            buckets.llm.len(),
+            buckets.image.len(),
+            buckets.embedding.len(),
+            buckets.tts.len(),
+            buckets.music.len(),
+            buckets.video.len(),
+        );
+        Ok(inventory)
     }
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
@@ -1782,7 +2050,19 @@ impl GoogleGiminiProvider {
 #[async_trait]
 impl Provider for GoogleGiminiProvider {
     fn inventory(&self) -> ProviderInventory {
-        self.inventory.clone()
+        self.inventory
+            .read()
+            .map(|inventory| inventory.clone())
+            .unwrap_or_else(|_| {
+                Self::build_inventory_from_buckets(
+                    self.provider_instance_name.as_str(),
+                    self.provider_type.clone(),
+                    self.provider_driver.as_str(),
+                    &GiminiModelBuckets::default(),
+                    self.features.as_slice(),
+                    Some("inventory-lock-poisoned".to_string()),
+                )
+            })
     }
 
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
@@ -1986,7 +2266,49 @@ fn default_features() -> Vec<String> {
 
 fn is_text2image_model_name(model: &str) -> bool {
     let lowered = model.trim().to_ascii_lowercase();
-    lowered.contains("image") || lowered.contains("nano-banana")
+    lowered.contains("image") || lowered.contains("nano-banana") || lowered.contains("imagen")
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GiminiModelKind {
+    Llm,
+    Image,
+    Embedding,
+    Tts,
+    Music,
+    Video,
+}
+
+fn strip_gimini_model_prefix(name: &str) -> &str {
+    name.strip_prefix("models/")
+        .or_else(|| name.strip_prefix("tunedModels/"))
+        .unwrap_or(name)
+}
+
+fn classify_gimini_model(id: &str, methods: &HashSet<String>) -> Option<GiminiModelKind> {
+    let lowered = id.to_ascii_lowercase();
+
+    if lowered.contains("embedding") || methods.contains("embedcontent") {
+        return Some(GiminiModelKind::Embedding);
+    }
+    if lowered.contains("tts") {
+        return Some(GiminiModelKind::Tts);
+    }
+    if lowered.contains("lyria") {
+        return Some(GiminiModelKind::Music);
+    }
+    if lowered.contains("veo") {
+        return Some(GiminiModelKind::Video);
+    }
+    if is_text2image_model_name(id) {
+        return Some(GiminiModelKind::Image);
+    }
+    if lowered.starts_with("gemini")
+        && (methods.contains("generatecontent") || methods.is_empty())
+    {
+        return Some(GiminiModelKind::Llm);
+    }
+    None
 }
 
 fn gimini_method_mounts(api_type: ApiType, provider_model_id: &str) -> Vec<String> {
@@ -2294,11 +2616,14 @@ pub fn register_google_gimini_providers(
     }
 
     let instances = build_gimini_instances(&gimini_settings)?;
-    let mut prepared = Vec::<(GoogleGiminiInstanceConfig, Arc<dyn Provider>)>::new();
+    let mut prepared = Vec::<(GoogleGiminiInstanceConfig, Arc<GoogleGiminiProvider>)>::new();
     for config in instances.iter() {
-        let provider =
-            GoogleGiminiProvider::new(config.clone(), gimini_settings.api_token.clone())?;
-        prepared.push((config.clone(), Arc::new(provider)));
+        let provider = Arc::new(GoogleGiminiProvider::new(
+            config.clone(),
+            gimini_settings.api_token.clone(),
+        )?);
+        provider.clone().start_inventory_refresh();
+        prepared.push((config.clone(), provider));
     }
 
     for (config, provider) in prepared.into_iter() {

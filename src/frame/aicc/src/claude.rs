@@ -6,7 +6,7 @@ use crate::aicc::{
 use crate::claude_protocol::convert_complete_request;
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
-    ProviderTypeTrustedSource, QuotaState,
+    ProviderType, ProviderTypeTrustedSource, QuotaState,
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -18,13 +18,18 @@ use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use tokio::time;
 
 const DEFAULT_CLAUDE_BASE_URL: &str = "https://api.anthropic.com/v1";
 const DEFAULT_CLAUDE_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_CLAUDE_MODELS: &str = "claude-3-7-sonnet-20250219,claude-3-5-haiku-20241022";
+const DEFAULT_CLAUDE_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+const CLAUDE_MODELS_PAGE_LIMIT: u32 = 1000;
 
 #[derive(Debug, Clone)]
 pub struct ClaudeInstanceConfig {
@@ -42,10 +47,29 @@ pub struct ClaudeInstanceConfig {
 #[derive(Debug, Clone)]
 pub struct ClaudeProvider {
     instance: ProviderInstance,
-    inventory: ProviderInventory,
+    inventory: Arc<RwLock<ProviderInventory>>,
     client: Client,
     api_token: String,
     base_url: String,
+    provider_type: ProviderType,
+    provider_driver: String,
+    provider_instance_name: String,
+    features: Vec<Feature>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeModelsResponse {
+    #[serde(default)]
+    data: Vec<ClaudeModelEntry>,
+    #[serde(default)]
+    has_more: bool,
+    #[serde(default)]
+    last_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeModelEntry {
+    id: String,
 }
 
 impl ClaudeProvider {
@@ -76,15 +100,45 @@ impl ClaudeProvider {
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
-        let mut models = Vec::new();
-        for model in cfg.models.iter() {
+        let inventory = Self::build_inventory_from_models(
+            provider_instance_name.as_str(),
+            provider_type.clone(),
+            provider_driver.as_str(),
+            cfg.models.as_slice(),
+            cfg.features.as_slice(),
+            Some("settings-v1".to_string()),
+        );
+
+        Ok(Self {
+            instance,
+            inventory: Arc::new(RwLock::new(inventory)),
+            client,
+            api_token,
+            base_url: cfg.base_url.trim_end_matches('/').to_string(),
+            provider_type,
+            provider_driver,
+            provider_instance_name,
+            features: cfg.features,
+        })
+    }
+
+    fn build_inventory_from_models(
+        provider_instance_name: &str,
+        provider_type: ProviderType,
+        provider_driver: &str,
+        models: &[String],
+        features: &[Feature],
+        inventory_revision: Option<String>,
+    ) -> ProviderInventory {
+        let mut metadata_list = Vec::with_capacity(models.len());
+        for model in models.iter() {
             let mut metadata = provider_model_metadata(
-                provider_instance_name.as_str(),
+                provider_instance_name,
                 provider_type.clone(),
                 model.as_str(),
                 ApiType::LlmChat,
-                llm_logical_mounts(provider_driver.as_str(), model.as_str()),
-                &cfg.features,
+                llm_logical_mounts(provider_driver, model.as_str()),
+                features,
                 Some(0.01),
                 Some(1800),
             );
@@ -97,27 +151,141 @@ impl ClaudeProvider {
                 .logical_mounts
                 .extend(claude_vision_mounts(ApiType::VisionOcr, model.as_str()));
             metadata.capabilities.vision = true;
-            models.push(metadata);
+            metadata_list.push(metadata);
         }
-        let inventory = ProviderInventory {
-            provider_instance_name,
+        ProviderInventory {
+            provider_instance_name: provider_instance_name.to_string(),
             provider_type,
-            provider_driver,
+            provider_driver: provider_driver.to_string(),
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             version: None,
-            inventory_revision: Some("settings-v1".to_string()),
-            models,
-        };
+            inventory_revision,
+            models: metadata_list,
+        }
+    }
 
-        Ok(Self {
-            instance,
-            inventory,
-            client,
-            api_token,
-            base_url: cfg.base_url.trim_end_matches('/').to_string(),
-        })
+    pub fn start_inventory_refresh(self: Arc<Self>) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+
+        tokio::spawn(async move {
+            if let Err(err) = self.refresh_inventory_once().await {
+                warn!(
+                    "aicc.claude.inventory.initial_refresh_failed provider_instance_name={} err={}",
+                    self.provider_instance_name, err
+                );
+            }
+
+            let mut interval = time::interval(DEFAULT_CLAUDE_INVENTORY_REFRESH_INTERVAL);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if let Err(err) = self.refresh_inventory_once().await {
+                    warn!(
+                        "aicc.claude.inventory.refresh_failed provider_instance_name={} err={}",
+                        self.provider_instance_name, err
+                    );
+                }
+            }
+        });
+    }
+
+    async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
+        let mut model_ids = Vec::<String>::new();
+        let mut seen = HashSet::<String>::new();
+        let mut after_id: Option<String> = None;
+
+        loop {
+            let mut url = format!(
+                "{}/models?limit={}",
+                self.base_url, CLAUDE_MODELS_PAGE_LIMIT
+            );
+            if let Some(cursor) = after_id.as_deref() {
+                url.push_str("&after_id=");
+                url.push_str(cursor);
+            }
+
+            let response = self
+                .client
+                .get(url.as_str())
+                .header("x-api-key", self.api_token.as_str())
+                .header("anthropic-version", ANTHROPIC_API_VERSION)
+                .send()
+                .await
+                .context("claude inventory refresh request failed")?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!(
+                    "claude inventory refresh failed status={} body={}",
+                    status,
+                    body
+                ));
+            }
+
+            let parsed = response
+                .json::<ClaudeModelsResponse>()
+                .await
+                .context("failed to parse claude models response")?;
+
+            for entry in parsed.data.iter() {
+                let id = entry.id.trim();
+                if id.is_empty() {
+                    continue;
+                }
+                let lower = id.to_ascii_lowercase();
+                if !lower.starts_with("claude-") {
+                    continue;
+                }
+                if seen.insert(lower) {
+                    model_ids.push(id.to_string());
+                }
+            }
+
+            if !parsed.has_more {
+                break;
+            }
+            match parsed.last_id {
+                Some(cursor) if !cursor.is_empty() => {
+                    after_id = Some(cursor);
+                }
+                _ => break,
+            }
+        }
+
+        if model_ids.is_empty() {
+            return Err(anyhow!(
+                "claude inventory refresh returned no supported models"
+            ));
+        }
+
+        let revision = Some(claude_inventory_revision(model_ids.as_slice()));
+        let inventory = Self::build_inventory_from_models(
+            self.provider_instance_name.as_str(),
+            self.provider_type.clone(),
+            self.provider_driver.as_str(),
+            model_ids.as_slice(),
+            self.features.as_slice(),
+            revision,
+        );
+
+        {
+            let mut current = self
+                .inventory
+                .write()
+                .map_err(|_| anyhow!("claude inventory lock poisoned"))?;
+            *current = inventory.clone();
+        }
+        info!(
+            "aicc.claude.inventory.refreshed provider_instance_name={} models={}",
+            self.provider_instance_name,
+            inventory.models.len()
+        );
+        Ok(inventory)
     }
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
@@ -452,7 +620,19 @@ impl ClaudeProvider {
 #[async_trait]
 impl Provider for ClaudeProvider {
     fn inventory(&self) -> ProviderInventory {
-        self.inventory.clone()
+        self.inventory
+            .read()
+            .map(|inventory| inventory.clone())
+            .unwrap_or_else(|_| {
+                Self::build_inventory_from_models(
+                    self.provider_instance_name.as_str(),
+                    self.provider_type.clone(),
+                    self.provider_driver.as_str(),
+                    Vec::<String>::new().as_slice(),
+                    self.features.as_slice(),
+                    Some("inventory-lock-poisoned".to_string()),
+                )
+            })
     }
 
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
@@ -519,6 +699,12 @@ fn provider_model_from_exact(exact_model: &str) -> &str {
         .rsplit_once('@')
         .map(|(model, _)| model)
         .unwrap_or(exact_model)
+}
+
+fn claude_inventory_revision(models: &[String]) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    models.hash(&mut hasher);
+    format!("claude-models-{}-{:x}", models.len(), hasher.finish())
 }
 
 fn claude_vision_mounts(api_type: ApiType, model: &str) -> Vec<String> {
@@ -791,10 +977,14 @@ pub fn register_claude_providers(center: &AIComputeCenter, settings: &Value) -> 
             .map(|item| item.default_model.clone().unwrap_or_default())
             .collect::<Vec<_>>(),
     );
-    let mut prepared = Vec::<(ClaudeInstanceConfig, Arc<dyn Provider>)>::new();
+    let mut prepared = Vec::<(ClaudeInstanceConfig, Arc<ClaudeProvider>)>::new();
     for config in instances.iter() {
-        let provider = ClaudeProvider::new(config.clone(), claude_settings.api_token.clone())?;
-        prepared.push((config.clone(), Arc::new(provider)));
+        let provider = Arc::new(ClaudeProvider::new(
+            config.clone(),
+            claude_settings.api_token.clone(),
+        )?);
+        provider.clone().start_inventory_refresh();
+        prepared.push((config.clone(), provider));
     }
 
     for (config, provider) in prepared.into_iter() {
