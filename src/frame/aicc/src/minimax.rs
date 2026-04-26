@@ -10,7 +10,8 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    features, AiCost, AiMethodRequest, AiResponseSummary, AiToolCall, AiUsage, Capability, Feature,
+    ai_methods, features, AiCost, AiMethodRequest, AiResponseSummary, AiToolCall, AiUsage,
+    Capability, Feature,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
@@ -133,13 +134,27 @@ impl MiniMaxProvider {
         for message in req.payload.messages.iter() {
             text_len += message.content.len();
         }
+        if let Some(input_json) = req.payload.input_json.as_ref() {
+            text_len += json_text_len(input_json);
+        }
 
         let input_tokens = ((text_len as f64) / 4.0).ceil() as u64;
         let output_tokens = req
             .payload
-            .options
+            .input_json
             .as_ref()
-            .and_then(|value| value.get("max_tokens").and_then(|value| value.as_u64()))
+            .and_then(|value| {
+                value
+                    .get("max_output_tokens")
+                    .and_then(|value| value.as_u64())
+                    .or_else(|| value.get("max_tokens").and_then(|value| value.as_u64()))
+            })
+            .or_else(|| {
+                req.payload
+                    .options
+                    .as_ref()
+                    .and_then(|value| value.get("max_tokens").and_then(|value| value.as_u64()))
+            })
             .unwrap_or(1024);
 
         (input_tokens.max(1), output_tokens.max(1))
@@ -333,14 +348,14 @@ impl Provider for MiniMaxProvider {
         req: ResolvedRequest,
         _sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
-        match req.request.capability {
-            Capability::Llm => {
+        match req.method.as_str() {
+            ai_methods::LLM_CHAT | ai_methods::LLM_COMPLETION => {
                 self.start_llm(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
-            capability => Err(ProviderError::fatal(format!(
-                "minimax provider does not support capability '{:?}'",
-                capability
+            method => Err(ProviderError::fatal(format!(
+                "minimax provider does not support method '{}'",
+                method
             ))),
         }
     }
@@ -359,6 +374,15 @@ fn provider_model_from_exact(exact_model: &str) -> &str {
         .rsplit_once('@')
         .map(|(model, _)| model)
         .unwrap_or(exact_model)
+}
+
+fn json_text_len(value: &Value) -> usize {
+    match value {
+        Value::String(text) => text.len(),
+        Value::Array(items) => items.iter().map(json_text_len).sum(),
+        Value::Object(map) => map.values().map(json_text_len).sum(),
+        _ => 0,
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]

@@ -173,7 +173,7 @@ fn now_seq() -> u64 {
 fn complete_params(prompt: &str, must_features: Vec<&str>, options: Value) -> Value {
     let alias = env::var("AICC_MODEL_ALIAS").unwrap_or_else(|_| "llm.plan.default".to_string());
     json!({
-        "capability": "llm_router",
+        "capability": "llm",
         "model": {
             "alias": alias,
         },
@@ -181,12 +181,14 @@ fn complete_params(prompt: &str, must_features: Vec<&str>, options: Value) -> Va
             "must_features": must_features,
         },
         "payload": {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
+            "input_json": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+            },
             "options": options,
         },
         "idempotency_key": format!("smoke-{}", now_seq()),
@@ -195,7 +197,7 @@ fn complete_params(prompt: &str, must_features: Vec<&str>, options: Value) -> Va
 
 fn complete_params_with_alias(alias: &str, prompt: &str, options: Value) -> Value {
     json!({
-        "capability": "llm_router",
+        "capability": "llm",
         "model": {
             "alias": alias,
         },
@@ -203,12 +205,14 @@ fn complete_params_with_alias(alias: &str, prompt: &str, options: Value) -> Valu
             "must_features": [],
         },
         "payload": {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
+            "input_json": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+            },
             "options": options,
         },
         "idempotency_key": format!("smoke-{}", now_seq()),

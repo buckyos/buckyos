@@ -186,22 +186,42 @@ impl Provider for MockProvider {
 fn mock_inventory(instance: &ProviderInstance, cost: &CostEstimate) -> ProviderInventory {
     let mut models = Vec::new();
     for capability in instance.capabilities.iter() {
-        let (api_type, mount, provider_model_id) = match capability {
-            Capability::Llm => (ApiType::LlmChat, "llm.plan.default", "m"),
-            Capability::Image => (ApiType::ImageTextToImage, "text2image.default", "m"),
-            Capability::Vision => (ApiType::ImageToImage, "i2t.default", "m"),
-            Capability::Audio => (ApiType::LlmCompletion, "t2v.default", "m"),
-            Capability::Video => (ApiType::LlmCompletion, "t2v.default", "m"),
-            Capability::Embedding => (ApiType::Embedding, "embedding.default", "m"),
-            Capability::Rerank => (ApiType::LlmCompletion, "rerank.default", "m"),
-            Capability::Agent => (ApiType::LlmCompletion, "agent.default", "m"),
+        let (api_type, mounts, provider_model_id) = match capability {
+            Capability::Llm => (ApiType::LlmChat, vec!["llm.plan.default"], "m"),
+            Capability::Image => (
+                ApiType::ImageTextToImage,
+                vec!["image.txt2img.default", "text2image.default"],
+                "m",
+            ),
+            Capability::Vision => (
+                ApiType::VisionCaption,
+                vec!["vision.caption.default", "i2t.default"],
+                "m",
+            ),
+            Capability::Audio => (
+                ApiType::AudioAsr,
+                vec!["audio.asr.default", "v2t.default", "t2v.default"],
+                "m",
+            ),
+            Capability::Video => (
+                ApiType::VideoTextToVideo,
+                vec!["video.txt2video.default", "v2t.default"],
+                "m",
+            ),
+            Capability::Embedding => (ApiType::Embedding, vec!["embedding.default"], "m"),
+            Capability::Rerank => (ApiType::Rerank, vec!["rerank.default"], "m"),
+            Capability::Agent => (
+                ApiType::AgentComputerUse,
+                vec!["agent.computer_use.default"],
+                "m",
+            ),
         };
         models.push(provider_model_metadata(
             instance.provider_instance_name.as_str(),
             instance.provider_type.clone(),
             provider_model_id,
             api_type,
-            vec![mount.to_string()],
+            mounts.into_iter().map(str::to_string).collect(),
             &instance.features,
             cost.estimated_cost_usd,
             cost.estimated_latency_ms,

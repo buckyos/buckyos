@@ -17,8 +17,8 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    features, value_to_object_map, AiArtifact, AiCost, AiMethodRequest, AiResponseSummary,
-    AiToolCall, AiUsage, Capability, ResourceRef,
+    ai_methods, features, value_to_object_map, AiArtifact, AiCost, AiMethodRequest,
+    AiResponseSummary, AiToolCall, AiUsage, Capability, ResourceRef,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use log::{error, info, warn};
@@ -527,6 +527,9 @@ impl OpenAIProvider {
         for message in req.payload.messages.iter() {
             text_len += message.content.len();
         }
+        if let Some(input_json) = req.payload.input_json.as_ref() {
+            text_len += json_text_len(input_json);
+        }
 
         for resource in req.payload.resources.iter() {
             match resource {
@@ -545,7 +548,7 @@ impl OpenAIProvider {
         let input_tokens = ((text_len as f64) / 4.0).ceil() as u64;
         let output_tokens = req
             .payload
-            .options
+            .input_json
             .as_ref()
             .and_then(|value| {
                 value
@@ -557,6 +560,19 @@ impl OpenAIProvider {
                             .get("max_completion_tokens")
                             .and_then(|value| value.as_u64())
                     })
+            })
+            .or_else(|| {
+                req.payload.options.as_ref().and_then(|value| {
+                    value
+                        .get("max_output_tokens")
+                        .and_then(|value| value.as_u64())
+                        .or_else(|| value.get("max_tokens").and_then(|value| value.as_u64()))
+                        .or_else(|| {
+                            value
+                                .get("max_completion_tokens")
+                                .and_then(|value| value.as_u64())
+                        })
+                })
             })
             .unwrap_or(512);
 
@@ -648,6 +664,114 @@ impl OpenAIProvider {
         Some((Self::estimate_image_count(req) as f64) * per_image)
     }
 
+    fn resource_text(resource: &ResourceRef) -> Result<String, ProviderError> {
+        match resource {
+            ResourceRef::Url { url, .. } => Ok(format!("resource_url: {}", url)),
+            ResourceRef::NamedObject { obj_id } => Ok(format!("named_object: {}", obj_id)),
+            ResourceRef::Base64 { .. } => Err(ProviderError::fatal(
+                "openai provider does not support base64 resources in this version",
+            )),
+        }
+    }
+
+    fn content_value_to_text(value: &Value) -> Result<Option<String>, ProviderError> {
+        if let Some(text) = value.as_str() {
+            let text = text.trim();
+            return Ok((!text.is_empty()).then(|| text.to_string()));
+        }
+
+        let Some(parts) = value.as_array() else {
+            return Ok(None);
+        };
+
+        let mut lines = Vec::new();
+        for part in parts {
+            let Some(part_obj) = part.as_object() else {
+                continue;
+            };
+            match part_obj.get("type").and_then(|value| value.as_str()) {
+                Some("text") | Some("input_text") => {
+                    if let Some(text) = part_obj
+                        .get("text")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        lines.push(text.to_string());
+                    }
+                }
+                Some("resource") => {
+                    if let Some(resource_value) = part_obj.get("resource") {
+                        let resource: ResourceRef = serde_json::from_value(resource_value.clone())
+                            .map_err(|err| {
+                                ProviderError::fatal(format!(
+                                    "invalid content resource part: {}",
+                                    err
+                                ))
+                            })?;
+                        lines.push(Self::resource_text(&resource)?);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if lines.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(lines.join("\n")))
+        }
+    }
+
+    fn canonical_message_texts(
+        req: &AiMethodRequest,
+    ) -> Result<Vec<(String, String)>, ProviderError> {
+        if let Some(messages) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("messages"))
+            .and_then(|value| value.as_array())
+        {
+            let mut result = Vec::new();
+            for msg in messages {
+                let Some(msg_obj) = msg.as_object() else {
+                    continue;
+                };
+                let role = msg_obj
+                    .get("role")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("user")
+                    .to_string();
+                if let Some(text) = msg_obj
+                    .get("content")
+                    .map(Self::content_value_to_text)
+                    .transpose()?
+                    .flatten()
+                {
+                    result.push((role, text));
+                }
+            }
+            if !result.is_empty() {
+                return Ok(result);
+            }
+        }
+
+        Ok(req
+            .payload
+            .messages
+            .iter()
+            .filter_map(|msg| {
+                let role = msg.role.trim();
+                let content = msg.content.trim();
+                (!role.is_empty() && !content.is_empty())
+                    .then(|| (role.to_string(), content.to_string()))
+            })
+            .collect())
+    }
+
     fn estimate_cost_for_usage(&self, model: &str, usage: &AiUsage) -> Option<AiCost> {
         let input_tokens = usage.input_tokens? as f64;
         let output_tokens = usage.output_tokens? as f64;
@@ -665,16 +789,13 @@ impl OpenAIProvider {
     fn build_messages(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
         let mut messages = vec![];
 
-        for msg in req.payload.messages.iter() {
-            if msg.role.trim().is_empty() || msg.content.trim().is_empty() {
-                continue;
-            }
+        for (role, content) in Self::canonical_message_texts(req)? {
             messages.push(json!({
-                "role": msg.role,
+                "role": role,
                 "content": [
                     {
                         "type": "input_text",
-                        "text": msg.content
+                        "text": content
                     }
                 ],
             }));
@@ -688,19 +809,7 @@ impl OpenAIProvider {
 
             let mut resource_lines = vec![];
             for resource in req.payload.resources.iter() {
-                match resource {
-                    ResourceRef::Url { url, .. } => {
-                        resource_lines.push(format!("resource_url: {}", url));
-                    }
-                    ResourceRef::NamedObject { obj_id } => {
-                        resource_lines.push(format!("named_object: {}", obj_id));
-                    }
-                    ResourceRef::Base64 { .. } => {
-                        return Err(ProviderError::fatal(
-                            "openai provider does not support base64 resources in this version",
-                        ));
-                    }
-                }
+                resource_lines.push(Self::resource_text(resource)?);
             }
 
             if !resource_lines.is_empty() {
@@ -736,13 +845,10 @@ impl OpenAIProvider {
     fn build_chat_messages(req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
         let mut messages = vec![];
 
-        for msg in req.payload.messages.iter() {
-            if msg.role.trim().is_empty() || msg.content.trim().is_empty() {
-                continue;
-            }
+        for (role, content) in Self::canonical_message_texts(req)? {
             messages.push(json!({
-                "role": msg.role,
-                "content": msg.content,
+                "role": role,
+                "content": content,
             }));
         }
 
@@ -754,19 +860,7 @@ impl OpenAIProvider {
 
             let mut resource_lines = vec![];
             for resource in req.payload.resources.iter() {
-                match resource {
-                    ResourceRef::Url { url, .. } => {
-                        resource_lines.push(format!("resource_url: {}", url));
-                    }
-                    ResourceRef::NamedObject { obj_id } => {
-                        resource_lines.push(format!("named_object: {}", obj_id));
-                    }
-                    ResourceRef::Base64 { .. } => {
-                        return Err(ProviderError::fatal(
-                            "openai provider does not support base64 resources in this version",
-                        ));
-                    }
-                }
+                resource_lines.push(Self::resource_text(resource)?);
             }
 
             if !resource_lines.is_empty() {
@@ -1361,6 +1455,18 @@ impl OpenAIProvider {
     }
 
     fn extract_text2image_prompt(req: &AiMethodRequest) -> Option<String> {
+        if let Some(prompt) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("prompt"))
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(prompt.to_string());
+        }
+
         if let Some(text) = req
             .payload
             .text
@@ -1381,18 +1487,6 @@ impl OpenAIProvider {
             .join("\n");
         if !message_prompt.is_empty() {
             return Some(message_prompt);
-        }
-
-        if let Some(prompt) = req
-            .payload
-            .input_json
-            .as_ref()
-            .and_then(|value| value.get("prompt"))
-            .and_then(|value| value.as_str())
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-        {
-            return Some(prompt.to_string());
         }
 
         req.payload
@@ -1674,8 +1768,11 @@ impl OpenAIProvider {
         }
 
         let mut ignored_options = vec![];
+        if let Some(input_json) = req.payload.input_json.as_ref() {
+            ignored_options.extend(merge_options(&mut request_obj, input_json)?);
+        }
         if let Some(options) = req.payload.options.as_ref() {
-            ignored_options = merge_options(&mut request_obj, options)?;
+            ignored_options.extend(merge_options(&mut request_obj, options)?);
         }
         let stripped_options =
             strip_incompatible_sampling_options(&mut request_obj, provider_model);
@@ -2024,18 +2121,18 @@ impl Provider for OpenAIProvider {
         req: ResolvedRequest,
         _sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
-        match req.request.capability {
-            Capability::Llm => {
+        match req.method.as_str() {
+            ai_methods::LLM_CHAT | ai_methods::LLM_COMPLETION => {
                 self.start_llm(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
-            Capability::Image => {
+            ai_methods::IMAGE_TXT2IMG => {
                 self.start_text2image(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
-            capability => Err(ProviderError::fatal(format!(
-                "openai provider does not support capability '{:?}'",
-                capability
+            method => Err(ProviderError::fatal(format!(
+                "openai provider does not support method '{}'",
+                method
             ))),
         }
     }
@@ -2054,6 +2151,15 @@ fn provider_model_from_exact(exact_model: &str) -> &str {
         .rsplit_once('@')
         .map(|(model, _)| model)
         .unwrap_or(exact_model)
+}
+
+fn json_text_len(value: &Value) -> usize {
+    match value {
+        Value::String(text) => text.len(),
+        Value::Array(items) => items.iter().map(json_text_len).sum(),
+        Value::Object(map) => map.values().map(json_text_len).sum(),
+        _ => 0,
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2301,6 +2407,7 @@ fn register_default_aliases(
             format!("text2image.{}", model),
             format!("t2i.{}", model),
             format!("image.{}", model),
+            format!("image.txt2img.{}", model),
         ] {
             center.model_catalog().set_mapping(
                 Capability::Image,
@@ -2312,7 +2419,12 @@ fn register_default_aliases(
     }
 
     if let Some(default_image_model) = default_image_model {
-        for alias in ["text2image.default", "t2i.default", "image.default"] {
+        for alias in [
+            "text2image.default",
+            "t2i.default",
+            "image.default",
+            "image.txt2img.default",
+        ] {
             center.model_catalog().set_mapping(
                 Capability::Image,
                 alias,

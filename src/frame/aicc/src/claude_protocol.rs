@@ -86,6 +86,7 @@ fn convert_internal_tool(tool: &Map<String, Value>, idx: usize) -> Result<Value,
 
     let input_schema = tool
         .get("args_schema")
+        .or_else(|| tool.get("args_json_schema"))
         .cloned()
         .unwrap_or_else(default_tool_input_schema);
     if !input_schema.is_object() {
@@ -123,6 +124,7 @@ fn normalize_openai_function_tool(
 
     let input_schema = function_obj
         .get("parameters")
+        .or_else(|| function_obj.get("args_json_schema"))
         .cloned()
         .unwrap_or_else(default_tool_input_schema);
     if !input_schema.is_object() {
@@ -616,36 +618,112 @@ fn build_fallback_content(req: &AiMethodRequest) -> Result<Option<String>, Provi
     }
 }
 
+fn content_value_to_text(value: &Value) -> Result<Option<String>, ProviderError> {
+    if let Some(text) = value.as_str() {
+        let text = text.trim();
+        return Ok((!text.is_empty()).then(|| text.to_string()));
+    }
+
+    let Some(parts) = value.as_array() else {
+        return Ok(None);
+    };
+
+    let mut lines = Vec::new();
+    for part in parts {
+        let Some(part_obj) = part.as_object() else {
+            continue;
+        };
+        match part_obj.get("type").and_then(|value| value.as_str()) {
+            Some("text") => {
+                if let Some(text) = part_obj
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    lines.push(text.to_string());
+                }
+            }
+            Some("resource") => {
+                if let Some(resource_value) = part_obj.get("resource") {
+                    let resource: ResourceRef = serde_json::from_value(resource_value.clone())
+                        .map_err(|err| {
+                            ProviderError::fatal(format!("invalid content resource part: {}", err))
+                        })?;
+                    match resource {
+                        ResourceRef::Url { url, .. } => {
+                            lines.push(format!("resource_url: {}", url));
+                        }
+                        ResourceRef::NamedObject { obj_id } => {
+                            lines.push(format!("named_object: {}", obj_id));
+                        }
+                        ResourceRef::Base64 { .. } => {
+                            return Err(ProviderError::fatal(
+                                "claude provider does not support base64 resources in this version",
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if lines.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(lines.join("\n")))
+    }
+}
+
 fn build_messages(req: &AiMethodRequest) -> Result<(Option<String>, Vec<Value>), ProviderError> {
     let mut system_parts = vec![];
     let mut messages = vec![];
 
-    for msg in req.payload.messages.iter() {
-        let role = msg.role.trim().to_lowercase();
-        let content = msg.content.trim();
-        if role.is_empty() || content.is_empty() {
-            continue;
-        }
+    let canonical_messages = req
+        .payload
+        .input_json
+        .as_ref()
+        .and_then(|value| value.get("messages"))
+        .and_then(|value| value.as_array());
 
-        match role.as_str() {
-            "system" => {
-                system_parts.push(content.to_string());
+    if let Some(canonical_messages) = canonical_messages {
+        for msg in canonical_messages {
+            let Some(msg_obj) = msg.as_object() else {
+                continue;
+            };
+            let role = msg_obj
+                .get("role")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("user")
+                .to_lowercase();
+            let Some(content) = msg_obj
+                .get("content")
+                .map(content_value_to_text)
+                .transpose()?
+                .flatten()
+            else {
+                continue;
+            };
+            push_message_content(
+                &mut system_parts,
+                &mut messages,
+                role.as_str(),
+                content.as_str(),
+            );
+        }
+    }
+
+    if messages.is_empty() && system_parts.is_empty() {
+        for msg in req.payload.messages.iter() {
+            let role = msg.role.trim().to_lowercase();
+            let content = msg.content.trim();
+            if role.is_empty() || content.is_empty() {
+                continue;
             }
-            "user" => {
-                messages.push(text_message("user", content));
-            }
-            "assistant" => {
-                messages.push(text_message("assistant", content));
-            }
-            "tool" => {
-                messages.push(text_message("user", format!("tool: {}", content).as_str()));
-            }
-            other => {
-                messages.push(text_message(
-                    "user",
-                    format!("{}: {}", other, content).as_str(),
-                ));
-            }
+            push_message_content(&mut system_parts, &mut messages, role.as_str(), content);
         }
     }
 
@@ -668,6 +746,34 @@ fn build_messages(req: &AiMethodRequest) -> Result<(Option<String>, Vec<Value>),
     };
 
     Ok((system, messages))
+}
+
+fn push_message_content(
+    system_parts: &mut Vec<String>,
+    messages: &mut Vec<Value>,
+    role: &str,
+    content: &str,
+) {
+    match role {
+        "system" | "developer" => {
+            system_parts.push(content.to_string());
+        }
+        "user" => {
+            messages.push(text_message("user", content));
+        }
+        "assistant" => {
+            messages.push(text_message("assistant", content));
+        }
+        "tool" => {
+            messages.push(text_message("user", format!("tool: {}", content).as_str()));
+        }
+        other => {
+            messages.push(text_message(
+                "user",
+                format!("{}: {}", other, content).as_str(),
+            ));
+        }
+    }
 }
 
 fn resolve_provider_model(req: &AiMethodRequest, provider_model: &str) -> Option<String> {
@@ -708,10 +814,15 @@ pub(crate) fn convert_complete_request(
 
     let mut ignored = vec![];
     let mut extra_messages = vec![];
+    if let Some(input_json) = req.payload.input_json.as_ref() {
+        let (ignored_options, converted_tool_messages) = merge_options(&mut request, input_json)?;
+        ignored.extend(ignored_options);
+        extra_messages.extend(converted_tool_messages);
+    }
     if let Some(options) = req.payload.options.as_ref() {
         let (ignored_options, converted_tool_messages) = merge_options(&mut request, options)?;
-        ignored = ignored_options;
-        extra_messages = converted_tool_messages;
+        ignored.extend(ignored_options);
+        extra_messages.extend(converted_tool_messages);
     }
 
     if !extra_messages.is_empty() {

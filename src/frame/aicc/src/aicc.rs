@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    AiMethodRequest, AiMethodResponse, AiMethodStatus, AiResponseSummary, AiccHandler,
+    ai_methods, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiResponseSummary, AiccHandler,
     AiccUsageEvent, CancelResponse, Capability, CreateTaskOptions, Feature, ResourceRef,
     TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
@@ -277,12 +277,21 @@ pub enum ProviderStartResult {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedRequest {
+    pub method: String,
     pub request: AiMethodRequest,
 }
 
 impl ResolvedRequest {
     pub fn new(request: AiMethodRequest) -> Self {
-        Self { request }
+        let method = default_method_for_capability(&request.capability).to_string();
+        Self { method, request }
+    }
+
+    pub fn new_with_method(method: impl Into<String>, request: AiMethodRequest) -> Self {
+        Self {
+            method: method.into(),
+            request,
+        }
     }
 }
 
@@ -1434,14 +1443,81 @@ fn inventory_supports_capability(inventory: &ProviderInventory, capability: &Cap
         .any(|model| model.api_types.iter().any(|item| item == &api_type))
 }
 
-fn api_type_for_capability(capability: &Capability) -> Option<ApiType> {
+fn default_method_for_capability(capability: &Capability) -> &'static str {
     match capability {
-        Capability::Llm => Some(ApiType::LlmChat),
-        Capability::Image => Some(ApiType::ImageTextToImage),
-        Capability::Vision => Some(ApiType::ImageToImage),
-        Capability::Audio | Capability::Video => Some(ApiType::LlmCompletion),
-        Capability::Embedding | Capability::Rerank | Capability::Agent => None,
+        Capability::Llm => ai_methods::LLM_CHAT,
+        Capability::Embedding => ai_methods::EMBEDDING_TEXT,
+        Capability::Rerank => ai_methods::RERANK,
+        Capability::Image => ai_methods::IMAGE_TXT2IMG,
+        Capability::Vision => ai_methods::VISION_CAPTION,
+        Capability::Audio => ai_methods::AUDIO_ASR,
+        Capability::Video => ai_methods::VIDEO_TXT2VIDEO,
+        Capability::Agent => ai_methods::AGENT_COMPUTER_USE,
     }
+}
+
+fn capability_for_method(method: &str) -> Option<Capability> {
+    match method {
+        ai_methods::LLM_CHAT | ai_methods::LLM_COMPLETION => Some(Capability::Llm),
+        ai_methods::EMBEDDING_TEXT | ai_methods::EMBEDDING_MULTIMODAL => {
+            Some(Capability::Embedding)
+        }
+        ai_methods::RERANK => Some(Capability::Rerank),
+        ai_methods::IMAGE_TXT2IMG
+        | ai_methods::IMAGE_IMG2IMG
+        | ai_methods::IMAGE_INPAINT
+        | ai_methods::IMAGE_UPSCALE
+        | ai_methods::IMAGE_BG_REMOVE => Some(Capability::Image),
+        ai_methods::VISION_OCR
+        | ai_methods::VISION_CAPTION
+        | ai_methods::VISION_DETECT
+        | ai_methods::VISION_SEGMENT => Some(Capability::Vision),
+        ai_methods::AUDIO_TTS
+        | ai_methods::AUDIO_ASR
+        | ai_methods::AUDIO_MUSIC
+        | ai_methods::AUDIO_ENHANCE => Some(Capability::Audio),
+        ai_methods::VIDEO_TXT2VIDEO
+        | ai_methods::VIDEO_IMG2VIDEO
+        | ai_methods::VIDEO_VIDEO2VIDEO
+        | ai_methods::VIDEO_EXTEND
+        | ai_methods::VIDEO_UPSCALE => Some(Capability::Video),
+        ai_methods::AGENT_COMPUTER_USE => Some(Capability::Agent),
+        _ => None,
+    }
+}
+
+fn api_type_for_method(method: &str) -> Option<ApiType> {
+    match method {
+        ai_methods::LLM_CHAT => Some(ApiType::LlmChat),
+        ai_methods::LLM_COMPLETION => Some(ApiType::LlmCompletion),
+        ai_methods::EMBEDDING_TEXT => Some(ApiType::Embedding),
+        ai_methods::EMBEDDING_MULTIMODAL => Some(ApiType::EmbeddingMultimodal),
+        ai_methods::RERANK => Some(ApiType::Rerank),
+        ai_methods::IMAGE_TXT2IMG => Some(ApiType::ImageTextToImage),
+        ai_methods::IMAGE_IMG2IMG => Some(ApiType::ImageToImage),
+        ai_methods::IMAGE_INPAINT => Some(ApiType::ImageInpaint),
+        ai_methods::IMAGE_UPSCALE => Some(ApiType::ImageUpscale),
+        ai_methods::IMAGE_BG_REMOVE => Some(ApiType::ImageBgRemove),
+        ai_methods::VISION_OCR => Some(ApiType::VisionOcr),
+        ai_methods::VISION_CAPTION => Some(ApiType::VisionCaption),
+        ai_methods::VISION_DETECT => Some(ApiType::VisionDetect),
+        ai_methods::VISION_SEGMENT => Some(ApiType::VisionSegment),
+        ai_methods::AUDIO_TTS => Some(ApiType::AudioTts),
+        ai_methods::AUDIO_ASR => Some(ApiType::AudioAsr),
+        ai_methods::AUDIO_MUSIC => Some(ApiType::AudioMusic),
+        ai_methods::AUDIO_ENHANCE => Some(ApiType::AudioEnhance),
+        ai_methods::VIDEO_TXT2VIDEO => Some(ApiType::VideoTextToVideo),
+        ai_methods::VIDEO_IMG2VIDEO => Some(ApiType::VideoImageToVideo),
+        ai_methods::VIDEO_VIDEO2VIDEO => Some(ApiType::VideoToVideo),
+        ai_methods::VIDEO_EXTEND => Some(ApiType::VideoExtend),
+        ai_methods::VIDEO_UPSCALE => Some(ApiType::VideoUpscale),
+        ai_methods::AGENT_COMPUTER_USE => Some(ApiType::AgentComputerUse),
+        _ => None,
+    }
+}
+
+fn api_type_for_capability(capability: &Capability) -> Option<ApiType> {
+    api_type_for_method(default_method_for_capability(capability))
 }
 
 fn route_error_to_rpc(error: crate::model_types::RouteError) -> RPCErrors {
@@ -1537,15 +1613,46 @@ fn estimate_request_tokens(request: &AiMethodRequest) -> (u64, u64) {
     for message in request.payload.messages.iter() {
         text_len = text_len.saturating_add(message.content.len());
     }
+    if let Some(input_json) = request.payload.input_json.as_ref() {
+        text_len = text_len.saturating_add(json_text_len(input_json));
+    }
     let input_tokens = ((text_len as f64) / 4.0).ceil().max(1.0) as u64;
     let output_tokens = request
         .payload
-        .options
+        .input_json
         .as_ref()
-        .and_then(|value| value.get("max_tokens").and_then(Value::as_u64))
+        .and_then(|value| {
+            value
+                .get("max_output_tokens")
+                .and_then(Value::as_u64)
+                .or_else(|| value.get("max_tokens").and_then(Value::as_u64))
+        })
+        .or_else(|| {
+            request
+                .payload
+                .options
+                .as_ref()
+                .and_then(|value| value.get("max_output_tokens").and_then(Value::as_u64))
+        })
+        .or_else(|| {
+            request
+                .payload
+                .options
+                .as_ref()
+                .and_then(|value| value.get("max_tokens").and_then(Value::as_u64))
+        })
         .unwrap_or(1024)
         .max(1);
     (input_tokens, output_tokens)
+}
+
+fn json_text_len(value: &Value) -> usize {
+    match value {
+        Value::String(text) => text.len(),
+        Value::Array(items) => items.iter().map(json_text_len).sum(),
+        Value::Object(map) => map.values().map(json_text_len).sum(),
+        _ => 0,
+    }
 }
 
 fn default_global_session_config() -> SessionConfig {
@@ -1595,7 +1702,7 @@ pub fn llm_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec
 
 pub fn image_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec<String> {
     let driver_mount = format!(
-        "image.txt2image.{}",
+        "image.txt2img.{}",
         provider_driver
             .trim()
             .replace("google-", "")
@@ -1604,11 +1711,11 @@ pub fn image_logical_mounts(provider_driver: &str, provider_model_id: &str) -> V
     let mut mounts = vec![driver_mount];
     let lowered = provider_model_id.to_ascii_lowercase();
     if lowered.contains("gpt") {
-        mounts.push("image.txt2image.gpt_image".to_string());
+        mounts.push("image.txt2img.gpt_image".to_string());
     } else if lowered.contains("dall-e") {
-        mounts.push("image.txt2image.dalle".to_string());
+        mounts.push("image.txt2img.dalle".to_string());
     } else if lowered.contains("gemini") || lowered.contains("gimini") {
-        mounts.push("image.txt2image.gemini".to_string());
+        mounts.push("image.txt2img.gemini".to_string());
     }
     mounts
 }
@@ -1855,19 +1962,26 @@ impl AIComputeCenter {
     fn route_request(
         &self,
         tenant_id: &str,
+        method: &str,
         request: &AiMethodRequest,
         route_cfg: &RouteConfig,
         request_id: &str,
     ) -> std::result::Result<RouteDecision, RPCErrors> {
-        let api_type = api_type_for_capability(&request.capability).ok_or_else(|| {
+        let api_type = api_type_for_method(method).ok_or_else(|| {
             reason_error(
-                "unsupported_capability",
-                format!(
-                    "capability '{:?}' is not supported by model router",
-                    request.capability
-                ),
+                "invalid_method",
+                format!("method '{}' is not supported by model router", method),
             )
         })?;
+        if capability_for_method(method).as_ref() != Some(&request.capability) {
+            return Err(reason_error(
+                "invalid_request",
+                format!(
+                    "method '{}' does not match capability '{:?}'",
+                    method, request.capability
+                ),
+            ));
+        }
         if let Err(err) = self.inventory_refresh_scheduler.refresh_once() {
             warn!(
                 "aicc.model_registry.refresh_before_route_failed err={}",
@@ -2196,11 +2310,26 @@ impl AIComputeCenter {
         request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+        self.complete_with_method(
+            default_method_for_capability(&request.capability),
+            request,
+            rpc_ctx,
+        )
+        .await
+    }
+
+    pub async fn complete_with_method(
+        &self,
+        method: &str,
+        request: AiMethodRequest,
+        rpc_ctx: RPCContext,
+    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
         let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
         info!(
-            "aicc.complete received: tenant={} caller_app={:?} capability={:?} model_alias={} idempotency_key={:?}",
+            "aicc.complete received: tenant={} caller_app={:?} method={} capability={:?} model_alias={} idempotency_key={:?}",
             invoke_ctx.tenant_id,
             invoke_ctx.caller_app_id,
+            method,
             request.capability,
             request.model.alias,
             request.idempotency_key
@@ -2232,7 +2361,7 @@ impl AIComputeCenter {
             ));
         }
 
-        let resolved = match self.resource_resolver.resolve(&invoke_ctx, &request).await {
+        let mut resolved = match self.resource_resolver.resolve(&invoke_ctx, &request).await {
             Ok(result) => result,
             Err(error) => {
                 self.emit_task_error(
@@ -2250,6 +2379,7 @@ impl AIComputeCenter {
                 ));
             }
         };
+        resolved.method = method.to_string();
 
         let route_cfg = self
             .route_cfg
@@ -2271,6 +2401,7 @@ impl AIComputeCenter {
 
         let decision = match self.route_request(
             invoke_ctx.tenant_id.as_str(),
+            method,
             &request,
             &route_cfg,
             external_task_id.as_str(),
@@ -2880,8 +3011,7 @@ impl AiccHandler for AIComputeCenter {
         request: AiMethodRequest,
         ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let _ = method;
-        self.complete(request, ctx).await
+        self.complete_with_method(method, request, ctx).await
     }
 
     async fn handle_cancel(

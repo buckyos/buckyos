@@ -74,20 +74,73 @@ pub enum ApiType {
     LlmChat,
     #[serde(rename = "llm.completion")]
     LlmCompletion,
-    #[serde(rename = "image.txt2image")]
+    #[serde(rename = "image.txt2img")]
     ImageTextToImage,
-    #[serde(rename = "image.img2image")]
+    #[serde(rename = "image.img2img")]
     ImageToImage,
-    #[serde(rename = "embedding")]
+    #[serde(rename = "embedding.text")]
     Embedding,
+    #[serde(rename = "embedding.multimodal")]
+    EmbeddingMultimodal,
+    #[serde(rename = "rerank")]
+    Rerank,
+    #[serde(rename = "image.inpaint")]
+    ImageInpaint,
+    #[serde(rename = "image.upscale")]
+    ImageUpscale,
+    #[serde(rename = "image.bg_remove")]
+    ImageBgRemove,
+    #[serde(rename = "vision.ocr")]
+    VisionOcr,
+    #[serde(rename = "vision.caption")]
+    VisionCaption,
+    #[serde(rename = "vision.detect")]
+    VisionDetect,
+    #[serde(rename = "vision.segment")]
+    VisionSegment,
+    #[serde(rename = "audio.tts")]
+    AudioTts,
+    #[serde(rename = "audio.asr")]
+    AudioAsr,
+    #[serde(rename = "audio.music")]
+    AudioMusic,
+    #[serde(rename = "audio.enhance")]
+    AudioEnhance,
+    #[serde(rename = "video.txt2video")]
+    VideoTextToVideo,
+    #[serde(rename = "video.img2video")]
+    VideoImageToVideo,
+    #[serde(rename = "video.video2video")]
+    VideoToVideo,
+    #[serde(rename = "video.extend")]
+    VideoExtend,
+    #[serde(rename = "video.upscale")]
+    VideoUpscale,
+    #[serde(rename = "agent.computer_use")]
+    AgentComputerUse,
 }
 
 impl ApiType {
     pub fn namespace(&self) -> &'static str {
         match self {
             Self::LlmChat | Self::LlmCompletion => "llm",
-            Self::ImageTextToImage | Self::ImageToImage => "image",
-            Self::Embedding => "embedding",
+            Self::Embedding | Self::EmbeddingMultimodal => "embedding",
+            Self::Rerank => "rerank",
+            Self::ImageTextToImage
+            | Self::ImageToImage
+            | Self::ImageInpaint
+            | Self::ImageUpscale
+            | Self::ImageBgRemove => "image",
+            Self::VisionOcr | Self::VisionCaption | Self::VisionDetect | Self::VisionSegment => {
+                "vision"
+            }
+            Self::AudioTts | Self::AudioAsr | Self::AudioMusic | Self::AudioEnhance => "audio",
+            Self::VideoTextToVideo
+            | Self::VideoImageToVideo
+            | Self::VideoToVideo
+            | Self::VideoExtend
+            | Self::VideoUpscale => "video",
+            Self::AgentComputerUse => "agent",
         }
     }
 }

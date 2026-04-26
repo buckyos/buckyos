@@ -87,6 +87,7 @@ fn convert_internal_tool(tool: &Map<String, Value>, idx: usize) -> Result<Value,
 
     let parameters = tool
         .get("args_schema")
+        .or_else(|| tool.get("args_json_schema"))
         .cloned()
         .unwrap_or_else(default_tool_parameters);
     if !parameters.is_object() {
@@ -135,6 +136,7 @@ fn normalize_openai_function_tool(
                 function_obj.get("description").cloned(),
                 function_obj
                     .get("parameters")
+                    .or_else(|| function_obj.get("args_json_schema"))
                     .cloned()
                     .unwrap_or_else(default_tool_parameters),
                 function_obj
@@ -154,6 +156,7 @@ fn normalize_openai_function_tool(
                 raw_name,
                 tool.get("description").cloned(),
                 tool.get("parameters")
+                    .or_else(|| tool.get("args_json_schema"))
                     .cloned()
                     .unwrap_or_else(default_tool_parameters),
                 tool.get("strict").cloned(),
