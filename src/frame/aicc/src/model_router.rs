@@ -605,8 +605,8 @@ mod tests {
                             LogicalNode {
                                 items: Some(
                                     [
-                                        ("gpt5".to_string(), ModelItem::new("llm.gpt5", 3.0)),
-                                        ("claude".to_string(), ModelItem::new("llm.claude", 2.0)),
+                                        ("gpt-pro".to_string(), ModelItem::new("llm.gpt-pro", 3.0)),
+                                        ("opus".to_string(), ModelItem::new("llm.opus", 3.0)),
                                     ]
                                     .into_iter()
                                     .collect(),

@@ -42,11 +42,31 @@ const LLM_TEMPLATES: &[Level2Template] = &[
     Level2Template {
         path: "llm.plan",
         items: &[
-            Level2Item { name: "opus", target: "llm.opus", weight: 2.5 },
-            Level2Item { name: "gpt_pro", target: "llm.gpt-pro", weight: 2.5 },
-            Level2Item { name: "gemini", target: "llm.gemini-pro", weight: 2.4 },
-            Level2Item { name: "qwen_max", target: "llm.qwen-max", weight: 1.8 },
-            Level2Item { name: "deepseek", target: "llm.deepseek-pro", weight: 1.5 },
+            Level2Item {
+                name: "opus",
+                target: "llm.opus",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "gpt-pro",
+                target: "llm.gpt-pro",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "gemini",
+                target: "llm.gemini-pro",
+                weight: 2.4,
+            },
+            Level2Item {
+                name: "qwen_max",
+                target: "llm.qwen-max",
+                weight: 1.8,
+            },
+            Level2Item {
+                name: "deepseek",
+                target: "llm.deepseek-pro",
+                weight: 1.5,
+            },
         ],
         fallback: FallbackPreset::Parent,
         profile: Some(SchedulerProfile::QualityFirst),
@@ -54,13 +74,41 @@ const LLM_TEMPLATES: &[Level2Template] = &[
     Level2Template {
         path: "llm.code",
         items: &[
-            Level2Item { name: "opus", target: "llm.opus", weight: 2.5 },
-            Level2Item { name: "gpt_pro", target: "llm.gpt-pro", weight: 2.5 },
-            Level2Item { name: "gemini", target: "llm.gemini-pro", weight: 2.4 },
-            Level2Item { name: "qwen_coder", target: "llm.qwen-coder", weight: 2.0 },
-            Level2Item { name: "kimi", target: "llm.kimi", weight: 2.0 },
-            Level2Item { name: "glm", target: "llm.glm", weight: 1.5 },
-            Level2Item { name: "deepseek", target: "llm.deepseek-pro", weight: 1.5 },
+            Level2Item {
+                name: "opus",
+                target: "llm.opus",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "gpt-pro",
+                target: "llm.gpt-pro",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "gemini",
+                target: "llm.gemini-pro",
+                weight: 2.4,
+            },
+            Level2Item {
+                name: "qwen_coder",
+                target: "llm.qwen-coder",
+                weight: 2.0,
+            },
+            Level2Item {
+                name: "kimi",
+                target: "llm.kimi",
+                weight: 2.0,
+            },
+            Level2Item {
+                name: "glm",
+                target: "llm.glm",
+                weight: 1.5,
+            },
+            Level2Item {
+                name: "deepseek",
+                target: "llm.deepseek-pro",
+                weight: 1.5,
+            },
         ],
         fallback: FallbackPreset::Parent,
         profile: None,
@@ -68,12 +116,36 @@ const LLM_TEMPLATES: &[Level2Template] = &[
     Level2Template {
         path: "llm.swift",
         items: &[
-            Level2Item { name: "haiku", target: "llm.haiku", weight: 2.5 },
-            Level2Item { name: "flash_lite", target: "llm.gemini-flash-lite", weight: 2.5 },
-            Level2Item { name: "gpt_nano", target: "llm.gpt-nano", weight: 2.5 },
-            Level2Item { name: "grok_fast", target: "llm.grok-fast", weight: 2.0 },
-            Level2Item { name: "qwen_small", target: "llm.qwen-small", weight: 2.0 },
-            Level2Item { name: "glm_flash", target: "llm.glm-flash", weight: 1.5 },
+            Level2Item {
+                name: "haiku",
+                target: "llm.haiku",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "flash_lite",
+                target: "llm.gemini-flash-lite",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "gpt_nano",
+                target: "llm.gpt-nano",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "grok_fast",
+                target: "llm.grok-fast",
+                weight: 2.0,
+            },
+            Level2Item {
+                name: "qwen_small",
+                target: "llm.qwen-small",
+                weight: 2.0,
+            },
+            Level2Item {
+                name: "glm_flash",
+                target: "llm.glm-flash",
+                weight: 1.5,
+            },
         ],
         fallback: FallbackPreset::Parent,
         profile: Some(SchedulerProfile::LatencyFirst),
@@ -86,9 +158,21 @@ const LLM_TEMPLATES: &[Level2Template] = &[
                 target: "llm.gemini-deepthink",
                 weight: 2.5,
             },
-            Level2Item { name: "opus", target: "llm.opus", weight: 2.5 },
-            Level2Item { name: "gpt_pro", target: "llm.gpt-pro", weight: 2.5 },
-            Level2Item { name: "grok_heavy", target: "llm.grok-heavy", weight: 2.0 },
+            Level2Item {
+                name: "opus",
+                target: "llm.opus",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "gpt_pro",
+                target: "llm.gpt-pro",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "grok_heavy",
+                target: "llm.grok-heavy",
+                weight: 2.0,
+            },
             Level2Item {
                 name: "kimi_thinking",
                 target: "llm.kimi-thinking",
@@ -106,10 +190,26 @@ const LLM_TEMPLATES: &[Level2Template] = &[
     Level2Template {
         path: "llm.vision",
         items: &[
-            Level2Item { name: "opus", target: "llm.opus", weight: 2.5 },
-            Level2Item { name: "gpt", target: "llm.gpt", weight: 2.5 },
-            Level2Item { name: "gemini", target: "llm.gemini-pro", weight: 2.5 },
-            Level2Item { name: "qwen", target: "llm.qwen-max", weight: 1.0 },
+            Level2Item {
+                name: "opus",
+                target: "llm.opus",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "gpt",
+                target: "llm.gpt",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "gemini",
+                target: "llm.gemini-pro",
+                weight: 2.5,
+            },
+            Level2Item {
+                name: "qwen",
+                target: "llm.qwen-max",
+                weight: 1.0,
+            },
         ],
         fallback: FallbackPreset::Parent,
         profile: None,
@@ -117,9 +217,21 @@ const LLM_TEMPLATES: &[Level2Template] = &[
     Level2Template {
         path: "llm.long",
         items: &[
-            Level2Item { name: "gemini", target: "llm.gemini-pro", weight: 2.0 },
-            Level2Item { name: "qwen", target: "llm.qwen-max", weight: 2.0 },
-            Level2Item { name: "sonnet", target: "llm.sonnet", weight: 1.5 },
+            Level2Item {
+                name: "gemini",
+                target: "llm.gemini-pro",
+                weight: 2.0,
+            },
+            Level2Item {
+                name: "qwen",
+                target: "llm.qwen-max",
+                weight: 2.0,
+            },
+            Level2Item {
+                name: "sonnet",
+                target: "llm.sonnet",
+                weight: 1.5,
+            },
         ],
         fallback: FallbackPreset::Parent,
         profile: None,
@@ -127,10 +239,26 @@ const LLM_TEMPLATES: &[Level2Template] = &[
     Level2Template {
         path: "llm.fallback",
         items: &[
-            Level2Item { name: "haiku", target: "llm.haiku", weight: 1.0 },
-            Level2Item { name: "flash_lite", target: "llm.gemini-flash-lite", weight: 1.0 },
-            Level2Item { name: "gpt_nano", target: "llm.gpt-nano", weight: 1.0 },
-            Level2Item { name: "qwen_small", target: "llm.qwen-small", weight: 1.0 },
+            Level2Item {
+                name: "haiku",
+                target: "llm.haiku",
+                weight: 1.0,
+            },
+            Level2Item {
+                name: "flash_lite",
+                target: "llm.gemini-flash-lite",
+                weight: 1.0,
+            },
+            Level2Item {
+                name: "gpt_nano",
+                target: "llm.gpt-nano",
+                weight: 1.0,
+            },
+            Level2Item {
+                name: "qwen_small",
+                target: "llm.qwen-small",
+                weight: 1.0,
+            },
         ],
         fallback: FallbackPreset::Disabled,
         profile: None,
@@ -153,7 +281,9 @@ fn descend_or_create<'a>(
     path: &str,
 ) -> &'a mut LogicalNode {
     let mut segments = path.split('.').filter(|seg| !seg.is_empty());
-    let first = segments.next().expect("path must have at least one segment");
+    let first = segments
+        .next()
+        .expect("path must have at least one segment");
     let mut node = root
         .entry(first.to_string())
         .or_insert_with(LogicalNode::default);
@@ -210,11 +340,7 @@ pub fn level2_node_count(config: &SessionConfig) -> usize {
         }
         count
     }
-    config
-        .logical_tree
-        .values()
-        .map(walk)
-        .sum::<usize>()
+    config.logical_tree.values().map(walk).sum::<usize>()
 }
 
 #[cfg(test)]

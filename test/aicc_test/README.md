@@ -32,6 +32,8 @@ cd test/aicc_test
 pnpm test
 ```
 
+smoke 会按 run 写入 `reports/aicc_smoke/<runId>/`，每个 case 一个子目录，包含 `input.json`、`response.json`、异步任务的 `task.json`（如有）和 `output.json`；总览写入 `summary.json`。如果响应里有 artifacts，URL 会下载到 case 的 `artifacts/` 目录，base64 会解码保存到同一目录。可用 `AICC_REPORT_DIR` 覆盖根目录。
+
 ## 打印模型目录树
 
 `test_list_models.ts` 调用 aicc 服务的 `models.list` RPC，

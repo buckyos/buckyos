@@ -76,3 +76,4 @@ test/aicc_test/rust_runner/targettest/deno.lock
 .claude/
 uv.lock
 test/aicc_test/deno.lock
+test/aicc_test/reports/*

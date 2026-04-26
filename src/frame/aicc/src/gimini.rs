@@ -1170,6 +1170,30 @@ impl GoogleGiminiProvider {
                 .and_then(|value| value.as_array())
             {
                 for part in parts.iter() {
+                    if let Some(file_data) =
+                        part.get("fileData").and_then(|value| value.as_object())
+                    {
+                        let Some(uri) = file_data.get("fileUri").and_then(|value| value.as_str())
+                        else {
+                            continue;
+                        };
+                        let mime = file_data
+                            .get("mimeType")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("image/png");
+                        let seq = artifacts.len() + 1;
+                        artifacts.push(AiArtifact {
+                            name: format!("image_{}", seq),
+                            resource: ResourceRef::Url {
+                                url: uri.to_string(),
+                                mime_hint: Some(mime.to_string()),
+                            },
+                            mime: Some(mime.to_string()),
+                            metadata: None,
+                        });
+                        continue;
+                    }
+
                     if let Some(inline_data) =
                         part.get("inlineData").and_then(|value| value.as_object())
                     {
@@ -1195,30 +1219,6 @@ impl GoogleGiminiProvider {
                             resource: ResourceRef::Base64 {
                                 mime: mime.to_string(),
                                 data_base64: data_base64.to_string(),
-                            },
-                            mime: Some(mime.to_string()),
-                            metadata: None,
-                        });
-                        continue;
-                    }
-
-                    if let Some(file_data) =
-                        part.get("fileData").and_then(|value| value.as_object())
-                    {
-                        let Some(uri) = file_data.get("fileUri").and_then(|value| value.as_str())
-                        else {
-                            continue;
-                        };
-                        let mime = file_data
-                            .get("mimeType")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("image/png");
-                        let seq = artifacts.len() + 1;
-                        artifacts.push(AiArtifact {
-                            name: format!("image_{}", seq),
-                            resource: ResourceRef::Url {
-                                url: uri.to_string(),
-                                mime_hint: Some(mime.to_string()),
                             },
                             mime: Some(mime.to_string()),
                             metadata: None,
@@ -2303,8 +2303,7 @@ fn classify_gimini_model(id: &str, methods: &HashSet<String>) -> Option<GiminiMo
     if is_text2image_model_name(id) {
         return Some(GiminiModelKind::Image);
     }
-    if lowered.starts_with("gemini")
-        && (methods.contains("generatecontent") || methods.is_empty())
+    if lowered.starts_with("gemini") && (methods.contains("generatecontent") || methods.is_empty())
     {
         return Some(GiminiModelKind::Llm);
     }
