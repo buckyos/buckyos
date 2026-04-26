@@ -13,7 +13,7 @@
   - SN AI Provider
   - Gemini
   - Claude
-  - 都会执行 `workflow_complex_scenario_protocol_mix`（复杂 DAG + JSON 输出 + stream）
+  - 都会执行 `workflow_complex_scenario_protocol_mix`（复杂 DAG + JSON 输出 + v0.2 `llm.chat`）
 
 ## 配置文件
 
@@ -25,7 +25,16 @@
 - `sn-ai-provider` 始终执行（不需要 api-key）
 - `openai/gemini/claude` 未提供 key 时，该 provider 的用例会显示为 `skipped`
 
-## 运行
+## 运行 smoke
+
+```bash
+cd test/aicc_test
+pnpm test
+```
+
+smoke 用例会通过 `../test_helpers/buckyos_client.ts` 的 `initTestRuntime()` 初始化标准 AppClient runtime，然后从 runtime 获取 AICC 和 task-manager client。
+
+## 运行 remote runner
 
 ```bash
 cd test/aicc_test

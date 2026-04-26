@@ -75,3 +75,4 @@ aicc_remote_runner.toml
 test/aicc_test/rust_runner/targettest/deno.lock
 .claude/
 uv.lock
+test/aicc_test/deno.lock

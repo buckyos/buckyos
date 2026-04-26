@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "smoke": "node --experimental-strip-types aicc_smoke.ts",
+    "smoke": "deno run --allow-net --allow-read --allow-env --unsafely-ignore-certificate-errors aicc_smoke.ts",
     "remote": "node --experimental-strip-types aicc_remote_runner.ts",
-    "test": "node --experimental-strip-types aicc_remote_runner.ts"
+    "test": "pnpm run smoke"
   },
   "dependencies": {
     "buckyos": "github:buckyos/buckyos-websdk#beta2.2"

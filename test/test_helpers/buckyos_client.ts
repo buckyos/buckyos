@@ -110,7 +110,7 @@ export async function initTestRuntime(): Promise<TestRuntime> {
     defaultProtocol: "https://",
     privateKeySearchPaths,
     autoRenew: false,
-  });
+  } as unknown as Parameters<typeof buckyos.initBuckyOS>[1]);
 
   // 等待本地签名的 JWT 时间生效
   await sleep(1100);
