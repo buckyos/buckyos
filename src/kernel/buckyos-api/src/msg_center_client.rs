@@ -20,7 +20,7 @@ pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
 pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
-pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 1;
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 2;
 
 /// Sqlite DDL for the msg-center database. Covers mailbox records, the
 /// per-owner message-id index, and contact-manager tables. All tables carry an
@@ -85,6 +85,75 @@ CREATE TABLE IF NOT EXISTS group_subscribers (
 
 CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_key);
 CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owner_key);
+
+CREATE TABLE IF NOT EXISTS groups (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    doc_json       TEXT NOT NULL,
+    settings_json  TEXT NOT NULL,
+    is_hosted      INTEGER NOT NULL DEFAULT 1,
+    updated_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did)
+);
+CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(host_owner_key);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    member_did     TEXT NOT NULL,
+    role           TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    member_kind    TEXT NOT NULL,
+    record_json    TEXT NOT NULL,
+    updated_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, member_did)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_group
+    ON group_members(host_owner_key, group_did, state);
+CREATE INDEX IF NOT EXISTS idx_group_members_member
+    ON group_members(host_owner_key, member_did);
+
+CREATE TABLE IF NOT EXISTS group_member_proofs (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    proof_id       TEXT NOT NULL,
+    member_did     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    issued_at_ms   INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, proof_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_member_proofs_member
+    ON group_member_proofs(host_owner_key, group_did, member_did);
+
+CREATE TABLE IF NOT EXISTS group_subgroups (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    subgroup_id    TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    updated_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, subgroup_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_events (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    event_id       TEXT NOT NULL,
+    event_type     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    created_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_events_group_time
+    ON group_events(host_owner_key, group_did, created_at_ms DESC, event_id DESC);
+
+CREATE TABLE IF NOT EXISTS group_expansion_snapshots (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    operation_id   TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    created_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, operation_id)
+);
 "#;
 
 /// Postgres DDL mirroring the sqlite schema above.
@@ -148,6 +217,75 @@ CREATE TABLE IF NOT EXISTS group_subscribers (
 
 CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_key);
 CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owner_key);
+
+CREATE TABLE IF NOT EXISTS groups (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    doc_json       TEXT NOT NULL,
+    settings_json  TEXT NOT NULL,
+    is_hosted      INTEGER NOT NULL DEFAULT 1,
+    updated_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did)
+);
+CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(host_owner_key);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    member_did     TEXT NOT NULL,
+    role           TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    member_kind    TEXT NOT NULL,
+    record_json    TEXT NOT NULL,
+    updated_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, member_did)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_group
+    ON group_members(host_owner_key, group_did, state);
+CREATE INDEX IF NOT EXISTS idx_group_members_member
+    ON group_members(host_owner_key, member_did);
+
+CREATE TABLE IF NOT EXISTS group_member_proofs (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    proof_id       TEXT NOT NULL,
+    member_did     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    issued_at_ms   BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, proof_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_member_proofs_member
+    ON group_member_proofs(host_owner_key, group_did, member_did);
+
+CREATE TABLE IF NOT EXISTS group_subgroups (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    subgroup_id    TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    updated_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, subgroup_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_events (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    event_id       TEXT NOT NULL,
+    event_type     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    created_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_events_group_time
+    ON group_events(host_owner_key, group_did, created_at_ms DESC, event_id DESC);
+
+CREATE TABLE IF NOT EXISTS group_expansion_snapshots (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    operation_id   TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    created_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, operation_id)
+);
 "#;
 
 /// Default rdb-instance config for the msg-center service. The scheduler drops
@@ -194,6 +332,28 @@ const METHOD_CONTACT_GET_CONTACT: &str = "contact.get_contact";
 const METHOD_CONTACT_LIST_CONTACTS: &str = "contact.list_contacts";
 const METHOD_CONTACT_GET_GROUP_SUBSCRIBERS: &str = "contact.get_group_subscribers";
 const METHOD_CONTACT_SET_GROUP_SUBSCRIBERS: &str = "contact.set_group_subscribers";
+
+// Self-host group methods (see doc/message_hub/Self-Host-Group.md, section 7.1).
+const METHOD_GROUP_CREATE: &str = "group.create";
+const METHOD_GROUP_GET_DOC: &str = "group.get_doc";
+const METHOD_GROUP_UPDATE_PROFILE: &str = "group.update_profile";
+const METHOD_GROUP_INVITE_MEMBER: &str = "group.invite_member";
+const METHOD_GROUP_SUBMIT_MEMBER_PROOF: &str = "group.submit_member_proof";
+const METHOD_GROUP_REQUEST_JOIN: &str = "group.request_join";
+const METHOD_GROUP_APPROVE_MEMBER: &str = "group.approve_member";
+const METHOD_GROUP_REJECT_MEMBER: &str = "group.reject_member";
+const METHOD_GROUP_REMOVE_MEMBER: &str = "group.remove_member";
+const METHOD_GROUP_UPDATE_MEMBER_ROLE: &str = "group.update_member_role";
+const METHOD_GROUP_LIST_MEMBERS: &str = "group.list_members";
+const METHOD_GROUP_CREATE_SUBGROUP: &str = "group.create_subgroup";
+const METHOD_GROUP_UPDATE_SUBGROUP: &str = "group.update_subgroup";
+const METHOD_GROUP_LIST_SUBGROUPS: &str = "group.list_subgroups";
+const METHOD_GROUP_UPDATE_COLLECTION_POLICY: &str = "group.update_collection_policy";
+const METHOD_GROUP_UPDATE_ATTRIBUTION_POLICY: &str = "group.update_attribution_policy";
+const METHOD_GROUP_EXPAND_MEMBERS: &str = "group.expand_members";
+const METHOD_GROUP_LIST_BY_MEMBER: &str = "group.list_by_member";
+const METHOD_GROUP_LIST_PARENTS: &str = "group.list_parents";
+const METHOD_GROUP_CHECK_ACCESS: &str = "group.check_access";
 
 fn parse_from_json<T: DeserializeOwned>(
     value: Value,
@@ -1908,6 +2068,372 @@ impl MsgCenterClient {
         }
     }
 
+    pub async fn group_create(
+        &self,
+        req: crate::group_mgr::GroupCreateReq,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler.handle_group_create(req, RPCContext::default()).await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupCreateReq")?;
+                let result = client.call(METHOD_GROUP_CREATE, req_json).await?;
+                parse_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_get_doc(
+        &self,
+        req: crate::group_mgr::GroupGetDocReq,
+    ) -> std::result::Result<Option<crate::group_mgr::GroupDoc>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_get_doc(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupGetDocReq")?;
+                let result = client.call(METHOD_GROUP_GET_DOC, req_json).await?;
+                parse_optional_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_update_profile(
+        &self,
+        req: crate::group_mgr::GroupUpdateProfileReq,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_profile(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateProfileReq")?;
+                let result = client.call(METHOD_GROUP_UPDATE_PROFILE, req_json).await?;
+                parse_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_invite_member(
+        &self,
+        req: crate::group_mgr::GroupInviteMemberReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_invite_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupInviteMemberReq")?;
+                let result = client.call(METHOD_GROUP_INVITE_MEMBER, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_submit_member_proof(
+        &self,
+        req: crate::group_mgr::GroupSubmitMemberProofReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_submit_member_proof(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupSubmitMemberProofReq")?;
+                let result = client
+                    .call(METHOD_GROUP_SUBMIT_MEMBER_PROOF, req_json)
+                    .await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_request_join(
+        &self,
+        req: crate::group_mgr::GroupRequestJoinReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_request_join(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupRequestJoinReq")?;
+                let result = client.call(METHOD_GROUP_REQUEST_JOIN, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_approve_member(
+        &self,
+        req: crate::group_mgr::GroupApproveMemberReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_approve_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupApproveMemberReq")?;
+                let result = client.call(METHOD_GROUP_APPROVE_MEMBER, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_reject_member(
+        &self,
+        req: crate::group_mgr::GroupRejectMemberReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_reject_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupRejectMemberReq")?;
+                let result = client.call(METHOD_GROUP_REJECT_MEMBER, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_remove_member(
+        &self,
+        req: crate::group_mgr::GroupRemoveMemberReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_remove_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupRemoveMemberReq")?;
+                let result = client.call(METHOD_GROUP_REMOVE_MEMBER, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_update_member_role(
+        &self,
+        req: crate::group_mgr::GroupUpdateMemberRoleReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_member_role(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateMemberRoleReq")?;
+                let result = client
+                    .call(METHOD_GROUP_UPDATE_MEMBER_ROLE, req_json)
+                    .await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_list_members(
+        &self,
+        req: crate::group_mgr::GroupListMembersReq,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupMemberRecord>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_list_members(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupListMembersReq")?;
+                let result = client.call(METHOD_GROUP_LIST_MEMBERS, req_json).await?;
+                parse_rpc_response(result, "Vec<GroupMemberRecord>")
+            }
+        }
+    }
+
+    pub async fn group_create_subgroup(
+        &self,
+        req: crate::group_mgr::GroupCreateSubgroupReq,
+    ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_create_subgroup(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupCreateSubgroupReq")?;
+                let result = client.call(METHOD_GROUP_CREATE_SUBGROUP, req_json).await?;
+                parse_rpc_response(result, "GroupSubgroup")
+            }
+        }
+    }
+
+    pub async fn group_update_subgroup(
+        &self,
+        req: crate::group_mgr::GroupUpdateSubgroupReq,
+    ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_subgroup(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateSubgroupReq")?;
+                let result = client.call(METHOD_GROUP_UPDATE_SUBGROUP, req_json).await?;
+                parse_rpc_response(result, "GroupSubgroup")
+            }
+        }
+    }
+
+    pub async fn group_list_subgroups(
+        &self,
+        req: crate::group_mgr::GroupListSubgroupsReq,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSubgroup>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_list_subgroups(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupListSubgroupsReq")?;
+                let result = client.call(METHOD_GROUP_LIST_SUBGROUPS, req_json).await?;
+                parse_rpc_response(result, "Vec<GroupSubgroup>")
+            }
+        }
+    }
+
+    pub async fn group_update_collection_policy(
+        &self,
+        req: crate::group_mgr::GroupUpdateCollectionPolicyReq,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_collection_policy(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateCollectionPolicyReq")?;
+                let result = client
+                    .call(METHOD_GROUP_UPDATE_COLLECTION_POLICY, req_json)
+                    .await?;
+                parse_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_update_attribution_policy(
+        &self,
+        req: crate::group_mgr::GroupUpdateAttributionPolicyReq,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_attribution_policy(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateAttributionPolicyReq")?;
+                let result = client
+                    .call(METHOD_GROUP_UPDATE_ATTRIBUTION_POLICY, req_json)
+                    .await?;
+                parse_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_expand_members(
+        &self,
+        req: crate::group_mgr::GroupExpandMembersReq,
+    ) -> std::result::Result<crate::group_mgr::GroupExpansionSnapshot, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_expand_members(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupExpandMembersReq")?;
+                let result = client.call(METHOD_GROUP_EXPAND_MEMBERS, req_json).await?;
+                parse_rpc_response(result, "GroupExpansionSnapshot")
+            }
+        }
+    }
+
+    pub async fn group_list_by_member(
+        &self,
+        req: crate::group_mgr::GroupListByMemberReq,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSummary>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_list_by_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupListByMemberReq")?;
+                let result = client.call(METHOD_GROUP_LIST_BY_MEMBER, req_json).await?;
+                parse_rpc_response(result, "Vec<GroupSummary>")
+            }
+        }
+    }
+
+    pub async fn group_list_parents(
+        &self,
+        req: crate::group_mgr::GroupListParentsReq,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSummary>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_list_parents(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupListParentsReq")?;
+                let result = client.call(METHOD_GROUP_LIST_PARENTS, req_json).await?;
+                parse_rpc_response(result, "Vec<GroupSummary>")
+            }
+        }
+    }
+
+    pub async fn group_check_access(
+        &self,
+        req: crate::group_mgr::GroupCheckAccessReq,
+    ) -> std::result::Result<crate::group_mgr::GroupAccessDecision, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_check_access(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupCheckAccessReq")?;
+                let result = client.call(METHOD_GROUP_CHECK_ACCESS, req_json).await?;
+                parse_rpc_response(result, "GroupAccessDecision")
+            }
+        }
+    }
+
     pub async fn set_group_subscribers(
         &self,
         group_id: DID,
@@ -2136,6 +2662,181 @@ pub trait MsgCenterHandler: Send + Sync {
         contact_mgr_owner: Option<DID>,
         ctx: RPCContext,
     ) -> std::result::Result<SetGroupSubscribersResult, RPCErrors>;
+
+    // -------------------------------------------------------------------
+    // Self-host group APIs (see doc/message_hub/Self-Host-Group.md §7).
+    //
+    // Default impls return `UnknownMethod` so existing handlers (tests,
+    // alternate backends) keep compiling without picking up group state.
+    // -------------------------------------------------------------------
+
+    async fn handle_group_create(
+        &self,
+        _req: crate::group_mgr::GroupCreateReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.create".to_string()))
+    }
+
+    async fn handle_group_get_doc(
+        &self,
+        _req: crate::group_mgr::GroupGetDocReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<crate::group_mgr::GroupDoc>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.get_doc".to_string()))
+    }
+
+    async fn handle_group_update_profile(
+        &self,
+        _req: crate::group_mgr::GroupUpdateProfileReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.update_profile".to_string()))
+    }
+
+    async fn handle_group_invite_member(
+        &self,
+        _req: crate::group_mgr::GroupInviteMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.invite_member".to_string()))
+    }
+
+    async fn handle_group_submit_member_proof(
+        &self,
+        _req: crate::group_mgr::GroupSubmitMemberProofReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.submit_member_proof".to_string(),
+        ))
+    }
+
+    async fn handle_group_request_join(
+        &self,
+        _req: crate::group_mgr::GroupRequestJoinReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.request_join".to_string()))
+    }
+
+    async fn handle_group_approve_member(
+        &self,
+        _req: crate::group_mgr::GroupApproveMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.approve_member".to_string()))
+    }
+
+    async fn handle_group_reject_member(
+        &self,
+        _req: crate::group_mgr::GroupRejectMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.reject_member".to_string()))
+    }
+
+    async fn handle_group_remove_member(
+        &self,
+        _req: crate::group_mgr::GroupRemoveMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.remove_member".to_string()))
+    }
+
+    async fn handle_group_update_member_role(
+        &self,
+        _req: crate::group_mgr::GroupUpdateMemberRoleReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.update_member_role".to_string(),
+        ))
+    }
+
+    async fn handle_group_list_members(
+        &self,
+        _req: crate::group_mgr::GroupListMembersReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupMemberRecord>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.list_members".to_string()))
+    }
+
+    async fn handle_group_create_subgroup(
+        &self,
+        _req: crate::group_mgr::GroupCreateSubgroupReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.create_subgroup".to_string()))
+    }
+
+    async fn handle_group_update_subgroup(
+        &self,
+        _req: crate::group_mgr::GroupUpdateSubgroupReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.update_subgroup".to_string()))
+    }
+
+    async fn handle_group_list_subgroups(
+        &self,
+        _req: crate::group_mgr::GroupListSubgroupsReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSubgroup>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.list_subgroups".to_string()))
+    }
+
+    async fn handle_group_update_collection_policy(
+        &self,
+        _req: crate::group_mgr::GroupUpdateCollectionPolicyReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.update_collection_policy".to_string(),
+        ))
+    }
+
+    async fn handle_group_update_attribution_policy(
+        &self,
+        _req: crate::group_mgr::GroupUpdateAttributionPolicyReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.update_attribution_policy".to_string(),
+        ))
+    }
+
+    async fn handle_group_expand_members(
+        &self,
+        _req: crate::group_mgr::GroupExpandMembersReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupExpansionSnapshot, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.expand_members".to_string()))
+    }
+
+    async fn handle_group_list_by_member(
+        &self,
+        _req: crate::group_mgr::GroupListByMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSummary>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.list_by_member".to_string()))
+    }
+
+    async fn handle_group_list_parents(
+        &self,
+        _req: crate::group_mgr::GroupListParentsReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSummary>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.list_parents".to_string()))
+    }
+
+    async fn handle_group_check_access(
+        &self,
+        _req: crate::group_mgr::GroupCheckAccessReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupAccessDecision, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.check_access".to_string()))
+    }
 }
 
 pub struct MsgCenterServerHandler<T: MsgCenterHandler>(pub T);
@@ -2451,6 +3152,144 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                         ctx,
                     )
                     .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_CREATE => {
+                let parsed: crate::group_mgr::GroupCreateReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupCreateReq")?;
+                let result = self.0.handle_group_create(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_GET_DOC => {
+                let parsed: crate::group_mgr::GroupGetDocReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupGetDocReq")?;
+                let result = self.0.handle_group_get_doc(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_PROFILE => {
+                let parsed: crate::group_mgr::GroupUpdateProfileReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupUpdateProfileReq")?;
+                let result = self.0.handle_group_update_profile(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_INVITE_MEMBER => {
+                let parsed: crate::group_mgr::GroupInviteMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupInviteMemberReq")?;
+                let result = self.0.handle_group_invite_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_SUBMIT_MEMBER_PROOF => {
+                let parsed: crate::group_mgr::GroupSubmitMemberProofReq =
+                    crate::group_mgr::parse_group_request(
+                        req.params,
+                        "GroupSubmitMemberProofReq",
+                    )?;
+                let result = self.0.handle_group_submit_member_proof(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_REQUEST_JOIN => {
+                let parsed: crate::group_mgr::GroupRequestJoinReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupRequestJoinReq")?;
+                let result = self.0.handle_group_request_join(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_APPROVE_MEMBER => {
+                let parsed: crate::group_mgr::GroupApproveMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupApproveMemberReq")?;
+                let result = self.0.handle_group_approve_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_REJECT_MEMBER => {
+                let parsed: crate::group_mgr::GroupRejectMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupRejectMemberReq")?;
+                let result = self.0.handle_group_reject_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_REMOVE_MEMBER => {
+                let parsed: crate::group_mgr::GroupRemoveMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupRemoveMemberReq")?;
+                let result = self.0.handle_group_remove_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_MEMBER_ROLE => {
+                let parsed: crate::group_mgr::GroupUpdateMemberRoleReq =
+                    crate::group_mgr::parse_group_request(
+                        req.params,
+                        "GroupUpdateMemberRoleReq",
+                    )?;
+                let result = self.0.handle_group_update_member_role(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_LIST_MEMBERS => {
+                let parsed: crate::group_mgr::GroupListMembersReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupListMembersReq")?;
+                let result = self.0.handle_group_list_members(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_CREATE_SUBGROUP => {
+                let parsed: crate::group_mgr::GroupCreateSubgroupReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupCreateSubgroupReq")?;
+                let result = self.0.handle_group_create_subgroup(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_SUBGROUP => {
+                let parsed: crate::group_mgr::GroupUpdateSubgroupReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupUpdateSubgroupReq")?;
+                let result = self.0.handle_group_update_subgroup(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_LIST_SUBGROUPS => {
+                let parsed: crate::group_mgr::GroupListSubgroupsReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupListSubgroupsReq")?;
+                let result = self.0.handle_group_list_subgroups(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_COLLECTION_POLICY => {
+                let parsed: crate::group_mgr::GroupUpdateCollectionPolicyReq =
+                    crate::group_mgr::parse_group_request(
+                        req.params,
+                        "GroupUpdateCollectionPolicyReq",
+                    )?;
+                let result = self
+                    .0
+                    .handle_group_update_collection_policy(parsed, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_ATTRIBUTION_POLICY => {
+                let parsed: crate::group_mgr::GroupUpdateAttributionPolicyReq =
+                    crate::group_mgr::parse_group_request(
+                        req.params,
+                        "GroupUpdateAttributionPolicyReq",
+                    )?;
+                let result = self
+                    .0
+                    .handle_group_update_attribution_policy(parsed, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_EXPAND_MEMBERS => {
+                let parsed: crate::group_mgr::GroupExpandMembersReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupExpandMembersReq")?;
+                let result = self.0.handle_group_expand_members(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_LIST_BY_MEMBER => {
+                let parsed: crate::group_mgr::GroupListByMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupListByMemberReq")?;
+                let result = self.0.handle_group_list_by_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_LIST_PARENTS => {
+                let parsed: crate::group_mgr::GroupListParentsReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupListParentsReq")?;
+                let result = self.0.handle_group_list_parents(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_CHECK_ACCESS => {
+                let parsed: crate::group_mgr::GroupCheckAccessReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupCheckAccessReq")?;
+                let result = self.0.handle_group_check_access(parsed, ctx).await?;
                 RPCResult::Success(json!(result))
             }
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),

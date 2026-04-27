@@ -5,6 +5,7 @@ use log::{info, warn};
 
 mod content_mgr_client;
 mod control_panel;
+mod group_mgr;
 mod msg_center_client;
 pub mod msg_queue;
 mod scheduler_client;
@@ -34,6 +35,7 @@ pub use aicc_usage_log::*;
 pub use app_doc::*;
 pub use content_mgr_client::*;
 pub use control_panel::*;
+pub use group_mgr::*;
 pub use msg_center_client::*;
 pub use repo_client::*;
 pub use scheduler_client::*;
