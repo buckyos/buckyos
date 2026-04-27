@@ -31,6 +31,7 @@ use package_lib::*;
 
 use crate::active_server::*;
 use crate::app_mgr::*;
+use crate::finder::{NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
 use crate::kernel_mgr::*;
 use crate::kevent_server::*;
@@ -1444,6 +1445,64 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         info!("Booting OOD {} ...", device_doc.name.as_str());
     } else {
         info!("Booting Node {} ...", device_doc.name.as_str());
+    }
+
+    if is_ood
+        && zone_boot_config
+            .oods
+            .iter()
+            .filter(|ood| ood.node_type.is_ood())
+            .count()
+            > 1
+    {
+        let owner_public_key =
+            DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(|err| {
+                error!("parse owner public key for finder failed! {}", err);
+                String::from("parse owner public key for finder failed!")
+            })?;
+        match NodeFinder::new_for_zone(
+            node_identity.device_doc_jwt.clone(),
+            device_private_key.clone(),
+            zone_boot_config.clone(),
+            owner_public_key,
+        ) {
+            Ok(finder) => {
+                if let Err(err) = finder.run_udp_server().await {
+                    warn!("start OOD finder udp server failed: {}", err);
+                }
+            }
+            Err(err) => {
+                warn!("init OOD finder udp server failed: {}", err);
+            }
+        }
+
+        let owner_public_key =
+            DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(|err| {
+                error!("parse owner public key for finder client failed! {}", err);
+                String::from("parse owner public key for finder client failed!")
+            })?;
+        match NodeFinderClient::new_for_zone(
+            node_identity.device_doc_jwt.clone(),
+            device_private_key.clone(),
+            zone_boot_config.clone(),
+            owner_public_key,
+        ) {
+            Ok(finder_client) => {
+                tokio::spawn(async move {
+                    match finder_client.looking_oods_by_udpv4(3).await {
+                        Ok(nodes) => {
+                            info!("OOD finder discovered {} OOD candidates", nodes.len());
+                        }
+                        Err(err) => {
+                            warn!("OOD finder discovery failed: {}", err);
+                        }
+                    }
+                });
+            }
+            Err(err) => {
+                warn!("init OOD finder client failed: {}", err);
+            }
+        }
     }
 
     unsafe {
