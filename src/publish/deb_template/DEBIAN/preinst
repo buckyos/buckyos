@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 BUCKYOS_ROOT="/opt/buckyos"
-# BEGIN AUTO-GENERATED: modules
 if [ -d "$BUCKYOS_ROOT/bin/" ]; then
   systemctl stop buckyos.service >/dev/null 2>&1 || true
   if [ -f "$BUCKYOS_ROOT/bin/stop.py" ]; then
@@ -9,4 +8,6 @@ if [ -d "$BUCKYOS_ROOT/bin/" ]; then
   fi
   rm -rf "$BUCKYOS_ROOT/bin/"
 fi
+# BEGIN AUTO-GENERATED: modules
+
 # END AUTO-GENERATED: modules
