@@ -58,6 +58,7 @@ stop_all() {
   kill_process "kmsg"
   kill_process "msg_center"
   kill_process "opendan"
+  sleep 1
   remove_buckyos_containers
 }
 
