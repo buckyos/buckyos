@@ -32,7 +32,7 @@ cd test/aicc_test
 pnpm test
 ```
 
-smoke 会按 run 写入 `reports/aicc_smoke/<runId>/`，每个 case 一个子目录，包含 `input.json`、`response.json`、异步任务的 `task.json`（如有）和 `output.json`；总览写入 `summary.json`。如果响应里有 artifacts，URL 会下载到 case 的 `artifacts/` 目录，base64 会解码保存到同一目录。可用 `AICC_REPORT_DIR` 覆盖根目录。
+smoke 会按 run 写入 `reports/aicc_smoke/<runId>/`，每个 case 一个子目录，包含 `input.json`、`response.json`、异步任务的 `task.json`（如有）和 `output.json`；总览写入 `summary.json`。图片链路会先运行 `image.txt2img`，要求 AICC 以 `named_object` 返回生成图片的 ObjectId，后续需要图片输入的用例只传这个 ObjectId。报告阶段不会立即打开 `named_object` artifact，只在全部用例结束后通过 SDK `ndm_proxy.openReader` 打开一次生成图片并保存到 `generated-image/`。可用 `AICC_REPORT_DIR` 覆盖根目录。
 
 ## 打印模型目录树
 

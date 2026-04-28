@@ -1,5 +1,5 @@
 {
   "imports": {
-    "buckyos": "https://raw.githubusercontent.com/buckyos/buckyos-websdk/beta2.2/dist/node.mjs"
+    "buckyos": "../../src/apps/sys_test/dist/buckyos-websdk/dist/node.mjs"
   }
 }
