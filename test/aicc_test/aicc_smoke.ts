@@ -110,6 +110,7 @@ type SmokeCase = {
   buildPayload: (runId: string, context: SmokeContext) => SmokePayload;
   check: SummaryCheck;
   capturesGeneratedImage?: boolean;
+  returnsUnstructuredData?: boolean;
   requiresGeneratedImage?: boolean;
 };
 
@@ -213,11 +214,11 @@ const allCases: SmokeCase[] = [
     capability: "image",
     check: "artifact",
     capturesGeneratedImage: true,
+    returnsUnstructuredData: true,
     buildPayload: () => ({
       input_json: {
         prompt:
           "A clean product-style icon of a small cloud node on a white background",
-        response_format: "object_id",
         size: "1024x1024",
       },
     }),
@@ -290,6 +291,7 @@ const allCases: SmokeCase[] = [
     method: "image.img2img",
     capability: "image",
     check: "artifact",
+    returnsUnstructuredData: true,
     requiresGeneratedImage: true,
     buildPayload: (_runId, context) => ({
       input_json: {
@@ -302,6 +304,7 @@ const allCases: SmokeCase[] = [
     method: "image.inpaint",
     capability: "image",
     check: "artifact",
+    returnsUnstructuredData: true,
     requiresGeneratedImage: true,
     buildPayload: (_runId, context) => ({
       input_json: { prompt: "Fill the transparent area naturally" },
@@ -315,6 +318,7 @@ const allCases: SmokeCase[] = [
     method: "image.upscale",
     capability: "image",
     check: "artifact",
+    returnsUnstructuredData: true,
     requiresGeneratedImage: true,
     buildPayload: (_runId, context) => ({
       input_json: { scale: 2 },
@@ -325,6 +329,7 @@ const allCases: SmokeCase[] = [
     method: "image.bg_remove",
     capability: "image",
     check: "artifact",
+    returnsUnstructuredData: true,
     requiresGeneratedImage: true,
     buildPayload: (_runId, context) => ({
       resources: [requireGeneratedImage(context, "image.bg_remove")],
@@ -374,6 +379,7 @@ const allCases: SmokeCase[] = [
     method: "audio.tts",
     capability: "audio",
     check: "artifact",
+    returnsUnstructuredData: true,
     buildPayload: () => ({
       input_json: {
         text: "BuckyOS AICC text to speech smoke test.",
@@ -395,6 +401,7 @@ const allCases: SmokeCase[] = [
     method: "audio.music",
     capability: "audio",
     check: "artifact",
+    returnsUnstructuredData: true,
     buildPayload: () => ({
       input_json: { prompt: "A short calm four-second synth tone." },
     }),
@@ -403,6 +410,7 @@ const allCases: SmokeCase[] = [
     method: "audio.enhance",
     capability: "audio",
     check: "artifact",
+    returnsUnstructuredData: true,
     buildPayload: () => ({
       resources: [audioResource],
     }),
@@ -411,6 +419,7 @@ const allCases: SmokeCase[] = [
     method: "video.txt2video",
     capability: "video",
     check: "video",
+    returnsUnstructuredData: true,
     buildPayload: () => ({
       input_json: {
         prompt: "A four-second animation of a cloud node pulsing gently.",
@@ -421,6 +430,7 @@ const allCases: SmokeCase[] = [
     method: "video.img2video",
     capability: "video",
     check: "video",
+    returnsUnstructuredData: true,
     requiresGeneratedImage: true,
     buildPayload: (_runId, context) => ({
       input_json: {
@@ -433,6 +443,7 @@ const allCases: SmokeCase[] = [
     method: "video.video2video",
     capability: "video",
     check: "video",
+    returnsUnstructuredData: true,
     buildPayload: () => ({
       input_json: { prompt: "Stabilize and lightly enhance this input video." },
       resources: [videoResource],
@@ -442,6 +453,7 @@ const allCases: SmokeCase[] = [
     method: "video.extend",
     capability: "video",
     check: "video",
+    returnsUnstructuredData: true,
     buildPayload: () => ({
       input_json: { prompt: "Extend the motion for a few more seconds." },
       resources: [videoResource],
@@ -451,6 +463,7 @@ const allCases: SmokeCase[] = [
     method: "video.upscale",
     capability: "video",
     check: "artifact",
+    returnsUnstructuredData: true,
     buildPayload: () => ({
       resources: [videoResource],
     }),
@@ -853,13 +866,35 @@ function selectModelAlias(
   return { modelAlias: supportedModels[0].exact_model, supported: true };
 }
 
+function requestNamedObjectOutput(payload: SmokePayload): SmokePayload {
+  const inputJson = { ...(payload.input_json ?? {}) };
+  const output = inputJson.output && typeof inputJson.output === "object" &&
+      !Array.isArray(inputJson.output)
+    ? inputJson.output as Record<string, unknown>
+    : {};
+  return {
+    ...payload,
+    input_json: {
+      ...inputJson,
+      response_format: inputJson.response_format ?? "object_id",
+      output: {
+        ...output,
+        resource_format: output.resource_format ?? "named_object",
+      },
+    },
+  };
+}
+
 function buildMethodPayload(
   testCase: SmokeCase,
   runId: string,
   modelAlias: string,
   context: SmokeContext,
 ): Record<string, unknown> {
-  const payload = testCase.buildPayload(runId, context);
+  const basePayload = testCase.buildPayload(runId, context);
+  const payload = testCase.returnsUnstructuredData
+    ? requestNamedObjectOutput(basePayload)
+    : basePayload;
   return {
     capability: testCase.capability,
     model: { alias: modelAlias },
