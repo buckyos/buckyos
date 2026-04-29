@@ -89,6 +89,28 @@ BuckyOS 负责生成“路径候选”：
 
 具体某条 RTCP direct candidate 内部使用哪个 IP，由 RTCP/name-client 决定。
 
+### Boot 阶段连接调度
+
+Boot 阶段必须区分“探测并发”和“路径优先级”：
+
+- SN keep tunnel、Finder/LAN discovery、已知 IP 的 OOD direct 连接、relay 连接可以同时启动。
+- route 选择不能按“谁先成功谁优先”固化。relay 往往比 direct 更早可用，但它只能作为 bootstrap/兜底路径。
+- 对同一个目标 OOD，direct candidate 的长期优先级必须高于 via SN/ZoneGateway relay candidate。
+- relay tunnel 成功后可以临时满足 boot 可达性，避免系统卡死；但 Finder 或 name-client 后续发现 direct endpoint 后，必须继续尝试 direct，并在 direct tunnel 成功后让业务 route 优先走 direct。
+- 如果 direct tunnel 断开，可以降级回 relay；降级后仍应周期性或由 discovery 事件触发 direct 重试。
+
+因此 Boot 阶段的推荐状态机是：
+
+```text
+unknown
+  -> probing_direct + probing_relay
+  -> relay_ready(provisional)
+  -> direct_ready(preferred)
+  -> relay_ready(fallback)    # direct 失效时
+```
+
+这解决一个常见问题：直连依赖 Finder 或 DID/name 解析补齐真实 IP，relay 可能一步成功。如果实现只以首次成功路径作为 `node_route_map` 或 keep tunnel 目标，就会退化成“中转优先”。正确行为是“连接探测并发、业务转发直连优先、relay 保持可用兜底”。
+
 ## Boot Route 数据模型
 
 下一阶段应把 `node_route_map` 从 `node_id -> url` 升级为 `node_id -> route candidates`。
@@ -126,6 +148,7 @@ BuckyOS 负责生成“路径候选”：
 
 - `routes`：正式 route candidate 列表。
 - `node_route_map`：兼容当前 `boot_gateway.yaml` 的单 URL 映射，取最高优先级 candidate。
+- 同一 target 的候选列表必须稳定排序：`rtcp_direct` 优先于 `rtcp_relay`；连接成功时间不能改变静态优先级，只能影响当前可用性。
 - `kind`
   - `rtcp_direct`：直接连接目标 device RTCP stack。
   - `rtcp_relay`：通过 SN 或 ZoneGateway 建立 bootstrap-backed RTCP tunnel。
@@ -202,14 +225,17 @@ rtcp://relay/rtcp://target/
 Boot 阶段行为：
 
 1. 启动 `node_rtcp`。
-2. 根据 `ZoneBootConfig.oods` 为其它 OOD 生成 direct route candidates。
-3. 如果存在 SN，生成 via SN relay candidates。
-4. 如果 `ZoneBootConfig` 标记了 ZoneGateway 节点，生成 via ZoneGateway relay candidates。
-5. 把需要长期保持的目标写入 RTCP `keep_tunnel`：
-   - 其它 OOD direct candidate。
+2. 启动 Finder，持续发现其它 OOD 的 LAN endpoint，并读取本地 Finder cache 作为初始 direct endpoint。
+3. 根据 `ZoneBootConfig.oods` 为其它 OOD 生成 direct route candidates。
+4. 如果存在 SN，生成 via SN relay candidates，并按本机网络形态决定是否 keep tunnel to SN。
+5. 如果 `ZoneBootConfig` 标记了 ZoneGateway 节点，生成 via ZoneGateway relay candidates。
+6. 并发尝试 direct 和 relay，但对同一 OOD 的业务 route 始终按 direct 优先、relay 兜底排序。
+7. relay 成功可以临时满足 boot 可达性；Finder 发现 direct endpoint 后必须继续尝试 direct，direct 成功后切换为 preferred route。
+8. 把需要长期保持的目标写入 RTCP `keep_tunnel`：
+   - 其它 OOD direct candidate 或 direct 目标 DID。
    - SN candidate，前提是本机不是稳定 WAN 可达。
    - ZoneGateway candidate，前提是该节点承担 relay/公网入口职责。
-6. 通过本机 `system_config` 或 `127.0.0.1:3180/kapi/system_config` 进入后续启动。
+9. 通过本机 `system_config` 或 `127.0.0.1:3180/kapi/system_config` 进入后续启动。
 
 多 OOD quorum 的启动门槛需要另行与 system-config/klog 设计对齐。gateway 层只负责提供 route 和 keep tunnel 能力，不在本阶段定义“必须连上 n 个 OOD 才启动 system-config”的一致性规则。
 
@@ -358,8 +384,9 @@ RTCP relay 不应默认开放给任意来源。
 
 1. 增加 boot route builder，输入 `ZoneBootConfig`、本机角色、本机 device doc、缓存 discovery 结果。
 2. 生成 boot 期 `node_gateway_info.json` 或等价临时配置。
-3. 生成 RTCP keep_tunnel 列表。
+3. 生成 RTCP keep_tunnel 列表，并保证 direct 目标与 relay bootstrap 目标分开表达。
 4. node-daemon 启动 cyfs-gateway 时不再只临时传 SN，而是传入或落地完整 keep_tunnel。
+5. boot route builder 必须把 direct candidate 排在 relay candidate 前面；relay 的先成功状态只能进入 runtime 可用性状态，不能反写成更高静态优先级。
 
 ### 阶段 3：process chain 使用 candidate 列表
 
@@ -367,6 +394,7 @@ RTCP relay 不应默认开放给任意来源。
 2. 当目标不在本机时，从 `routes[target_node]` 生成 weighted/priority forward map。
 3. 保留旧 `NODE_ROUTE_MAP` fallback。
 4. debug tests 覆盖 direct 和 relay URL。
+5. debug tests 必须覆盖 relay 先可用、direct 后发现的场景，验证最终业务 route 优先使用 direct。
 
 ### 阶段 4：非 OOD Node 启动
 

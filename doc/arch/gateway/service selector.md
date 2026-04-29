@@ -1,193 +1,383 @@
-# service selector
-`client(runtime) -> select_by_servcie_info(service_name) -> service_url`
+# BuckyOS Service Selector
 
-service selector是buckyos作为分布式系统的一个重要基础概念：任何分布式访问，都需要先根据目标service的selector进行处理，然后再向实际提供服务的Node发起请求。
+`client(runtime) -> select_by_service_info(service_name) -> service_url list`
 
-一个应用服务至少定义了一个服务
-应用通过两种方法暴露其服务
+Service Selector 是 BuckyOS 分布式访问的基础机制：调用方先用目标服务的 `ServiceInfo` 得到可访问的 Provider 和路径集合，再向实际提供服务的 Node 发起请求。
 
-### Web服务
-	1. 使用短域名暴露 
-	2. 使用nodeid:port暴露  
-	3. 非应用服务，使用URL暴露 
-	
-### 其它服务
-	1. 通过协议+端口暴露 
-	2. 通过node:port暴露 
+本文根据 `doc/arch/gateway/服务的多链路选择.md` 的新设计和当前代码实现整理。核心更新是：Selector 不再被描述为“发现、探测、选择、失败扩散”的混合模块，而是一个基于已知配置做稳定选择的运行时组件。设备发现、多链路 URL 生产、业务成本判断和刷新节奏应由调度器或应用层调度逻辑负责。
 
+## 1. 设计边界
 
-## 暴露服务的边界是
-	1. 在特定Node上暴露
-	2. 在特定Zone上暴露
+### 1.1 Selector 负责什么
 
-Zone暴露的服务，实际上就是在ZoneGatewayNode上暴露的服务
-要考虑所有的Service都能在一个Node上暴露，因此所有的Service的暴露信息是不能冲突的。调度器会保证这一点。 
+Selector 的输入是确定的 `ServiceInfo`、请求上下文和 Gateway 配置，输出是一个候选访问路径集合中的选择结果。
 
+Selector 应该负责：
 
-## 核心循环
-1. 用户安装服务(添加Spec)
-2. 调度器为服务分配合适的instance (实例化)
-3. node_damen根据instance配置，启动service进程（运行docker镜像）
-4. 启动后的instance上报状态（服务租约/keep-alive)
-5. 调度器根据服务所有的instance info，更新service info
-6. selector（同一个应用必定使用相同类型的selector) 基于确定的service_info，根据请求选择提供服务的node
+- 在 `ServiceInfo` 给出的 Provider 集合内选择 Node 或实例；
+- 在 Gateway 配置允许的 URL 集合内执行稳定策略，例如单实例、权重、随机、RTT 优先、成本优先或 Failover；
+- 保持选择逻辑可解释：相同输入应得到一致或符合权重语义的输出；
+- 在当前 Gateway process-chain 中，把服务访问限制在 `node_gateway_info.json` 已生成的 `selector` 和 `node_route_map` 内。
 
-要点：
-- select操作是幂等的，也就是说基于一样的请求，和一样的service_info,必然会得到一样的select结果
-- 无内核重试：只要调度器没有更新service_info(对instance的故障进行确认)，那么select的结果不会改变。此时如果node不可用，被视作网络抖动而不会去进行应对
-- cyfs-gatway总是可以以上一个状态稳定的中转流量，而不需要主动访问system-config，防止产生错误传导。
-- 保持核心设计原则：所有人基于一致的信息进行一致操作，由一个决策者进行一次决策。
-- selector看到的服务都是无状态的，有状态服务需要在得到请求后，进行二次selector
-- 一个正常工作的Zone中，设计上任意两个Node之间都是可以连接成功的，Node的选择一般只有速度问题
+Selector 不应该负责：
 
-### 添加Spec
-通过收集UI信息后，执行下代码
-```python
+- 自动搜索设备 IP；
+- 自动发现中转节点；
+- 在配置未声明时把直连失败扩散到任意中转；
+- 根据业务流量成本自行决定是否使用中转；
+- 维护复杂的历史学习逻辑并隐式改变路径。
 
-# hosts,path,expose_port均为UI填写，填写时会使用系统提供的函数对暴露信息进行去重
-# 需要收集多少信息，取决于app-doc.servcies的定义
-spec.services["www"] = {
-    "expose_hosts" : {
-        "filebrowser",
-        "www",
-    }，
-    "expose_path" : "/xxxx/xxxxx/xxxx"
-}
+### 1.2 谁负责多链路生产
 
-spec.services["smb"] = {
-    "expose_port" : 445,
-}
+多链路选择拆成三层：
 
-system_config.add_spec(spec) 
-```
+1. **应用层调度器 / 系统调度器**：根据业务语义、DeviceInfo、节点状态、成本和可靠性要求，生成或刷新候选 URL 集合。
+2. **Gateway Selector**：只在已配置的 URL 或 Provider 集合内做标准选择和 Failover。
+3. **Tunnel 内部**：对给定 IP 列表执行 IP 竞速、慢路径切换和连接级 Failover。
 
-### 调度器基于Spec构造Instance
+因此，如果一次请求走了中转，首先应检查“最近一次调度刷新结果是否包含直连 URL”。如果调度结果没有直连 URL，Gateway 走中转是正确行为。
 
-```python OK
+## 2. 服务暴露模型
 
-expose_services = spec.services
-for services in expose_services:
-    # 如果返回0，就是让应用自己决定
-    service.port = alloc_port(spec.app_index,service)
+一个应用服务至少定义一个服务。服务可以通过两类方式暴露。
 
-new_instance = {
-    "expose" : sepc.expose_services
-}
+### 2.1 Web 服务
 
-do_alloc_replica_instance(new_instance)
-```
+- 使用短域名暴露，例如 `app.zone.host` 或 shortcut；
+- 使用 `node_id:port` 形式经 NodeGateway 转发；
+- 非应用服务可以通过固定 URL 或 `/kapi/{service_name}` 暴露。
 
-### 调度器根据Spec与InstanceInfo创建ServiceInfo
+### 2.2 其它服务
+
+- 使用协议 + 端口暴露；
+- 使用 `node_id:port` 暴露；
+- 经 Gateway 映射为本地 HTTP URL、本地端口，或未来的 SOCKS/TCP 透明连接。
+
+## 3. 暴露边界
+
+服务暴露边界有两种：
+
+- **Node 级暴露**：服务只在某个 Node 上提供。
+- **Zone 级暴露**：服务通过 ZoneGateway 暴露。实现上通常等价于在 ZoneGatewayNode 上暴露服务，再由 Gateway 转发到实际 Provider。
+
+所有服务最终都可能在同一个 Node 上暴露，因此暴露信息不能冲突。调度器负责保证端口、短域名、路径等服务暴露信息不冲突。
+
+## 4. 当前实现链路
+
+当前实现不是一个独立的 `buckyos-select-service` Rust 模块，而是由调度器、`node_gateway_info.json` 和 cyfs-gateway process-chain 共同完成。
+
+### 4.1 调度器生成 ServiceInfo
+
+代码入口：
+
+- `src/kernel/scheduler/src/scheduler.rs`
+- `src/kernel/scheduler/src/service.rs`
+- `src/kernel/scheduler/src/system_config_agent.rs`
+
+调度核心流程：
+
+1. 用户安装服务或应用后写入 `ServiceSpec`。
+2. 调度器为 `ServiceSpec` 创建 `ReplicaInstance`。
+3. node-daemon 按实例配置启动服务进程或容器。
+4. 实例通过 `ServiceInstanceReportInfo` 上报状态和服务端口。
+5. 调度器只把 `Running` 且 `last_update_time` 在 `INSTANCE_ALIVE_TIME = 90s` 内的实例计入 `ServiceInfo`。
+6. 同一服务的 `ServiceInfo` 变更刷新至少间隔 `SERVICE_INFO_REFRESH_INTERVAL = 30s`。
+7. 单实例生成 `SingleInstance`，多实例生成 `RandomCluster`。
+
+写入 system-config 的服务发现数据结构是：
+
 ```rust
-//用于上报给调度器的实例信息
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ServiceInstanceReportInfo {
-    pub instance_id:String,
-    pub node_id:String,
-    pub node_did:DID,
+pub struct ServiceInfo {
+    pub selector_type: String,
+    pub node_list: HashMap<String, ServiceNode>,
+}
+
+pub struct ServiceNode {
+    pub node_did: DID,
+    pub node_net_id: Option<String>,
     pub state: ServiceInstanceState,
-    //服务名->node暴露端口
-    //pub service_ports:  HashMap<String,u16>, 
-    pub last_update_time: u64,
-    pub start_time: u64,
-    pub pid: u32,
+    pub weight: u32,
+    pub service_port: HashMap<String, u16>,
 }
 ```
 
-```python OK
-all_instance_info = get_valid_instance_and_cacl_weight(appid)
-for service in spec.services {
-    service_info = {
-        "selector" : {
-            "type" : spec.selector_type,
-            "instance" : all_instance
-        },
-    }
-    update_service_info(get_service_id(spec.appid,service.name),service_info)
-}
-```
+当前 `selector_type` 写入为 `"random"`，`node_list` 是 `node_id -> ServiceNode`。
 
-注意InstanceInfo中只有node_id, 构造service_url的逻辑依靠一个函数
-```python TODO，在正式buckyos-select中实现
-# 该函数会根据system_config里的zone_config,NodeInfo，构造一个确定的url
-service_url = get_service_url(source_node_id,instance_info)
-```
+### 4.2 调度器生成 NodeGateway 配置
 
-## docker 的网络服务参数确定逻辑
+`system_config_agent.rs` 会把 `ServiceInfo` 转换成每个 Node 使用的 `node_gateway_info.json`：
 
-在启动时,node_daemon根据app的instance信息，得到host_port
-docker_port根据系统服务
-
-```python OK 
-expose_services = instance.expose
-for service in expose_services
-    inner_port = instance.app_doc.services[service.name].port
-    port_cmd += f" -p {service.port}:{inner_port}
-
-```
-
-
-## selector的类型
-
-### 单instance
-最简单的情况，只有单instance,只能选他
-
-### 均等instance
-按访问速度排序（当前runtime可以不经过测试，就得到与目标节点的测速）
-在速度相同的节点中，随机选择 ，随机时会参考instance的load
-
-### 有亲和标签
-选择时，构造亲和路径，选择与亲和路径最大匹配 / 最小匹配的 Node
-
-## selector的实现框架
-
-- 在runtime中用rust实现，并通过命令扩展给process chain
-- 通过系统升级扩展/修复 selector的逻辑
-
-
-## 例子
-
-在内核服务中访问另一个内核服务
-
-```
-fn service_fun() {
-    //如果提供服务的Node是当前节点，url是127开头的
-    //如果是可以直接连接的Node，且支持自加密 url是目标ip开头的 （少见）
-    
-    //需要RTCP : 如果是可以直接连接的Node，但需要用rtcp加密，或则不能直接连接的节点
-    //使用 http://127.0.0.1:node_gateway_port/kapi/$service_name, 会在node-gateway内部执行真正的select
-   
-    url = runtime.select(target_service_name)
-    client = new krpc_client(url) 
-}
-
-
-```
-node-gateway的配置
 ```yaml
+service_info:
+  control-panel:
+    selector:
+      ood1:
+        port: 3202
+        weight: 100
 
-server:
-    id: node-gatweay
-    type: http
-    process_chain: |
-        call buckyos-select-service && return "forward $ANSWSER.url"
-
+node_route_map:
+  node-a: rtcp://node-a.example.zone/
+  node-b: rtcp://node-b.example.zone:2981/
 ```
-buckyos-select-service内部是真正的全功能实现，逻辑如下：
-首先选择Node（因为幂等性，会和service_fun内选择的一致）
 
-- 如果提供服务的Node是当前节点，http://127.0.0.1:service_port
-- 如果提供服务的Node是不需要加密的可直连节点 , http://node_ip:service_port
-- 如果提供的Node是需要加密的可直连节点: rtcp://node_did/:service_port
-- 如果提供的Node是需要中转的节点: rtcp://中转节点/rtcp://node_did/:service_port
+其中：
 
+- `service_info.{service}.selector` 表示该服务可选 Provider；
+- selector 的 key 是 `node_id`；
+- value 只包含当前服务端口和权重；
+- `node_route_map` 目前为每个远端 Node 生成一个 `rtcp://{node_id}.{zone_host}/` 路由；
+- 如果设备声明的 RTCP 端口不是 `2980`，路由会带显式端口。
 
-## 使用process chain的好处
-- 允许通用pre处理，根据运维需要，针对特定节点，实现临时的selector逻辑
-- 允许通过post处理，根据运维需要，临时的改变selector结果（这里可以有丰富的逻辑
+这说明当前实现仍是“Provider Node 选择 + 每 Node 单 RTCP 路由”的模型，还没有实现“每个 Provider 多条 Tunnel URL”的完整模型。
 
+### 4.3 Runtime 侧行为
 
+`buckyos-api` 的 `get_kernel_service_url()` 当前行为是：
 
+- 如果目标内核服务就在本机，且本机实例状态为 `Started`，直接返回 `http://127.0.0.1:{service_port}/kapi/{service_name}`；
+- 否则返回 `http://127.0.0.1:3180/kapi/{service_name}`，交给本机 NodeGateway 转发。
 
+也就是说，跨 Node 访问的真正路径选择由 NodeGateway 的 process-chain 和 `node_gateway_info.json` 完成，而不是由 SDK runtime 在进程内完成。
 
+### 4.4 Gateway process-chain 侧行为
 
+`src/rootfs/etc/boot_gateway.yaml` 中的关键逻辑是：
+
+1. 根据请求 host 或 `/kapi/{service_name}` 找到 `TARGET_SERVICE_INFO`。
+2. 如果 `TARGET_SERVICE_INFO.selector` 包含 `THIS_NODE_ID`，直接转发到本机 `http://127.0.0.1:{port}`。
+3. 否则遍历 selector 中的远端 Node：
+   - 从 `NODE_ROUTE_MAP[node_id]` 得到 RTCP 基础 URL；
+   - 拼上服务端口；
+   - 放入 `target_node_map`；
+   - 执行 `forward round_robin --map $target_node_map`。
+
+当前 process-chain 的选择对象是 `node_id -> rtcp route`，不是显式的多 URL 列表。
+
+## 5. 多链路新设计对 Service Selector 的要求
+
+### 5.1 ServiceInfo 不应只表达最终单 URL
+
+旧描述容易把 `select_by_service_info()` 理解为返回一个最终 URL。新模型下，更准确的语义是：
+
+```text
+service_name -> provider list -> candidate service_url list -> selected service_url
+```
+
+Provider 选择和 URL 选择是两个层次：
+
+- Provider 选择回答“哪个实例提供这个服务”；
+- URL 选择回答“从当前 Node 到该 Provider 走哪条链路”。
+
+当前实现中这两个层次被压缩为：
+
+```text
+service selector: node_id + port
+route map: node_id -> one rtcp URL
+```
+
+后续多链路实现应把 `node_id -> one route` 扩展为 `node_id -> route list`，并且每条路由都必须是显式配置的 URL。
+
+### 5.2 不允许隐式中转扩散
+
+中转节点必须显式出现在候选 URL 中。
+
+正确语义：
+
+```text
+如果候选 URL 中只有 direct://node-a，则 Gateway 只能尝试 direct://node-a。
+如果需要 relay-a 兜底，调度器必须显式下发 relay://relay-a/node-a。
+```
+
+错误语义：
+
+```text
+direct 失败后，Gateway 自动查找任意中转节点并改走中转。
+```
+
+禁止隐式扩散的原因是：中转可能有成本、安全、带宽和业务语义差异，不能由底层 Gateway 自动决定。
+
+### 5.3 DeviceInfo 与直连选择
+
+设备 IP 来源包括：
+
+- DeviceInfo 自上报；
+- 系统级设备搜索；
+- 局域网发现；
+- 历史成功连接数据。
+
+新设计建议：
+
+- DeviceInfo 上报时间在 30 秒内时可优先信任；
+- 拿到有效 DeviceInfo 后，应停止更广泛搜索，只使用其中 IP 列表构造直连候选；
+- 明确不可用的地址应先排除，例如目标只给 IPv6 但本机没有 IPv6 能力；
+- RTCP Tunnel 对给定 IP 列表负责内部竞速；
+- 上一次成功 IP 只能作为优先项，不应永久锁定；
+- 如果 250ms 内未建立连接，可以尝试下一个 IP。
+
+这些逻辑不应塞进 Service Selector。Selector 只能消费调度器或 Gateway Probe 已生成的候选 URL 和排序结果。
+
+### 5.4 Gateway Probe API
+
+为了让应用层调度器生成更好的 URL 集合，Gateway 应提供探测基础能力：
+
+```text
+输入：一组 Tunnel URL
+输出：可达性、RTT、排序、失败原因
+```
+
+推荐只暴露“调用方传入 URL 的测速与排序结果”，不直接暴露 Gateway 内部所有已有 Tunnel URL。这样安全边界更清楚，也避免上层过度依赖底层连接状态。
+
+## 6. 目标数据形态
+
+当前实现可以继续保持兼容的 `selector` 结构，但多链路目标模型应能表达 Provider 下的多路由。
+
+示例：
+
+```yaml
+service_info:
+  backup:
+    selector_type: cost_first_then_rtt
+    providers:
+      node-a:
+        weight: 100
+        services:
+          backup:
+            port: 7001
+        routes:
+          - url: direct://node-a
+            type: direct
+            priority: 10
+          - url: relay://relay-a/node-a
+            type: relay
+            priority: 50
+```
+
+Gateway 运行时可转成：
+
+```yaml
+service_mapping:
+  service: backup
+  selector: cost_first_then_rtt
+  failover: next_available
+  urls:
+    - direct://node-a/127.0.0.1:7001
+    - relay://relay-a/node-a/127.0.0.1:7001
+```
+
+这只是目标表达形态。当前代码还没有这样的字段，当前落地形态仍是 `selector + node_route_map`。
+
+## 7. Selector 类型
+
+### 7.1 当前已落地类型
+
+- **单实例**：`SingleInstance`，只有一个可用实例，只能选择它。
+- **随机集群**：`RandomCluster`，多实例带权重。当前 Gateway process-chain 使用 `round_robin --map` 按 map 执行转发。
+- **静态 Web 应用**：`SelectorType::Static` 用于静态 Web App，不走普通服务实例选择。
+
+### 7.2 规划类型
+
+多链路设计下可以增加标准 Selector，但仍应只作用于已配置集合：
+
+- `single`：只选唯一 Provider 或唯一 URL；
+- `weighted_random`：按权重在 Provider 或 URL 间选择；
+- `round_robin`：轮询；
+- `rtt_first`：优先选择 Gateway Probe 或 Tunnel 统计中 RTT 更低的 URL；
+- `cost_first_then_rtt`：先按业务成本过滤或排序，再按 RTT 排序；
+- `failover`：主 URL 失败后切到下一个已配置 URL；
+- `affinity`：按亲和标签、Node 区域或业务 affinity 选择 Provider。
+
+不论类型如何，Selector 都不能自己发明未配置 URL。
+
+## 8. 典型访问流程
+
+### 8.1 当前内核服务访问流程
+
+```mermaid
+flowchart TD
+    A["client calls get_kernel_service_url(service)"] --> B["read services/{service}/info from control-panel"]
+    B --> C{"local node has Started instance?"}
+    C -- yes --> D["return http://127.0.0.1:{port}/kapi/{service}"]
+    C -- no --> E["return http://127.0.0.1:3180/kapi/{service}"]
+    E --> F["NodeGateway process-chain reads node_gateway_info.json"]
+    F --> G{"selector contains THIS_NODE_ID?"}
+    G -- yes --> H["forward http://127.0.0.1:{port}"]
+    G -- no --> I["build rtcp URL from NODE_ROUTE_MAP + port"]
+    I --> J["forward round_robin --map"]
+```
+
+### 8.2 目标多链路流程
+
+```mermaid
+flowchart TD
+    A["应用或系统调度器生成候选 URL"] --> B["调用 Gateway Probe 获取可达性和 RTT"]
+    B --> C["结合业务成本、可靠性、流量特征筛选 URL"]
+    C --> D["刷新 service mapping / ServiceInfo"]
+    D --> E["Gateway Selector 在配置集合内选择 URL"]
+    E --> F["Tunnel 对给定 IP 列表执行 OpenStream 竞速"]
+```
+
+## 9. 排障模型
+
+### 9.1 服务没有切到预期实例
+
+先检查调度器输入和输出：
+
+- `services/{spec_id}/instances/*` 是否有实例上报；
+- 实例状态是否为 `Running` / `Started`；
+- `last_update_time` 是否超过 90 秒存活窗口；
+- 是否触发了 30 秒 `ServiceInfo` 刷新节流；
+- `services/{spec_id}/info` 中是否包含预期 `node_id`；
+- `node_gateway_info.json` 中的 `service_info.{service}.selector` 是否包含该 Node。
+
+### 9.2 已发现直连 IP，但请求仍走中转
+
+按新设计，先检查最近一次调度刷新结果：
+
+- 如果结果中没有直连 URL，Gateway 走中转是正确的；
+- 如果结果中有直连 URL，但 Gateway 没有选择它，再检查 Selector、Failover、Probe 结果和 Tunnel OpenStream 竞速逻辑；
+- 如果直连 URL 是由过期 DeviceInfo 生成的，应重新触发发现或探测。
+
+### 9.3 远端服务不可达
+
+检查顺序：
+
+1. `ServiceInfo` 是否还发布该实例；
+2. `node_gateway_info.json` 是否包含该服务 selector；
+3. `NODE_ROUTE_MAP[node_id]` 是否存在；
+4. RTCP URL 是否带对了端口；
+5. Gateway 日志中 `forward round_robin --map` 的目标是否符合预期；
+6. Tunnel 层是否连接失败、超时或被身份校验拒绝。
+
+## 10. 落地原则
+
+- `ServiceInfo` 是 Selector 的输入，不是请求级健康检查结果。
+- 调度器是服务 Provider 集合的唯一决策者，Gateway 不主动访问 system-config 做二次决策。
+- Gateway 可以复用已有 Tunnel 统计做 Probe，但对上层只暴露可达性、RTT、排序和失败原因。
+- 直连、中转和多中转必须以显式 URL 表达。
+- 大流量业务如果要求直连，应在业务启动前强制刷新发现与 Probe；没有直连时应失败或提示，而不是让 Gateway 自动走中转。
+- Boot 阶段可以更频繁刷新 URL 集合；平稳阶段应降低刷新频率，例如 5 到 10 分钟一次。
+- 节点级探测优先于服务级探测，避免每个服务重复测同一组 Node 链路。
+
+## 11. 当前实现与目标模型的差距
+
+当前已实现：
+
+- 调度器基于存活实例生成 `ServiceInfo`；
+- `ServiceInfo` 写入 `services/{spec_id}/info`；
+- 调度器生成 `node_gateway_info.json`；
+- Gateway process-chain 可按本机优先、远端 RTCP、权重 map 转发；
+- runtime 本机服务短路，否则交给 NodeGateway。
+
+尚未实现或需要确认：
+
+- `node_id -> 多 Tunnel URL` 的 Gateway 配置结构；
+- Gateway URL Probe API；
+- DeviceInfo 30 秒新鲜度和搜索停止策略的统一实现；
+- RTCP Tunnel 每次 OpenStream 是否都会进入 IP 竞速；
+- 250ms 慢路径切换是否覆盖所有直连场景；
+- Selector 策略是否扩展为 RTT、成本、Failover 等标准类型；
+- 调度刷新日志是否能关联到请求日志，方便解释“为什么走这条路径”。
+
+## 12. 一句话总结
+
+Service Selector 的正确定位是：**基于调度器已发布的服务与路径配置做稳定选择**。设备发现、直连 IP 生产、多中转候选、业务成本和刷新周期属于调度层；Gateway 只在显式配置的 URL 集合内选择，Tunnel 只对给定连接信息做底层竞速与 Failover。

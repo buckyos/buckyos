@@ -1,13 +1,14 @@
 ## Zone Boot Config的设计
 
-因为DNS的TXT Recrod限制，所以BuckyOS专门设计了3条TXT Record来共同构成ZoneConfig,
-- BOOT=$ZONE_BOOT_CONFIG_JWT
-- PKX=$OWNER_PUBLIC_KEY.X
-- DEV=$GATEAY_DEVICE_MINI_DOC_JWT
+因为DNS的TXT Record长度限制，BuckyOS专门设计了3条TXT Record来共同构成可在Zone外可信引导Zone所需的最小信息，整体由name-lib的`ZoneBootConfig`承载：
+- `BOOT=$ZONE_BOOT_CONFIG_JWT` —— ZoneBootConfig主体（owner私钥签名的JWT）
+- `PKX=$OWNER_PUBLIC_KEY.X` —— Owner公钥（Ed25519的x分量），仅用于自验证BOOT签名
+- `DEV=$GATEWAY_DEVICE_MINI_DOC_JWT` —— ZoneGateway/OOD的`DeviceMiniConfig`（owner签名的JWT），主要携带rtcp端口等boot阶段必须的字段
 
-具体实现参考(name-client provider.rs parse_txt_record_to_did_document)
+具体实现参考 `buckyos-base/src/name-lib/src/zone.rs` 的 `ZoneBootConfig`，以及name-client里的`parse_txt_record_to_did_document`。
 
 ```rust
+// buckyos-base/src/name-lib/src/zone.rs
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct ZoneBootConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -20,11 +21,13 @@ pub struct ZoneBootConfig {
     pub owner: Option<DID>,
     #[serde(flatten)]
     pub extra_info: HashMap<String, serde_json::Value>,
-    //------- The following fields are not serialized, but stored separately in TXT Records ------------
+    //------- 下面的字段不会序列化进BOOT这条TXT，而是单独保存在其它TXT Record中 ------------
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub owner_key: Option<Jwk>, //PKX=0:xxxxxxx;
+    pub owner_key: Option<Jwk>, // 来自 PKX=0:xxxxxxx;
 }
 ```
+
+> 配套的辅助方法见同文件：`encode/decode`(JWT)、`device_is_ood`、`device_is_gateway`、`get_gateway_name`、`to_zone_config`等。
 
 ## ZoneBootConfig与ZoneConfig的区别
 
@@ -35,38 +38,43 @@ pub struct ZoneBootConfig {
 99%的情况下，都不应该直接使用ZoneBootConfig,而是使用基于DNS TXT Record 转换得到的ZoneConfig
 
 ## ZoneBootConfig的 首要目标：确保系统能安全引导 (Secure Boot)
-OOD的安全启动引导流程如下：
-1. OOD通过DNS查询得到ZoneBootConfig(JWT格式)
-2. 对ZoneBootConfig进行验证：
-    - 比已知的ZoneBootConfig更新(尽力防止DNS重放攻击)
-    - 有ZoneOwner的签名
-3. 验证ZoneOwner的签名需要可信的通过OwnerDID得到其公钥 目前的方法
-    - OOD在激活的时候，已经在本地保存了Owner的公钥 （实际上是OwnerConfig,复用DID-Document存储的底层设施）
-    - 通过BNS查询Owner的公钥（最权威）, 给了Owner更换公钥的机会（如果之前的私钥丢失的化）
-    - 查询器已经基于PX0对ZoneBootConfig进行了自验证
-4. ZoneBootConfig中只有1个OOD，则进行单点启动引导（目前的实现）
-5. ZoneBootConfig中有2n+1个OOD，OOD需要和n个其它OOD在boot阶段建立连接。基于BootConfig中的SN信息和OOD的"Net String",尝试与其他OOD在Boot阶段建立连接。有配置SN会增加一种连接方法
-6. Boot阶段，OOD会努力与其它OOD保存rtcp tunnel(实际上一直会)，当与n个ood keep tunnel成功后，才会进入system config的启动阶段，。
-7. OOD之间建立rtcp tunnel的方法
-7.1 基于Devcie's Name尝试直连（Zone内设备的直连几乎都是这个流程）
-- 尝试得到目标OOD的一个IP地址 
-    - UDP广播
-    - OODDescriptionString里包含IP地址
-    - resove_did("did:bns:$oodname.$zonename"),得到包含IP的OOD DeviceDocument 
-    - 通过DNS查询：zone_hostname (只有1个gateway ood的情况) 或 `$oodname.$zonehostname`
-- 与该IP地址的RTCP端口(默认2980)建立连接
-- 连接成功进入RTCP握手
-    - 使用双方的Device Public Key协商session key
-    - RTCP握手时会对更完整的DeviceConfig进行交换验证(TODO:RTCP 安全机制未完全实现)
+OOD的安全启动引导流程如下（实现位置：`src/kernel/node_daemon/src/node_daemon.rs` 的 `looking_zone_boot_config`）：
 
-7.2 尝试通过中转建立连接 (此时无法keep tunnel)
-当无法直接建立连接时，会视是否有中转节点来尝试通过中转建立rtcp stream,下面是尝试open stream
-`rtcp://$中转设备did/rtcp://目标设备名/` (TODO:这种中转，中转设备是能解码rtcp上的内容，这可能会导致隐私泄露)
-- boot阶段，可用的中转设备信息来自ZoneBootConfig，优先级是 `标记为WLAN的OOD->是ZoneGateway的WLAN Node->SN`
-    - 和中转设备建立rtcp tunnel的逻辑与7.1步骤相同，OOD一旦与中转节点连接成功，就会keep tunnel
-    - SN可能会基于自己的逻辑，阻止任意中转，只允许OOD到OOD的中转。
-8. 系统首次启动时，调度器会基于ZoneBootConfig构造正式的ZoneConfig，下面是核心逻辑
-`scheduler.rs add_boot_config`
+1. OOD通过DNS查询得到ZoneBootConfig(JWT格式)
+   - 调试/离线场景：若`{zone_name}.zone.json`存在，会被优先加载，绕过DNS（见`looking_zone_boot_config`内的本地分支）
+2. 对ZoneBootConfig进行验证：
+    - 比已知的ZoneBootConfig更新（尽力防止DNS重放攻击）
+    - 有ZoneOwner的签名（依赖`ZoneBootConfig::decode`使用Owner公钥校验）
+3. 验证ZoneOwner的签名需要可信的获得其公钥，目前有以下来源：
+    - OOD在激活时已经在本地保存了Owner公钥（`NodeIdentityConfig.owner_public_key`，复用DID-Document存储底层设施）
+    - 通过BNS查询Owner的公钥（最权威），用以支持Owner在私钥丢失时更换公钥
+    - 解析器已经基于`PKX`这条TXT对ZoneBootConfig的JWT进行了自验证（`parse_txt_record_to_did_document`）
+4. ZoneBootConfig中只有1个OOD —— 单点启动引导（目前默认实现）
+5. ZoneBootConfig中有2n+1个OOD —— OOD需要在boot阶段与n个其它OOD建立rtcp tunnel才会进入下一步。基于BootConfig里的SN信息和`OODDescriptionString`，尝试与其他OOD在Boot阶段建立连接；配置了SN则多一种通过SN中转的连接方法
+6. Boot阶段，OOD会持续地尝试与其它OOD保持rtcp tunnel；当与n个ood keep tunnel成功后，才进入system config的启动阶段
+7. OOD之间建立rtcp tunnel的方法：
+
+   7.1 基于Device Name尝试直连（Zone内设备的直连几乎都走这个流程，核心实现见`src/kernel/node_daemon/src/finder.rs`）
+   - 尝试拿到目标OOD的一个IP地址，候选来源：
+     - UDP广播（`FINDER_SERVER_UDP_PORT = 2980`，广播间隔`FINDER_BROADCAST_INTERVAL_SECS = 2s`）
+     - 兜底TCP扫描：同子网C段最多254个地址（见finder.rs顶部注释）
+     - `OODDescriptionString`中显式携带的IP
+     - `resolve_did("did:bns:$oodname.$zonename")`，得到包含IP的OOD DeviceDocument
+     - 通过DNS A/AAAA查询：`zone_hostname`（只有1个gateway-ood时）或 `$oodname.$zonehostname`
+     - 历史发现缓存：`finder_cache.json`，TTL = 7天（`FINDER_CACHE_TTL_SECS`）
+   - 与该IP地址的RTCP端口（默认`2980`，由`DeviceMiniConfig.rtcp_port`覆盖）建立连接
+   - 连接成功后进入RTCP握手
+     - 使用双方的Device Public Key协商session key
+     - RTCP握手时会对更完整的DeviceConfig进行交换验证（TODO：RTCP 安全机制未完全实现）
+
+   7.2 尝试通过中转建立连接（此时无法keep tunnel）
+   当无法直接建立连接时，会视是否有中转节点来尝试通过中转建立rtcp stream，open stream的形式：
+   `rtcp://$中转设备did/rtcp://目标设备名/` （TODO：中转设备能解码rtcp流量，存在隐私泄露风险）
+   - boot阶段可用的中转设备信息来自ZoneBootConfig，优先级 `WAN可达的OOD（net_id以wan开头）-> ZoneGateway-> SN`
+     - 与中转设备建立rtcp tunnel的逻辑与7.1相同；连上后会`keep tunnel`
+     - SN可能基于自己的逻辑阻止任意中转，只允许OOD到OOD的中转
+8. 系统首次启动时，调度器会基于ZoneBootConfig构造正式的ZoneConfig，核心逻辑在
+[system_config_builder.rs add_boot_config](src/kernel/scheduler/src/system_config_builder.rs:499)：
 ```rust
 pub fn add_boot_config(
     &mut self,
@@ -75,44 +83,76 @@ pub fn add_boot_config(
     zone_boot_config: &ZoneBootConfig,
 ) -> Result<&mut Self> {
     let public_key_value = verify_hub_public_key.clone();
-    let mut zone_config = ZoneConfig::new(DID::new("bns", &config.user_name), DID::new("bns", &config.user_name), config.public_key.clone());
+    let zone_did = DID::from_str(&config.zone_name)?;
+    let mut zone_config = ZoneConfig::new(
+        zone_did,
+        DID::new("bns", &config.user_name),
+        config.public_key.clone(),
+    );
 
-    let verify_hub_info = VerifyHubInfo {
-        public_key: public_key_value,
-    };
+    let verify_hub_info = VerifyHubInfo { public_key: public_key_value };
     let boot_jwt = config.ood_jwt.clone().unwrap_or_default();
-    zone_config.init_by_boot_config(zone_boot_config,&boot_jwt);
+    zone_config.init_by_boot_config(zone_boot_config, &boot_jwt);
     zone_config.verify_hub_info = Some(verify_hub_info);
-    info!("add_boot_config: zone_config: {}", serde_json::to_string_pretty(&zone_config)?);
     self.insert_json("boot/config", &zone_config)?;
     Ok(self)
 }
 ```
+注：`ZoneConfig::init_by_boot_config`会把`oods`、`sn`、`exp`、`owner`、`owner_key`等字段拷贝到ZoneConfig，并保留`boot_jwt`原文用于后续校验（见name-lib `zone.rs init_by_boot_config`）。
 
-### 非OOD(Node/Client)的启动流程(与ZoneBootConfig无关) `未实现`
-1. Node启动的时候，系统已经启动完成。因此Node在启动时的核心目标是连接上SystemConfig Service。
-2. Node可以基于OOD搜索流程，主动尝试连接OOD (可以避免ZoneGateway失效导致的内网不可用)，尝试流程
-3. Node通过ZoneGateway 可以直接访问SystemConfig Service(优先rtcp)
-4. 通过SystemConfig Service返回的OOD DeviceInfo,可以使用最佳的方法与OOD建立RTCP连接（尽量直连）,提高后续访问的速度
+### 非OOD(Node/Client)的启动流程(与ZoneBootConfig无关) `部分未实现`
+1. Node启动时系统通常已经启动完成，因此Node启动的核心目标是连接上SystemConfig Service
+2. Node可以基于OOD搜索流程，主动尝试连接OOD（可以避免ZoneGateway失效导致的内网不可用）
+3. Node通过ZoneGateway也可以直接访问SystemConfig Service（优先rtcp）
+4. 通过SystemConfig Service返回的OOD DeviceInfo，可以使用最佳的方法与OOD建立RTCP连接（尽量直连），提高后续访问的速度
+
+> 当前代码现状：非OOD分支在 [node_daemon.rs](src/kernel/node_daemon/src/node_daemon.rs) 中获取SystemConfigClient的路径仍是`unimplemented!()`，仅OOD分支可独立完成boot。Node目前必须等系统启动后由OOD推送配置。
 
 ## ZoneGateway的定义与确定
-- ZoneGateway通常是OOD，但可以是普通Node，系统里默认将oods的第一个有效ood视作zone-gateway
-- 如果有一个这样的ood列表`oods:["$ood1","#gate:210.35.22.1"],说明系统里有一个公网的gate节点,ood1在内网
-  - 为了节约ZoneBootConfig的长度，只能用这种Magic String,详细解析参考`OODDescriptionString`的实现
-  - 该Case是一个典型的小型系统:使用单内网OOD，但添加一个最便宜的VPS Node做ZoneGateway以拜托对SN的依赖
-- OOD和ZoneGatewayNode都持有zone hostname的tls证书,会启动tls stack(可选，但一般都有)
-  - tls证书通过配置获得，通常配置 $zonehostname + *.zonehostname两本tls证书,以支持https访问
-  - 在有SN的情况下，SN收到tls连接请求后，会转发到ood(ood上的zone-gateway配置包含有tls协议栈)
-- 通过rtcp访问zonegateway后，再访问zone gateway的http服务，也是可靠的访问zone service的方法. 该流程避免了对tls和传统CA的依赖。
-- ZoneGateway通过URL rouer,提供了对Zone内所有服务的访问能力`CHECK 所有的node-gateway都有这个能力，但通常不对外提供服务`
+- ZoneGateway通常是OOD，但也可以是普通Node。`ZoneBootConfig`里第一个`node_type.is_gateway()`为真的条目即为默认ZoneGateway（参见`ZoneConfig::get_default_zone_gateway`）
+- 一个典型的小型混合配置：`oods: ["$ood1", "#gate1:210.35.22.1"]`，意为：内网`ood1`只承担OOD职责，公网`gate1`只承担Gateway职责（IP是210.35.22.1）。这样可以用一台廉价VPS充当ZoneGateway，从而摆脱对SN的依赖
+- OOD和ZoneGatewayNode都持有zone hostname的tls证书，会启动tls stack（可选，但一般都有）
+  - tls证书通过配置获得，通常配置 `$zonehostname + *.$zonehostname` 两本tls证书以支持https访问
+  - 在有SN的情况下，SN收到tls连接请求后会转发到ood（ood上的zone-gateway配置包含tls协议栈）
+- 通过rtcp访问zone-gateway后，再访问zone-gateway的http服务，是可靠的访问zone service的方法。该流程避免了对tls和传统CA的依赖
+- ZoneGateway通过URL Router提供对Zone内所有服务的访问能力（实际上所有node-gateway共用同一套URL Router能力，只是非ZoneGateway通常只在`127.0.0.1`绑定，不对外提供服务）
 
-## OODDescriptionString (OOD String) 
-- ood1 相当于 ood1@unknown_lan
-- ood1@wlan ood1是处在waln的非固定IP设备 
-- ood1:210.34.120.23 ood1是有固定IP的WLAN设备
-- ood1@lan1 ood1是处在lan1的设备
-- #ood1 该节点是zone-gateway节点？
-- #node1 该节点是非ood zone-gateawy节点？
+## OODDescriptionString (OOD String)
+
+实现见 `buckyos-base/src/name-lib/src/zone.rs`，结构如下：
+
+```rust
+pub struct OODDescriptionString {
+    pub name: String,
+    pub node_type: DeviceNodeType, // OOD | Gateway | OODOnly
+    pub net_id: Option<String>,    // wan | wan_dyn | portmap | nat | lan1 | ...
+    pub ip: Option<IpAddr>,
+}
+```
+
+字符串文法：`[#|$]<name>[:<ip>][@<net_id>]`
+
+| 前缀 | DeviceNodeType | 含义 |
+| --- | --- | --- |
+| 无前缀 | `OOD` | 既是OOD，也可承担Gateway职责（默认） |
+| `#` | `Gateway` | 仅作Gateway，**不是OOD** |
+| `$` | `OODOnly` | 仅作OOD，**不承担Gateway** |
+
+净身位（net_id）规则：
+- 显式指定时直接使用，例如 `@lan1`、`@wan`、`@wan_dyn`、`@portmap`、`@nat`
+- 未指定但带IP时，自动设为 `wan`（即"有固定IP默认是WAN"）
+- 未指定也无IP时为 `None`，等价于"未知LAN"
+
+示例（与代码`tests`保持一致）：
+- `ood1` —— OOD类型，net_id为None
+- `ood1@lan1` —— OOD，处在lan1
+- `ood1:192.168.1.8@lan` —— OOD，处在lan，IP为192.168.1.8
+- `ood1:210.35.22.1` —— OOD，因有IP自动判定为wan
+- `#gate1:210.35.22.1` —— 仅Gateway（非OOD），公网IP
+- `#gate1@wan_dyn` —— 仅Gateway，动态公网
+- `$ood2` —— 仅OOD（不会被选为ZoneGateway）
+
+> 注意：旧文档中出现的 `wlan` / `unknown_lan` 等写法不在解析规则里，请勿使用。
 
 
 ### ZoneGateway Node的启动(非OOD）`TODO未实现`
@@ -125,7 +165,7 @@ pub fn add_boot_config(
 
 ### ZoneGateway与NodeGateway
 
-核心区别ZoneGateway有tls stack,NodeGateway没有
+核心区别：**ZoneGateway 有 tls stack，NodeGateway 没有**。两者共用同一套cyfs-gateway二进制，差别在配置（是否启用tls监听、是否绑定公开端口）。
 
 ```
 浏览器 --https--> SN(无tls证书) --https--> ZoneGateway(有tls证书) --rtcp--> NodeGateway --upstream--> (App)Service 
@@ -133,9 +173,9 @@ pub fn add_boot_config(
 ```
 
 - NodeGateway的首要目标是运行node的rtcp stack
-- 基于node rtcp stack,可以访问node上运行的各种传统tcp/udp服务
-- 基于权限管理，不少服务只允许绑定在127.0.0.1，因此只能通过rtcp(node_gateway)去访问
-- node_gatway上，也提供了基于127:3180端口的http服务，通过该端口可以以device的身份，通过rtcp协议访问Zone内的所有服务（这个能力是zone_gateway访问zone内服务的底层能力）
+- 基于node rtcp stack，可以访问node上运行的各种传统tcp/udp服务
+- 出于权限管理考虑，不少服务只允许绑定在`127.0.0.1`，因此只能通过rtcp(node_gateway)访问
+- NodeGateway在`127.0.0.1:3180`提供http服务（默认端口`DEFAULT_NODE_GATEWAY_PORT = 3180`，定义见 [runtime.rs:41](src/kernel/buckyos-api/src/runtime.rs:41) ）。通过该端口可以以device的身份、通过rtcp协议访问Zone内的所有服务，这是ZoneGateway访问zone内服务的底层能力
 
 ## Zone内的Device之间建立连接
 
@@ -205,6 +245,8 @@ resolve_did是cyfs://名字系统的关键函数，在其实现里，会根据di
 ### A. 4 种访问路径（入口节点 OOD / ZoneGateway 的 net_id）
 
 > 入口节点=对外提供访问与域名引导的节点（可以是 ZoneGateway，也可以是承担 ZoneGateway 职责的 OOD）。
+>
+> 是否`keep tunnel to SN`的判定见 [node_daemon.rs:864](src/kernel/node_daemon/src/node_daemon.rs:864) ：仅当配置了SN且`net_id`不以`wan`开头时才会`keep_tunnel`。`ddns_sn_url`只在`net_id`为`wan_dyn`或`portmap`时由激活流程自动写入（见 [active_server.rs:507](src/kernel/node_daemon/src/active_server.rs:507) ）。
 
 #### A1. `nat`（最常见）
 
@@ -214,24 +256,24 @@ resolve_did是cyfs://名字系统的关键函数，在其实现里，会根据di
 #### A2. `portmap`
 
 * 入口节点在 NAT 后，**可映射 2980 或其它指定端口，但无法映射 443**
-* 需要 SN 的 **DDNS**（当入口节点 IP/端口变化时）
+* 需要 SN 的 **DDNS**（`ddns_sn_url`自动指向SN，当入口节点 IP/端口变化时刷新）
 * HTTPS 流量无法直达入口节点：**需要 SN 转发/中转（HTTPS relay）**
-* 入口节点通常仍需要与 SN **keep tunnel**（至少为了 https 访问/控制面可达）
+* 入口节点通常仍需要与 SN **keep tunnel**（因为`net_id`不以`wan`开头）
 
 #### A3. `wan_dyn`
 
 * 入口节点具备公网可达能力，但 IP 不固定：
 
   * 能映射 443、2980（或公网动态 IPv6 可达）
-* **不一定需要 SN 做中转**，但通常需要 **DDNS/引导服务**
+* **不需要 SN 做中转**（代码中`net_id.starts_with("wan")`返回true，不keep_tunnel），但通常需要 **DDNS/引导服务**
 
-  * 用 SN 二级域名 → SN 提供 DDNS
+  * 用 SN 二级域名 → SN 提供 DDNS（自动写入`ddns_sn_url`）
   * 用自有域名 → 用户可自建 DDNS，或仍用 SN 参与引导（见 B1）
-* 通常 **不需要 keep tunnel**
 
 #### A4. `wan`
 
 * 入口节点具备公网固定可达能力（固定公网 IP / 稳定公网 IPv6）
+* `net_id.starts_with("wan")`，因此**不keep_tunnel**
 * 可做到 **完全不依赖 SN**（前提见 B1/WAN+自有域名）
 
 
