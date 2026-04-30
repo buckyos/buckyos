@@ -106,6 +106,7 @@ def build_typical_node_gateway_info(*, remote_app: bool) -> dict:
             "ood2": "rtcp://ood2.test.buckyos.io/",
             "ood3": "rtcp://ood3.test.buckyos.io/",
         },
+        "routes": {},
         "trust_key": {
             "issuer-main": "Wo0udCICmiQtnLwzpfulTbFEDvtT5UHNP-MZvnQ3dns",
             "issuer-backup": "s9j6X2zwk1DPjFt60z65LeBJN1DCTsqgeh15iF6Zmd4",
@@ -185,6 +186,31 @@ def run_debug(binary: Path, config: Path, node_gateway_info: dict, req_file: Pat
 
 
 def build_node_gateway_info_for_case(case_name: str) -> dict:
+    if case_name == "req_app_remote_via_routes_ok":
+        info = build_typical_node_gateway_info(remote_app=True)
+        info["routes"] = {
+            "ood2": {
+                "primary": {
+                    "url": "tcp://ood2-edge.test.buckyos.io",
+                    "backup": False,
+                },
+            },
+        }
+        return info
+    if case_name == "req_service_kmsg_via_routes_ok":
+        info = build_typical_node_gateway_info(remote_app=False)
+        info["service_info"]["kmsg"] = {
+            "selector": build_selector(("ood2", 10163, 10)),
+        }
+        info["routes"] = {
+            "ood2": {
+                "primary": {
+                    "url": "tcp://ood2-edge.test.buckyos.io",
+                    "backup": False,
+                },
+            },
+        }
+        return info
     return build_typical_node_gateway_info(remote_app=case_name in REMOTE_APP_CASES)
 
 
@@ -211,6 +237,10 @@ def assertions_for_case(case_name: str):
         return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:10160")]
     if case_name == "req_app_remote_ok":
         return [control_matches({"return", "exit"}, expected_substring="rtcp://ood2.test.buckyos.io/:10160")]
+    if case_name == "req_app_remote_via_routes_ok":
+        return [control_matches({"return", "exit"}, expected_substring="tcp://ood2-edge.test.buckyos.io:10160")]
+    if case_name == "req_service_kmsg_via_routes_ok":
+        return [control_matches({"return", "exit"}, expected_substring="tcp://ood2-edge.test.buckyos.io:10163")]
     if case_name == "req_invalid_host_prefix_reject":
         return [control_matches({"exit"}, exact_value="reject")]
     if case_name == "req_invalid_host_dash_reject":

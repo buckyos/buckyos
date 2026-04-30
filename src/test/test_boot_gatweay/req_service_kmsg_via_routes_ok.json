@@ -1,0 +1,14 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/kapi/kmsg/ping",
+      "host": "api.test.buckyos.io",
+      "url": "https://api.test.buckyos.io/kapi/kmsg/ping"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

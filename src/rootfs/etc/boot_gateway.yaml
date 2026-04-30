@@ -11,6 +11,10 @@ collections:
     type: json_map
     file_path: ./node_gateway_info.json#node_route_map
     only_read_file: true
+  ROUTES:
+    type: json_map
+    file_path: ./node_gateway_info.json#routes
+    only_read_file: true
   TRUST_KEY:
     type: json_map
     file_path: ./node_gateway_info.json#trust_key
@@ -218,22 +222,35 @@ servers:
               return true;
 
           forward_to_service:
+            # 优先使用 forward-plan 形态的 ROUTES（boot 由 node_daemon 生成、运行期由 scheduler 生成），
+            # 在 ROUTES 缺失时回退到老的 NODE_ROUTE_MAP，保证 boot 早期或老配置仍可工作。
             priority: 150
             block: |
               if match-include $TARGET_SERVICE_INFO.selector $THIS_NODE_ID then
                 local port=$TARGET_SERVICE_INFO.selector[$THIS_NODE_ID].port;
                 forward "http://127.0.0.1:${port}";
               else
-                map-create target_node_map;
+                map-create primary_peers;
+                map-create backup_peers;
                 for node_id, node_info in $TARGET_SERVICE_INFO.selector then
-                    local target_rtcp_url = ${NODE_ROUTE_MAP[$node_id]}
-                    if !eq target_rtcp_url "" then
-                      local target_rtcp_url_with_port = "${target_rtcp_url}:${node_info.port}";
-                      echo "target_rtcp_url_with_port: ${target_rtcp_url_with_port}";
-                      map-add target_node_map $target_rtcp_url_with_port $node_info.weight;
+                  if match-include $ROUTES $node_id then
+                    for route_id, route in $ROUTES[$node_id] then
+                      local target_url="${route.url}:${node_info.port}";
+                      if eq $route.backup true then
+                        map-add backup_peers $target_url $node_info.weight;
+                      else
+                        map-add primary_peers $target_url $node_info.weight;
+                      end
                     end
+                  else
+                    local target_rtcp_url=${NODE_ROUTE_MAP[$node_id]};
+                    if !eq $target_rtcp_url "" then
+                      local target_url="${target_rtcp_url}:${node_info.port}";
+                      map-add primary_peers $target_url $node_info.weight;
+                    end
+                  end
                 end
-                forward round_robin --map $target_node_map;
+                forward round_robin --map $primary_peers --backup-map $backup_peers --group "service:${SERVICE_ID}" --next-upstream "error,timeout" --tries 3;
               end
               echo "forward to service failed";
               reject;
@@ -246,7 +263,21 @@ servers:
                 call-server $TARGET_APP_INFO.dir_pkg_id;
               else
                 eq $TARGET_APP_INFO.node_id $THIS_NODE_ID && forward "http://127.0.0.1:${TARGET_APP_INFO.port}";
-                forward "${NODE_ROUTE_MAP[$TARGET_APP_INFO.node_id]}:${TARGET_APP_INFO.port}";
+                if match-include $ROUTES $TARGET_APP_INFO.node_id then
+                  map-create app_primary_peers;
+                  map-create app_backup_peers;
+                  for route_id, route in $ROUTES[$TARGET_APP_INFO.node_id] then
+                    local target_url="${route.url}:${TARGET_APP_INFO.port}";
+                    if eq $route.backup true then
+                      map-add app_backup_peers $target_url 100;
+                    else
+                      map-add app_primary_peers $target_url 100;
+                    end
+                  end
+                  forward round_robin --map $app_primary_peers --backup-map $app_backup_peers --group "app:${APP_ID}" --next-upstream "error,timeout" --tries 3;
+                else
+                  forward "${NODE_ROUTE_MAP[$TARGET_APP_INFO.node_id]}:${TARGET_APP_INFO.port}";
+                end
               end
 
           forward_to_public:

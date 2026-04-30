@@ -28,7 +28,9 @@ uv run src/test/test_boot_gatweay/run_debug_tests.py --binary ~/cyfs-gateway/src
 - `node_gateway_info.json` 由 runner 在测试时直接构造，不依赖运行态 `src/rootfs/etc/node_gateway_info.json`
 - 目前覆盖：
   - 本地 app 转发
-  - 远端 app 转发
+  - 远端 app 转发（NODE_ROUTE_MAP 回退路径）
+  - 远端 app 转发（ROUTES forward-plan 路径）
+  - 远端 service 转发（ROUTES forward-plan 路径，单 primary peer）
   - root host / host prefix / `/kapi` / `/sso_callback` / `/ndm`
   - `/.well-known/*` 与 `/1.0/identifiers/*`
   - 非法 host reject
