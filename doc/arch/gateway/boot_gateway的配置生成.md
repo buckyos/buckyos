@@ -11,15 +11,27 @@ cyfs-gateway 上游已经完成 group forward 和 tunnel URL 状态查询后，B
 1. `src/rootfs/etc/boot_gateway.yaml`
    - 静态 boot 配置。
    - 定义 `node_rtcp`、`zone_gateway_http`、`node_gateway_http` 和 `node_gateway` HTTP server。
-   - 从 `node_gateway_info.json` 读取 `APP_INFO`、`SERVICE_INFO`、`NODE_ROUTE_MAP`、`TRUST_KEY`、`NODE_INFO`。
+   - 从 `node_gateway_info.json` 读取 `APP_INFO`、`SERVICE_INFO`、`ROUTES`（升级前为 `NODE_ROUTE_MAP`）、`TRUST_KEY`、`NODE_INFO`。
 2. `nodes/<node>/gateway_info`
    - scheduler 按 source node 生成。
    - node-daemon 拉取后落地为 `$BUCKYOS_ROOT/etc/node_gateway_info.json`。
-   - 当前包含 `node_info`、`app_info`、`service_info`、`node_route_map`、`trust_key`。
+   - 当前包含 `node_info`、`app_info`、`service_info`、`node_route_map`（升级目标为 `routes`）、`trust_key`。
 3. `nodes/<node>/gateway_config`
    - scheduler 按 source node 生成。
    - node-daemon 拉取后落地为 `$BUCKYOS_ROOT/etc/node_gateway.json` 并触发 cyfs-gateway reload。
    - 当前主要承载 zone TLS、ACME、静态 web dir server 等后置配置。
+
+### cyfs-gateway 的运行时独立性
+
+cyfs-gateway 进程的运行**只依赖 `boot_gateway.yaml` 这一份本地配置**。`node_gateway_info.json` 和 `node_gateway.json` 是 boot_gateway.yaml 引用的数据文件，scheduler 通过更新这两份文件来调整转发行为。
+
+由此带来一个重要属性：
+
+- **scheduler 失能不会让 cyfs-gateway 不可用**。当 system-config 不可写、scheduler 崩溃或 node-daemon 拉取失败时，唯一的后果是 `node_gateway_info.json` 停止更新；cyfs-gateway 仍按已落地的最后一份配置继续转发，已建立的 RTCP tunnel、已生效的 routes 和 selector 都保持工作。
+- **boot 期与 scheduler 期的"切换"不是替换 cyfs-gateway 配置文件**。两者都是往同一份 `node_gateway_info.json` 写入；boot route builder 写第一版，scheduler 上线后覆盖。process-chain 永远从同一个数据源读取，不区分"boot 模式"和"正常模式"。
+- node-daemon 在写入新版本 `node_gateway_info.json` 后通过 reload 通知 cyfs-gateway 重新加载，未受影响的 tunnel 和 selector 状态尽量保留（详见后文"scheduler 接管流程"中的 reload 行为）。
+
+因此本文中说"scheduler 接管"或"配置切换"指的都是数据文件内容更新，不是 cyfs-gateway 重启或启用不同 yaml。
 
 当前 `node_route_map` 由 scheduler 根据 `devices/*/info` 生成，格式是：
 
@@ -148,25 +160,44 @@ cyfs-gateway 负责消费这些显式候选：
 
 ### Boot 阶段连接调度
 
-Boot 阶段必须区分“探测并发”和“路径优先级”：
+Boot 阶段必须区分"探测并发"和"路径优先级"：
 
 - SN keep tunnel、Finder/LAN discovery、已知 IP 的 OOD direct 连接、relay 连接可以同时启动。
-- route 选择不能按“谁先成功谁优先”固化。relay 往往比 direct 更早可用，但它只能作为 bootstrap/兜底路径。
+- route 选择不能按"谁先成功谁优先"固化。relay 往往比 direct 更早可用，但它只能作为 bootstrap/兜底路径。
 - 对同一个目标 OOD，direct candidate 的长期优先级必须高于 via SN/ZoneGateway relay candidate。
 - relay tunnel 成功后可以临时满足 boot 可达性，避免系统卡死；但 Finder 或 name-client 后续发现 direct endpoint 后，必须继续尝试 direct，并在 direct tunnel 成功后让业务 route 优先走 direct。
 - 如果 direct tunnel 断开，可以降级回 relay；降级后仍应周期性或由 discovery 事件触发 direct 重试。
 
-因此 Boot 阶段的推荐状态机是：
+#### 显式双 candidate，而不是隐式 relay 兜底
+
+需要强调一个边界：Boot 阶段对每一个需要既"快可达"又"长期走 direct"的 target，**显式插入两个 tunnel URL** 到 ROUTES：
+
+```text
+ROUTES["ood2"] = [
+  { id: "direct",  kind: rtcp_direct, priority: 10, backup: false, url: "rtcp://ood2.example.zone/" },
+  { id: "via-sn",  kind: rtcp_relay,  priority: 30, backup: true,  url: "rtcp://<encoded-sn-bootstrap>@ood2.example.zone/" },
+]
+```
+
+两条都是显式候选，区别只在 `backup` / `priority`。这意味着：
+
+- "relay 先成功"是 forward executor 在 primary 全部 `fail_timeout` 内不可用时尝试 backup peer 的**正常 group forward 行为**，不是 Gateway "在 direct 失败后自动发明 relay"。
+- 当 direct 后来探测可用，下一次 attempt 自然回到 primary peer，无需特殊"切回"逻辑。
+- 如果 ROUTES 里没有显式写入 relay candidate，那就是真的没有 relay 路径——cyfs-gateway 不会自己去找一个。
+
+因此 readme.md / Zone集群化.md 中的"禁止隐式中转扩散"在 Boot 阶段同样适用，区别只是 boot route builder 是显式构造 candidate 的合法主体。
+
+#### Boot 推荐状态机
 
 ```text
 unknown
   -> probing_direct + probing_relay
-  -> relay_ready(provisional)
-  -> direct_ready(preferred)
-  -> relay_ready(degraded)    # direct 失效时降级
+  -> relay_ready(provisional)        # backup peer 在 primary 不可用时被 group forward 选中
+  -> direct_ready(preferred)         # primary peer 状态恢复后自然回到 direct
+  -> relay_ready(degraded)           # direct 失效时再次进入 backup
 ```
 
-这解决一个常见问题：直连依赖 Finder 或 DID/name 解析补齐真实 IP，relay 可能一步成功。如果实现只以首次成功路径作为唯一 route 或 keep tunnel 目标，就会退化成“中转优先”。正确行为是“连接探测并发、业务转发直连优先、relay 保持可用兜底”。
+这解决一个常见问题：直连依赖 Finder 或 DID/name 解析补齐真实 IP，relay 可能一步成功。如果实现只以首次成功路径作为唯一 route 或 keep tunnel 目标，就会退化成"中转优先"。正确行为是"连接探测并发、business forward 始终在显式 primary / backup 集合里按优先级选、direct 可用时自然占据 primary"。
 
 ## DeviceInfo 网络观测模型
 
@@ -242,7 +273,40 @@ scheduler 使用 DeviceInfo 时应遵循：
 2. 只有地址、没有成功 probe 时，可以生成低置信 direct candidate，但不应压过已验证的 relay 可达性用于 readiness。
 3. direct probe 成功可以提升 direct candidate 的当前排序或 readiness 权重，但不能让 relay 从配置中消失。
 4. probe 失败不能直接删除 direct candidate；应结合失败原因、时间新鲜度和 Zone 拓扑决定是否降级。
-5. 节点上报的 probe 结果只对“从该节点出发”的 route 有直接意义，不应无条件复用给其它 source node。
+5. 节点上报的 probe 结果在大多数情况下只对"从该节点出发"的 route 有直接意义；只有当其它 source 与本节点处于同 LAN 且本次 probe 的目标也在该 LAN 时，scheduler 才可在标注 evidence applicability 后复用（详见下文 evidence 模型）。
+
+## 探测时机
+
+direct probe、tunnel_mgr URL 状态查询、Finder 广播这些动作都有成本。本节明确"什么时候触发探测"，避免实现层把它们退化为高频轮询或反过来变成只在 boot 时跑一次的 dead code。
+
+探测触发分为三类：
+
+### 1. 事件触发（必须立即跑）
+
+- **boot 阶段启动**：node-daemon / cyfs-gateway 起来后立即对 keep_tunnel 集合（OOD / SN / ZoneGateway）和 system-config 入口候选发起一次 probe。
+- **网络环境变化**：node-daemon 检测到 `network_observation.generation` 递增（IP 列表变化、接口 up/down、默认网关切换）后，立即对本节点出发的所有 keep_tunnel candidate 重测，并刷新 DeviceInfo 上报。这是"笔记本换网络"场景的核心触发点。
+- **scheduler 配置变化**：node-daemon 拿到新版 `nodes/<source>/gateway_info` 时，对其中新增或 URL 变化的 candidate 立即跑一次 probe，把结果回写 tunnel_mgr，让下一次业务请求能基于新鲜状态选路。
+- **大流量业务启动前的强制刷新**：备份等成本敏感业务在启动前可显式触发一次 direct probe，没有 direct 时直接失败提示用户，不允许默认回落 relay。这条由业务侧调用，不是周期任务。
+
+### 2. 周期触发（节流后台跑）
+
+- **keep_tunnel 长连接**：tunnel 自身的 ping/pong 已提供持续的可达性信号，tunnel_mgr 直接消费。**不再额外跑周期 probe**。
+- **节点级 direct probe**：对"在 keep_tunnel 集合外、但 scheduler 在 routes 里写过的 target node"，按 source × target 矩阵周期性跑。家用规模 n ≤ 10 时矩阵规模可控；建议 boot 阶段 30s 一轮，平稳阶段 5–10 分钟一轮。
+- **Finder 广播**：仍按 `FINDER_BROADCAST_INTERVAL_SECS = 2s` 进行，作为 LAN 内 OOD 发现的低成本背景流量。
+- **DeviceInfo 上报**：node-daemon 周期上报 DeviceInfo 到 system-config，间隔与 `network_observation` 内的最快字段对齐（建议 30–60s）；变化触发与周期触发取较短者。
+
+### 3. 按需触发（selector 没得选时）
+
+- forward executor 在某 group 全部 candidate 都被 `fail_timeout` 标记不可用时，可调用 tunnel_mgr 的 URL 状态查询接口做一次同步 probe（cyfs-gateway `forward机制升级需求.md` 阶段 4 的 `apply_least_time_via_tunnel_mgr` 路径），刷新候选状态。这种 probe 必须有预算限制（默认 50ms），超时退化为现有 candidate 顺序。
+- runtime / Client Device 在拿到 ServiceInfo + DeviceInfo 后做一次性 URL probe，决定是否走 direct。这类 probe 的结果不回写 system-config，只用于本次会话。
+
+### 反模式
+
+下面这些实现选择是被明确反对的：
+
+- 服务级周期 probe（每个 service 都跑一遍 source × target × url 矩阵）。**节点级探测优先于服务级探测**，service 级别只在 selector 找不到可用 URL 时按需触发。
+- 用 probe 失败直接删除 direct candidate。失败只能降低当前排序，candidate 集合由 scheduler / boot route builder 决定。
+- 把 probe 结果写回静态 priority。priority 是稳定排序锚（direct < relay），不被运行时探测覆盖。
 
 ## Boot Route 数据模型
 
@@ -311,7 +375,36 @@ scheduler 使用 DeviceInfo 时应遵循：
   - `system_config`
   - `lan_discovery`
   - `manual`
-- `evidence`：可选字段，记录该 candidate 的生成依据，例如 DeviceInfo direct probe、Finder cache、ZoneBootConfig OOD 描述、SN/ZoneGateway 配置。它用于诊断和后续调度，不参与 gateway 鉴权。
+- `evidence`：可选字段，记录该 candidate 的生成依据，例如 DeviceInfo direct probe、Finder cache、ZoneBootConfig OOD 描述、SN/ZoneGateway 配置。它用于诊断和后续调度，不参与 gateway 鉴权。结构如下：
+
+  ```json
+  {
+    "type": "direct_probe",
+    "source_node": "node1",
+    "last_success": 1710000030,
+    "rtt_ms": 12,
+    "confidence": "high",
+    "freshness_ttl_secs": 600,
+    "applicability": "source_node"
+  }
+  ```
+
+  - `confidence`
+    - `high`：tunnel_mgr 主动 probe 或 forward executor 业务建链回写的成功记录。
+    - `medium`：DeviceInfo 中的 endpoint 事实、Finder cache 命中。
+    - `low`：仅来自 ZoneBootConfig / ZoneConfig 的静态描述，未经探测验证。
+  - `freshness_ttl_secs`：该 evidence 的有效期。常用值：
+    - direct_probe / 业务建链：300–600s。
+    - LAN 发现 / Finder cache：≥ TTL（默认 7 天）。
+    - ZoneBootConfig / ZoneConfig：长期有效，scheduler 不应据此让 candidate 过期。
+    - 超过 TTL 的 evidence 仍可保留供诊断，但不再用于提升 candidate 排序。
+  - `applicability`
+    - `source_node`：仅对 `evidence.source_node` 出发的 routes 有意义（默认）。
+    - `same_lan`：可被同 LAN 的其它 source 复用（按 `network_observation.endpoints.scope == lan` 且子网一致判定）。
+    - `zone_wide`：来自 ZoneConfig 等全局事实，所有 source 都可参考。
+    - applicability 描述"这条证据可以被哪些 source 借用"，scheduler 在为别的 source 生成 routes 时查这个字段决定是否复用。
+
+  evidence TTL 过期不直接删除 candidate（candidate 由 scheduler/boot route builder 决定是否存在），只会让它退回到"无业务级 evidence 加成"的默认排序。
 
 `node_gateway_info.json` 中只写入 `ROUTES`。process-chain 必须使用 `ROUTES` 构造 group forward；如果目标 node 没有 route candidate，应返回明确错误，不再降级到 `NODE_ROUTE_MAP`。
 
@@ -556,6 +649,16 @@ Boot 阶段必须补充 `node_rtcp.on_new_tunnel_hook_point`。
 2. OOD、ZoneGateway、SN 可按角色加入 allow list。
 3. 跨 Zone device 只有在明确存在 trust relationship 时允许。
 4. 未携带可验证 `device_doc_jwt` 的来源只能使用较弱字段，如 `source_device_id`，默认不应允许敏感 relay 能力。
+
+#### 准入与 system-config 的解耦
+
+device_doc 的可信性不依赖 system-config：
+
+- 每个 device 的 `device_doc` 在**激活流程加入 Zone 时**就已经创建并落地到本机（owner 私钥签名，本地存储）。
+- 因此当任意 device A 向 device B 发起 RTCP tunnel 时，A 携带的 `device_doc_jwt` 可以被 B 用 owner 公钥独立验证，**不需要 B 已经连上 system-config**。
+- 这避免了"先有 tunnel 才能拿 system-config，又要先有 system-config 才能允许 tunnel"的循环依赖。
+
+因此 boot 阶段的 `on_new_tunnel_hook_point` 不需要"bootstrap 模式 vs 正常模式"两套规则；只要 owner 公钥在本机可信即可执行完整准入策略。
 
 可用字段以 cyfs-gateway 当前实现为准：
 

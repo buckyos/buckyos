@@ -17,7 +17,7 @@ Selector 应该负责：
 - 在 `ServiceInfo` 给出的 Provider 集合内选择 Node 或实例；
 - 在 Gateway 配置允许的 URL 集合内执行稳定策略，例如单实例、权重、随机、RTT 优先、成本优先或 Failover；
 - 保持选择逻辑可解释：相同输入应得到一致或符合权重语义的输出；
-- 在当前 Gateway process-chain 中，把服务访问限制在 `node_gateway_info.json` 已生成的 `selector` 和 `node_route_map` 内。
+- 把服务访问限制在 `node_gateway_info.json` 中已生成的 `selector` 和 routes 集合内（升级前对应 `node_route_map`，升级后对应 per-source `routes`）。
 
 Selector 不应该负责：
 
@@ -153,6 +153,8 @@ node_route_map:
 
 当前 process-chain 的选择对象是 `node_id -> rtcp route`，不是显式的多 URL 列表。
 
+cyfs-gateway 上游的 `forward` 命令已经支持 `ForwardPlan` 形态（`--group-map` / `--backup-map` / `--next-upstream` / `--tries`，连接阶段 retry，URL history 业务回写到 tunnel_mgr，详见 cyfs-gateway `doc/forward机制升级需求.md`）。BuckyOS 这一侧的剩余工作是用 `ROUTES` 替换 `NODE_ROUTE_MAP`，process-chain 改为构造 primary / backup peer map 后调用 group forward，转发能力本身不需要再等上游。
+
 ## 5. 多链路新设计对 Service Selector 的要求
 
 ### 5.1 ServiceInfo 不应只表达最终单 URL
@@ -229,42 +231,68 @@ direct 失败后，Gateway 自动查找任意中转节点并改走中转。
 
 ## 6. 目标数据形态
 
-当前实现可以继续保持兼容的 `selector` 结构，但多链路目标模型应能表达 Provider 下的多路由。
+多链路目标模型保持 **ServiceInfo 与 routes 两层独立**，避免把 "哪个 Node 提供" 与 "如何到 Node" 耦合在同一份结构里。两份数据分别维护、由 process-chain 在拼装时合成。
 
-示例：
+### 6.1 ServiceInfo（不变）
 
-```yaml
-service_info:
-  backup:
-    selector_type: cost_first_then_rtt
-    providers:
-      node-a:
-        weight: 100
-        services:
-          backup:
-            port: 7001
-        routes:
-          - url: direct://node-a
-            type: direct
-            priority: 10
-          - url: relay://relay-a/node-a
-            type: relay
-            priority: 50
-```
-
-Gateway 运行时可转成：
+ServiceInfo 仍然只描述 `provider node × port × weight`：
 
 ```yaml
-service_mapping:
-  service: backup
-  selector: cost_first_then_rtt
-  failover: next_available
-  urls:
-    - direct://node-a/127.0.0.1:7001
-    - relay://relay-a/node-a/127.0.0.1:7001
+services/<spec_id>/info:
+  selector_type: weighted_random
+  node_list:
+    node-a:
+      weight: 100
+      service_port:
+        backup: 7001
+    node-b:
+      weight: 100
+      service_port:
+        backup: 7001
 ```
 
-这只是目标表达形态。当前代码还没有这样的字段，当前落地形态仍是 `selector + node_route_map`。
+升级中 `selector_type` 可扩展为 `single` / `weighted_random` / `round_robin` / `rtt_first` / `cost_first_then_rtt` / `failover` / `affinity`，但内部结构仍然是 provider 列表 + 权重，不嵌入 routes。
+
+### 6.2 routes（per source node）
+
+routes 作为独立产物存在 `nodes/<source>/gateway_info.routes` 中，结构由 `boot_gateway的配置生成.md` 定义，是 `target_node_id -> route candidates` 的形态。同一 target node 在不同 source node 下可以有不同候选路径。
+
+### 6.3 process-chain 合成 ForwardPlan
+
+cyfs-gateway 的 `forward` 命令支持基于 process-chain 中的 map 动态构造 `ForwardPlan`（见 cyfs-gateway `doc/forward机制升级需求.md` §6.2）。BuckyOS 侧把 ServiceInfo + routes 合成 ForwardPlan 的伪代码：
+
+```text
+map-create primary_peers
+map-create backup_peers
+
+for node_id, node_info in TARGET_SERVICE_INFO.selector:
+  if node_id == THIS_NODE_ID:
+    forward "http://127.0.0.1:${node_info.port}"        # 本机短路
+  else if ROUTES contains node_id:
+    for route in ROUTES[node_id]:
+      target_url = append_port(route.url, node_info.port)
+      if route.backup:
+        map-add backup_peers $target_url $node_info.weight
+      else:
+        map-add primary_peers $target_url $node_info.weight
+  else:
+    return route_missing(node_id)
+
+forward --group-map $primary_peers \
+        --backup-map $backup_peers \
+        --next-upstream error,timeout \
+        --tries 3
+```
+
+执行结果是 cyfs-gateway 在连接阶段按 primary → backup 顺序尝试，session 建立后不再透明切换；URL history 由 executor 回写 tunnel_mgr。
+
+### 6.4 不内嵌 routes 的原因
+
+- ServiceInfo 由 service 实例上报驱动（`ServiceInstanceReportInfo` + 90s 存活窗口），变更频率与服务生命周期对齐；
+- routes 由 DeviceInfo 网络观测驱动，变更频率与网络环境变化对齐；
+- 两者刷新节奏不同、来源不同，硬塞进一个结构会导致任一侧变化都触发对方重写，且 per source node 的 routes 没法表达在 service 共享的 ServiceInfo 中。
+
+当前代码落地形态仍是 `selector + node_route_map`，目标形态是 `selector + per-source routes`。从 `node_route_map` 到 `routes` 的迁移是 breaking change，详见 `boot_gateway的配置生成.md`。
 
 ## 7. Selector 类型
 

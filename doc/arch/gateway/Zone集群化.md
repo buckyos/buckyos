@@ -4,13 +4,15 @@
 
 本文偏思路介绍，具体数据结构、生成规则和实现阶段见 `doc/arch/gateway/boot_gateway的配置生成.md`。
 
-核心思路是把问题拆成三层：
+本文聚焦"Node 之间集群化"的拓扑问题。Client Device（笔记本、手机等不承载服务的设备）走的是另一条访问路径，详见本文"Client Device 的访问路径"一节。
+
+核心思路是把 Node 的拓扑问题拆成三层：
 
 1. **Boot 层**：只解决最小可达性。依赖 `ZoneBootConfig`、SN、ZoneGateway、OOD 描述和本地 Finder 缓存，先让 OOD、ZoneGateway、普通 Node 能找到 system-config 或至少找到一个可用中转。
 2. **调度层**：以 system-config 为真相源。scheduler 根据 `devices/*/info`、服务实例上报、Zone 配置，按 source node 分别生成 `nodes/<node>/gateway_info` 和 `nodes/<node>/gateway_config`。
 3. **Gateway/Tunnel 层**：只消费已发布的配置。NodeGateway 根据 selector 和 route 转发服务；RTCP/name-client 负责给定路径内部的地址解析、IP 竞速和连接级 failover。
 
-因此，Gateway 拓扑算法不应该变成一个隐式全局搜索器。设备发现、候选 URL 生产、业务成本判断和刷新周期应由 Boot builder、scheduler 或应用层调度器完成；Gateway 只在显式配置的路径集合内选择。
+因此，Gateway 拓扑算法不应该变成一个隐式全局搜索器。设备发现、候选 URL 生产、业务成本判断和刷新周期应由 Boot builder、scheduler 或 runtime（在 cyfs-gateway 视角下相当于应用层调度器）完成；Gateway 只在显式配置的路径集合内选择。
 
 Boot 后的常态闭环应是：
 
@@ -110,16 +112,25 @@ Node/Device
 
 在这个阶段，局域网直连应优先于 relay。relay 可以先成功并临时保证可达，但不能因为“先成功”就长期覆盖 direct 的静态优先级。
 
-## Zone 外设备访问 Zone
+## Client Device 的访问路径
 
-笔记本、手机等 Device 经常在 Zone 外部网络中使用。它们不能假设能通过局域网 Finder 找到 OOD，应先使用 Zone 的公网入口或 SN。
+笔记本、手机等 Client Device 经常在 Zone 外部网络中使用。它们不承载服务，也不接受 scheduler 的 `nodes/<source>/gateway_info` 下发；它们解决的是另一类问题——"如何从外部接入 Zone 并访问 Zone 内服务"。
 
-常见路径是：
+Client Device 的访问路径流程：
+
+1. **接通入口**：通过 Zone 的公网入口建立到 system-config 的连接。最常见的形式是 `https://<zone-host>/kapi/system_config`，由 ZoneGateway / SN 在公网侧承接。这一步成功后，Client Device 就拿到了访问 Zone 内服务的可信入口。
+2. **拉取必要元数据**：从 system-config 读取目标服务的 `ServiceInfo` 和相关 Provider Node 的 `DeviceInfo`。这部分数据 scheduler 已经在维护，Client Device 只是读取。
+3. **本地链路优化**：runtime 拿到 ServiceInfo + DeviceInfo 后，在客户端侧自己做"访问 Zone 内服务的最优路径"选择：
+   - 如果 DeviceInfo 表明目标 Node 与本设备在同一 LAN，且新鲜度足够，尝试 direct RTCP；
+   - 否则继续经 ZoneGateway / SN 中转；
+   - 这里的探测、竞速、回退都是一次性的，由 runtime 自己驱动，不需要 scheduler 介入。
+
+常见路径形态：
 
 ```text
-Device -> SN -> ZoneGateway/OOD -> NodeGateway -> Service
-Device -> ZoneGateway -> NodeGateway -> Service
-Device -> direct RTCP -> NodeGateway -> Service
+Client Device -> ZoneGateway -> NodeGateway -> Service
+Client Device -> SN -> ZoneGateway/OOD -> NodeGateway -> Service
+Client Device -> direct RTCP -> NodeGateway -> Service     # 仅当本机网络观测支持
 ```
 
 其中 SN 与 ZoneGateway 的定位不同：
@@ -127,13 +138,15 @@ Device -> direct RTCP -> NodeGateway -> Service
 - **SN**：公网协助节点，提供 DDNS、TXT/引导、证书挑战协助、HTTPS/RTCP relay、keep-tunnel target 等能力。
 - **ZoneGateway**：Zone 自己的入口节点，持有 Zone hostname 的 TLS 能力，并能通过 NodeGateway 访问 Zone 内服务。
 
-当 Zone 内只有某个 OOD 与 SN keep-tunnel 时，外部设备访问其它 Node 可能需要多跳：
+当 Zone 内只有某个 OOD 与 SN keep-tunnel 时，外部 Client Device 访问其它 Node 可能需要多跳：
 
 ```text
-Device -> SN -> OOD1 -> Target Node
+Client Device -> SN -> OOD1 -> Target Node
 ```
 
-这条路径必须作为显式 route candidate 存在，不能由 Gateway 在 direct 失败后自动发明。
+这条路径以显式 Tunnel URL 表达（参见 `服务的多链路选择.md`），由 Client Device runtime 在本地构造，而不是 Gateway 在 direct 失败后自动发明。
+
+> 这一节解释 Client Device 的访问模型；本文剩余内容仍聚焦于 Node 之间的集群化拓扑（per source node 的 routes 下发、scheduler 接管、keep_tunnel 集合等）。两者不要混淆。
 
 ## 有公网 ServerNode 的 Zone
 
