@@ -1,13 +1,17 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 use buckyos_api::network_observation::{
-    NetworkEndpoint, NetworkObservation, ProbeInfo, DEFAULT_RTCP_PORT, NETWORK_OBSERVATION_KEY,
+    NetworkObservation, ProbeInfo, DEFAULT_RTCP_PORT, NETWORK_OBSERVATION_KEY,
 };
 use name_lib::{DeviceInfo, ZoneConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const DEFAULT_ROUTE_WEIGHT: u32 = 100;
+const DIRECT_PRIORITY: u32 = 10;
+const SN_PRIORITY: u32 = 30;
+const ZONE_GATEWAY_PRIORITY: u32 = 40;
 
 fn probe_target_node_id(probe: &ProbeInfo) -> Option<&str> {
     probe.target_node.as_deref()
@@ -29,48 +33,35 @@ fn parse_network_observation(device_info: &DeviceInfo) -> Option<NetworkObservat
     serde_json::from_value::<NetworkObservation>(value.clone()).ok()
 }
 
-fn lan_endpoint_for(
-    observation: &NetworkObservation,
-    family: &str,
-) -> Option<std::net::IpAddr> {
-    observation
-        .endpoints
-        .iter()
-        .filter(|ep| ep.scope.as_deref() == Some("lan"))
-        .filter(|ep| ep.family.as_deref() == Some(family))
-        .filter_map(|ep| ep.ip.as_deref().and_then(|ip| ip.parse::<std::net::IpAddr>().ok()))
-        .next()
-}
-
-fn global_ipv6_endpoint(observation: &NetworkObservation) -> Option<std::net::IpAddr> {
+fn global_ipv6_endpoint(observation: &NetworkObservation) -> Option<IpAddr> {
     observation
         .endpoints
         .iter()
         .filter(|ep| ep.scope.as_deref() == Some("global"))
         .filter(|ep| ep.family.as_deref() == Some("ipv6"))
-        .filter_map(|ep| ep.ip.as_deref().and_then(|ip| ip.parse::<std::net::IpAddr>().ok()))
+        .filter_map(|ep| ep.ip.as_deref().and_then(|ip| ip.parse::<IpAddr>().ok()))
         .next()
 }
 
-fn collect_lan_ips(observation: &NetworkObservation) -> Vec<std::net::IpAddr> {
+fn collect_lan_ips(observation: &NetworkObservation) -> Vec<IpAddr> {
     observation
         .endpoints
         .iter()
         .filter(|ep| ep.scope.as_deref() == Some("lan"))
-        .filter_map(|ep| ep.ip.as_deref().and_then(|ip| ip.parse::<std::net::IpAddr>().ok()))
+        .filter_map(|ep| ep.ip.as_deref().and_then(|ip| ip.parse::<IpAddr>().ok()))
         .collect()
 }
 
-fn ip_subnet_matches(a: &std::net::IpAddr, b: &std::net::IpAddr) -> bool {
+fn ip_subnet_matches(a: &IpAddr, b: &IpAddr) -> bool {
     match (a, b) {
-        (std::net::IpAddr::V4(a4), std::net::IpAddr::V4(b4)) => {
+        (IpAddr::V4(a4), IpAddr::V4(b4)) => {
             // 家用 LAN 默认按 /24 判等：高于 /24 的子网划分在家用场景里不常见，
             // 即使误判也只是把"应当能直连"放过，后续业务建链失败会自然降级到 relay。
             let a_oct = a4.octets();
             let b_oct = b4.octets();
             a_oct[0] == b_oct[0] && a_oct[1] == b_oct[1] && a_oct[2] == b_oct[2]
         }
-        (std::net::IpAddr::V6(a6), std::net::IpAddr::V6(b6)) => {
+        (IpAddr::V6(a6), IpAddr::V6(b6)) => {
             // IPv6 LAN 默认按 /64 前缀匹配。
             a6.segments()[..4] == b6.segments()[..4]
         }
@@ -148,6 +139,45 @@ pub(crate) struct NodeGatewayRouteCandidate {
     pub(crate) evidence: Option<NodeGatewayRouteEvidence>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DidIpHintSource {
+    SignedDeviceDoc,
+    LanEndpoint,
+    GlobalIpv6,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct DidIpHint {
+    pub(crate) ip: IpAddr,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) port: Option<u32>,
+    pub(crate) source: DidIpHintSource,
+    pub(crate) confidence: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_observed_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) freshness_ttl_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct ForwardPlan {
+    pub(crate) routes: HashMap<String, Vec<NodeGatewayRouteCandidate>>,
+    // key = target 的 DID hostname；value 是 cyfs-gateway resolve_ips 的 IP 事实参考。
+    pub(crate) did_ip_hints: HashMap<String, Vec<DidIpHint>>,
+}
+
+// scheduler 内部用来描述"为什么 direct 走得通"，最终被翻译成 candidate.evidence。
+// IP 选哪个由 cyfs-gateway 的 resolve_ips 根据 did_ip_hints + 历史 RTT 决定。
+enum DirectEvidence {
+    SignedWanIp,
+    DirectProbe(ProbeInfo),
+    Ipv6GlobalEndpoint { confidence: &'static str },
+    WanTarget,
+    SameNetId,
+    SharedOodInference { witness: String },
+}
+
 fn device_rtcp_port(device_info: &DeviceInfo) -> u32 {
     device_info
         .device_doc
@@ -160,19 +190,6 @@ fn format_rtcp_did_url(node_id: &str, zone_host: &str, port: u32) -> String {
         format!("rtcp://{}.{}/", node_id, zone_host)
     } else {
         format!("rtcp://{}.{}:{}/", node_id, zone_host, port)
-    }
-}
-
-fn format_rtcp_ip_url(ip: &std::net::IpAddr, port: u32) -> String {
-    let host = match ip {
-        std::net::IpAddr::V4(ipv4) => ipv4.to_string(),
-        std::net::IpAddr::V6(ipv6) => format!("[{}]", ipv6),
-    };
-
-    if port == DEFAULT_RTCP_PORT {
-        format!("rtcp://{}/", host)
-    } else {
-        format!("rtcp://{}:{}/", host, port)
     }
 }
 
@@ -358,6 +375,34 @@ fn shared_ood_direct_probe(
         .map(str::to_string)
 }
 
+fn ipv6_direct_confidence(
+    source_obs: Option<&NetworkObservation>,
+    target_obs: Option<&NetworkObservation>,
+) -> Option<&'static str> {
+    let source_obs = source_obs?;
+    let target_obs = target_obs?;
+
+    // source 必须至少能 IPv6 出站；address_only / unknown / unavailable 都不足以发起 direct。
+    let source_state = source_obs.ipv6.as_ref()?.state.as_deref()?;
+    if !matches!(source_state, "egress_ok" | "rtcp_direct_ok") {
+        return None;
+    }
+    // target 显式声明 IPv6 不可用时，没必要把它当成 direct 路径。
+    if let Some(target_state) = target_obs.ipv6.as_ref().and_then(|i| i.state.as_deref()) {
+        if target_state == "unavailable" {
+            return None;
+        }
+    }
+    global_ipv6_endpoint(target_obs)?;
+
+    // 双方都 rtcp_direct_ok 时，IPv6 直连基本等价于已验证；只 source 侧 egress_ok 时降一档。
+    Some(if source_state == "rtcp_direct_ok" {
+        "high"
+    } else {
+        "medium"
+    })
+}
+
 fn route_evidence(
     evidence_type: &str,
     source_node: Option<&str>,
@@ -401,103 +446,205 @@ fn route_evidence_from_probe(
     }
 }
 
-fn build_ipv6_direct_candidate(
+fn direct_evidence_for(
+    source_device: &DeviceInfo,
+    target_device: &DeviceInfo,
+    this_node_id: &str,
+    target_node_id: &str,
+    zone_config: &ZoneConfig,
+    probe_targets: &HashMap<String, HashMap<String, ProbeInfo>>,
+    source_obs: Option<&NetworkObservation>,
+    target_obs: Option<&NetworkObservation>,
+) -> Option<DirectEvidence> {
+    if has_signed_wan_ip(target_device) {
+        return Some(DirectEvidence::SignedWanIp);
+    }
+    if let Some(probe_info) = direct_probe_to(probe_targets, this_node_id, target_node_id) {
+        return Some(DirectEvidence::DirectProbe(probe_info.clone()));
+    }
+    if let Some(confidence) = ipv6_direct_confidence(source_obs, target_obs) {
+        return Some(DirectEvidence::Ipv6GlobalEndpoint { confidence });
+    }
+    if is_publicly_reachable_net_id(target_device.device_doc.net_id.as_ref()) {
+        return Some(DirectEvidence::WanTarget);
+    }
+    if same_trusted_lan(source_device, target_device, source_obs, target_obs) {
+        return Some(DirectEvidence::SameNetId);
+    }
+    if let Some(witness) = shared_ood_direct_probe(
+        zone_config,
+        probe_targets,
+        this_node_id,
+        target_node_id,
+        source_obs,
+        target_obs,
+    ) {
+        return Some(DirectEvidence::SharedOodInference { witness });
+    }
+    None
+}
+
+fn build_direct_candidate(
     this_node_id: &str,
     target_node_id: &str,
     target_port: u32,
-    source_obs: Option<&NetworkObservation>,
-    target_obs: Option<&NetworkObservation>,
-) -> Option<NodeGatewayRouteCandidate> {
-    let source_obs = source_obs?;
-    let target_obs = target_obs?;
-
-    // source 必须至少能 IPv6 出站；address_only / unknown / unavailable 都不足以发起 direct。
-    let source_state = source_obs.ipv6.as_ref()?.state.as_deref()?;
-    if !matches!(source_state, "egress_ok" | "rtcp_direct_ok") {
-        return None;
-    }
-    // target 显式声明 IPv6 不可用时，没必要再写 candidate。
-    if let Some(target_state) = target_obs.ipv6.as_ref().and_then(|i| i.state.as_deref()) {
-        if target_state == "unavailable" {
-            return None;
+    zone_host: &str,
+    evidence: DirectEvidence,
+) -> NodeGatewayRouteCandidate {
+    let url = format_rtcp_did_url(target_node_id, zone_host, target_port);
+    let route_evidence = match evidence {
+        DirectEvidence::SignedWanIp => route_evidence(
+            "signed_wan_ip",
+            Some(this_node_id),
+            Some(target_node_id),
+            None,
+            "high",
+            "zone_wide",
+        ),
+        DirectEvidence::DirectProbe(probe_info) => {
+            route_evidence_from_probe(this_node_id, target_node_id, &probe_info)
         }
-    }
-    let target_v6 = global_ipv6_endpoint(target_obs)?;
-
-    // 双方都 rtcp_direct_ok 时，IPv6 直连基本等价于已验证；只 source 侧 egress_ok 时降一档。
-    let confidence = if source_state == "rtcp_direct_ok" {
-        "high"
-    } else {
-        "medium"
-    };
-
-    Some(NodeGatewayRouteCandidate {
-        id: "direct-ipv6-global".to_string(),
-        kind: "rtcp_direct".to_string(),
-        // 介于 direct-probed (10) 与 direct-wan-target (18) 之间：IPv6 全局可直连，
-        // 但未经业务建链验证，排在已 probe 的 direct 之后、各类 net_id 推断之前。
-        priority: 14,
-        weight: DEFAULT_ROUTE_WEIGHT,
-        backup: false,
-        keep_tunnel: true,
-        url: format_rtcp_ip_url(&target_v6, target_port),
-        source: "system_config".to_string(),
-        relay_node: None,
-        evidence: Some(route_evidence(
+        DirectEvidence::Ipv6GlobalEndpoint { confidence } => route_evidence(
             "ipv6_global_endpoint",
             Some(this_node_id),
             Some(target_node_id),
             None,
             confidence,
             "zone_wide",
-        )),
-    })
-}
-
-fn build_lan_endpoint_candidate(
-    this_node_id: &str,
-    target_node_id: &str,
-    target_port: u32,
-    target_obs: Option<&NetworkObservation>,
-    priority: u32,
-    evidence_type: &str,
-) -> Option<NodeGatewayRouteCandidate> {
-    let target_obs = target_obs?;
-    let target_lan = lan_endpoint_for(target_obs, "ipv4")?;
-
-    Some(NodeGatewayRouteCandidate {
-        id: format!("direct-lan-endpoint-{}", target_lan),
-        kind: "rtcp_direct".to_string(),
-        priority,
-        weight: DEFAULT_ROUTE_WEIGHT,
-        backup: false,
-        keep_tunnel: true,
-        // 直接拼 IP 形态，避免 DNS / Finder 解析往返；DID hostname 形态由原有 candidate 兜底。
-        url: format_rtcp_ip_url(&target_lan, target_port),
-        source: "system_config".to_string(),
-        relay_node: None,
-        evidence: Some(route_evidence(
-            evidence_type,
+        ),
+        DirectEvidence::WanTarget => route_evidence(
+            "wan_target_net_id",
+            Some(this_node_id),
+            Some(target_node_id),
+            None,
+            "medium",
+            "zone_wide",
+        ),
+        DirectEvidence::SameNetId => route_evidence(
+            "same_net_id",
             Some(this_node_id),
             Some(target_node_id),
             None,
             "medium",
             "same_lan",
-        )),
-    })
+        ),
+        DirectEvidence::SharedOodInference { witness } => route_evidence(
+            "shared_ood_direct_probe",
+            Some(this_node_id),
+            Some(target_node_id),
+            Some(witness.as_str()),
+            "medium",
+            "same_lan",
+        ),
+    };
+
+    NodeGatewayRouteCandidate {
+        id: "direct".to_string(),
+        kind: "rtcp_direct".to_string(),
+        priority: DIRECT_PRIORITY,
+        weight: DEFAULT_ROUTE_WEIGHT,
+        backup: false,
+        keep_tunnel: true,
+        url,
+        source: "system_config".to_string(),
+        relay_node: None,
+        evidence: Some(route_evidence),
+    }
 }
 
-fn push_route_candidate(
-    candidates: &mut Vec<NodeGatewayRouteCandidate>,
-    candidate: NodeGatewayRouteCandidate,
-) {
-    if candidates
-        .iter()
-        .any(|existing| existing.id == candidate.id || existing.url == candidate.url)
-    {
-        return;
+fn did_ip_hints_for_target(
+    target_device: &DeviceInfo,
+    target_obs: Option<&NetworkObservation>,
+    target_port: u32,
+) -> Vec<DidIpHint> {
+    let mut hints: Vec<DidIpHint> = Vec::new();
+    let mut push_unique = |hint: DidIpHint, hints: &mut Vec<DidIpHint>| {
+        if hints
+            .iter()
+            .any(|existing| existing.ip == hint.ip && existing.source == hint.source)
+        {
+            return;
+        }
+        hints.push(hint);
+    };
+
+    if has_signed_wan_ip(target_device) {
+        for ip in target_device.device_doc.ips.iter() {
+            push_unique(
+                DidIpHint {
+                    ip: *ip,
+                    port: Some(target_port),
+                    source: DidIpHintSource::SignedDeviceDoc,
+                    confidence: "high".to_string(),
+                    last_observed_at: None,
+                    freshness_ttl_secs: None,
+                },
+                &mut hints,
+            );
+        }
     }
-    candidates.push(candidate);
+
+    if let Some(obs) = target_obs {
+        let v6_state = obs.ipv6.as_ref().and_then(|i| i.state.as_deref());
+        for endpoint in obs.endpoints.iter() {
+            let Some(scope) = endpoint.scope.as_deref() else {
+                continue;
+            };
+            let Some(ip_str) = endpoint.ip.as_deref() else {
+                continue;
+            };
+            let Ok(ip) = ip_str.parse::<IpAddr>() else {
+                continue;
+            };
+
+            match scope {
+                "lan" => push_unique(
+                    DidIpHint {
+                        ip,
+                        port: Some(target_port),
+                        source: DidIpHintSource::LanEndpoint,
+                        confidence: "medium".to_string(),
+                        last_observed_at: endpoint.observed_at.or(obs.observed_at),
+                        freshness_ttl_secs: None,
+                    },
+                    &mut hints,
+                ),
+                "global" if endpoint.family.as_deref() == Some("ipv6") => {
+                    if v6_state == Some("unavailable") {
+                        continue;
+                    }
+                    let confidence = if v6_state == Some("rtcp_direct_ok") {
+                        "high"
+                    } else {
+                        "medium"
+                    };
+                    push_unique(
+                        DidIpHint {
+                            ip,
+                            port: Some(target_port),
+                            source: DidIpHintSource::GlobalIpv6,
+                            confidence: confidence.to_string(),
+                            last_observed_at: endpoint.observed_at.or(obs.observed_at),
+                            freshness_ttl_secs: None,
+                        },
+                        &mut hints,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 签名 IP 互斥：一旦 device_doc 里盖了 wan IP，其它推断得来的 IP 都不再喂给
+    // resolve_ips，避免名字解析阶段把签名外的探测 IP 提到前面。
+    if hints
+        .iter()
+        .any(|h| h.source == DidIpHintSource::SignedDeviceDoc)
+    {
+        hints.retain(|h| h.source == DidIpHintSource::SignedDeviceDoc);
+    }
+
+    hints
 }
 
 pub(crate) fn build_forward_plan(
@@ -505,10 +652,10 @@ pub(crate) fn build_forward_plan(
     zone_config: &ZoneConfig,
     zone_host: &str,
     device_list: &HashMap<String, DeviceInfo>,
-) -> HashMap<String, Vec<NodeGatewayRouteCandidate>> {
-    let mut routes = HashMap::new();
+) -> ForwardPlan {
+    let mut plan = ForwardPlan::default();
     let Some(source_device) = device_list.get(this_node_id) else {
-        return routes;
+        return plan;
     };
     let probe_targets = device_list
         .iter()
@@ -529,241 +676,85 @@ pub(crate) fn build_forward_plan(
         }
 
         let target_port = device_rtcp_port(target_device);
-        let target_has_signed_wan_ip = has_signed_wan_ip(target_device);
         let target_obs = network_observations.get(target_node_id);
         let mut candidates = Vec::new();
 
-        if target_has_signed_wan_ip {
-            let signed_ip = &target_device.device_doc.ips[0];
-            push_route_candidate(
-                &mut candidates,
-                NodeGatewayRouteCandidate {
-                    id: "direct-signed-wan-ip".to_string(),
-                    kind: "rtcp_direct".to_string(),
-                    priority: 1,
-                    weight: DEFAULT_ROUTE_WEIGHT,
-                    backup: false,
-                    keep_tunnel: false,
-                    url: format_rtcp_ip_url(signed_ip, target_port),
-                    source: "signed_device_doc".to_string(),
-                    relay_node: None,
-                    evidence: Some(route_evidence(
-                        "signed_wan_ip",
-                        Some(this_node_id),
-                        Some(target_node_id),
-                        None,
-                        "high",
-                        "zone_wide",
-                    )),
-                },
-            );
-            // 不再短路：签名 IP 仅停止 IP 级探索（不再尝试 DNS / Finder 推断的 IP），
-            // 但显式 relay candidate 仍应作为 backup 写入，覆盖签名 IP 暂时不可达的场景。
-        } else if let Some(probe_info) =
-            direct_probe_to(&probe_targets, this_node_id, target_node_id)
-        {
-            push_route_candidate(
-                &mut candidates,
-                NodeGatewayRouteCandidate {
-                    id: "direct-probed".to_string(),
-                    kind: "rtcp_direct".to_string(),
-                    priority: 10,
-                    weight: DEFAULT_ROUTE_WEIGHT,
-                    backup: false,
-                    keep_tunnel: true,
-                    url: format_rtcp_did_url(target_node_id, zone_host, target_port),
-                    source: "system_config".to_string(),
-                    relay_node: None,
-                    evidence: Some(route_evidence_from_probe(
-                        this_node_id,
-                        target_node_id,
-                        probe_info,
-                    )),
-                },
-            );
-        } else if same_trusted_lan(source_device, target_device, source_obs, target_obs) {
-            // 同 LAN 推断下，如果 target 上报了 LAN endpoint，优先用 IP 形态 candidate，
-            // 避开 DNS 解析往返；DID hostname 形态作为兼容兜底保留。
-            if let Some(candidate) = build_lan_endpoint_candidate(
-                this_node_id,
-                target_node_id,
-                target_port,
-                target_obs,
-                19,
-                "same_net_id_lan_endpoint",
-            ) {
-                push_route_candidate(&mut candidates, candidate);
-            }
-            push_route_candidate(
-                &mut candidates,
-                NodeGatewayRouteCandidate {
-                    id: "direct-net-id".to_string(),
-                    kind: "rtcp_direct".to_string(),
-                    priority: 20,
-                    weight: DEFAULT_ROUTE_WEIGHT,
-                    backup: false,
-                    keep_tunnel: true,
-                    url: format_rtcp_did_url(target_node_id, zone_host, target_port),
-                    source: "system_config".to_string(),
-                    relay_node: None,
-                    evidence: Some(route_evidence(
-                        "same_net_id",
-                        Some(this_node_id),
-                        Some(target_node_id),
-                        None,
-                        "medium",
-                        "same_lan",
-                    )),
-                },
-            );
-        } else if is_publicly_reachable_net_id(target_device.device_doc.net_id.as_ref()) {
-            // target 自身声明公网可达（wan / wan_dyn / portmap），任意 source 都可以尝试 direct。
-            // URL 用 DID hostname，由 name-client 在解析阶段处理 DDNS 等动态 IP。
-            push_route_candidate(
-                &mut candidates,
-                NodeGatewayRouteCandidate {
-                    id: "direct-wan-target".to_string(),
-                    kind: "rtcp_direct".to_string(),
-                    priority: 18,
-                    weight: DEFAULT_ROUTE_WEIGHT,
-                    backup: false,
-                    keep_tunnel: true,
-                    url: format_rtcp_did_url(target_node_id, zone_host, target_port),
-                    source: "system_config".to_string(),
-                    relay_node: None,
-                    evidence: Some(route_evidence(
-                        "wan_target_net_id",
-                        Some(this_node_id),
-                        Some(target_node_id),
-                        None,
-                        "medium",
-                        "zone_wide",
-                    )),
-                },
-            );
-        } else if let Some(witness_node) = shared_ood_direct_probe(
-            zone_config,
-            &probe_targets,
+        if let Some(evidence) = direct_evidence_for(
+            source_device,
+            target_device,
             this_node_id,
             target_node_id,
+            zone_config,
+            &probe_targets,
             source_obs,
             target_obs,
         ) {
-            // 共同 OOD 推断同 LAN 的同时，如果 target 还上报了 LAN endpoint，直接用 IP
-            // 形态把 candidate 写入；这样 device 之间不必互测就能拿到一条可达的 direct URL。
-            if let Some(candidate) = build_lan_endpoint_candidate(
+            candidates.push(build_direct_candidate(
                 this_node_id,
                 target_node_id,
                 target_port,
-                target_obs,
-                24,
-                "shared_ood_lan_endpoint",
-            ) {
-                push_route_candidate(&mut candidates, candidate);
-            }
-            push_route_candidate(
-                &mut candidates,
-                NodeGatewayRouteCandidate {
-                    id: format!("direct-shared-ood-{}", witness_node),
-                    kind: "rtcp_direct".to_string(),
-                    priority: 25,
-                    weight: DEFAULT_ROUTE_WEIGHT,
-                    backup: false,
-                    keep_tunnel: true,
-                    url: format_rtcp_did_url(target_node_id, zone_host, target_port),
-                    source: "system_config".to_string(),
-                    relay_node: None,
-                    evidence: Some(route_evidence(
-                        "shared_ood_direct_probe",
-                        Some(this_node_id),
-                        Some(target_node_id),
-                        Some(witness_node.as_str()),
-                        "medium",
-                        "same_lan",
-                    )),
-                },
-            );
+                zone_host,
+                evidence,
+            ));
         }
 
-        // IPv6 全局直连：与 NAT/LAN 拓扑无关，只要双方都报告 IPv6 可用且 target 有 global
-        // 地址就能成立，特别适合双 LAN 场景。signed_wan_ip target 例外——按"不 fallback
-        // 到任意探测得到的 IP"原则，IPv6 endpoint 同样属于观测得来，不进 forward 候选。
-        if !target_has_signed_wan_ip {
-            if let Some(candidate) = build_ipv6_direct_candidate(
-                this_node_id,
-                target_node_id,
-                target_port,
-                source_obs,
-                target_obs,
-            ) {
-                push_route_candidate(&mut candidates, candidate);
-            }
-        }
-
-        let relay_is_backup = !candidates.is_empty();
         if let Some(sn_host) = zone_config.sn.as_ref() {
-            push_route_candidate(
-                &mut candidates,
-                NodeGatewayRouteCandidate {
-                    id: "via-sn".to_string(),
-                    kind: "rtcp_relay".to_string(),
-                    priority: 30,
-                    weight: DEFAULT_ROUTE_WEIGHT,
-                    backup: relay_is_backup,
-                    // 签名 IP 的 target 不需要为它单独维持 SN keep_tunnel：target 是稳定 WAN，
-                    // SN relay 只是异常时的 backup 触点。
-                    keep_tunnel: !target_has_signed_wan_ip,
-                    url: format_relay_rtcp_url(
-                        format!("rtcp://{}/", sn_host).as_str(),
-                        target_node_id,
-                        zone_host,
-                        target_port,
-                    ),
-                    source: "zone_config".to_string(),
-                    relay_node: Some(sn_host.clone()),
-                    evidence: Some(route_evidence(
-                        "sn_relay",
-                        Some(this_node_id),
-                        Some(target_node_id),
-                        None,
-                        "low",
-                        "zone_wide",
-                    )),
-                },
-            );
+            let relay_is_backup = !candidates.is_empty();
+            candidates.push(NodeGatewayRouteCandidate {
+                id: "via-sn".to_string(),
+                kind: "rtcp_relay".to_string(),
+                priority: SN_PRIORITY,
+                weight: DEFAULT_ROUTE_WEIGHT,
+                backup: relay_is_backup,
+                // 签名 wan IP 的 target 是稳定 WAN，不需要 SN 维持 keep_tunnel；只在异常时回退。
+                keep_tunnel: !has_signed_wan_ip(target_device),
+                url: format_relay_rtcp_url(
+                    format!("rtcp://{}/", sn_host).as_str(),
+                    target_node_id,
+                    zone_host,
+                    target_port,
+                ),
+                source: "zone_config".to_string(),
+                relay_node: Some(sn_host.clone()),
+                evidence: Some(route_evidence(
+                    "sn_relay",
+                    Some(this_node_id),
+                    Some(target_node_id),
+                    None,
+                    "low",
+                    "zone_wide",
+                )),
+            });
         }
 
         if let Some(gateway_node) = zone_gateway_node.as_ref() {
             if gateway_node != this_node_id && gateway_node != target_node_id {
                 let relay_is_backup = !candidates.is_empty();
-                push_route_candidate(
-                    &mut candidates,
-                    NodeGatewayRouteCandidate {
-                        id: format!("via-zone-gateway-{}", gateway_node),
-                        kind: "rtcp_relay".to_string(),
-                        priority: 40,
-                        weight: DEFAULT_ROUTE_WEIGHT,
-                        backup: relay_is_backup,
-                        keep_tunnel: false,
-                        url: format_relay_rtcp_url(
-                            format_rtcp_did_url(gateway_node, zone_host, DEFAULT_RTCP_PORT)
-                                .as_str(),
-                            target_node_id,
-                            zone_host,
-                            target_port,
-                        ),
-                        source: "zone_config".to_string(),
-                        relay_node: Some(gateway_node.clone()),
-                        evidence: Some(route_evidence(
-                            "zone_gateway_relay",
-                            Some(this_node_id),
-                            Some(target_node_id),
-                            Some(gateway_node.as_str()),
-                            "low",
-                            "zone_wide",
-                        )),
-                    },
-                );
+                candidates.push(NodeGatewayRouteCandidate {
+                    id: format!("via-zone-gateway-{}", gateway_node),
+                    kind: "rtcp_relay".to_string(),
+                    priority: ZONE_GATEWAY_PRIORITY,
+                    weight: DEFAULT_ROUTE_WEIGHT,
+                    backup: relay_is_backup,
+                    keep_tunnel: false,
+                    url: format_relay_rtcp_url(
+                        format_rtcp_did_url(gateway_node, zone_host, DEFAULT_RTCP_PORT)
+                            .as_str(),
+                        target_node_id,
+                        zone_host,
+                        target_port,
+                    ),
+                    source: "zone_config".to_string(),
+                    relay_node: Some(gateway_node.clone()),
+                    evidence: Some(route_evidence(
+                        "zone_gateway_relay",
+                        Some(this_node_id),
+                        Some(target_node_id),
+                        Some(gateway_node.as_str()),
+                        "low",
+                        "zone_wide",
+                    )),
+                });
             }
         }
 
@@ -775,11 +766,17 @@ pub(crate) fn build_forward_plan(
         });
 
         if !candidates.is_empty() {
-            routes.insert(target_node_id.clone(), candidates);
+            plan.routes.insert(target_node_id.clone(), candidates);
+        }
+
+        let hints = did_ip_hints_for_target(target_device, target_obs, target_port);
+        if !hints.is_empty() {
+            let did_host = format!("{}.{}", target_node_id, zone_host);
+            plan.did_ip_hints.insert(did_host, hints);
         }
     }
 
-    routes
+    plan
 }
 
 #[cfg(test)]
@@ -882,234 +879,6 @@ mod tests {
         zone_config
     }
 
-    #[test]
-    fn test_build_forward_plan_signed_wan_ip_is_primary_with_explicit_relay_backup() {
-        let mut zone_config = create_test_zone_config();
-        zone_config.sn = Some("sn.test.buckyos.io".to_string());
-        let zone_host = zone_config.id.to_host_name();
-        let device_ood1 = create_test_device_info_with_net_id("ood1", None);
-        let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("wan"));
-        device_ood2
-            .device_doc
-            .ips
-            .push("203.0.113.10".parse().unwrap());
-
-        let device_list = HashMap::from([
-            ("ood1".to_string(), device_ood1),
-            ("ood2".to_string(), device_ood2),
-        ]);
-
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
-
-        // signed wan IP 仅停止 IP 级探索，仍应保留显式 relay backup 用于签名 IP 暂时不可达
-        // 时的兜底。SN backup 不需要 keep_tunnel —— 稳定 WAN target 不该消耗 SN 资源。
-        assert_eq!(ood2_routes.len(), 2);
-        assert_eq!(ood2_routes[0].id, "direct-signed-wan-ip");
-        assert_eq!(ood2_routes[0].kind, "rtcp_direct");
-        assert_eq!(ood2_routes[0].url, "rtcp://203.0.113.10/");
-        assert!(!ood2_routes[0].backup);
-
-        let via_sn = ood2_routes
-            .iter()
-            .find(|candidate| candidate.id == "via-sn")
-            .expect("signed wan IP target should still get SN relay backup");
-        assert_eq!(via_sn.kind, "rtcp_relay");
-        assert!(via_sn.backup);
-        assert!(
-            !via_sn.keep_tunnel,
-            "signed wan IP target should not need keep_tunnel via SN"
-        );
-    }
-
-    #[test]
-    fn test_build_forward_plan_generates_direct_for_wan_dyn_target_without_signed_ip() {
-        let mut zone_config = create_test_zone_config();
-        zone_config.sn = Some("sn.test.buckyos.io".to_string());
-        let zone_host = zone_config.id.to_host_name();
-        // source 在 NAT 后，target 是 wan_dyn（动态公网，device_doc 中没有静态 IP）。
-        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("nat"));
-        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("wan_dyn"));
-
-        let device_list = HashMap::from([
-            ("ood1".to_string(), device_ood1),
-            ("ood2".to_string(), device_ood2),
-        ]);
-
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
-
-        // target 公网可达 → 任意 source（包括 NAT 后）都应生成 direct candidate；
-        // URL 用 DID hostname，由 DDNS / name-client 处理动态 IP。
-        let direct = ood2_routes
-            .iter()
-            .find(|candidate| candidate.kind == "rtcp_direct")
-            .expect("wan_dyn target should yield a direct candidate even from NAT source");
-        assert_eq!(direct.id, "direct-wan-target");
-        assert!(!direct.backup);
-        assert_eq!(direct.url, "rtcp://ood2.test.buckyos.io/");
-        let evidence = direct.evidence.as_ref().unwrap();
-        assert_eq!(evidence.evidence_type, "wan_target_net_id");
-        assert_eq!(evidence.applicability, "zone_wide");
-        assert_eq!(evidence.confidence, "medium");
-    }
-
-    #[test]
-    fn test_build_forward_plan_generates_direct_for_portmap_target() {
-        let zone_config = create_test_zone_config();
-        let zone_host = zone_config.id.to_host_name();
-        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
-        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("portmap"));
-
-        let device_list = HashMap::from([
-            ("ood1".to_string(), device_ood1),
-            ("ood2".to_string(), device_ood2),
-        ]);
-
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
-
-        let direct = ood2_routes
-            .iter()
-            .find(|candidate| candidate.kind == "rtcp_direct")
-            .expect("portmap target should yield a direct candidate");
-        assert_eq!(direct.id, "direct-wan-target");
-    }
-
-    #[test]
-    fn test_build_forward_plan_preserves_direct_probe_evidence_fields() {
-        let zone_config = create_test_zone_config();
-        let zone_host = zone_config.id.to_host_name();
-        let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("nat"));
-        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan2"));
-        add_network_observation_direct_probe(&mut device_ood1, "ood2");
-
-        let device_list = HashMap::from([
-            ("ood1".to_string(), device_ood1),
-            ("ood2".to_string(), device_ood2),
-        ]);
-
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
-        let direct = ood2_routes
-            .iter()
-            .find(|candidate| candidate.id == "direct-probed")
-            .expect("reachable direct probe should produce a direct candidate");
-        let evidence = direct.evidence.as_ref().unwrap();
-        assert_eq!(evidence.evidence_type, "direct_probe");
-        assert_eq!(evidence.rtt_ms, Some(12));
-        assert_eq!(evidence.last_probe, Some(1710000030));
-        assert_eq!(evidence.last_success, Some(1710000030));
-        assert_eq!(evidence.freshness_ttl_secs, Some(600));
-    }
-
-    #[test]
-    fn test_build_forward_plan_skips_shared_ood_when_witness_is_wan() {
-        // 两个 LAN 后的 device 都能 direct 到一个 wan OOD：这只能说明它们都有公网出口，
-        // 不能据此推断它们位于同一 LAN。共同 OOD 推断必须排除 wan witness。
-        let mut zone_config = create_test_zone_config();
-        zone_config.oods = vec![OODDescriptionString::new(
-            "ood1".to_string(),
-            DeviceNodeType::OOD,
-            Some("wan".to_string()),
-            None,
-        )];
-        let zone_host = zone_config.id.to_host_name();
-        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("wan"));
-        let mut device_node1 = create_test_device_info_with_net_id("node1", Some("lan1"));
-        let mut device_node2 = create_test_device_info_with_net_id("node2", Some("lan2"));
-        add_direct_probe(&mut device_node1, "ood1");
-        add_direct_probe(&mut device_node2, "ood1");
-
-        let device_list = HashMap::from([
-            ("ood1".to_string(), device_ood1),
-            ("node1".to_string(), device_node1),
-            ("node2".to_string(), device_node2),
-        ]);
-
-        let routes = build_forward_plan("node1", &zone_config, &zone_host, &device_list);
-
-        // node1 -> node2: same_trusted_lan(lan1, lan2) = false；target 不是 wan-class；
-        // witness ood1 是 wan，必须被过滤；没有 SN/ZG 配置 → 整个 target 没有任何 candidate。
-        if let Some(node2_routes) = routes.get("node2") {
-            let has_direct = node2_routes
-                .iter()
-                .any(|candidate| candidate.kind == "rtcp_direct");
-            assert!(
-                !has_direct,
-                "wan witness OOD must not produce same-LAN direct inference"
-            );
-        }
-    }
-
-    #[test]
-    fn test_build_forward_plan_uses_net_id_for_direct_primary_and_sn_backup() {
-        let mut zone_config = create_test_zone_config();
-        zone_config.sn = Some("sn.test.buckyos.io".to_string());
-        let zone_host = zone_config.id.to_host_name();
-        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
-        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan1"));
-        let device_list = HashMap::from([
-            ("ood1".to_string(), device_ood1),
-            ("ood2".to_string(), device_ood2),
-        ]);
-
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
-
-        assert_eq!(ood2_routes[0].id, "direct-net-id");
-        assert_eq!(ood2_routes[0].url, "rtcp://ood2.test.buckyos.io/");
-        assert!(!ood2_routes[0].backup);
-        assert_eq!(ood2_routes[1].id, "via-sn");
-        assert!(ood2_routes[1].backup);
-    }
-
-    #[test]
-    fn test_build_forward_plan_treats_missing_net_id_as_unknown_lan() {
-        let zone_config = create_test_zone_config();
-        let zone_host = zone_config.id.to_host_name();
-        let device_ood1 = create_test_device_info_with_net_id("ood1", None);
-        let device_ood2 = create_test_device_info_with_net_id("ood2", None);
-        let device_list = HashMap::from([
-            ("ood1".to_string(), device_ood1),
-            ("ood2".to_string(), device_ood2),
-        ]);
-
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
-
-        assert_eq!(ood2_routes[0].id, "direct-net-id");
-        assert_eq!(
-            ood2_routes[0].evidence.as_ref().unwrap().evidence_type,
-            "same_net_id"
-        );
-    }
-
-    #[test]
-    fn test_build_forward_plan_uses_shared_ood_probe_as_direct_evidence() {
-        let zone_config = create_test_zone_config();
-        let zone_host = zone_config.id.to_host_name();
-        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan-ood"));
-        let mut device_node1 = create_test_device_info_with_net_id("node1", Some("lan1"));
-        let mut device_node2 = create_test_device_info_with_net_id("node2", Some("lan2"));
-        add_direct_probe(&mut device_node1, "ood1");
-        add_direct_probe(&mut device_node2, "ood1");
-
-        let device_list = HashMap::from([
-            ("ood1".to_string(), device_ood1),
-            ("node1".to_string(), device_node1),
-            ("node2".to_string(), device_node2),
-        ]);
-
-        let routes = build_forward_plan("node1", &zone_config, &zone_host, &device_list);
-        let node2_routes = routes.get("node2").unwrap();
-
-        assert_eq!(node2_routes[0].id, "direct-shared-ood-ood1");
-        let evidence = node2_routes[0].evidence.as_ref().unwrap();
-        assert_eq!(evidence.evidence_type, "shared_ood_direct_probe");
-        assert_eq!(evidence.witness_node.as_deref(), Some("ood1"));
-    }
-
     fn add_lan_endpoint(device_info: &mut DeviceInfo, ip: &str) {
         device_info.device_doc.extra_info.insert(
             "network_observation".to_string(),
@@ -1150,9 +919,299 @@ mod tests {
     }
 
     #[test]
+    fn test_build_forward_plan_signed_wan_ip_yields_did_url_and_signed_doc_hint() {
+        let mut zone_config = create_test_zone_config();
+        zone_config.sn = Some("sn.test.buckyos.io".to_string());
+        let zone_host = zone_config.id.to_host_name();
+        let device_ood1 = create_test_device_info_with_net_id("ood1", None);
+        let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("wan"));
+        device_ood2
+            .device_doc
+            .ips
+            .push("203.0.113.10".parse().unwrap());
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
+
+        // routes 收敛到 direct + via-sn 两条；URL 始终是 DID hostname 形态。
+        assert_eq!(ood2_routes.len(), 2);
+        assert_eq!(ood2_routes[0].id, "direct");
+        assert_eq!(ood2_routes[0].kind, "rtcp_direct");
+        assert_eq!(ood2_routes[0].priority, DIRECT_PRIORITY);
+        assert_eq!(
+            ood2_routes[0].url,
+            format!("rtcp://ood2.{}/", zone_host)
+        );
+        assert!(!ood2_routes[0].backup);
+        assert_eq!(
+            ood2_routes[0].evidence.as_ref().unwrap().evidence_type,
+            "signed_wan_ip"
+        );
+
+        let via_sn = ood2_routes
+            .iter()
+            .find(|c| c.id == "via-sn")
+            .expect("signed wan IP target should still get SN relay backup");
+        assert!(via_sn.backup);
+        assert!(
+            !via_sn.keep_tunnel,
+            "stable wan target should not need SN keep_tunnel"
+        );
+
+        // 签名 IP 进 did_ip_hints；互斥规则下没有其它来源混入。
+        let target_did = format!("ood2.{}", zone_host);
+        let hints = plan.did_ip_hints.get(&target_did).unwrap();
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].ip, "203.0.113.10".parse::<IpAddr>().unwrap());
+        assert_eq!(hints[0].source, DidIpHintSource::SignedDeviceDoc);
+        assert_eq!(hints[0].confidence, "high");
+    }
+
+    #[test]
+    fn test_build_forward_plan_signed_wan_ip_hint_excludes_other_sources() {
+        // 即使 target 同时上报 LAN endpoint / global v6，也应被 SignedDeviceDoc 互斥过滤掉。
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let device_ood1 = create_test_device_info_with_net_id("ood1", None);
+        let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("wan"));
+        device_ood2
+            .device_doc
+            .ips
+            .push("203.0.113.10".parse().unwrap());
+        device_ood2.device_doc.extra_info.insert(
+            "network_observation".to_string(),
+            json!({
+                "observed_at": 1710000030_u64,
+                "ipv6": { "state": "rtcp_direct_ok" },
+                "endpoints": [
+                    {
+                        "ip": "192.168.1.23",
+                        "family": "ipv4",
+                        "scope": "lan",
+                        "observed_at": 1710000030_u64
+                    },
+                    {
+                        "ip": "2001:db9::23",
+                        "family": "ipv6",
+                        "scope": "global",
+                        "observed_at": 1710000030_u64
+                    }
+                ]
+            }),
+        );
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let target_did = format!("ood2.{}", zone_host);
+        let hints = plan.did_ip_hints.get(&target_did).unwrap();
+        assert!(hints
+            .iter()
+            .all(|h| h.source == DidIpHintSource::SignedDeviceDoc));
+    }
+
+    #[test]
+    fn test_build_forward_plan_generates_direct_for_wan_dyn_target_without_signed_ip() {
+        let mut zone_config = create_test_zone_config();
+        zone_config.sn = Some("sn.test.buckyos.io".to_string());
+        let zone_host = zone_config.id.to_host_name();
+        // source 在 NAT 后，target 是 wan_dyn（动态公网，device_doc 中没有静态 IP）。
+        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("nat"));
+        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("wan_dyn"));
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
+
+        let direct = ood2_routes
+            .iter()
+            .find(|c| c.id == "direct")
+            .expect("wan_dyn target should yield a direct candidate even from NAT source");
+        assert_eq!(direct.kind, "rtcp_direct");
+        assert!(!direct.backup);
+        assert_eq!(direct.url, format!("rtcp://ood2.{}/", zone_host));
+        let evidence = direct.evidence.as_ref().unwrap();
+        assert_eq!(evidence.evidence_type, "wan_target_net_id");
+        assert_eq!(evidence.applicability, "zone_wide");
+        assert_eq!(evidence.confidence, "medium");
+    }
+
+    #[test]
+    fn test_build_forward_plan_generates_direct_for_portmap_target() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
+        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("portmap"));
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
+
+        let direct = ood2_routes
+            .iter()
+            .find(|c| c.id == "direct")
+            .expect("portmap target should yield a direct candidate");
+        assert_eq!(
+            direct.evidence.as_ref().unwrap().evidence_type,
+            "wan_target_net_id"
+        );
+    }
+
+    #[test]
+    fn test_build_forward_plan_preserves_direct_probe_evidence_fields() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("nat"));
+        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan2"));
+        add_network_observation_direct_probe(&mut device_ood1, "ood2");
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
+        let direct = ood2_routes
+            .iter()
+            .find(|c| c.id == "direct")
+            .expect("reachable direct probe should produce a direct candidate");
+        let evidence = direct.evidence.as_ref().unwrap();
+        assert_eq!(evidence.evidence_type, "direct_probe");
+        assert_eq!(evidence.rtt_ms, Some(12));
+        assert_eq!(evidence.last_probe, Some(1710000030));
+        assert_eq!(evidence.last_success, Some(1710000030));
+        assert_eq!(evidence.freshness_ttl_secs, Some(600));
+    }
+
+    #[test]
+    fn test_build_forward_plan_skips_shared_ood_when_witness_is_wan() {
+        // 两个 LAN 后的 device 都能 direct 到一个 wan OOD：这只能说明它们都有公网出口，
+        // 不能据此推断它们位于同一 LAN。共同 OOD 推断必须排除 wan witness。
+        let mut zone_config = create_test_zone_config();
+        zone_config.oods = vec![OODDescriptionString::new(
+            "ood1".to_string(),
+            DeviceNodeType::OOD,
+            Some("wan".to_string()),
+            None,
+        )];
+        let zone_host = zone_config.id.to_host_name();
+        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("wan"));
+        let mut device_node1 = create_test_device_info_with_net_id("node1", Some("lan1"));
+        let mut device_node2 = create_test_device_info_with_net_id("node2", Some("lan2"));
+        add_direct_probe(&mut device_node1, "ood1");
+        add_direct_probe(&mut device_node2, "ood1");
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("node1".to_string(), device_node1),
+            ("node2".to_string(), device_node2),
+        ]);
+
+        let plan = build_forward_plan("node1", &zone_config, &zone_host, &device_list);
+
+        if let Some(node2_routes) = plan.routes.get("node2") {
+            let has_direct = node2_routes.iter().any(|c| c.id == "direct");
+            assert!(
+                !has_direct,
+                "wan witness OOD must not produce same-LAN direct inference"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_forward_plan_uses_net_id_for_direct_primary_and_sn_backup() {
+        let mut zone_config = create_test_zone_config();
+        zone_config.sn = Some("sn.test.buckyos.io".to_string());
+        let zone_host = zone_config.id.to_host_name();
+        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
+        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan1"));
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
+
+        assert_eq!(ood2_routes.len(), 2);
+        assert_eq!(ood2_routes[0].id, "direct");
+        assert_eq!(ood2_routes[0].url, format!("rtcp://ood2.{}/", zone_host));
+        assert!(!ood2_routes[0].backup);
+        assert_eq!(
+            ood2_routes[0].evidence.as_ref().unwrap().evidence_type,
+            "same_net_id"
+        );
+        assert_eq!(ood2_routes[1].id, "via-sn");
+        assert!(ood2_routes[1].backup);
+    }
+
+    #[test]
+    fn test_build_forward_plan_treats_missing_net_id_as_unknown_lan() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let device_ood1 = create_test_device_info_with_net_id("ood1", None);
+        let device_ood2 = create_test_device_info_with_net_id("ood2", None);
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
+
+        assert_eq!(ood2_routes[0].id, "direct");
+        assert_eq!(
+            ood2_routes[0].evidence.as_ref().unwrap().evidence_type,
+            "same_net_id"
+        );
+    }
+
+    #[test]
+    fn test_build_forward_plan_uses_shared_ood_probe_as_direct_evidence() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan-ood"));
+        let mut device_node1 = create_test_device_info_with_net_id("node1", Some("lan1"));
+        let mut device_node2 = create_test_device_info_with_net_id("node2", Some("lan2"));
+        add_direct_probe(&mut device_node1, "ood1");
+        add_direct_probe(&mut device_node2, "ood1");
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("node1".to_string(), device_node1),
+            ("node2".to_string(), device_node2),
+        ]);
+
+        let plan = build_forward_plan("node1", &zone_config, &zone_host, &device_list);
+        let node2_routes = plan.routes.get("node2").unwrap();
+
+        assert_eq!(node2_routes[0].id, "direct");
+        let evidence = node2_routes[0].evidence.as_ref().unwrap();
+        assert_eq!(evidence.evidence_type, "shared_ood_direct_probe");
+        assert_eq!(evidence.witness_node.as_deref(), Some("ood1"));
+    }
+
+    #[test]
     fn test_build_forward_plan_skips_stale_direct_probe() {
         // probe 上报时已经超过 freshness_ttl_secs：last_success 比 observed_at 老 1000s，
-        // ttl 60s。direct-probed 不应再被触发；落到下一档 net_id 推断或 relay。
+        // ttl 60s。direct evidence 应回退到 net_id 推断而非 direct_probe。
         let mut zone_config = create_test_zone_config();
         zone_config.sn = Some("sn.test.buckyos.io".to_string());
         let zone_host = zone_config.id.to_host_name();
@@ -1178,21 +1237,23 @@ mod tests {
             ("ood2".to_string(), device_ood2),
         ]);
 
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
 
-        assert!(
-            !ood2_routes.iter().any(|c| c.id == "direct-probed"),
-            "stale probe must not promote direct-probed"
+        let direct = ood2_routes
+            .iter()
+            .find(|c| c.id == "direct")
+            .expect("net_id inference should still produce direct candidate");
+        assert_eq!(
+            direct.evidence.as_ref().unwrap().evidence_type,
+            "same_net_id",
+            "stale probe must not produce direct_probe evidence"
         );
-        // 仍然可以走 net_id 同 LAN 推断作为 direct primary。
-        assert!(ood2_routes.iter().any(|c| c.id == "direct-net-id"));
     }
 
     #[test]
-    fn test_build_forward_plan_emits_lan_endpoint_for_same_net_id() {
-        // 同 net_id 推断同 LAN 时，target 上报的 LAN endpoint 应直接拼成 IP 形态 candidate，
-        // 排在 DID hostname 形态之前以避开 DNS 解析往返。
+    fn test_build_forward_plan_emits_lan_endpoint_hint_for_target() {
+        // LAN endpoint 不再写成独立 candidate；事实进入 did_ip_hints 由 resolve_ips 消化。
         let zone_config = create_test_zone_config();
         let zone_host = zone_config.id.to_host_name();
         let device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
@@ -1204,71 +1265,92 @@ mod tests {
             ("ood2".to_string(), device_ood2),
         ]);
 
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
 
-        assert_eq!(ood2_routes[0].id, "direct-lan-endpoint-192.168.1.23");
-        assert_eq!(ood2_routes[0].url, "rtcp://192.168.1.23/");
-        assert!(!ood2_routes[0].backup);
-        let evidence = ood2_routes[0].evidence.as_ref().unwrap();
-        assert_eq!(evidence.evidence_type, "same_net_id_lan_endpoint");
-        assert_eq!(evidence.applicability, "same_lan");
-        // 兼容兜底：DID hostname 形态仍然在列表里。
-        assert!(ood2_routes.iter().any(|c| c.id == "direct-net-id"));
+        // routes 只剩 DID hostname 的 direct，没有 IP 形态 candidate。
+        assert!(ood2_routes
+            .iter()
+            .all(|c| !c.url.contains("192.168.1.23")));
+        assert_eq!(ood2_routes[0].id, "direct");
+
+        let target_did = format!("ood2.{}", zone_host);
+        let hints = plan.did_ip_hints.get(&target_did).unwrap();
+        let lan_hint = hints
+            .iter()
+            .find(|h| h.source == DidIpHintSource::LanEndpoint)
+            .expect("lan endpoint should appear in did_ip_hints");
+        assert_eq!(lan_hint.ip, "192.168.1.23".parse::<IpAddr>().unwrap());
+        assert_eq!(lan_hint.confidence, "medium");
+        assert_eq!(lan_hint.last_observed_at, Some(1710000030));
     }
 
     #[test]
     fn test_build_forward_plan_emits_ipv6_direct_for_dual_lan_with_global_v6() {
         // 双 LAN（lan1 / lan2）—— same_trusted_lan 不成立，没有共同 OOD，没有 wan target；
-        // 但双方都有 IPv6，target 上报 global v6 endpoint：仍可生成 IPv6 direct candidate。
+        // 但双方都有 IPv6，target 上报 global v6 endpoint：仍可生成 direct candidate（DID URL）
+        // 并把 v6 IP 放进 did_ip_hints。
         let mut zone_config = create_test_zone_config();
         zone_config.sn = Some("sn.test.buckyos.io".to_string());
         let zone_host = zone_config.id.to_host_name();
         let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
         let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan2"));
         add_ipv6_observation(&mut device_ood1, "egress_ok", None);
-        add_ipv6_observation(&mut device_ood2, "address_only", Some("2001:db8::23"));
+        add_ipv6_observation(&mut device_ood2, "address_only", Some("2001:db9::23"));
 
         let device_list = HashMap::from([
             ("ood1".to_string(), device_ood1),
             ("ood2".to_string(), device_ood2),
         ]);
 
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
 
-        let v6 = ood2_routes
+        let direct = ood2_routes
             .iter()
-            .find(|c| c.id == "direct-ipv6-global")
+            .find(|c| c.id == "direct")
             .expect("dual-LAN with global v6 endpoint should yield IPv6 direct candidate");
-        assert_eq!(v6.kind, "rtcp_direct");
-        assert_eq!(v6.url, "rtcp://[2001:db8::23]/");
-        assert!(!v6.backup);
-        let evidence = v6.evidence.as_ref().unwrap();
+        assert_eq!(direct.url, format!("rtcp://ood2.{}/", zone_host));
+        let evidence = direct.evidence.as_ref().unwrap();
         assert_eq!(evidence.evidence_type, "ipv6_global_endpoint");
-        assert_eq!(evidence.applicability, "zone_wide");
-        // source 仅 egress_ok（未到 rtcp_direct_ok）—— confidence 应停在 medium。
         assert_eq!(evidence.confidence, "medium");
+
+        let target_did = format!("ood2.{}", zone_host);
+        let hints = plan.did_ip_hints.get(&target_did).unwrap();
+        let v6_hint = hints
+            .iter()
+            .find(|h| h.source == DidIpHintSource::GlobalIpv6)
+            .expect("global v6 endpoint should appear in did_ip_hints");
+        assert_eq!(v6_hint.ip, "2001:db9::23".parse::<IpAddr>().unwrap());
     }
 
     #[test]
-    fn test_build_forward_plan_skips_ipv6_direct_when_target_v6_unavailable() {
-        // target 显式声明 IPv6 unavailable 时，即使有 global endpoint 字段也不该再生成 v6 direct。
+    fn test_build_forward_plan_skips_ipv6_when_target_v6_unavailable() {
+        // target 显式声明 IPv6 unavailable：v6 evidence 不触发，hints 中也不包含 GlobalIpv6。
         let zone_config = create_test_zone_config();
         let zone_host = zone_config.id.to_host_name();
         let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
         let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan2"));
         add_ipv6_observation(&mut device_ood1, "rtcp_direct_ok", None);
-        add_ipv6_observation(&mut device_ood2, "unavailable", Some("2001:db8::23"));
+        add_ipv6_observation(&mut device_ood2, "unavailable", Some("2001:db9::23"));
 
         let device_list = HashMap::from([
             ("ood1".to_string(), device_ood1),
             ("ood2".to_string(), device_ood2),
         ]);
 
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").cloned().unwrap_or_default();
-        assert!(!ood2_routes.iter().any(|c| c.id == "direct-ipv6-global"));
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").cloned().unwrap_or_default();
+        assert!(ood2_routes
+            .iter()
+            .all(|c| c.evidence.as_ref().map(|e| e.evidence_type.as_str())
+                != Some("ipv6_global_endpoint")));
+
+        let target_did = format!("ood2.{}", zone_host);
+        let hints = plan.did_ip_hints.get(&target_did).cloned().unwrap_or_default();
+        assert!(hints
+            .iter()
+            .all(|h| h.source != DidIpHintSource::GlobalIpv6));
     }
 
     #[test]
@@ -1288,13 +1370,45 @@ mod tests {
             ("ood2".to_string(), device_ood2),
         ]);
 
-        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let ood2_routes = routes.get("ood2").unwrap();
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
 
         assert!(
-            !ood2_routes.iter().any(|c| c.kind == "rtcp_direct"),
-            "subnet mismatch must refute same-LAN direct candidates"
+            !ood2_routes.iter().any(|c| c.id == "direct"),
+            "subnet mismatch must refute same-LAN direct candidate"
         );
         assert!(ood2_routes.iter().any(|c| c.id == "via-sn"));
+    }
+
+    #[test]
+    fn test_did_ip_hints_signed_doc_excludes_other_sources() {
+        // 互斥规则的最小覆盖：has_signed_wan_ip + lan + global v6 endpoint 同时存在
+        // 时，输出仅保留 SignedDeviceDoc。
+        let mut device = create_test_device_info_with_net_id("ood2", Some("wan"));
+        device.device_doc.ips.push("203.0.113.10".parse().unwrap());
+        let obs: NetworkObservation = serde_json::from_value(json!({
+            "observed_at": 1710000030_u64,
+            "ipv6": { "state": "rtcp_direct_ok" },
+            "endpoints": [
+                {
+                    "ip": "192.168.1.23",
+                    "family": "ipv4",
+                    "scope": "lan",
+                    "observed_at": 1710000030_u64
+                },
+                {
+                    "ip": "2001:db9::23",
+                    "family": "ipv6",
+                    "scope": "global",
+                    "observed_at": 1710000030_u64
+                }
+            ]
+        }))
+        .unwrap();
+        let hints = did_ip_hints_for_target(&device, Some(&obs), DEFAULT_RTCP_PORT);
+        assert!(hints
+            .iter()
+            .all(|h| h.source == DidIpHintSource::SignedDeviceDoc));
+        assert_eq!(hints.len(), 1);
     }
 }

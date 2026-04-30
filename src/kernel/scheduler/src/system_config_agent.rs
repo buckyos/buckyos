@@ -12,7 +12,9 @@ use serde_json::{json, Value};
 use crate::app::*;
 use crate::scheduler::*;
 use crate::service::*;
-use crate::zone_route_builder::{build_forward_plan, NodeGatewayRouteCandidate};
+use crate::zone_route_builder::{
+    build_forward_plan, DidIpHint, NodeGatewayRouteCandidate,
+};
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,
@@ -685,6 +687,8 @@ struct NodeGatewayInfo {
     node_route_map: HashMap<String, String>,
     #[serde(default)]
     routes: HashMap<String, Vec<NodeGatewayRouteCandidate>>,
+    #[serde(default)]
+    did_ip_hints: HashMap<String, Vec<DidIpHint>>,
     trust_key: HashMap<String, String>,
 }
 
@@ -968,6 +972,7 @@ pub(crate) async fn update_node_gateway_info(
     let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
     let device_list = get_device_list(input_system_config)?;
     let zone_host = zone_config.id.to_host_name();
+    let forward_plan = build_forward_plan(node_id, &zone_config, &zone_host, &device_list);
 
     let mut node_gateway_info = NodeGatewayInfo {
         node_info: NodeGatewayNodeInfo {
@@ -977,7 +982,8 @@ pub(crate) async fn update_node_gateway_info(
         app_info: HashMap::new(),
         service_info: HashMap::new(),
         node_route_map: build_node_route_map(node_id, &zone_host, &device_list),
-        routes: build_forward_plan(node_id, &zone_config, &zone_host, &device_list),
+        routes: forward_plan.routes,
+        did_ip_hints: forward_plan.did_ip_hints,
         trust_key: build_trust_keys(node_id, &zone_config, &device_list),
     };
 
@@ -1741,6 +1747,7 @@ mod tests {
         app_info.insert("_".to_string(), control_panel_entry.clone());
         app_info.insert("www".to_string(), control_panel_entry);
 
+        let forward_plan = build_forward_plan("ood1", zone_config, &zone_host, &device_list);
         NodeGatewayInfo {
             node_info: NodeGatewayNodeInfo {
                 this_node_id: "ood1".to_string(),
@@ -1749,7 +1756,8 @@ mod tests {
             app_info,
             service_info,
             node_route_map: build_node_route_map("ood1", &zone_host, &device_list),
-            routes: build_forward_plan("ood1", zone_config, &zone_host, &device_list),
+            routes: forward_plan.routes,
+            did_ip_hints: forward_plan.did_ip_hints,
             trust_key: build_trust_keys("ood1", zone_config, &device_list),
         }
     }
