@@ -95,7 +95,11 @@ pub async fn discover_oods_in_lan(
             nodes
         }
         Err(err) => {
-            warn!("LAN OOD discovery failed: role={}, err={}", role.as_str(), err);
+            warn!(
+                "LAN OOD discovery failed: role={}, err={}",
+                role.as_str(),
+                err
+            );
             client.load_cached_oods().unwrap_or_default()
         }
     }
@@ -181,21 +185,19 @@ pub fn build_boot_node_gateway_info(
         node_route_map
             .entry(ood.name.clone())
             .or_insert_with(|| direct_url.clone());
-        routes
-            .entry(ood.name.clone())
-            .or_insert_with(|| {
-                vec![build_route_candidate(
-                    "direct",
-                    "rtcp_direct",
-                    10,
-                    false,
-                    true,
-                    &direct_url,
-                    "zone_boot_config",
-                    None,
-                    None,
-                )]
-            });
+        routes.entry(ood.name.clone()).or_insert_with(|| {
+            vec![build_route_candidate(
+                "direct",
+                "rtcp_direct",
+                10,
+                false,
+                true,
+                &direct_url,
+                "zone_boot_config",
+                None,
+                None,
+            )]
+        });
     }
 
     // service_info.system_config 让 boot_gateway.yaml 的 forward_to_service 能命中
@@ -302,7 +304,7 @@ fn format_relay_rtcp_url(
     }
 }
 
-// 启动 cyfs-gateway 时通过 --keep_tunnel 命令行注入的目标。
+// 启动 cyfs-gateway 前写入 node_rtcp.keep_tunnel 的目标。
 // SN：本机非 wan 系时，需要它 keep tunnel 解决"被动可达"。
 // 其它 OOD：作为 RTCP direct 的 keep_tunnel 目标。
 pub fn build_keep_tunnel_targets(
@@ -361,14 +363,202 @@ pub fn build_keep_tunnel_targets(
     targets
 }
 
+pub fn extract_keep_tunnel_targets_from_gateway_info(gateway_info: &Value) -> Vec<String> {
+    let mut targets = Vec::new();
+    let Some(routes) = gateway_info.get("routes").and_then(Value::as_object) else {
+        return targets;
+    };
+
+    for candidates in routes.values() {
+        let Some(candidates) = candidates.as_array() else {
+            continue;
+        };
+        for candidate in candidates {
+            let keep_tunnel = candidate
+                .get("keep_tunnel")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !keep_tunnel {
+                continue;
+            }
+            let Some(url) = candidate.get("url").and_then(Value::as_str) else {
+                continue;
+            };
+            if url.trim().is_empty() {
+                continue;
+            }
+            targets.push(url.to_string());
+        }
+    }
+
+    dedup_keep_tunnel_targets(&mut targets);
+    targets
+}
+
+pub fn extract_keep_tunnel_targets_from_gateway_config(gateway_config: &Value) -> Vec<String> {
+    let mut targets = gateway_config
+        .get("stacks")
+        .and_then(|stacks| stacks.get("node_rtcp"))
+        .and_then(|node_rtcp| node_rtcp.get("keep_tunnel"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    dedup_keep_tunnel_targets(&mut targets);
+    targets
+}
+
+pub fn read_local_gateway_keep_tunnel_targets() -> Vec<String> {
+    let path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
+    let Some(gateway_config) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(content.as_str()).ok())
+    else {
+        return Vec::new();
+    };
+    extract_keep_tunnel_targets_from_gateway_config(&gateway_config)
+}
+
+pub fn dedup_keep_tunnel_targets(targets: &mut Vec<String>) {
+    let mut deduped = Vec::with_capacity(targets.len());
+    for target in targets.drain(..) {
+        if target.trim().is_empty() {
+            continue;
+        }
+        if !deduped.iter().any(|item| item == &target) {
+            deduped.push(target);
+        }
+    }
+    *targets = deduped;
+}
+
+pub fn merge_keep_tunnel_into_gateway_config(
+    mut gateway_config: Value,
+    targets: &[String],
+) -> Value {
+    if !gateway_config.is_object() {
+        gateway_config = json!({});
+    }
+    if gateway_config
+        .get("stacks")
+        .and_then(Value::as_object)
+        .is_none()
+    {
+        gateway_config["stacks"] = json!({});
+    }
+    if gateway_config["stacks"]
+        .get("node_rtcp")
+        .and_then(Value::as_object)
+        .is_none()
+    {
+        gateway_config["stacks"]["node_rtcp"] = json!({});
+    }
+
+    gateway_config["stacks"]["node_rtcp"]["keep_tunnel"] = json!(targets);
+    gateway_config
+}
+
+pub fn write_boot_node_gateway_config(keep_tunnels: &[String]) -> std::io::Result<()> {
+    let path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
+    let existing_config = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(content.as_str()).ok())
+        .unwrap_or_else(|| json!({}));
+    let content = merge_keep_tunnel_into_gateway_config(existing_config, keep_tunnels);
+    let body = serde_json::to_string_pretty(&content).unwrap_or_else(|_| "{}".to_string());
+    std::fs::write(&path, body.as_bytes())?;
+    info!("write boot node_gateway.json -> {}", path.display());
+    Ok(())
+}
+
 // 把 boot 阶段构造的 gateway info 写入 `$BUCKYOS_ROOT/etc/node_gateway_info.json`。
 // 必须在启动 cyfs-gateway 之前完成，否则它会读到空文件 / 旧文件。
 pub fn write_boot_node_gateway_info(content: &Value) -> std::io::Result<()> {
     let path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
-    let body = serde_json::to_string_pretty(content)
-        .unwrap_or_else(|_| "{}".to_string());
+    let body = serde_json::to_string_pretty(content).unwrap_or_else(|_| "{}".to_string());
     std::fs::write(&path, body.as_bytes())?;
     info!("write boot node_gateway_info.json -> {}", path.display());
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_keep_tunnel_preserves_existing_gateway_config() {
+        let config = json!({
+            "acme": {"enabled": true},
+            "stacks": {
+                "zone_tls": {"protocol": "tls"},
+                "node_rtcp": {
+                    "keep_tunnel": ["old"],
+                    "hook_point": {}
+                }
+            }
+        });
+
+        let merged = merge_keep_tunnel_into_gateway_config(
+            config,
+            &[
+                "rtcp://ood2.zone/".to_string(),
+                "rtcp://ood3.zone/".to_string(),
+            ],
+        );
+
+        assert_eq!(merged["acme"]["enabled"], true);
+        assert_eq!(merged["stacks"]["zone_tls"]["protocol"], "tls");
+        assert_eq!(
+            merged["stacks"]["node_rtcp"]["keep_tunnel"],
+            json!(["rtcp://ood2.zone/", "rtcp://ood3.zone/"])
+        );
+    }
+
+    #[test]
+    fn extract_keep_tunnel_targets_from_gateway_info_uses_route_flag() {
+        let gateway_info = json!({
+            "routes": {
+                "ood2": [
+                    {"url": "rtcp://ood2.zone/", "keep_tunnel": true},
+                    {"url": "rtcp://backup@ood2.zone/", "keep_tunnel": false}
+                ],
+                "ood3": [
+                    {"url": "rtcp://ood3.zone/", "keep_tunnel": true}
+                ]
+            }
+        });
+
+        assert_eq!(
+            extract_keep_tunnel_targets_from_gateway_info(&gateway_info),
+            vec![
+                "rtcp://ood2.zone/".to_string(),
+                "rtcp://ood3.zone/".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn dedup_keep_tunnel_targets_keeps_order() {
+        let mut targets = vec![
+            "rtcp://ood2.zone/".to_string(),
+            "".to_string(),
+            "rtcp://ood2.zone/".to_string(),
+            "rtcp://ood3.zone/".to_string(),
+        ];
+
+        dedup_keep_tunnel_targets(&mut targets);
+
+        assert_eq!(
+            targets,
+            vec![
+                "rtcp://ood2.zone/".to_string(),
+                "rtcp://ood3.zone/".to_string()
+            ]
+        );
+    }
+}

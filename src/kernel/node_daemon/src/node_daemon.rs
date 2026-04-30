@@ -32,8 +32,10 @@ use package_lib::*;
 use crate::active_server::*;
 use crate::app_mgr::*;
 use crate::boot::{
-    build_boot_node_gateway_info, build_keep_tunnel_targets, discover_oods_in_lan,
-    write_boot_node_gateway_info, NodeRole,
+    build_boot_node_gateway_info, build_keep_tunnel_targets, dedup_keep_tunnel_targets,
+    discover_oods_in_lan, extract_keep_tunnel_targets_from_gateway_info,
+    merge_keep_tunnel_into_gateway_config, read_local_gateway_keep_tunnel_targets,
+    write_boot_node_gateway_config, write_boot_node_gateway_info, NodeRole,
 };
 use crate::finder::{DiscoveredNode, NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
@@ -898,8 +900,8 @@ async fn keep_cyfs_gateway_service(
     node_id: &str,
     device_doc: &DeviceConfig,
     node_private_key: &EncodingKey,
-    keep_tunnels: Vec<String>,
     is_reload: bool,
+    is_restart: bool,
 ) -> std::result::Result<(), String> {
     let _ = (node_id, node_private_key);
     let mut cyfs_gateway_service_pkg =
@@ -924,10 +926,19 @@ async fn keep_cyfs_gateway_service(
             return Err(String::from("install cyfs_gateway service pkg failed!"));
         } else {
             info!("install cyfs_gateway service pkg success");
+            running_state = ServiceInstanceState::Stopped;
         }
     }
 
-    if is_reload && running_state == ServiceInstanceState::Started {
+    if is_restart && running_state == ServiceInstanceState::Started {
+        info!("cyfs_gateway keep_tunnel changed, will restart service ...");
+        cyfs_gateway_service_pkg.stop(None).await.map_err(|err| {
+            error!("stop cyfs_gateway service failed! {}", err);
+            return String::from("stop cyfs_gateway service failed!");
+        })?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        running_state = ServiceInstanceState::Stopped;
+    } else if is_reload && running_state == ServiceInstanceState::Started {
         info!("cyfs_gateway service pkg loaded, will do reload ...");
         let params = vec!["reload".to_string()];
         cyfs_gateway_service_pkg
@@ -944,21 +955,11 @@ async fn keep_cyfs_gateway_service(
 
     if running_state == ServiceInstanceState::Stopped {
         warn!("check cyfs_gateway is stopped,try to start cyfs_gateway");
-        let mut params: Vec<String> = Vec::new();
-        if !keep_tunnels.is_empty() {
-            params.push("--keep_tunnel".to_string());
-            for tunnel in keep_tunnels.iter() {
-                params.push(tunnel.clone());
-            }
-        }
 
-        let start_result = cyfs_gateway_service_pkg
-            .start(Some(&params))
-            .await
-            .map_err(|err| {
-                error!("start cyfs_gateway failed! {}", err);
-                return String::from("start cyfs_gateway failed!");
-            })?;
+        let start_result = cyfs_gateway_service_pkg.start(None).await.map_err(|err| {
+            error!("start cyfs_gateway failed! {}", err);
+            return String::from("start cyfs_gateway failed!");
+        })?;
 
         info!(
             "start cyfs_gateway OK!,result:{}. wait 2 seconds...",
@@ -971,7 +972,7 @@ async fn keep_cyfs_gateway_service(
     Ok(())
 }
 
-// 把 ZoneBootConfig.sn 解析成 cyfs-gateway --keep_tunnel 直接可用的 host name。
+// 把 ZoneBootConfig.sn 解析成 cyfs-gateway keep_tunnel 直接可用的 host name。
 // wan 系节点不需要走 SN，返回 None。
 async fn resolve_sn_host_for_keep_tunnel(
     device_doc: &DeviceConfig,
@@ -1204,6 +1205,7 @@ async fn node_daemon_main_loop(
     let mut last_register_time = 0;
     let mut node_gateway_config_id: Option<ObjId> = None;
     let mut node_gateway_info_id: Option<ObjId> = None;
+    let mut keep_tunnel_config_id: Option<ObjId> = None;
     let mut network_observer = NetworkObserver::new(NetworkObserverConfig::default());
 
     loop {
@@ -1294,9 +1296,12 @@ async fn node_daemon_main_loop(
             if !is_running {
                 break;
             }
+            let mut gateway_info_keep_tunnels: Vec<String> = Vec::new();
             let new_node_gateway_info =
                 load_node_gateway_info(node_host_name, &system_config_client).await;
             if let Ok(new_node_gateway_info) = new_node_gateway_info {
+                gateway_info_keep_tunnels =
+                    extract_keep_tunnel_targets_from_gateway_info(&new_node_gateway_info);
                 let (new_node_gateway_info_id_value, new_node_gateway_info_str) =
                     build_named_object_by_json("node_gateway_info", &new_node_gateway_info);
                 let need_write = match node_gateway_info_id.as_ref() {
@@ -1325,7 +1330,38 @@ async fn node_daemon_main_loop(
 
             if new_node_gateway_config.is_ok() {
                 let mut need_reload = false;
+                let mut need_restart = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
+                let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
+                info!("*** keep cyfs-gateway service with sn: {:?}", sn);
+                let mut keep_tunnels = gateway_info_keep_tunnels;
+                if let Some(host) = resolve_sn_host_for_keep_tunnel(device_doc, sn.as_deref()).await
+                {
+                    keep_tunnels.push(host);
+                }
+                dedup_keep_tunnel_targets(&mut keep_tunnels);
+
+                let keep_tunnels_value = serde_json::to_value(&keep_tunnels).unwrap_or(json!([]));
+                let (new_keep_tunnel_config_id, _) =
+                    build_named_object_by_json("gateway_keep_tunnel", &keep_tunnels_value);
+                if let Some(old_id) = keep_tunnel_config_id.as_ref() {
+                    if old_id != &new_keep_tunnel_config_id {
+                        need_restart = true;
+                    }
+                } else {
+                    let old_keep_tunnels = read_local_gateway_keep_tunnel_targets();
+                    let old_keep_tunnels_value =
+                        serde_json::to_value(&old_keep_tunnels).unwrap_or(json!([]));
+                    let (old_keep_tunnel_config_id, _) =
+                        build_named_object_by_json("gateway_keep_tunnel", &old_keep_tunnels_value);
+                    if old_keep_tunnel_config_id != new_keep_tunnel_config_id {
+                        need_restart = true;
+                    }
+                }
+                keep_tunnel_config_id = Some(new_keep_tunnel_config_id);
+
+                let new_node_gateway_config =
+                    merge_keep_tunnel_into_gateway_config(new_node_gateway_config, &keep_tunnels);
                 let (new_node_gateway_config_id, new_node_gateway_config_str) =
                     build_named_object_by_json("nodeconfig", &new_node_gateway_config);
                 if node_gateway_config_id.is_none() {
@@ -1351,22 +1387,12 @@ async fn node_daemon_main_loop(
                         .unwrap();
                 }
 
-                let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
-                info!("*** keep cyfs-gateway service with sn: {:?}", sn);
-                let keep_tunnels =
-                    if let Some(host) = resolve_sn_host_for_keep_tunnel(device_doc, sn.as_deref())
-                        .await
-                    {
-                        vec![host]
-                    } else {
-                        Vec::new()
-                    };
                 keep_cyfs_gateway_service(
                     node_id,
                     device_doc,
                     device_private_key,
-                    keep_tunnels,
                     need_reload,
+                    need_restart,
                 )
                 .await
                 .map_err(|err| {
@@ -1596,8 +1622,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         NodeRole::ZoneGateway | NodeRole::Node => true,
     };
     let discovered_oods: HashMap<String, DiscoveredNode> = if want_discovery {
-        let owner_public_key_for_finder =
-            DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(|err| {
+        let owner_public_key_for_finder = DecodingKey::from_jwk(&node_identity.owner_public_key)
+            .map_err(|err| {
                 error!("parse owner public key for finder client failed! {}", err);
                 String::from("parse owner public key for finder client failed!")
             })?;
@@ -1650,7 +1676,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         warn!("write boot node_gateway_info.json failed: {}", err);
     }
 
-    // cyfs-gateway --keep_tunnel 命令行 targets。
+    // cyfs-gateway node_rtcp.keep_tunnel config targets.
     let mut keep_tunnels = build_keep_tunnel_targets(
         role,
         &device_doc,
@@ -1658,8 +1684,23 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         zone_host.as_str(),
         sn_host_name.as_deref(),
     );
-    // 兼容现有 keep_cyfs_gateway_service 的入参（首条仍是 SN host name 时一切照旧）。
-    keep_tunnels.dedup();
+    dedup_keep_tunnel_targets(&mut keep_tunnels);
+    if let Err(err) = write_boot_node_gateway_config(&keep_tunnels) {
+        warn!("write boot node_gateway.json failed: {}", err);
+    }
+
+    keep_cyfs_gateway_service(
+        node_id.as_str(),
+        &device_doc,
+        &device_private_key,
+        false,
+        true,
+    )
+    .await
+    .map_err(|err| {
+        error!("start cyfs_gateway for boot failed: {}", err);
+        String::from("start cyfs_gateway for boot failed!")
+    })?;
 
     unsafe {
         std::env::set_var(
@@ -1677,13 +1718,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     }
 
     info!("set env var BUCKY_ZONE_OWNER,BUCKYOS_ZONE_BOOT_CONFIG,BUCKYOS_THIS_DEVICE OK!");
-
-    // uncomment this when cyfs-gateway support etcd
-    // keep_cyfs_gateway_service(node_id.as_str(),&device_doc, &device_private_key,
-    //     zone_boot_config.sn.clone(),false).await.map_err(|err| {
-    //         error!("init cyfs_gateway service failed! {}", err);
-    //         return String::from("init cyfs_gateway service failed!");
-    // })?;
 
     let device_session_token_jwt =
         generate_device_session_token(&device_doc, &device_private_key, true)
@@ -1799,27 +1833,14 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             String::from("register global runtime failed!")
         })?;
     } else {
-        // 非 OOD（ZoneGateway 或普通 Node）：boot 阶段必须先把 cyfs-gateway 拉起来，
+        // 非 OOD（ZoneGateway 或普通 Node）：boot 阶段已经先把 cyfs-gateway 拉起来，
         // 这样 RPC 客户端默认指向的 `127.0.0.1:3180/kapi/system_config` 才能被
         // boot routes 转发到 OOD。
         info!(
-            "non-ood role {} boot: start cyfs-gateway with {} keep_tunnel target(s) before login.",
+            "non-ood role {} boot: cyfs-gateway is ready with {} keep_tunnel target(s) before login.",
             role.as_str(),
             keep_tunnels.len()
         );
-        keep_cyfs_gateway_service(
-            node_id.as_str(),
-            &device_doc,
-            &device_private_key,
-            keep_tunnels.clone(),
-            false,
-        )
-        .await
-        .map_err(|err| {
-            error!("start cyfs_gateway for non-ood boot failed: {}", err);
-            String::from("start cyfs_gateway for non-ood boot failed!")
-        })?;
-
         let mut runtime = init_buckyos_api_runtime("node-daemon", None, BuckyOSRuntimeType::Kernel)
             .await
             .map_err(|e| {
@@ -1838,10 +1859,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             attempt += 1;
             match runtime.login().await {
                 Ok(_) => {
-                    info!(
-                        "non-ood boot login OK after {} attempt(s).",
-                        attempt
-                    );
+                    info!("non-ood boot login OK after {} attempt(s).", attempt);
                     break;
                 }
                 Err(e) => {

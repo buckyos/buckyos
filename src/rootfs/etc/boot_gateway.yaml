@@ -26,6 +26,7 @@ stacks:
     bind: 0.0.0.0:2980
     key_path: ./node_private_key.pem
     device_config_path: ./node_device_config.json
+    keep_tunnel: []
     hook_point:
       main:
         id: main

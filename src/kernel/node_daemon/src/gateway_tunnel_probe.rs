@@ -4,8 +4,7 @@ use std::time::Duration;
 use buckyos_api::{ProbeInfo, DEFAULT_RTCP_PORT};
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_service_data_dir};
 use cyfs_gateway_lib::{
-    GatewayControlClient, TunnelProbeOptions, TunnelUrlSortPolicy, TunnelUrlStatus,
-    CONTROL_SERVER,
+    GatewayControlClient, TunnelProbeOptions, TunnelUrlSortPolicy, TunnelUrlStatus, CONTROL_SERVER,
 };
 use kRPC::RPCSessionToken;
 use log::*;
