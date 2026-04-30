@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use name_lib::{DeviceInfo, ZoneConfig};
 use serde::{Deserialize, Serialize};
@@ -6,6 +6,93 @@ use serde_json::Value;
 
 const DEFAULT_RTCP_PORT: u32 = 2980;
 const DEFAULT_ROUTE_WEIGHT: u32 = 100;
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub(crate) struct NetworkObservation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) changed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rtcp_port: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ipv6: Option<Ipv6Observation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) endpoints: Vec<NetworkEndpoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) direct_probe: Vec<ProbeInfo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub(crate) struct Ipv6Observation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) probe_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_probe: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) failure_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub(crate) struct NetworkEndpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observed_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub(crate) struct ProbeInfo {
+    #[serde(
+        default,
+        alias = "target_node_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) target_node: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rtt_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_probe: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_success: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) freshness_ttl_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) failure_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<String>,
+}
+
+impl ProbeInfo {
+    fn target_node_id(&self) -> Option<&str> {
+        self.target_node.as_deref()
+    }
+
+    fn is_reachable(&self) -> bool {
+        self.status
+            .as_deref()
+            .map(|status| status.eq_ignore_ascii_case("reachable"))
+            .unwrap_or(false)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct NodeGatewayRouteEvidence {
@@ -17,6 +104,16 @@ pub(crate) struct NodeGatewayRouteEvidence {
     pub(crate) target_node: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) witness_node: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_probe: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_success: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) rtt_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) freshness_ttl_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) failure_reason: Option<String>,
     pub(crate) confidence: String,
     pub(crate) applicability: String,
 }
@@ -121,17 +218,21 @@ fn same_trusted_lan(source: &DeviceInfo, target: &DeviceInfo) -> bool {
     net_id_for_planning(source) == net_id_for_planning(target)
 }
 
-fn direct_probe_targets(device_info: &DeviceInfo) -> HashSet<String> {
-    let mut result = HashSet::new();
+fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> {
+    let mut result = HashMap::new();
 
-    if let Some(direct_probe) = device_info
-        .device_doc
-        .extra_info
-        .get("network_observation")
-        .and_then(|network_observation| network_observation.get("direct_probe"))
-        .and_then(Value::as_array)
+    if let Some(network_observation) = device_info.device_doc.extra_info.get("network_observation")
     {
-        collect_reachable_probe_targets(direct_probe, &mut result);
+        if let Ok(network_observation) =
+            serde_json::from_value::<NetworkObservation>(network_observation.clone())
+        {
+            collect_reachable_probe_targets(&network_observation.direct_probe, &mut result);
+        } else if let Some(direct_probe) = network_observation
+            .get("direct_probe")
+            .and_then(Value::as_array)
+        {
+            collect_reachable_probe_target_values(direct_probe, &mut result);
+        }
     }
 
     if let Some(direct_probe) = device_info
@@ -140,46 +241,56 @@ fn direct_probe_targets(device_info: &DeviceInfo) -> HashSet<String> {
         .get("direct_probe")
         .and_then(Value::as_array)
     {
-        collect_reachable_probe_targets(direct_probe, &mut result);
+        collect_reachable_probe_target_values(direct_probe, &mut result);
     }
 
     result
 }
 
-fn collect_reachable_probe_targets(direct_probe: &[Value], result: &mut HashSet<String>) {
+fn collect_reachable_probe_target_values(
+    direct_probe: &[Value],
+    result: &mut HashMap<String, ProbeInfo>,
+) {
     for probe in direct_probe.iter() {
-        let status = probe
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !status.eq_ignore_ascii_case("reachable") {
+        let Ok(probe_info) = serde_json::from_value::<ProbeInfo>(probe.clone()) else {
             continue;
-        }
-
-        let target_node = probe
-            .get("target_node")
-            .or_else(|| probe.get("target_node_id"))
-            .and_then(Value::as_str);
-        if let Some(target_node) = target_node {
-            result.insert(target_node.to_string());
-        }
+        };
+        collect_reachable_probe_target(probe_info, result);
     }
 }
 
-fn has_direct_probe_to(
-    probe_targets: &HashMap<String, HashSet<String>>,
+fn collect_reachable_probe_targets(
+    direct_probe: &[ProbeInfo],
+    result: &mut HashMap<String, ProbeInfo>,
+) {
+    for probe in direct_probe.iter().cloned() {
+        collect_reachable_probe_target(probe, result);
+    }
+}
+
+fn collect_reachable_probe_target(probe: ProbeInfo, result: &mut HashMap<String, ProbeInfo>) {
+    if !probe.is_reachable() {
+        return;
+    }
+
+    if let Some(target_node) = probe.target_node_id().map(str::to_string) {
+        result.insert(target_node, probe);
+    }
+}
+
+fn direct_probe_to<'a>(
+    probe_targets: &'a HashMap<String, HashMap<String, ProbeInfo>>,
     source_node_id: &str,
     target_node_id: &str,
-) -> bool {
+) -> Option<&'a ProbeInfo> {
     probe_targets
         .get(source_node_id)
-        .map(|targets| targets.contains(target_node_id))
-        .unwrap_or(false)
+        .and_then(|targets| targets.get(target_node_id))
 }
 
 fn shared_ood_direct_probe(
     zone_config: &ZoneConfig,
-    probe_targets: &HashMap<String, HashSet<String>>,
+    probe_targets: &HashMap<String, HashMap<String, ProbeInfo>>,
     source_node_id: &str,
     target_node_id: &str,
 ) -> Option<String> {
@@ -192,8 +303,8 @@ fn shared_ood_direct_probe(
         .filter(|ood| ood.node_type.is_ood() && !is_publicly_reachable_net_id(ood.net_id.as_ref()))
         .map(|ood| ood.name.as_str())
         .find(|ood_name| {
-            has_direct_probe_to(probe_targets, source_node_id, ood_name)
-                && has_direct_probe_to(probe_targets, target_node_id, ood_name)
+            direct_probe_to(probe_targets, source_node_id, ood_name).is_some()
+                && direct_probe_to(probe_targets, target_node_id, ood_name).is_some()
         })
         .map(str::to_string)
 }
@@ -211,8 +322,33 @@ fn route_evidence(
         source_node: source_node.map(str::to_string),
         target_node: target_node.map(str::to_string),
         witness_node: witness_node.map(str::to_string),
+        last_probe: None,
+        last_success: None,
+        rtt_ms: None,
+        freshness_ttl_secs: None,
+        failure_reason: None,
         confidence: confidence.to_string(),
         applicability: applicability.to_string(),
+    }
+}
+
+fn route_evidence_from_probe(
+    source_node: &str,
+    target_node: &str,
+    probe_info: &ProbeInfo,
+) -> NodeGatewayRouteEvidence {
+    NodeGatewayRouteEvidence {
+        evidence_type: "direct_probe".to_string(),
+        source_node: Some(source_node.to_string()),
+        target_node: Some(target_node.to_string()),
+        witness_node: None,
+        last_probe: probe_info.last_probe,
+        last_success: probe_info.last_success,
+        rtt_ms: probe_info.rtt_ms,
+        freshness_ttl_secs: probe_info.freshness_ttl_secs,
+        failure_reason: probe_info.failure_reason.clone(),
+        confidence: "high".to_string(),
+        applicability: "source_node".to_string(),
     }
 }
 
@@ -280,7 +416,9 @@ pub(crate) fn build_forward_plan(
             );
             // 不再短路：签名 IP 仅停止 IP 级探索（不再尝试 DNS / Finder 推断的 IP），
             // 但显式 relay candidate 仍应作为 backup 写入，覆盖签名 IP 暂时不可达的场景。
-        } else if has_direct_probe_to(&probe_targets, this_node_id, target_node_id) {
+        } else if let Some(probe_info) =
+            direct_probe_to(&probe_targets, this_node_id, target_node_id)
+        {
             push_route_candidate(
                 &mut candidates,
                 NodeGatewayRouteCandidate {
@@ -293,13 +431,10 @@ pub(crate) fn build_forward_plan(
                     url: format_rtcp_did_url(target_node_id, zone_host, target_port),
                     source: "system_config".to_string(),
                     relay_node: None,
-                    evidence: Some(route_evidence(
-                        "direct_probe",
-                        Some(this_node_id),
-                        Some(target_node_id),
-                        None,
-                        "high",
-                        "source_node",
+                    evidence: Some(route_evidence_from_probe(
+                        this_node_id,
+                        target_node_id,
+                        probe_info,
                     )),
                 },
             );
@@ -497,6 +632,48 @@ mod tests {
         );
     }
 
+    fn add_network_observation_direct_probe(device_info: &mut DeviceInfo, target_node: &str) {
+        device_info.device_doc.extra_info.insert(
+            "network_observation".to_string(),
+            json!({
+                "generation": 12,
+                "observation_id": "sha256:test",
+                "changed_at": 1710000000_u64,
+                "observed_at": 1710000030_u64,
+                "rtcp_port": 2980,
+                "ipv6": {
+                    "state": "egress_ok",
+                    "probe_target": "ipv6.test.example",
+                    "last_probe": 1710000030_u64,
+                    "failure_reason": null
+                },
+                "endpoints": [
+                    {
+                        "ip": "192.168.1.23",
+                        "family": "ipv4",
+                        "scope": "lan",
+                        "source": "system_interface",
+                        "observed_at": 1710000030_u64
+                    }
+                ],
+                "direct_probe": [
+                    {
+                        "target_node": target_node,
+                        "kind": "rtcp_direct",
+                        "url": format!("rtcp://{}.test.buckyos.io/", target_node),
+                        "status": "reachable",
+                        "rtt_ms": 12_u64,
+                        "last_probe": 1710000030_u64,
+                        "last_success": 1710000030_u64,
+                        "freshness_ttl_secs": 600_u64,
+                        "failure_reason": null,
+                        "source": "tunnel_mgr"
+                    }
+                ]
+            }),
+        );
+    }
+
     fn create_test_zone_config() -> ZoneConfig {
         let (_, owner_key_jwk) = generate_ed25519_key_pair();
         let owner_key_jwk: Jwk = serde_json::from_value(owner_key_jwk).unwrap();
@@ -610,6 +787,33 @@ mod tests {
             .find(|candidate| candidate.kind == "rtcp_direct")
             .expect("portmap target should yield a direct candidate");
         assert_eq!(direct.id, "direct-wan-target");
+    }
+
+    #[test]
+    fn test_build_forward_plan_preserves_direct_probe_evidence_fields() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("nat"));
+        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan2"));
+        add_network_observation_direct_probe(&mut device_ood1, "ood2");
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = routes.get("ood2").unwrap();
+        let direct = ood2_routes
+            .iter()
+            .find(|candidate| candidate.id == "direct-probed")
+            .expect("reachable direct probe should produce a direct candidate");
+        let evidence = direct.evidence.as_ref().unwrap();
+        assert_eq!(evidence.evidence_type, "direct_probe");
+        assert_eq!(evidence.rtt_ms, Some(12));
+        assert_eq!(evidence.last_probe, Some(1710000030));
+        assert_eq!(evidence.last_success, Some(1710000030));
+        assert_eq!(evidence.freshness_ttl_secs, Some(600));
     }
 
     #[test]
