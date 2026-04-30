@@ -1492,6 +1492,24 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                     match finder_client.looking_oods_by_udpv4(3).await {
                         Ok(nodes) => {
                             info!("OOD finder discovered {} OOD candidates", nodes.len());
+                            for node in nodes.values() {
+                                let device_did = node.device_doc.id.clone();
+                                let device_doc =
+                                    EncodedDocument::Jwt(node.device_doc_jwt.clone());
+                                if let Err(err) =
+                                    update_did_cache(device_did.clone(), None, device_doc).await
+                                {
+                                    warn!(
+                                        "update did cache for discovered device failed, did={:?}, err={}",
+                                        device_did, err
+                                    );
+                                } else {
+                                    info!(
+                                        "update did cache for discovered device, did={:?}, ips={:?}",
+                                        device_did, node.device_doc.ips
+                                    );
+                                }
+                            }
                         }
                         Err(err) => {
                             warn!("OOD finder discovery failed: {}", err);
