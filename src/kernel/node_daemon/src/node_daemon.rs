@@ -37,6 +37,7 @@ use crate::boot::{
 };
 use crate::finder::{DiscoveredNode, NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
+use crate::gateway_tunnel_probe::probe_key_tunnels_via_gateway;
 use crate::kernel_mgr::*;
 use crate::kevent_server::*;
 use crate::local_app_mgr::LocalAppRunItem;
@@ -663,9 +664,34 @@ async fn populate_network_observation(
 ) {
     let peers =
         load_zone_peer_devices(device_info.device_doc.name.as_str(), system_config_client).await;
-    let observation = observer
+    let mut observation = observer
         .observe(&device_info.device_doc, &device_info.all_ip, &peers)
         .await;
+
+    // Augment the TCP-level direct probes with cyfs-gateway tunnel_mgr's
+    // view of the same peers, so consumers can see end-to-end RTCP tunnel
+    // health (keep_tunnel/business_connect/fresh_probe) instead of only a
+    // raw TCP connect result. Best-effort; silently skipped when the
+    // gateway control endpoint is not yet reachable (e.g. boot phase).
+    let zone_host = device_info
+        .device_doc
+        .zone_did
+        .as_ref()
+        .map(|did| did.to_host_name());
+    let gateway_probes = probe_key_tunnels_via_gateway(
+        device_info.device_doc.name.as_str(),
+        zone_host.as_deref(),
+        &peers,
+    )
+    .await;
+    if !gateway_probes.is_empty() {
+        observation.direct_probe.extend(gateway_probes);
+        observation.direct_probe.sort_by(|a, b| {
+            (a.target_node.as_deref(), a.kind.as_deref())
+                .cmp(&(b.target_node.as_deref(), b.kind.as_deref()))
+        });
+    }
+
     match serde_json::to_value(&observation) {
         Ok(value) => {
             device_info
