@@ -94,6 +94,93 @@ impl ProbeInfo {
     }
 }
 
+fn parse_network_observation(device_info: &DeviceInfo) -> Option<NetworkObservation> {
+    let value = device_info
+        .device_doc
+        .extra_info
+        .get("network_observation")?;
+    serde_json::from_value::<NetworkObservation>(value.clone()).ok()
+}
+
+fn lan_endpoint_for(
+    observation: &NetworkObservation,
+    family: &str,
+) -> Option<std::net::IpAddr> {
+    observation
+        .endpoints
+        .iter()
+        .filter(|ep| ep.scope.as_deref() == Some("lan"))
+        .filter(|ep| ep.family.as_deref() == Some(family))
+        .filter_map(|ep| ep.ip.as_deref().and_then(|ip| ip.parse::<std::net::IpAddr>().ok()))
+        .next()
+}
+
+fn global_ipv6_endpoint(observation: &NetworkObservation) -> Option<std::net::IpAddr> {
+    observation
+        .endpoints
+        .iter()
+        .filter(|ep| ep.scope.as_deref() == Some("global"))
+        .filter(|ep| ep.family.as_deref() == Some("ipv6"))
+        .filter_map(|ep| ep.ip.as_deref().and_then(|ip| ip.parse::<std::net::IpAddr>().ok()))
+        .next()
+}
+
+fn collect_lan_ips(observation: &NetworkObservation) -> Vec<std::net::IpAddr> {
+    observation
+        .endpoints
+        .iter()
+        .filter(|ep| ep.scope.as_deref() == Some("lan"))
+        .filter_map(|ep| ep.ip.as_deref().and_then(|ip| ip.parse::<std::net::IpAddr>().ok()))
+        .collect()
+}
+
+fn ip_subnet_matches(a: &std::net::IpAddr, b: &std::net::IpAddr) -> bool {
+    match (a, b) {
+        (std::net::IpAddr::V4(a4), std::net::IpAddr::V4(b4)) => {
+            // 家用 LAN 默认按 /24 判等：高于 /24 的子网划分在家用场景里不常见，
+            // 即使误判也只是把"应当能直连"放过，后续业务建链失败会自然降级到 relay。
+            let a_oct = a4.octets();
+            let b_oct = b4.octets();
+            a_oct[0] == b_oct[0] && a_oct[1] == b_oct[1] && a_oct[2] == b_oct[2]
+        }
+        (std::net::IpAddr::V6(a6), std::net::IpAddr::V6(b6)) => {
+            // IPv6 LAN 默认按 /64 前缀匹配。
+            a6.segments()[..4] == b6.segments()[..4]
+        }
+        _ => false,
+    }
+}
+
+fn endpoints_refute_same_lan(
+    source_obs: Option<&NetworkObservation>,
+    target_obs: Option<&NetworkObservation>,
+) -> bool {
+    let (Some(src), Some(tgt)) = (source_obs, target_obs) else {
+        return false;
+    };
+    let src_lans = collect_lan_ips(src);
+    let tgt_lans = collect_lan_ips(tgt);
+    if src_lans.is_empty() || tgt_lans.is_empty() {
+        return false;
+    }
+    !src_lans
+        .iter()
+        .any(|s| tgt_lans.iter().any(|t| ip_subnet_matches(s, t)))
+}
+
+fn probe_is_fresh(probe: &ProbeInfo, observed_at: Option<u64>) -> bool {
+    let Some(observed_at) = observed_at else {
+        return true;
+    };
+    let Some(last_success) = probe.last_success else {
+        return true;
+    };
+    let Some(ttl) = probe.freshness_ttl_secs else {
+        return true;
+    };
+    observed_at.saturating_sub(last_success) <= ttl
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct NodeGatewayRouteEvidence {
     #[serde(rename = "type")]
@@ -208,14 +295,25 @@ fn has_signed_wan_ip(device_info: &DeviceInfo) -> bool {
     is_wan_net_id(device_info.device_doc.net_id.as_ref()) && !device_info.device_doc.ips.is_empty()
 }
 
-fn same_trusted_lan(source: &DeviceInfo, target: &DeviceInfo) -> bool {
+fn same_trusted_lan(
+    source: &DeviceInfo,
+    target: &DeviceInfo,
+    source_obs: Option<&NetworkObservation>,
+    target_obs: Option<&NetworkObservation>,
+) -> bool {
     if is_wan_net_id(source.device_doc.net_id.as_ref())
         || is_wan_net_id(target.device_doc.net_id.as_ref())
     {
         return false;
     }
 
-    net_id_for_planning(source) == net_id_for_planning(target)
+    if net_id_for_planning(source) != net_id_for_planning(target) {
+        return false;
+    }
+
+    // net_id 字面相同（含都为 unknown_lan）只是必要条件；如果双方都上报了 LAN endpoint
+    // 但子网完全对不上，说明只是标签巧合，不能据此推断同 LAN，避免家用 VPN/桥接误标。
+    !endpoints_refute_same_lan(source_obs, target_obs)
 }
 
 fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> {
@@ -223,15 +321,21 @@ fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> 
 
     if let Some(network_observation) = device_info.device_doc.extra_info.get("network_observation")
     {
-        if let Ok(network_observation) =
-            serde_json::from_value::<NetworkObservation>(network_observation.clone())
+        if let Ok(parsed) = serde_json::from_value::<NetworkObservation>(network_observation.clone())
         {
-            collect_reachable_probe_targets(&network_observation.direct_probe, &mut result);
+            collect_reachable_probe_targets(
+                &parsed.direct_probe,
+                parsed.observed_at,
+                &mut result,
+            );
         } else if let Some(direct_probe) = network_observation
             .get("direct_probe")
             .and_then(Value::as_array)
         {
-            collect_reachable_probe_target_values(direct_probe, &mut result);
+            let observed_at = network_observation
+                .get("observed_at")
+                .and_then(Value::as_u64);
+            collect_reachable_probe_target_values(direct_probe, observed_at, &mut result);
         }
     }
 
@@ -241,7 +345,9 @@ fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> 
         .get("direct_probe")
         .and_then(Value::as_array)
     {
-        collect_reachable_probe_target_values(direct_probe, &mut result);
+        // 顶层 `direct_probe` 字段没有 observation 上下文，无从判断 freshness；
+        // 仍按 reachable 直接保留，由其它新鲜度通道（network_observation）覆盖。
+        collect_reachable_probe_target_values(direct_probe, None, &mut result);
     }
 
     result
@@ -249,27 +355,36 @@ fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> 
 
 fn collect_reachable_probe_target_values(
     direct_probe: &[Value],
+    observed_at: Option<u64>,
     result: &mut HashMap<String, ProbeInfo>,
 ) {
     for probe in direct_probe.iter() {
         let Ok(probe_info) = serde_json::from_value::<ProbeInfo>(probe.clone()) else {
             continue;
         };
-        collect_reachable_probe_target(probe_info, result);
+        collect_reachable_probe_target(probe_info, observed_at, result);
     }
 }
 
 fn collect_reachable_probe_targets(
     direct_probe: &[ProbeInfo],
+    observed_at: Option<u64>,
     result: &mut HashMap<String, ProbeInfo>,
 ) {
     for probe in direct_probe.iter().cloned() {
-        collect_reachable_probe_target(probe, result);
+        collect_reachable_probe_target(probe, observed_at, result);
     }
 }
 
-fn collect_reachable_probe_target(probe: ProbeInfo, result: &mut HashMap<String, ProbeInfo>) {
+fn collect_reachable_probe_target(
+    probe: ProbeInfo,
+    observed_at: Option<u64>,
+    result: &mut HashMap<String, ProbeInfo>,
+) {
     if !probe.is_reachable() {
+        return;
+    }
+    if !probe_is_fresh(&probe, observed_at) {
         return;
     }
 
@@ -293,10 +408,17 @@ fn shared_ood_direct_probe(
     probe_targets: &HashMap<String, HashMap<String, ProbeInfo>>,
     source_node_id: &str,
     target_node_id: &str,
+    source_obs: Option<&NetworkObservation>,
+    target_obs: Option<&NetworkObservation>,
 ) -> Option<String> {
     // 共同 OOD 推断仅在 witness OOD 不在公网时成立：能 direct 连上同一非公网 OOD 的两个
     // device 大概率位于同一 LAN；如果 witness 自己是 wan/wan_dyn/portmap，两端只是都有
     // 公网出口，不能据此推断同 LAN。
+    // 同时如果双方都上报了 LAN endpoint 且子网不一致，OOD 可能是 dual-homed，仅凭它
+    // 直连成功无法证明 device 之间也在同一 LAN，按反证排除。
+    if endpoints_refute_same_lan(source_obs, target_obs) {
+        return None;
+    }
     zone_config
         .oods
         .iter()
@@ -352,6 +474,92 @@ fn route_evidence_from_probe(
     }
 }
 
+fn build_ipv6_direct_candidate(
+    this_node_id: &str,
+    target_node_id: &str,
+    target_port: u32,
+    source_obs: Option<&NetworkObservation>,
+    target_obs: Option<&NetworkObservation>,
+) -> Option<NodeGatewayRouteCandidate> {
+    let source_obs = source_obs?;
+    let target_obs = target_obs?;
+
+    // source 必须至少能 IPv6 出站；address_only / unknown / unavailable 都不足以发起 direct。
+    let source_state = source_obs.ipv6.as_ref()?.state.as_deref()?;
+    if !matches!(source_state, "egress_ok" | "rtcp_direct_ok") {
+        return None;
+    }
+    // target 显式声明 IPv6 不可用时，没必要再写 candidate。
+    if let Some(target_state) = target_obs.ipv6.as_ref().and_then(|i| i.state.as_deref()) {
+        if target_state == "unavailable" {
+            return None;
+        }
+    }
+    let target_v6 = global_ipv6_endpoint(target_obs)?;
+
+    // 双方都 rtcp_direct_ok 时，IPv6 直连基本等价于已验证；只 source 侧 egress_ok 时降一档。
+    let confidence = if source_state == "rtcp_direct_ok" {
+        "high"
+    } else {
+        "medium"
+    };
+
+    Some(NodeGatewayRouteCandidate {
+        id: "direct-ipv6-global".to_string(),
+        kind: "rtcp_direct".to_string(),
+        // 介于 direct-probed (10) 与 direct-wan-target (18) 之间：IPv6 全局可直连，
+        // 但未经业务建链验证，排在已 probe 的 direct 之后、各类 net_id 推断之前。
+        priority: 14,
+        weight: DEFAULT_ROUTE_WEIGHT,
+        backup: false,
+        keep_tunnel: true,
+        url: format_rtcp_ip_url(&target_v6, target_port),
+        source: "system_config".to_string(),
+        relay_node: None,
+        evidence: Some(route_evidence(
+            "ipv6_global_endpoint",
+            Some(this_node_id),
+            Some(target_node_id),
+            None,
+            confidence,
+            "zone_wide",
+        )),
+    })
+}
+
+fn build_lan_endpoint_candidate(
+    this_node_id: &str,
+    target_node_id: &str,
+    target_port: u32,
+    target_obs: Option<&NetworkObservation>,
+    priority: u32,
+    evidence_type: &str,
+) -> Option<NodeGatewayRouteCandidate> {
+    let target_obs = target_obs?;
+    let target_lan = lan_endpoint_for(target_obs, "ipv4")?;
+
+    Some(NodeGatewayRouteCandidate {
+        id: format!("direct-lan-endpoint-{}", target_lan),
+        kind: "rtcp_direct".to_string(),
+        priority,
+        weight: DEFAULT_ROUTE_WEIGHT,
+        backup: false,
+        keep_tunnel: true,
+        // 直接拼 IP 形态，避免 DNS / Finder 解析往返；DID hostname 形态由原有 candidate 兜底。
+        url: format_rtcp_ip_url(&target_lan, target_port),
+        source: "system_config".to_string(),
+        relay_node: None,
+        evidence: Some(route_evidence(
+            evidence_type,
+            Some(this_node_id),
+            Some(target_node_id),
+            None,
+            "medium",
+            "same_lan",
+        )),
+    })
+}
+
 fn push_route_candidate(
     candidates: &mut Vec<NodeGatewayRouteCandidate>,
     candidate: NodeGatewayRouteCandidate,
@@ -379,6 +587,13 @@ pub(crate) fn build_forward_plan(
         .iter()
         .map(|(node_id, device_info)| (node_id.clone(), direct_probe_targets(device_info)))
         .collect::<HashMap<_, _>>();
+    let network_observations: HashMap<String, NetworkObservation> = device_list
+        .iter()
+        .filter_map(|(node_id, device_info)| {
+            parse_network_observation(device_info).map(|obs| (node_id.clone(), obs))
+        })
+        .collect();
+    let source_obs = network_observations.get(this_node_id);
     let zone_gateway_node = zone_config.get_default_zone_gateway();
 
     for (target_node_id, target_device) in device_list.iter() {
@@ -388,6 +603,7 @@ pub(crate) fn build_forward_plan(
 
         let target_port = device_rtcp_port(target_device);
         let target_has_signed_wan_ip = has_signed_wan_ip(target_device);
+        let target_obs = network_observations.get(target_node_id);
         let mut candidates = Vec::new();
 
         if target_has_signed_wan_ip {
@@ -438,7 +654,19 @@ pub(crate) fn build_forward_plan(
                     )),
                 },
             );
-        } else if same_trusted_lan(source_device, target_device) {
+        } else if same_trusted_lan(source_device, target_device, source_obs, target_obs) {
+            // 同 LAN 推断下，如果 target 上报了 LAN endpoint，优先用 IP 形态 candidate，
+            // 避开 DNS 解析往返；DID hostname 形态作为兼容兜底保留。
+            if let Some(candidate) = build_lan_endpoint_candidate(
+                this_node_id,
+                target_node_id,
+                target_port,
+                target_obs,
+                19,
+                "same_net_id_lan_endpoint",
+            ) {
+                push_route_candidate(&mut candidates, candidate);
+            }
             push_route_candidate(
                 &mut candidates,
                 NodeGatewayRouteCandidate {
@@ -486,9 +714,26 @@ pub(crate) fn build_forward_plan(
                     )),
                 },
             );
-        } else if let Some(witness_node) =
-            shared_ood_direct_probe(zone_config, &probe_targets, this_node_id, target_node_id)
-        {
+        } else if let Some(witness_node) = shared_ood_direct_probe(
+            zone_config,
+            &probe_targets,
+            this_node_id,
+            target_node_id,
+            source_obs,
+            target_obs,
+        ) {
+            // 共同 OOD 推断同 LAN 的同时，如果 target 还上报了 LAN endpoint，直接用 IP
+            // 形态把 candidate 写入；这样 device 之间不必互测就能拿到一条可达的 direct URL。
+            if let Some(candidate) = build_lan_endpoint_candidate(
+                this_node_id,
+                target_node_id,
+                target_port,
+                target_obs,
+                24,
+                "shared_ood_lan_endpoint",
+            ) {
+                push_route_candidate(&mut candidates, candidate);
+            }
             push_route_candidate(
                 &mut candidates,
                 NodeGatewayRouteCandidate {
@@ -511,6 +756,21 @@ pub(crate) fn build_forward_plan(
                     )),
                 },
             );
+        }
+
+        // IPv6 全局直连：与 NAT/LAN 拓扑无关，只要双方都报告 IPv6 可用且 target 有 global
+        // 地址就能成立，特别适合双 LAN 场景。signed_wan_ip target 例外——按"不 fallback
+        // 到任意探测得到的 IP"原则，IPv6 endpoint 同样属于观测得来，不进 forward 候选。
+        if !target_has_signed_wan_ip {
+            if let Some(candidate) = build_ipv6_direct_candidate(
+                this_node_id,
+                target_node_id,
+                target_port,
+                source_obs,
+                target_obs,
+            ) {
+                push_route_candidate(&mut candidates, candidate);
+            }
         }
 
         let relay_is_backup = !candidates.is_empty();
@@ -921,5 +1181,193 @@ mod tests {
         let evidence = node2_routes[0].evidence.as_ref().unwrap();
         assert_eq!(evidence.evidence_type, "shared_ood_direct_probe");
         assert_eq!(evidence.witness_node.as_deref(), Some("ood1"));
+    }
+
+    fn add_lan_endpoint(device_info: &mut DeviceInfo, ip: &str) {
+        device_info.device_doc.extra_info.insert(
+            "network_observation".to_string(),
+            json!({
+                "observed_at": 1710000030_u64,
+                "endpoints": [
+                    {
+                        "ip": ip,
+                        "family": "ipv4",
+                        "scope": "lan",
+                        "source": "system_interface",
+                        "observed_at": 1710000030_u64
+                    }
+                ]
+            }),
+        );
+    }
+
+    fn add_ipv6_observation(device_info: &mut DeviceInfo, state: &str, global_ipv6: Option<&str>) {
+        let mut endpoints = Vec::new();
+        if let Some(ip) = global_ipv6 {
+            endpoints.push(json!({
+                "ip": ip,
+                "family": "ipv6",
+                "scope": "global",
+                "source": "system_interface",
+                "observed_at": 1710000030_u64
+            }));
+        }
+        device_info.device_doc.extra_info.insert(
+            "network_observation".to_string(),
+            json!({
+                "observed_at": 1710000030_u64,
+                "ipv6": { "state": state },
+                "endpoints": endpoints
+            }),
+        );
+    }
+
+    #[test]
+    fn test_build_forward_plan_skips_stale_direct_probe() {
+        // probe 上报时已经超过 freshness_ttl_secs：last_success 比 observed_at 老 1000s，
+        // ttl 60s。direct-probed 不应再被触发；落到下一档 net_id 推断或 relay。
+        let mut zone_config = create_test_zone_config();
+        zone_config.sn = Some("sn.test.buckyos.io".to_string());
+        let zone_host = zone_config.id.to_host_name();
+        let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
+        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan1"));
+        device_ood1.device_doc.extra_info.insert(
+            "network_observation".to_string(),
+            json!({
+                "observed_at": 1710001000_u64,
+                "direct_probe": [
+                    {
+                        "target_node": "ood2",
+                        "status": "reachable",
+                        "last_success": 1710000000_u64,
+                        "freshness_ttl_secs": 60_u64
+                    }
+                ]
+            }),
+        );
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = routes.get("ood2").unwrap();
+
+        assert!(
+            !ood2_routes.iter().any(|c| c.id == "direct-probed"),
+            "stale probe must not promote direct-probed"
+        );
+        // 仍然可以走 net_id 同 LAN 推断作为 direct primary。
+        assert!(ood2_routes.iter().any(|c| c.id == "direct-net-id"));
+    }
+
+    #[test]
+    fn test_build_forward_plan_emits_lan_endpoint_for_same_net_id() {
+        // 同 net_id 推断同 LAN 时，target 上报的 LAN endpoint 应直接拼成 IP 形态 candidate，
+        // 排在 DID hostname 形态之前以避开 DNS 解析往返。
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
+        let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan1"));
+        add_lan_endpoint(&mut device_ood2, "192.168.1.23");
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = routes.get("ood2").unwrap();
+
+        assert_eq!(ood2_routes[0].id, "direct-lan-endpoint-192.168.1.23");
+        assert_eq!(ood2_routes[0].url, "rtcp://192.168.1.23/");
+        assert!(!ood2_routes[0].backup);
+        let evidence = ood2_routes[0].evidence.as_ref().unwrap();
+        assert_eq!(evidence.evidence_type, "same_net_id_lan_endpoint");
+        assert_eq!(evidence.applicability, "same_lan");
+        // 兼容兜底：DID hostname 形态仍然在列表里。
+        assert!(ood2_routes.iter().any(|c| c.id == "direct-net-id"));
+    }
+
+    #[test]
+    fn test_build_forward_plan_emits_ipv6_direct_for_dual_lan_with_global_v6() {
+        // 双 LAN（lan1 / lan2）—— same_trusted_lan 不成立，没有共同 OOD，没有 wan target；
+        // 但双方都有 IPv6，target 上报 global v6 endpoint：仍可生成 IPv6 direct candidate。
+        let mut zone_config = create_test_zone_config();
+        zone_config.sn = Some("sn.test.buckyos.io".to_string());
+        let zone_host = zone_config.id.to_host_name();
+        let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
+        let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan2"));
+        add_ipv6_observation(&mut device_ood1, "egress_ok", None);
+        add_ipv6_observation(&mut device_ood2, "address_only", Some("2001:db8::23"));
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = routes.get("ood2").unwrap();
+
+        let v6 = ood2_routes
+            .iter()
+            .find(|c| c.id == "direct-ipv6-global")
+            .expect("dual-LAN with global v6 endpoint should yield IPv6 direct candidate");
+        assert_eq!(v6.kind, "rtcp_direct");
+        assert_eq!(v6.url, "rtcp://[2001:db8::23]/");
+        assert!(!v6.backup);
+        let evidence = v6.evidence.as_ref().unwrap();
+        assert_eq!(evidence.evidence_type, "ipv6_global_endpoint");
+        assert_eq!(evidence.applicability, "zone_wide");
+        // source 仅 egress_ok（未到 rtcp_direct_ok）—— confidence 应停在 medium。
+        assert_eq!(evidence.confidence, "medium");
+    }
+
+    #[test]
+    fn test_build_forward_plan_skips_ipv6_direct_when_target_v6_unavailable() {
+        // target 显式声明 IPv6 unavailable 时，即使有 global endpoint 字段也不该再生成 v6 direct。
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
+        let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan2"));
+        add_ipv6_observation(&mut device_ood1, "rtcp_direct_ok", None);
+        add_ipv6_observation(&mut device_ood2, "unavailable", Some("2001:db8::23"));
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = routes.get("ood2").cloned().unwrap_or_default();
+        assert!(!ood2_routes.iter().any(|c| c.id == "direct-ipv6-global"));
+    }
+
+    #[test]
+    fn test_build_forward_plan_subnet_mismatch_blocks_same_lan() {
+        // 双方都标 lan1（可能因为家用 VPN/桥接误标），但实际 LAN endpoint 子网完全不同；
+        // endpoints 子网反证应阻止 same_trusted_lan 推断，落到 relay-only。
+        let mut zone_config = create_test_zone_config();
+        zone_config.sn = Some("sn.test.buckyos.io".to_string());
+        let zone_host = zone_config.id.to_host_name();
+        let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
+        let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan1"));
+        add_lan_endpoint(&mut device_ood1, "192.168.1.10");
+        add_lan_endpoint(&mut device_ood2, "10.0.0.20");
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let routes = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = routes.get("ood2").unwrap();
+
+        assert!(
+            !ood2_routes.iter().any(|c| c.kind == "rtcp_direct"),
+            "subnet mismatch must refute same-LAN direct candidates"
+        );
+        assert!(ood2_routes.iter().any(|c| c.id == "via-sn"));
     }
 }
