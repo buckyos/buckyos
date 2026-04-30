@@ -31,7 +31,11 @@ use package_lib::*;
 
 use crate::active_server::*;
 use crate::app_mgr::*;
-use crate::finder::{NodeFinder, NodeFinderClient};
+use crate::boot::{
+    build_boot_node_gateway_info, build_keep_tunnel_targets, discover_oods_in_lan,
+    write_boot_node_gateway_info, NodeRole,
+};
+use crate::finder::{DiscoveredNode, NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
 use crate::kernel_mgr::*;
 use crate::kevent_server::*;
@@ -868,10 +872,10 @@ async fn keep_cyfs_gateway_service(
     node_id: &str,
     device_doc: &DeviceConfig,
     node_private_key: &EncodingKey,
-    sn: Option<String>,
+    keep_tunnels: Vec<String>,
     is_reload: bool,
 ) -> std::result::Result<(), String> {
-    //TODO: 需要区分boot模式和正常模式
+    let _ = (node_id, node_private_key);
     let mut cyfs_gateway_service_pkg =
         ServicePkg::new("cyfs-gateway".to_string(), get_buckyos_system_bin_dir());
 
@@ -914,32 +918,12 @@ async fn keep_cyfs_gateway_service(
 
     if running_state == ServiceInstanceState::Stopped {
         warn!("check cyfs_gateway is stopped,try to start cyfs_gateway");
-        //params: boot cyfs-gateway configs, identiy_etc folder, keep_tunnel list
-        //  ood: keep tunnel to other ood, keep tunnel to gateway
-        //  gateway_config: port_forward for system_config service
-        let params: Vec<String>;
-        let mut need_keep_tunnel_to_sn = false;
-        if sn.is_some() {
-            need_keep_tunnel_to_sn = true;
-            // wan and wan_dyn are publicly reachable routes and should not keep tunnel to SN.
-            if let Some(net_id) = device_doc.net_id.as_ref() {
-                if net_id.starts_with("wan") {
-                    need_keep_tunnel_to_sn = false;
-                }
+        let mut params: Vec<String> = Vec::new();
+        if !keep_tunnels.is_empty() {
+            params.push("--keep_tunnel".to_string());
+            for tunnel in keep_tunnels.iter() {
+                params.push(tunnel.clone());
             }
-        }
-
-        if need_keep_tunnel_to_sn {
-            let device_did = device_doc.id.to_string();
-            let sn_host_name = get_real_sn_host_name(sn.as_ref().unwrap(), device_did.as_str())
-                .await
-                .map_err(|err| {
-                    error!("get sn host name failed! {}", err);
-                    return String::from("get sn host name failed!");
-                })?;
-            params = vec!["--keep_tunnel".to_string(), sn_host_name.clone()];
-        } else {
-            params = Vec::new();
         }
 
         let start_result = cyfs_gateway_service_pkg
@@ -959,6 +943,27 @@ async fn keep_cyfs_gateway_service(
     }
 
     Ok(())
+}
+
+// 把 ZoneBootConfig.sn 解析成 cyfs-gateway --keep_tunnel 直接可用的 host name。
+// wan 系节点不需要走 SN，返回 None。
+async fn resolve_sn_host_for_keep_tunnel(
+    device_doc: &DeviceConfig,
+    sn: Option<&str>,
+) -> Option<String> {
+    let sn = sn?;
+    if let Some(net_id) = device_doc.net_id.as_ref() {
+        if net_id.starts_with("wan") {
+            return None;
+        }
+    }
+    match get_real_sn_host_name(sn, device_doc.id.to_string().as_str()).await {
+        Ok(host) => Some(host),
+        Err(err) => {
+            warn!("resolve sn host name failed: {}", err);
+            None
+        }
+    }
 }
 
 async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
@@ -1322,11 +1327,25 @@ async fn node_daemon_main_loop(
 
                 let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
                 info!("*** keep cyfs-gateway service with sn: {:?}", sn);
-                keep_cyfs_gateway_service(node_id, device_doc, device_private_key, sn, need_reload)
-                    .await
-                    .map_err(|err| {
-                        error!("keep cyfs_gateway service failed! {}", err);
-                    });
+                let keep_tunnels =
+                    if let Some(host) = resolve_sn_host_for_keep_tunnel(device_doc, sn.as_deref())
+                        .await
+                    {
+                        vec![host]
+                    } else {
+                        Vec::new()
+                    };
+                keep_cyfs_gateway_service(
+                    node_id,
+                    device_doc,
+                    device_private_key,
+                    keep_tunnels,
+                    need_reload,
+                )
+                .await
+                .map_err(|err| {
+                    error!("keep cyfs_gateway service failed! {}", err);
+                });
             } else {
                 error!("load node gateway_cconfig from system_config failed!");
             }
@@ -1502,23 +1521,22 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     info!("Load zone_boot_config OK, {}", zone_config_json_str);
 
     //verify node_name is this device's hostname
-    let is_ood = zone_boot_config.device_is_ood(&device_doc.name);
     let device_name = device_doc.name.clone();
-    //CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
-    if is_ood {
-        info!("Booting OOD {} ...", device_doc.name.as_str());
-    } else {
-        info!("Booting Node {} ...", device_doc.name.as_str());
-    }
+    let role = NodeRole::from_zone_boot_config(&zone_boot_config, &device_name);
+    let is_ood = matches!(role, NodeRole::Ood);
+    info!("Booting {} as {} ...", device_name, role.as_str());
 
-    if is_ood
-        && zone_boot_config
-            .oods
-            .iter()
-            .filter(|ood| ood.node_type.is_ood())
-            .count()
-            > 1
-    {
+    let multi_ood = zone_boot_config
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+        .count()
+        > 1;
+
+    // OOD 在多 OOD 部署下作为 finder server 提供 LAN 发现应答；非 OOD 角色不提供应答。
+    // OOD 启动 finder server 后会在 boot 完成时被显式停止（doc 角色启动流程要求）。
+    let mut finder_server: Option<NodeFinder> = None;
+    if is_ood && multi_ood {
         let owner_public_key =
             DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(|err| {
                 error!("parse owner public key for finder failed! {}", err);
@@ -1533,59 +1551,89 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             Ok(finder) => {
                 if let Err(err) = finder.run_udp_server().await {
                     warn!("start OOD finder udp server failed: {}", err);
+                } else {
+                    finder_server = Some(finder);
                 }
             }
             Err(err) => {
                 warn!("init OOD finder udp server failed: {}", err);
             }
         }
+    }
 
-        let owner_public_key =
+    // 三类角色都可受益的"在局域网找 OOD"：
+    //  - OOD 多机部署：发现兄弟 OOD 以便建立 keep_tunnel；
+    //  - 非 OOD ZoneGateway / 普通 Node：发现 LAN OOD 以便 system-config 路由走 RTCP direct。
+    // 单 OOD 部署不需要 LAN 发现（也没有兄弟 OOD 可找）。
+    let want_discovery = match role {
+        NodeRole::Ood => multi_ood,
+        NodeRole::ZoneGateway | NodeRole::Node => true,
+    };
+    let discovered_oods: HashMap<String, DiscoveredNode> = if want_discovery {
+        let owner_public_key_for_finder =
             DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(|err| {
                 error!("parse owner public key for finder client failed! {}", err);
                 String::from("parse owner public key for finder client failed!")
             })?;
-        match NodeFinderClient::new_for_zone(
+        discover_oods_in_lan(
             node_identity.device_doc_jwt.clone(),
             device_private_key.clone(),
             zone_boot_config.clone(),
-            owner_public_key,
-        ) {
-            Ok(finder_client) => {
-                tokio::spawn(async move {
-                    match finder_client.looking_oods_by_udpv4(3).await {
-                        Ok(nodes) => {
-                            info!("OOD finder discovered {} OOD candidates", nodes.len());
-                            for node in nodes.values() {
-                                let device_did = node.device_doc.id.clone();
-                                let device_doc =
-                                    EncodedDocument::Jwt(node.device_doc_jwt.clone());
-                                if let Err(err) =
-                                    update_did_cache(device_did.clone(), None, device_doc).await
-                                {
-                                    warn!(
-                                        "update did cache for discovered device failed, did={:?}, err={}",
-                                        device_did, err
-                                    );
-                                } else {
-                                    info!(
-                                        "update did cache for discovered device, did={:?}, ips={:?}",
-                                        device_did, node.device_doc.ips
-                                    );
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            warn!("OOD finder discovery failed: {}", err);
-                        }
-                    }
-                });
-            }
-            Err(err) => {
-                warn!("init OOD finder client failed: {}", err);
-            }
+            owner_public_key_for_finder,
+            role,
+        )
+        .await
+    } else {
+        HashMap::new()
+    };
+
+    // 把发现到的设备文档塞进 DID cache，让后续 RTCP / name-client 解析能直接拿到 endpoint。
+    for node in discovered_oods.values() {
+        let device_did = node.device_doc.id.clone();
+        let device_doc_enc = EncodedDocument::Jwt(node.device_doc_jwt.clone());
+        if let Err(err) = update_did_cache(device_did.clone(), None, device_doc_enc).await {
+            warn!(
+                "update did cache for discovered device failed, did={:?}, err={}",
+                device_did, err
+            );
+        } else {
+            info!(
+                "update did cache for discovered device, did={:?}, ips={:?}",
+                device_did, node.device_doc.ips
+            );
         }
     }
+
+    // SN host name 解析（wan 系节点不需要 SN keep_tunnel）。
+    let sn_host_name =
+        resolve_sn_host_for_keep_tunnel(&device_doc, zone_boot_config.sn.as_deref()).await;
+
+    // 在启动 cyfs-gateway 前，写入 boot 期 node_gateway_info.json：
+    //  - service_info.system_config 让 boot_gateway.yaml 能把 /kapi/system_config 转发到 OOD；
+    //  - node_route_map / routes 提供 OOD / ZoneGateway / SN-relay 的显式候选；
+    // 这样 cyfs-gateway 起来时本机 3180 就已经能访问 system-config 了。
+    let zone_host = node_identity.zone_did.to_host_name();
+    let boot_gateway_info = build_boot_node_gateway_info(
+        &device_name,
+        zone_host.as_str(),
+        &zone_boot_config,
+        &discovered_oods,
+        sn_host_name.as_deref(),
+    );
+    if let Err(err) = write_boot_node_gateway_info(&boot_gateway_info) {
+        warn!("write boot node_gateway_info.json failed: {}", err);
+    }
+
+    // cyfs-gateway --keep_tunnel 命令行 targets。
+    let mut keep_tunnels = build_keep_tunnel_targets(
+        role,
+        &device_doc,
+        &zone_boot_config,
+        zone_host.as_str(),
+        sn_host_name.as_deref(),
+    );
+    // 兼容现有 keep_cyfs_gateway_service 的入参（首条仍是 SN host name 时一切照旧）。
+    keep_tunnels.dedup();
 
     unsafe {
         std::env::set_var(
@@ -1725,29 +1773,71 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             String::from("register global runtime failed!")
         })?;
     } else {
-        //this node is not ood: try connect to system_config_service
+        // 非 OOD（ZoneGateway 或普通 Node）：boot 阶段必须先把 cyfs-gateway 拉起来，
+        // 这样 RPC 客户端默认指向的 `127.0.0.1:3180/kapi/system_config` 才能被
+        // boot routes 转发到 OOD。
+        info!(
+            "non-ood role {} boot: start cyfs-gateway with {} keep_tunnel target(s) before login.",
+            role.as_str(),
+            keep_tunnels.len()
+        );
+        keep_cyfs_gateway_service(
+            node_id.as_str(),
+            &device_doc,
+            &device_private_key,
+            keep_tunnels.clone(),
+            false,
+        )
+        .await
+        .map_err(|err| {
+            error!("start cyfs_gateway for non-ood boot failed: {}", err);
+            String::from("start cyfs_gateway for non-ood boot failed!")
+        })?;
+
         let mut runtime = init_buckyos_api_runtime("node-daemon", None, BuckyOSRuntimeType::Kernel)
             .await
             .map_err(|e| {
                 error!("init_buckyos_api_runtime failed: {:?}", e);
                 return String::from("init_buckyos_api_runtime failed!");
             })?;
+        // 让 runtime.get_system_config_url() 走"非 OOD Kernel -> 本机 3180"分支
+        // （buckyos-api/runtime.rs 的 get_system_config_url 已识别该 case）。
+        runtime.force_https = false;
 
+        // 重试 login。两类失败都会进入 retry：
+        //  1) cyfs-gateway 还没就绪：连 127.0.0.1:3180 拒连；
+        //  2) 路由到 OOD 但 OOD 还没启动 system-config：RPC 错误。
+        let mut attempt = 0u32;
         loop {
-            let login_result = runtime.login().await.map_err(|e| {
-                error!("buckyos-api-runtime::login failed: {:?}", e);
-                return String::from("buckyos-api-runtime::login failed!");
-            });
-
-            if login_result.is_ok() {
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                break;
+            attempt += 1;
+            match runtime.login().await {
+                Ok(_) => {
+                    info!(
+                        "non-ood boot login OK after {} attempt(s).",
+                        attempt
+                    );
+                    break;
+                }
+                Err(e) => {
+                    warn!(
+                        "non-ood boot login failed (attempt {}): {:?}, retry in 5s",
+                        attempt, e
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
             }
         }
         set_buckyos_api_runtime(runtime).map_err(|err| {
             error!("register global runtime failed: {}", err);
             String::from("register global runtime failed!")
         })?;
+    }
+
+    // doc 角色启动流程要求：boot 成功后立刻停掉 OOD 的 finder server。
+    // LAN 内 OOD 已经互相建立 keep_tunnel，无需继续应答 finder 广播。
+    if let Some(finder) = finder_server {
+        finder.stop_udp_server().await;
+        info!("OOD finder server stopped after boot.");
     }
 
     info!(

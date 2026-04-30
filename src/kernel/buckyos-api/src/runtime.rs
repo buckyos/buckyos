@@ -1951,8 +1951,16 @@ impl BuckyOSRuntime {
                     DEFAULT_NODE_GATEWAY_PORT
                 );
             }
-            _ => {
-                // keep local direct system_config url
+            BuckyOSRuntimeType::Kernel | BuckyOSRuntimeType::KernelService => {
+                // 非 OOD Kernel（ZoneGateway / 普通 Node）本机不跑 system_config 服务，
+                // 必须通过本机 cyfs-gateway 转发到 OOD。
+                if !self.is_ood() {
+                    url = format!(
+                        "http://{}:{}/kapi/system_config",
+                        self.resolve_local_service_host(),
+                        DEFAULT_NODE_GATEWAY_PORT
+                    );
+                }
             }
         }
         url

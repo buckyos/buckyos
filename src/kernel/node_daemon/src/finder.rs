@@ -323,10 +323,45 @@ impl NodeFinderClient {
         zone_boot_config: ZoneBootConfig,
         owner_public_key: DecodingKey,
     ) -> Result<Self> {
+        Self::new_for_zone_inner(
+            this_device_jwt,
+            this_device_private_key,
+            zone_boot_config,
+            owner_public_key,
+            true,
+        )
+    }
+
+    // 非 OOD 角色（ZoneGateway / 普通 Node）用来发现局域网内的 OOD。
+    // 自己不需要是 OOD，但仍只接受来自 OOD 的应答（cache/响应验证保持严格）。
+    pub fn new_as_lan_client(
+        this_device_jwt: String,
+        this_device_private_key: EncodingKey,
+        zone_boot_config: ZoneBootConfig,
+        owner_public_key: DecodingKey,
+    ) -> Result<Self> {
+        Self::new_for_zone_inner(
+            this_device_jwt,
+            this_device_private_key,
+            zone_boot_config,
+            owner_public_key,
+            false,
+        )
+    }
+
+    fn new_for_zone_inner(
+        this_device_jwt: String,
+        this_device_private_key: EncodingKey,
+        zone_boot_config: ZoneBootConfig,
+        owner_public_key: DecodingKey,
+        require_self_ood: bool,
+    ) -> Result<Self> {
         let owner_public_key = Arc::new(owner_public_key);
         let this_device_doc = decode_device_doc(&this_device_jwt, owner_public_key.as_ref())
             .map_err(|err| anyhow!("decode local device doc for finder client failed: {}", err))?;
-        validate_ood_device(&this_device_doc, &zone_boot_config)?;
+        if require_self_ood {
+            validate_ood_device(&this_device_doc, &zone_boot_config)?;
+        }
         Ok(Self {
             this_device_jwt,
             this_device_private_key,

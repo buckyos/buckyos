@@ -4,6 +4,7 @@
 mod active_server;
 mod app_loader;
 mod app_mgr; // support manager app service (run in docker,run for one user)
+mod boot;
 mod finder;
 mod frame_service_mgr; // support manager frame service (run in docker,run for all users)
 mod kernel_mgr; // support manager kernel service (run in native, run for system)
