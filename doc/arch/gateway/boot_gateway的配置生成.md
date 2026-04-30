@@ -605,6 +605,7 @@ Boot 阶段行为：
 10. 只有 OOD 列表中的第一个 OOD 有资格执行 boot/config 构造，其它 OOD 等待该配置出现。
 
 多 OOD quorum 的一致性判断仍由 system-config/klog 设计定义。gateway 层只负责提供 route、keep_tunnel 和 URL 状态查询能力，不把 relay 先成功反写为更高静态优先级。
+Boot成功后，立刻停止Finder流程
 
 ### 非 OOD ZoneGateway
 
@@ -638,6 +639,9 @@ Boot 阶段行为：
 
 Boot 阶段目标只有一个：连接上 system-config。
 
+1）大部分情况下，只有ZoneGateway可用立刻就能成功
+2）Node的正常流程，需要和至少1个，至多2个OOD Keep-tunnel. 可以复用前面的“在局域网找OOD”的流程，以实现“即使ZoneGateway失效，Zone内服务也可正常"
+
 候选路径：
 
 1. ZoneGateway：
@@ -646,27 +650,22 @@ Boot 阶段目标只有一个：连接上 system-config。
 https://<zone-host>/kapi/system_config
 ```
 
-2. 本机 gateway 到 OOD direct：
+2. 本机 gateway 到 OOD （
 
 ```text
 http://127.0.0.1:3180/kapi/system_config
 ```
 
-底层 route candidate：
+其底层 route candidate可能是两个（需要在boot的时候写入tunnel url才有可能连接成功)
 
 ```text
 rtcp://<ood-device>/:3200
 ```
 
-3. 本机 gateway 经 SN 到 OOD：
-
 ```text
 rtcp://<encoded-sn-bootstrap>@<ood-device>/:3200
 ```
 
-4. LAN discovery 得到的 OOD direct candidate。
-
-普通 Node 当前实现缺口较大：node-daemon 的非 OOD `get_system_config_client()` 仍需要实现，且需要能使用 boot route candidates。
 
 ## scheduler 接管流程
 

@@ -1,104 +1,31 @@
 use std::collections::HashMap;
 
+use buckyos_api::network_observation::{
+    NetworkEndpoint, NetworkObservation, ProbeInfo, DEFAULT_RTCP_PORT, NETWORK_OBSERVATION_KEY,
+};
 use name_lib::{DeviceInfo, ZoneConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const DEFAULT_RTCP_PORT: u32 = 2980;
 const DEFAULT_ROUTE_WEIGHT: u32 = 100;
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub(crate) struct NetworkObservation {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) observation_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) changed_at: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) observed_at: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) rtcp_port: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) ipv6: Option<Ipv6Observation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) endpoints: Vec<NetworkEndpoint>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) direct_probe: Vec<ProbeInfo>,
+fn probe_target_node_id(probe: &ProbeInfo) -> Option<&str> {
+    probe.target_node.as_deref()
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub(crate) struct Ipv6Observation {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) state: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) probe_target: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) last_probe: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) failure_reason: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub(crate) struct NetworkEndpoint {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) ip: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) family: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) scope: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) observed_at: Option<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub(crate) struct ProbeInfo {
-    #[serde(
-        default,
-        alias = "target_node_id",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub(crate) target_node: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) status: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) rtt_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) last_probe: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) last_success: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) freshness_ttl_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) failure_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) source: Option<String>,
-}
-
-impl ProbeInfo {
-    fn target_node_id(&self) -> Option<&str> {
-        self.target_node.as_deref()
-    }
-
-    fn is_reachable(&self) -> bool {
-        self.status
-            .as_deref()
-            .map(|status| status.eq_ignore_ascii_case("reachable"))
-            .unwrap_or(false)
-    }
+fn probe_is_reachable(probe: &ProbeInfo) -> bool {
+    probe
+        .status
+        .as_deref()
+        .map(|status| status.eq_ignore_ascii_case("reachable"))
+        .unwrap_or(false)
 }
 
 fn parse_network_observation(device_info: &DeviceInfo) -> Option<NetworkObservation> {
     let value = device_info
         .device_doc
         .extra_info
-        .get("network_observation")?;
+        .get(NETWORK_OBSERVATION_KEY)?;
     serde_json::from_value::<NetworkObservation>(value.clone()).ok()
 }
 
@@ -319,7 +246,7 @@ fn same_trusted_lan(
 fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> {
     let mut result = HashMap::new();
 
-    if let Some(network_observation) = device_info.device_doc.extra_info.get("network_observation")
+    if let Some(network_observation) = device_info.device_doc.extra_info.get(NETWORK_OBSERVATION_KEY)
     {
         if let Ok(parsed) = serde_json::from_value::<NetworkObservation>(network_observation.clone())
         {
@@ -381,14 +308,14 @@ fn collect_reachable_probe_target(
     observed_at: Option<u64>,
     result: &mut HashMap<String, ProbeInfo>,
 ) {
-    if !probe.is_reachable() {
+    if !probe_is_reachable(&probe) {
         return;
     }
     if !probe_is_fresh(&probe, observed_at) {
         return;
     }
 
-    if let Some(target_node) = probe.target_node_id().map(str::to_string) {
+    if let Some(target_node) = probe_target_node_id(&probe).map(str::to_string) {
         result.insert(target_node, probe);
     }
 }

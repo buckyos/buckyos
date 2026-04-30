@@ -618,6 +618,63 @@ async fn do_boot_upgreade() -> std::result::Result<(), String> {
     Ok(())
 }
 
+async fn load_zone_peer_devices(
+    self_node_id: &str,
+    system_config_client: &SystemConfigClient,
+) -> HashMap<String, DeviceInfo> {
+    let mut peers: HashMap<String, DeviceInfo> = HashMap::new();
+    let names = match system_config_client.list("devices").await {
+        Ok(names) => names,
+        Err(err) => {
+            warn!("list zone devices for network observation failed: {}", err);
+            return peers;
+        }
+    };
+    for name in names {
+        if name == self_node_id {
+            continue;
+        }
+        let key = format!("devices/{}/info", name);
+        match system_config_client.get(key.as_str()).await {
+            Ok(value) => match serde_json::from_str::<DeviceInfo>(value.value.as_str()) {
+                Ok(info) => {
+                    peers.insert(name, info);
+                }
+                Err(err) => {
+                    warn!("parse peer device_info {} failed: {}", key, err);
+                }
+            },
+            Err(err) => {
+                warn!("read peer device_info {} failed: {}", key, err);
+            }
+        }
+    }
+    peers
+}
+
+async fn populate_network_observation(
+    observer: &mut NetworkObserver,
+    device_info: &mut DeviceInfo,
+    system_config_client: &SystemConfigClient,
+) {
+    let peers =
+        load_zone_peer_devices(device_info.device_doc.name.as_str(), system_config_client).await;
+    let observation = observer
+        .observe(&device_info.device_doc, &device_info.all_ip, &peers)
+        .await;
+    match serde_json::to_value(&observation) {
+        Ok(value) => {
+            device_info
+                .device_doc
+                .extra_info
+                .insert(NETWORK_OBSERVATION_KEY.to_string(), value);
+        }
+        Err(err) => {
+            warn!("serialize network_observation failed: {}", err);
+        }
+    }
+}
+
 async fn update_device_info(device_info: &DeviceInfo, syste_config_client: &SystemConfigClient) {
     let device_key = format!("devices/{}/info", device_info.name.as_str());
     let device_info_str = serde_json::to_string(&device_info).unwrap();
@@ -1116,6 +1173,7 @@ async fn node_daemon_main_loop(
     let mut last_register_time = 0;
     let mut node_gateway_config_id: Option<ObjId> = None;
     let mut node_gateway_info_id: Option<ObjId> = None;
+    let mut network_observer = NetworkObserver::new(NetworkObserverConfig::default());
 
     loop {
         let reaped = reap_exited_children_nonblocking();
@@ -1157,6 +1215,12 @@ async fn node_daemon_main_loop(
                 );
                 break;
             }
+            populate_network_observation(
+                &mut network_observer,
+                &mut device_info,
+                &system_config_client,
+            )
+            .await;
             let device_info_str = serde_json::to_string(&device_info).unwrap();
             debug!("update device info: {:?}", device_info);
             unsafe {
@@ -1582,6 +1646,8 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             );
             return Err(String::from("auto fill device info failed!"));
         }
+        let mut boot_observer = NetworkObserver::new(NetworkObserverConfig::default());
+        populate_network_observation(&mut boot_observer, &mut device_info, &syc_cfg_client).await;
         update_device_info(&device_info, &syc_cfg_client).await;
 
         while boot_config_result_str.is_empty() {
