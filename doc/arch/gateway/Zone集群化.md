@@ -2,24 +2,38 @@
 
 本文回答 `doc/arch/gateway/readme.md` 中提出的问题：在家庭和个人集群环境中，设备 IP、网络位置和公网可达性都会变化，Gateway 应如何让 Zone 先可用、再持续优化访问路径。
 
+本文偏思路介绍，具体数据结构、生成规则和实现阶段见 `doc/arch/gateway/boot_gateway的配置生成.md`。
+
 核心思路是把问题拆成三层：
 
 1. **Boot 层**：只解决最小可达性。依赖 `ZoneBootConfig`、SN、ZoneGateway、OOD 描述和本地 Finder 缓存，先让 OOD、ZoneGateway、普通 Node 能找到 system-config 或至少找到一个可用中转。
-2. **调度层**：以 system-config 为真相源。scheduler 根据 `devices/*/info`、服务实例上报、Zone 配置生成 `ServiceInfo`、`node_gateway_info.json` 和 `node_gateway.json`。
+2. **调度层**：以 system-config 为真相源。scheduler 根据 `devices/*/info`、服务实例上报、Zone 配置，按 source node 分别生成 `nodes/<node>/gateway_info` 和 `nodes/<node>/gateway_config`。
 3. **Gateway/Tunnel 层**：只消费已发布的配置。NodeGateway 根据 selector 和 route 转发服务；RTCP/name-client 负责给定路径内部的地址解析、IP 竞速和连接级 failover。
 
 因此，Gateway 拓扑算法不应该变成一个隐式全局搜索器。设备发现、候选 URL 生产、业务成本判断和刷新周期应由 Boot builder、scheduler 或应用层调度器完成；Gateway 只在显式配置的路径集合内选择。
+
+Boot 后的常态闭环应是：
+
+```text
+node-daemon 上报 DeviceInfo
+  -> scheduler 读取 devices/*/info 并分析拓扑
+  -> scheduler 按 source node 生成 nodes/<source>/gateway_info
+  -> node-daemon 拉取并落地 node_gateway_info.json
+  -> cyfs-gateway 按显式 routes 执行转发和 failover
+```
+
+其中 `DeviceInfo` 表达的是节点自己的网络事实和 probe 证据；`gateway_info.routes` 才是 scheduler 裁决后的转发计划。
 
 ## 当前实现基线
 
 当前实现已经有一条稳定的服务访问链路：
 
 ```text
-ServiceInstanceReportInfo
-  -> scheduler 计算 ServiceInfo
-  -> scheduler 写 nodes/<node>/gateway_info
-  -> node-daemon 落地 $BUCKYOS_ROOT/etc/node_gateway_info.json
-  -> cyfs-gateway boot_gateway.yaml process-chain 转发
+ServiceInstanceReportInfo + devices/*/info
+  -> scheduler 计算 ServiceInfo 和每个 source node 的 route candidates
+  -> scheduler 写 nodes/<source>/gateway_info
+  -> source node 上的 node-daemon 落地 $BUCKYOS_ROOT/etc/node_gateway_info.json
+  -> source node 上的 cyfs-gateway boot_gateway.yaml process-chain 转发
 ```
 
 相关入口：
@@ -53,7 +67,9 @@ ServiceInstanceReportInfo
 2. 如果 selector 中包含本机 Node，直接转发到 `127.0.0.1:<port>`。
 3. 否则从 `NODE_ROUTE_MAP[node_id]` 取一个 RTCP URL，拼接服务端口后 `round_robin` 转发。
 
-这说明当前实现仍是“Provider Node 选择 + 每 Node 单 RTCP route”的模型，还没有实现“每个目标 Node 多条候选路径”的完整集群化模型。
+这说明当前实现仍是“Provider Node 选择 + 每 Node 单 RTCP route”的模型，还没有实现“每个 source node 到每个 target node 多条候选路径”的完整集群化模型。
+
+按节点生成配置是关键约束：同一个 target node，在不同 source node 的 `gateway_info.routes[target]` 中可以有不同候选路径。例如 `nodeA` 与 `ood1` 在同一 LAN 时应优先 direct，而 `nodeB` 在 Zone 外时可能只能优先经 ZoneGateway 或 SN relay。
 
 ## Zone 必须有公网入口或中转
 
@@ -164,13 +180,17 @@ node_route_map: node_id -> rtcp URL
 演进为：
 
 ```text
-routes: node_id -> route candidate list
+nodes/<source>/gateway_info.routes: target_node_id -> route candidate list
 ```
 
 示例：
 
 ```json
 {
+  "node_info": {
+    "this_node_id": "node1",
+    "this_zone_host": "example.zone"
+  },
   "routes": {
     "ood2": [
       {
@@ -188,14 +208,11 @@ routes: node_id -> route candidate list
         "source": "zone_boot_config"
       }
     ]
-  },
-  "node_route_map": {
-    "ood2": "rtcp://ood2.example.zone/"
   }
 }
 ```
 
-兼容字段 `node_route_map` 可以继续保留，取最高优先级 candidate。后续 `boot_gateway.yaml` 再从 candidate list 中生成转发 map。
+`routes` 是下发到当前 source node 的配置，不是全局拓扑表。`boot_gateway.yaml` 从当前节点的 candidate list 中生成转发 map。
 
 排序原则：
 
@@ -204,6 +221,19 @@ routes: node_id -> route candidate list
 - 同等路径下再看 RTT、历史成功率、业务成本；
 - relay 可兜底，但不能隐式扩散；
 - 连接成功时间只能影响当前可用性，不能反写静态优先级。
+
+## DeviceInfo 与拓扑证据
+
+Boot 后，node-daemon 应周期性上报更完整的网络观测信息，帮助 scheduler 构造正确的 per-node route candidates。
+
+DeviceInfo 中适合保存：
+
+- 当前网络环境是否变化：用 `network_observation_id`、`network_generation`、`network_changed_at` 表达，而不是只依赖一个 bool。
+- 必要网络信息：IP 地址列表、RTCP 端口、net_id、网络来源和观测时间。
+- IPv6 能力：区分“有 IPv6 地址”和“IPv6 真的可用”。光有地址不代表能访问公网 IPv6，也不代表 RTCP 可被其它节点经 IPv6 连上。
+- direct probe 结果：本节点能用 direct RTCP 连上的 OOD 或关键 Node 列表，包含 URL、状态、RTT、失败原因和时间戳。
+
+DeviceInfo 不应直接声明最终 forward-plan。节点可以上报“我 direct probe 到 ood1 成功”，但不应上报“业务流量必须走 direct”。是否把这条证据转成 primary route，由 scheduler 结合全局 Zone 状态决定。
 
 ## 分层职责
 
@@ -222,13 +252,12 @@ Boot builder 输入 `ZoneBootConfig`、本机角色、本机 device doc、Finder
 
 scheduler 在 system-config 可用后接管：
 
-- 从 `devices/*/info` 构造 Node 列表和 `node_route_map`；
+- 从 `devices/*/info` 构造 Node 列表、网络观测和 probe 证据；
 - 从实例上报构造 `ServiceInfo`；
-- 生成 `nodes/<node>/gateway_info`；
-- 生成 `nodes/<node>/gateway_config`，包括 TLS、ACME、静态 Web dir server 等后置配置；
-- 后续扩展为生成 `routes` candidate list。
+- 按 source node 生成 `nodes/<node>/gateway_info`，其中 `routes[target]` 是从该 source node 出发的候选路径；
+- 按 source node 生成 `nodes/<node>/gateway_config`，包括 TLS、ACME、静态 Web dir server、RTCP 准入等后置配置。
 
-scheduler 是服务 Provider 集合的唯一决策者。Gateway 不应该绕过 scheduler 自行访问 system-config 做二次调度。
+scheduler 是服务 Provider 集合和 per-node route candidate 的唯一决策者。Gateway 不应该绕过 scheduler 自行访问 system-config 做二次调度。
 
 ### NodeGateway
 
@@ -259,7 +288,7 @@ BuckyOS 配置层不应手写 IP 级别的 `ipv4 > ipv6` 或 LAN 地址竞速逻
 
 - Boot 阶段高频探测关键节点：OOD、SN、ZoneGateway。
 - 平稳阶段降低刷新频率，例如 5 到 10 分钟一次。
-- DeviceInfo 在 30 秒内可认为新鲜，优先用其 IP 列表构造 direct candidate。
+- DeviceInfo 在 30 秒内可认为新鲜，优先用其网络观测和 probe 证据构造 direct candidate。
 - 拿到新鲜 DeviceInfo 后停止更广泛搜索，避免搜索结果和自上报结果互相干扰。
 - 大流量业务启动前可以强制刷新发现和 Probe；没有 direct 时应失败或提示，而不是自动走 relay。
 
@@ -287,18 +316,18 @@ BuckyOS 配置层不应手写 IP 级别的 `ipv4 > ipv6` 或 LAN 地址竞速逻
 
 ## 演进步骤
 
-1. 保持当前 `node_route_map` 兼容字段，新增 `routes` candidate list。
-2. scheduler 先基于 `devices/*/info`、`boot/config`、SN 配置生成 direct 和 via-SN route candidate。
+1. 扩展 DeviceInfo 的网络观测和 direct probe 信息。
+2. scheduler 基于 `devices/*/info`、`boot/config`、SN/ZoneGateway 配置，按 source node 生成 `routes` candidate list。
 3. 增加 boot route builder，解决 scheduler 产物不可用时的最小可达性。
-4. 修改 `boot_gateway.yaml`，远端服务从 candidate list 生成 forward map，并保留 `NODE_ROUTE_MAP` fallback。
-5. 增加 Gateway Probe API，让上层获得 URL 可达性、RTT、排序和失败原因。
+4. 修改 `boot_gateway.yaml`，远端服务从 candidate list 生成 forward map。
+5. 接入 tunnel_mgr URL 状态查询，让 boot readiness、诊断和调度刷新获得 URL 可达性、RTT、排序和失败原因。
 6. 根据业务需要扩展 selector：`single`、`round_robin`、`rtt_first`、`cost_first_then_rtt`、`failover`。
 7. 补齐 RTCP tunnel 准入策略，默认只允许同 Zone 或显式 trust relationship 的来源使用 relay 能力。
 
 ## 与其它文档的关系
 
 - `doc/arch/gateway/zone-boot-config与zone-gateway.md`：解释 ZoneBootConfig、ZoneGateway、SN、域名和访问路径组合。
-- `doc/arch/gateway/boot_gateay的配置生成.md`：定义 boot 阶段 gateway 配置和 route candidate 的具体生成逻辑。
+- `doc/arch/gateway/boot_gateway的配置生成.md`：定义 boot 阶段 gateway 配置、DeviceInfo 网络观测和 per-node route candidate 的具体生成逻辑。
 - `doc/arch/gateway/service selector.md`：定义 Service Selector 的边界，即只在已配置 Provider 和 URL 集合内做选择。
 - `doc/arch/gateway/服务的多链路选择.md`：展开 DeviceInfo、直连、中转、Gateway Probe 和业务调度的多链路模型。
 
