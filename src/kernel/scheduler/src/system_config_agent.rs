@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::app::*;
 use crate::scheduler::*;
 use crate::service::*;
+use crate::zone_route_builder::{build_forward_plan, NodeGatewayRouteCandidate};
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,
@@ -682,6 +683,8 @@ struct NodeGatewayInfo {
     app_info: HashMap<String, NodeGatewayAppEntry>,
     service_info: HashMap<String, NodeGatewayServiceInfoEntry>,
     node_route_map: HashMap<String, String>,
+    #[serde(default)]
+    routes: HashMap<String, Vec<NodeGatewayRouteCandidate>>,
     trust_key: HashMap<String, String>,
 }
 
@@ -974,6 +977,7 @@ pub(crate) async fn update_node_gateway_info(
         app_info: HashMap::new(),
         service_info: HashMap::new(),
         node_route_map: build_node_route_map(node_id, &zone_host, &device_list),
+        routes: build_forward_plan(node_id, &zone_config, &zone_host, &device_list),
         trust_key: build_trust_keys(node_id, &zone_config, &device_list),
     };
 
@@ -1745,6 +1749,7 @@ mod tests {
             app_info,
             service_info,
             node_route_map: build_node_route_map("ood1", &zone_host, &device_list),
+            routes: build_forward_plan("ood1", zone_config, &zone_host, &device_list),
             trust_key: build_trust_keys("ood1", zone_config, &device_list),
         }
     }

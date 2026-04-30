@@ -6,6 +6,7 @@ mod service;
 mod system_config_agent;
 mod system_config_builder;
 mod thunk_runner;
+mod zone_route_builder;
 
 #[cfg(test)]
 mod scheduler_test;
