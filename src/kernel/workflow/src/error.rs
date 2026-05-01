@@ -35,4 +35,18 @@ pub enum WorkflowError {
     Dispatcher(String),
     #[error("task tracker error: {0}")]
     TaskTracker(String),
+    #[error("for_each `{node_id}` items must resolve to an array, got {actual}")]
+    ForEachItemsType { node_id: String, actual: String },
+    #[error("for_each `{node_id}` produced {count} items which exceeds max_items={max}")]
+    ForEachTooManyItems {
+        node_id: String,
+        count: u32,
+        max: u32,
+    },
+    #[error("for_each `{0}` body step `{1}` must be an Apply node")]
+    ForEachBodyNotApply(String, String),
+    #[error("missing map state for for_each `{0}`")]
+    MissingMapState(String),
+    #[error("missing par state for parallel `{0}`")]
+    MissingParState(String),
 }

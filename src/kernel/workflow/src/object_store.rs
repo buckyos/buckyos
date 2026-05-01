@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 #[async_trait]
 pub trait WorkflowObjectStore: Send + Sync {
     async fn put_json(&self, object_type: &str, value: &Value) -> WorkflowResult<String>;
+    async fn put_json_with_id(&self, object_id: &str, value: &Value) -> WorkflowResult<()>;
     async fn get_json(&self, object_id: &str) -> WorkflowResult<Option<Value>>;
     async fn exists(&self, object_id: &str) -> WorkflowResult<bool>;
 }
@@ -36,6 +37,14 @@ impl WorkflowObjectStore for InMemoryObjectStore {
             .await
             .insert(object_id.clone(), value.clone());
         Ok(object_id)
+    }
+
+    async fn put_json_with_id(&self, object_id: &str, value: &Value) -> WorkflowResult<()> {
+        self.inner
+            .lock()
+            .await
+            .insert(object_id.to_string(), value.clone());
+        Ok(())
     }
 
     async fn get_json(&self, object_id: &str) -> WorkflowResult<Option<Value>> {
@@ -71,6 +80,18 @@ impl WorkflowObjectStore for NamedStoreObjectStore {
             .await
             .map_err(|err| WorkflowError::ObjectStore(err.to_string()))?;
         Ok(object_id)
+    }
+
+    async fn put_json_with_id(&self, object_id: &str, value: &Value) -> WorkflowResult<()> {
+        let obj_id =
+            ObjId::new(object_id).map_err(|err| WorkflowError::ObjectStore(err.to_string()))?;
+        let json = serde_json::to_string(value)
+            .map_err(|err| WorkflowError::Serialization(err.to_string()))?;
+        self.store
+            .put_object(&obj_id, &json)
+            .await
+            .map_err(|err| WorkflowError::ObjectStore(err.to_string()))?;
+        Ok(())
     }
 
     async fn get_json(&self, object_id: &str) -> WorkflowResult<Option<Value>> {

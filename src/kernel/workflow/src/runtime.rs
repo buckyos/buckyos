@@ -34,6 +34,7 @@ pub enum NodeRunState {
     WaitingHuman,
     Skipped,
     Aborted,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +42,35 @@ pub struct PendingThunk {
     pub node_id: String,
     pub thunk_obj_id: String,
     pub attempt: u32,
+    #[serde(default)]
+    pub shard_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapState {
+    pub for_each_id: String,
+    pub body_step_id: String,
+    pub items: Vec<Value>,
+    pub shard_states: Vec<NodeRunState>,
+    pub shard_outputs: Vec<Value>,
+    pub shard_attempts: Vec<u32>,
+    pub max_concurrency: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParState {
+    pub node_id: String,
+    pub branches: Vec<String>,
+    pub join: ParJoin,
+    pub completed_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParJoin {
+    All,
+    Any,
+    NOfM(u32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +95,10 @@ pub struct WorkflowRun {
     pub metrics: BTreeMap<String, Value>,
     #[serde(default)]
     pub human_waiting_nodes: BTreeSet<String>,
+    #[serde(default)]
+    pub map_states: BTreeMap<String, MapState>,
+    #[serde(default)]
+    pub par_states: BTreeMap<String, ParState>,
     #[serde(default)]
     pub seq: u64,
     pub created_at: i64,

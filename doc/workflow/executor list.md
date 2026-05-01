@@ -1,125 +1,416 @@
-# BuckyOS Workflow Executor
+# BuckyOS Workflow Executor List
 
-Executor的分类
-那我们这里对 workflow 的 executor 做一下分类啊
+> 配套文档：[wokflow engine.md](./wokflow%20engine.md)（v0.4.0-draft）
+>
+> 本文档站在 **Executor 开发者 / 系统集成方** 的视角，说明 Workflow DSL 中的
+> `executor` 应该如何分类、由哪层 adapter 实现、第一期哪些能力应先落地。
 
+Workflow 引擎本身只认 Expr Tree（`Apply` / `Match` / `Par` / `Map` / `Await`）。
+本文说的 "Executor 分类" 不是引擎内部多态，也不是调度器的长期原语，而是：
 
-## 标准服务 Executor @ workflow
-还有一种 executor 是所谓的标准服务，就是 BuckyOS 的标准服务。它的命名方法基本上是一个“服务名.方法名”，其实我们系统里的标准服务不会很多。
+- DSL 作者在 `executor` 字段里能写什么。
+- Executor 开发者应该实现哪类 adapter。
+- 编排器遇到这类 `executor` 时应如何调用。
+- 哪些能力属于第一期主路径，哪些只是后续扩展。
 
-能够被 workflow编排器看见的这些标准服务，它们不同的方法名肯定都有不同的 schema。
+## 0. 一期范围
 
-原理上讲，BuckyOS 的所有标准服务都会是幂等的。
+第一期目标是先把常见 Agent-Human-Loop workflow 跑起来，晚一点引入 Thunk 调度闭环。
 
-也就是说，即使在原理上不好实现幂等，它也会通过类似于 TaskID 之类的 Unique 标识来保证幂等。这本质上是为了解决重试的问题：
-1. 当某个任务已经运行过了，你再把同样的参数发送过去，系统会识别出该任务。
-2. 如果之前服务已经跑完后系统崩溃了，你下次再把同样的内容发过去时，会直接拿到成功的结果。
+> 我们认识到，定义标准的FunctionObject 不是一个容易的事情
 
-标准服务它的执行端，本质上讲只区分“域外运行”和“域内运行”，这主要是一个权限上的不同。
+因此一期的执行模型是：
 
-对于标准服务来说，它内部会自行进行资源分配。换句话说，一旦调度器把一个服务跑起来，就隐含了这个服务自身具备负载均衡的能力，调度器之后就不再干预。
+1. `autonomous` Step 编译为 `Apply`。
+2. 编排器根据 `executor` 前缀选择内置 adapter。
+3. adapter 直接调用标准服务、AppService/HTTP 端点、Agent/Skill/Tool 包装服务。
+4. 返回值直接回填到 `node_outputs`，再激活下游节点。
+5. `human_confirm` / `human_required` 编译为 `Await`，由编排器等待人类输入。
 
-按照这个逻辑，在域内的任何一个地方发起对该服务的调用，效果都是一样的。里既然都一样，就选择直接在 Workflow 的编排器里去发起了。
+FunctionObject / ThunkObject / Node Daemon Runner 是后续阶段的执行基础设施。它们重要，但不是第一期 executor 开发者必须实现的主路径。
 
-当然，这里有一个潜在的假设：即不涉及到大范围的数据传输。
+术语上要区分两层：
 
-对我们而言，如果你将本地的一个文件作为参数去访问标准服务，依然会涉及到文件本身传输到服务内部的问题。但由于我们整体采用的是“命名对象”机制，实际上你传输的只是一个全局对象 ID。
+- **定义层**：`FunctionObject` 描述一个 executor 能力，包括代码/包/脚本、参数约束、资源需求、结果类型等。
+- **执行层**：`FunctionObject + params = ThunkObject`。编排器真正投递给 Scheduler / Node Daemon Runner 的是 `ThunkObject`。
 
-所以说，在非结构化的参数都用对象化的基础上，访问服务对我们来讲，在系统的任何一个节点都是一样的。
+## 1. 分类总表
 
-这里主要是想说明 AI 类的标准服务和 Chunk 的区别：
+| 类别 | DSL `executor` 形式 | Expr 类型 | 是否需要调度器 | 实际执行位置 | 幂等性默认 | 一期优先级 |
+|------|--------------------|-----------|---------------|-------------|----------|------------|
+| 标准服务 | `service::<name>.<method>` | `Apply` | 否 | Workflow 编排器进程 | 强幂等 | P0 |
+| AppService / HTTP | `http::<endpoint-id>` / `appservice::<id>.<method>` | `Apply` | 否 | Workflow 编排器进程 | 默认非幂等 | P0 |
+| Agent / Skill / Tool 语义链接 | `/agent/<name>` / `/skill/<name>` / `/tool/<name>` | `Apply` | 看最终目标 | 先展开为实际 executor 定义，再由对应 adapter 执行 | 由展开后的 executor 决定 | P0 |
+| 人工输入 | `type: human_confirm` / `human_required` | `Await` | 否 | 编排器 + Msg Center | - | P0 |
+| 内置算子 | `operator::<name>` | `Apply` | 否 | 编排器内置函数 | 通常幂等 | P1 |
+| FunctionObject | `func::<objid>` / registry-resolved function | `Apply` |是 | Scheduler + Node Daemon Runner | 由 FunctionObject 决定 | 后续 |
+| OPTask | `optask::<pkg>@<device>` | `Apply` | 是 | 指定 Node Daemon | 窄幂等 | 后续 / break-glass |
 
-1. 我们优先鼓励使用服务。
-2. 除非某些服务的数据量特别大，且不适合用对象 ID，才需要使用 Thunk。
+### 实际定义与语义链接
 
-之所以使用 Thunk，是因为对于调度器来讲，它有所谓的“数据亲和性”概念（无论是输入亲和还是结果亲和）。调度器总是有机会通过调整 Executor 的位置，来减少数据传输的量。
+`executor` 字段里有两种不同语义：
 
-但如果都是命名数据，就没什么好说的了。因为在系统里，我们通过基本的分布式桶（Bucket）方法，已经决定了数据最终都要落桶。由于桶的分布是根据 ID 哈希的，你在任何地方发起访问，其实分布都是比较均匀的。
+- **实际 executor 定义**：用 `namespace::name` 表达，例如 `service::aicc.complete`、`http::file-classifier.classify`。这类名字已经能直接定位到一个 adapter 和调用协议。
+- **语义链接**：用路径表达，例如 `/agent/mia`、`/skill/fs-scanner`、`/tool/image-normalizer`。它们不是最终 executor 定义，而是一个可解析的语义入口。
 
-## Thunk Executor @ node_daemon
+语义链接必须先通过 executor registry 展开为实际 executor 定义，例如：
 
-首先第一类就是前面一直提到的标准 Thunk executor，它是幂等的。
+```text
+/skill/fs-scanner
+  -> service::fs_index.scan
+  -> http::fs-scanner.scan
+  -> func::<function_object_id>
+```
 
-其基本思路如下：
-1. 给定一个输入参数 ID
-2. 给定一个 thunk ID
+这让系统可以在不改大流程结构的情况下，调整某几个步骤的实现。Workflow 仍然说“这里需要扫描文件”，而 registry 可以把它切到标准服务、AppService endpoint、临时工具包或后续的 FunctionObject。
 
-完成以上步骤后就可以执行 apply 操作。apply 之后，调度器会分配一个具体的 node 节点去执行。
+### 分类原则
 
-简单来说，thunk的核心在于它的执行需要调度器介入，并投递到一个具体的节点上运行。这就是 thunk executor。
-从实际执行、代码实现上讲，这个 Thunk Executor 其实是 Node Daemon 挂的一个任务。Node Daemon 本身所能支持的 Thunk，决定了系统里哪些 Thunk 可以运行。
-我们系统里下发 Trunk 的几个角度：
+- `service::`、`http::`、`appservice::` 是第一期最重要的实际 executor 定义。它们不需要 Thunk，也足以覆盖系统服务调用、用户通知、AI 能力、AppService 接入、轻量外部 API 调用。
+- `/agent/`、`/skill/`、`/tool/` 在一期是语义链接，不直接等价于 FunctionObject。它们应先通过 registry 展开到一个实际 executor 定义。
+- `human_confirm` / `human_required` 不是真正的 executor，但它是 Workflow 执行语义的一等能力，所以保留在本文档中。
+- `func::<objid>` 是后续 FunctionObject 定义层的底层入口。运行时会结合参数生成 ThunkObject 后再投递。第一期可以先不暴露给普通 DSL 作者。
+- `optask::` 不应成为长期常规 executor。它只适合低频运维、修复、测试等 break-glass 场景。
 
-当然，这个其实是一个系统长期的外部逻辑，我们这里只是做一些基本的整理。毕竟我们也不是说总是要去定义 Trunk 的，对吧？我们这里面最常见的做法就是这个 PKG name。给一个 PKG name 就好。如果说我们 PKG 有一种特殊的类型就是叫 Trunk，那这个时候这个 PKG 它就一定有这个入口函数。
+## 2. 标准服务 Executor @ workflow
 
-换句话讲，我们可以把一个 Trunk 的执行在 Node daemon 上看成是一个特定的命令。
+### 语义
 
-## 非标准服务 Executor @ workflow
+BuckyOS 的标准服务指系统内置、有稳定 RPC schema、整个 Zone 内访问语义一致的服务。命名为 `服务名.方法名`。典型例子：
 
-从可扩展性的角度，我们系统也支持非标准服务。
+- `aicc.complete`
+- `msg_center.notify_user`
+- `system_config.get` / `system_config.set`
+- `task_manager.create_task`
+- `kb.put` / `kb.search`
 
-非标准服务是什么意思呢？就是说如果一个服务能够用 HTTP 描述（当然这涉及到我们 workflow 的描述能力，其实这块做起来细节还挺多的），相当于你给另一个 HTTP 端口加上一个 schema 描述。
+### 一期执行方式
 
-如果这个 schema 可以通过 workflow 引擎从前面的 step 中得到结果，并进行动态拼装的话，其实是可以把任意 HTTP 端口的服务都集成到 workflow 里面来。
+- DSL：`executor: "service::aicc.complete"`
+- Expr：`Apply`
+- 编排器：识别 `service::` 前缀，直接通过 buckyos-api RPC client 调用对应服务。
+- 输出：RPC response 作为该 Step 的输出回填。
+- Cache：若 Step 声明 `idempotent: true`，编排器可用 `executor + input hash` 做结果缓存。
 
-在这种情况下，我们通常不假定标准服务具有幂等的特性。因为这可能是一个外部服务，所以从某种意义上讲，如果一个外部服务没有手动将其标记为幂等，它默认就是非幂等的。
+标准服务原则上应具备幂等能力。若服务内部不是天然幂等，服务实现者应通过 `task_id`、request id 或业务唯一键保证重复请求得到一致结果。
 
-这时候一旦发起调用，就不能进行重试。换句话说，成功就是成功，失败就整个workflow直接失败了。
+### 当前代码位置
 
-## 人工输入 @ workflow
+- 服务 RPC client：`src/kernel/buckyos-api/src/`
+- AI 类服务：`src/frame/aicc/`
+- Msg 类服务：`src/frame/msg_center/`
+- 编排器 Apply 调度入口：`src/kernel/workflow/src/orchestrator.rs::schedule_apply`
 
-或者叫“人工确认”。
+### 实现状态
 
-总的来说，它的特点是构造一个选项（通常是 Yes/No，或者 ABCD 几个选项），然后调用系统的一个接口（例如 notify user）并把 schema 传过去。
+🟡 **部分实现**。RPC client 已有不少基础能力；workflow 编排器目前还没有 `service::` 前缀短路，所有 `Apply` 仍走统一 dispatcher。第一期应优先补 `service::` adapter。
 
-执行完成之后，用户那边会返回选择的结果。对于我们来说，因为这里面涉及一些条件判断和 Match 的主要选项，所以我认为“人工输入”其实可以看作是对系统内 NotifyUser 接口的一个高级包装。
+## 3. AppService / HTTP Executor @ workflow
 
-但因为它对 Workflow 的错误流控制有一些特定的语义，所以我们现在把这一类专门都提出来了。
-当然，从架构正确的角度来讲，即使我们不做这个分类，如果系统有标准的 Notify User 这种所谓的标准服务接口，其实也能把整个正确的流程给拼接出来。
+### 语义
 
-## OPTask @ node_daemon
+这一类用于把已有 HTTP endpoint 或 Zone 内 AppService 接入 workflow。它是第一期最实用的扩展机制：很多能力不需要先包装成 Thunk，也不需要调度到特定 Node，只要有稳定 endpoint 和 schema 就能被 workflow 调用。
 
-还有一种叫做 OPTask Executor，这就是传统的运维任务了。
+推荐 DSL 形式：
 
-这类任务跟服务的特点在于它是“设备视角”的。换句话说，它明确需要去一个特定的设备上执行一段代码。这个设备可能是一个概念设备，也可能是一个准确设备，但通常叫 OPTask 的一般都是指准确设备。
+```json
+{
+  "id": "classify_file",
+  "type": "autonomous",
+  "executor": "http::file-classifier.classify",
+  "input": {
+    "file": "${scan.output.file_obj_id}"
+  },
+  "idempotent": true
+}
+```
 
-其实这个 Executor 更多的是系统传统的运维服务，借用 Workflow 做的实现。相当于说 Workflow 其实也是我们系统某种意义上讲，作为半自动化运维的底座吧。
+或 Zone 内 AppService：
 
-OPTask 这里面有一些审计的问题。审计问题的本质，其实就是如何标识一个脚本的问题。
+```json
+{
+  "id": "extract_metadata",
+  "type": "autonomous",
+  "executor": "appservice::media-tools.extract_metadata",
+  "input": {
+    "file": "${scan.output.file_obj_id}"
+  }
+}
+```
 
-关于脚本的标识，目前有两种方案：
+### 一期执行方式
 
-1. 直接包含内容：
-   如果说 Object（BuckyOS Object）里面直接包含脚本的所有内容，也不是不可以。因为脚本本身并不大，做成 JSON 里的一个结构体存进来就行。但这样做会导致自由度过大，虽然灵活，但可能带来管控上的挑战。
+- `http::<endpoint-id>` 由 endpoint registry 解析为 URL、method、auth、request schema、response schema。
+- `appservice::<id>.<method>` 由 AppService registry 或 system_config 解析为 Zone 内访问地址。
+- 编排器直接发起 HTTP/kRPC 调用。
+- 默认非幂等；只有显式 `idempotent: true` 时才允许自动 cache 和安全重试。
 
-2. 基于 FileObjectID：
-   我们系统里另外一个更易用的方法，是基于我们现有的 FileObject。利用 FileObjectID 来实现，你只需要在审计端维护一个“允许执行的脚本列表”。通过 ObjectID，就能准确地确定和校验脚本了。
+### 与标准服务的区别
 
-换句话讲，OPTask 通常是一个脚本。从我们角度来讲，因为它跟设备是绑定的，所以通常是 Bash 脚本、PowerShell 脚本或者是 TypeScript 脚本都可以。
+| 维度 | 标准服务 | AppService / HTTP |
+|------|---------|-------------------|
+| 注册方 | 系统内置 | App / workflow / 用户声明 |
+| Schema 稳定性 | 平台承诺 | endpoint 自己承诺 |
+| 幂等性默认 | 强幂等 | 默认非幂等 |
+| 调用位置 | 编排器 | 编排器 |
+| 一期是否需要 Thunk | 不需要 | 不需要 |
 
-但在下发 OPTask 的时候，已经假设目标设备（Device）具备运行 OPTask 的能力了。我们在执行器上不会去做环境准备这类的事情。
+### 实现状态
 
-因为是跟特定设备绑定的，对吧？按照我们之前的架构，node_daemon 之前也一直有从调度器上拉取 OPTask 的这种传统需求。
+⚪ **未实现**。代码中尚无 `http::` / `appservice::` 前缀处理路径，也没有 endpoint registry。第一期建议把这类 adapter 做成 P0，因为它能覆盖大量常见扩展需求。
 
-所以说我们现在包装成 Chunk 体系之后，其实 OPTask 就是一种特殊的 Chunk。相当于 node_daemon 会不断去调度器上拉取属于自己的 Chunk，然后尽力而为地去执行它们。
+## 4. Agent / Skill / Tool Semantic Links @ workflow
 
-OPTask 的幂等性其实特别难做，因为它非常反直觉。传统的运维脚本很难实现幂等，换句话说，编写一个幂等脚本的难度相当大。
+### 语义
 
-这意味着脚本本身在执行时，是需要进行设备状态观测的。我们要简化这件事情，至少能把一些错误消灭在萌芽状态。
+`/agent/`、`/skill/`、`/tool/` 是面向 DSL 作者的人类友好语义路径。它们描述“这一步需要什么能力”，而不是直接描述“这一步由哪个 executor 实现”。
 
-我们的思路是：当调度器或者运维的需求发起方决定执行一个 OPTask 时，它通常是基于设备某个特定的观测状态来做的。这个时候，我们可以给观测状态加一个版本号。
+| DSL `executor` | 含义 | 一期解析目标 |
+|---------------|------|--------------|
+| `/agent/<name>` | 一个 Agent 角色或能力（如 Mia / Jarvis / 自定义 Agent） | 实际 executor 定义，如 `service::...` / `http::...` / `func::...` |
+| `/skill/<name>` | 被注册的技能语义 | 实际 executor 定义，如 `service::...` / `http::...` / 包入口 |
+| `/tool/<name>` | 被注册的工具语义 | 实际 executor 定义，如 `service::...` / `http::...` / 包入口 |
 
-每个 OPTask 只要执行完成——不管它具体做了什么——我们系统内部一定会强制推进该设备的版本号。也就是说，当每个设备在 update 或 report 自己的状态到调度器时，其实已经潜在地包含了它跑过哪些 OPTask 的信息。
+第一期不要要求它们必须解析为 FunctionObject。对 executor 开发者来说，关键是实现 registry 展开：
 
-就跟前面说的一样，通过在 OPTask 的参数里面编排进入所谓的 Device Current State，编排进入这个信息之后，其实就相当于说它变成了一个幂等问题（窄问题）。
+1. 根据语义路径查到实际 executor 定义。
+2. 校验 input/output schema。
+3. 把调用交给实际 executor 对应的 adapter。
+4. 把结果按 workflow 输出协议返回。
 
-1. 逻辑判断机制：
-   (a) 如果 OPTask 的执行结果没有改变设备的状态，那它就执行失败了。
-   (b) 如果它把设备状态改变了，那么这个 OPTask 就完成了。
-   (c) 即使因为某些原因，同样一个 OPTask 被重复投递到了 Node 上去执行，但 Node 在检测执行时，发现它 Dependency 的设备状态已经改变了，就可以选择拒绝执行。
+### 一期执行方式
 
-这个机制我觉得还是要打磨的，这涉及到实际的实现问题。
+`/agent/`、`/skill/`、`/tool/` 可以优先展开到三种后端之一：
 
-但好消息是，我们现在的系统里是反对写这种半维护脚本的。我们希望所有的标准服务都是基于目标状态自迭代的，所以目前对于这种手工运维的需求并不高。
+- 标准服务：例如 `/agent/mia` 展开到 OpenDAN service 任务入口。
+- AppService/HTTP：例如某个 skill 由 AppService 暴露 endpoint。
+- 本地包入口：仅限开发/单机场景，由编排器 adapter 直接启动受控进程。
 
-从分类上讲，我们先把它放在这里。当然，跑测试时可能会运行一些比较简单的运维脚本，我估计这类脚本大多是用来修 bug 的。比如调用 apt install 一个组件，或者我们在某些情况下需要修改某个服务依赖的组件。像 apt 这种类型的操作，它一般本身就是强幂等的。
+只要展开后的实际 executor 对外返回确定的 Step result，workflow 引擎不关心内部实现。这样大流程可以稳定引用 `/skill/fs-scanner`，而系统可以把它从 `http::...` 切换到 `service::...` 或后续 `func::...`。
+
+### 实现状态
+
+🟡 **部分设计，缺 registry**。当前 `compile_step` 只对 `executor` 字符串做 hash，没有真正把 `/agent/`、`/skill/`、`/tool/` 展开为实际 executor 定义。第一期需要先补 executor registry，而不是直接补 Thunk。
+
+## 5. 人工输入 Executor @ workflow
+
+### 语义
+
+DSL 中表达为 `type: human_confirm` 或 `type: human_required` 的 Step。它不是真正的 executor，而是 `Await` 节点，由编排器原生处理。
+
+| Step Type | 决策权 | 引擎行为 |
+|-----------|-------|---------|
+| `human_confirm` | 人类守门 | 展示 `subject_ref` 指向的对象，等待 approve / reject / modify |
+| `human_required` | 人类执行 | 展示 prompt，等待人类按 `output_schema` 提交输出 |
+
+### 与 Msg Center 的关系
+
+人工输入可以理解为 `msg_center.notify_user` 的高级包装：
+
+- 编排器生成等待事件。
+- Msg Center adapter 把 prompt、schema、subject 推给用户。
+- 用户响应后，编排器校验输出并继续执行。
+
+### 当前代码位置
+
+| 组件 | 文件 |
+|------|------|
+| Expr `Await` 节点处理 | `src/kernel/workflow/src/orchestrator.rs::enter_human_wait / handle_human_action` |
+| 人类操作枚举 | `src/kernel/workflow/src/runtime.rs::HumanActionKind` |
+| 静态校验 | `src/kernel/workflow/src/analysis.rs` |
+| 通知通道 | `src/frame/msg_center/` |
+
+### 实现状态
+
+🟢 **核心闭环已实现**。`enter_human_wait` 和 `handle_human_action` 已覆盖 approve / modify / reject / retry / skip / abort / rollback。
+
+🟡 **缺适配**。`step.waiting_human` 事件目前只进入内存事件流；还需要桥接 Msg Center，把 subject + prompt 推给用户。
+
+## 6. 内置算子 Executor @ workflow
+
+### 语义
+
+内置算子是编排器进程内的小函数，用来做轻量、确定、无外部副作用的转换。例如：
+
+- JSON 字段提取 / 合并
+- schema normalize
+- 小型路由判定
+- 固定格式转换
+
+推荐 DSL：
+
+```json
+{
+  "id": "pick_files",
+  "type": "autonomous",
+  "executor": "operator::json.pick",
+  "input": {
+    "source": "${scan.output}",
+    "path": "files"
+  },
+  "idempotent": true
+}
+```
+
+### 一期执行方式
+
+- 编排器识别 `operator::` 前缀。
+- 从内置 operator table 查找函数。
+- 同步或异步执行，直接回填结果。
+
+### 边界
+
+内置算子不应该承载重计算、长期运行、外部网络请求或有副作用的操作。这类需求应使用 `service::`、`appservice::`、`http::`，或通过 `/agent/`、`/skill/`、`/tool/` 语义链接展开。
+
+### 实现状态
+
+⚪ **未实现**。不是一期必须项，但对减少大量胶水 service 有价值，可作为 P1。
+
+## 7. FunctionObject Executor @ scheduler
+
+### 语义
+
+FunctionObject 是后续阶段的 executor 定义对象。编排器执行某个 `Apply` 时，会用 `FunctionObject` 和已经解析好的参数构造 `ThunkObject`，再交给 Scheduler + Node Daemon Runner 执行。
+
+两者关系是：
+
+```text
+FunctionObject + params = ThunkObject
+```
+
+其中 `FunctionObject` 属于定义层，回答“这个 executor 是什么、怎么运行、需要什么资源、参数和结果是什么”；`ThunkObject` 属于执行层，回答“这一次用这组参数执行哪个 FunctionObject”。
+
+推荐长期入口：
+
+```json
+{
+  "id": "embed_batch",
+  "type": "autonomous",
+  "executor": "func::<function_object_id>",
+  "input": {
+    "batch": "${plan.output.batch_obj_id}"
+  },
+  "idempotent": true
+}
+```
+
+`/agent/`、`/skill/`、`/tool/` 未来也可以通过 registry 展开到 `FunctionObject`，但它们不是底层原语。
+
+### FunctionObject 类型
+
+当前代码里的 `FunctionType` 包括：
+
+| FunctionType | 含义 | Runner hint |
+|--------------|------|-------------|
+| `ExecPkg` | 可执行包 | `package-runner` |
+| `Script(<lang>)` | 脚本 | `script-runner:<lang>` |
+| `OPTask(<lang>)` | 运维脚本 | `op-task-runner:<lang>` |
+| `Operator` | 算子 | `operator-runner` |
+
+### 当前代码位置
+
+| 组件 | 文件 |
+|------|------|
+| FunctionObject / ThunkObject | `src/kernel/buckyos-api/src/thunk_object.rs` |
+| Apply + params → ThunkObject 构造 | `src/kernel/workflow/src/orchestrator.rs::build_thunk` |
+| Scheduler thunk runner | `src/kernel/scheduler/src/thunk_runner.rs` |
+| Node 执行器 | `src/kernel/node_daemon/src/node_exector.rs` |
+
+### 实现状态
+
+🟡 **基础链路已有，但不作为一期主路径**。
+
+已存在：
+
+- `FunctionType` 枚举。
+- Scheduler runner hint。
+- NodeExecutor 对 `ExecPkg` / `Script` / `OPTask` 的执行计划。
+
+未完成：
+
+- executor registry：语义链接到实际 executor 定义 / FunctionObject 的解析。
+- named_store 参数存在性检查。
+- `Operator` 在 NodeExecutor 中仍未支持。
+- 一期编排器侧的直接 adapter 还没有补齐。
+
+## 8. OPTask Executor @ node_daemon
+
+### 语义
+
+OPTask 是设备视角的低频运维任务，典型用途包括修配置文件、安装依赖、重启服务、临时修 bug。
+
+它不应作为普通 workflow 的长期一等 executor。更推荐的方向是把可变状态版本化，把运维动作表达成普通 Function Instance：
+
+```text
+exec(hash("deploy.sh"), node_state("node3", 3701))
+```
+
+这样调度器看到的仍是函数求值，而不是一条命令式运维指令。
+
+### 使用边界
+
+`optask::` 只建议用于：
+
+- break-glass 修复。
+- 测试环境运维。
+- 迁移期临时工具。
+- 尚无法表达为 service/function 的底层操作。
+
+### 当前代码位置
+
+| 组件 | 文件 |
+|------|------|
+| FunctionType `OPTask` | `src/kernel/buckyos-api/src/thunk_object.rs` |
+| runner hint | `src/kernel/scheduler/src/thunk_runner.rs::build_scheduling_hint` |
+| Node 端执行计划 | `src/kernel/node_daemon/src/node_exector.rs::build_execution_plan` |
+
+### 实现状态
+
+🟡 **基础执行分支存在，但完整语义未实现**。
+
+缺口：
+
+- `optask::` DSL 前缀解析。
+- 目标 device 绑定。
+- Device State Version 注入和拒绝重复执行。
+- 脚本白名单 / FileObjectID 审计。
+
+## 9. 一期实现优先级
+
+| 优先级 | 类别 | 下一步动作 |
+|-------|------|------------|
+| P0 | `service::` | 编排器 `schedule_apply` 加 service adapter，直接 RPC 调用 |
+| P0 | `http::` / `appservice::` | 定义 endpoint registry，编排器直接调用 |
+| P0 | `/agent/` / `/skill/` / `/tool/` | 定义 executor registry，先展开到实际 executor 定义 |
+| P0 | `human_confirm` / `human_required` | 桥接 Msg Center 推送与响应 |
+| P1 | `operator::` | 增加编排器内置 operator table |
+| 后续 | `func::<objid>` | 接入 FunctionObject registry；运行时由 Apply 参数构造 ThunkObject，再投递 Scheduler / Node Daemon Runner |
+| 后续 | `optask::` | 仅按 break-glass 能力推进，避免成为常规 workflow executor |
+
+## 10. 选择建议
+
+给 DSL 作者和 executor 开发者的粗略指引：
+
+```text
+要调用 BuckyOS 内置能力？
+└── service::<name>.<method>
+
+要接入已存在的 AppService 或 HTTP API？
+└── appservice::<id>.<method> 或 http::<endpoint-id>
+
+要调用 Agent / Skill / Tool？
+└── /agent/<name> / /skill/<name> / /tool/<name>
+    └── 一期通过 executor registry 展开到实际 executor 定义
+
+要等待人类确认或输入？
+└── type: human_confirm / human_required
+
+只是做轻量数据转换？
+└── operator::<name>
+
+需要调度到具体节点、利用数据亲和性、跑重计算？
+└── 后续使用 func::<objid> 引用 FunctionObject；运行时生成 ThunkObject
+
+需要低频运维修复？
+└── 后续 optask::<pkg>@<device>，并标记为 break-glass
+```
