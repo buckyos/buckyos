@@ -206,6 +206,23 @@ cyfs-gateway 的 RTCP 内部实现把“候选 IP 展开和排序”交给 `name
 
 所以，Device 多 IP 不等于 gateway 顺序串行尝试所有地址。上层只需要给出可解释的候选来源；实际建链由 name-client 排序、RTCP 并发竞速，并用历史结果持续修正。
 
+### name provider 注册：让 cyfs-gateway 通过 system_config 解析 device
+
+cyfs-gateway 内部 `name_client::resolve` 能拿到哪些 IP，取决于注册了哪些 name provider。BuckyOS 的真相源是 `system_config`（`devices/<name>/info` 等记录中存有 device 自报的 `device_doc.ips` 与运行时 `all_ip`），所以 gateway 必须能查到 system_config，才能把名字解析回 device 的实际地址。
+
+落地方式：
+
+- node_daemon 起的 cyfs-gateway 一定会把本机 `127.0.0.1:3180/kapi/system_config` forward 到 zone 的 system_config 服务（OOD 上转本地 3200，非 OOD 上经 RTCP 转到 OOD；详见 `boot.rs` 中的 `_dispatch_to_system_config`）。
+- system_config 服务自身实现了 cyfs-gateway 的 `HttpsProvider` name provider 协议。
+- node_daemon 在进入正常工作状态（`get_system_config_client` 成功、cyfs-gateway 已经被 `keep_cyfs_gateway_service` 启动）后，会对本机 cyfs-gateway 调用 `add_name_provider("http://127.0.0.1:3180/", None)`（实现见 `gateway_name_provider.rs`）。
+
+效果：
+
+- gateway 内部 `resolve(<device-name>)` 会经由 3180 forward 落到 system_config，把 device 自己上报的 IP 集合（含 `device_doc.ips` 与 `all_ip`）拉回来，作为后续 `resolve_ips` 的候选来源。
+- 注册采用本机 gateway-control RPC（`http://127.0.0.1:13451`），token 由本机 `cyfs_gateway/token_key/private_key.pem` 现签，跟 `gateway_tunnel_probe.rs` 复用同一套机制。
+- name provider 仅在 cyfs-gateway 进程内存里保留。如果 gateway 因为 keep_tunnel 变化等原因被 `keep_cyfs_gateway_service` 重启（`is_restart=true`），node_daemon 会清掉本地的"已注册"标记，下一轮主循环重新注册一次；`reload` 路径不会丢 provider，所以不需要重注册。
+- 注册失败（gateway 还没起来、token 拿不到、RPC 超时等）只记 `debug` 日志，下一轮 5s 主循环周期再试，避免在 boot 抖动期刷大量错误。
+
 文档地图（按顺序阅读)
 - `Zone集群化.md`:目前解决方案的整体思路
 - `服务的多链路选择.md` + `service selector.md`: 站在访问集群内的服务的角度，说明上述成型的拓扑是如何被使用的

@@ -17,7 +17,7 @@ const GATEWAY_PROBE_TIMEOUT_MS: u64 = 2_000;
 // signals instead of triggering fresh probes from the observation loop.
 const GATEWAY_PROBE_MAX_AGE_MS: u64 = 30_000;
 
-fn build_local_gateway_token() -> Option<String> {
+pub(crate) fn build_local_gateway_token() -> Option<String> {
     // Mirrors `read_login_token(CONTROL_SERVER)` in cyfs-gateway: sign a
     // short-lived JWT with the gateway's local private key. We replicate
     // the call instead of depending on the gateway crate to keep the dep

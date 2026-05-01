@@ -39,6 +39,7 @@ use crate::boot::{
 };
 use crate::finder::{DiscoveredNode, NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
+use crate::gateway_name_provider::register_node_gateway_name_provider;
 use crate::gateway_tunnel_probe::probe_key_tunnels_via_gateway;
 use crate::kernel_mgr::*;
 use crate::kevent_server::*;
@@ -1207,6 +1208,12 @@ async fn node_daemon_main_loop(
     let mut node_gateway_info_id: Option<ObjId> = None;
     let mut keep_tunnel_config_id: Option<ObjId> = None;
     let mut network_observer = NetworkObserver::new(NetworkObserverConfig::default());
+    // 进入正常工作状态后，把本机 cyfs-gateway 的 system_config 转发口
+    // (http://127.0.0.1:3180/) 注册为 gateway 自己的 name provider；这样
+    // gateway 内部 resolve 时能拿到 device 上报到 system_config 的 IP。
+    // 失败时下一轮继续重试；gateway 重启后需要重新注册（providers 仅在
+    // 进程内存中保留），因此在 need_restart=true 时清掉这个标记。
+    let mut name_provider_registered = false;
 
     loop {
         let reaped = reap_exited_children_nonblocking();
@@ -1387,7 +1394,7 @@ async fn node_daemon_main_loop(
                         .unwrap();
                 }
 
-                keep_cyfs_gateway_service(
+                let keep_result = keep_cyfs_gateway_service(
                     node_id,
                     device_doc,
                     device_private_key,
@@ -1398,6 +1405,15 @@ async fn node_daemon_main_loop(
                 .map_err(|err| {
                     error!("keep cyfs_gateway service failed! {}", err);
                 });
+
+                if need_restart {
+                    name_provider_registered = false;
+                }
+                if keep_result.is_ok() && !name_provider_registered {
+                    if register_node_gateway_name_provider().await {
+                        name_provider_registered = true;
+                    }
+                }
             } else {
                 error!("load node gateway_cconfig from system_config failed!");
             }

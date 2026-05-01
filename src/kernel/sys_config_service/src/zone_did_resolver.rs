@@ -46,6 +46,48 @@ impl ZoneDidResolver {
         zone_config.ok_or_else(|| NSError::NotFound("zone config not set".to_string()))
     }
 
+    async fn load_zone_host_name(&self) -> Option<String> {
+        let zone_config_str = self.load_zone_config_json().await.ok()?;
+        let zone_value: Value = serde_json::from_str(&zone_config_str).ok()?;
+        if let Some(hostname) = zone_value
+            .get("hostname")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            return Some(hostname.to_string());
+        }
+        let id_str = zone_value.get("id").and_then(|v| v.as_str())?;
+        let did = DID::from_str(id_str).ok()?;
+        Some(did.to_host_name())
+    }
+
+    // Normalize an incoming DID/host into a SYS_STORE short-name key. For
+    // `did:web:<id>` the host id is unwrapped, and a zone-host suffix is
+    // stripped so e.g. `did:web:ood2.test.buckyos.io` resolves to `ood2`.
+    // For other DID methods we return `did.id` (e.g. `did:dev:abc` -> `abc`),
+    // matching how scheduler/node_daemon write entries under
+    // `devices/<short>/...` and `users/<short>/...`.
+    async fn normalize_did_to_short_name(&self, did_str: &str) -> Option<String> {
+        let did = DID::from_str(did_str).ok()?;
+        if did.method == "web" {
+            let id = did.id.clone();
+            if id.contains('.') {
+                if let Some(zone_host) = self.load_zone_host_name().await {
+                    let suffix = format!(".{}", zone_host);
+                    if id.ends_with(&suffix) {
+                        return Some(id[..id.len() - suffix.len()].to_string());
+                    }
+                    if id == zone_host {
+                        return None;
+                    }
+                }
+                return Some(id);
+            }
+            return Some(id);
+        }
+        Some(did.id)
+    }
+
     async fn load_device_doc(&self, device_id: &str) -> NSResult<(DeviceConfig, String)> {
         let obj_path = format!("devices/{}/doc", device_id);
         let store = SYS_STORE.lock().await;
@@ -164,6 +206,23 @@ impl ZoneDidResolver {
     }
 
     async fn do_query_did(&self, did_str: &str, typ: Option<String>) -> NSResult<String> {
+        // ?type=info => return the runtime DeviceInfo (with `all_ip`) that
+        // node_daemon publishes. Routed before any other lookup because
+        // `name_client::resolve_device_info_ips` deserializes the body as
+        // DeviceInfo, so we must not fall through to the signed JWT doc.
+        if typ.as_deref() == Some("info") {
+            let key = if DID::is_did(did_str) {
+                self.normalize_did_to_short_name(did_str)
+                    .await
+                    .ok_or_else(|| {
+                        NSError::NotFound(format!("did {} cannot be resolved to short name", did_str))
+                    })?
+            } else {
+                did_str.to_string()
+            };
+            return self.do_query_info(&key).await;
+        }
+
         if DID::is_did(did_str) {
             if let Ok((_agent_doc, obj_config_str)) = self.load_agent_doc_by_did(did_str).await {
                 info!(
@@ -174,22 +233,40 @@ impl ZoneDidResolver {
                 return Ok(obj_config_str);
             }
 
-            if let Ok((_device_config, obj_config_str)) = self.load_device_doc(did_str).await {
-                info!(
-                    "zone_provider resolve Device did {} => {}",
-                    did_str,
-                    obj_config_str.as_str()
-                );
-                return Ok(obj_config_str);
-            }
+            // SYS_STORE keys are short names, not full DID strings, so we
+            // normalize before falling back to device/agent/owner lookups.
+            let short_key = self.normalize_did_to_short_name(did_str).await;
 
-            if let Ok((_owner_config, obj_config_str)) = self.load_owner_doc(did_str).await {
-                info!(
-                    "zone_provider resolve Owner did {} => {}",
-                    did_str,
-                    obj_config_str.as_str()
-                );
-                return Ok(obj_config_str);
+            if let Some(key) = short_key.as_deref() {
+                if let Ok((_device_config, obj_config_str)) = self.load_device_doc(key).await {
+                    info!(
+                        "zone_provider resolve Device did {} (key={}) => {}",
+                        did_str,
+                        key,
+                        obj_config_str.as_str()
+                    );
+                    return Ok(obj_config_str);
+                }
+
+                if let Ok((_agent_doc, obj_config_str)) = self.load_agent_doc(key).await {
+                    info!(
+                        "zone_provider resolve Agent did {} (key={}) => {}",
+                        did_str,
+                        key,
+                        obj_config_str.as_str()
+                    );
+                    return Ok(obj_config_str);
+                }
+
+                if let Ok((_owner_config, obj_config_str)) = self.load_owner_doc(key).await {
+                    info!(
+                        "zone_provider resolve Owner did {} (key={}) => {}",
+                        did_str,
+                        key,
+                        obj_config_str.as_str()
+                    );
+                    return Ok(obj_config_str);
+                }
             }
 
             return Err(NSError::NotFound(format!("did {} not found", did_str)));
