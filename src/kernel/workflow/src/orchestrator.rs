@@ -2,6 +2,7 @@ use crate::compiler::{CompiledNode, CompiledWorkflow};
 use crate::dispatcher::ThunkDispatcher;
 use crate::dsl::RetryFallback;
 use crate::error::{WorkflowError, WorkflowResult};
+use crate::executor_adapter::{ExecutorAdapter, ExecutorRegistry};
 use crate::object_store::{deterministic_object_id, WorkflowObjectStore};
 use crate::runtime::{
     EventEnvelope, HumanAction, HumanActionKind, HumanWait, MapState, NodeRunState, ParJoin,
@@ -21,6 +22,7 @@ pub struct WorkflowOrchestrator<D, O, T> {
     dispatcher: Arc<D>,
     object_store: Arc<O>,
     tracker: Arc<T>,
+    executor_registry: Arc<ExecutorRegistry>,
 }
 
 impl<D, O, T> WorkflowOrchestrator<D, O, T>
@@ -34,7 +36,16 @@ where
             dispatcher,
             object_store,
             tracker,
+            executor_registry: Arc::new(ExecutorRegistry::new()),
         }
+    }
+
+    /// 注入编排器侧 Apply 直执行通道。命中 registry 的 executor（一期主要是
+    /// `service::` / `http::` / `appservice::`）会跳过 Thunk 调度器，由编排器
+    /// 同步调用 adapter 并把结果直接回填到 `node_outputs`。
+    pub fn with_executor_registry(mut self, registry: Arc<ExecutorRegistry>) -> Self {
+        self.executor_registry = registry;
+        self
     }
 
     pub async fn create_run(
@@ -514,6 +525,24 @@ where
             *attempt += 1;
             *attempt
         };
+
+        // 编排器侧 Apply 直执行通道：命中 registry 的 executor（一期主要是
+        // service:: / http:: / appservice::）跳过 Thunk 调度器，由编排器同步
+        // 调用 adapter 并把结果直接回填到 node_outputs。
+        if let Some(adapter) = self.adapter_for(compiled) {
+            return self
+                .schedule_apply_direct(
+                    workflow,
+                    run,
+                    compiled,
+                    resolved_input,
+                    next_attempt,
+                    adapter,
+                    events,
+                )
+                .await;
+        }
+
         let (thunk_obj_id, thunk) = build_thunk(run, compiled, resolved_input, next_attempt)?;
         self.object_store
             .put_json(
@@ -544,6 +573,151 @@ where
             None,
         ));
         Ok(())
+    }
+
+    fn adapter_for(&self, compiled: &CompiledNode) -> Option<Arc<dyn ExecutorAdapter>> {
+        if self.executor_registry.is_empty() {
+            return None;
+        }
+        let Expr::Apply { executor, .. } = &compiled.expr else {
+            return None;
+        };
+        self.executor_registry.find(executor)
+    }
+
+    async fn schedule_apply_direct(
+        &self,
+        workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        compiled: &CompiledNode,
+        resolved_input: Value,
+        attempt: u32,
+        adapter: Arc<dyn ExecutorAdapter>,
+        events: &mut Vec<EventEnvelope>,
+    ) -> WorkflowResult<()> {
+        let executor = match &compiled.expr {
+            Expr::Apply { executor, .. } => executor.clone(),
+            _ => return Err(WorkflowError::UnsupportedNode(compiled.id.clone())),
+        };
+        run.node_states
+            .insert(compiled.id.clone(), NodeRunState::Running);
+        events.push(self.emit_event(
+            run,
+            "step.started",
+            Some(compiled.id.clone()),
+            "engine",
+            Some(json!({ "executor": executor.as_str(), "mode": "direct" })),
+        ));
+
+        match adapter.invoke(&executor, &resolved_input).await {
+            Ok(output) => {
+                self.complete_apply_node_direct(
+                    workflow,
+                    run,
+                    compiled,
+                    &resolved_input,
+                    output,
+                    Value::Null,
+                    events,
+                )
+                .await
+            }
+            Err(err) => {
+                self.fail_apply_node_direct(run, compiled, attempt, err, events);
+                Ok(())
+            }
+        }
+    }
+
+    async fn complete_apply_node_direct(
+        &self,
+        workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        compiled: &CompiledNode,
+        resolved_input: &Value,
+        output: Value,
+        metrics: Value,
+        events: &mut Vec<EventEnvelope>,
+    ) -> WorkflowResult<()> {
+        let output_id = self
+            .object_store
+            .put_json("workflow_result", &output)
+            .await?;
+        run.node_states
+            .insert(compiled.id.clone(), NodeRunState::Completed);
+        run.node_outputs
+            .insert(compiled.id.clone(), output.clone());
+        run.metrics
+            .insert(compiled.id.clone(), metrics.clone());
+        if is_idempotent(compiled) {
+            let key = cache_key(compiled, resolved_input);
+            self.object_store
+                .put_json_with_id(
+                    &key,
+                    &json!({
+                        "result_obj_id": output_id,
+                        "result": output,
+                        "metrics": metrics,
+                    }),
+                )
+                .await?;
+        }
+        self.activate_successors(workflow, run, &compiled.id);
+        self.notify_par_branch_completed(workflow, run, &compiled.id, events)
+            .await?;
+        events.push(self.emit_event(
+            run,
+            "step.completed",
+            Some(compiled.id.clone()),
+            "engine",
+            Some(json!({ "result_obj_id": output_id, "mode": "direct" })),
+        ));
+        Ok(())
+    }
+
+    fn fail_apply_node_direct(
+        &self,
+        run: &mut WorkflowRun,
+        compiled: &CompiledNode,
+        attempt: u32,
+        err: WorkflowError,
+        events: &mut Vec<EventEnvelope>,
+    ) {
+        let policy = retry_policy(compiled);
+        let error_message = err.to_string();
+        let node_id = compiled.id.clone();
+        if attempt < policy.max_attempts {
+            // 重新置为 Pending 让下一轮 tick 再次进入 schedule_apply（attempt 已自增过）。
+            run.node_states
+                .insert(node_id.clone(), NodeRunState::Pending);
+            events.push(self.emit_event(
+                run,
+                "step.retrying",
+                Some(node_id),
+                "engine",
+                Some(json!({ "attempt": attempt + 1, "error": error_message })),
+            ));
+        } else if policy.fallback == RetryFallback::Human {
+            run.node_states
+                .insert(node_id.clone(), NodeRunState::WaitingHuman);
+            run.human_waiting_nodes.insert(node_id.clone());
+            events.push(self.emit_event(
+                run,
+                "step.waiting_human",
+                Some(node_id),
+                "engine",
+                Some(json!({ "reason": "retries_exhausted", "error": error_message })),
+            ));
+        } else {
+            run.node_states.insert(node_id.clone(), NodeRunState::Failed);
+            events.push(self.emit_event(
+                run,
+                "step.failed",
+                Some(node_id),
+                "engine",
+                Some(json!({ "error": error_message })),
+            ));
+        }
     }
 
     async fn advance_match(
@@ -1061,15 +1235,18 @@ where
             return Ok(());
         }
 
-        self.dispatch_pending_shards(run, &compiled.id, body_node).await?;
+        self.dispatch_pending_shards(workflow, run, &compiled.id, body_node, events)
+            .await?;
         Ok(())
     }
 
     async fn dispatch_pending_shards(
         &self,
+        workflow: &CompiledWorkflow,
         run: &mut WorkflowRun,
         for_each_id: &str,
         body_node: &CompiledNode,
+        events: &mut Vec<EventEnvelope>,
     ) -> WorkflowResult<()> {
         let (max_concurrency, total, body_step_id) = {
             let state = run
@@ -1095,8 +1272,13 @@ where
             })
             .unwrap_or(0);
 
+        // body 节点固定，所以 adapter 决策在所有 shard 间一致。
+        let adapter = self.adapter_for(body_node);
+
         for index in 0..total {
-            if running_count >= max_concurrency {
+            // 直执行通道下 shard 同步完成、不会占用 running_count；只有 Thunk 路径
+            // 才需要受 max_concurrency 限制。
+            if adapter.is_none() && running_count >= max_concurrency {
                 break;
             }
             let shard_status = run
@@ -1118,6 +1300,54 @@ where
             };
             let resolved_input =
                 self.resolve_shard_input(run, body_node, item.clone(), index as u32)?;
+
+            if let Some(adapter) = adapter.as_ref() {
+                let executor = match &body_node.expr {
+                    Expr::Apply { executor, .. } => executor.clone(),
+                    _ => return Err(WorkflowError::UnsupportedNode(body_node.id.clone())),
+                };
+                let _ = attempt;
+                match adapter.invoke(&executor, &resolved_input).await {
+                    Ok(output) => {
+                        if let Some(state) = run.map_states.get_mut(for_each_id) {
+                            state.shard_states[index] = NodeRunState::Completed;
+                            state.shard_outputs[index] = output;
+                        }
+                        events.push(self.emit_event(
+                            run,
+                            "step.progress",
+                            Some(for_each_id.to_string()),
+                            "engine",
+                            Some(json!({
+                                "shard": index,
+                                "status": "completed",
+                                "mode": "direct",
+                            })),
+                        ));
+                    }
+                    Err(err) => {
+                        if let Some(state) = run.map_states.get_mut(for_each_id) {
+                            state.shard_states[index] = NodeRunState::Failed;
+                        }
+                        run.node_states
+                            .insert(for_each_id.to_string(), NodeRunState::Failed);
+                        events.push(self.emit_event(
+                            run,
+                            "step.failed",
+                            Some(for_each_id.to_string()),
+                            "engine",
+                            Some(json!({
+                                "shard": index,
+                                "error": err.to_string(),
+                                "mode": "direct",
+                            })),
+                        ));
+                        return Ok(());
+                    }
+                }
+                continue;
+            }
+
             let (thunk_obj_id, thunk) = build_shard_thunk(
                 run,
                 body_node,
@@ -1150,6 +1380,22 @@ where
                 state.shard_states[index] = NodeRunState::Running;
             }
             running_count += 1;
+        }
+
+        if adapter.is_some() {
+            let all_done = run
+                .map_states
+                .get(for_each_id)
+                .map(|state| {
+                    state
+                        .shard_states
+                        .iter()
+                        .all(|s| matches!(*s, NodeRunState::Completed))
+                })
+                .unwrap_or(false);
+            if all_done {
+                self.complete_map(workflow, run, for_each_id, events).await?;
+            }
         }
         Ok(())
     }
@@ -1213,7 +1459,7 @@ where
             .nodes
             .get(&body_step_id)
             .ok_or_else(|| WorkflowError::NodeNotFound(body_step_id.clone()))?;
-        self.dispatch_pending_shards(run, for_each_id, body_node)
+        self.dispatch_pending_shards(workflow, run, for_each_id, body_node, events)
             .await?;
 
         let all_done = run
@@ -2102,5 +2348,324 @@ mod tests {
         .await;
         orchestrator.tick(&compiled, &mut run).await.unwrap();
         assert_eq!(run.status, RunStatus::Completed);
+    }
+
+    fn service_only_workflow() -> WorkflowDefinition {
+        WorkflowDefinition {
+            schema_version: "0.2.0".to_string(),
+            id: "wf-service-only".to_string(),
+            name: "ServiceOnly".to_string(),
+            description: None,
+            trigger: json!({"type":"manual"}),
+            steps: vec![
+                StepDefinition {
+                    id: "fetch".to_string(),
+                    name: "Fetch".to_string(),
+                    executor: Some("service::aicc.complete".to_string()),
+                    step_type: StepType::Autonomous,
+                    input: Some(json!({"prompt": "hello"})),
+                    input_schema: None,
+                    output_schema: json!({
+                        "type":"object",
+                        "properties": {
+                            "answer": {"type":"string"}
+                        },
+                        "required": ["answer"]
+                    }),
+                    subject_ref: None,
+                    prompt: None,
+                    idempotent: false,
+                    skippable: false,
+                    output_mode: OutputMode::Single,
+                    guards: None,
+                },
+                StepDefinition {
+                    id: "notify".to_string(),
+                    name: "Notify".to_string(),
+                    executor: Some("http::msg-center.notify".to_string()),
+                    step_type: StepType::Autonomous,
+                    input: Some(json!({
+                        "answer": "${fetch.output.answer}"
+                    })),
+                    input_schema: None,
+                    output_schema: json!({"type":"object"}),
+                    subject_ref: None,
+                    prompt: None,
+                    idempotent: false,
+                    skippable: false,
+                    output_mode: OutputMode::Single,
+                    guards: None,
+                },
+            ],
+            nodes: vec![],
+            edges: vec![
+                EdgeDefinition {
+                    from: "fetch".to_string(),
+                    to: Some("notify".to_string()),
+                },
+                EdgeDefinition {
+                    from: "notify".to_string(),
+                    to: None,
+                },
+            ],
+            guards: None,
+            defs: BTreeMap::new(),
+        }
+    }
+
+    fn echo_registry() -> Arc<crate::executor_adapter::ExecutorRegistry> {
+        let adapter = crate::executor_adapter::NamespaceAdapter::new(
+            ["service", "http", "appservice"],
+            |executor, input| {
+                let executor = executor.clone();
+                let input = input.clone();
+                Box::pin(async move {
+                    if executor.as_str() == "service::aicc.complete" {
+                        Ok(json!({ "answer": "ok", "echo": input }))
+                    } else {
+                        Ok(json!({ "delivered": true, "echo": input }))
+                    }
+                })
+            },
+        );
+        Arc::new(crate::executor_adapter::ExecutorRegistry::new().with(Arc::new(adapter)))
+    }
+
+    #[tokio::test]
+    async fn orchestrator_runs_service_and_http_directly() {
+        let compiled = compile_workflow(service_only_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(NoopTaskTracker);
+        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker)
+            .with_executor_registry(echo_registry());
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+        let _events = orchestrator.tick(&compiled, &mut run).await.unwrap();
+
+        // 一次 tick 即可全程跑完，不应有任何 Thunk 投递到调度器。
+        let scheduled = dispatcher.scheduled().await;
+        assert!(
+            scheduled.is_empty(),
+            "service::/http:: should not go through dispatcher, got {:?}",
+            scheduled
+        );
+        assert!(run.pending_thunks.is_empty());
+        assert_eq!(run.status, RunStatus::Completed);
+        assert_eq!(
+            run.node_states.get("fetch"),
+            Some(&NodeRunState::Completed)
+        );
+        assert_eq!(
+            run.node_states.get("notify"),
+            Some(&NodeRunState::Completed)
+        );
+        let fetch_out = run.node_outputs.get("fetch").cloned().unwrap_or(Value::Null);
+        assert_eq!(fetch_out["answer"], "ok");
+        let notify_out = run.node_outputs.get("notify").cloned().unwrap_or(Value::Null);
+        assert_eq!(notify_out["delivered"], true);
+        assert_eq!(notify_out["echo"]["answer"], "ok");
+    }
+
+    #[tokio::test]
+    async fn orchestrator_direct_apply_falls_back_when_no_adapter() {
+        // 没有 registry 时仍应走 Thunk 路径——保持原行为。
+        let compiled = compile_workflow(service_only_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(NoopTaskTracker);
+        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker);
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+        let res = orchestrator.tick(&compiled, &mut run).await;
+        // service:: 没有 fun_id 也没有 adapter，build_thunk 应明确报 namespace 未实现，
+        // 而不是静默落到调度器。
+        assert!(matches!(
+            res,
+            Err(WorkflowError::ExecutorNamespaceNotImplemented { .. })
+        ));
+    }
+
+    fn http_for_each_workflow() -> WorkflowDefinition {
+        WorkflowDefinition {
+            schema_version: "0.2.0".to_string(),
+            id: "wf-map-http".to_string(),
+            name: "MapHttp".to_string(),
+            description: None,
+            trigger: json!({"type":"manual"}),
+            steps: vec![
+                StepDefinition {
+                    id: "scan".to_string(),
+                    name: "Scan".to_string(),
+                    executor: Some("service::fs_index.scan".to_string()),
+                    step_type: StepType::Autonomous,
+                    input: None,
+                    input_schema: None,
+                    output_schema: json!({
+                        "type":"object",
+                        "properties": {
+                            "element_schema": {"type":"object"},
+                            "total_count": {"type":"integer"},
+                            "items": {"type":"array"}
+                        }
+                    }),
+                    subject_ref: None,
+                    prompt: None,
+                    idempotent: true,
+                    skippable: false,
+                    output_mode: OutputMode::FiniteSeekable,
+                    guards: None,
+                },
+                StepDefinition {
+                    id: "classify".to_string(),
+                    name: "Classify".to_string(),
+                    executor: Some("http::file-classifier.classify".to_string()),
+                    step_type: StepType::Autonomous,
+                    input: None,
+                    input_schema: None,
+                    output_schema: json!({"type":"object"}),
+                    subject_ref: None,
+                    prompt: None,
+                    idempotent: true,
+                    skippable: false,
+                    output_mode: OutputMode::Single,
+                    guards: None,
+                },
+                StepDefinition {
+                    id: "report".to_string(),
+                    name: "Report".to_string(),
+                    executor: Some("service::msg_center.notify_user".to_string()),
+                    step_type: StepType::Autonomous,
+                    input: Some(json!({"shards": "${loop.output}"})),
+                    input_schema: None,
+                    output_schema: json!({"type":"object"}),
+                    subject_ref: None,
+                    prompt: None,
+                    idempotent: true,
+                    skippable: false,
+                    output_mode: OutputMode::Single,
+                    guards: None,
+                },
+            ],
+            nodes: vec![ControlNodeDefinition::ForEach(
+                crate::dsl::ForEachNodeDefinition {
+                    id: "loop".to_string(),
+                    items: "${scan.output}".to_string(),
+                    steps: vec!["classify".to_string()],
+                    max_items: 10,
+                    concurrency: 2,
+                },
+            )],
+            edges: vec![
+                EdgeDefinition {
+                    from: "scan".to_string(),
+                    to: Some("loop".to_string()),
+                },
+                EdgeDefinition {
+                    from: "loop".to_string(),
+                    to: Some("report".to_string()),
+                },
+                EdgeDefinition {
+                    from: "report".to_string(),
+                    to: None,
+                },
+            ],
+            guards: None,
+            defs: BTreeMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn orchestrator_direct_apply_runs_for_each_via_adapter() {
+        let compiled = compile_workflow(http_for_each_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(NoopTaskTracker);
+
+        let adapter = crate::executor_adapter::NamespaceAdapter::new(
+            ["service", "http"],
+            |executor, input| {
+                let executor = executor.clone();
+                let input = input.clone();
+                Box::pin(async move {
+                    match executor.as_str() {
+                        "service::fs_index.scan" => Ok(json!({"items": [
+                            {"path": "/a"}, {"path": "/b"}, {"path": "/c"}
+                        ]})),
+                        "http::file-classifier.classify" => {
+                            let item = input.get("_item").cloned().unwrap_or(Value::Null);
+                            let index = input.get("_index").cloned().unwrap_or(Value::Null);
+                            Ok(json!({"index": index, "kind": "doc", "item": item}))
+                        }
+                        "service::msg_center.notify_user" => Ok(json!({"sent": true})),
+                        other => Err(WorkflowError::Dispatcher(format!(
+                            "unexpected executor `{}`",
+                            other
+                        ))),
+                    }
+                })
+            },
+        );
+        let registry = Arc::new(
+            crate::executor_adapter::ExecutorRegistry::new().with(Arc::new(adapter)),
+        );
+        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker)
+            .with_executor_registry(registry);
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+
+        let scheduled = dispatcher.scheduled().await;
+        assert!(
+            scheduled.is_empty(),
+            "no thunk should be dispatched, got {:?}",
+            scheduled
+        );
+        assert!(run.pending_thunks.is_empty());
+        assert_eq!(run.status, RunStatus::Completed);
+
+        let loop_output = run.node_outputs.get("loop").cloned().unwrap_or(Value::Null);
+        let arr = loop_output.as_array().expect("loop output should be array");
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0]["index"], 0);
+        assert_eq!(arr[2]["index"], 2);
+        assert_eq!(arr[1]["kind"], "doc");
+
+        assert_eq!(
+            run.node_states.get("report"),
+            Some(&NodeRunState::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrator_direct_apply_failure_falls_back_to_human() {
+        let compiled = compile_workflow(service_only_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(NoopTaskTracker);
+
+        let failing = crate::executor_adapter::NamespaceAdapter::new(
+            ["service", "http"],
+            |_executor, _input| {
+                Box::pin(async move {
+                    Err(WorkflowError::Dispatcher("boom".to_string()))
+                })
+            },
+        );
+        let registry =
+            Arc::new(crate::executor_adapter::ExecutorRegistry::new().with(Arc::new(failing)));
+        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker)
+            .with_executor_registry(registry);
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+
+        // 第一步默认 retry 1 次 + Human fallback，所以应该停在 WaitingHuman。
+        assert_eq!(run.status, RunStatus::WaitingHuman);
+        assert_eq!(
+            run.node_states.get("fetch"),
+            Some(&NodeRunState::WaitingHuman)
+        );
+        assert!(dispatcher.scheduled().await.is_empty());
     }
 }

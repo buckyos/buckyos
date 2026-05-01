@@ -3,6 +3,7 @@ mod compiler;
 mod dispatcher;
 mod dsl;
 mod error;
+mod executor_adapter;
 mod object_store;
 mod orchestrator;
 mod runtime;
@@ -21,6 +22,7 @@ pub use compiler::{
 pub use dispatcher::{InMemoryThunkDispatcher, ScheduledThunk, ThunkDispatcher};
 pub use dsl::*;
 pub use error::{WorkflowError, WorkflowResult};
+pub use executor_adapter::{ExecutorAdapter, ExecutorRegistry, NamespaceAdapter};
 pub use object_store::{InMemoryObjectStore, NamedStoreObjectStore, WorkflowObjectStore};
 pub use orchestrator::WorkflowOrchestrator;
 pub use runtime::*;
