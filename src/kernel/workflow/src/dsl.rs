@@ -211,7 +211,7 @@ mod tests {
                 {
                     "id": "collect",
                     "name": "Collect Inputs",
-                    "executor": "skill/fs.scan",
+                    "executor": "/skill/fs.scan",
                     "type": "autonomous",
                     "skippable": false,
                     "output_schema": {
@@ -233,7 +233,7 @@ mod tests {
                 {
                     "id": "draft",
                     "name": "Draft Plan",
-                    "executor": "agent/planner",
+                    "executor": "/agent/planner",
                     "type": "autonomous",
                     "skippable": false,
                     "input": {
@@ -304,7 +304,7 @@ mod tests {
                 {
                     "id": "publish",
                     "name": "Publish",
-                    "executor": "skill/publish",
+                    "executor": "/skill/publish",
                     "type": "autonomous",
                     "skippable": false,
                     "input": {
@@ -326,7 +326,7 @@ mod tests {
                 {
                     "id": "revise",
                     "name": "Revise",
-                    "executor": "agent/revise",
+                    "executor": "/agent/revise",
                     "type": "autonomous",
                     "skippable": false,
                     "input": {
@@ -391,15 +391,20 @@ mod tests {
         println!("{}", expr_tree_str);
         assert_eq!(compiled.graph.start_nodes, vec!["collect".to_string()]);
 
+        // 语义链接 (`/skill/...` / `/agent/...`) 编译后落到
+        // `ExecutorRef::SemanticPath`，序列化形态是 `{ "SemanticPath": "..." }`。
+        // 这一步还不会展开到实际 executor 定义，所以 fun_id 必须为 null。
         assert_eq!(
-            expr_tree["collect"]["expr"]["Apply"]["executor"],
-            "skill/fs.scan"
+            expr_tree["collect"]["expr"]["Apply"]["executor"]["SemanticPath"],
+            "/skill/fs.scan"
         );
+        assert!(expr_tree["collect"]["expr"]["Apply"]["fun_id"].is_null());
 
         assert_eq!(
-            expr_tree["draft"]["expr"]["Apply"]["executor"],
-            "agent/planner"
+            expr_tree["draft"]["expr"]["Apply"]["executor"]["SemanticPath"],
+            "/agent/planner"
         );
+        assert!(expr_tree["draft"]["expr"]["Apply"]["fun_id"].is_null());
         assert_eq!(
             expr_tree["draft"]["expr"]["Apply"]["params"]["files"]["Reference"]["node_id"],
             "collect"

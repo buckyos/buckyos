@@ -49,4 +49,23 @@ pub enum WorkflowError {
     MissingMapState(String),
     #[error("missing par state for parallel `{0}`")]
     MissingParState(String),
+    #[error(
+        "node `{node_id}` has executor `{executor}` with unknown namespace; expected one of \
+         service::/http::/appservice::/operator::/func:: or a /agent//skill//tool/ semantic path"
+    )]
+    UnknownExecutorNamespace { node_id: String, executor: String },
+    #[error(
+        "node `{node_id}` uses semantic executor `{executor}` which has not been resolved by \
+         the executor registry"
+    )]
+    UnresolvedSemanticExecutor { node_id: String, executor: String },
+    #[error(
+        "node `{node_id}` uses actual executor `{executor}` whose namespace `{namespace}` is \
+         not yet supported by an orchestrator-side adapter"
+    )]
+    ExecutorNamespaceNotImplemented {
+        node_id: String,
+        executor: String,
+        namespace: String,
+    },
 }

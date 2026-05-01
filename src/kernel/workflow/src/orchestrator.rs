@@ -8,7 +8,7 @@ use crate::runtime::{
     ParState, PendingThunk, RunStatus, WorkflowRun,
 };
 use crate::task_tracker::WorkflowTaskTracker;
-use crate::types::{AwaitKind, Expr, JoinStrategy, RetryPolicy, ValueTemplate};
+use crate::types::{AwaitKind, Expr, ExecutorRef, JoinStrategy, RetryPolicy, ValueTemplate};
 use buckyos_api::{ThunkExecutionResult, ThunkExecutionStatus, ThunkObject};
 use chrono::Utc;
 use ndn_lib::ObjId;
@@ -1301,6 +1301,7 @@ fn build_thunk(
     attempt: u32,
 ) -> WorkflowResult<(String, ThunkObject)> {
     let Expr::Apply {
+        executor,
         fun_id,
         idempotent: _,
         guards: _,
@@ -1309,6 +1310,7 @@ fn build_thunk(
     else {
         return Err(WorkflowError::UnsupportedNode(compiled.id.clone()));
     };
+    let fun_id = require_function_object(&compiled.id, executor, fun_id.as_deref())?;
     let params = match resolved_input {
         Value::Object(map) => map.into_iter().collect(),
         other => {
@@ -1351,12 +1353,16 @@ fn build_shard_thunk(
     resolved_input: Value,
     attempt: u32,
 ) -> WorkflowResult<(String, ThunkObject)> {
-    let Expr::Apply { fun_id, .. } = &body_node.expr else {
+    let Expr::Apply {
+        executor, fun_id, ..
+    } = &body_node.expr
+    else {
         return Err(WorkflowError::ForEachBodyNotApply(
             for_each_id.to_string(),
             body_step_id.to_string(),
         ));
     };
+    let fun_id = require_function_object(&body_node.id, executor, fun_id.as_deref())?;
     let params = match resolved_input {
         Value::Object(map) => map.into_iter().collect::<HashMap<_, _>>(),
         other => {
@@ -1487,14 +1493,57 @@ fn is_idempotent(compiled: &CompiledNode) -> bool {
 }
 
 fn cache_key(compiled: &CompiledNode, resolved_input: &Value) -> String {
-    let Expr::Apply { fun_id, .. } = &compiled.expr else {
+    let Expr::Apply {
+        executor, fun_id, ..
+    } = &compiled.expr
+    else {
         return String::new();
     };
+    // 缓存 key 必须能跨 Run 命中同一段函数。优先使用 FunctionObject 的 fun_id；
+    // 对于 service:: / http:: / appservice:: / operator:: 这类编排器侧 adapter
+    // 直接执行的 executor，没有 fun_id，用 executor 字符串本身做内容标识。
+    let identity = match fun_id.as_deref() {
+        Some(id) => id.to_string(),
+        None => format!("ref:{}", executor.as_str()),
+    };
     let payload = json!({
-        "fun_id": fun_id,
+        "executor": executor.as_str(),
+        "identity": identity,
         "input": resolved_input,
     });
     deterministic_object_id("workflow_cache", &payload).unwrap_or_default()
+}
+
+/// 从 `Apply` 节点取出可用于构造 ThunkObject 的 `fun_id`。一期只有
+/// `func::<objid>`（即 `ExecutorRef::Actual` 且属于 FunctionObject 命名空间）
+/// 会走调度器路径；其它 namespace 还没有 adapter 的话报明确错误，避免静默
+/// 落到调度器上。语义链接（`/agent/`、`/skill/`、`/tool/`）必须先经 registry
+/// 展开，否则不应出现在投递路径上。
+fn require_function_object<'a>(
+    node_id: &str,
+    executor: &ExecutorRef,
+    fun_id: Option<&'a str>,
+) -> WorkflowResult<&'a str> {
+    if let Some(id) = fun_id {
+        return Ok(id);
+    }
+    match executor {
+        ExecutorRef::SemanticPath(value) => Err(WorkflowError::UnresolvedSemanticExecutor {
+            node_id: node_id.to_string(),
+            executor: value.clone(),
+        }),
+        ExecutorRef::Actual(value) => {
+            let namespace = executor
+                .namespace()
+                .map(str::to_string)
+                .unwrap_or_else(|| "<unknown>".to_string());
+            Err(WorkflowError::ExecutorNamespaceNotImplemented {
+                node_id: node_id.to_string(),
+                executor: value.clone(),
+                namespace,
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1523,7 +1572,7 @@ mod tests {
                 StepDefinition {
                     id: "plan".to_string(),
                     name: "Plan".to_string(),
-                    executor: Some("agent/mia".to_string()),
+                    executor: Some("func::agent.mia".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
@@ -1572,7 +1621,7 @@ mod tests {
                 StepDefinition {
                     id: "approved_step".to_string(),
                     name: "Approved".to_string(),
-                    executor: Some("skill/finalize".to_string()),
+                    executor: Some("func::skill.finalize".to_string()),
                     step_type: StepType::Autonomous,
                     input: Some(json!({
                         "source": "${review.output.final_subject}"
@@ -1695,7 +1744,7 @@ mod tests {
                 StepDefinition {
                     id: "seed".to_string(),
                     name: "Seed".to_string(),
-                    executor: Some("skill/seed".to_string()),
+                    executor: Some("func::skill.seed".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
@@ -1710,7 +1759,7 @@ mod tests {
                 StepDefinition {
                     id: "branch_a".to_string(),
                     name: "A".to_string(),
-                    executor: Some("skill/a".to_string()),
+                    executor: Some("func::skill.a".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
@@ -1725,7 +1774,7 @@ mod tests {
                 StepDefinition {
                     id: "branch_b".to_string(),
                     name: "B".to_string(),
-                    executor: Some("skill/b".to_string()),
+                    executor: Some("func::skill.b".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
@@ -1740,7 +1789,7 @@ mod tests {
                 StepDefinition {
                     id: "join".to_string(),
                     name: "Join".to_string(),
-                    executor: Some("skill/join".to_string()),
+                    executor: Some("func::skill.join".to_string()),
                     step_type: StepType::Autonomous,
                     input: Some(json!({
                         "all": "${par.output}"
@@ -1887,7 +1936,7 @@ mod tests {
                 StepDefinition {
                     id: "scan".to_string(),
                     name: "Scan".to_string(),
-                    executor: Some("skill/fs".to_string()),
+                    executor: Some("func::skill.fs".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
@@ -1909,7 +1958,7 @@ mod tests {
                 StepDefinition {
                     id: "ingest".to_string(),
                     name: "Ingest".to_string(),
-                    executor: Some("skill/ingest".to_string()),
+                    executor: Some("func::skill.ingest".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
@@ -1924,7 +1973,7 @@ mod tests {
                 StepDefinition {
                     id: "summary".to_string(),
                     name: "Summary".to_string(),
-                    executor: Some("skill/summary".to_string()),
+                    executor: Some("func::skill.summary".to_string()),
                     step_type: StepType::Autonomous,
                     input: Some(json!({
                         "results": "${loop.output}"

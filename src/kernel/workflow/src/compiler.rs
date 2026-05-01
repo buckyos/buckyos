@@ -1,7 +1,7 @@
 use crate::analysis::{analyze_workflow, AnalysisIssue};
 use crate::dsl::*;
 use crate::error::{WorkflowError, WorkflowResult};
-use crate::types::{AwaitKind, Expr, JoinStrategy, ValueTemplate};
+use crate::types::{AwaitKind, Expr, ExecutorRef, JoinStrategy, ValueTemplate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -407,11 +407,17 @@ pub fn compile_workflow(definition: WorkflowDefinition) -> WorkflowResult<Compil
 fn compile_step(step: &StepDefinition, _workflow: &WorkflowDefinition) -> WorkflowResult<Expr> {
     match step.step_type {
         StepType::Autonomous => {
-            let executor = step.executor.clone().ok_or_else(|| {
+            let executor_str = step.executor.clone().ok_or_else(|| {
                 WorkflowError::Serialization(format!(
                     "autonomous step `{}` requires executor",
                     step.id
                 ))
+            })?;
+            let executor = ExecutorRef::parse(&executor_str).ok_or_else(|| {
+                WorkflowError::UnknownExecutorNamespace {
+                    node_id: step.id.clone(),
+                    executor: executor_str.clone(),
+                }
             })?;
             let params = match step.input.as_ref() {
                 Some(Value::Object(map)) => map
@@ -426,9 +432,19 @@ fn compile_step(step: &StepDefinition, _workflow: &WorkflowDefinition) -> Workfl
                 None => BTreeMap::new(),
             };
 
+            // 仅 `func::<objid>` 这类已绑定到 FunctionObject 的实际定义会有 fun_id；
+            // 其余 (service:: / http:: / appservice:: / operator:: 以及未展开的
+            // /agent/、/skill/、/tool/ 语义链接) 留空，由编排器在执行阶段决定走
+            // adapter 还是先经 registry 展开。
+            let fun_id = if executor.is_function_object() {
+                Some(hash_executor(executor.as_str()))
+            } else {
+                None
+            };
+
             Ok(Expr::Apply {
-                executor: executor.clone(),
-                fun_id: hash_executor(&executor),
+                executor,
+                fun_id,
                 params,
                 output_mode: step.output_mode,
                 idempotent: step.idempotent,
@@ -599,7 +615,7 @@ mod tests {
                 StepDefinition {
                     id: "plan".to_string(),
                     name: "Plan".to_string(),
-                    executor: Some("agent/mia".to_string()),
+                    executor: Some("/agent/mia".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
@@ -620,7 +636,7 @@ mod tests {
                 StepDefinition {
                     id: "done".to_string(),
                     name: "Done".to_string(),
-                    executor: Some("skill/finalize".to_string()),
+                    executor: Some("/skill/finalize".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
@@ -679,7 +695,7 @@ mod tests {
                 StepDefinition {
                     id: "scan".to_string(),
                     name: "Scan".to_string(),
-                    executor: Some("skill/fs".to_string()),
+                    executor: Some("/skill/fs".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
@@ -700,7 +716,7 @@ mod tests {
                 StepDefinition {
                     id: "ingest".to_string(),
                     name: "Ingest".to_string(),
-                    executor: Some("skill/ingest".to_string()),
+                    executor: Some("/skill/ingest".to_string()),
                     step_type: StepType::Autonomous,
                     input: None,
                     input_schema: None,
