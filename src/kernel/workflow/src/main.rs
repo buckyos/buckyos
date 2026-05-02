@@ -21,6 +21,7 @@ mod runtime;
 mod schema;
 mod server;
 mod state;
+mod subscriptions;
 mod task_tracker;
 mod types;
 
@@ -59,7 +60,7 @@ pub use types::*;
 use ::kRPC::*;
 use anyhow::Result;
 use buckyos_api::{
-    init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
+    init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType, KEventClient,
     WORKFLOW_SERVICE_HTTP_PATH, WORKFLOW_SERVICE_NAME, WORKFLOW_SERVICE_PORT,
 };
 use buckyos_http_server::{
@@ -77,6 +78,7 @@ use std::sync::Arc;
 use crate::server::WorkflowRpcHandler;
 use crate::service_schemas::aicc::AiccAdapter;
 use crate::state::{DefinitionStore, RunStore, ServiceTracker};
+use crate::subscriptions::RunSubscriptionManager;
 
 struct WorkflowHttpServer {
     rpc: Arc<WorkflowRpcHandler>,
@@ -190,7 +192,22 @@ pub async fn start_workflow_service() -> Result<()> {
             .with_executor_registry(registry),
     );
 
-    let rpc = Arc::new(WorkflowRpcHandler::new(definitions, runs, orchestrator));
+    // §3.3：用户在 TaskMgr UI 上点按钮 = 写一次 TaskData，task_manager 把
+    // TaskData 变更扇出到 `/task_mgr/{run_id}` 子树 channel。订阅管理器把这些
+    // 事件回灌到 orchestrator.apply_task_data，把 human_action 翻译成内部状态机
+    // 动作。每个 run 对应一条动态加进来的 pattern，run 终态后摘掉。
+    let subscriptions = RunSubscriptionManager::new(
+        KEventClient::new_full(WORKFLOW_SERVICE_NAME, None),
+        runs.clone(),
+        definitions.clone(),
+        orchestrator.clone(),
+    );
+    subscriptions.start().await;
+
+    let rpc = Arc::new(
+        WorkflowRpcHandler::new(definitions, runs, orchestrator)
+            .with_subscriptions(subscriptions),
+    );
     let server = Arc::new(WorkflowHttpServer::new(rpc));
 
     let runner = Runner::new(WORKFLOW_SERVICE_PORT);

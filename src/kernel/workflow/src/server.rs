@@ -34,6 +34,7 @@ use crate::state::{
     workflow_error_payload, AmendmentRecord, AmendmentStatus, DefinitionStatus, DefinitionStore,
     Owner, RunRecord, RunStore, ServiceTracker,
 };
+use crate::subscriptions::RunSubscriptionManager;
 
 type RpcResult<T> = std::result::Result<T, RPCErrors>;
 
@@ -45,6 +46,9 @@ pub struct WorkflowRpcHandler {
     definitions: Arc<DefinitionStore>,
     runs: Arc<RunStore>,
     orchestrator: Arc<ServiceOrchestrator>,
+    /// task_mgr 事件订阅管理器。tests / 不需要回灌 human_action 的部署可以为
+    /// None；生产路径在 main.rs 里注入。
+    subscriptions: Option<Arc<RunSubscriptionManager>>,
 }
 
 impl WorkflowRpcHandler {
@@ -57,7 +61,13 @@ impl WorkflowRpcHandler {
             definitions,
             runs,
             orchestrator,
+            subscriptions: None,
         }
+    }
+
+    pub fn with_subscriptions(mut self, subscriptions: Arc<RunSubscriptionManager>) -> Self {
+        self.subscriptions = Some(subscriptions);
+        self
     }
 
     pub async fn handle_rpc_call(
@@ -285,6 +295,11 @@ impl WorkflowRpcHandler {
         let seq = record.run.seq;
         record.append_events(&events);
         let _ = self.runs.insert(record).await;
+        // Run 落表后再订 task_mgr 的 root channel：避免 dispatch loop 抢在
+        // RunStore 拿到这个 run 之前先收到事件、查表落空。
+        if let Some(subs) = self.subscriptions.as_ref() {
+            subs.watch_run(&run_id).await;
+        }
         Ok(json!({
             "ok": true,
             "run_id": run_id,
