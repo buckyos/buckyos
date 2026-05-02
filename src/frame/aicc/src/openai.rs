@@ -3288,6 +3288,19 @@ fn is_supported_llm_model_name(model: &str) -> bool {
     if normalized.is_empty() || is_text2image_model_name(normalized.as_str()) {
         return false;
     }
+    // gpt-* 命名族里这些是 ASR / TTS / 实时音频 modality（例如
+    // gpt-4o-mini-transcribe / gpt-4o-mini-tts / gpt-4o-audio-preview /
+    // gpt-4o-realtime-preview），它们已经在 DEFAULT_OPENAI_{ASR,TTS}_MODELS
+    // 里登记。如果再当 LLM 收一遍，build_inventory 会产出两条 exact_model
+    // 相同的 metadata，被 model_registry::validate_inventory 拒为
+    // SessionConfigInvalid，整个 registry refresh 会卡死。
+    if normalized.contains("transcribe")
+        || normalized.contains("-tts")
+        || normalized.contains("-audio")
+        || normalized.contains("-realtime")
+    {
+        return false;
+    }
 
     normalized.starts_with("gpt-")
         || normalized.starts_with("chatgpt-")
@@ -4191,6 +4204,37 @@ data: [DONE]
 
         assert_eq!(llm_models, vec!["gpt-5.2".to_string()]);
         assert_eq!(image_models, vec!["gpt-image-1".to_string()]);
+    }
+
+    #[test]
+    fn remote_model_inventory_excludes_audio_realtime_modalities() {
+        // 这些都是 ASR / TTS / 实时音频 modality 的 gpt-* 命名族；它们已经在
+        // DEFAULT_OPENAI_{ASR,TTS}_MODELS 里登记，再当 LLM 收一遍会让
+        // build_inventory 产生重复 exact_model，触发 model_registry
+        // SessionConfigInvalid 把整个 refresh 卡死。
+        let (llm_models, image_models) = normalize_remote_model_ids(vec![
+            OpenAIModelEntry {
+                id: "gpt-4o-mini-transcribe".to_string(),
+            },
+            OpenAIModelEntry {
+                id: "gpt-4o-transcribe".to_string(),
+            },
+            OpenAIModelEntry {
+                id: "gpt-4o-mini-tts".to_string(),
+            },
+            OpenAIModelEntry {
+                id: "gpt-4o-audio-preview".to_string(),
+            },
+            OpenAIModelEntry {
+                id: "gpt-4o-realtime-preview".to_string(),
+            },
+            OpenAIModelEntry {
+                id: "gpt-5".to_string(),
+            },
+        ]);
+
+        assert_eq!(llm_models, vec!["gpt-5".to_string()]);
+        assert!(image_models.is_empty());
     }
 
     #[test]

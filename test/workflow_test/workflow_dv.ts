@@ -48,6 +48,16 @@ type CaseResult =
   | { status: "blocked"; caseId: string; reason: string; reportDir: string }
   | { status: "failed"; caseId: string; error: string; reportDir: string };
 
+type TaskRecord = {
+  id: number;
+  name: string;
+  task_type: string;
+  status: string;
+  data: JsonValue;
+  root_id?: string | null;
+  parent_id?: number | null;
+};
+
 class BlockedError extends Error {
   constructor(message: string) {
     super(message);
@@ -206,6 +216,20 @@ async function rpcOk<T>(
     throw new Error(`${method} failed: ${text}`);
   }
   return body as T;
+}
+
+/**
+ * task_mgr RPC handlers return the result struct directly (e.g. `{tasks:[...]}`,
+ * `null`) without an `{ok:true}` envelope, unlike the workflow service. Use
+ * this helper for those calls so we don't misinterpret a successful response
+ * as a failure.
+ */
+async function rpcCall<T>(
+  rpc: RpcClient,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<T> {
+  return (await rpc.call(method, params)) as T;
 }
 
 function isAiccUnavailableText(text: string): boolean {
@@ -481,14 +505,78 @@ async function assertRunListed(
   );
 }
 
+/**
+ * Drive a human_confirm node by writing TaskData via task_manager RPC,
+ * mirroring the production flow (TaskMgr UI writes TaskData, workflow service
+ * subscribes to the event and calls apply_task_data). The legacy path used
+ * workflow.submit_step_output directly; switching here lets the smoke test
+ * exercise the task_mgr → workflow event pipe end-to-end.
+ */
+async function submitHumanActionViaTaskData(args: {
+  taskMgrRpc: RpcClient;
+  runId: string;
+  nodeId: string;
+  actor: string;
+  payload: JsonValue;
+}): Promise<{ taskId: number }> {
+  const { taskMgrRpc, runId, nodeId, actor, payload } = args;
+  const task = await waitForStepTask(taskMgrRpc, runId, nodeId);
+  await rpcCall<unknown>(taskMgrRpc, "update_task", {
+    id: task.id,
+    data: {
+      human_action: {
+        kind: "submit_output",
+        actor,
+        payload,
+      },
+    },
+  });
+  return { taskId: task.id };
+}
+
+async function waitForStepTask(
+  taskMgrRpc: RpcClient,
+  runId: string,
+  nodeId: string,
+): Promise<TaskRecord> {
+  // The workflow tracker creates the step task lazily — give it a few seconds
+  // after the run lands in waiting_human. list_tasks filters by root_id =
+  // run_id (the tracker pins root_id to run.run_id for every step task).
+  const deadline = Date.now() + 10_000;
+  let lastSnapshot: TaskRecord[] = [];
+  while (Date.now() < deadline) {
+    const listed = await rpcCall<{ tasks?: TaskRecord[] }>(
+      taskMgrRpc,
+      "list_tasks",
+      { root_id: runId },
+    );
+    lastSnapshot = listed.tasks ?? [];
+    const match = lastSnapshot.find((task) => {
+      const data = task.data as JsonObject | null;
+      const workflow = data && typeof data === "object" && !Array.isArray(data)
+        ? (data.workflow as JsonObject | undefined)
+        : undefined;
+      return workflow?.node_id === nodeId;
+    });
+    if (match) return match;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(
+    `task_mgr.list_tasks did not surface step task for run=${runId} node=${nodeId}; saw=${
+      JSON.stringify(lastSnapshot.map((t) => ({ id: t.id, name: t.name })))
+    }`,
+  );
+}
+
 async function runImageReviewCase(args: {
   workflowRpc: RpcClient;
+  taskMgrRpc: RpcClient;
   owner: Owner;
   runTag: string;
   decision: "approved" | "rejected";
   reportDir: string;
 }): Promise<void> {
-  const { workflowRpc, owner, runTag, decision, reportDir } = args;
+  const { workflowRpc, taskMgrRpc, owner, runTag, decision, reportDir } = args;
   const definition = prepareDefinition(
     await loadFixture("wf-dv-image-review-enhance.json"),
     `${runTag}-${decision}`,
@@ -543,19 +631,16 @@ async function runImageReviewCase(args: {
       },
     };
 
-  const submittedHuman = await rpcOk<JsonObject>(
-    workflowRpc,
-    "submit_step_output",
-    {
-      run_id: runId,
-      node_id: "human_review",
-      actor: "devtest",
-      output: humanOutput,
-    },
-  );
+  const submittedHuman = await submitHumanActionViaTaskData({
+    taskMgrRpc,
+    runId,
+    nodeId: "human_review",
+    actor: "devtest",
+    payload: humanOutput as unknown as JsonValue,
+  });
   await writeJsonFile(
     joinPath(reportDir, "submit_step_output.json"),
-    submittedHuman,
+    submittedHuman as unknown as JsonObject,
   );
 
   const done = await waitForGraph(
@@ -612,11 +697,12 @@ async function runImageReviewCase(args: {
 
 async function runAgentCallbackCase(args: {
   workflowRpc: RpcClient;
+  taskMgrRpc: RpcClient;
   owner: Owner;
   runTag: string;
   reportDir: string;
 }): Promise<void> {
-  const { workflowRpc, owner, runTag, reportDir } = args;
+  const { workflowRpc, taskMgrRpc, owner, runTag, reportDir } = args;
   const definition = prepareDefinition(
     await loadFixture("wf-dv-agent-callback.json"),
     runTag,
@@ -643,19 +729,16 @@ async function runAgentCallbackCase(args: {
     tags: ["sample", "product", "needs-review"],
     source: "agent_callback",
   };
-  const submittedOutput = await rpcOk<JsonObject>(
-    workflowRpc,
-    "submit_step_output",
-    {
-      run_id: runId,
-      node_id: "request_manual_tag",
-      actor: "agent/dv-callback",
-      output,
-    },
-  );
+  const submittedOutput = await submitHumanActionViaTaskData({
+    taskMgrRpc,
+    runId,
+    nodeId: "request_manual_tag",
+    actor: "agent/dv-callback",
+    payload: output,
+  });
   await writeJsonFile(
     joinPath(reportDir, "submit_step_output.json"),
-    submittedOutput,
+    submittedOutput as unknown as JsonObject,
   );
 
   const done = await waitForGraph(
@@ -704,6 +787,9 @@ async function runAgentCallbackCase(args: {
       graph.status === "waiting_human" &&
       graph.node_states.request_manual_tag === "waiting_human",
   );
+  // This sub-case specifically pins down the workflow RPC's default-actor
+  // behavior ("agent" when actor omitted). The apply_task_data path defaults
+  // to "human" instead, so the test stays on submit_step_output here.
   await rpcOk<JsonObject>(workflowRpc, "submit_step_output", {
     run_id: defaultActorRun.runId,
     node_id: "request_manual_tag",
@@ -887,11 +973,12 @@ async function runSemanticCase(args: {
 
 async function runFailureHumanRetryCase(args: {
   workflowRpc: RpcClient;
+  taskMgrRpc: RpcClient;
   owner: Owner;
   runTag: string;
   reportDir: string;
 }): Promise<void> {
-  const { workflowRpc, owner, runTag, reportDir } = args;
+  const { workflowRpc, taskMgrRpc, owner, runTag, reportDir } = args;
   const definition = prepareDefinition(
     await loadFixture("wf-dv-failure-human-retry.json"),
     runTag,
@@ -917,11 +1004,12 @@ async function runFailureHumanRetryCase(args: {
     eventsFor(waiting.history, "caption_bad", "step.waiting_human").length >= 1,
   );
 
-  await rpcOk<JsonObject>(workflowRpc, "submit_step_output", {
-    run_id: runId,
-    node_id: "caption_bad",
+  await submitHumanActionViaTaskData({
+    taskMgrRpc,
+    runId,
+    nodeId: "caption_bad",
     actor: "devtest",
-    output: { text: "manually-supplied caption text" },
+    payload: { text: "manually-supplied caption text" },
   });
   const done = await waitForGraph(
     workflowRpc,
@@ -965,17 +1053,19 @@ function selectedCaseIds(): string[] {
 async function runOneCase(args: {
   caseId: string;
   workflowRpc: RpcClient;
+  taskMgrRpc: RpcClient;
   owner: Owner;
   runTag: string;
   reportRoot: string;
 }): Promise<CaseResult> {
-  const { caseId, workflowRpc, owner, runTag, reportRoot } = args;
+  const { caseId, workflowRpc, taskMgrRpc, owner, runTag, reportRoot } = args;
   const reportDir = joinPath(reportRoot, safeFileSegment(caseId));
   await Deno.mkdir(reportDir, { recursive: true });
   try {
     if (caseId === "WF-DV-001") {
       await runImageReviewCase({
         workflowRpc,
+        taskMgrRpc,
         owner,
         runTag,
         decision: "approved",
@@ -984,6 +1074,7 @@ async function runOneCase(args: {
     } else if (caseId === "WF-DV-002") {
       await runImageReviewCase({
         workflowRpc,
+        taskMgrRpc,
         owner,
         runTag,
         decision: "rejected",
@@ -992,13 +1083,25 @@ async function runOneCase(args: {
     } else if (caseId === TASKDATA_CASE_ID) {
       await runTaskDataCase();
     } else if (caseId === "WF-DV-006") {
-      await runAgentCallbackCase({ workflowRpc, owner, runTag, reportDir });
+      await runAgentCallbackCase({
+        workflowRpc,
+        taskMgrRpc,
+        owner,
+        runTag,
+        reportDir,
+      });
     } else if (caseId === "WF-DV-007") {
       await runCacheCase({ workflowRpc, owner, runTag, reportDir });
     } else if (caseId === "WF-DV-005") {
       await runSemanticCase({ workflowRpc, owner, runTag, reportDir });
     } else if (caseId === "WF-DV-008") {
-      await runFailureHumanRetryCase({ workflowRpc, owner, runTag, reportDir });
+      await runFailureHumanRetryCase({
+        workflowRpc,
+        taskMgrRpc,
+        owner,
+        runTag,
+        reportDir,
+      });
     } else if (caseId === "WF-DV-004") {
       throw new BlockedError(
         "WF-DV-004 is blocked: appservice adapter is not registered.",
@@ -1040,6 +1143,7 @@ async function main(): Promise<void> {
     app_id: appId,
   };
   const workflowRpc = buckyos.getServiceRpcClient("workflow") as RpcClient;
+  const taskMgrRpc = buckyos.getServiceRpcClient("task-manager") as RpcClient;
   const cases = selectedCaseIds();
 
   console.log("=== Workflow DV Smoke Test ===");
@@ -1055,6 +1159,7 @@ async function main(): Promise<void> {
     const result = await runOneCase({
       caseId,
       workflowRpc,
+      taskMgrRpc,
       owner,
       runTag,
       reportRoot,

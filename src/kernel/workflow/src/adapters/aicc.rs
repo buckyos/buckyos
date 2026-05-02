@@ -74,22 +74,22 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     // ---- LLM ----
     out.push(llm_schema(
         LLM_CHAT,
-        "llm.chat.default",
+        "llm.chat",
         "Chat completion with optional tool calls.",
         true,
     ));
     out.push(llm_schema(
         LLM_COMPLETION,
-        "llm.completion.default",
+        "llm.completion",
         "Plain text completion / instruction following.",
         true,
     ));
 
     // ---- Embedding ----
-    out.push(embedding_schema(EMBEDDING_TEXT, "embedding.text.default", false));
+    out.push(embedding_schema(EMBEDDING_TEXT, "embedding.text", false));
     out.push(embedding_schema(
         EMBEDDING_MULTIMODAL,
-        "embedding.multimodal.default",
+        "embedding.multimodal",
         true,
     ));
 
@@ -97,7 +97,7 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     out.push(AiccMethodSchema {
         method: RERANK,
         capability: Some(Capability::Rerank),
-        default_alias: Some("rerank.default"),
+        default_alias: Some("rerank"),
         input_schema: json!({
             "type": "object",
             "description": "Rerank a list of documents against a query.",
@@ -131,35 +131,35 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     // ---- Image generation ----
     out.push(image_schema(
         IMAGE_TXT2IMG,
-        "image.txt2img.default",
+        "image.txt2img",
         "Generate an image from a text prompt.",
         false,
         false,
     ));
     out.push(image_schema(
         IMAGE_IMG2IMG,
-        "image.img2img.default",
+        "image.img2img",
         "Transform an input image guided by a prompt.",
         true,
         false,
     ));
     out.push(image_schema(
         IMAGE_INPAINT,
-        "image.inpaint.default",
+        "image.inpaint",
         "Inpaint masked regions of an image.",
         true,
         true,
     ));
     out.push(image_schema(
         IMAGE_UPSCALE,
-        "image.upscale.default",
+        "image.upscale",
         "Upscale an image.",
         true,
         false,
     ));
     out.push(image_schema(
         IMAGE_BG_REMOVE,
-        "image.bg_remove.default",
+        "image.bg_remove",
         "Remove the background of an image.",
         true,
         false,
@@ -168,22 +168,22 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     // ---- Vision ----
     out.push(vision_schema(
         VISION_OCR,
-        "vision.ocr.default",
+        "vision.ocr",
         "Run OCR on an image; returns recognized text.",
     ));
     out.push(vision_schema(
         VISION_CAPTION,
-        "vision.caption.default",
+        "vision.caption",
         "Generate a caption describing an image.",
     ));
     out.push(vision_schema(
         VISION_DETECT,
-        "vision.detect.default",
+        "vision.detect",
         "Detect objects in an image; results in `extra`.",
     ));
     out.push(vision_schema(
         VISION_SEGMENT,
-        "vision.segment.default",
+        "vision.segment",
         "Run image segmentation; masks in `artifacts`.",
     ));
 
@@ -191,7 +191,7 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     out.push(AiccMethodSchema {
         method: AUDIO_TTS,
         capability: Some(Capability::Audio),
-        default_alias: Some("audio.tts.default"),
+        default_alias: Some("audio.tts"),
         input_schema: tts_input_schema(),
         output_schema: ai_response_output_schema(),
         idempotent: true,
@@ -200,7 +200,7 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     out.push(AiccMethodSchema {
         method: AUDIO_ASR,
         capability: Some(Capability::Audio),
-        default_alias: Some("audio.asr.default"),
+        default_alias: Some("audio.asr"),
         input_schema: single_resource_schema(
             "audio",
             "Speech audio to transcribe (one of `kind: url|base64|named_object`).",
@@ -212,7 +212,7 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     out.push(AiccMethodSchema {
         method: AUDIO_MUSIC,
         capability: Some(Capability::Audio),
-        default_alias: Some("audio.music.default"),
+        default_alias: Some("audio.music"),
         input_schema: prompt_input_schema("Music generation prompt."),
         output_schema: ai_response_output_schema(),
         idempotent: false,
@@ -221,7 +221,7 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     out.push(AiccMethodSchema {
         method: AUDIO_ENHANCE,
         capability: Some(Capability::Audio),
-        default_alias: Some("audio.enhance.default"),
+        default_alias: Some("audio.enhance"),
         input_schema: single_resource_schema("audio", "Audio resource to enhance."),
         output_schema: ai_response_output_schema(),
         idempotent: true,
@@ -231,31 +231,31 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     // ---- Video ----
     out.push(video_schema(
         VIDEO_TXT2VIDEO,
-        "video.txt2video.default",
+        "video.txt2video",
         "Text-to-video.",
         false,
     ));
     out.push(video_schema(
         VIDEO_IMG2VIDEO,
-        "video.img2video.default",
+        "video.img2video",
         "Image-to-video.",
         true,
     ));
     out.push(video_schema(
         VIDEO_VIDEO2VIDEO,
-        "video.video2video.default",
+        "video.video2video",
         "Video-to-video transformation.",
         true,
     ));
     out.push(video_schema(
         VIDEO_EXTEND,
-        "video.extend.default",
+        "video.extend",
         "Extend an input video.",
         true,
     ));
     out.push(video_schema(
         VIDEO_UPSCALE,
-        "video.upscale.default",
+        "video.upscale",
         "Upscale a video.",
         true,
     ));
@@ -264,7 +264,7 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     out.push(AiccMethodSchema {
         method: AGENT_COMPUTER_USE,
         capability: Some(Capability::Agent),
-        default_alias: Some("agent.computer_use.default"),
+        default_alias: Some("agent.computer_use"),
         input_schema: json!({
             "type": "object",
             "description": "Computer-use agent step. Provide goal in `text` and current screenshot in `resources`.",
@@ -368,6 +368,16 @@ impl ExecutorAdapter for AiccAdapter {
             .call_method(method, request)
             .await
             .map_err(|err| WorkflowError::Dispatcher(format!("aicc {} failed: {}", method, err)))?;
+        if response.status == AiMethodStatus::Failed {
+            // 把 provider 侧失败抛回 orchestrator，让 retry/human-fallback 生效；
+            // 否则会把没有 `text` 的伪成功结果写进 node_outputs 并污染缓存，
+            // 下游 `${node.output.text}` 引用马上就会爆 ReferenceResolution。
+            let event_ref = response.event_ref.as_deref().unwrap_or("");
+            return Err(WorkflowError::Dispatcher(format!(
+                "aicc {} returned failed status: task_id={}, event_ref={}",
+                method, response.task_id, event_ref,
+            )));
+        }
         Ok(flatten_ai_response(response))
     }
 }
@@ -1243,6 +1253,57 @@ mod tests {
         let executor = ExecutorRef::parse("service::aicc.cancel").unwrap();
         let err = adapter.invoke(&executor, &json!({})).await.unwrap_err();
         assert!(matches!(err, WorkflowError::Dispatcher(_)));
+    }
+
+    #[tokio::test]
+    async fn failed_status_surfaces_as_error() {
+        let client = Arc::new(AiccClient::new_in_process(Box::new(FailedHandler)));
+        let adapter = AiccAdapter::new(client);
+        let executor = ExecutorRef::parse("service::aicc.llm.chat").unwrap();
+        let err = adapter
+            .invoke(
+                &executor,
+                &json!({
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "model": "llm.chat.test"
+                }),
+            )
+            .await
+            .unwrap_err();
+        match err {
+            WorkflowError::Dispatcher(msg) => {
+                assert!(msg.contains("returned failed status"));
+                assert!(msg.contains("task-bad"));
+            }
+            other => panic!("expected Dispatcher err, got {:?}", other),
+        }
+    }
+
+    struct FailedHandler;
+
+    #[async_trait]
+    impl AiccHandler for FailedHandler {
+        async fn handle_method(
+            &self,
+            _method: &str,
+            _request: AiMethodRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+            Ok(AiMethodResponse::new(
+                "task-bad".to_string(),
+                AiMethodStatus::Failed,
+                None,
+                Some("task://task-bad/events".to_string()),
+            ))
+        }
+
+        async fn handle_cancel(
+            &self,
+            task_id: &str,
+            _ctx: RPCContext,
+        ) -> std::result::Result<buckyos_api::CancelResponse, RPCErrors> {
+            Ok(buckyos_api::CancelResponse::new(task_id.to_string(), true))
+        }
     }
 
     struct SharedHandler(Arc<EchoHandler>);

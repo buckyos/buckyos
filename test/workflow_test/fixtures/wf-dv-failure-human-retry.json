@@ -19,7 +19,7 @@
             "mime_hint": "image/jpeg"
           }
         ],
-        "model": "vision.caption.default"
+        "model": "vision.caption"
       },
       "output_schema": {
         "type": "object",
@@ -37,7 +37,7 @@
       "executor": "service::aicc.llm.chat",
       "idempotent": true,
       "input": {
-        "model": "llm.chat.default",
+        "model": "llm.chat",
         "messages": [
           { "role": "system", "content": "Echo the caption text." },
           { "role": "user", "content": "${caption_bad.output.text}" }

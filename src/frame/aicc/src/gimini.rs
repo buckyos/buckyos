@@ -150,6 +150,13 @@ struct GiminiModelEntry {
     name: String,
     #[serde(default, alias = "supportedGenerationMethods")]
     supported_generation_methods: Vec<String>,
+    // Google `/v1beta/models` 不会用一个独立字段标 deprecation，但 displayName /
+    // description 里经常有 "(Discontinued)" / "Deprecated." / "no longer" 之类的
+    // 字眼，我们用它过滤掉刷出来其实已经不能用的模型。
+    #[serde(default, alias = "displayName")]
+    display_name: String,
+    #[serde(default)]
+    description: String,
 }
 
 impl GoogleGiminiProvider {
@@ -427,6 +434,15 @@ impl GoogleGiminiProvider {
             for entry in parsed.models.iter() {
                 let id = strip_gimini_model_prefix(entry.name.as_str()).trim();
                 if id.is_empty() {
+                    continue;
+                }
+                if is_deprecated_gimini_entry(id, &entry.display_name, &entry.description) {
+                    log::debug!(
+                        "aicc.gimini.inventory.skip_deprecated id={} display_name={:?} description={:?}",
+                        id,
+                        entry.display_name,
+                        entry.description
+                    );
                     continue;
                 }
                 let methods = entry
@@ -2285,6 +2301,29 @@ fn strip_gimini_model_prefix(name: &str) -> &str {
         .unwrap_or(name)
 }
 
+/// Google `/v1beta/models` 仍会列出已经下线的模型（比如 `gemini-2.0-flash-001`
+/// 对新用户已不可用），但运行期才会以 `fatal: ... is no longer available to
+/// new users` 的形式报出来。Provider 刷新模型列表本身就是为了"只保留能用的"，
+/// 所以这里在写 inventory 之前就基于 displayName / description 上的 deprecation
+/// 关键词把它们筛掉。匹配是大小写无关的子串匹配。
+///
+/// 这只是描述文字层面的过滤；如果 Google 哪天没在文案里写明就停服，最终还是要
+/// 由运行期 health 反馈再降级一次（属于另外一条独立的链路）。
+fn is_deprecated_gimini_entry(id: &str, display_name: &str, description: &str) -> bool {
+    const SIGNALS: &[&str] = &[
+        "deprecat",     // deprecated / deprecation
+        "discontinu",   // discontinued / discontinuation
+        "no longer",    // "no longer available", "no longer supported"
+        "retired",
+        "(legacy)",     // 用 "(legacy)" 而非裸 "legacy"，避免误伤 "Gemini Legacy Workshop" 这种命名
+        "sunset",       // "sunset on ..."
+        "end of life",
+        "end-of-life",
+    ];
+    let haystack = format!("{} {} {}", id, display_name, description).to_ascii_lowercase();
+    SIGNALS.iter().any(|signal| haystack.contains(signal))
+}
+
 fn classify_gimini_model(id: &str, methods: &HashSet<String>) -> Option<GiminiModelKind> {
     let lowered = id.to_ascii_lowercase();
 
@@ -2664,6 +2703,43 @@ mod tests {
             ),
             None,
         )
+    }
+
+    #[test]
+    fn deprecated_gimini_entries_are_filtered() {
+        // 描述里出现 deprecation 信号 → 必须过滤
+        assert!(is_deprecated_gimini_entry(
+            "gemini-2.0-flash-001",
+            "Gemini 2.0 Flash (Discontinued)",
+            "Stable version of Gemini 2.0 Flash."
+        ));
+        assert!(is_deprecated_gimini_entry(
+            "gemini-1.5-pro-002",
+            "Gemini 1.5 Pro",
+            "This model is deprecated. Please migrate to gemini-2.5-pro."
+        ));
+        assert!(is_deprecated_gimini_entry(
+            "gemini-1.0-pro",
+            "Gemini 1.0 Pro",
+            "Legacy: gemini-1.0-pro is no longer available to new users.",
+        ));
+        assert!(is_deprecated_gimini_entry(
+            "gemini-2.0-flash-lite",
+            "Gemini 2.0 Flash-Lite",
+            "Will be retired on 2026-01-01."
+        ));
+
+        // 健康的当前模型不能误伤
+        assert!(!is_deprecated_gimini_entry(
+            "gemini-2.5-flash",
+            "Gemini 2.5 Flash",
+            "Fast and versatile multimodal model."
+        ));
+        assert!(!is_deprecated_gimini_entry(
+            "gemini-2.5-pro",
+            "Gemini 2.5 Pro",
+            "Most capable Gemini model for complex reasoning tasks."
+        ));
     }
 
     #[test]

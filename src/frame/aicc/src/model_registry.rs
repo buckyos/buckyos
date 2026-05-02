@@ -2,6 +2,7 @@ use crate::model_types::{
     ApiType, ExactModelName, LogicalItems, ModelCandidate, ModelItem, ProviderInventory,
     RouteError, RouteErrorCode,
 };
+use log::warn;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -161,9 +162,22 @@ impl InventoryRefreshScheduler {
                 "registry lock poisoned",
             )
         })?;
+        // 一个 provider 的 inventory 校验失败（比如 SessionConfigInvalid /
+        // 重复 exact_model）只能让那个 provider 不更新，不能连累其它 provider。
+        // 早期实现用 `?` 直接传播错误，结果一条坏 inventory 会让循环里它后面
+        // 的 provider 也都跳过 apply，registry 会停留在很久以前装载好的那份
+        // 快照上。这里改成 per-provider try/log。
         for inventory in inventories {
-            if registry.apply_inventory_if_changed(inventory)? {
-                changed += 1;
+            let provider_instance_name = inventory.provider_instance_name.clone();
+            match registry.apply_inventory_if_changed(inventory) {
+                Ok(true) => changed += 1,
+                Ok(false) => {}
+                Err(err) => {
+                    warn!(
+                        "aicc.model_registry.apply_inventory_failed provider_instance_name={} err={}",
+                        provider_instance_name, err
+                    );
+                }
             }
         }
         let stale_providers = registry
@@ -172,7 +186,13 @@ impl InventoryRefreshScheduler {
             .map(|inventory| inventory.provider_instance_name.clone())
             .collect::<Vec<_>>();
         for provider in stale_providers {
-            registry.remove_inventory(provider.as_str())?;
+            if let Err(err) = registry.remove_inventory(provider.as_str()) {
+                warn!(
+                    "aicc.model_registry.remove_inventory_failed provider_instance_name={} err={}",
+                    provider, err
+                );
+                continue;
+            }
             changed += 1;
         }
         Ok(changed)
@@ -393,6 +413,49 @@ mod tests {
         assert!(registry
             .exact_candidate("gpt-5.2@openai_primary", &ApiType::LlmChat)
             .is_some());
+    }
+
+    #[test]
+    fn refresh_once_skips_bad_provider_and_keeps_others() {
+        // 之前的实现会让一个 provider 校验失败连累循环里它后面的 provider，
+        // 这里证明现在每个 provider 独立处理。
+        let registry = Arc::new(RwLock::new(ModelRegistry::new()));
+        let bad = inventory(
+            "openai_primary",
+            "r1",
+            vec![
+                model("openai_primary", "gpt-5.2", "llm.gpt5"),
+                model("openai_primary", "gpt-5.2", "llm.plan"), // duplicate
+            ],
+        );
+        let good = inventory(
+            "google_primary",
+            "r1",
+            vec![model("google_primary", "gemini-2.5-flash", "llm.vision")],
+        );
+        let inventories = Arc::new(vec![bad, good]);
+        let scheduler = InventoryRefreshScheduler::new(
+            registry.clone(),
+            Arc::new(move || (*inventories).clone()),
+            Duration::from_secs(60),
+        );
+
+        let changed = scheduler.refresh_once().unwrap();
+        assert_eq!(changed, 1, "only the good provider should apply");
+
+        let guard = registry.read().unwrap();
+        assert!(
+            guard
+                .exact_candidate("gemini-2.5-flash@google_primary", &ApiType::LlmChat)
+                .is_some(),
+            "google inventory should be in the registry despite openai failing"
+        );
+        assert!(
+            guard
+                .exact_candidate("gpt-5.2@openai_primary", &ApiType::LlmChat)
+                .is_none(),
+            "openai inventory should not be applied (it was malformed)"
+        );
     }
 
     #[test]

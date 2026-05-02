@@ -26,7 +26,7 @@
       "executor": "service::aicc.llm.chat",
       "idempotent": true,
       "input": {
-        "model": "llm.chat.default",
+        "model": "llm.chat",
         "messages": [
           { "role": "system", "content": "Echo the input as JSON." },
           { "role": "user", "content": "${request_manual_tag.output.source}" }

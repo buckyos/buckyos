@@ -551,6 +551,8 @@ where
                     .insert(compiled.id.clone(), NodeRunState::Completed);
                 run.node_outputs.insert(compiled.id.clone(), cached.clone());
                 self.activate_successors(workflow, run, &compiled.id);
+                self.notify_par_branch_completed(workflow, run, &compiled.id, events)
+                    .await?;
                 events.push(self.emit_event(
                     run,
                     "step.completed",

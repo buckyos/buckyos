@@ -18,7 +18,7 @@
             "mime_hint": "image/jpeg"
           }
         ],
-        "model": "vision.caption.default"
+        "model": "vision.caption"
       },
       "output_schema": {
         "type": "object",

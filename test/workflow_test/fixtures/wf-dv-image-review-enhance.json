@@ -23,7 +23,7 @@
         "input_json": {
           "instruction": "Describe the image for a product quality review."
         },
-        "model": "vision.caption.default"
+        "model": "vision.caption"
       },
       "output_schema": {
         "type": "object",
@@ -51,7 +51,7 @@
           }
         ],
         "input_json": { "language_hint": "auto" },
-        "model": "vision.ocr.default"
+        "model": "vision.ocr"
       },
       "output_schema": {
         "type": "object",
@@ -77,7 +77,7 @@
           }
         ],
         "input_json": { "max_objects": 20 },
-        "model": "vision.detect.default"
+        "model": "vision.detect"
       },
       "output_schema": {
         "type": "object",
@@ -95,7 +95,7 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "model": "llm.chat.default",
+        "model": "llm.chat",
         "messages": [
           {
             "role": "system",
@@ -163,7 +163,7 @@
           "response_format": "object_id",
           "output": { "resource_format": "named_object" }
         },
-        "model": "image.upscale.default"
+        "model": "image.upscale"
       },
       "output_schema": {
         "type": "object",
@@ -193,7 +193,7 @@
           "response_format": "object_id",
           "output": { "resource_format": "named_object" }
         },
-        "model": "image.bg_remove.default"
+        "model": "image.bg_remove"
       },
       "output_schema": {
         "type": "object",
@@ -212,7 +212,7 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "model": "llm.chat.default",
+        "model": "llm.chat",
         "messages": [
           {
             "role": "system",
@@ -241,7 +241,7 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "model": "llm.chat.default",
+        "model": "llm.chat",
         "messages": [
           {
             "role": "system",
