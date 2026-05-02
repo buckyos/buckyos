@@ -258,19 +258,126 @@ DSL 中表达为 `type: human_confirm` 或 `type: human_required` 的 Step。它
 }
 ```
 
+内置算子的核心价值不是提供一门表达式语言，而是避免把轻量数据整理塞进
+Reference 语法或外部 service。主 DSL 中 Reference 保持“只读不算”，当流程需要
+字段提取、列表排序、TopK、计数、ID 生成这类确定性转换时，用一个显式
+`operator::` Step 表达。这样执行图仍然可静态分析，每次转换也有独立的输入、
+输出、事件和审计记录。
+
+典型例子：
+
+```json
+{
+  "id": "select",
+  "type": "autonomous",
+  "executor": "operator::rank.topk",
+  "input": {
+    "items": "${vlm_score.output}",
+    "score_field": "composite_score",
+    "k": 20,
+    "diversity": {
+      "by": "taken_at",
+      "min_gap_minutes": 30
+    }
+  },
+  "output_schema": {
+    "type": "array",
+    "items": { "type": "object" }
+  },
+  "idempotent": true
+}
+```
+
+```json
+{
+  "id": "album_id",
+  "type": "autonomous",
+  "executor": "operator::gen.ulid",
+  "input": {},
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "value": { "type": "string" }
+    },
+    "required": ["value"]
+  },
+  "idempotent": false
+}
+```
+
+`gen.ulid` / `time.now` 这类算子虽然没有外部副作用，但每次执行会产生新值，默认
+应视为非幂等；如果业务需要可重放的确定性 ID，应使用 `operator::hash.stable_id`
+这类由输入决定输出的算子。
+
+### 命名与调用约定
+
+- 命名采用 `operator::<domain>.<name>`，如 `operator::list.sort`、
+  `operator::json.pick`、`operator::rank.topk`。
+- operator 的输入必须是 JSON object，输出必须是 JSON value，并由 `output_schema`
+  约束。
+- operator 不直接读取 workflow 上下文，只通过 `input` 接收参数。需要 run_id、
+  node_id、actor 等上下文时，应由编排器显式注入受控字段，不能让 operator 访问
+  全局状态。
+- operator 失败应返回结构化错误，由编排器按普通 Apply 的 retry / human fallback
+  处理。
+- operator table 是平台内置能力，版本应随 workflow 引擎发布；未来如允许用户自定义
+  operator，应先包装为 `/tool/`、`appservice::` 或 `func::`，不要直接污染内置命名空间。
+
+### 建议的最小标准库
+
+| 分类 | 算子 | 说明 |
+|------|------|------|
+| JSON / Object | `json.pick` | 从 object 中按 path 取字段，返回 `{ "value": ... }` |
+| JSON / Object | `json.merge` | 合并多个 object；冲突策略需显式声明 |
+| JSON / Object | `json.set` | 在 object 的指定 path 写入 value，返回新 object |
+| List | `list.sort` | 按字段或多字段排序，支持 asc / desc |
+| List | `list.slice` | 截取列表区间 |
+| List | `list.pluck` | 提取列表中每个元素的指定字段 |
+| List | `list.len` | 返回列表长度，形如 `{ "value": 123 }` |
+| Rank | `rank.topk` | 按 score 字段取 TopK，可选 diversity 约束 |
+| Scalar | `scalar.coalesce` | 返回第一个非 null 值 |
+| Scalar | `scalar.compare` | 比较两个标量，返回 enum 结果，供 branch 使用 |
+| Generate | `gen.ulid` | 生成 ULID，非幂等 |
+| Generate | `hash.stable_id` | 基于输入 JSON 生成稳定 ID，幂等 |
+| Time | `time.now` | 返回当前时间，非幂等 |
+| Schema | `schema.validate` | 校验 value 是否符合给定 schema |
+| Schema | `schema.normalize` | 做确定性字段补齐 / 默认值归一化 |
+
+第一期不必一次实现完整标准库，但 `json.pick`、`list.sort`、`list.pluck`、
+`list.len`、`rank.topk`、`gen.ulid` 足以覆盖大量 Agent 生成 workflow 中常见的
+胶水逻辑。
+
 ### 一期执行方式
 
 - 编排器识别 `operator::` 前缀。
 - 从内置 operator table 查找函数。
 - 同步或异步执行，直接回填结果。
+- operator 与 `service::` / `http::` / `appservice::` 共用编排器侧
+  `ExecutorRegistry` 直执行路径；正式实现中可以单独提供 `OperatorAdapter`。
+- 幂等 operator 可以使用普通 Apply cache；非幂等 operator 必须显式
+  `idempotent: false`，避免恢复或重试时静默生成不同结果。
 
 ### 边界
 
 内置算子不应该承载重计算、长期运行、外部网络请求或有副作用的操作。这类需求应使用 `service::`、`appservice::`、`http::`，或通过 `/agent/`、`/skill/`、`/tool/` 语义链接展开。
 
+更具体地说，operator 不应做：
+
+- 调 LLM / VLM / Embedding 模型。
+- 访问数据库、文件系统、网络或 system_config。
+- 修改外部状态，例如创建相册、发消息、写 KB。
+- 长时间 CPU / GPU 计算，或需要调度到特定 Node 的任务。
+- 依赖隐藏全局状态做不透明决策。
+
+这些约束的目的，是让 operator 始终保持“编排器内、短耗时、可审计、可重试”的
+纯转换能力。只要需求越过这个边界，就应升级为 service、AppService、HTTP endpoint
+或 FunctionObject。
+
 ### 实现状态
 
-⚪ **未实现**。不是一期必须项，但对减少大量胶水 service 有价值，可作为 P1。
+⚪ **未实现**。从架构上仍可放在 P1，但实际 Agent workflow 会频繁需要轻量数据转换。
+建议先实现最小 operator table 和 `OperatorAdapter`，否则大量 `pluck` / `len` /
+`sort` / `topk` 逻辑会被迫包装成低价值 service。
 
 ## 7. FunctionObject Executor @ scheduler
 

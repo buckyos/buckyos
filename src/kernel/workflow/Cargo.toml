@@ -23,3 +23,4 @@ buckyos-api = { path = "../buckyos-api" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+kRPC = { workspace = true }

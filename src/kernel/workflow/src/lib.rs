@@ -1,3 +1,4 @@
+mod adapters;
 mod analysis;
 mod compiler;
 mod dispatcher;
@@ -10,6 +11,17 @@ mod runtime;
 mod schema;
 mod task_tracker;
 mod types;
+
+pub mod service_schemas {
+    //! workflow 视角的服务 schema 定义。它们不是协议本身，是 DSL 作者写
+    //! `executor: "service::xxx.yyy"` 时引擎用来约束输入输出的 workflow 子集。
+    pub mod aicc {
+        pub use crate::adapters::aicc::{
+            aicc_method_schema, aicc_method_schemas, AiccAdapter, AiccMethodSchema,
+            AICC_EXECUTOR_PREFIX,
+        };
+    }
+}
 
 pub use analysis::{analyze_workflow, AnalysisReport, AnalysisSeverity};
 pub use buckyos_api::{
