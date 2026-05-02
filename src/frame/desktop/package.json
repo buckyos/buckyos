@@ -12,13 +12,16 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@hookform/resolvers": "^5.2.2",
     "@mui/material": "^7.3.9",
     "@svar-ui/react-filemanager": "^2.5.0",
     "@tanstack/react-virtual": "^3.13.23",
+    "@xyflow/react": "^12.10.2",
     "autoprefixer": "^10.4.27",
+    "buckyos": "github:buckyos/buckyos-websdk#beta2.2",
     "clsx": "^2.1.1",
     "lucide-react": "^1.7.0",
     "postcss": "^8.5.8",
@@ -31,8 +34,7 @@
     "swr": "^2.4.1",
     "tailwindcss": "^3.4.19",
     "winbox": "^0.2.82",
-    "zod": "^4.3.6",
-    "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

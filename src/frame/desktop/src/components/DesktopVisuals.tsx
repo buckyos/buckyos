@@ -15,6 +15,7 @@ import {
   StickyNote,
   Store,
   Users,
+  Workflow as WorkflowIcon,
   Wrench,
 } from 'lucide-react'
 import type { AppDefinition } from '../models/ui'
@@ -34,6 +35,7 @@ const iconMap = {
   messagehub: MessageSquare,
   homestation: Home,
   'task-center': ClipboardList,
+  workflow: WorkflowIcon,
   'users-agents': Users,
   clock: Clock3,
   notepad: StickyNote,
