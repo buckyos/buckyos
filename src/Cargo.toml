@@ -21,7 +21,6 @@ members = [
     "./frame/smb_service",
     "./frame/aicc",
     "./frame/msg_center",
-    "./frame/workflow_service",
     "./frame/control_panel",
     "./frame/agent_tool",
     "./frame/opendan",

@@ -7,18 +7,18 @@ use buckyos_api::{
     generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
     generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
-    AppDoc, AppServiceSpec, AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec,
-    NodeConfig, NodeState, SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig,
-    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, SubPkgDesc,
-    UserContactSettings, UserSettings, UserState, UserTunnelBinding, UserType,
-    OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID,
-    VERIFY_HUB_UNIQUE_ID,
+    generate_workflow_service_doc, AppDoc, AppServiceSpec, AppType, GatewaySettings,
+    GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SelectorType, ServiceExposeConfig,
+    ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState,
+    ServiceNode, ServiceState, SubPkgDesc, UserContactSettings, UserSettings, UserState,
+    UserTunnelBinding, UserType, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
+    SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
     CONTROL_PANEL_SERVICE_UNIQUE_ID, MSG_CENTER_SERVICE_PORT, MSG_CENTER_SERVICE_UNIQUE_ID,
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
-    TASK_MANAGER_SERVICE_UNIQUE_ID,
+    TASK_MANAGER_SERVICE_UNIQUE_ID, WORKFLOW_SERVICE_PORT, WORKFLOW_SERVICE_UNIQUE_ID,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use jsonwebtoken::jwk::Jwk;
@@ -364,6 +364,19 @@ impl SystemConfigBuilder {
         self.insert_json("services/msg-center/spec", &service_spec)?;
         let settings = build_msg_center_settings(config)?;
         self.insert_json_if_absent("services/msg-center/settings", &settings)?;
+        Ok(self)
+    }
+
+    pub async fn add_workflow(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_workflow_service_doc();
+        let config = build_kernel_service_spec(
+            WORKFLOW_SERVICE_UNIQUE_ID,
+            WORKFLOW_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+        self.insert_json("services/workflow/spec", &config)?;
         Ok(self)
     }
 

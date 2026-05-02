@@ -16,6 +16,7 @@ mod thunk_object;
 mod verify_hub_client;
 pub mod workflow_dsl;
 pub mod workflow_runtime;
+mod workflow_service;
 pub mod workflow_types;
 mod zone_gateway;
 
@@ -50,6 +51,7 @@ pub use thunk_object::*;
 pub use verify_hub_client::*;
 pub use workflow_dsl::*;
 pub use workflow_runtime::*;
+pub use workflow_service::*;
 pub use workflow_types::*;
 pub use zone_gateway::*;
 

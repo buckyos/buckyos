@@ -4,11 +4,15 @@ version.workspace = true
 edition = "2021"
 authors = ["BuckyOS DAO", "Codex"]
 
+
 [dependencies]
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+bytes = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
 log = { workspace = true }
 named_store = { workspace = true }
 ndn-lib = { workspace = true }
@@ -19,8 +23,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 
+kRPC = { workspace = true }
+buckyos-kit = { workspace = true }
+cyfs-gateway-lib = { workspace = true }
+server-runner = { workspace = true }
+
 buckyos-api = { path = "../buckyos-api" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-kRPC = { workspace = true }

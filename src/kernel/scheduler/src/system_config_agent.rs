@@ -120,7 +120,7 @@ fn create_service_spec_by_service_config(
         state: spec_state,
         need_container: false,
         best_instance_count: service_config.expected_instance_count,
-        required_cpu_mhz: 300,
+        required_cpu_mhz: 200,
         required_memory: DEFAULT_REQUIRED_MEMORY,
         required_gpu_tflops: 0.0,
         required_gpu_mem: 0,

@@ -121,6 +121,8 @@ async fn create_init_list_by_template(
         .await?
         .add_msg_center(&start_config)
         .await?
+        .add_workflow()
+        .await?
         .add_control_panel()
         .await?;
 
