@@ -14,6 +14,9 @@ mod system_config;
 mod task_mgr;
 mod thunk_object;
 mod verify_hub_client;
+pub mod workflow_dsl;
+pub mod workflow_runtime;
+pub mod workflow_types;
 mod zone_gateway;
 
 mod aicc_client;
@@ -45,6 +48,9 @@ pub use system_config::*;
 pub use task_mgr::*;
 pub use thunk_object::*;
 pub use verify_hub_client::*;
+pub use workflow_dsl::*;
+pub use workflow_runtime::*;
+pub use workflow_types::*;
 pub use zone_gateway::*;
 
 pub use app_mgr::*;
