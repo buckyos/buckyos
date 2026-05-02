@@ -234,7 +234,7 @@ def control_matches(action_set, expected_substring=None, exact_value=None):
 
 def assertions_for_case(case_name: str):
     if case_name == "req_app_local_ok":
-        return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:10160")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10160")]
     if case_name == "req_app_remote_ok":
         return [control_matches({"return", "exit"}, expected_substring="rtcp://ood2.test.buckyos.io/:10160")]
     if case_name == "req_app_remote_via_routes_ok":
@@ -246,21 +246,21 @@ def assertions_for_case(case_name: str):
     if case_name == "req_invalid_host_dash_reject":
         return [control_matches({"exit"}, exact_value="reject")]
     if case_name == "req_service_by_host_prefix_ok":
-        return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:10262")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
     if case_name == "req_service_by_root_host_ok":
-        return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:10262")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
     if case_name == "req_service_by_kapi_ok":
-        return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:10262")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
     if case_name == "req_sso_callback_ok":
-        return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:10262")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
     if case_name == "req_ndm_ok":
-        return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:10262")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
     if case_name == "req_service_system_config_identifiers_ok":
-        return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:3200")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:3200")]
     if case_name == "req_service_system_config_well_known_ok":
-        return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:3200")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:3200")]
     if case_name == "req_kevent_direct_ok":
-        return [control_matches({"return", "exit"}, expected_substring="127.0.0.1:3181")]
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:3181")]
     return []
 
 

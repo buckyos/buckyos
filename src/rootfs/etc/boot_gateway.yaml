@@ -228,7 +228,7 @@ servers:
             block: |
               if match-include $TARGET_SERVICE_INFO.selector $THIS_NODE_ID then
                 local port=$TARGET_SERVICE_INFO.selector[$THIS_NODE_ID].port;
-                forward "http://127.0.0.1:${port}";
+                forward "tcp:///127.0.0.1:${port}";
               else
                 map-create primary_peers;
                 map-create backup_peers;
@@ -262,7 +262,7 @@ servers:
               if match-include $TARGET_APP_INFO "dir_pkg_id" then
                 call-server $TARGET_APP_INFO.dir_pkg_id;
               else
-                eq $TARGET_APP_INFO.node_id $THIS_NODE_ID && forward "http://127.0.0.1:${TARGET_APP_INFO.port}";
+                eq $TARGET_APP_INFO.node_id $THIS_NODE_ID && forward "tcp:///127.0.0.1:${TARGET_APP_INFO.port}";
                 if match-include $ROUTES $TARGET_APP_INFO.node_id then
                   map-create app_primary_peers;
                   map-create app_backup_peers;
@@ -290,7 +290,7 @@ servers:
             priority: 180
             block: |
               #echo "forward_to_kevent block";
-              forward "http://127.0.0.1:3181";
+              forward "tcp:///127.0.0.1:3181";
           check_block_list:
             # 通过请求信息判断是否允许访问本zone
             priority: 110

@@ -89,7 +89,7 @@ SchedulerAction 的执行由外部模块负责：
 - 更新 Gateway 路由：根据 ServiceInfo 生成各 Node 的 gateway_config（process chain 规则）
     - Kernel/Service 服务 → 匹配 /kapi/{service_name} 路径
     - App 服务 → 匹配 host 前缀（子域名），支持 shortcut 快捷方式
-    - 单实例本机 → 直接 forward 到 127.0.0.1:{port}
+    - 单实例本机 → 直接 forward 到 tcp:///127.0.0.1:{port}
     - 其他情况 → 通过 buckyos-select 路由
 
 ## 工作原则

@@ -536,7 +536,7 @@ rtcp://relay/rtcp://target/
 
 `boot_gateway.yaml` 的 `forward_to_service` 和 `forward_to_app` 应把本节点 `gateway_info.routes` 转换为 cyfs-gateway group forward：
 
-1. 如果 service/app selector 命中 `THIS_NODE_ID`，直接 `forward "http://127.0.0.1:<port>"`。
+1. 如果 service/app selector 命中 `THIS_NODE_ID`，直接 `forward "tcp:///127.0.0.1:<port>"`。
 2. 如果目标在远端 node，遍历 `TARGET_SERVICE_INFO.selector` 或 `TARGET_APP_INFO.selector`。
 3. 对每个 provider node：
    - 优先读取本 source node 配置中的 `ROUTES[node_id]`。
@@ -555,7 +555,7 @@ map-create backup_peers
 
 for node_id, node_info in TARGET_SERVICE_INFO.selector:
   if node_id == THIS_NODE_ID:
-    forward "http://127.0.0.1:${node_info.port}"
+    forward "tcp:///127.0.0.1:${node_info.port}"
   else if ROUTES contains node_id:
     for route in ROUTES[node_id]:
       target_url = append_port(route.url, node_info.port)
