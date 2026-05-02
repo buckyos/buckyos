@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use cyfs_gateway_lib::{GatewayControlClient, CONTROL_SERVER};
+use cyfs_gateway_api::{GatewayControlClient, CONTROL_SERVER};
 use log::*;
 
 use crate::gateway_tunnel_probe::build_local_gateway_token;

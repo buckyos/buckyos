@@ -5,8 +5,8 @@ use buckyos_api::{
     MsgCenterClient, MsgRecordWithObject, MsgState, SendContext, UserType,
     CONTROL_PANEL_SERVICE_NAME,
 };
+use buckyos_http_server::{server_err, ServerError, ServerErrorCode, ServerResult};
 use bytes::Bytes;
-use cyfs_gateway_lib::{server_err, ServerError, ServerErrorCode, ServerResult};
 use futures::{stream, TryStreamExt};
 use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use http::StatusCode;

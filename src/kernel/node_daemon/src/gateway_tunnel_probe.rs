@@ -3,12 +3,13 @@ use std::time::Duration;
 
 use buckyos_api::{ProbeInfo, DEFAULT_RTCP_PORT};
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_service_data_dir};
-use cyfs_gateway_lib::{
-    GatewayControlClient, TunnelProbeOptions, TunnelUrlSortPolicy, TunnelUrlStatus, CONTROL_SERVER,
+use cyfs_gateway_api::{
+    GatewayControlClient, TunnelProbeOptions, TunnelUrlSortPolicy, CONTROL_SERVER,
 };
 use kRPC::RPCSessionToken;
 use log::*;
 use name_lib::{load_private_key, DeviceInfo};
+use serde::Deserialize;
 
 const GATEWAY_PROBE_RPC_TIMEOUT_SECS: u64 = 3;
 const GATEWAY_PROBE_TIMEOUT_MS: u64 = 2_000;
@@ -16,6 +17,18 @@ const GATEWAY_PROBE_TIMEOUT_MS: u64 = 2_000;
 // cyfs-gateway tunnel_mgr so we usually piggy-back on keep_tunnel/business
 // signals instead of triggering fresh probes from the observation loop.
 const GATEWAY_PROBE_MAX_AGE_MS: u64 = 30_000;
+
+#[derive(Debug, Deserialize)]
+struct TunnelUrlStatus {
+    url: String,
+    normalized_url: String,
+    state: String,
+    rtt_ms: Option<u64>,
+    last_success_at_ms: Option<u64>,
+    failure_reason: Option<String>,
+    source: String,
+    observed_at_ms: u64,
+}
 
 pub(crate) fn build_local_gateway_token() -> Option<String> {
     // Mirrors `read_login_token(CONTROL_SERVER)` in cyfs-gateway: sign a
@@ -171,13 +184,13 @@ pub async fn probe_key_tunnels_via_gateway(
             target_node,
             kind: Some("rtcp_tunnel".to_string()),
             url: Some(status.url),
-            status: Some(status.state.as_str().to_string()),
+            status: Some(status.state),
             rtt_ms: status.rtt_ms,
             last_probe,
             last_success: status.last_success_at_ms.map(ms_to_secs),
             freshness_ttl_secs: None,
             failure_reason: status.failure_reason,
-            source: Some(format!("gateway_tunnel_mgr:{}", status.source.as_str())),
+            source: Some(format!("gateway_tunnel_mgr:{}", status.source)),
         });
     }
     results.sort_by(|a, b| a.target_node.cmp(&b.target_node));

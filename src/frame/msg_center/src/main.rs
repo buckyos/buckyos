@@ -14,12 +14,12 @@ use buckyos_api::{
     BoxKind, BuckyOSRuntimeType, DeliveryReportResult, MsgCenterClient, MsgCenterServerHandler,
     MsgState, UserSettings, UserState, MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
 };
-use buckyos_kit::{get_buckyos_service_data_dir, init_logging};
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
 };
+use buckyos_kit::{get_buckyos_service_data_dir, init_logging};
+use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};

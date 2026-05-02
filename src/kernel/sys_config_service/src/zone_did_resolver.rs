@@ -13,10 +13,10 @@ use log::*;
 use name_lib::*;
 
 use async_trait::async_trait;
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::{
     server_err, HttpServer, ServerError, ServerErrorCode, ServerResult, StreamInfo,
 };
+use bytes::Bytes;
 use http::Method;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use serde_json::{json, Value};
@@ -25,7 +25,6 @@ use std::str::FromStr;
 use url::{form_urlencoded, Url};
 
 use crate::SYS_STORE;
-
 
 #[derive(Clone)]
 pub struct ZoneDidResolver {}
@@ -215,7 +214,10 @@ impl ZoneDidResolver {
                 self.normalize_did_to_short_name(did_str)
                     .await
                     .ok_or_else(|| {
-                        NSError::NotFound(format!("did {} cannot be resolved to short name", did_str))
+                        NSError::NotFound(format!(
+                            "did {} cannot be resolved to short name",
+                            did_str
+                        ))
                     })?
             } else {
                 did_str.to_string()

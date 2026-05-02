@@ -14,6 +14,6 @@ axum = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
 http-body-util = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
+buckyos-http-server = { workspace = true }
 buckyos-api = { path = "../buckyos-api" }
 hyper = "1.8.1"

@@ -25,7 +25,7 @@ log = { workspace = true }
 anyhow = { workspace = true }
 buckyos-kit = { workspace = true }
 server-runner = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
+buckyos-http-server = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }

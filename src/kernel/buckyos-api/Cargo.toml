@@ -36,7 +36,6 @@ name-lib = { workspace = true }
 name-client = { workspace = true }
 kRPC ={ workspace = true }
 rbac = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
 ndn-lib = { workspace = true }
 named_store = { workspace = true }
 ndn-toolkit = { workspace = true }

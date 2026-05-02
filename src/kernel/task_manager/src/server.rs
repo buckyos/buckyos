@@ -8,11 +8,11 @@ use crate::task_db::TaskDb;
 use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_api::*;
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
 };
+use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::*;
@@ -203,7 +203,9 @@ impl TaskManagerService {
             "change_kind": kind.as_str(),
         });
 
-        let data_size = serde_json::to_vec(&after.data).map(|v| v.len()).unwrap_or(0);
+        let data_size = serde_json::to_vec(&after.data)
+            .map(|v| v.len())
+            .unwrap_or(0);
         let map = payload.as_object_mut().expect("payload is a json object");
         if data_size <= TASK_EVENT_DATA_INLINE_LIMIT_BYTES {
             map.insert("data".to_string(), after.data.clone());

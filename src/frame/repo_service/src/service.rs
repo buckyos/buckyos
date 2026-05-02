@@ -17,12 +17,12 @@ use buckyos_api::{
     REPO_SERVICE_SERVICE_NAME, REPO_SERVICE_SERVICE_PORT, REPO_STATUS_COLLECTED,
     REPO_STATUS_PINNED,
 };
-use buckyos_kit::{buckyos_get_unix_timestamp, init_logging};
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
 };
+use buckyos_kit::{buckyos_get_unix_timestamp, init_logging};
+use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};

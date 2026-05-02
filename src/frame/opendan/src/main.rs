@@ -9,12 +9,12 @@ use buckyos_api::{
     ServiceInstallConfig, AICC_SERVICE_SERVICE_NAME, OPENDAN_SERVICE_NAME,
     OPENDAN_SERVICE_PORT as DEFAULT_OPENDAN_SERVICE_PORT,
 };
-use buckyos_kit::{get_buckyos_root_dir, init_logging};
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
 };
+use buckyos_kit::{get_buckyos_root_dir, init_logging};
+use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};
@@ -804,8 +804,8 @@ async fn main() {
 mod tests {
     use super::{
         agent_spec_key_candidates, parse_startup_args_from_iter, resolve_agent_env_root,
-        resolve_owner_from_agent_env, resolve_requested_owner_id,
-        resolve_requested_service_port, StartupArgs, DEFAULT_OPENDAN_SERVICE_PORT,
+        resolve_owner_from_agent_env, resolve_requested_owner_id, resolve_requested_service_port,
+        StartupArgs, DEFAULT_OPENDAN_SERVICE_PORT,
     };
     use std::path::PathBuf;
 

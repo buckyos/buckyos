@@ -46,6 +46,7 @@ name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "nam
 name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client", branch = "beta2.2" }
 kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC", branch = "beta2.2" }
 rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", branch = "beta2.2" }
+buckyos-http-server = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-http-server", branch = "beta2.2" }
 
 ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", branch = "beta2.2" }
 named_store = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "named_store", branch = "beta2.2" }
@@ -53,7 +54,7 @@ ndn-toolkit = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-
 package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", branch = "beta2.2" }
 
 cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", branch = "beta2.2" }
-cyfs-gateway-lib = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-lib", branch = "beta2.2" }
+cyfs-gateway-api = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-api", branch = "beta2.2" }
 cyfs-sn = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-sn", branch = "beta2.2" }
 server-runner =  { git = "https://github.com/buckyos/cyfs-gateway.git", package = "server-runner", branch = "beta2.2" }
 

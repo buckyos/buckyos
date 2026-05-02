@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::get_buckyos_api_runtime;
-use buckyos_kit::get_buckyos_root_dir;
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
 };
+use buckyos_kit::get_buckyos_root_dir;
+use bytes::Bytes;
 use http::header::{
     ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
     RANGE,

@@ -38,7 +38,7 @@ named_store = { workspace = true }
 kRPC ={ workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 server-runner = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
+buckyos-http-server = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

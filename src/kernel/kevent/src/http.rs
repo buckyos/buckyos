@@ -1,10 +1,10 @@
 use crate::KEventService;
 use async_trait::async_trait;
 use buckyos_api::{Event, KEventDaemonRequest, KEventDaemonResponse, KEventError};
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::{
     server_err, HttpServer, ServerError, ServerErrorCode, ServerResult, StreamInfo,
 };
+use bytes::Bytes;
 use futures::{stream, TryStreamExt};
 use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use http::{Method, StatusCode, Version};

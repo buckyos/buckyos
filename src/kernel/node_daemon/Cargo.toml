@@ -27,7 +27,8 @@ time = { workspace = true }
 sysinfo = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 if-addrs = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
+buckyos-http-server = { workspace = true }
+cyfs-gateway-api = { workspace = true }
 kRPC = { workspace = true }
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }

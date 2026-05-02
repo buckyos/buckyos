@@ -22,9 +22,9 @@ use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
     SystemConfigClient, UserType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
 };
+use buckyos_http_server::*;
 use buckyos_kit::*;
 use bytes::Bytes;
-use cyfs_gateway_lib::*;
 use http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use http::{Method, StatusCode, Version};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};

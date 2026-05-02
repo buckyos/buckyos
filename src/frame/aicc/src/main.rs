@@ -22,12 +22,12 @@ use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiccServerHandler,
     BuckyOSRuntimeType, AICC_SERVICE_SERVICE_NAME,
 };
-use buckyos_kit::init_logging;
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
 };
+use buckyos_kit::init_logging;
+use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};

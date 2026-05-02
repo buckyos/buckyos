@@ -25,7 +25,7 @@ uuid = { workspace = true }
 
 kRPC = { workspace = true }
 buckyos-kit = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
+buckyos-http-server = { workspace = true }
 server-runner = { workspace = true }
 
 buckyos-api = { path = "../buckyos-api" }
