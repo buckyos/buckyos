@@ -38,5 +38,8 @@ pub use executor_adapter::{ExecutorAdapter, ExecutorRegistry, NamespaceAdapter};
 pub use object_store::{InMemoryObjectStore, NamedStoreObjectStore, WorkflowObjectStore};
 pub use orchestrator::WorkflowOrchestrator;
 pub use runtime::*;
-pub use task_tracker::{NoopTaskTracker, TaskManagerTaskTracker, WorkflowTaskTracker};
+pub use task_tracker::{
+    MapShardTaskView, NoopTaskTracker, RecordingTaskTracker, StepTaskView, TaskManagerTaskTracker,
+    ThunkTaskView, WorkflowTaskTracker,
+};
 pub use types::*;

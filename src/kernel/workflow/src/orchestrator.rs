@@ -8,7 +8,9 @@ use crate::runtime::{
     EventEnvelope, HumanAction, HumanActionKind, HumanWait, MapState, NodeRunState, ParJoin,
     ParState, PendingThunk, RunStatus, WorkflowRun,
 };
-use crate::task_tracker::WorkflowTaskTracker;
+use crate::task_tracker::{
+    MapShardTaskView, StepTaskView, ThunkTaskView, WorkflowTaskTracker,
+};
 use crate::types::{AwaitKind, Expr, ExecutorRef, JoinStrategy, RetryPolicy, ValueTemplate};
 use buckyos_api::{ThunkExecutionResult, ThunkExecutionStatus, ThunkObject};
 use chrono::Utc;
@@ -118,10 +120,12 @@ where
                             .await?;
                     }
                     Expr::Await { .. } => {
-                        self.enter_human_wait(workflow, run, compiled, &mut events)?;
+                        self.enter_human_wait(workflow, run, compiled, &mut events)
+                            .await?;
                     }
                     Expr::Par { .. } => {
-                        self.enter_par(workflow, run, compiled, &mut events)?;
+                        self.enter_par(workflow, run, compiled, &mut events)
+                            .await?;
                     }
                     Expr::Map { .. } => {
                         self.enter_map(workflow, run, compiled, &mut events).await?;
@@ -246,10 +250,11 @@ where
                     events.push(self.emit_event(
                         run,
                         "step.completed",
-                        Some(node_id),
+                        Some(node_id.clone()),
                         "engine",
                         Some(json!({ "result_obj_id": output_id })),
                     ));
+                    self.sync_step_basic(run, compiled).await?;
                 }
             }
             ThunkExecutionStatus::Failed | ThunkExecutionStatus::Cancelled => {
@@ -269,6 +274,7 @@ where
                 }
                 let policy = retry_policy(compiled);
                 let attempt = run.node_attempts.get(&node_id).copied().unwrap_or(1);
+                let mut waiting_since = None;
                 if attempt < policy.max_attempts && result.status == ThunkExecutionStatus::Failed {
                     run.node_states
                         .insert(node_id.clone(), NodeRunState::Retrying);
@@ -277,7 +283,7 @@ where
                     events.push(self.emit_event(
                         run,
                         "step.retrying",
-                        Some(node_id),
+                        Some(node_id.clone()),
                         "engine",
                         Some(json!({ "attempt": attempt + 1, "error": result.error })),
                     ));
@@ -285,10 +291,11 @@ where
                     run.node_states
                         .insert(node_id.clone(), NodeRunState::WaitingHuman);
                     run.human_waiting_nodes.insert(node_id.clone());
+                    waiting_since = Some(Utc::now().timestamp());
                     events.push(self.emit_event(
                         run,
                         "step.waiting_human",
-                        Some(node_id),
+                        Some(node_id.clone()),
                         "engine",
                         Some(json!({ "reason": "retries_exhausted", "error": result.error })),
                     ));
@@ -298,11 +305,21 @@ where
                     events.push(self.emit_event(
                         run,
                         "step.failed",
-                        Some(node_id),
+                        Some(node_id.clone()),
                         "engine",
                         Some(json!({ "error": result.error })),
                     ));
                 }
+                self.sync_step(
+                    run,
+                    compiled,
+                    SyncStepOpts {
+                        error: result.error.clone(),
+                        waiting_since,
+                        ..Default::default()
+                    },
+                )
+                .await?;
             }
         }
 
@@ -463,10 +480,35 @@ where
         events.push(self.emit_event(
             run,
             "human.action",
-            Some(action.node_id),
+            Some(action.node_id.clone()),
             action.actor.as_str(),
             Some(json!({ "action": action.action.as_str(), "payload": action.payload })),
         ));
+        // 把受影响的节点（以及 rollback 时的下游链）同步到 task_manager。
+        if let Some(node) = workflow.nodes.get(&action.node_id) {
+            self.sync_step_basic(run, node).await?;
+        }
+        if matches!(action.action, HumanActionKind::Rollback) {
+            for node_id in workflow.graph.downstream_from(&action.node_id) {
+                if let Some(node) = workflow.nodes.get(&node_id) {
+                    self.sync_step_basic(run, node).await?;
+                }
+            }
+        }
+        if matches!(action.action, HumanActionKind::Abort) {
+            // Abort 触及所有未终止节点。
+            let touched: Vec<String> = run
+                .node_states
+                .iter()
+                .filter(|(_, state)| matches!(state, NodeRunState::Aborted))
+                .map(|(id, _)| id.clone())
+                .collect();
+            for node_id in touched {
+                if let Some(node) = workflow.nodes.get(&node_id) {
+                    self.sync_step_basic(run, node).await?;
+                }
+            }
+        }
         self.refresh_run_status(workflow, run, &mut events);
         self.tracker.sync_run(run).await?;
         Ok(events)
@@ -516,6 +558,7 @@ where
                     "engine",
                     Some(json!({ "source": "cache" })),
                 ));
+                self.sync_step_basic(run, compiled).await?;
                 return Ok(());
             }
         }
@@ -558,7 +601,7 @@ where
             thunk_obj_id.clone(),
             PendingThunk {
                 node_id: compiled.id.clone(),
-                thunk_obj_id,
+                thunk_obj_id: thunk_obj_id.clone(),
                 attempt: next_attempt,
                 shard_index: None,
             },
@@ -572,6 +615,9 @@ where
             "engine",
             None,
         ));
+        self.sync_step_basic(run, compiled).await?;
+        self.sync_thunk_dispatch(run, &compiled.id, &thunk_obj_id, next_attempt, None)
+            .await?;
         Ok(())
     }
 
@@ -608,6 +654,7 @@ where
             "engine",
             Some(json!({ "executor": executor.as_str(), "mode": "direct" })),
         ));
+        self.sync_step_basic(run, compiled).await?;
 
         match adapter.invoke(&executor, &resolved_input).await {
             Ok(output) => {
@@ -623,7 +670,8 @@ where
                 .await
             }
             Err(err) => {
-                self.fail_apply_node_direct(run, compiled, attempt, err, events);
+                self.fail_apply_node_direct(run, compiled, attempt, err, events)
+                    .await?;
                 Ok(())
             }
         }
@@ -672,20 +720,22 @@ where
             "engine",
             Some(json!({ "result_obj_id": output_id, "mode": "direct" })),
         ));
+        self.sync_step_basic(run, compiled).await?;
         Ok(())
     }
 
-    fn fail_apply_node_direct(
+    async fn fail_apply_node_direct(
         &self,
         run: &mut WorkflowRun,
         compiled: &CompiledNode,
         attempt: u32,
         err: WorkflowError,
         events: &mut Vec<EventEnvelope>,
-    ) {
+    ) -> WorkflowResult<()> {
         let policy = retry_policy(compiled);
         let error_message = err.to_string();
         let node_id = compiled.id.clone();
+        let mut waiting_since = None;
         if attempt < policy.max_attempts {
             // 重新置为 Pending 让下一轮 tick 再次进入 schedule_apply（attempt 已自增过）。
             run.node_states
@@ -693,7 +743,7 @@ where
             events.push(self.emit_event(
                 run,
                 "step.retrying",
-                Some(node_id),
+                Some(node_id.clone()),
                 "engine",
                 Some(json!({ "attempt": attempt + 1, "error": error_message })),
             ));
@@ -701,23 +751,36 @@ where
             run.node_states
                 .insert(node_id.clone(), NodeRunState::WaitingHuman);
             run.human_waiting_nodes.insert(node_id.clone());
+            waiting_since = Some(Utc::now().timestamp());
             events.push(self.emit_event(
                 run,
                 "step.waiting_human",
-                Some(node_id),
+                Some(node_id.clone()),
                 "engine",
                 Some(json!({ "reason": "retries_exhausted", "error": error_message })),
             ));
         } else {
-            run.node_states.insert(node_id.clone(), NodeRunState::Failed);
+            run.node_states
+                .insert(node_id.clone(), NodeRunState::Failed);
             events.push(self.emit_event(
                 run,
                 "step.failed",
-                Some(node_id),
+                Some(node_id.clone()),
                 "engine",
                 Some(json!({ "error": error_message })),
             ));
         }
+        self.sync_step(
+            run,
+            compiled,
+            SyncStepOpts {
+                error: Some(error_message),
+                waiting_since,
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     async fn advance_match(
@@ -752,6 +815,15 @@ where
                 "engine",
                 Some(json!({ "reason": "max_iterations_reached" })),
             ));
+            self.sync_step(
+                run,
+                compiled,
+                SyncStepOpts {
+                    waiting_since: Some(Utc::now().timestamp()),
+                    ..Default::default()
+                },
+            )
+            .await?;
             return Ok(());
         }
 
@@ -771,6 +843,15 @@ where
                 "engine",
                 Some(json!({ "reason": "unexpected_branch", "branch": branch_key })),
             ));
+            self.sync_step(
+                run,
+                compiled,
+                SyncStepOpts {
+                    waiting_since: Some(Utc::now().timestamp()),
+                    ..Default::default()
+                },
+            )
+            .await?;
             return Ok(());
         };
 
@@ -791,10 +872,11 @@ where
             "engine",
             None,
         ));
+        self.sync_step_basic(run, compiled).await?;
         Ok(())
     }
 
-    fn enter_human_wait(
+    async fn enter_human_wait(
         &self,
         _workflow: &CompiledWorkflow,
         run: &mut WorkflowRun,
@@ -808,10 +890,16 @@ where
             .insert(compiled.id.clone(), NodeRunState::WaitingHuman);
         run.human_waiting_nodes.insert(compiled.id.clone());
         let subject = self.subject_for_node(run, compiled).ok();
+        let subject_obj_id = match subject.as_ref() {
+            Some(value) if !value.is_null() => {
+                Some(self.object_store.put_json("workflow_subject", value).await?)
+            }
+            _ => None,
+        };
         let wait = HumanWait {
             node_id: compiled.id.clone(),
             prompt: prompt.clone(),
-            subject,
+            subject: subject.clone(),
         };
         events.push(
             self.emit_event(
@@ -825,6 +913,18 @@ where
                 ),
             ),
         );
+        let waiting_since = Utc::now().timestamp();
+        self.sync_step(
+            run,
+            compiled,
+            SyncStepOpts {
+                waiting_since: Some(waiting_since),
+                subject_obj_id,
+                subject_value: subject,
+                ..Default::default()
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -974,7 +1074,7 @@ where
         }
     }
 
-    fn enter_par(
+    async fn enter_par(
         &self,
         workflow: &CompiledWorkflow,
         run: &mut WorkflowRun,
@@ -1018,6 +1118,7 @@ where
             "engine",
             Some(json!({ "branches": branches })),
         ));
+        self.sync_step_basic(run, compiled).await?;
         let _ = workflow;
         Ok(())
     }
@@ -1087,6 +1188,9 @@ where
                 "engine",
                 Some(json!({ "reason": "branch_failed" })),
             ));
+            if let Some(par_compiled) = workflow.nodes.get(par_id) {
+                self.sync_step_basic(run, par_compiled).await?;
+            }
             return Ok(());
         }
 
@@ -1155,6 +1259,14 @@ where
                 "cancelled_branches": cancelled,
             })),
         ));
+        for branch_id in &cancelled {
+            if let Some(branch_compiled) = workflow.nodes.get(branch_id) {
+                self.sync_step_basic(run, branch_compiled).await?;
+            }
+        }
+        if let Some(par_compiled) = workflow.nodes.get(par_id) {
+            self.sync_step_basic(run, par_compiled).await?;
+        }
         Ok(())
     }
 
@@ -1229,6 +1341,7 @@ where
             "engine",
             Some(json!({ "total": total, "concurrency": actual_concurrency })),
         ));
+        self.sync_step_basic(run, compiled).await?;
 
         if total == 0 {
             self.complete_map(workflow, run, &compiled.id, events).await?;
@@ -1324,8 +1437,11 @@ where
                                 "mode": "direct",
                             })),
                         ));
+                        self.sync_shard(run, for_each_id, index as u32, None)
+                            .await?;
                     }
                     Err(err) => {
+                        let error_message = err.to_string();
                         if let Some(state) = run.map_states.get_mut(for_each_id) {
                             state.shard_states[index] = NodeRunState::Failed;
                         }
@@ -1338,10 +1454,28 @@ where
                             "engine",
                             Some(json!({
                                 "shard": index,
-                                "error": err.to_string(),
+                                "error": error_message.clone(),
                                 "mode": "direct",
                             })),
                         ));
+                        self.sync_shard(
+                            run,
+                            for_each_id,
+                            index as u32,
+                            Some(error_message.clone()),
+                        )
+                        .await?;
+                        if let Some(parent) = workflow.nodes.get(for_each_id) {
+                            self.sync_step(
+                                run,
+                                parent,
+                                SyncStepOpts {
+                                    error: Some(error_message),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                        }
                         return Ok(());
                     }
                 }
@@ -1379,6 +1513,21 @@ where
             if let Some(state) = run.map_states.get_mut(for_each_id) {
                 state.shard_states[index] = NodeRunState::Running;
             }
+            self.sync_shard(run, for_each_id, index as u32, None).await?;
+            self.sync_thunk_dispatch(
+                run,
+                for_each_id,
+                run.pending_thunks
+                    .iter()
+                    .find(|(_, info)| {
+                        info.node_id == for_each_id && info.shard_index == Some(index as u32)
+                    })
+                    .map(|(id, _)| id.as_str())
+                    .unwrap_or(""),
+                attempt,
+                Some(index as u32),
+            )
+            .await?;
             running_count += 1;
         }
 
@@ -1449,6 +1598,7 @@ where
             "engine",
             Some(json!({ "shard": shard_index, "status": "completed" })),
         ));
+        self.sync_shard(run, for_each_id, shard_index, None).await?;
 
         let body_step_id = run
             .map_states
@@ -1505,7 +1655,19 @@ where
         ));
         run.node_states
             .insert(for_each_id.to_string(), NodeRunState::Failed);
-        let _ = workflow;
+        self.sync_shard(run, for_each_id, shard_index, error.clone())
+            .await?;
+        if let Some(parent) = workflow.nodes.get(for_each_id) {
+            self.sync_step(
+                run,
+                parent,
+                SyncStepOpts {
+                    error,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -1536,7 +1698,432 @@ where
             "engine",
             None,
         ));
+        if let Some(parent) = workflow.nodes.get(for_each_id) {
+            self.sync_step_basic(run, parent).await?;
+        }
         Ok(())
+    }
+
+    /// 把 compiled 节点的当前状态同步到 task_manager 上对应的 Step task。
+    /// 默认情况下从 run 里读 state / attempt / output；调用者可以通过 opts 覆盖
+    /// 错误信息、人类等待开始时间、subject 引用等无法从 run 推导的字段。
+    async fn sync_step(
+        &self,
+        run: &WorkflowRun,
+        compiled: &CompiledNode,
+        opts: SyncStepOpts,
+    ) -> WorkflowResult<()> {
+        let view = build_step_view(run, compiled, opts);
+        self.tracker.sync_step(run, &view).await
+    }
+
+    /// 等价于 `sync_step` 但不带任何 opts。
+    async fn sync_step_basic(
+        &self,
+        run: &WorkflowRun,
+        compiled: &CompiledNode,
+    ) -> WorkflowResult<()> {
+        self.sync_step(run, compiled, SyncStepOpts::default()).await
+    }
+
+    async fn sync_shard(
+        &self,
+        run: &WorkflowRun,
+        for_each_id: &str,
+        shard_index: u32,
+        error: Option<String>,
+    ) -> WorkflowResult<()> {
+        let view = build_shard_view(run, for_each_id, shard_index, error);
+        self.tracker.sync_map_shard(run, &view).await
+    }
+
+    async fn sync_thunk_dispatch(
+        &self,
+        run: &WorkflowRun,
+        node_id: &str,
+        thunk_obj_id: &str,
+        attempt: u32,
+        shard_index: Option<u32>,
+    ) -> WorkflowResult<()> {
+        let view = ThunkTaskView {
+            node_id: node_id.to_string(),
+            thunk_obj_id: thunk_obj_id.to_string(),
+            attempt,
+            shard_index,
+        };
+        self.tracker.sync_thunk(run, &view).await
+    }
+
+    /// Agent 直接写入步骤输出，等价于 §3.4 `workflow.submit_step_output` 的语义：
+    /// 若节点处于 WaitingHuman / Running / Failed 都接受，作为该节点的最终输出
+    /// 推进状态机。在 TaskData 渠道中对应 `human_action.kind == "submit_output"`。
+    pub async fn submit_step_output(
+        &self,
+        workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        node_id: &str,
+        actor: &str,
+        output: Value,
+    ) -> WorkflowResult<Vec<EventEnvelope>> {
+        let compiled = workflow
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))?;
+        let state = run
+            .node_states
+            .get(node_id)
+            .copied()
+            .unwrap_or(NodeRunState::Pending);
+        if !matches!(
+            state,
+            NodeRunState::Running
+                | NodeRunState::WaitingHuman
+                | NodeRunState::Failed
+                | NodeRunState::Pending
+        ) {
+            return Err(WorkflowError::InvalidHumanAction {
+                node_id: node_id.to_string(),
+                action: "submit_output".to_string(),
+            });
+        }
+
+        // 取消任何还挂着的 thunk（agent 直接给结果就不再等调度器）。
+        let pending_for_node: Vec<String> = run
+            .pending_thunks
+            .iter()
+            .filter(|(_, info)| info.node_id == node_id && info.shard_index.is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for thunk_id in pending_for_node {
+            let _ = self.dispatcher.cancel_thunk(&thunk_id).await;
+            run.pending_thunks.remove(&thunk_id);
+        }
+
+        run.node_states
+            .insert(node_id.to_string(), NodeRunState::Completed);
+        run.node_outputs.insert(node_id.to_string(), output.clone());
+        run.human_waiting_nodes.remove(node_id);
+        self.activate_successors(workflow, run, node_id);
+
+        let mut events = Vec::new();
+        events.push(self.emit_event(
+            run,
+            "step.completed",
+            Some(node_id.to_string()),
+            actor,
+            Some(json!({ "source": "submit_step_output" })),
+        ));
+        self.notify_par_branch_completed(workflow, run, node_id, &mut events)
+            .await?;
+        self.sync_step_basic(run, compiled).await?;
+        self.refresh_run_status(workflow, run, &mut events);
+        self.tracker.sync_run(run).await?;
+        Ok(events)
+    }
+
+    /// Agent 上报进度，仅落事件 + 把 progress_message 写到 Step task 的 TaskData。
+    /// 不修改节点状态。
+    pub async fn report_step_progress(
+        &self,
+        _workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        node_id: &str,
+        actor: &str,
+        progress: Value,
+    ) -> WorkflowResult<Vec<EventEnvelope>> {
+        let compiled = _workflow
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))?;
+        let progress_message = progress
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let mut events = Vec::new();
+        events.push(self.emit_event(
+            run,
+            "step.progress",
+            Some(node_id.to_string()),
+            actor,
+            Some(progress.clone()),
+        ));
+        self.sync_step(
+            run,
+            compiled,
+            SyncStepOpts {
+                progress_message,
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(events)
+    }
+
+    /// Agent 主动把当前 Step 切到 WaitingHuman，由 workflow 写 TaskData 等待用户操作。
+    pub async fn request_human(
+        &self,
+        workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        node_id: &str,
+        actor: &str,
+        prompt: Option<String>,
+        subject: Option<Value>,
+    ) -> WorkflowResult<Vec<EventEnvelope>> {
+        let compiled = workflow
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))?;
+
+        // 取消任何还挂着的 thunk。
+        let pending_for_node: Vec<String> = run
+            .pending_thunks
+            .iter()
+            .filter(|(_, info)| info.node_id == node_id && info.shard_index.is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for thunk_id in pending_for_node {
+            let _ = self.dispatcher.cancel_thunk(&thunk_id).await;
+            run.pending_thunks.remove(&thunk_id);
+        }
+
+        run.node_states
+            .insert(node_id.to_string(), NodeRunState::WaitingHuman);
+        run.human_waiting_nodes.insert(node_id.to_string());
+        let waiting_since = Utc::now().timestamp();
+
+        let subject_value = subject.clone();
+        let subject_obj_id = if let Some(value) = subject.as_ref() {
+            Some(self.object_store.put_json("workflow_subject", value).await?)
+        } else {
+            None
+        };
+
+        let mut events = Vec::new();
+        let payload = json!({
+            "prompt": prompt,
+            "subject": subject_value,
+            "actor": actor,
+        });
+        events.push(self.emit_event(
+            run,
+            "step.waiting_human",
+            Some(node_id.to_string()),
+            actor,
+            Some(payload),
+        ));
+        self.sync_step(
+            run,
+            compiled,
+            SyncStepOpts {
+                waiting_since: Some(waiting_since),
+                subject_obj_id,
+                subject_value,
+                ..Default::default()
+            },
+        )
+        .await?;
+        self.refresh_run_status(workflow, run, &mut events);
+        self.tracker.sync_run(run).await?;
+        Ok(events)
+    }
+
+    /// 解释 §3.3 中 TaskData 上的 `human_action`，把它翻译成内部状态机动作。
+    /// 用户在 TaskMgr UI 中点按钮 = 写一次 TaskData，service 监听 task_manager 的
+    /// TaskData 变更后把整个 task_data JSON 喂给这个方法。
+    pub async fn apply_task_data(
+        &self,
+        workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        task_data: &Value,
+    ) -> WorkflowResult<Vec<EventEnvelope>> {
+        let workflow_meta = task_data
+            .get("workflow")
+            .ok_or_else(|| WorkflowError::Serialization(
+                "task_data missing `workflow` descriptor".to_string(),
+            ))?;
+        let node_id = workflow_meta
+            .get("node_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| WorkflowError::Serialization(
+                "task_data.workflow.node_id missing".to_string(),
+            ))?
+            .to_string();
+        if let Some(declared_run) = workflow_meta.get("run_id").and_then(Value::as_str) {
+            if declared_run != run.run_id {
+                return Err(WorkflowError::Serialization(format!(
+                    "task_data.workflow.run_id `{}` does not match run `{}`",
+                    declared_run, run.run_id
+                )));
+            }
+        }
+
+        let action = match task_data.get("human_action") {
+            Some(value) => value,
+            None => return Ok(Vec::new()),
+        };
+        let kind = action
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| WorkflowError::Serialization(
+                "task_data.human_action.kind missing".to_string(),
+            ))?
+            .to_string();
+        let actor = action
+            .get("actor")
+            .and_then(Value::as_str)
+            .unwrap_or("human")
+            .to_string();
+        let payload = action.get("payload").cloned();
+
+        if kind == "submit_output" {
+            let output = payload.clone().unwrap_or(Value::Null);
+            return match self
+                .submit_step_output(workflow, run, &node_id, &actor, output)
+                .await
+            {
+                Ok(events) => Ok(events),
+                Err(err) => {
+                    let _ = self
+                        .tracker
+                        .report_step_validation_error(run, &node_id, &err.to_string())
+                        .await;
+                    Err(err)
+                }
+            };
+        }
+
+        let action_kind = match kind.as_str() {
+            "approve" => HumanActionKind::Approve,
+            "modify" => HumanActionKind::Modify,
+            "reject" => HumanActionKind::Reject,
+            "retry" => HumanActionKind::Retry,
+            "skip" => HumanActionKind::Skip,
+            "abort" => HumanActionKind::Abort,
+            "rollback" => HumanActionKind::Rollback,
+            other => {
+                let msg = format!("unknown human_action kind `{}`", other);
+                let _ = self
+                    .tracker
+                    .report_step_validation_error(run, &node_id, &msg)
+                    .await;
+                return Err(WorkflowError::InvalidHumanAction {
+                    node_id,
+                    action: other.to_string(),
+                });
+            }
+        };
+
+        match self
+            .handle_human_action(
+                workflow,
+                run,
+                HumanAction {
+                    node_id: node_id.clone(),
+                    action: action_kind,
+                    payload,
+                    actor,
+                },
+            )
+            .await
+        {
+            Ok(events) => Ok(events),
+            Err(err) => {
+                let _ = self
+                    .tracker
+                    .report_step_validation_error(run, &node_id, &err.to_string())
+                    .await;
+                Err(err)
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct SyncStepOpts {
+    error: Option<String>,
+    waiting_since: Option<i64>,
+    subject_obj_id: Option<String>,
+    subject_value: Option<Value>,
+    progress_message: Option<String>,
+}
+
+fn build_step_view(
+    run: &WorkflowRun,
+    compiled: &CompiledNode,
+    opts: SyncStepOpts,
+) -> StepTaskView {
+    let state = run
+        .node_states
+        .get(&compiled.id)
+        .copied()
+        .unwrap_or(NodeRunState::Pending);
+    let attempt = run.node_attempts.get(&compiled.id).copied().unwrap_or(0);
+    let executor = match &compiled.expr {
+        Expr::Apply { executor, .. } => Some(executor.as_str().to_string()),
+        _ => None,
+    };
+    let prompt = match &compiled.expr {
+        Expr::Await { prompt, .. } => prompt.clone(),
+        _ => None,
+    };
+    let output = if matches!(
+        state,
+        NodeRunState::Completed | NodeRunState::Skipped | NodeRunState::WaitingHuman
+    ) {
+        run.node_outputs.get(&compiled.id).cloned()
+    } else {
+        None
+    };
+    StepTaskView {
+        node_id: compiled.id.clone(),
+        name: compiled.name.clone(),
+        state,
+        attempt,
+        executor,
+        subject: opts.subject_value,
+        subject_obj_id: opts.subject_obj_id,
+        prompt,
+        output_schema: compiled.output_schema.clone(),
+        stakeholders: Vec::new(),
+        progress_message: opts.progress_message,
+        error: opts.error,
+        output,
+        waiting_human_since: opts.waiting_since,
+    }
+}
+
+fn build_shard_view(
+    run: &WorkflowRun,
+    for_each_id: &str,
+    shard_index: u32,
+    error: Option<String>,
+) -> MapShardTaskView {
+    let map_state = run.map_states.get(for_each_id);
+    let state = map_state
+        .and_then(|s| s.shard_states.get(shard_index as usize).copied())
+        .unwrap_or(NodeRunState::Pending);
+    let attempt = map_state
+        .and_then(|s| s.shard_attempts.get(shard_index as usize).copied())
+        .unwrap_or(0);
+    let item = map_state
+        .and_then(|s| s.items.get(shard_index as usize).cloned())
+        .unwrap_or(Value::Null);
+    let output = map_state.and_then(|s| {
+        let value = s.shard_outputs.get(shard_index as usize)?;
+        if matches!(state, NodeRunState::Completed) {
+            Some(value.clone())
+        } else {
+            None
+        }
+    });
+    MapShardTaskView {
+        for_each_id: for_each_id.to_string(),
+        shard_index,
+        state,
+        attempt,
+        item,
+        output,
+        error,
     }
 }
 
@@ -2077,17 +2664,19 @@ mod tests {
         }
     }
 
-    async fn finish_thunk(
+    async fn finish_thunk<T>(
         orchestrator: &WorkflowOrchestrator<
             InMemoryThunkDispatcher,
             InMemoryObjectStore,
-            NoopTaskTracker,
+            T,
         >,
         compiled: &CompiledWorkflow,
         run: &mut WorkflowRun,
         thunk_id: &str,
         result: serde_json::Value,
-    ) {
+    ) where
+        T: crate::task_tracker::WorkflowTaskTracker + 'static,
+    {
         orchestrator
             .handle_thunk_result(
                 compiled,
@@ -2667,5 +3256,288 @@ mod tests {
             Some(&NodeRunState::WaitingHuman)
         );
         assert!(dispatcher.scheduled().await.is_empty());
+    }
+
+    // -------- §6.3 / §3.3 任务树 + TaskData 路径 --------
+
+    #[tokio::test]
+    async fn tracker_records_step_thunk_and_human_wait_views() {
+        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
+        let orchestrator = WorkflowOrchestrator::new(
+            dispatcher.clone(),
+            object_store.clone(),
+            tracker.clone(),
+        );
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+
+        // 第一个 Apply 节点应当至少产生过一次 Running 视图，并被 dispatcher 投递了一个 thunk
+        let plan_view = tracker
+            .step(&run.run_id, "plan")
+            .await
+            .expect("plan step view should exist");
+        assert_eq!(plan_view.attempt, 1);
+        assert_eq!(plan_view.executor.as_deref(), Some("func::agent.mia"));
+
+        let scheduled = dispatcher.scheduled().await;
+        assert_eq!(scheduled.len(), 1);
+        let plan_thunk_id = scheduled[0].thunk_obj_id.clone();
+        let thunk_view = tracker
+            .thunk(&run.run_id, &plan_thunk_id)
+            .await
+            .expect("thunk task view should exist for dispatched thunk");
+        assert_eq!(thunk_view.node_id, "plan");
+        assert!(thunk_view.shard_index.is_none());
+
+        finish_thunk(
+            &orchestrator,
+            &compiled,
+            &mut run,
+            &plan_thunk_id,
+            json!({"decision":"approved"}),
+        )
+        .await;
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+
+        // review 是 human_confirm 节点，应进入 WaitingHuman 并带上 subject_obj_id / waiting_since
+        let review_view = tracker
+            .step(&run.run_id, "review")
+            .await
+            .expect("review step view should exist after entering human wait");
+        assert!(matches!(review_view.state, NodeRunState::WaitingHuman));
+        assert!(review_view.waiting_human_since.is_some());
+        assert!(review_view.subject_obj_id.is_some());
+        // 其值应当确实存在于 object_store，而不是凭空构造
+        let stored = object_store
+            .get_json(review_view.subject_obj_id.as_ref().unwrap())
+            .await
+            .unwrap();
+        assert!(stored.is_some());
+    }
+
+    #[tokio::test]
+    async fn apply_task_data_translates_human_action_into_state_machine() {
+        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
+        let orchestrator = WorkflowOrchestrator::new(
+            dispatcher.clone(),
+            object_store,
+            tracker.clone(),
+        );
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+        let plan_thunk = dispatcher.scheduled().await[0].thunk_obj_id.clone();
+        finish_thunk(
+            &orchestrator,
+            &compiled,
+            &mut run,
+            &plan_thunk,
+            json!({"decision":"approved"}),
+        )
+        .await;
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+        assert_eq!(
+            run.node_states.get("review"),
+            Some(&NodeRunState::WaitingHuman)
+        );
+
+        // 模拟 TaskMgr UI 的 TaskData 写入：用户点了 "approve"
+        let task_data = json!({
+            "workflow": {
+                "run_id": run.run_id,
+                "node_id": "review",
+            },
+            "human_action": {
+                "kind": "approve",
+                "actor": "user-A",
+            }
+        });
+        let events = orchestrator
+            .apply_task_data(&compiled, &mut run, &task_data)
+            .await
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "human.action"));
+        assert_eq!(
+            run.node_states.get("review"),
+            Some(&NodeRunState::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_task_data_validation_failure_records_last_error() {
+        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
+        let orchestrator =
+            WorkflowOrchestrator::new(dispatcher, object_store, tracker.clone());
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+
+        // plan 节点根本还没进入 WaitingHuman，approve 应当报错并写回 last_error
+        let task_data = json!({
+            "workflow": {
+                "run_id": run.run_id,
+                "node_id": "plan",
+            },
+            "human_action": {
+                "kind": "approve",
+                "actor": "user-A",
+            }
+        });
+        let result = orchestrator
+            .apply_task_data(&compiled, &mut run, &task_data)
+            .await;
+        assert!(result.is_err());
+        let errors = tracker.validation_errors("plan").await;
+        assert!(!errors.is_empty(), "tracker should record validation error");
+    }
+
+    #[tokio::test]
+    async fn apply_task_data_rejects_run_id_mismatch() {
+        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
+        let orchestrator =
+            WorkflowOrchestrator::new(dispatcher, object_store, tracker.clone());
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+
+        let task_data = json!({
+            "workflow": {
+                "run_id": "run-other",
+                "node_id": "plan",
+            },
+            "human_action": {
+                "kind": "approve",
+            }
+        });
+        let result = orchestrator
+            .apply_task_data(&compiled, &mut run, &task_data)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn submit_step_output_completes_running_node_via_agent() {
+        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
+        let orchestrator = WorkflowOrchestrator::new(
+            dispatcher.clone(),
+            object_store,
+            tracker.clone(),
+        );
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+        assert_eq!(run.node_states.get("plan"), Some(&NodeRunState::Running));
+        assert_eq!(dispatcher.scheduled().await.len(), 1);
+
+        orchestrator
+            .submit_step_output(
+                &compiled,
+                &mut run,
+                "plan",
+                "agent/mia",
+                json!({"decision": "approved"}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            run.node_states.get("plan"),
+            Some(&NodeRunState::Completed)
+        );
+        // 应当取消挂起的 thunk
+        assert!(run.pending_thunks.is_empty());
+        assert_eq!(
+            run.node_outputs.get("plan").and_then(|v| v.get("decision")),
+            Some(&Value::String("approved".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn request_human_writes_subject_to_object_store() {
+        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
+        let orchestrator = WorkflowOrchestrator::new(
+            dispatcher,
+            object_store.clone(),
+            tracker.clone(),
+        );
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+
+        orchestrator
+            .request_human(
+                &compiled,
+                &mut run,
+                "plan",
+                "agent/mia",
+                Some("please review".to_string()),
+                Some(json!({"key": "value"})),
+            )
+            .await
+            .unwrap();
+
+        let view = tracker
+            .step(&run.run_id, "plan")
+            .await
+            .expect("step view should exist");
+        assert!(matches!(view.state, NodeRunState::WaitingHuman));
+        assert!(view.waiting_human_since.is_some());
+        let obj_id = view.subject_obj_id.expect("subject_obj_id should be set");
+        let stored = object_store.get_json(&obj_id).await.unwrap();
+        assert_eq!(stored, Some(json!({"key": "value"})));
+        assert_eq!(run.status, RunStatus::WaitingHuman);
+    }
+
+    #[tokio::test]
+    async fn for_each_records_map_shard_views() {
+        let compiled = compile_workflow(for_each_workflow()).unwrap().workflow;
+        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
+        let object_store = Arc::new(InMemoryObjectStore::new());
+        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
+        let orchestrator = WorkflowOrchestrator::new(
+            dispatcher.clone(),
+            object_store,
+            tracker.clone(),
+        );
+
+        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+        let scan_thunk = dispatcher.scheduled().await[0].thunk_obj_id.clone();
+        finish_thunk(
+            &orchestrator,
+            &compiled,
+            &mut run,
+            &scan_thunk,
+            json!({"items": [1, 2, 3]}),
+        )
+        .await;
+        orchestrator.tick(&compiled, &mut run).await.unwrap();
+
+        // for_each concurrency=2，前两个 shard 应已派发到 dispatcher 并写入 tracker.
+        let shard0 = tracker.map_shard(&run.run_id, "loop", 0).await;
+        let shard1 = tracker.map_shard(&run.run_id, "loop", 1).await;
+        assert!(shard0.is_some(), "shard 0 view should be recorded");
+        assert!(shard1.is_some(), "shard 1 view should be recorded");
+        let shard0 = shard0.unwrap();
+        assert_eq!(shard0.for_each_id, "loop");
+        assert!(matches!(shard0.state, NodeRunState::Running));
     }
 }
