@@ -24,7 +24,6 @@ hex = { workspace = true }
 log = { workspace = true }
 anyhow = { workspace = true }
 buckyos-kit = { workspace = true }
-server-runner = { workspace = true }
 buckyos-http-server = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }

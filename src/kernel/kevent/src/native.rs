@@ -43,6 +43,22 @@ impl KEventDaemonClient {
         )
     }
 
+    pub async fn update_reader(
+        &self,
+        reader_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> KEventResult<()> {
+        map_response_unit(
+            self.call(KEventDaemonRequest::UpdateReader {
+                reader_id: reader_id.to_string(),
+                add: add.to_vec(),
+                remove: remove.to_vec(),
+            })
+            .await?,
+        )
+    }
+
     pub async fn publish_global(&self, event: &Event) -> KEventResult<()> {
         map_response_unit(
             self.call(KEventDaemonRequest::PublishGlobal {
@@ -75,6 +91,15 @@ impl KEventDaemonBridge for KEventDaemonClient {
 
     async fn unregister_reader(&self, reader_id: &str) -> KEventResult<()> {
         self.unregister_reader(reader_id).await
+    }
+
+    async fn update_reader(
+        &self,
+        reader_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> KEventResult<()> {
+        self.update_reader(reader_id, add, remove).await
     }
 
     async fn publish_global(&self, event: &Event) -> KEventResult<()> {

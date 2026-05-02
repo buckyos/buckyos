@@ -26,7 +26,6 @@ buckyos-kit = { workspace = true }
 name-lib = { workspace = true }
 kRPC ={ workspace = true }
 buckyos-api = { path = "../buckyos-api" }
-server-runner = { workspace = true }
 buckyos-http-server = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }

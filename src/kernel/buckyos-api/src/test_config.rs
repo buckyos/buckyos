@@ -1,6 +1,5 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use buckyos_kit::buckyos_get_unix_timestamp;
-use cyfs_sn::{SnDB, SqliteSnDB};
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use jsonwebtoken::{DecodingKey, EncodingKey};
@@ -10,12 +9,14 @@ use name_lib::{
     OwnerConfig, ZoneBootConfig, ZoneConfig, DID,
 };
 use package_lib::PackageId;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     AppDoc, LocalAppInstanceConfig, ServiceInstallConfig, ServiceInstanceState,
@@ -30,6 +31,103 @@ use crate::{
 const BASE_TIME: u64 = 1743478939; // 2025-04-01
 const DEFAULT_EXP_YEARS: u64 = 10;
 const ADMIN_PASSWORD_HASH: &str = "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4="; // bucky2025
+
+struct DevSnDb {
+    path: PathBuf,
+}
+
+impl DevSnDb {
+    async fn new_by_path(path: &str) -> Result<Self, String> {
+        Ok(Self {
+            path: PathBuf::from(path),
+        })
+    }
+
+    fn connect(&self) -> Result<Connection, String> {
+        Connection::open(&self.path)
+            .map_err(|e| format!("open SN database {} failed: {}", self.path.display(), e))
+    }
+
+    async fn initialize_database(&self) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS activation_codes (code TEXT PRIMARY KEY, used INTEGER);
+             CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, state TEXT, public_key TEXT, activation_code TEXT, zone_config TEXT, self_cert boolean, user_domain TEXT, sn_ips TEXT);
+             CREATE TABLE IF NOT EXISTS user_auth_v2 (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, password_algo TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_login_at INTEGER NULL);
+             CREATE TABLE IF NOT EXISTS devices (owner TEXT, device_name TEXT, did TEXT PRIMARY KEY, ip TEXT, description TEXT, mini_config_jwt TEXT, created_at INTEGER, updated_at INTEGER);
+             CREATE TABLE IF NOT EXISTS user_dns_records (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT, domain TEXT, record_type TEXT, record TEXT, ttl INTEGER, created_at INTEGER, updated_at INTEGER);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_user_domain_record_type ON user_dns_records (owner, domain, record_type);
+             CREATE INDEX IF NOT EXISTS user_dns_records_domain_index ON user_dns_records (domain, id);
+             CREATE TABLE IF NOT EXISTS user_domain_history (domain TEXT PRIMARY KEY, owner TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS did_documents (id INTEGER PRIMARY KEY AUTOINCREMENT, obj_id TEXT, owner_user TEXT, obj_name TEXT, did_document TEXT, doc_type TEXT, update_time INTEGER);
+             CREATE INDEX IF NOT EXISTS idx_did_documents_owner_obj ON did_documents (owner_user, obj_name, update_time);",
+        )
+        .map_err(|e| format!("initialize SN database failed: {}", e))?;
+        Ok(())
+    }
+
+    async fn insert_activation_code(&self, code: &str) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO activation_codes (code, used) VALUES (?1, 0)",
+            params![code],
+        )
+        .map_err(|e| format!("insert activation code failed: {}", e))?;
+        Ok(())
+    }
+
+    async fn register_user_directly(
+        &self,
+        username: &str,
+        public_key: &str,
+        zone_config: &str,
+        user_domain: Option<String>,
+    ) -> Result<bool, String> {
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("begin SN user transaction failed: {}", e))?;
+        tx.execute(
+            "INSERT INTO users (username, state, public_key, activation_code, zone_config, user_domain, self_cert, sn_ips) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                username,
+                "active",
+                public_key,
+                "DIRECT",
+                zone_config,
+                user_domain,
+                true,
+                Option::<String>::None,
+            ],
+        )
+        .map_err(|e| format!("insert SN user failed: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("commit SN user transaction failed: {}", e))?;
+        Ok(true)
+    }
+
+    async fn register_device(
+        &self,
+        username: &str,
+        device_name: &str,
+        did: &str,
+        mini_config_jwt: &str,
+        ip: &str,
+        description: &str,
+    ) -> Result<(), String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| format!("get current timestamp failed: {}", e))?
+            .as_secs() as i64;
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO devices (owner, device_name, did, ip, description, mini_config_jwt, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![username, device_name, did, ip, description, mini_config_jwt, now, now],
+        )
+        .map_err(|e| format!("insert SN device failed: {}", e))?;
+        Ok(())
+    }
+}
 
 // ============================================================================
 // Key Data Management
@@ -722,7 +820,7 @@ pub async fn create_formula_sn_config() {
 
     // Create initial database
     let sn_db_path = sn_dir.join("sn_db.sqlite3");
-    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy())
+    let db = DevSnDb::new_by_path(&sn_db_path.to_string_lossy())
         .await
         .unwrap();
     db.initialize_database().await.unwrap();
@@ -822,7 +920,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder, sn_ip: IpAddr, sn_base_ho
 
     // Create initial database
     let sn_db_path = builder.root_dir().join("sn_server").join("sn_db.sqlite3");
-    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy())
+    let db = DevSnDb::new_by_path(&sn_db_path.to_string_lossy())
         .await
         .unwrap();
     db.initialize_database().await.unwrap();
@@ -881,7 +979,7 @@ pub async fn register_user_to_sn(
     )
     .map_err(|e| format!("Failed to parse {:?}: {}", zone_record_path, e))?;
 
-    let db = SqliteSnDB::new_by_path(&sn_db_path).await.unwrap();
+    let db = DevSnDb::new_by_path(&sn_db_path).await.unwrap();
     let public_key_json = json!({
         "kty": "OKP",
         "crv": "Ed25519",
@@ -1011,7 +1109,7 @@ pub async fn register_device_to_sn(
         .map_err(|e| format!("Failed to serialize device info: {}", e))?;
 
     // Open SN database
-    let db = SqliteSnDB::new_by_path(sn_db_path)
+    let db = DevSnDb::new_by_path(sn_db_path)
         .await
         .map_err(|e| format!("Failed to open SN database: {}", e))?;
 
@@ -1313,13 +1411,13 @@ pub async fn create_test_env_configs() {
     )
     .await;
 
-    // 4. Initialize SN database (if SnDB is available)
+    // 4. Initialize SN database
     // let sn_db_path = builder.root_dir().join("sn_db.sqlite3");
     // if sn_db_path.exists() {
     //     std::fs::remove_file(&sn_db_path).unwrap();
     // }
     //
-    // let db = SnDB::new_by_path(sn_db_path.to_str().unwrap()).unwrap();
+    // let db = DevSnDb::new_by_path(sn_db_path.to_str().unwrap()).await.unwrap();
     // db.initialize_database();
     //
     // // Insert activation codes

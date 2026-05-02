@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, RwLock as StdRwLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::sync::{oneshot, Mutex, Notify, RwLock};
@@ -147,6 +147,13 @@ pub enum KEventDaemonRequest {
     UnregisterReader {
         reader_id: String,
     },
+    UpdateReader {
+        reader_id: String,
+        #[serde(default)]
+        add: Vec<String>,
+        #[serde(default)]
+        remove: Vec<String>,
+    },
     PublishGlobal {
         event: Event,
     },
@@ -173,6 +180,12 @@ pub enum KEventDaemonResponse {
 pub trait KEventDaemonBridge: Send + Sync {
     async fn register_reader(&self, reader_id: &str, patterns: &[String]) -> KEventResult<()>;
     async fn unregister_reader(&self, reader_id: &str) -> KEventResult<()>;
+    async fn update_reader(
+        &self,
+        reader_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> KEventResult<()>;
     async fn publish_global(&self, event: &Event) -> KEventResult<()>;
 }
 
@@ -200,7 +213,7 @@ struct KEventClientInner {
 }
 
 struct ReaderState {
-    patterns: Vec<String>,
+    patterns: StdRwLock<Vec<String>>,
     queue: Mutex<VecDeque<Event>>,
     notify: Notify,
     capacity: usize,
@@ -209,11 +222,23 @@ struct ReaderState {
 impl ReaderState {
     fn new(patterns: Vec<String>, capacity: usize) -> Self {
         Self {
-            patterns,
+            patterns: StdRwLock::new(patterns),
             queue: Mutex::new(VecDeque::new()),
             notify: Notify::new(),
             capacity,
         }
+    }
+
+    fn matches(&self, eventid: &str) -> bool {
+        let patterns = self.patterns.read().expect("patterns lock poisoned");
+        match_event_patterns(&patterns, eventid)
+    }
+
+    fn snapshot_patterns(&self) -> Vec<String> {
+        self.patterns
+            .read()
+            .expect("patterns lock poisoned")
+            .clone()
     }
 
     async fn push(&self, event: Event) {
@@ -247,7 +272,7 @@ impl KEventClientInner {
     async fn dispatch_event(&self, event: &Event) {
         let snapshot: Vec<Arc<ReaderState>> = self.readers.read().await.values().cloned().collect();
         for reader in snapshot {
-            if match_event_patterns(&reader.patterns, &event.eventid) {
+            if reader.matches(&event.eventid) {
                 reader.push(event.clone()).await;
             }
         }
@@ -260,7 +285,7 @@ impl KEventClientInner {
         let snapshot: Vec<Arc<ReaderState>> =
             self.readers.blocking_read().values().cloned().collect();
         for reader in snapshot {
-            if match_event_patterns(&reader.patterns, &event.eventid) {
+            if reader.matches(&event.eventid) {
                 reader.push_sync(event.clone());
             }
         }
@@ -427,12 +452,13 @@ impl KEventClient {
             ));
         }
 
+        let normalized = normalize_patterns(patterns);
         let reader_id = format!(
             "r_{}",
             self.inner.reader_seq.fetch_add(1, Ordering::Relaxed) + 1
         );
         let state = Arc::new(ReaderState::new(
-            patterns.clone(),
+            normalized.clone(),
             self.inner.reader_capacity.max(1),
         ));
         self.inner
@@ -449,7 +475,12 @@ impl KEventClient {
 
         if self.mode == KEventClientMode::Full && has_global_patterns {
             if let Some(bridge) = &self.bridge {
-                if let Err(err) = bridge.register_reader(&reader_id, &patterns).await {
+                let global_only: Vec<String> = normalized
+                    .iter()
+                    .filter(|p| is_global_pattern(p))
+                    .cloned()
+                    .collect();
+                if let Err(err) = bridge.register_reader(&reader_id, &global_only).await {
                     self.inner.readers.write().await.remove(&reader_id);
                     return Err(err);
                 }
@@ -690,6 +721,161 @@ fn shm_dispatch_thread(weak: Weak<KEventClientInner>) {
 impl EventReader {
     pub fn reader_id(&self) -> &str {
         &self.reader_id
+    }
+
+    /// Returns the current pattern set for this reader. Useful for tests
+    /// and observability; not part of the hot path.
+    pub async fn patterns(&self) -> Vec<String> {
+        let Some(inner) = self.inner.upgrade() else {
+            return Vec::new();
+        };
+        let readers = inner.readers.read().await;
+        match readers.get(&self.reader_id) {
+            Some(state) => state.snapshot_patterns(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Subscribe additional patterns. Patterns already covered by an existing
+    /// pattern are silently swallowed; patterns that subsume existing ones
+    /// replace them. Existing queued events are preserved. Future-only:
+    /// events that arrived before this call are not retroactively delivered.
+    pub async fn add_patterns(&self, patterns: Vec<String>) -> KEventResult<()> {
+        if patterns.is_empty() {
+            return Ok(());
+        }
+        let inner = self
+            .inner
+            .upgrade()
+            .ok_or_else(|| KEventError::ReaderClosed(self.reader_id.clone()))?;
+
+        let mut has_global = false;
+        let mut has_local = false;
+        for pattern in &patterns {
+            validate_pattern(pattern)?;
+            if is_global_pattern(pattern) {
+                has_global = true;
+            } else {
+                has_local = true;
+            }
+        }
+        if has_global && !self.has_global_patterns {
+            return Err(KEventError::NotSupported(
+                "cannot add global patterns to a reader with no global subscriptions; \
+                 create a new reader instead"
+                    .to_string(),
+            ));
+        }
+        let _ = has_local;
+
+        let state = {
+            let readers = inner.readers.read().await;
+            readers.get(&self.reader_id).cloned()
+        }
+        .ok_or_else(|| KEventError::ReaderClosed(self.reader_id.clone()))?;
+
+        let (effective_added_globals, removed_redundant_globals) = {
+            let mut guard = state.patterns.write().expect("patterns lock poisoned");
+            let current = guard.clone();
+            let mut combined = current.clone();
+            combined.extend(patterns);
+            let normalized = normalize_patterns(combined);
+
+            let added: Vec<String> = normalized
+                .iter()
+                .filter(|p| !current.contains(p))
+                .cloned()
+                .collect();
+            let removed: Vec<String> = current
+                .iter()
+                .filter(|p| !normalized.contains(p))
+                .cloned()
+                .collect();
+
+            *guard = normalized;
+
+            (
+                added
+                    .into_iter()
+                    .filter(|p| is_global_pattern(p))
+                    .collect::<Vec<_>>(),
+                removed
+                    .into_iter()
+                    .filter(|p| is_global_pattern(p))
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        if self.mode == KEventClientMode::Full
+            && self.has_global_patterns
+            && (!effective_added_globals.is_empty() || !removed_redundant_globals.is_empty())
+        {
+            if let Some(bridge) = &self.bridge {
+                bridge
+                    .update_reader(
+                        &self.reader_id,
+                        &effective_added_globals,
+                        &removed_redundant_globals,
+                    )
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Unsubscribe specific patterns by exact match. Patterns not currently
+    /// in the set are silently ignored. Errors if the removal would leave
+    /// the reader with no patterns. Future-only: already-queued events
+    /// matching removed patterns remain pull-able.
+    pub async fn remove_patterns(&self, patterns: Vec<String>) -> KEventResult<()> {
+        if patterns.is_empty() {
+            return Ok(());
+        }
+        let inner = self
+            .inner
+            .upgrade()
+            .ok_or_else(|| KEventError::ReaderClosed(self.reader_id.clone()))?;
+
+        let state = {
+            let readers = inner.readers.read().await;
+            readers.get(&self.reader_id).cloned()
+        }
+        .ok_or_else(|| KEventError::ReaderClosed(self.reader_id.clone()))?;
+
+        let removed_globals: Vec<String> = {
+            let mut guard = state.patterns.write().expect("patterns lock poisoned");
+            let next: Vec<String> = guard
+                .iter()
+                .filter(|p| !patterns.iter().any(|r| r == *p))
+                .cloned()
+                .collect();
+            if next.is_empty() {
+                return Err(KEventError::InvalidPattern(
+                    "reader must keep at least one pattern".to_string(),
+                ));
+            }
+            let removed: Vec<String> = guard
+                .iter()
+                .filter(|p| !next.contains(p) && is_global_pattern(p))
+                .cloned()
+                .collect();
+            *guard = next;
+            removed
+        };
+
+        if self.mode == KEventClientMode::Full
+            && self.has_global_patterns
+            && !removed_globals.is_empty()
+        {
+            if let Some(bridge) = &self.bridge {
+                bridge
+                    .update_reader(&self.reader_id, &[], &removed_globals)
+                    .await?;
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn pull_event(&self, timeout_ms: Option<u64>) -> KEventResult<Option<Event>> {
@@ -953,6 +1139,93 @@ pub fn match_global_pattern(pattern: &str, eventid: &str) -> bool {
     match_global_segments(&p_segments, &e_segments)
 }
 
+/// Returns true iff every eventid that would match `narrow` also matches `broad`.
+///
+/// This is *pattern-vs-pattern* containment, not the eventid-vs-pattern check
+/// done by `match_event_patterns`. It is conservative: cases that are difficult
+/// to decide return false, so callers may keep two patterns that are actually
+/// redundant (extra cost: one more entry in the match loop), but will never
+/// silently drop a pattern whose match set is larger than the keeper's.
+pub fn pattern_subsumes(broad: &str, narrow: &str) -> bool {
+    if broad == narrow {
+        return true;
+    }
+    let broad_global = is_global_pattern(broad);
+    let narrow_global = is_global_pattern(narrow);
+    if broad_global != narrow_global {
+        return false;
+    }
+    if !broad_global {
+        // Local patterns are literal names with no wildcards; only equality subsumes.
+        return false;
+    }
+    let broad_segs: Vec<&str> = broad.split('/').skip(1).collect();
+    let narrow_segs: Vec<&str> = narrow.split('/').skip(1).collect();
+    pattern_subsumes_segments(&broad_segs, &narrow_segs)
+}
+
+fn pattern_subsumes_segments(broad: &[&str], narrow: &[&str]) -> bool {
+    match (broad.first(), narrow.first()) {
+        (None, None) => true,
+        (None, Some(_)) => false,
+        (Some(_), None) => broad.iter().all(|s| *s == "**"),
+        (Some(&b0), Some(&n0)) => match (b0, n0) {
+            ("**", "**") => {
+                // L(Σ*·B) ⊇ L(Σ*·N) iff L(Σ*·B) ⊇ L(N): the leading Σ* on the
+                // narrow side adds no constraints the broad's leading Σ* can't
+                // already absorb, so peel ** from narrow and recurse.
+                pattern_subsumes_segments(broad, &narrow[1..])
+            }
+            ("**", _) => {
+                // broad's ** matches zero segments → rest-of-broad must subsume narrow
+                if pattern_subsumes_segments(&broad[1..], narrow) {
+                    return true;
+                }
+                // OR ** absorbs narrow's first single-segment match (n0 is "*"
+                // or literal here, exactly one segment).
+                pattern_subsumes_segments(broad, &narrow[1..])
+            }
+            (_, "**") => {
+                // narrow's L is broader at this position than broad's; not subsumed
+                // (conservative: there are corner cases like an all-** broad tail
+                // that could still be true, but the recursion above handles those
+                // via the ("**", "**") arm).
+                false
+            }
+            ("*", _) => {
+                // broad's "*" accepts any single segment; narrow's "*" or literal
+                // is also a single segment → accepted. Compare the rest.
+                pattern_subsumes_segments(&broad[1..], &narrow[1..])
+            }
+            (_, "*") => {
+                // narrow's "*" can produce a segment broad's literal doesn't match.
+                false
+            }
+            (b_lit, n_lit) => {
+                if b_lit != n_lit {
+                    return false;
+                }
+                pattern_subsumes_segments(&broad[1..], &narrow[1..])
+            }
+        },
+    }
+}
+
+/// Normalize a pattern set: drop exact duplicates and patterns that are
+/// subsumed by another pattern in the same set. Order is preserved among
+/// the survivors.
+pub fn normalize_patterns(patterns: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(patterns.len());
+    for p in patterns {
+        if out.iter().any(|kept| pattern_subsumes(kept, &p)) {
+            continue;
+        }
+        out.retain(|kept| !pattern_subsumes(&p, kept));
+        out.push(p);
+    }
+    out
+}
+
 fn match_global_segments(pattern: &[&str], event: &[&str]) -> bool {
     if pattern.is_empty() {
         return event.is_empty();
@@ -1023,6 +1296,15 @@ mod tests {
             Ok(())
         }
 
+        async fn update_reader(
+            &self,
+            _reader_id: &str,
+            _add: &[String],
+            _remove: &[String],
+        ) -> KEventResult<()> {
+            Ok(())
+        }
+
         async fn publish_global(&self, event: &Event) -> KEventResult<()> {
             self.published.lock().await.push(event.clone());
             Ok(())
@@ -1061,6 +1343,68 @@ mod tests {
         assert!(!match_event_patterns(&patterns, "/other/task_001"));
     }
 
+    #[test]
+    fn test_pattern_subsumes_basic() {
+        assert!(pattern_subsumes("/sys/**", "/sys/**"));
+        assert!(pattern_subsumes("/sys/**", "/sys/node/online"));
+        assert!(pattern_subsumes("/sys/**", "/sys/node/*"));
+        assert!(pattern_subsumes("/sys/**", "/sys/**/online"));
+        assert!(pattern_subsumes("/sys/**", "/sys/*"));
+        assert!(pattern_subsumes("/sys/**", "/sys"));
+
+        assert!(!pattern_subsumes("/sys/node/*", "/sys/**"));
+        assert!(!pattern_subsumes("/sys/*", "/sys/**"));
+        assert!(!pattern_subsumes("/sys/*", "/sys/a/b"));
+        assert!(!pattern_subsumes("/sys/node/online", "/sys/node/offline"));
+        assert!(!pattern_subsumes("/sys/**", "/other/x"));
+
+        // local patterns: only equality subsumes
+        assert!(pattern_subsumes("heartbeat_tick", "heartbeat_tick"));
+        assert!(!pattern_subsumes("heartbeat_tick", "heartbeat_tock"));
+        // global vs local are disjoint
+        assert!(!pattern_subsumes("/sys/**", "heartbeat_tick"));
+        assert!(!pattern_subsumes("heartbeat_tick", "/sys/x"));
+    }
+
+    #[test]
+    fn test_pattern_subsumes_star() {
+        assert!(pattern_subsumes("/sys/*/online", "/sys/node/online"));
+        assert!(pattern_subsumes("/sys/*/online", "/sys/*/online"));
+        assert!(!pattern_subsumes("/sys/*/online", "/sys/*/offline"));
+        assert!(!pattern_subsumes(
+            "/sys/*/online",
+            "/sys/node/sub/online"
+        ));
+        // ** absorbs star matches too
+        assert!(pattern_subsumes("/**/online", "/sys/node/online"));
+        assert!(pattern_subsumes("/**/online", "/sys/*/online"));
+    }
+
+    #[test]
+    fn test_normalize_patterns() {
+        // broad pattern swallows a later finer one
+        let normalized =
+            normalize_patterns(vec!["/sys/**".into(), "/sys/node/online".into()]);
+        assert_eq!(normalized, vec!["/sys/**".to_string()]);
+
+        // finer pattern arriving first is removed when a later broad pattern subsumes it
+        let normalized =
+            normalize_patterns(vec!["/sys/node/online".into(), "/sys/**".into()]);
+        assert_eq!(normalized, vec!["/sys/**".to_string()]);
+
+        // unrelated patterns coexist
+        let normalized =
+            normalize_patterns(vec!["/sys/**".into(), "/taskmgr/**".into()]);
+        assert_eq!(
+            normalized,
+            vec!["/sys/**".to_string(), "/taskmgr/**".to_string()]
+        );
+
+        // exact duplicates dropped
+        let normalized = normalize_patterns(vec!["/sys/**".into(), "/sys/**".into()]);
+        assert_eq!(normalized, vec!["/sys/**".to_string()]);
+    }
+
     #[tokio::test]
     async fn test_local_pub_sub() {
         let client = KEventClient::new_local("node_a");
@@ -1085,6 +1429,121 @@ mod tests {
             .unwrap();
         let event = reader.pull_event(Some(50)).await.unwrap().unwrap();
         assert_eq!(event.eventid, "/taskmgr/new/task_001");
+    }
+
+    #[tokio::test]
+    async fn test_add_remove_patterns_local() {
+        let client = KEventClient::new_local("node_a");
+        let reader = client
+            .create_event_reader(vec!["heartbeat_tick".to_string()])
+            .await
+            .unwrap();
+
+        // Initially "tock" is not subscribed
+        client
+            .pub_event("heartbeat_tock", json!({"a": 1}))
+            .await
+            .unwrap();
+        assert!(reader.pull_event(Some(20)).await.unwrap().is_none());
+
+        // Add "tock" subscription
+        reader
+            .add_patterns(vec!["heartbeat_tock".to_string()])
+            .await
+            .unwrap();
+        client
+            .pub_event("heartbeat_tock", json!({"a": 2}))
+            .await
+            .unwrap();
+        let ev = reader.pull_event(Some(50)).await.unwrap().unwrap();
+        assert_eq!(ev.eventid, "heartbeat_tock");
+
+        // Remove "tick"
+        reader
+            .remove_patterns(vec!["heartbeat_tick".to_string()])
+            .await
+            .unwrap();
+        client
+            .pub_event("heartbeat_tick", json!({"a": 3}))
+            .await
+            .unwrap();
+        // Tick removed → no delivery
+        assert!(reader.pull_event(Some(20)).await.unwrap().is_none());
+        // Tock still works
+        client
+            .pub_event("heartbeat_tock", json!({"a": 4}))
+            .await
+            .unwrap();
+        let ev = reader.pull_event(Some(50)).await.unwrap().unwrap();
+        assert_eq!(ev.eventid, "heartbeat_tock");
+
+        // Cannot remove the last pattern
+        let err = reader
+            .remove_patterns(vec!["heartbeat_tock".to_string()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, KEventError::InvalidPattern(_)));
+    }
+
+    #[tokio::test]
+    async fn test_add_patterns_subsumes_finer() {
+        let client = KEventClient::new_local("node_a");
+        let reader = client
+            .create_event_reader(vec!["/sys/node/online".to_string()])
+            .await
+            .unwrap();
+
+        // Add a broader pattern; the finer one should get swallowed.
+        reader
+            .add_patterns(vec!["/sys/**".to_string()])
+            .await
+            .unwrap();
+        let patterns = reader.patterns().await;
+        assert_eq!(patterns, vec!["/sys/**".to_string()]);
+
+        // Adding a finer pattern that's already covered is a no-op.
+        reader
+            .add_patterns(vec!["/sys/node/offline".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(reader.patterns().await, vec!["/sys/**".to_string()]);
+
+        // Both event flavors deliver because /sys/** matches them.
+        client
+            .pub_event("/sys/node/online", json!({"x": 1}))
+            .await
+            .unwrap();
+        client
+            .pub_event("/sys/foo/bar", json!({"x": 2}))
+            .await
+            .unwrap();
+        let mut got = vec![];
+        while let Some(ev) = reader.pull_event(Some(50)).await.unwrap() {
+            got.push(ev.eventid);
+        }
+        assert!(got.contains(&"/sys/node/online".to_string()));
+        assert!(got.contains(&"/sys/foo/bar".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_add_patterns_preserves_queue() {
+        let client = KEventClient::new_local("node_a");
+        let reader = client
+            .create_event_reader(vec!["heartbeat_tick".to_string()])
+            .await
+            .unwrap();
+
+        client
+            .pub_event("heartbeat_tick", json!({"a": 1}))
+            .await
+            .unwrap();
+        // Add a new pattern WITHOUT pulling first → queued event must survive.
+        reader
+            .add_patterns(vec!["heartbeat_tock".to_string()])
+            .await
+            .unwrap();
+        let ev = reader.pull_event(Some(20)).await.unwrap().unwrap();
+        assert_eq!(ev.eventid, "heartbeat_tick");
     }
 
     #[tokio::test]

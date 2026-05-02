@@ -9,7 +9,6 @@ mod group_mgr;
 mod msg_center_client;
 pub mod msg_queue;
 mod scheduler_client;
-mod sn_client;
 mod system_config;
 mod task_mgr;
 mod thunk_object;
@@ -40,11 +39,16 @@ pub use aicc_usage_log::*;
 pub use app_doc::*;
 pub use content_mgr_client::*;
 pub use control_panel::*;
+pub use cyfs_gateway_api::{
+    get_real_sn_host_name, sn_bind_zone_config, sn_get_device_info, sn_register_device,
+    sn_set_user_did_document, sn_update_device_info, SnBindZoneConfigReq, SnClient,
+    SnGetDeviceInfoReq, SnHandler, SnRegisterDeviceReq, SnServerHandler, SnSetUserDidDocumentReq,
+    SnUpdateDeviceInfoReq,
+};
 pub use group_mgr::*;
 pub use msg_center_client::*;
 pub use repo_client::*;
 pub use scheduler_client::*;
-pub use sn_client::*;
 pub use system_config::*;
 pub use task_mgr::*;
 pub use thunk_object::*;

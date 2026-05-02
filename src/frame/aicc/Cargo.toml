@@ -18,7 +18,6 @@ bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true } 
 buckyos-http-server = { workspace = true }
-server-runner = { workspace = true }
 reqwest = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 name-lib = { workspace = true }

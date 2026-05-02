@@ -28,7 +28,6 @@ sysinfo ={ workspace = true }
 chrono = { workspace = true }
 if-addrs ={ workspace = true }
 anyhow={ workspace = true }
-server-runner = { workspace = true }
 buckyos-http-server = { workspace = true }
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }

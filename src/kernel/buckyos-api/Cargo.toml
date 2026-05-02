@@ -25,10 +25,11 @@ http-body-util = { workspace = true }
 bytes = { workspace = true }
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
-cyfs-sn = { workspace = true }
+cyfs-gateway-api = { workspace = true }
 sha2 = { workspace = true }
 memmap2 = "0.9.5"
 libc = "0.2.177"
+rusqlite = { workspace = true }
 
 buckyos-kit = { workspace = true }
 package-lib = { workspace = true }
