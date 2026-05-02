@@ -78,3 +78,4 @@ uv.lock
 test/aicc_test/deno.lock
 test/aicc_test/reports/*
 test/workflow_test/reports/*
+src/rootfs/bin/workflow/workflow
