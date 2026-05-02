@@ -19,8 +19,36 @@ use log::*;
 use ndn_lib::ObjId;
 use serde_json::{json, Value};
 use server_runner::*;
+use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
+
+const TASK_EVENT_DATA_INLINE_LIMIT_BYTES: usize = 60 * 1024;
+const TASK_EVENT_RATE_LIMIT: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy)]
+enum TaskChangeKind {
+    Status,
+    Error,
+    Data,
+    Progress,
+}
+
+impl TaskChangeKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            TaskChangeKind::Status => "status",
+            TaskChangeKind::Error => "error",
+            TaskChangeKind::Data => "data",
+            TaskChangeKind::Progress => "progress",
+        }
+    }
+
+    fn always_emit(self) -> bool {
+        matches!(self, TaskChangeKind::Status | TaskChangeKind::Error)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RequestContext {
@@ -105,6 +133,7 @@ fn unique_task_name_conflict(err: &RPCErrors) -> bool {
 struct TaskManagerService {
     kevent_client: KEventClient,
     db: Arc<TaskDb>,
+    last_event_at: Arc<StdMutex<HashMap<i64, Instant>>>,
 }
 
 impl TaskManagerService {
@@ -112,6 +141,7 @@ impl TaskManagerService {
         TaskManagerService {
             kevent_client: KEventClient::new_full(TASK_MANAGER_SERVICE_NAME, None),
             db,
+            last_event_at: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
 
@@ -119,22 +149,45 @@ impl TaskManagerService {
         app_id == "kernel" || app_id == "system"
     }
 
-    fn task_status_event_id(task_id: i64) -> String {
+    fn task_event_id(task_id: i64) -> String {
         format!("/task_mgr/{}", task_id)
     }
 
-    async fn publish_task_status_changed_event(
+    fn root_event_id(root_id: &str) -> Option<String> {
+        let trimmed = root_id.trim();
+        if trimmed.is_empty() || trimmed.contains('/') {
+            return None;
+        }
+        Some(format!("/task_mgr/{}", trimmed))
+    }
+
+    /// Returns true if the rate-limit gate is open and updates the last-emit
+    /// timestamp. `Status` / `Error` kinds always pass and refresh the gate so
+    /// a low-priority emit doesn't fire right after a critical one.
+    fn check_and_update_rate_limit(&self, task_id: i64, kind: TaskChangeKind) -> bool {
+        let now = Instant::now();
+        let mut guard = self.last_event_at.lock().unwrap();
+        if kind.always_emit() {
+            guard.insert(task_id, now);
+            return true;
+        }
+        match guard.get(&task_id) {
+            Some(prev) if now.duration_since(*prev) < TASK_EVENT_RATE_LIMIT => false,
+            _ => {
+                guard.insert(task_id, now);
+                true
+            }
+        }
+    }
+
+    fn build_event_payload(
         &self,
         before: &Task,
         after: &Task,
+        kind: TaskChangeKind,
         source_method: &str,
-    ) {
-        if before.status == after.status {
-            return;
-        }
-
-        let event_id = Self::task_status_event_id(after.id);
-        let payload = json!({
+    ) -> Value {
+        let mut payload = json!({
             "task_id": after.id,
             "root_id": after.root_id,
             "parent_id": after.parent_id,
@@ -147,18 +200,89 @@ impl TaskManagerService {
             "message": after.message,
             "updated_at": after.updated_at,
             "source_method": source_method,
+            "change_kind": kind.as_str(),
         });
 
+        let data_size = serde_json::to_vec(&after.data).map(|v| v.len()).unwrap_or(0);
+        let map = payload.as_object_mut().expect("payload is a json object");
+        if data_size <= TASK_EVENT_DATA_INLINE_LIMIT_BYTES {
+            map.insert("data".to_string(), after.data.clone());
+        } else {
+            map.insert("data_omitted".to_string(), Value::Bool(true));
+            map.insert(
+                "data_size".to_string(),
+                Value::Number(serde_json::Number::from(data_size as u64)),
+            );
+        }
+        payload
+    }
+
+    /// Publish a task-changed event. Status / Error transitions always fire;
+    /// Data / Progress changes are rate-limited per task_id at
+    /// TASK_EVENT_RATE_LIMIT. Subscribers can listen on `/task_mgr/{task_id}`
+    /// for a single task, or `/task_mgr/{root_id}` to receive every event in
+    /// the subtree (root + descendants).
+    async fn publish_task_changed_event(
+        &self,
+        before: &Task,
+        after: &Task,
+        kind: TaskChangeKind,
+        source_method: &str,
+    ) {
+        if !self.check_and_update_rate_limit(after.id, kind) {
+            return;
+        }
+
+        let payload = self.build_event_payload(before, after, kind, source_method);
+
+        let task_event_id = Self::task_event_id(after.id);
         if let Err(err) = self
             .kevent_client
-            .pub_event(event_id.as_str(), payload)
+            .pub_event(task_event_id.as_str(), payload.clone())
             .await
         {
             warn!(
-                "task_mgr.publish_task_status_changed_event failed: event_id={} task_id={} err={}",
-                event_id, after.id, err
+                "task_mgr.publish_task_changed_event failed: event_id={} task_id={} kind={} err={}",
+                task_event_id,
+                after.id,
+                kind.as_str(),
+                err
             );
         }
+
+        // Also fan out to the root-id channel so subtree subscribers see
+        // every descendant event. Root tasks (root_id == task_id) are not
+        // republished — the per-task channel already covers them.
+        if let Some(root_event_id) = Self::root_event_id(after.root_id.as_str()) {
+            if root_event_id != task_event_id {
+                if let Err(err) = self
+                    .kevent_client
+                    .pub_event(root_event_id.as_str(), payload)
+                    .await
+                {
+                    warn!(
+                        "task_mgr.publish_task_changed_event root fanout failed: event_id={} task_id={} err={}",
+                        root_event_id, after.id, err
+                    );
+                }
+            }
+        }
+    }
+
+    fn diff_kind(before: &Task, after: &Task) -> Option<TaskChangeKind> {
+        if before.status != after.status {
+            return Some(TaskChangeKind::Status);
+        }
+        if (before.progress - after.progress).abs() > f32::EPSILON {
+            return Some(TaskChangeKind::Progress);
+        }
+        if before.data != after.data {
+            return Some(TaskChangeKind::Data);
+        }
+        if before.message != after.message {
+            return Some(TaskChangeKind::Data);
+        }
+        None
     }
 
     fn can_read_task(&self, ctx: &RequestContext, task: &Task) -> bool {
@@ -229,8 +353,8 @@ impl TaskManagerService {
             .map_err(|err| err.to_string())?;
 
         let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
-        if before_task.status != after_task.status {
-            self.publish_task_status_changed_event(&before_task, &after_task, source_method)
+        if let Some(kind) = Self::diff_kind(&before_task, &after_task) {
+            self.publish_task_changed_event(&before_task, &after_task, kind, source_method)
                 .await;
         }
         Ok(after_task)
@@ -249,8 +373,13 @@ impl TaskManagerService {
             .map_err(|err| err.to_string())?;
 
         let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
-        self.publish_task_status_changed_event(&before_task, &after_task, source_method)
-            .await;
+        self.publish_task_changed_event(
+            &before_task,
+            &after_task,
+            TaskChangeKind::Error,
+            source_method,
+        )
+        .await;
         Ok(after_task)
     }
 }
@@ -552,22 +681,18 @@ impl TaskManagerHandler for TaskManagerService {
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
-        if status.is_some() {
-            match self.load_task(id).await {
-                Ok(after_task) => {
-                    self.publish_task_status_changed_event(
-                        &before_task,
-                        &after_task,
-                        "update_task",
-                    )
-                    .await;
+        match self.load_task(id).await {
+            Ok(after_task) => {
+                if let Some(kind) = Self::diff_kind(&before_task, &after_task) {
+                    self.publish_task_changed_event(&before_task, &after_task, kind, "update_task")
+                        .await;
                 }
-                Err(err) => {
-                    warn!(
-                        "task_mgr.update_task status changed but failed to reload task {} for event publish: {}",
-                        id, err
-                    );
-                }
+            }
+            Err(err) => {
+                warn!(
+                    "task_mgr.update_task failed to reload task {} for event publish: {}",
+                    id, err
+                );
             }
         }
         Ok(())
@@ -606,9 +731,10 @@ impl TaskManagerHandler for TaskManagerService {
             {
                 match self.load_task(before_task.id).await {
                     Ok(after_task) => {
-                        self.publish_task_status_changed_event(
+                        self.publish_task_changed_event(
                             &before_task,
                             &after_task,
+                            TaskChangeKind::Status,
                             "cancel_task_recursive",
                         )
                         .await;
@@ -631,9 +757,10 @@ impl TaskManagerHandler for TaskManagerService {
             if before_task.status != TaskStatus::Canceled {
                 match self.load_task(id).await {
                     Ok(after_task) => {
-                        self.publish_task_status_changed_event(
+                        self.publish_task_changed_event(
                             &before_task,
                             &after_task,
+                            TaskChangeKind::Status,
                             "cancel_task",
                         )
                         .await;
@@ -687,9 +814,10 @@ impl TaskManagerHandler for TaskManagerService {
         if before_task.status != status {
             match self.load_task(id).await {
                 Ok(after_task) => {
-                    self.publish_task_status_changed_event(
+                    self.publish_task_changed_event(
                         &before_task,
                         &after_task,
+                        TaskChangeKind::Status,
                         "update_task_status",
                     )
                     .await;
@@ -713,8 +841,8 @@ impl TaskManagerHandler for TaskManagerService {
         _ctx: RPCContext,
     ) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
+        let before_task = self.load_task(id).await?;
+        if !self.can_write_task(&request_ctx, &before_task) {
             return Err(RPCErrors::NoPermission(
                 "No permission to update task".to_string(),
             ));
@@ -740,6 +868,23 @@ impl TaskManagerHandler for TaskManagerService {
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
+        match self.load_task(id).await {
+            Ok(after_task) => {
+                self.publish_task_changed_event(
+                    &before_task,
+                    &after_task,
+                    TaskChangeKind::Progress,
+                    "update_task_progress",
+                )
+                .await;
+            }
+            Err(err) => {
+                warn!(
+                    "task_mgr.update_task_progress failed to reload task {} for event publish: {}",
+                    id, err
+                );
+            }
+        }
         Ok(())
     }
 
@@ -764,9 +909,10 @@ impl TaskManagerHandler for TaskManagerService {
 
         match self.load_task(id).await {
             Ok(after_task) => {
-                self.publish_task_status_changed_event(
+                self.publish_task_changed_event(
                     &before_task,
                     &after_task,
+                    TaskChangeKind::Error,
                     "update_task_error",
                 )
                 .await;
@@ -783,8 +929,8 @@ impl TaskManagerHandler for TaskManagerService {
 
     async fn handle_update_task_data(&self, id: i64, data: Value, _ctx: RPCContext) -> Result<()> {
         let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
+        let before_task = self.load_task(id).await?;
+        if !self.can_write_task(&request_ctx, &before_task) {
             return Err(RPCErrors::NoPermission(
                 "No permission to update task".to_string(),
             ));
@@ -796,6 +942,26 @@ impl TaskManagerHandler for TaskManagerService {
             .update_task_data(id, data_str.as_str())
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+
+        match self.load_task(id).await {
+            Ok(after_task) => {
+                if before_task.data != after_task.data {
+                    self.publish_task_changed_event(
+                        &before_task,
+                        &after_task,
+                        TaskChangeKind::Data,
+                        "update_task_data",
+                    )
+                    .await;
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "task_mgr.update_task_data failed to reload task {} for event publish: {}",
+                    id, err
+                );
+            }
+        }
         Ok(())
     }
 
