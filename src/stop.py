@@ -99,6 +99,7 @@ def kill_all():
     kill_process("kmsg")
     kill_process("msg_center")
     kill_process("opendan")
+    kill_process("workflow")
     kill_devtest_containers()
 
 

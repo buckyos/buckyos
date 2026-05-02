@@ -1,0 +1,60 @@
+{
+  "schema_version": "0.2.0",
+  "id": "wf-dv-failure-human-retry",
+  "name": "DV Failure Human Retry",
+  "trigger": { "type": "manual" },
+  "steps": [
+    {
+      "id": "caption_bad",
+      "name": "Caption Bad URL",
+      "type": "autonomous",
+      "executor": "service::aicc.vision.caption",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "resources": [
+          {
+            "kind": "url",
+            "url": "https://test.buckyos.io/dv/not-found-on-purpose.jpg",
+            "mime_hint": "image/jpeg"
+          }
+        ],
+        "model": "vision.caption.default"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } },
+        "required": ["text"]
+      },
+      "guards": {
+        "retry": { "max_attempts": 2, "fallback": "human" }
+      }
+    },
+    {
+      "id": "echo_caption",
+      "name": "Echo Caption",
+      "type": "autonomous",
+      "executor": "service::aicc.llm.chat",
+      "idempotent": true,
+      "input": {
+        "model": "llm.chat.default",
+        "messages": [
+          { "role": "system", "content": "Echo the caption text." },
+          { "role": "user", "content": "${caption_bad.output.text}" }
+        ],
+        "input_json": {
+          "response_format": { "type": "json_object" }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } },
+        "required": ["text"]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "caption_bad", "to": "echo_caption" },
+    { "from": "echo_caption" }
+  ]
+}

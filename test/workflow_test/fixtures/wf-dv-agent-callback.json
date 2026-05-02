@@ -1,0 +1,49 @@
+{
+  "schema_version": "0.2.0",
+  "id": "wf-dv-agent-callback",
+  "name": "DV Agent Callback",
+  "trigger": { "type": "manual" },
+  "steps": [
+    {
+      "id": "request_manual_tag",
+      "name": "Request Manual Tag",
+      "type": "human_required",
+      "skippable": false,
+      "prompt": "请为图片补充业务标签。也允许外部 Agent 通过 submit_step_output 回填。",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "source": { "type": "string" }
+        },
+        "required": ["tags", "source"]
+      }
+    },
+    {
+      "id": "echo_tags",
+      "name": "Echo Tags",
+      "type": "autonomous",
+      "executor": "service::aicc.llm.chat",
+      "idempotent": true,
+      "input": {
+        "model": "llm.chat.default",
+        "messages": [
+          { "role": "system", "content": "Echo the input as JSON." },
+          { "role": "user", "content": "${request_manual_tag.output.source}" }
+        ],
+        "input_json": {
+          "response_format": { "type": "json_object" }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } },
+        "required": ["text"]
+      }
+    }
+  ],
+  "edges": [
+    { "from": "request_manual_tag", "to": "echo_tags" },
+    { "from": "echo_tags" }
+  ]
+}

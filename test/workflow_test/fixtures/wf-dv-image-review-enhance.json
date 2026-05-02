@@ -1,0 +1,298 @@
+{
+  "schema_version": "0.2.0",
+  "id": "wf-dv-image-review-enhance",
+  "name": "DV Image Review Enhance",
+  "description": "从公网图片 URL 提取内容，人工确认后生成增强图。",
+  "trigger": { "type": "manual" },
+  "steps": [
+    {
+      "id": "caption_image",
+      "name": "Caption Image",
+      "type": "autonomous",
+      "executor": "service::aicc.vision.caption",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "resources": [
+          {
+            "kind": "url",
+            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+            "mime_hint": "image/jpeg"
+          }
+        ],
+        "input_json": {
+          "instruction": "Describe the image for a product quality review."
+        },
+        "model": "vision.caption.default"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "artifacts": { "type": "array" },
+          "usage": { "type": "object" }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "id": "ocr_image",
+      "name": "OCR Image",
+      "type": "autonomous",
+      "executor": "service::aicc.vision.ocr",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "resources": [
+          {
+            "kind": "url",
+            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+            "mime_hint": "image/jpeg"
+          }
+        ],
+        "input_json": { "language_hint": "auto" },
+        "model": "vision.ocr.default"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": ["string", "null"] },
+          "extra": { "type": ["object", "null"] }
+        }
+      }
+    },
+    {
+      "id": "detect_objects",
+      "name": "Detect Objects",
+      "type": "autonomous",
+      "executor": "service::aicc.vision.detect",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "resources": [
+          {
+            "kind": "url",
+            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+            "mime_hint": "image/jpeg"
+          }
+        ],
+        "input_json": { "max_objects": 20 },
+        "model": "vision.detect.default"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": ["string", "null"] },
+          "extra": { "type": ["object", "null"] }
+        }
+      }
+    },
+    {
+      "id": "summarize_review",
+      "name": "Summarize Review",
+      "type": "autonomous",
+      "executor": "service::aicc.llm.chat",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "model": "llm.chat.default",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a product image QA assistant. Return strict JSON."
+          },
+          {
+            "role": "user",
+            "content": "${caption_image.output.text}"
+          }
+        ],
+        "input_json": {
+          "response_format": { "type": "json_object" }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "extra": { "type": ["object", "null"] }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "id": "human_review",
+      "name": "Human Review",
+      "type": "human_confirm",
+      "skippable": false,
+      "subject_ref": "${summarize_review.output}",
+      "prompt": "请确认图片质检摘要是否可以继续进入增强流程。",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "decision": { "type": "string", "enum": ["approved", "rejected"] },
+          "comment": { "type": ["string", "null"] },
+          "final_subject": {
+            "type": "object",
+            "properties": {
+              "text": { "type": "string" },
+              "extra": { "type": ["object", "null"] }
+            },
+            "required": ["text"]
+          }
+        },
+        "required": ["decision", "final_subject"]
+      }
+    },
+    {
+      "id": "upscale_image",
+      "name": "Upscale Image",
+      "type": "autonomous",
+      "executor": "service::aicc.image.upscale",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "resources": [
+          {
+            "kind": "url",
+            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+            "mime_hint": "image/jpeg"
+          }
+        ],
+        "input_json": {
+          "scale": 2,
+          "response_format": "object_id",
+          "output": { "resource_format": "named_object" }
+        },
+        "model": "image.upscale.default"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "artifacts": { "type": "array" },
+          "text": { "type": ["string", "null"] }
+        },
+        "required": ["artifacts"]
+      }
+    },
+    {
+      "id": "remove_background",
+      "name": "Remove Background",
+      "type": "autonomous",
+      "executor": "service::aicc.image.bg_remove",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "resources": [
+          {
+            "kind": "url",
+            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+            "mime_hint": "image/jpeg"
+          }
+        ],
+        "input_json": {
+          "response_format": "object_id",
+          "output": { "resource_format": "named_object" }
+        },
+        "model": "image.bg_remove.default"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "artifacts": { "type": "array" },
+          "text": { "type": ["string", "null"] }
+        },
+        "required": ["artifacts"]
+      }
+    },
+    {
+      "id": "rejected_marker",
+      "name": "Rejected Marker",
+      "type": "autonomous",
+      "executor": "service::aicc.llm.chat",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "model": "llm.chat.default",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Echo the rejection record as JSON."
+          },
+          {
+            "role": "user",
+            "content": "${human_review.output.comment}"
+          }
+        ],
+        "input_json": {
+          "response_format": { "type": "json_object" }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } },
+        "required": ["text"]
+      }
+    },
+    {
+      "id": "completed_marker",
+      "name": "Completed Marker",
+      "type": "autonomous",
+      "executor": "service::aicc.llm.chat",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "model": "llm.chat.default",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Echo the enhancement summary as JSON."
+          },
+          {
+            "role": "user",
+            "content": "enhancement complete"
+          }
+        ],
+        "input_json": {
+          "response_format": { "type": "json_object" }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } },
+        "required": ["text"]
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "type": "parallel",
+      "id": "inspect_fork",
+      "branches": ["caption_image", "ocr_image", "detect_objects"],
+      "join": "all"
+    },
+    {
+      "type": "branch",
+      "id": "approval_branch",
+      "on": "${human_review.output.decision}",
+      "paths": {
+        "approved": "enhance_fork",
+        "rejected": "rejected_marker"
+      },
+      "max_iterations": 1
+    },
+    {
+      "type": "parallel",
+      "id": "enhance_fork",
+      "branches": ["upscale_image", "remove_background"],
+      "join": "all"
+    }
+  ],
+  "edges": [
+    { "from": "inspect_fork", "to": "summarize_review" },
+    { "from": "summarize_review", "to": "human_review" },
+    { "from": "human_review", "to": "approval_branch" },
+    { "from": "enhance_fork", "to": "completed_marker" },
+    { "from": "completed_marker" },
+    { "from": "rejected_marker" }
+  ]
+}

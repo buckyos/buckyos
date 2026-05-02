@@ -1,0 +1,31 @@
+{
+  "schema_version": "0.2.0",
+  "id": "wf-dv-idempotent-cache",
+  "name": "DV Idempotent Cache",
+  "trigger": { "type": "manual" },
+  "steps": [
+    {
+      "id": "caption",
+      "name": "Caption",
+      "type": "autonomous",
+      "executor": "service::aicc.vision.caption",
+      "idempotent": true,
+      "input": {
+        "resources": [
+          {
+            "kind": "url",
+            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+            "mime_hint": "image/jpeg"
+          }
+        ],
+        "model": "vision.caption.default"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } },
+        "required": ["text"]
+      }
+    }
+  ],
+  "edges": [{ "from": "caption" }]
+}

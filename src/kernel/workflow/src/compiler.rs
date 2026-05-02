@@ -215,6 +215,32 @@ impl WorkflowGraph {
                 }
                 stack.push(next.clone());
             }
+            // Branches/steps inside a parallel or for_each scope have no edges
+            // back out to whatever runs after the scope joins. Logically the
+            // scope's explicit successors only run once every branch/step has
+            // completed, so they are reachable from each member. We push only
+            // the *explicit* successors (edges from `workflow.edges`) to avoid
+            // making sibling branches upstream of each other.
+            for (parallel_id, branches) in &self.parallel_branches {
+                if branches.iter().any(|b| b == &current) {
+                    for next in self.explicit_successors(parallel_id) {
+                        if next == target {
+                            return true;
+                        }
+                        stack.push(next.clone());
+                    }
+                }
+            }
+            for (for_each_id, steps) in &self.for_each_steps {
+                if steps.iter().any(|s| s == &current) {
+                    for next in self.explicit_successors(for_each_id) {
+                        if next == target {
+                            return true;
+                        }
+                        stack.push(next.clone());
+                    }
+                }
+            }
         }
         false
     }

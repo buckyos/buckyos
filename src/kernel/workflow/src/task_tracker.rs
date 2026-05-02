@@ -288,10 +288,13 @@ impl TaskManagerTaskTracker {
             return Ok(task_id);
         }
 
+        // task table has UNIQUE(app_id, user_id, name); two runs of the same
+        // workflow share workflow_name, so include run_id to disambiguate.
+        let task_name = format!("{} [{}]", run.workflow_name, run.run_id);
         let task = self
             .client
             .create_task(
-                run.workflow_name.as_str(),
+                task_name.as_str(),
                 "workflow/run",
                 Some(json!({
                     "workflow": {
@@ -326,10 +329,11 @@ impl TaskManagerTaskTracker {
         }
         let parent_id = self.ensure_run_task(run).await?;
 
+        let task_name = format!("{} [{}/{}]", step.name, run.run_id, step.node_id);
         let task = self
             .client
             .create_task(
-                step.name.as_str(),
+                task_name.as_str(),
                 "workflow/step",
                 Some(initial_step_task_data(run, step)),
                 self.user_id.as_str(),
@@ -378,7 +382,7 @@ impl TaskManagerTaskTracker {
         let task = self
             .client
             .create_task(
-                &format!("{}[{}]", shard.for_each_id, shard.shard_index),
+                &format!("{}[{}] [{}]", shard.for_each_id, shard.shard_index, run.run_id),
                 "workflow/map_shard",
                 Some(initial_map_shard_task_data(run, shard)),
                 self.user_id.as_str(),
@@ -433,7 +437,7 @@ impl TaskManagerTaskTracker {
         let task = self
             .client
             .create_task(
-                &format!("thunk:{}", thunk.thunk_obj_id),
+                &format!("thunk:{} [{}]", thunk.thunk_obj_id, run.run_id),
                 "workflow/thunk",
                 Some(json!({
                     "workflow": {

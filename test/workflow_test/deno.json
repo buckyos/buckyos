@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "buckyos": "../../src/apps/sys_test/dist/buckyos-websdk/dist/node.mjs"
+  }
+}
