@@ -1753,10 +1753,16 @@ fn add_unique_mount(mounts: &mut Vec<String>, mount: String) {
 }
 
 pub fn llm_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec<String> {
-    let mut mounts = vec![format!(
-        "llm.{}",
-        provider_driver_mount_segment(provider_driver)
-    )];
+    // `llm.chat` 是 api_type 的线名（见 doc/aicc/aicc 逻辑模型目录.md §1.2），
+    // workflow 适配层把它当作默认 model_alias 使用（adapters/aicc.rs llm_schema
+    // 传 LLM_CHAT 进去时 default_alias 就是 "llm.chat"）。挂在每个 chat-capable
+    // LLM 模型上，让 `model_alias=llm.chat` 直接命中所有 chat 模型——这与
+    // gimini_method_mounts 给 vision 模型挂 bare `vision.caption` / `vision.ocr`
+    // 是同一思路，避免 router 在 fallback 到 `llm` 父节点时拿不到候选。
+    let mut mounts = vec![
+        "llm.chat".to_string(),
+        format!("llm.{}", provider_driver_mount_segment(provider_driver)),
+    ];
     let lowered = provider_model_id.to_ascii_lowercase();
     for family in ["gpt5", "gpt-5", "claude", "gemini", "gimini", "minimax"] {
         if lowered.contains(family) {
@@ -3347,7 +3353,7 @@ fn resolve_default_rootid(invoke_ctx: &InvokeCtx) -> String {
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .unwrap_or(AICC_SERVICE_SERVICE_NAME);
-    format!("{app_seed}#default")
+    format!("{app_seed}-default")
 }
 
 fn build_initial_aicc_task_data(
@@ -3998,7 +4004,7 @@ mod tests {
         );
         assert_eq!(
             task.data.get("rootid").and_then(|value| value.as_str()),
-            Some("aicc#default")
+            Some("aicc-default")
         );
     }
 

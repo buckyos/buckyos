@@ -147,18 +147,22 @@ pub async fn start_workflow_service() -> Result<()> {
     // 时退化为 noop（参考 §1.2 的"task_manager 不可用时仍可推进 adapter 主路径"）。
     let user_id = runtime.user_id.clone().unwrap_or_default();
     let app_id = runtime.app_id.clone();
-    let tracker = match runtime.get_task_mgr_client().await {
-        Ok(client) => {
-            info!("workflow tracker bound to task_manager");
-            ServiceTracker::from_task_manager(Arc::new(client), user_id, app_id)
-        }
+    let task_mgr_client = match runtime.get_task_mgr_client().await {
+        Ok(client) => Some(Arc::new(client)),
         Err(err) => {
             warn!(
                 "task_manager client unavailable, workflow runs will not be mirrored to task tree: {}",
                 err
             );
-            ServiceTracker::noop()
+            None
         }
+    };
+    let tracker = match task_mgr_client.clone() {
+        Some(client) => {
+            info!("workflow tracker bound to task_manager");
+            ServiceTracker::from_task_manager(client, user_id, app_id)
+        }
+        None => ServiceTracker::noop(),
     };
 
     // §1.2 / §9：一期 P0 必须有的 service:: adapter。aicc 拿不到客户端时不算
@@ -201,6 +205,7 @@ pub async fn start_workflow_service() -> Result<()> {
         runs.clone(),
         definitions.clone(),
         orchestrator.clone(),
+        task_mgr_client.clone(),
     );
     subscriptions.start().await;
 

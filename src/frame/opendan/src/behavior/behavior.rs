@@ -874,7 +874,7 @@ fn normalize_non_empty_str(value: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-fn resolve_rootid_for_task(agent_did: &str, session_id: Option<&str>) -> String {
+pub(super) fn resolve_rootid_for_task(agent_did: &str, session_id: Option<&str>) -> String {
     if let Some(session_id) = session_id.and_then(normalize_non_empty_str) {
         return session_id;
     }
@@ -885,7 +885,7 @@ fn resolve_rootid_for_task(agent_did: &str, session_id: Option<&str>) -> String 
         .filter(|part| !part.is_empty())
         .last()
         .unwrap_or("agent");
-    format!("{agent_name}#default")
+    format!("{agent_name}-default")
 }
 
 fn now_ms() -> u64 {

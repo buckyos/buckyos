@@ -498,6 +498,30 @@ impl GoogleGiminiProvider {
             ));
         }
 
+        // Google `/v1beta/models` 同时返回 alias（例如 `gemini-2.0-flash-lite`）
+        // 和它的版本快照（`gemini-2.0-flash-lite-001`），两者底层是同一个模型，
+        // 但 Google 弃用一般是先停版本快照、alias 再续命一段时间。如果两者并存
+        // 就把版本快照丢掉，只信 alias，避免路由命中已被 Google 拒绝的快照。
+        prefer_alias_over_versioned(&mut buckets.llm);
+        prefer_alias_over_versioned(&mut buckets.image);
+        prefer_alias_over_versioned(&mut buckets.embedding);
+        prefer_alias_over_versioned(&mut buckets.tts);
+        prefer_alias_over_versioned(&mut buckets.music);
+        prefer_alias_over_versioned(&mut buckets.video);
+
+        // Google 弃用模型时是按整个主版本族下架（例如 2.0 family 整体对新用户停服，
+        // 但 `gemini-2.0-flash` / `gemini-2.0-flash-lite` 这些 alias 仍然出现在
+        // `/v1beta/models` 列表里）。aicc 的设计也鼓励调用方用 family alias 而非
+        // 完整模型名，所以这里再加一道：每个 bucket 内识别 `gemini-X.Y-...` 的版本
+        // 前缀，只保留全局最大 (X,Y) 的那一族。无版本前缀的条目（如 `lyria-002` /
+        // `gemini-embedding-001`）当成"独立模型"原样保留。
+        keep_only_max_gemini_version(&mut buckets.llm);
+        keep_only_max_gemini_version(&mut buckets.image);
+        keep_only_max_gemini_version(&mut buckets.embedding);
+        keep_only_max_gemini_version(&mut buckets.tts);
+        keep_only_max_gemini_version(&mut buckets.music);
+        keep_only_max_gemini_version(&mut buckets.video);
+
         // Categories that the API never returns (lyria/veo are typically not
         // listed) fall back to defaults so we don't drop them on refresh.
         if buckets.embedding.is_empty() {
@@ -1919,6 +1943,24 @@ impl GoogleGiminiProvider {
             ai_methods::VISION_SEGMENT => "segments",
             _ => "captions",
         };
+        // Gemini 的 generateContent 响应里 vision 调用同样会带 usageMetadata，
+        // 不抽出来的话 UsageLoggingSink 在 emit Final 时会因为 summary.usage
+        // 缺失而打 missing_usage_protocol_error 跳过整条 usage row，导致
+        // /opt/buckyos/data/aicc/aicc-usage-log.db 里这部分调用丢账。
+        let usage = body.get("usageMetadata").map(|usage| AiUsage {
+            input_tokens: usage
+                .get("promptTokenCount")
+                .and_then(|value| value.as_u64()),
+            output_tokens: usage
+                .get("candidatesTokenCount")
+                .and_then(|value| value.as_u64()),
+            total_tokens: usage
+                .get("totalTokenCount")
+                .and_then(|value| value.as_u64()),
+        });
+        let cost = usage
+            .as_ref()
+            .and_then(|usage| self.estimate_cost_for_usage(provider_model, usage));
         let mut extra = Map::new();
         extra.insert(extra_key.to_string(), parsed);
         extra.insert("latency_ms".to_string(), Value::from(latency_ms));
@@ -1928,6 +1970,8 @@ impl GoogleGiminiProvider {
         );
         Ok(ProviderStartResult::Immediate(AiResponseSummary {
             text,
+            usage,
+            cost,
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -2301,6 +2345,92 @@ fn strip_gimini_model_prefix(name: &str) -> &str {
         .unwrap_or(name)
 }
 
+/// 在一份模型列表里识别 `gemini-X.Y-...` 形态的版本前缀，找到全局最大 (X,Y)，
+/// 把所有更老主版本族的条目都丢掉。无版本前缀的条目（例如 `lyria-002` /
+/// `gemini-embedding-001` / 不以 `gemini-` 开头的命名）原样保留——它们没有
+/// 跟谁竞争。
+///
+/// 设计目的：Google 弃用模型时是整个主版本族（2.0 family）一起对新用户停服，
+/// 但 alias（`gemini-2.0-flash` / `gemini-2.0-flash-lite`）仍然出现在
+/// `/v1beta/models` 列表里给老用户兼容；只看名字看不出 deprecation。
+/// 这里直接相信 Google 的命名约定：同时给出 N.M 和 N.M+1 时，N.M 已经是过气
+/// 的版本族，不应再被路由选中。
+fn keep_only_max_gemini_version(models: &mut Vec<String>) {
+    let mut max_version: Option<(u32, u32)> = None;
+    for name in models.iter() {
+        if let Some(v) = parse_gemini_major_minor(name) {
+            max_version = Some(match max_version {
+                Some(prev) if prev >= v => prev,
+                _ => v,
+            });
+        }
+    }
+    let Some(max) = max_version else { return };
+    models.retain(|name| match parse_gemini_major_minor(name) {
+        Some(v) => v >= max,
+        None => true,
+    });
+}
+
+/// 解析 `gemini-X.Y-...` 形态的主.次版本号。识别要求：
+/// - 必须以 `gemini-` 开头（其它命名族——`lyria-*` / `veo-*` / `text-embedding-*`
+///   ——不参与版本竞争，函数返回 None 让 caller 原样保留）。
+/// - 紧跟的 token 必须能解析成 `<u32>.<u32>` 形式（`2.5` / `1.5` / `3.0`）。
+fn parse_gemini_major_minor(name: &str) -> Option<(u32, u32)> {
+    let rest = name.strip_prefix("gemini-")?;
+    let version_token = rest.split('-').next()?;
+    let mut nums = version_token.splitn(2, '.');
+    let major: u32 = nums.next()?.parse().ok()?;
+    let minor: u32 = nums.next()?.parse().ok()?;
+    if nums.next().is_some() {
+        return None;
+    }
+    Some((major, minor))
+}
+
+/// 若同一 bucket 里既有 alias `X` 又有它的数字后缀版本 `X-NNN`（NNN 是 2~4 位
+/// 数字），就只保留 alias、把版本快照剔除。Google `/v1beta/models` 同时返回这两
+/// 种命名，alias 通常生命周期更长，先停的是版本快照（`gemini-2.0-flash-001` /
+/// `gemini-2.0-flash-lite-001` 这种）。
+///
+/// 注意：只有在同一份模型列表里 alias **本身**也存在时才剔除版本号；如果只剩
+/// 版本号变体（比如 `gemini-embedding-001` 没 alias 兄弟），照样保留——它就是
+/// 这个模型在 Google 那边唯一的命名。
+fn prefer_alias_over_versioned(models: &mut Vec<String>) {
+    let aliases: HashSet<String> = models
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    models.retain(|name| {
+        let Some(alias_part) = strip_numeric_version_suffix(name) else {
+            return true;
+        };
+        let alias_key = alias_part.to_ascii_lowercase();
+        // 自己的小写形式肯定也在集合里，alias 必须是另一个不同的条目
+        let alias_exists = aliases.contains(&alias_key) && alias_key != name.to_ascii_lowercase();
+        !alias_exists
+    });
+}
+
+/// 识别 `<base>-<digits>` 命名（如 `gemini-2.0-flash-001`），返回去掉 `-<digits>`
+/// 之后的 `<base>`。识别规则约束 2~4 位纯数字尾巴，避免误吃 `gpt-4o` 这种本身
+/// 名字里就带数字的情况。
+fn strip_numeric_version_suffix(name: &str) -> Option<&str> {
+    let bytes = name.as_bytes();
+    let mut digits = 0usize;
+    while digits < bytes.len() && bytes[bytes.len() - 1 - digits].is_ascii_digit() {
+        digits += 1;
+    }
+    if !(2..=4).contains(&digits) {
+        return None;
+    }
+    let split_at = bytes.len() - digits;
+    if split_at == 0 || bytes[split_at - 1] != b'-' {
+        return None;
+    }
+    Some(&name[..split_at - 1])
+}
+
 /// Google `/v1beta/models` 仍会列出已经下线的模型（比如 `gemini-2.0-flash-001`
 /// 对新用户已不可用），但运行期才会以 `fatal: ... is no longer available to
 /// new users` 的形式报出来。Provider 刷新模型列表本身就是为了"只保留能用的"，
@@ -2311,12 +2441,12 @@ fn strip_gimini_model_prefix(name: &str) -> &str {
 /// 由运行期 health 反馈再降级一次（属于另外一条独立的链路）。
 fn is_deprecated_gimini_entry(id: &str, display_name: &str, description: &str) -> bool {
     const SIGNALS: &[&str] = &[
-        "deprecat",     // deprecated / deprecation
-        "discontinu",   // discontinued / discontinuation
-        "no longer",    // "no longer available", "no longer supported"
+        "deprecat",   // deprecated / deprecation
+        "discontinu", // discontinued / discontinuation
+        "no longer",  // "no longer available", "no longer supported"
         "retired",
-        "(legacy)",     // 用 "(legacy)" 而非裸 "legacy"，避免误伤 "Gemini Legacy Workshop" 这种命名
-        "sunset",       // "sunset on ..."
+        "(legacy)", // 用 "(legacy)" 而非裸 "legacy"，避免误伤 "Gemini Legacy Workshop" 这种命名
+        "sunset",   // "sunset on ..."
         "end of life",
         "end-of-life",
     ];
@@ -2703,6 +2833,173 @@ mod tests {
             ),
             None,
         )
+    }
+
+    #[test]
+    fn parse_gemini_major_minor_recognizes_canonical_shape() {
+        assert_eq!(parse_gemini_major_minor("gemini-2.5-flash"), Some((2, 5)));
+        assert_eq!(
+            parse_gemini_major_minor("gemini-2.5-flash-image-preview"),
+            Some((2, 5))
+        );
+        assert_eq!(
+            parse_gemini_major_minor("gemini-2.5-computer-use-preview-10-2025"),
+            Some((2, 5))
+        );
+        assert_eq!(
+            parse_gemini_major_minor("gemini-2.0-flash-lite"),
+            Some((2, 0))
+        );
+        assert_eq!(parse_gemini_major_minor("gemini-1.5-pro"), Some((1, 5)));
+        // 不带 family 的纯版本号也认（比较少见但合理）
+        assert_eq!(parse_gemini_major_minor("gemini-3.0"), Some((3, 0)));
+        // 没 X.Y 形式 → None（让 caller 原样保留）
+        assert_eq!(parse_gemini_major_minor("gemini-embedding-001"), None);
+        assert_eq!(parse_gemini_major_minor("gemini-pro-vision"), None);
+        assert_eq!(parse_gemini_major_minor("gemini-2-flash"), None);
+        // 不是 gemini- 开头的
+        assert_eq!(parse_gemini_major_minor("lyria-002"), None);
+        assert_eq!(parse_gemini_major_minor("veo-3.1-generate-preview"), None);
+        assert_eq!(parse_gemini_major_minor("text-embedding-004"), None);
+        // 三段版本 (2.5.1) 不识别——Google 没有这种命名，避免误判
+        assert_eq!(parse_gemini_major_minor("gemini-2.5.1-flash"), None);
+    }
+
+    #[test]
+    fn keep_only_max_gemini_version_drops_older_families() {
+        let mut models = vec![
+            "gemini-1.5-flash".to_string(),
+            "gemini-1.5-pro".to_string(),
+            "gemini-2.0-flash".to_string(),
+            "gemini-2.0-flash-lite".to_string(),
+            "gemini-2.5-flash".to_string(),
+            "gemini-2.5-flash-lite".to_string(),
+            "gemini-2.5-pro".to_string(),
+            "gemini-2.5-computer-use-preview-10-2025".to_string(),
+            // 没 X.Y 版本号的非 gemini 命名 → 原样保留
+            "gemini-embedding-001".to_string(),
+            "lyria-002".to_string(),
+            "veo-3.1-generate-preview".to_string(),
+        ];
+        keep_only_max_gemini_version(&mut models);
+        assert_eq!(
+            models,
+            vec![
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.5-flash-lite".to_string(),
+                "gemini-2.5-pro".to_string(),
+                "gemini-2.5-computer-use-preview-10-2025".to_string(),
+                "gemini-embedding-001".to_string(),
+                "lyria-002".to_string(),
+                "veo-3.1-generate-preview".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn keep_only_max_gemini_version_no_op_without_versioned_models() {
+        // 全部都没 gemini-X.Y 版本号 → 不动
+        let mut models = vec![
+            "lyria-002".to_string(),
+            "veo-3.1-generate-preview".to_string(),
+            "gemini-embedding-001".to_string(),
+        ];
+        keep_only_max_gemini_version(&mut models);
+        assert_eq!(
+            models,
+            vec![
+                "lyria-002".to_string(),
+                "veo-3.1-generate-preview".to_string(),
+                "gemini-embedding-001".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn keep_only_max_gemini_version_picks_higher_minor() {
+        // 同主版本不同次版本 → 留次版本最高的
+        let mut models = vec![
+            "gemini-2.0-flash".to_string(),
+            "gemini-2.5-flash".to_string(),
+            "gemini-2.5-pro".to_string(),
+            "gemini-2.10-flash".to_string(), // 假设未来真出现
+        ];
+        keep_only_max_gemini_version(&mut models);
+        assert_eq!(models, vec!["gemini-2.10-flash".to_string()]);
+    }
+
+    #[test]
+    fn strip_numeric_version_suffix_matches_only_short_digit_tails() {
+        assert_eq!(
+            strip_numeric_version_suffix("gemini-2.0-flash-001"),
+            Some("gemini-2.0-flash")
+        );
+        assert_eq!(
+            strip_numeric_version_suffix("gemini-2.5-flash-002"),
+            Some("gemini-2.5-flash")
+        );
+        // 4 位也算（保险一点，比如 -1234）
+        assert_eq!(
+            strip_numeric_version_suffix("gemini-x-1234"),
+            Some("gemini-x")
+        );
+        // 1 位太短，可能是模型自带后缀，不算版本号
+        assert_eq!(strip_numeric_version_suffix("gpt-4"), None);
+        // 5 位以上不算（避免误吃像 claude-3-7-sonnet-20250219 这种 datestamp）
+        assert_eq!(
+            strip_numeric_version_suffix("claude-3-7-sonnet-20250219"),
+            None
+        );
+        // 没有 `-` 边界
+        assert_eq!(strip_numeric_version_suffix("gpt4o"), None);
+        // 名字本身是纯数字
+        assert_eq!(strip_numeric_version_suffix("123"), None);
+    }
+
+    #[test]
+    fn prefer_alias_over_versioned_drops_version_when_alias_present() {
+        let mut models = vec![
+            "gemini-2.0-flash".to_string(),
+            "gemini-2.0-flash-001".to_string(),
+            "gemini-2.0-flash-lite".to_string(),
+            "gemini-2.0-flash-lite-001".to_string(),
+            "gemini-2.5-flash".to_string(),
+            "gemini-2.5-flash-002".to_string(),
+            "gemini-2.5-pro".to_string(),
+            // 没 alias 兄弟，要保留
+            "gemini-embedding-001".to_string(),
+            // claude-style datestamp（8 位）不被识别为版本号，原样保留
+            "claude-3-7-sonnet-20250219".to_string(),
+        ];
+        prefer_alias_over_versioned(&mut models);
+        assert_eq!(
+            models,
+            vec![
+                "gemini-2.0-flash".to_string(),
+                "gemini-2.0-flash-lite".to_string(),
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.5-pro".to_string(),
+                "gemini-embedding-001".to_string(),
+                "claude-3-7-sonnet-20250219".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn prefer_alias_over_versioned_keeps_lonely_versioned() {
+        // 只有版本快照、没有 alias 兄弟 → 保留
+        let mut models = vec![
+            "text-embedding-004".to_string(),
+            "veo-3.1-generate-preview".to_string(),
+        ];
+        prefer_alias_over_versioned(&mut models);
+        assert_eq!(
+            models,
+            vec![
+                "text-embedding-004".to_string(),
+                "veo-3.1-generate-preview".to_string(),
+            ]
+        );
     }
 
     #[test]

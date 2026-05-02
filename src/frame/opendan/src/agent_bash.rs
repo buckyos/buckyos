@@ -1986,8 +1986,8 @@ fn resolve_exec_bash_task_root_id(agent_name: &str, session_id: Option<&str>) ->
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .last()
-        .map(|value| format!("{value}#default"))
-        .unwrap_or_else(|| "agent#default".to_string())
+        .map(|value| format!("{value}-default"))
+        .unwrap_or_else(|| "agent-default".to_string())
 }
 
 fn next_exec_bash_task_name_suffix() -> u64 {
@@ -2113,7 +2113,11 @@ mod tests {
     #[test]
     fn sync_session_tool_links_rewrites_visible_tool_set() {
         let temp = tempdir().expect("create tempdir");
-        let tool_dir = temp.path().join("tools").join("agent_demo").join("work-demo");
+        let tool_dir = temp
+            .path()
+            .join("tools")
+            .join("agent_demo")
+            .join("work-demo");
         let agent_tool_path = temp.path().join("agent_tool");
         std_fs::create_dir_all(&tool_dir).expect("create tool dir");
         std_fs::write(&agent_tool_path, "#!/bin/sh\n").expect("seed agent_tool");
@@ -2159,5 +2163,17 @@ mod tests {
 
         assert!(script.contains("command_not_found_handle"));
         assert!(script.contains(EXEC_BASH_COMMAND_NOT_FOUND_PROXY));
+    }
+
+    #[test]
+    fn exec_bash_default_root_id_is_kevent_safe() {
+        assert_eq!(
+            resolve_exec_bash_task_root_id("did:example:jarvis", None),
+            "jarvis-default"
+        );
+        assert_eq!(
+            resolve_exec_bash_task_root_id("did:example:jarvis", Some("session-1")),
+            "session-1"
+        );
     }
 }

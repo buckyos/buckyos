@@ -2819,8 +2819,8 @@ impl AIAgent {
             }
 
             let parsed_content = parse_memory_content_for_self_check(content.as_str());
-            let reminder_like = is_reminder_memory_key(key)
-                || is_reminder_memory_content(&parsed_content);
+            let reminder_like =
+                is_reminder_memory_key(key) || is_reminder_memory_content(&parsed_content);
             if reminder_like {
                 let has_explicit_time =
                     memory_has_self_check_explicit_time(key, &parsed_content, Utc::now());
@@ -6325,7 +6325,10 @@ system: "self check behavior"
             current_time,
             SELF_CHECK_EXACT_TIME_WINDOW_MS,
         );
-        assert!(exact.has_explicit_time, "embedded YYYY-MM-DD HH:MM must count");
+        assert!(
+            exact.has_explicit_time,
+            "embedded YYYY-MM-DD HH:MM must count"
+        );
         assert!(exact.retained);
         assert!(exact.exact_time_hit);
 

@@ -2983,7 +2983,11 @@ fn is_llm_api_type(api_type: &ApiType) -> bool {
 }
 
 fn openai_llm_logical_mounts(provider_driver: &str, provider_model_id: &str) -> Vec<String> {
+    // `llm.chat` 见 aicc.rs llm_logical_mounts 注释——OpenAI 这条独立路径也得
+    // 同步挂上，否则纯 OpenAI 部署里 workflow 调 `model_alias=llm.chat` 同样
+    // 拿不到候选。
     vec![
+        "llm.chat".to_string(),
         format!("llm.{}", logical_mount_segment(provider_driver)),
         format!("llm.openai.{}", logical_mount_segment(provider_model_id)),
     ]

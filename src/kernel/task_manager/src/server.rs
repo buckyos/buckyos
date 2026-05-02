@@ -8,6 +8,7 @@ use crate::task_db::TaskDb;
 use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_api::*;
+use buckyos_http_server::*;
 use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
@@ -18,13 +19,16 @@ use http_body_util::combinators::BoxBody;
 use log::*;
 use ndn_lib::ObjId;
 use serde_json::{json, Value};
-use buckyos_http_server::*;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-const TASK_EVENT_DATA_INLINE_LIMIT_BYTES: usize = 60 * 1024;
+// Keep the inlined data small enough that the full event (envelope + task
+// fields + data) fits in a single shared-ringbuffer slot (SLOT_DATA_SIZE =
+// 2048). Envelope + the 13 top-level task fields take ~400-700 bytes, so
+// 1300 leaves headroom.
+const TASK_EVENT_DATA_INLINE_LIMIT_BYTES: usize = 1300;
 const TASK_EVENT_RATE_LIMIT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy)]
@@ -158,7 +162,9 @@ impl TaskManagerService {
         if trimmed.is_empty() || trimmed.contains('/') {
             return None;
         }
-        Some(format!("/task_mgr/{}", trimmed))
+        let event_id = format!("/task_mgr/{}", trimmed);
+        validate_eventid(event_id.as_str()).ok()?;
+        Some(event_id)
     }
 
     /// Returns true if the rate-limit gate is open and updates the last-emit
@@ -1102,6 +1108,16 @@ mod tests {
         let service = TaskManagerService::new(Arc::new(db));
         let server = buckyos_api::TaskManagerServerHandler::new(service);
         (server, temp_dir)
+    }
+
+    #[test]
+    fn root_event_id_rejects_kevent_invalid_root_id() {
+        assert_eq!(
+            TaskManagerService::root_event_id("workflow-default"),
+            Some("/task_mgr/workflow-default".to_string())
+        );
+        assert_eq!(TaskManagerService::root_event_id("workflow#default"), None);
+        assert_eq!(TaskManagerService::root_event_id("workflow/default"), None);
     }
 
     #[tokio::test(flavor = "current_thread")]

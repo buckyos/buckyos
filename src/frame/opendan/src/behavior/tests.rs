@@ -37,6 +37,18 @@ struct MockPolicy {
     tools: Vec<ToolSpec>,
 }
 
+#[test]
+fn default_behavior_task_rootid_is_kevent_safe() {
+    assert_eq!(
+        resolve_rootid_for_task("did:example:agent", None),
+        "agent-default"
+    );
+    assert_eq!(
+        resolve_rootid_for_task("did:example:agent", Some("session-1")),
+        "session-1"
+    );
+}
+
 #[async_trait]
 impl PolicyEngine for MockPolicy {
     async fn allowed_tools(&self, _input: &BehaviorExecInput) -> Result<Vec<ToolSpec>, String> {
