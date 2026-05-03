@@ -31,6 +31,10 @@ impl RunItemControl for LocalAppRunItem {
         Ok(full_appid)
     }
 
+    fn get_item_kind(&self) -> &'static str {
+        "local_app"
+    }
+
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         self.app_loader.deploy().await
     }

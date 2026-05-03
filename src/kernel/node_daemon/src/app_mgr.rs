@@ -36,6 +36,10 @@ impl RunItemControl for AppRunItem {
         Ok(full_appid)
     }
 
+    fn get_item_kind(&self) -> &'static str {
+        "app_service"
+    }
+
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         self.app_loader.deploy().await
     }

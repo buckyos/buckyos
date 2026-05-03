@@ -15,6 +15,7 @@ mod local_app_mgr;
 mod node_daemon;
 mod node_exector;
 mod run_item;
+mod run_plist;
 mod service_pkg;
 #[cfg(test)]
 mod test_app_loader;

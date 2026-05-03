@@ -182,6 +182,10 @@ impl RunItemControl for KernelServiceRunItem {
         Ok(self.resolved_pkg_id())
     }
 
+    fn get_item_kind(&self) -> &'static str {
+        "kernel_service"
+    }
+
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         //这个逻辑是不区分新装和升级的
         let pkg_id = self.resolved_pkg_id();
