@@ -22,6 +22,9 @@
 //   即 `ensure_running`。
 // - 如果当前安装形态已经注册到 Host OS 的服务管理器，应优先通过服务管理器启动/停止
 //   node_daemon；如果是 Windows 计划任务或开发模式直启，则走对应 launcher。
+// - node_daemon 是本机 run item 的确定性收敛器，不是 run item 的生命周期父进程。
+//   node_daemon 崩溃或被 Host OS 重启时，已经启动的 run item 应继续运行；系统进入
+//   “controller down, workload alive”的降级态，而不是把 workload 一起杀掉。
 // - `stop` 不能只依赖 BuckyOS 内部控制链路，因为故障时 scheduler -> node_config ->
 //   node_daemon 这条路径可能已经不可用。必须保留黑盒停止路径，能识别并停止本机进程、
 //   容器和服务。
@@ -40,6 +43,8 @@
 // - BuckyOS 完全不可用时，通过 Host OS API 做黑盒诊断和恢复。
 // - Desktop 安装/卸载/升级时的 stop -> update/uninstall -> start 流程。
 // - 输出结构化 check report、operation 状态和审计信息。
+// - 区分 node_daemon 自身生命周期和 run item 生命周期，避免把 node_daemon crash restart
+//   等同于 BuckyOS Runtime stop。
 //
 // node_control 不负责：
 // - 多节点顺序、屏障和分布式重启计划；这些属于 system_control。
@@ -100,6 +105,8 @@
 //   - WorkingDirectory: `/opt/buckyos/bin`
 //   - User: `root`
 //   - Restart: `always`
+//   - KillMode: `process`，systemd 只停止主进程 node_daemon，不级联清理同 cgroup 内的
+//     native run item，保证 node_daemon 崩溃/重启不杀已启动 workload。
 //   - postinst: `systemctl stop`、`daemon-reload`、`enable`、`start`
 //   - preinst: 如果 `/opt/buckyos/bin/` 存在，先 `systemctl stop buckyos.service` 再删除 bin。
 // - Windows:
@@ -130,12 +137,17 @@
 //
 // 设计原则：
 // - 已服务化时，启动/停止 node_daemon 优先走 Host OS 服务接口。
+// - Host OS 服务管理器只应该保障 node_daemon 自动恢复，不应该在 node_daemon crash/restart 时
+//   自动停止 run item。run item 的目标态由 node_daemon 恢复后继续 reconcile。
 // - ScheduledLauncher 模式下，手动 start 仍然有意义，因为它可以跳过下一次调度窗口等待。
 // - DirectProcess 模式下，start/stop 与现有 `src/start.py`、`src/stop.py` 的开发体验保持一致。
 // - node_daemon 只负责管理其可见的 BuckyOS 服务；Host OS 服务管理器通常只知道 node_daemon，
 //   不一定知道 node_daemon 拉起的子进程、容器和应用态服务。
-// - macOS plist 使用 `AbandonProcessGroup=true`，所以 `launchctl bootout` 不能被视为完整 Runtime
-//   清理；升级/卸载仍需要黑盒进程/容器检查兜底。
+// - macOS plist 使用 `AbandonProcessGroup=true` 符合“node_daemon 不拥有 run item”的目标；
+//   因此 `launchctl bootout` 只应被视为停止 controller，不是完整 Runtime 清理。
+//   升级/卸载仍需要显式黑盒进程/容器检查兜底。
+// - Linux systemd 若使用默认 control-group kill 语义，可能与“controller crash 不杀 run item”
+//   目标冲突；node_control 的 host_control check 应报告 unit policy 是否满足该目标。
 // - Windows ScheduledLauncher 会周期性拉起 node_daemon；黑盒停止前必须先删除计划任务和 Run 启动项，
 //   否则进程可能在 1 分钟窗口内被重新拉起。
 //
@@ -167,6 +179,9 @@
 //   未激活状态下 node_daemon 的 activation endpoint 可访问，例如 127.0.0.1:3182。
 // - NodeDaemonReachable
 //   node_daemon 控制面可访问，但完整 kernel 不一定可用。
+// - ControllerDownWorkloadAlive
+//   node_daemon 不可达，但本机 run item 仍在运行。这是预期降级态，不是自动清理触发条件。
+//   推荐动作是恢复 node_daemon 并重新进入 reconcile，而不是默认 kill workload。
 // - MinimalKernelReachable
 //   NodeGateway、system-config、node_daemon 至少部分可用。
 // - FullRuntimeReachable
@@ -181,7 +196,7 @@
 // - Yellow
 //   本机降级但仍有可操作路径，例如二进制存在但某些进程/端口缺失。
 // - Orange
-//   核心服务不可用，或标准控制面不可用但黑盒恢复路径仍可执行。
+//   controller 不可用但 workload 仍可提供部分服务，或标准控制面不可用但黑盒恢复路径仍可执行。
 // - Red
 //   关键恢复能力不可用、数据风险明显，或继续强控制可能扩大损害。
 //
@@ -317,6 +332,8 @@
 // - scheduler/verify_hub/control_panel 缺失时不应输出完全 Green；按影响范围给 Blue/Yellow。
 // - 安装包形态下 HostControlState 异常时，即使当前进程还在，也不应输出完全 Green，因为重启后
 //   可能无法自动恢复。
+// - node_daemon 不可达但 run item 仍在运行时，不能判定 Green；应报告
+//   ControllerDownWorkloadAlive，并推荐恢复 node_daemon/reconcile。
 //
 // =============================================================================
 // 5. ensure_running / start：本机进入目标运行态
@@ -453,7 +470,8 @@
 // - Quiesce
 //   停止高风险写入，保留最小诊断面。
 // - StopHostService
-//   只停止 Host OS 管理的 node_daemon 服务单元/计划任务，不保证清理子进程和容器。
+//   只停止 Host OS 管理的 node_daemon 服务单元/计划任务。按设计不应该清理 run item；
+//   如果底层 service manager 会级联清理 run item，应在 preflight 中报告风险或拒绝。
 // - BlackboxForce
 //   不依赖 BuckyOS 控制面，识别并停止相关进程、容器和服务。
 // - KillAll
@@ -495,6 +513,13 @@
 // 5. 如果仍有相关进程、端口或容器残留，执行 BlackboxForce。
 // 6. 再跑一次 minimal check 验证。
 //
+// 普通 node_daemon crash/restart 逻辑：
+// - 不执行 BlackboxForce。
+// - 不主动停止 run item。
+// - 优先恢复 node_daemon，再由 node_daemon 根据 node_config reconcile run item。
+// - 如果 node_daemon 持续失败，check 报告 ControllerDownWorkloadAlive，提示用户当前 workload
+//   可能仍在提供服务，但已失去本机控制器收敛能力。
+//
 // 黑盒停止必须能识别：
 // - node-daemon / node_daemon
 // - scheduler
@@ -516,8 +541,11 @@
 // 当前实现差异：
 // - `src/stop.py` 会杀 `workflow`，但 Windows 安装包携带的 `src/rootfs/bin/stop.ps1` 当前没有
 //   `workflow`。node_control 落地时应统一进程清单，或把平台差异显式写进 capability。
-// - macOS/Linux 安装脚本只通过 service manager 停 node_daemon，不会自动清理所有
-//   `AbandonProcessGroup`/子进程/容器残留；node_control 的升级/卸载 stop 不能只包装现有脚本。
+// - macOS 安装脚本只通过 LaunchDaemon 停 node_daemon，不自动清理 run item；这符合
+//   node_daemon crash 不杀 workload 的目标，但升级/卸载 stop 不能只包装现有脚本。
+// - Linux systemd unit 已显式使用 `KillMode=process`，与 macOS `AbandonProcessGroup=true`
+//   一样只让 Host OS 管理 node_daemon 本身；升级/卸载需要完整停止 Runtime 时仍不能只包装
+//   `systemctl stop buckyos.service`，必须走黑盒进程/容器清理。
 //
 // 与旧 `src/stop.py` 的映射：
 // - 开发命令：NodeStopMode::KillAll + NodeBlackboxStopPolicy::FullRuntime + NoCheck

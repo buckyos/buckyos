@@ -36,6 +36,7 @@ ExecStart=/opt/buckyos/bin/node-daemon/node_daemon --enable_active
 User=root
 WorkingDirectory=/opt/buckyos/bin
 Restart=always
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
