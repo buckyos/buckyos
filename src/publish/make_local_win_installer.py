@@ -522,6 +522,14 @@ def generate_nsis_script(
         allow_arch = ""
 
     launch_bundle = next((comp for comp in components if comp.kind == "bundle"), None)
+    bundled_stop_script = next(
+        (
+            payload_dir / comp.key / "bin" / "stop.ps1"
+            for comp in components
+            if comp.system_service and (payload_dir / comp.key / "bin" / "stop.ps1").exists()
+        ),
+        None,
+    )
 
     lines: List[str] = []
     
@@ -750,6 +758,14 @@ def generate_nsis_script(
         lines.append("FunctionEnd")
         lines.append("")
 
+    lines.append("Function ExtractBundledStopScript")
+    lines.append("  InitPluginsDir")
+    lines.append('  SetOutPath "$PLUGINSDIR"')
+    if bundled_stop_script is not None:
+        lines.append(f'  File /oname=buckyos_stop.ps1 "{_escape_nsis_path(str(bundled_stop_script))}"')
+    lines.append("FunctionEnd")
+    lines.append("")
+
     lines.append("Function StopExistingBuckyOS")
     lines.append('  StrCpy $ExistingBuckyRoot ""')
     lines.append('  ReadRegStr $ExistingBuckyRoot HKCU "Environment" "BUCKYOS_ROOT"')
@@ -765,12 +781,8 @@ def generate_nsis_script(
     lines.append('  ${EndIf}')
     lines.append('  nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
     lines.append('  DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
-    lines.append('  ${If} $ExistingBuckyRoot != ""')
-    lines.append('    Push $ExistingBuckyRoot')
-    lines.append('    Call RunStopScript')
-    lines.append('  ${Else}')
-    lines.append('    nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
-    lines.append('  ${EndIf}')
+    lines.append('  Push $ExistingBuckyRoot')
+    lines.append('  Call RunStopScript')
     lines.append('  ${If} $ExistingBuckyRoot != ""')
     lines.append('    ; Backward compatibility: stop/remove legacy Windows service if present')
     lines.append('    nsExec::ExecToLog \'sc stop buckyos\'')
@@ -782,12 +794,9 @@ def generate_nsis_script(
 
     lines.append("Function RunStopScript")
     lines.append("  Exch $0")
-    lines.append('  ${If} $0 == ""')
-    lines.append("    Return")
-    lines.append('  ${EndIf}')
-    lines.append('  IfFileExists "$0\\bin\\stop.ps1" stop_script_exists stop_script_missing')
+    lines.append('  IfFileExists "$PLUGINSDIR\\buckyos_stop.ps1" stop_script_exists stop_script_missing')
     lines.append("stop_script_exists:")
-    lines.append('  nsExec::ExecToLog \'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$0\\bin\\stop.ps1"\'')
+    lines.append('  nsExec::ExecToLog \'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\\buckyos_stop.ps1"\'')
     lines.append("  Return")
     lines.append("stop_script_missing:")
     lines.append('  nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
@@ -911,6 +920,7 @@ def generate_nsis_script(
         if comp_payload.exists():
             if comp.system_service:
                 lines.append("  ; Stop existing service and running processes before overwrite")
+                lines.append("  Call ExtractBundledStopScript")
                 lines.append("  Call StopExistingBuckyOS")
                 lines.append("  ; Check required ports only when installation actually starts")
                 lines.append("  Call CheckRequiredPorts")

@@ -543,6 +543,46 @@ def _cleanup_platform(root: Path, results: list[ActionResult]) -> None:
         _append_result(results, "platform", system_name or "unknown", "skipped", "no platform cleanup defined")
 
 
+def _run_installed_stop_script(root: Path, results: list[ActionResult]) -> None:
+    system_name = platform.system().lower()
+    if system_name == "windows":
+        script_path = root / "bin" / "stop.ps1"
+        if not script_path.exists():
+            _append_result(results, "stop-script", str(script_path), "skipped", "not found")
+            return
+        result = _run_command([
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+        ])
+    elif system_name == "darwin":
+        script_path = root / "bin" / "stop_osx.sh"
+        if script_path.exists():
+            result = _run_command(["/bin/sh", str(script_path)])
+        else:
+            legacy_script_path = root / "bin" / "stop.py"
+            if not legacy_script_path.exists():
+                _append_result(results, "stop-script", str(script_path), "skipped", "not found")
+                return
+            script_path = legacy_script_path
+            result = _run_command(["python3", str(script_path)])
+    else:
+        script_path = root / "bin" / "stop.py"
+        if not script_path.exists():
+            _append_result(results, "stop-script", str(script_path), "skipped", "not found")
+            return
+        result = _run_command(["python3", str(script_path)])
+
+    output = _safe_command_output(result)
+    if result.returncode == 0:
+        _append_result(results, "stop-script", str(script_path), "ok", output or "completed")
+    else:
+        _append_result(results, "stop-script", str(script_path), "failed", output or f"exit code {result.returncode}")
+
+
 def _iter_remove_paths(root: Path, app_info: AppInfo) -> Iterable[Path]:
     for module_path in app_info.modules.values():
         normalized = str(module_path).strip().rstrip("/\\")
@@ -625,6 +665,7 @@ def main() -> int:
 
     results: list[ActionResult] = []
     _cleanup_platform(root, results)
+    _run_installed_stop_script(root, results)
     _remove_install_paths(root, app_info, results)
     if parsed.all:
         _remove_root_all(root, results)

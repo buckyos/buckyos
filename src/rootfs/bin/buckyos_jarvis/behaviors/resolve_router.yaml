@@ -56,7 +56,7 @@ input: |
   ```xml
   <response>
     <thinking>...</thinking>
-    <reply>...</reply>
+    <reply><![CDATA[...]]></reply>
     <set_memory>
       <item key="reminder/owner/2026-03-25-dentist">Dentist appointment at 3pm</item>
     </set_memory>
@@ -71,6 +71,8 @@ input: |
     </new_work_session>
   </response>
   ```
+  Wrap `<reply>` content in CDATA when present: `<reply><![CDATA[...]]></reply>`.
+
   **set_memory**: Long-lived key–value notes (same `key="..."` shape as the schema). Keys are slash-separated paths: `scope/topic/leaf`—usually 2–4 segments. Use short, stable segment names; avoid spaces in keys.
   Examples:
   - `user/alice/birthday` → `March 15`
