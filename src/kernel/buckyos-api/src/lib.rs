@@ -27,6 +27,7 @@ mod gateway_control;
 mod kevent_client;
 mod kevent_ringbuffer;
 pub mod network_observation;
+pub mod node_control;
 mod opendan_client;
 mod permission;
 mod rdb_mgr;

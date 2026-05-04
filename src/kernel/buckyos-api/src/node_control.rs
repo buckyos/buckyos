@@ -665,10 +665,1935 @@
 // =============================================================================
 //
 // 1. 容器识别规则应优先使用 Docker label 还是命名约定。目前 `src/stop.py` 只杀
-//    `devtest-*` 容器，产品环境需要更明确的边界。
-// 2. node_daemon graceful stop 的 live API 名称和最小可用前提尚未固定。
-// 3. Windows `stop.ps1` 与 `src/stop.py` 的进程清单需要对齐，尤其是 `workflow`。
+//    `devtest-*` 容器，产品环境需要更明确的边界。: /tmp/buckyos/run.plist 有记录
+// 2. node_daemon graceful stop 的 live API 名称和最小可用前提尚未固定。还未设计
+// 3. Windows `stop.ps1` 与 `src/stop.py` 的进程清单需要对齐，尤其是 `workflow`：通过/tmp/buckyos/run.plist 解决
 // 4. macOS/Linux service stop 后是否应默认做一次黑盒残留清理，需要在“产品停止”和“升级/卸载停止”
-//    之间保持不同策略。
+//    之间保持不同策略。 ：要做的，node_daemon设计上停止后，不会杀他拉起的run item
 // 5. DataSafetyState 当前版本默认应为 NotEvaluated；如果要在 stop 前阻断操作，需要 system_control
-//    或专门的数据安全检查提供更强信号。
+//    或专门的数据安全检查提供更强信号。: 下个版本再做
+
+// =============================================================================
+// Implementation
+// =============================================================================
+//
+// 当前版本目标：在正式环境下替代 src/start.py、src/stop.py、src/check.py 中
+// 与本机 BuckyOS Runtime 有关的能力，并支撑 Desktop 安装/卸载/升级时的本机停止
+// 与重启需求。所有跨平台动作走 std::process::Command，避免引入额外依赖。
+//
+// 关键差异：
+// - stop 不再写死进程清单。优先读取 /tmp/buckyos/run.plist（由 node_daemon 维护），
+//   驱动 kernel_service 进程清单和 app_service 容器清单；run.plist 不可用时退回
+//   保底清单（与历史 stop.py 对齐，含 workflow）。
+// - check 同时报告 HostControlState；安装包形态下若 Host OS 服务管理器异常，
+//   即使当前进程在跑也不会判 Green。
+// - start / stop 优先走 Host OS 服务管理器（launchctl / systemctl / schtasks）；
+//   失败或不可用时退回直接 spawn / 黑盒杀。
+
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+const TCP_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+const HTTP_PROBE_TIMEOUT: Duration = Duration::from_millis(2000);
+
+// -----------------------------------------------------------------------------
+// 平台 / 控制模型类型
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodePlatform {
+    MacOS,
+    Linux,
+    Windows,
+    Unknown,
+}
+
+impl NodePlatform {
+    pub fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            NodePlatform::MacOS
+        } else if cfg!(target_os = "linux") {
+            NodePlatform::Linux
+        } else if cfg!(target_os = "windows") {
+            NodePlatform::Windows
+        } else {
+            NodePlatform::Unknown
+        }
+    }
+
+    pub fn exe_suffix(&self) -> &'static str {
+        match self {
+            NodePlatform::Windows => ".exe",
+            _ => "",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeHostControlModel {
+    ServiceManager,
+    ScheduledLauncher,
+    DirectProcess,
+    ContainerizedRuntime,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Confidence {
+    Confirmed,
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeHostControlState {
+    pub model: NodeHostControlModel,
+    pub platform: NodePlatform,
+    pub buckyos_root: PathBuf,
+    pub node_daemon_binary: PathBuf,
+    pub service_unit_name: Option<String>,
+    pub service_plist_path: Option<PathBuf>,
+    pub scheduled_task_name: Option<String>,
+    pub run_key_name: Option<String>,
+    pub legacy_service_name: Option<String>,
+    pub confidence: Confidence,
+    pub evidence: Vec<String>,
+    pub service_enabled: Option<bool>,
+    pub service_active: Option<bool>,
+}
+
+// -----------------------------------------------------------------------------
+// Check / Fault 模型
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeFaultLevel {
+    Green,
+    Blue,
+    Yellow,
+    Orange,
+    Red,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeAvailabilityLayer {
+    HostUnreachable,
+    HostReachable,
+    ActivationEndpointReachable,
+    NodeDaemonReachable,
+    ControllerDownWorkloadAlive,
+    MinimalKernelReachable,
+    FullRuntimeReachable,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckStatus {
+    Ok,
+    Warn,
+    Fail,
+    Info,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckItem {
+    pub name: String,
+    pub status: CheckStatus,
+    pub summary: String,
+    pub details: Vec<String>,
+}
+
+impl CheckItem {
+    fn new(name: impl Into<String>, status: CheckStatus, summary: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            status,
+            summary: summary.into(),
+            details: Vec::new(),
+        }
+    }
+
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.details.push(detail.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NodeLiveProbeReport {
+    pub activation_endpoint_ok: bool,
+    pub node_gateway_ok: bool,
+    pub system_config_ok: bool,
+    pub node_daemon_control_ok: bool,
+    pub detail: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticFinding {
+    pub severity: CheckStatus,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeCheckReport {
+    pub overall: NodeFaultLevel,
+    pub availability_layer: NodeAvailabilityLayer,
+    pub buckyos_root: PathBuf,
+    pub platform: NodePlatform,
+    pub host_control: NodeHostControlState,
+    pub activated: bool,
+    pub activation_ready: bool,
+    pub live_probe: NodeLiveProbeReport,
+    pub checks: Vec<CheckItem>,
+    pub log_findings: Vec<DiagnosticFinding>,
+    pub title: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NodeCheckOptions {
+    pub include_logs: bool,
+    pub include_host_control: bool,
+}
+
+impl NodeCheckOptions {
+    pub fn standard() -> Self {
+        Self {
+            include_logs: true,
+            include_host_control: true,
+        }
+    }
+
+    pub fn basic() -> Self {
+        Self {
+            include_logs: false,
+            include_host_control: true,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Start / Stop 请求
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeStartMode {
+    Normal,
+    Activation,
+    Recovery,
+    DesktopDaemon,
+    SafeMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeHostControlPolicy {
+    Auto,
+    PreferServiceManager,
+    PreferScheduledLauncher,
+    DirectProcessOnly,
+    RefuseIfUnknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeStartRequest {
+    pub mode: NodeStartMode,
+    pub host_control_policy: NodeHostControlPolicy,
+    pub buckyos_root: Option<PathBuf>,
+    pub stop_conflicting: bool,
+    pub reason: Option<String>,
+}
+
+impl Default for NodeStartRequest {
+    fn default() -> Self {
+        Self {
+            mode: NodeStartMode::Normal,
+            host_control_policy: NodeHostControlPolicy::Auto,
+            buckyos_root: None,
+            stop_conflicting: true,
+            reason: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeStartReport {
+    pub used_model: NodeHostControlModel,
+    pub actions: Vec<String>,
+    pub started_pid: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeStopMode {
+    Graceful,
+    GracefulThenForce,
+    StopHostService,
+    BlackboxForce,
+    KillAll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeBlackboxStopPolicy {
+    Disabled,
+    BuckyOSProcessesOnly,
+    IncludeManagedContainers,
+    IncludeHostService,
+    FullRuntime,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeStopRequest {
+    pub mode: NodeStopMode,
+    pub blackbox_policy: NodeBlackboxStopPolicy,
+    pub host_control_policy: NodeHostControlPolicy,
+    pub timeout_secs: u64,
+    pub buckyos_root: Option<PathBuf>,
+    pub reason: Option<String>,
+}
+
+impl Default for NodeStopRequest {
+    fn default() -> Self {
+        Self {
+            mode: NodeStopMode::GracefulThenForce,
+            blackbox_policy: NodeBlackboxStopPolicy::IncludeManagedContainers,
+            host_control_policy: NodeHostControlPolicy::Auto,
+            timeout_secs: 30,
+            buckyos_root: None,
+            reason: None,
+        }
+    }
+}
+
+impl NodeStopRequest {
+    /// 旧 src/stop.py 行为：开发兜底 kill-all。
+    pub fn dev_kill_all() -> Self {
+        Self {
+            mode: NodeStopMode::KillAll,
+            blackbox_policy: NodeBlackboxStopPolicy::FullRuntime,
+            host_control_policy: NodeHostControlPolicy::Auto,
+            timeout_secs: 5,
+            buckyos_root: None,
+            reason: Some("dev kill-all".into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NodeStopReport {
+    pub stopped_processes: Vec<String>,
+    pub stopped_containers: Vec<String>,
+    pub host_service_actions: Vec<String>,
+    pub remaining: Vec<String>,
+    pub actions: Vec<String>,
+}
+
+// -----------------------------------------------------------------------------
+// 进程清单（保底清单 + run.plist 动态清单）
+// -----------------------------------------------------------------------------
+
+const PROCESS_KILL_BASELINE: &[&str] = &[
+    "node-daemon",
+    "node_daemon",
+    "scheduler",
+    "verify-hub",
+    "verify_hub",
+    "system-config",
+    "system_config",
+    "cyfs-gateway",
+    "cyfs_gateway",
+    "filebrowser",
+    "smb-service",
+    "smb_service",
+    "repo-service",
+    "repo_service",
+    "control-panel",
+    "control_panel",
+    "aicc",
+    "task_manager",
+    "task-manager",
+    "kmsg",
+    "msg_center",
+    "msg-center",
+    "opendan",
+    "workflow",
+];
+
+const NODE_DAEMON_ALIASES: &[&str] = &["node-daemon", "node_daemon"];
+const CYFS_GATEWAY_ALIASES: &[&str] = &["cyfs-gateway", "cyfs_gateway"];
+const SYSTEM_CONFIG_ALIASES: &[&str] = &["system-config", "system_config"];
+const SCHEDULER_ALIASES: &[&str] = &["scheduler"];
+const VERIFY_HUB_ALIASES: &[&str] = &["verify-hub", "verify_hub"];
+const CONTROL_PANEL_ALIASES: &[&str] = &["control-panel", "control_panel"];
+
+const PORT_NODE_GATEWAY_HTTP: u16 = 3180;
+const PORT_NODE_DAEMON_ACTIVATION: u16 = 3182;
+const PORT_SYSTEM_CONFIG: u16 = 3200;
+const PORT_VERIFY_HUB: u16 = 3300;
+const PORT_CONTROL_PANEL: u16 = 4020;
+const PORT_ZONE_GATEWAY_HTTP: u16 = 80;
+
+// -----------------------------------------------------------------------------
+// run.plist 读取
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+struct RunPlistItemRaw {
+    item_name: String,
+    item_kind: String,
+    #[serde(default)]
+    run_state: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RunPlistRaw {
+    #[serde(default)]
+    items: BTreeMap<String, RunPlistItemRaw>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunPlistEntry {
+    pub name: String,
+    pub kind: String,
+    pub run_state: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunPlistSnapshot {
+    pub path: PathBuf,
+    pub items: Vec<RunPlistEntry>,
+}
+
+impl RunPlistSnapshot {
+    pub fn kernel_service_aliases(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .filter(|i| i.kind == "kernel_service")
+            .map(|i| i.name.clone())
+            .collect()
+    }
+
+    pub fn frame_service_aliases(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .filter(|i| i.kind == "frame_service")
+            .map(|i| i.name.clone())
+            .collect()
+    }
+
+    /// app_service 容器命名约定：`{owner}#{app_name}` -> `{owner}-{app_name}`。
+    pub fn app_service_container_names(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .filter(|i| i.kind == "app_service")
+            .map(|i| i.name.replace('#', "-"))
+            .collect()
+    }
+
+    pub fn all_process_aliases(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.kernel_service_aliases();
+        out.extend(self.frame_service_aliases());
+        out
+    }
+}
+
+pub fn run_plist_path() -> PathBuf {
+    if cfg!(target_os = "windows") {
+        std::env::temp_dir().join("buckyos").join("run.plist")
+    } else {
+        PathBuf::from("/tmp/buckyos/run.plist")
+    }
+}
+
+pub fn read_run_plist() -> Option<RunPlistSnapshot> {
+    let path = run_plist_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    let raw: RunPlistRaw = serde_json::from_str(&content).ok()?;
+    let items = raw
+        .items
+        .into_values()
+        .map(|item| RunPlistEntry {
+            name: item.item_name,
+            kind: item.item_kind,
+            run_state: item.run_state,
+        })
+        .collect();
+    Some(RunPlistSnapshot { path, items })
+}
+
+// -----------------------------------------------------------------------------
+// 路径 / 二进制
+// -----------------------------------------------------------------------------
+
+pub fn resolve_buckyos_root() -> PathBuf {
+    if let Ok(value) = std::env::var("BUCKYOS_ROOT") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    match NodePlatform::current() {
+        NodePlatform::Windows => {
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                if !appdata.is_empty() {
+                    return PathBuf::from(appdata).join("buckyos");
+                }
+            }
+            if let Ok(profile) = std::env::var("USERPROFILE") {
+                if !profile.is_empty() {
+                    return PathBuf::from(profile).join("buckyos");
+                }
+            }
+            PathBuf::from("C:\\buckyos")
+        }
+        _ => PathBuf::from("/opt/buckyos"),
+    }
+}
+
+pub fn node_daemon_binary_path(buckyos_root: &Path) -> PathBuf {
+    let dir = buckyos_root.join("bin").join("node-daemon");
+    if cfg!(target_os = "windows") {
+        dir.join("node_daemon.exe")
+    } else {
+        dir.join("node_daemon")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// 进程列表 / 端口列表
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub command: String,
+    pub args: String,
+}
+
+fn normalize_name(value: &str) -> String {
+    let mut normalized = value.trim().to_lowercase().replace('_', "-");
+    for suffix in [".exe", ".cmd", ".bat"] {
+        if normalized.ends_with(suffix) {
+            normalized.truncate(normalized.len() - suffix.len());
+            break;
+        }
+    }
+    normalized
+}
+
+fn run_capture(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+    if !output.status.success() && output.stdout.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+pub fn collect_processes() -> Vec<ProcessInfo> {
+    if cfg!(target_os = "windows") {
+        return collect_processes_windows();
+    }
+    let raw = match run_capture("ps", &["-axo", "pid=,comm=,args="]) {
+        Some(text) => text,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(3, char::is_whitespace);
+        let pid_str = match parts.next() {
+            Some(value) => value,
+            None => continue,
+        };
+        let pid = match pid_str.parse::<u32>() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let command = parts.next().unwrap_or("").trim().to_string();
+        let args = parts
+            .next()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| command.clone());
+        out.push(ProcessInfo { pid, command, args });
+    }
+    out
+}
+
+fn collect_processes_windows() -> Vec<ProcessInfo> {
+    let script = "Get-CimInstance Win32_Process | Select-Object ProcessId, Name, CommandLine | ConvertTo-Csv -NoTypeInformation";
+    let raw = match run_capture("powershell", &["-NoProfile", "-Command", script]) {
+        Some(text) => text,
+        None => return Vec::new(),
+    };
+    let mut lines = raw.lines();
+    let _ = lines.next();
+    let mut out = Vec::new();
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // CSV with "" quoting; small ad-hoc parser
+        let fields = parse_csv_line(line);
+        if fields.len() < 3 {
+            continue;
+        }
+        let pid: u32 = match fields[0].parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let command = fields[1].clone();
+        let args = if fields[2].is_empty() {
+            command.clone()
+        } else {
+            fields[2].clone()
+        };
+        out.push(ProcessInfo { pid, command, args });
+    }
+    out
+}
+
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if ch == '"' {
+                if let Some('"') = chars.peek() {
+                    current.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                current.push(ch);
+            }
+        } else {
+            match ch {
+                ',' => {
+                    fields.push(std::mem::take(&mut current));
+                }
+                '"' => in_quotes = true,
+                _ => current.push(ch),
+            }
+        }
+    }
+    fields.push(current);
+    fields
+}
+
+fn process_command_basename(p: &ProcessInfo) -> String {
+    let name = Path::new(&p.command)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or(&p.command);
+    normalize_name(name)
+}
+
+fn process_args0_basename(p: &ProcessInfo) -> String {
+    let first = p.args.split_whitespace().next().unwrap_or(&p.command);
+    let name = Path::new(first)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or(first);
+    normalize_name(name)
+}
+
+pub fn process_matches<S: AsRef<str>>(p: &ProcessInfo, aliases: &[S]) -> bool {
+    let normalized: Vec<String> = aliases
+        .iter()
+        .map(|s| normalize_name(s.as_ref()))
+        .collect();
+    let base = process_command_basename(p);
+    let arg0 = process_args0_basename(p);
+    if normalized.iter().any(|alias| alias == &base || alias == &arg0) {
+        return true;
+    }
+    let haystack = normalize_name(&p.args);
+    normalized
+        .iter()
+        .any(|alias| !alias.is_empty() && haystack.contains(alias.as_str()))
+}
+
+pub fn find_processes<'a, S: AsRef<str>>(
+    processes: &'a [ProcessInfo],
+    aliases: &[S],
+) -> Vec<&'a ProcessInfo> {
+    processes
+        .iter()
+        .filter(|p| process_matches(*p, aliases))
+        .collect()
+}
+
+pub fn probe_tcp(port: u16) -> bool {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    TcpStream::connect_timeout(&addr, TCP_PROBE_TIMEOUT).is_ok()
+}
+
+/// 简易 HTTP GET，仅用作健康探测；返回 (是否收到 HTTP 响应, status code)。
+pub fn probe_http(port: u16, path: &str) -> (bool, Option<u16>) {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let mut stream = match TcpStream::connect_timeout(&addr, TCP_PROBE_TIMEOUT) {
+        Ok(s) => s,
+        Err(_) => return (false, None),
+    };
+    let _ = stream.set_read_timeout(Some(HTTP_PROBE_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(HTTP_PROBE_TIMEOUT));
+    let req = format!(
+        "GET {} HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        path, port
+    );
+    if stream.write_all(req.as_bytes()).is_err() {
+        return (false, None);
+    }
+    let mut buf = [0u8; 256];
+    let read_bytes = match stream.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return (false, None),
+    };
+    if read_bytes == 0 {
+        return (false, None);
+    }
+    let head = std::str::from_utf8(&buf[..read_bytes]).unwrap_or("");
+    if !head.starts_with("HTTP/") {
+        return (true, None);
+    }
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok());
+    (true, status)
+}
+
+pub fn get_port_listener(port: u16) -> Option<String> {
+    if cfg!(target_os = "windows") {
+        let raw = run_capture("netstat", &["-ano", "-p", "tcp"])?;
+        for line in raw.lines() {
+            let lower = line.to_lowercase();
+            if !lower.contains("listening") {
+                continue;
+            }
+            if line.contains(&format!(":{}", port)) {
+                return Some(line.trim().to_string());
+            }
+        }
+        return None;
+    }
+
+    if let Some(raw) = run_capture(
+        "lsof",
+        &["-nP", &format!("-iTCP:{}", port), "-sTCP:LISTEN"],
+    ) {
+        let mut lines = raw.lines();
+        let _ = lines.next();
+        if let Some(line) = lines.next() {
+            return Some(line.trim().to_string());
+        }
+    }
+    if let Some(raw) = run_capture("ss", &["-lntp"]) {
+        let needle = format!(":{}", port);
+        for line in raw.lines() {
+            if line.contains(&needle) {
+                return Some(line.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+// -----------------------------------------------------------------------------
+// Host control 检测
+// -----------------------------------------------------------------------------
+
+pub fn detect_host_control_state() -> NodeHostControlState {
+    let buckyos_root = resolve_buckyos_root();
+    let node_daemon = node_daemon_binary_path(&buckyos_root);
+    let platform = NodePlatform::current();
+    let mut evidence = Vec::new();
+    let mut model = NodeHostControlModel::Unknown;
+    let mut confidence = Confidence::Low;
+    let mut service_unit_name = None;
+    let mut service_plist_path = None;
+    let mut scheduled_task_name = None;
+    let mut run_key_name = None;
+    let legacy_service_name = if platform == NodePlatform::Windows {
+        Some("buckyos".to_string())
+    } else {
+        None
+    };
+    let mut service_enabled = None;
+    let mut service_active = None;
+
+    match platform {
+        NodePlatform::MacOS => {
+            let plist = PathBuf::from("/Library/LaunchDaemons/buckyos.service.plist");
+            if plist.is_file() {
+                evidence.push(format!("found launchd plist: {}", plist.display()));
+                service_plist_path = Some(plist.clone());
+                service_unit_name = Some("buckyos.service".to_string());
+                model = NodeHostControlModel::ServiceManager;
+                confidence = Confidence::High;
+                if let Some(out) = run_capture(
+                    "launchctl",
+                    &["print", "system/buckyos.service"],
+                ) {
+                    let lower = out.to_lowercase();
+                    let active = lower.contains("state = running");
+                    service_active = Some(active);
+                    service_enabled = Some(!lower.contains("disabled = 1"));
+                    evidence.push(format!(
+                        "launchctl print: state_running={}, len={}",
+                        active,
+                        out.len()
+                    ));
+                } else {
+                    evidence.push("launchctl print failed or unavailable".to_string());
+                }
+            } else if node_daemon.is_file() {
+                model = NodeHostControlModel::DirectProcess;
+                confidence = Confidence::Medium;
+                evidence.push(format!(
+                    "no LaunchDaemon plist; binary present at {}",
+                    node_daemon.display()
+                ));
+            }
+        }
+        NodePlatform::Linux => {
+            let unit = PathBuf::from("/etc/systemd/system/buckyos.service");
+            if unit.is_file() {
+                evidence.push(format!("found systemd unit: {}", unit.display()));
+                service_plist_path = Some(unit.clone());
+                service_unit_name = Some("buckyos.service".to_string());
+                model = NodeHostControlModel::ServiceManager;
+                confidence = Confidence::High;
+                if let Some(out) =
+                    run_capture("systemctl", &["is-enabled", "buckyos.service"])
+                {
+                    let trimmed = out.trim();
+                    service_enabled = Some(trimmed == "enabled" || trimmed == "static");
+                    evidence.push(format!("systemctl is-enabled: {}", trimmed));
+                }
+                if let Some(out) =
+                    run_capture("systemctl", &["is-active", "buckyos.service"])
+                {
+                    let trimmed = out.trim();
+                    service_active = Some(trimmed == "active");
+                    evidence.push(format!("systemctl is-active: {}", trimmed));
+                }
+            } else if node_daemon.is_file() {
+                model = NodeHostControlModel::DirectProcess;
+                confidence = Confidence::Medium;
+                evidence.push(format!(
+                    "no systemd unit; binary present at {}",
+                    node_daemon.display()
+                ));
+            }
+        }
+        NodePlatform::Windows => {
+            let task = "BuckyOSNodeDaemonKeepAlive".to_string();
+            let task_present =
+                run_capture("schtasks", &["/Query", "/TN", &task, "/FO", "LIST"]).is_some();
+            let run_key = "BuckyOSDaemon".to_string();
+            run_key_name = Some(run_key.clone());
+            if task_present {
+                model = NodeHostControlModel::ScheduledLauncher;
+                confidence = Confidence::High;
+                scheduled_task_name = Some(task.clone());
+                evidence.push(format!("scheduled task present: {}", task));
+            } else if node_daemon.is_file() {
+                model = NodeHostControlModel::DirectProcess;
+                confidence = Confidence::Medium;
+                evidence.push(format!(
+                    "no scheduled task; binary present at {}",
+                    node_daemon.display()
+                ));
+            }
+        }
+        NodePlatform::Unknown => {
+            evidence.push("unknown platform".to_string());
+        }
+    }
+
+    NodeHostControlState {
+        model,
+        platform,
+        buckyos_root,
+        node_daemon_binary: node_daemon,
+        service_unit_name,
+        service_plist_path,
+        scheduled_task_name,
+        run_key_name,
+        legacy_service_name,
+        confidence,
+        evidence,
+        service_enabled,
+        service_active,
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Check 实现
+// -----------------------------------------------------------------------------
+
+pub fn node_check(
+    buckyos_root_override: Option<PathBuf>,
+    options: NodeCheckOptions,
+) -> NodeCheckReport {
+    let host_control = if let Some(root) = buckyos_root_override.clone() {
+        let mut s = detect_host_control_state();
+        s.buckyos_root = root.clone();
+        s.node_daemon_binary = node_daemon_binary_path(&root);
+        s
+    } else {
+        detect_host_control_state()
+    };
+    let buckyos_root = host_control.buckyos_root.clone();
+    let etc_dir = buckyos_root.join("etc");
+    let bin_dir = buckyos_root.join("bin");
+    let log_root = buckyos_root.join("logs");
+    let node_identity = etc_dir.join("node_identity.json");
+
+    let mut checks: Vec<CheckItem> = Vec::new();
+    let mut log_findings: Vec<DiagnosticFinding> = Vec::new();
+    let processes = collect_processes();
+
+    let activated = node_identity.is_file();
+    if activated {
+        checks.push(CheckItem::new(
+            "Activation State",
+            CheckStatus::Ok,
+            format!("Activated: {}", node_identity.display()),
+        ));
+    } else {
+        checks.push(
+            CheckItem::new(
+                "Activation State",
+                CheckStatus::Warn,
+                format!("Not found: {}", node_identity.display()),
+            )
+            .with_detail("Treating system as activation-pending."),
+        );
+    }
+
+    // node_daemon 进程
+    let node_daemon_procs = find_processes(&processes, NODE_DAEMON_ALIASES);
+    if !node_daemon_procs.is_empty() {
+        let pids: Vec<String> = node_daemon_procs.iter().take(5).map(|p| p.pid.to_string()).collect();
+        checks.push(
+            CheckItem::new(
+                "node_daemon Process",
+                CheckStatus::Ok,
+                format!("Found {} process(es)", node_daemon_procs.len()),
+            )
+            .with_detail(format!("PID: {}", pids.join(", "))),
+        );
+    } else {
+        checks.push(CheckItem::new(
+            "node_daemon Process",
+            CheckStatus::Fail,
+            "No node_daemon/node-daemon process found",
+        ));
+    }
+
+    let mut live_probe = NodeLiveProbeReport::default();
+    let mut activation_ready = false;
+
+    if !activated {
+        let port_open = probe_tcp(PORT_NODE_DAEMON_ACTIVATION);
+        let (http_ok, status) = probe_http(PORT_NODE_DAEMON_ACTIVATION, "/");
+        live_probe.activation_endpoint_ok = port_open && http_ok;
+        live_probe.detail.push(format!(
+            "activation: tcp_open={}, http_ok={}, status={:?}",
+            port_open, http_ok, status
+        ));
+        if port_open {
+            checks.push(CheckItem::new(
+                "3182 Activation Port",
+                CheckStatus::Ok,
+                "3182 is reachable",
+            ));
+        } else {
+            checks.push(CheckItem::new(
+                "3182 Activation Port",
+                CheckStatus::Fail,
+                "3182 is not reachable",
+            ));
+        }
+        activation_ready = !node_daemon_procs.is_empty() && port_open && http_ok;
+    } else {
+        // 核心进程
+        for (label, aliases, severity_when_missing) in [
+            ("cyfs_gateway Process", CYFS_GATEWAY_ALIASES, CheckStatus::Fail),
+            ("system_config Process", SYSTEM_CONFIG_ALIASES, CheckStatus::Fail),
+            ("scheduler Process", SCHEDULER_ALIASES, CheckStatus::Fail),
+            ("verify_hub Process", VERIFY_HUB_ALIASES, CheckStatus::Fail),
+            ("control_panel Process", CONTROL_PANEL_ALIASES, CheckStatus::Warn),
+        ] {
+            let found = find_processes(&processes, aliases);
+            if !found.is_empty() {
+                let pids: Vec<String> = found.iter().take(5).map(|p| p.pid.to_string()).collect();
+                checks.push(
+                    CheckItem::new(
+                        label,
+                        CheckStatus::Ok,
+                        format!("Found {} process(es)", found.len()),
+                    )
+                    .with_detail(format!("PID: {}", pids.join(", "))),
+                );
+            } else {
+                checks.push(CheckItem::new(
+                    label,
+                    severity_when_missing,
+                    format!("No process matching {:?} found", aliases),
+                ));
+            }
+        }
+
+        // 端口
+        let ports: &[(&str, u16, CheckStatus)] = &[
+            ("zone_gateway_http", PORT_ZONE_GATEWAY_HTTP, CheckStatus::Fail),
+            ("node_gateway_http", PORT_NODE_GATEWAY_HTTP, CheckStatus::Fail),
+            ("system_config", PORT_SYSTEM_CONFIG, CheckStatus::Fail),
+            ("verify_hub", PORT_VERIFY_HUB, CheckStatus::Fail),
+            ("control_panel", PORT_CONTROL_PANEL, CheckStatus::Warn),
+        ];
+        let mut port_results: BTreeMap<u16, bool> = BTreeMap::new();
+        for (label, port, severity) in ports {
+            let open = probe_tcp(*port);
+            port_results.insert(*port, open);
+            let listener = get_port_listener(*port);
+            let mut item = CheckItem::new(
+                format!("Port {}", port),
+                if open { CheckStatus::Ok } else { *severity },
+                if open {
+                    format!("{} is reachable", label)
+                } else {
+                    format!("{} is not reachable", label)
+                },
+            );
+            if let Some(line) = listener {
+                item = item.with_detail(format!("Listener: {}", line));
+            }
+            checks.push(item);
+        }
+
+        live_probe.node_gateway_ok = *port_results.get(&PORT_NODE_GATEWAY_HTTP).unwrap_or(&false);
+        live_probe.system_config_ok = *port_results.get(&PORT_SYSTEM_CONFIG).unwrap_or(&false);
+        live_probe.node_daemon_control_ok = !node_daemon_procs.is_empty();
+
+        // cyfs_gateway 二进制 fallback 提示
+        let cyfs_gw_running = !find_processes(&processes, CYFS_GATEWAY_ALIASES).is_empty();
+        let port80 = *port_results.get(&PORT_ZONE_GATEWAY_HTTP).unwrap_or(&false);
+        let port_node_gw = *port_results.get(&PORT_NODE_GATEWAY_HTTP).unwrap_or(&false);
+        if !cyfs_gw_running || !port80 || !port_node_gw {
+            let suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
+            let candidates = [
+                bin_dir.join("cyfs-gateway").join(format!("cyfs_gateway{}", suffix)),
+                bin_dir.join("cyfs_gateway").join(format!("cyfs_gateway{}", suffix)),
+                bin_dir.join("cyfs-gateway").join(format!("cyfs-gateway{}", suffix)),
+            ];
+            let exists = candidates.iter().find(|p| p.exists());
+            if let Some(p) = exists {
+                checks.push(CheckItem::new(
+                    "cyfs_gateway Binary",
+                    CheckStatus::Ok,
+                    format!("cyfs_gateway executable exists: {}", p.display()),
+                ));
+            } else {
+                let mut item = CheckItem::new(
+                    "cyfs_gateway Binary",
+                    CheckStatus::Fail,
+                    "cyfs_gateway executable was not found",
+                );
+                for c in &candidates {
+                    item = item.with_detail(format!("checked: {}", c.display()));
+                }
+                checks.push(item);
+            }
+        }
+    }
+
+    if options.include_logs && log_root.is_dir() {
+        log_findings.extend(scan_log_findings(&log_root));
+    }
+
+    // host control 报告
+    if options.include_host_control {
+        let host_status = match host_control.model {
+            NodeHostControlModel::ServiceManager => {
+                let active = host_control.service_active.unwrap_or(false);
+                if active {
+                    (CheckStatus::Ok, "Service manager unit is active".to_string())
+                } else if host_control.platform != NodePlatform::Unknown {
+                    (CheckStatus::Warn, "Service manager unit not active".to_string())
+                } else {
+                    (CheckStatus::Info, "Service manager state unknown".to_string())
+                }
+            }
+            NodeHostControlModel::ScheduledLauncher => (
+                CheckStatus::Ok,
+                format!(
+                    "Scheduled launcher present: {}",
+                    host_control.scheduled_task_name.clone().unwrap_or_default()
+                ),
+            ),
+            NodeHostControlModel::DirectProcess => (
+                CheckStatus::Info,
+                "DirectProcess: no host service registration".to_string(),
+            ),
+            NodeHostControlModel::ContainerizedRuntime => (
+                CheckStatus::Info,
+                "Containerized runtime detected".to_string(),
+            ),
+            NodeHostControlModel::Unknown => (
+                CheckStatus::Warn,
+                "Host control model unknown".to_string(),
+            ),
+        };
+        let mut item = CheckItem::new("Host Control", host_status.0, host_status.1);
+        for ev in &host_control.evidence {
+            item = item.with_detail(ev.clone());
+        }
+        checks.push(item);
+    }
+
+    let availability_layer = compute_availability_layer(activated, &live_probe, &node_daemon_procs);
+    let overall = compute_overall_level(&checks, &host_control, activated, activation_ready);
+    let (title, summary) = summarize(activated, activation_ready, &overall, &availability_layer);
+
+    NodeCheckReport {
+        overall,
+        availability_layer,
+        buckyos_root,
+        platform: host_control.platform,
+        host_control,
+        activated,
+        activation_ready,
+        live_probe,
+        checks,
+        log_findings,
+        title,
+        summary,
+    }
+}
+
+fn compute_availability_layer(
+    activated: bool,
+    live: &NodeLiveProbeReport,
+    node_daemon_procs: &[&ProcessInfo],
+) -> NodeAvailabilityLayer {
+    if !activated {
+        if live.activation_endpoint_ok {
+            return NodeAvailabilityLayer::ActivationEndpointReachable;
+        }
+        return NodeAvailabilityLayer::HostReachable;
+    }
+    if live.system_config_ok && live.node_gateway_ok {
+        return NodeAvailabilityLayer::FullRuntimeReachable;
+    }
+    if live.system_config_ok || live.node_gateway_ok {
+        return NodeAvailabilityLayer::MinimalKernelReachable;
+    }
+    if !node_daemon_procs.is_empty() {
+        return NodeAvailabilityLayer::NodeDaemonReachable;
+    }
+    NodeAvailabilityLayer::ControllerDownWorkloadAlive
+}
+
+fn compute_overall_level(
+    checks: &[CheckItem],
+    host_control: &NodeHostControlState,
+    activated: bool,
+    activation_ready: bool,
+) -> NodeFaultLevel {
+    let has_fail = checks.iter().any(|c| c.status == CheckStatus::Fail);
+    let has_warn = checks.iter().any(|c| c.status == CheckStatus::Warn);
+
+    if !activated {
+        return if activation_ready {
+            NodeFaultLevel::Green
+        } else if has_fail {
+            NodeFaultLevel::Yellow
+        } else {
+            NodeFaultLevel::Yellow
+        };
+    }
+
+    if host_control.model == NodeHostControlModel::ServiceManager {
+        if matches!(host_control.service_active, Some(false)) {
+            return NodeFaultLevel::Yellow;
+        }
+    }
+
+    if has_fail {
+        return NodeFaultLevel::Orange;
+    }
+    if has_warn {
+        return NodeFaultLevel::Blue;
+    }
+    NodeFaultLevel::Green
+}
+
+fn summarize(
+    activated: bool,
+    activation_ready: bool,
+    overall: &NodeFaultLevel,
+    layer: &NodeAvailabilityLayer,
+) -> (String, String) {
+    if !activated {
+        if activation_ready {
+            return (
+                "Activation Ready".into(),
+                "node_active is serving on this machine and the system is waiting for activation".into(),
+            );
+        }
+        return (
+            "Not Running".into(),
+            "system is not activated and node_active is not serving".into(),
+        );
+    }
+    let title = match overall {
+        NodeFaultLevel::Green => "Running",
+        NodeFaultLevel::Blue => "Running With Warnings",
+        NodeFaultLevel::Yellow => "Booting Or Degraded",
+        NodeFaultLevel::Orange => "Abnormal",
+        NodeFaultLevel::Red => "Critical",
+    };
+    let summary = format!("availability layer: {:?}", layer);
+    (title.to_string(), summary)
+}
+
+// 简化的日志扫描（保留 check.py 的 churn / permission 信号）。
+fn scan_log_findings(log_root: &Path) -> Vec<DiagnosticFinding> {
+    let mut findings = Vec::new();
+    for service in ["scheduler", "node_daemon", "node-daemon"] {
+        let dir = log_root.join(service);
+        if !dir.is_dir() {
+            continue;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let mut log_files: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(OsStr::to_str) == Some("log"))
+            .collect();
+        log_files.sort_by_key(|p| {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        });
+        log_files.reverse();
+        let mut pids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for f in log_files.iter().take(10) {
+            if let Some(name) = f.file_name().and_then(OsStr::to_str) {
+                if let Some(captured) = extract_pid_from_log_name(name) {
+                    pids.insert(captured);
+                }
+            }
+        }
+        if pids.len() > 2 {
+            findings.push(DiagnosticFinding {
+                severity: CheckStatus::Warn,
+                title: format!("{} may be restarting repeatedly", service),
+                detail: format!(
+                    "Recent log files under {} map to {} different PIDs.",
+                    dir.display(),
+                    pids.len()
+                ),
+            });
+        }
+    }
+    findings
+}
+
+fn extract_pid_from_log_name(name: &str) -> Option<String> {
+    if !name.ends_with(".log") {
+        return None;
+    }
+    let stem = &name[..name.len() - 4];
+    let last_sep = stem.rfind(|c: char| c == '_' || c == '-')?;
+    let candidate = &stem[last_sep + 1..];
+    if !candidate.is_empty() && candidate.chars().all(|c| c.is_ascii_digit()) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+// -----------------------------------------------------------------------------
+// CLI 渲染
+// -----------------------------------------------------------------------------
+
+pub fn print_check_report(report: &NodeCheckReport) {
+    println!("BuckyOS Local Runtime Check");
+    println!("- Platform: {:?}", report.platform);
+    println!("- BUCKYOS_ROOT: {}", report.buckyos_root.display());
+    println!(
+        "- Host Control: model={:?} confidence={:?} unit={:?} task={:?}",
+        report.host_control.model,
+        report.host_control.confidence,
+        report.host_control.service_unit_name,
+        report.host_control.scheduled_task_name
+    );
+    println!(
+        "- Activated: {}, Activation Ready: {}",
+        report.activated, report.activation_ready
+    );
+    println!(
+        "- Overall: {:?} | Availability: {:?}",
+        report.overall, report.availability_layer
+    );
+    println!("- Status: {} ({})", report.title, report.summary);
+
+    println!("\nChecks");
+    for item in &report.checks {
+        let prefix = match item.status {
+            CheckStatus::Ok => "[OK]",
+            CheckStatus::Warn => "[WARN]",
+            CheckStatus::Fail => "[FAIL]",
+            CheckStatus::Info => "[INFO]",
+        };
+        println!("{} {}: {}", prefix, item.name, item.summary);
+        for d in &item.details {
+            println!("  - {}", d);
+        }
+    }
+
+    if !report.log_findings.is_empty() {
+        println!("\nDiagnostics");
+        for f in &report.log_findings {
+            let prefix = match f.severity {
+                CheckStatus::Ok => "[OK]",
+                CheckStatus::Warn => "[WARN]",
+                CheckStatus::Fail => "[FAIL]",
+                CheckStatus::Info => "[INFO]",
+            };
+            println!("{} {}: {}", prefix, f.title, f.detail);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Start
+// -----------------------------------------------------------------------------
+
+pub fn node_start(req: NodeStartRequest) -> Result<NodeStartReport, String> {
+    let mut host = if let Some(root) = req.buckyos_root.clone() {
+        let mut s = detect_host_control_state();
+        s.buckyos_root = root.clone();
+        s.node_daemon_binary = node_daemon_binary_path(&root);
+        s
+    } else {
+        detect_host_control_state()
+    };
+
+    let chosen_model = pick_start_model(&req.host_control_policy, host.model)?;
+    host.model = chosen_model;
+
+    if req.stop_conflicting && req.mode != NodeStartMode::Recovery {
+        // 软停 node_daemon 旧进程，避免端口冲突；不杀其他 run item。
+        for proc in find_processes(&collect_processes(), NODE_DAEMON_ALIASES) {
+            let _ = kill_process_by_pid(proc.pid);
+        }
+    }
+
+    let mut actions = Vec::new();
+    let mut started_pid: Option<u32> = None;
+
+    match chosen_model {
+        NodeHostControlModel::ServiceManager => match host.platform {
+            NodePlatform::MacOS => start_via_launchd(&host, &mut actions)?,
+            NodePlatform::Linux => start_via_systemd(&host, &mut actions)?,
+            _ => {
+                started_pid = Some(spawn_node_daemon_direct(&host, req.mode, &mut actions)?);
+            }
+        },
+        NodeHostControlModel::ScheduledLauncher => {
+            start_via_scheduled_task(&host, &mut actions)?;
+        }
+        NodeHostControlModel::DirectProcess => {
+            started_pid = Some(spawn_node_daemon_direct(&host, req.mode, &mut actions)?);
+        }
+        NodeHostControlModel::ContainerizedRuntime => {
+            return Err("ContainerizedRuntime start is not implemented".into());
+        }
+        NodeHostControlModel::Unknown => {
+            return Err("Unknown host control model; refusing start".into());
+        }
+    }
+
+    Ok(NodeStartReport {
+        used_model: chosen_model,
+        actions,
+        started_pid,
+    })
+}
+
+fn pick_start_model(
+    policy: &NodeHostControlPolicy,
+    detected: NodeHostControlModel,
+) -> Result<NodeHostControlModel, String> {
+    match policy {
+        NodeHostControlPolicy::Auto => match detected {
+            NodeHostControlModel::Unknown => Ok(NodeHostControlModel::DirectProcess),
+            other => Ok(other),
+        },
+        NodeHostControlPolicy::PreferServiceManager => Ok(NodeHostControlModel::ServiceManager),
+        NodeHostControlPolicy::PreferScheduledLauncher => {
+            Ok(NodeHostControlModel::ScheduledLauncher)
+        }
+        NodeHostControlPolicy::DirectProcessOnly => Ok(NodeHostControlModel::DirectProcess),
+        NodeHostControlPolicy::RefuseIfUnknown => {
+            if detected == NodeHostControlModel::Unknown {
+                Err("Host control model unknown; refusing".into())
+            } else {
+                Ok(detected)
+            }
+        }
+    }
+}
+
+fn spawn_node_daemon_direct(
+    host: &NodeHostControlState,
+    mode: NodeStartMode,
+    actions: &mut Vec<String>,
+) -> Result<u32, String> {
+    if !host.node_daemon_binary.is_file() {
+        return Err(format!(
+            "node_daemon binary not found: {}",
+            host.node_daemon_binary.display()
+        ));
+    }
+
+    let mut cmd = Command::new(&host.node_daemon_binary);
+    if matches!(mode, NodeStartMode::Activation | NodeStartMode::Normal) {
+        cmd.arg("--enable_active");
+    }
+    cmd.env("BUCKYOS_ROOT", &host.buckyos_root);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn node_daemon failed: {}", e))?;
+    let pid = child.id();
+    actions.push(format!(
+        "spawned node_daemon (pid={}) from {}",
+        pid,
+        host.node_daemon_binary.display()
+    ));
+    Ok(pid)
+}
+
+fn start_via_launchd(
+    host: &NodeHostControlState,
+    actions: &mut Vec<String>,
+) -> Result<(), String> {
+    let plist = host
+        .service_plist_path
+        .as_ref()
+        .ok_or_else(|| "LaunchDaemon plist path missing".to_string())?;
+    if !plist.is_file() {
+        return Err(format!("LaunchDaemon plist missing: {}", plist.display()));
+    }
+    let label = host
+        .service_unit_name
+        .clone()
+        .unwrap_or_else(|| "buckyos.service".to_string());
+    let target = format!("system/{}", label);
+
+    run_quiet("launchctl", &["enable", &target], actions);
+    // bootstrap; if already loaded, bootout-then-bootstrap.
+    let bs = Command::new("launchctl")
+        .args(["bootstrap", "system", plist.to_str().unwrap_or_default()])
+        .output();
+    match bs {
+        Ok(out) if out.status.success() => {
+            actions.push(format!("launchctl bootstrap system {}", plist.display()));
+        }
+        _ => {
+            run_quiet("launchctl", &["bootout", "system", plist.to_str().unwrap_or_default()], actions);
+            run_must("launchctl", &["bootstrap", "system", plist.to_str().unwrap_or_default()], actions)?;
+        }
+    }
+    run_must("launchctl", &["kickstart", "-k", &target], actions)?;
+    Ok(())
+}
+
+fn start_via_systemd(
+    host: &NodeHostControlState,
+    actions: &mut Vec<String>,
+) -> Result<(), String> {
+    let unit = host
+        .service_unit_name
+        .clone()
+        .unwrap_or_else(|| "buckyos.service".to_string());
+    run_quiet("systemctl", &["daemon-reload"], actions);
+    run_quiet("systemctl", &["enable", &unit], actions);
+    run_must("systemctl", &["start", &unit], actions)?;
+    Ok(())
+}
+
+fn start_via_scheduled_task(
+    host: &NodeHostControlState,
+    actions: &mut Vec<String>,
+) -> Result<(), String> {
+    let task = host
+        .scheduled_task_name
+        .clone()
+        .unwrap_or_else(|| "BuckyOSNodeDaemonKeepAlive".to_string());
+    run_must("schtasks", &["/Run", "/TN", &task], actions)?;
+    Ok(())
+}
+
+fn run_quiet(program: &str, args: &[&str], actions: &mut Vec<String>) {
+    let label = format!("{} {}", program, args.join(" "));
+    match Command::new(program).args(args).output() {
+        Ok(out) if out.status.success() => actions.push(format!("ok: {}", label)),
+        Ok(out) => actions.push(format!(
+            "warn: {} exit={:?} stderr={}",
+            label,
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(e) => actions.push(format!("error: {} ({})", label, e)),
+    }
+}
+
+fn run_must(program: &str, args: &[&str], actions: &mut Vec<String>) -> Result<(), String> {
+    let label = format!("{} {}", program, args.join(" "));
+    let out = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| format!("execute {} failed: {}", label, e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{} exit={:?} stderr={}",
+            label,
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    actions.push(format!("ok: {}", label));
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// Stop
+// -----------------------------------------------------------------------------
+
+pub fn node_stop(req: NodeStopRequest) -> Result<NodeStopReport, String> {
+    let mut host = if let Some(root) = req.buckyos_root.clone() {
+        let mut s = detect_host_control_state();
+        s.buckyos_root = root.clone();
+        s.node_daemon_binary = node_daemon_binary_path(&root);
+        s
+    } else {
+        detect_host_control_state()
+    };
+
+    if req.host_control_policy == NodeHostControlPolicy::RefuseIfUnknown
+        && host.model == NodeHostControlModel::Unknown
+    {
+        return Err("host control unknown; refusing stop".into());
+    }
+    if req.host_control_policy == NodeHostControlPolicy::DirectProcessOnly {
+        host.model = NodeHostControlModel::DirectProcess;
+    }
+
+    let mut report = NodeStopReport::default();
+
+    // Stage 1: 关闭自动拉起。
+    let stop_host = matches!(
+        req.mode,
+        NodeStopMode::Graceful
+            | NodeStopMode::GracefulThenForce
+            | NodeStopMode::StopHostService
+            | NodeStopMode::KillAll
+    ) && matches!(
+        req.blackbox_policy,
+        NodeBlackboxStopPolicy::IncludeHostService | NodeBlackboxStopPolicy::FullRuntime
+    ) || matches!(
+        req.mode,
+        NodeStopMode::StopHostService | NodeStopMode::KillAll | NodeStopMode::GracefulThenForce
+    );
+
+    if stop_host {
+        stop_host_service(&host, &mut report);
+    }
+
+    if matches!(req.mode, NodeStopMode::StopHostService) {
+        return Ok(report);
+    }
+
+    // Stage 2: graceful — 此版本只是“已关闭自动拉起后等待 timeout”。
+    // node_daemon 不需要进一步主动停 run item，由 Host OS 服务管理器/上层负责或直接到黑盒。
+    if matches!(
+        req.mode,
+        NodeStopMode::Graceful | NodeStopMode::GracefulThenForce
+    ) {
+        let waited = wait_for_node_daemon_exit(req.timeout_secs);
+        report
+            .actions
+            .push(format!("waited {}s for node_daemon graceful exit", waited));
+    }
+
+    // Stage 3: 黑盒强停。
+    let blackbox_enabled = matches!(
+        req.mode,
+        NodeStopMode::GracefulThenForce | NodeStopMode::BlackboxForce | NodeStopMode::KillAll
+    ) && req.blackbox_policy != NodeBlackboxStopPolicy::Disabled;
+
+    if blackbox_enabled {
+        blackbox_stop(&req, &host, &mut report);
+    }
+
+    // Stage 4: 残留检查。
+    let processes = collect_processes();
+    let mut remaining = Vec::new();
+    let kill_targets: Vec<&str> = PROCESS_KILL_BASELINE.iter().copied().collect();
+    if !find_processes(&processes, &kill_targets).is_empty() {
+        for proc in find_processes(&processes, &kill_targets) {
+            remaining.push(format!("pid={} {}", proc.pid, proc.command));
+        }
+    }
+    report.remaining = remaining;
+
+    Ok(report)
+}
+
+fn stop_host_service(host: &NodeHostControlState, report: &mut NodeStopReport) {
+    match (host.platform, host.model) {
+        (NodePlatform::MacOS, NodeHostControlModel::ServiceManager) => {
+            let label = host
+                .service_unit_name
+                .clone()
+                .unwrap_or_else(|| "buckyos.service".to_string());
+            let target = format!("system/{}", label);
+            run_quiet("launchctl", &["disable", &target], &mut report.host_service_actions);
+            if let Some(plist) = &host.service_plist_path {
+                run_quiet(
+                    "launchctl",
+                    &["bootout", "system", plist.to_str().unwrap_or_default()],
+                    &mut report.host_service_actions,
+                );
+            }
+        }
+        (NodePlatform::Linux, NodeHostControlModel::ServiceManager) => {
+            let unit = host
+                .service_unit_name
+                .clone()
+                .unwrap_or_else(|| "buckyos.service".to_string());
+            run_quiet(
+                "systemctl",
+                &["stop", &unit],
+                &mut report.host_service_actions,
+            );
+        }
+        (NodePlatform::Windows, NodeHostControlModel::ScheduledLauncher) => {
+            if let Some(task) = &host.scheduled_task_name {
+                run_quiet(
+                    "schtasks",
+                    &["/Delete", "/TN", task, "/F"],
+                    &mut report.host_service_actions,
+                );
+            }
+            if let Some(legacy) = &host.legacy_service_name {
+                run_quiet("sc", &["stop", legacy], &mut report.host_service_actions);
+            }
+            // Run key
+            if let Some(run_key) = &host.run_key_name {
+                run_quiet(
+                    "reg",
+                    &[
+                        "delete",
+                        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                        "/V",
+                        run_key,
+                        "/F",
+                    ],
+                    &mut report.host_service_actions,
+                );
+            }
+        }
+        _ => {
+            report
+                .host_service_actions
+                .push("no host service action for this model".to_string());
+        }
+    }
+}
+
+fn wait_for_node_daemon_exit(timeout_secs: u64) -> u64 {
+    let mut waited = 0;
+    let step = Duration::from_secs(1);
+    while waited < timeout_secs {
+        let processes = collect_processes();
+        if find_processes(&processes, NODE_DAEMON_ALIASES).is_empty() {
+            return waited;
+        }
+        std::thread::sleep(step);
+        waited += 1;
+    }
+    waited
+}
+
+fn blackbox_stop(
+    req: &NodeStopRequest,
+    host: &NodeHostControlState,
+    report: &mut NodeStopReport,
+) {
+    let snapshot = read_run_plist();
+    if let Some(snap) = &snapshot {
+        report.actions.push(format!(
+            "loaded run.plist from {}: {} items",
+            snap.path.display(),
+            snap.items.len()
+        ));
+    } else {
+        report
+            .actions
+            .push("run.plist unavailable; using baseline kill list".to_string());
+    }
+
+    // 进程清单：保底 + run.plist 中 kernel/frame service 名（去重，归一化）。
+    let mut alias_set: std::collections::BTreeSet<String> = PROCESS_KILL_BASELINE
+        .iter()
+        .map(|s| normalize_name(s))
+        .collect();
+    if let Some(snap) = &snapshot {
+        for alias in snap.all_process_aliases() {
+            alias_set.insert(normalize_name(&alias));
+        }
+    }
+    let alias_vec: Vec<String> = alias_set.into_iter().collect();
+    let alias_refs: Vec<&str> = alias_vec.iter().map(|s| s.as_str()).collect();
+
+    let processes = collect_processes();
+    for proc in find_processes(&processes, &alias_refs) {
+        match kill_process_by_pid(proc.pid) {
+            Ok(_) => report
+                .stopped_processes
+                .push(format!("pid={} {}", proc.pid, proc.command)),
+            Err(e) => report
+                .actions
+                .push(format!("kill pid={} failed: {}", proc.pid, e)),
+        }
+    }
+
+    // 容器：根据策略和平台决定是否处理。
+    let want_containers = matches!(
+        req.blackbox_policy,
+        NodeBlackboxStopPolicy::IncludeManagedContainers | NodeBlackboxStopPolicy::FullRuntime
+    );
+    if want_containers {
+        let mut targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        if let Some(snap) = &snapshot {
+            for name in snap.app_service_container_names() {
+                targets.insert(name);
+            }
+        }
+        // 兼容历史脚本 devtest-* 容器（如 run.plist 不可用时的开发场景）。
+        if targets.is_empty() && !cfg!(target_os = "windows") {
+            if let Some(out) = run_capture(
+                "docker",
+                &["ps", "-a", "--format", "{{.Names}}"],
+            ) {
+                for line in out.lines() {
+                    let name = line.trim();
+                    if name.starts_with("devtest-") {
+                        targets.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        // 也支持 buckyos label
+        if let Some(out) = run_capture(
+            "docker",
+            &["ps", "-aq", "--filter", "label=buckyos.full_appid"],
+        ) {
+            for line in out.lines() {
+                let id = line.trim();
+                if !id.is_empty() {
+                    targets.insert(id.to_string());
+                }
+            }
+        }
+
+        for target in targets {
+            let r = Command::new("docker").args(["rm", "-f", &target]).output();
+            match r {
+                Ok(out) if out.status.success() => {
+                    report.stopped_containers.push(target);
+                }
+                Ok(out) => report.actions.push(format!(
+                    "docker rm -f {} failed: {}",
+                    target,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )),
+                Err(e) => report
+                    .actions
+                    .push(format!("docker rm -f {} error: {}", target, e)),
+            }
+        }
+    }
+
+    // legacy: KillAll 模式下额外 fallback 用 killall/taskkill 强一遍。
+    if matches!(req.mode, NodeStopMode::KillAll) {
+        for alias in PROCESS_KILL_BASELINE {
+            let _ = kill_process_by_name(alias);
+        }
+        let _ = host; // suppress unused on some configs
+    }
+}
+
+fn kill_process_by_pid(pid: u32) -> Result<(), String> {
+    if cfg!(target_os = "windows") {
+        let out = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).to_string());
+        }
+    } else {
+        #[cfg(unix)]
+        unsafe {
+            if libc::kill(pid as libc::pid_t, libc::SIGTERM) != 0 {
+                let err = std::io::Error::last_os_error();
+                return Err(err.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn kill_process_by_name(name: &str) -> Result<bool, String> {
+    if cfg!(target_os = "windows") {
+        let exe_name = format!("{}.exe", name);
+        let out = Command::new("taskkill")
+            .args(["/F", "/IM", &exe_name])
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(out.status.success())
+    } else {
+        let out = Command::new("killall")
+            .arg(name)
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(out.status.success())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_plist_path_unix_prefix() {
+        let path = run_plist_path();
+        let s = path.to_string_lossy().to_string();
+        if cfg!(target_os = "windows") {
+            assert!(s.ends_with("run.plist"));
+        } else {
+            assert_eq!(s, "/tmp/buckyos/run.plist");
+        }
+    }
+
+    #[test]
+    fn normalize_handles_underscore_and_exe() {
+        assert_eq!(normalize_name("Node_Daemon.exe"), "node-daemon");
+        assert_eq!(normalize_name("control-panel"), "control-panel");
+    }
+
+    #[test]
+    fn run_plist_parses_app_service_container_names() {
+        let raw = r#"{
+            "version": 1,
+            "updated_at": 1,
+            "items": {
+                "scheduler": {"item_name":"scheduler","item_kind":"kernel_service","target_state":"Running","observed_state":null,"run_state":"started","last_error":null,"updated_at":1},
+                "devtest#jarvis": {"item_name":"devtest#jarvis","item_kind":"app_service","target_state":"Running","observed_state":null,"run_state":"started","last_error":null,"updated_at":1}
+            }
+        }"#;
+        let parsed: RunPlistRaw = serde_json::from_str(raw).expect("parse");
+        let snapshot = RunPlistSnapshot {
+            path: PathBuf::from("/tmp/test"),
+            items: parsed
+                .items
+                .into_values()
+                .map(|i| RunPlistEntry {
+                    name: i.item_name,
+                    kind: i.item_kind,
+                    run_state: i.run_state,
+                })
+                .collect(),
+        };
+        assert_eq!(snapshot.kernel_service_aliases(), vec!["scheduler"]);
+        assert_eq!(
+            snapshot.app_service_container_names(),
+            vec!["devtest-jarvis"]
+        );
+    }
+
+    #[test]
+    fn extract_pid_from_log_name_works() {
+        assert_eq!(
+            extract_pid_from_log_name("scheduler_12345.log").as_deref(),
+            Some("12345")
+        );
+        assert_eq!(
+            extract_pid_from_log_name("node-daemon-998.log").as_deref(),
+            Some("998")
+        );
+        assert!(extract_pid_from_log_name("scheduler.log").is_none());
+    }
+
+    #[test]
+    fn pick_start_model_refuse_when_unknown() {
+        let err = pick_start_model(
+            &NodeHostControlPolicy::RefuseIfUnknown,
+            NodeHostControlModel::Unknown,
+        );
+        assert!(err.is_err());
+    }
+}
