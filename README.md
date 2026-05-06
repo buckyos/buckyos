@@ -193,8 +193,10 @@ SourceDAO is the open-source DAO smart contract built on these ideas. For more d
 
 #### 2026
 
-- **0.6.0 Beta2:** 2.5% (This release in Q1 2026; iterative development is ongoing)
-- **0.7.0 Beta3:** 2.5% (Planned for late April 2026)
+- **0.6.0 Beta2:** 4% (Completed in April 2026)
+- **0.7.0 Beta2.2:** 7.5% (Planned for May 2026)
+- **0.8.0 Beat3:** 4% (Planed for July 2026)
+
 
 ## License
 
