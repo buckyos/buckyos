@@ -667,11 +667,7 @@ impl ControlPanelServer {
             }
         }
 
-        match Self::request_host(req) {
-            Some(host) if host == "localhost" || host.parse::<IpAddr>().is_ok() => false,
-            Some(_) => true,
-            None => false,
-        }
+        false
     }
 
     fn token_max_age(token: &str) -> Option<u64> {
