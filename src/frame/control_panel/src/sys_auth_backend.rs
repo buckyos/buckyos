@@ -1,4 +1,4 @@
-use crate::{ControlPanelServer, RpcAuthPrincipal, GATEWAY_ETC_DIR};
+use crate::{gateway_etc_dir, ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use buckyos_api::{
     get_buckyos_api_runtime, LoginByPasswordResponse, UserInfo, UserSettings, UserState, UserType,
@@ -15,7 +15,6 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::path::Path;
 
 const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
 const GATEWAY_SSO_SESSION_COOKIE: &str = "buckyos_session_token";
@@ -815,7 +814,7 @@ impl ControlPanelServer {
     }
 
     fn lookup_gateway_appid(app_key: &str) -> Result<String, RPCErrors> {
-        let gateway_info_path = Path::new(GATEWAY_ETC_DIR).join("node_gateway_info.json");
+        let gateway_info_path = gateway_etc_dir().join("node_gateway_info.json");
         let content = std::fs::read_to_string(gateway_info_path.as_path()).map_err(|error| {
             RPCErrors::ReasonError(format!("read node_gateway_info.json failed: {}", error))
         })?;
