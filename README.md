@@ -14,20 +14,20 @@ Beta2 is a major BuckyOS update for the AI era. Key additions include:
   - A Runtime Sandbox with fully controlled isolation between agents
 - A new AI Computer Center for unified cluster AI capability management and model routing
 - A new Msg Center that provides unified Message Inbox/Outbox management for DID entities and serves as the foundation for the planned default apps Message Hub and Home Station
-- Msg Center support for Msg Tunnel extensions, with full Telegram API support already implemented
-- A new Workflow engine with Agent-Human-Loop support, serving as the foundation of the Agent Intent Engine (*currently under development)
+  - Msg Center support for Msg Tunnel extensions, with full Telegram API support already implemented
 - A complete refactor of the Named Store storage layer in ndn-lib
 - A reimplemented repo-service, upgraded from an "app source" into a general-purpose digital content management and distribution infrastructure service
-- Kernel development for CYFS (a distributed file system based on `cyfs://`) is complete and planned to be enabled in Beta3
 - Multiple cyfs-gateway updates that expand Server configuration and further strengthen process-chain capabilities
 - A rewritten BuckyOS cluster-routing process-chain that is more modular, supports richer gateway security, and protects system installation from the source
 - Rtcp protocol security upgrades are in progress and are planned to be completed in the first two Beta2 iterations
-- Support for virtual machine management, with VMs assignable to agents (*currently under development)
-- Scheduler support for Function Instance, replacing the originally planned OPTask (*currently under development)
-- The BuckyOS TypeScript SDK is becoming a first-class citizen and will gain feature parity with the Rust SDK (*in progress)
-  - Developers can choose either TypeScript or Rust to build BuckyOS native apps
 - Infrastructure for Harness Engineering has been added, and we will fully switch to an AI-native development workflow in this release
-
+- A new Workflow engine with Agent-Human-Loop support, serving as the foundation of the Agent Intent Engine (move to beta2.2)
+- Support for virtual machine management, with VMs assignable to agents (move to beta3)
+- Scheduler support for Function Instance, replacing the originally planned OPTask (move to beta2.2)
+- Kernel development for CYFS (a distributed file system based on `cyfs://`) is complete and planned to be enabled in Beta3
+- The BuckyOS TypeScript SDK is becoming a first-class citizen and will gain feature parity with the Rust SDK (move to bete 2.2)
+  - Developers can choose either TypeScript or Rust to build BuckyOS native apps
+    
 **Join us on this journey. Issues and pull requests are always welcome. Let’s build the next generation of distributed personal AI operating systems together.**
 
 After the first Beta2 release, we will move into a rapid iteration phase, with the goal of shipping user-experience improvements every week.
