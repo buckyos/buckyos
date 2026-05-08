@@ -1,6 +1,6 @@
 use crate::{
     docker_command, external_command, ControlPanelServer, DockerOverviewCacheEntry,
-    GATEWAY_CONFIG_FILES, GATEWAY_ETC_DIR, SN_SELF_CERT_STATE_PATH, ZONE_CONFIG_FILES,
+    GATEWAY_CONFIG_FILES, ZONE_CONFIG_FILES, gateway_etc_dir, sn_self_cert_state_path,
 };
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use chrono::{DateTime, Utc};
@@ -31,14 +31,14 @@ impl ControlPanelServer {
         if !GATEWAY_CONFIG_FILES.contains(&name) {
             return None;
         }
-        Some(Path::new(GATEWAY_ETC_DIR).join(name))
+        Some(gateway_etc_dir().join(name))
     }
 
     fn zone_config_file_path(name: &str) -> Option<PathBuf> {
         if !ZONE_CONFIG_FILES.contains(&name) {
             return None;
         }
-        Some(Path::new(GATEWAY_ETC_DIR).join(name))
+        Some(gateway_etc_dir().join(name))
     }
 
     fn extract_first_quoted_after(value: &str, marker: &str) -> Option<String> {
@@ -268,7 +268,7 @@ impl ControlPanelServer {
     }
 
     fn read_self_cert_state(zone_domain: &str) -> Result<Option<bool>, String> {
-        let content = std::fs::read_to_string(SN_SELF_CERT_STATE_PATH)
+        let content = std::fs::read_to_string(sn_self_cert_state_path())
             .map_err(|err| format!("read self cert state failed: {}", err))?;
         let parsed = serde_json::from_str::<Value>(content.as_str())
             .map_err(|err| format!("parse self cert state failed: {}", err))?;
@@ -304,12 +304,13 @@ impl ControlPanelServer {
         &self,
         req: RPCRequest,
     ) -> Result<RPCResponse, RPCErrors> {
+        let etc_dir = gateway_etc_dir();
         let start_config_path = Self::zone_config_file_path("start_config.json")
-            .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("start_config.json"));
+            .unwrap_or_else(|| etc_dir.join("start_config.json"));
         let node_device_config_path = Self::zone_config_file_path("node_device_config.json")
-            .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("node_device_config.json"));
+            .unwrap_or_else(|| etc_dir.join("node_device_config.json"));
         let node_identity_path = Self::zone_config_file_path("node_identity.json")
-            .unwrap_or_else(|| Path::new(GATEWAY_ETC_DIR).join("node_identity.json"));
+            .unwrap_or_else(|| etc_dir.join("node_identity.json"));
 
         let files = vec![
             Self::gateway_file_summary(&start_config_path),
@@ -333,7 +334,7 @@ impl ControlPanelServer {
         let mut sn_dns_txt_records: Vec<String> = Vec::new();
         let mut sn_dig_error = String::new();
         let mut self_cert_state = false;
-        let self_cert_state_source = SN_SELF_CERT_STATE_PATH.to_string();
+        let self_cert_state_source = sn_self_cert_state_path().display().to_string();
         let mut zone_iat: i64 = 0;
         let mut notes: Vec<String> = Vec::new();
 
@@ -530,7 +531,7 @@ impl ControlPanelServer {
         }
 
         let response = json!({
-            "etcDir": GATEWAY_ETC_DIR,
+            "etcDir": etc_dir.display().to_string(),
             "zone": {
                 "name": zone_name,
                 "domain": zone_domain,
@@ -567,7 +568,7 @@ impl ControlPanelServer {
         &self,
         req: RPCRequest,
     ) -> Result<RPCResponse, RPCErrors> {
-        let etc_dir = Path::new(GATEWAY_ETC_DIR);
+        let etc_dir = gateway_etc_dir();
         let cyfs_gateway_path = etc_dir.join("cyfs_gateway.json");
         let boot_gateway_path = etc_dir.join("boot_gateway.yaml");
         let node_gateway_path = etc_dir.join("node_gateway.json");
@@ -685,7 +686,7 @@ impl ControlPanelServer {
 
         let response = json!({
             "mode": mode,
-            "etcDir": GATEWAY_ETC_DIR,
+            "etcDir": etc_dir.display().to_string(),
             "files": files,
             "includes": includes,
             "stacks": stacks,

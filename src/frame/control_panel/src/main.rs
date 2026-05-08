@@ -34,6 +34,7 @@ use buckyos_http_server::*;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::{net::IpAddr, time::Instant};
@@ -75,7 +76,6 @@ fn windows_hidden_process_creation_flags() -> u32 {
 const METRICS_DISK_REFRESH_INTERVAL_SECS: u64 = 5;
 const NETWORK_TIMELINE_LIMIT: usize = 300;
 const DOCKER_OVERVIEW_CACHE_TTL_SECS: u64 = 15;
-const GATEWAY_ETC_DIR: &str = "/opt/buckyos/etc";
 const GATEWAY_CONFIG_FILES: [&str; 5] = [
     "cyfs_gateway.json",
     "boot_gateway.yaml",
@@ -88,8 +88,19 @@ const ZONE_CONFIG_FILES: [&str; 3] = [
     "node_device_config.json",
     "node_identity.json",
 ];
-const SN_SELF_CERT_STATE_PATH: &str = "/opt/buckyos/data/cyfs_gateway/sn_dns/self_cert_state.json";
 const CONTROL_PANEL_LOCALE_KEY: &str = "services/control_panel/settings/locale";
+
+pub(crate) fn gateway_etc_dir() -> PathBuf {
+    get_buckyos_system_etc_dir()
+}
+
+pub(crate) fn sn_self_cert_state_path() -> PathBuf {
+    get_buckyos_root_dir()
+        .join("data")
+        .join("cyfs_gateway")
+        .join("sn_dns")
+        .join("self_cert_state.json")
+}
 
 #[derive(Clone, Debug)]
 struct RpcAuthPrincipal {
