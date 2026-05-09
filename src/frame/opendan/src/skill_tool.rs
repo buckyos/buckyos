@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as Json};
+use serde_json::Value as Json;
 use tokio::sync::Mutex;
 
 use crate::agent_session::{AgentSession, AgentSessionMgr, SessionSkillScope};
@@ -39,14 +40,14 @@ impl UnloadSkillTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct LoadSkillArgs {
     pub skill: String,
     #[serde(default)]
     pub scope: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 pub struct LoadSkillOutput {
     ok: bool,
     scope: &'static str,
@@ -72,29 +73,6 @@ impl TypedTool for LoadSkillTool {
         CallingConventions::ACTION | CallingConventions::LLM
     }
 
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "skill": { "type": "string" },
-                "scope": { "type": "string", "enum": ["behavior", "session"] }
-            },
-            "required": ["skill"],
-            "additionalProperties": false
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean" },
-                "scope": { "type": "string" },
-                "skill": { "type": "string" },
-                "path": { "type": "string" }
-            }
-        })
-    }
 
     fn usage(&self) -> Option<String> {
         Some("load_skill <skill> [behavior|session]".to_string())
@@ -156,12 +134,12 @@ impl TypedTool for LoadSkillTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct UnloadSkillArgs {
     pub skill: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 pub struct UnloadSkillOutput {
     ok: bool,
     skill: String,
@@ -182,27 +160,6 @@ impl TypedTool for UnloadSkillTool {
 
     fn calling(&self) -> CallingConventions {
         CallingConventions::ACTION | CallingConventions::LLM
-    }
-
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "skill": { "type": "string" }
-            },
-            "required": ["skill"],
-            "additionalProperties": false
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean" },
-                "skill": { "type": "string" }
-            }
-        })
     }
 
     fn usage(&self) -> Option<String> {

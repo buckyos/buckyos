@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use buckyos_api::AiToolCall;
 use chrono::Utc;
 use log::{info, warn};
+use schemars::JsonSchema;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as Json};
@@ -28,8 +29,8 @@ pub mod tool;
 pub mod workspace;
 
 pub use tool::{
-    BasicToolHost, CallingConventions, NullToolHost, ToolCtx, ToolHost, TypedTool,
-    TypedToolHandle,
+    BasicToolHost, CallingConventions, CliInvocation, ContentInput, NullToolHost, ToolCtx,
+    ToolHost, TypedTool, TypedToolHandle,
 };
 
 pub use file_tools::{
@@ -45,7 +46,8 @@ pub use json_args::{
 pub use memory::{AgentMemory, AgentMemoryConfig, MemoryRankItem};
 pub use path_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,
-    sanitize_session_id_for_path, session_record_path, to_abs_path, MAX_SESSION_ID_LEN,
+    rewrite_path_with_shell_cwd, sanitize_session_id_for_path, session_record_path, to_abs_path,
+    MAX_SESSION_ID_LEN,
 };
 pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1141,6 +1143,27 @@ pub trait AgentTool: Send + Sync {
         let args = parse_default_bash_exec_args(&tokens[1..])?;
         self.call(ctx, args).await
     }
+
+    /// Convert a CLI argv (after the tool name) into a dispatch
+    /// invocation. Default treats it as bash form. Tools whose CLI
+    /// uses `--flag value` syntax override this; the override lives
+    /// next to the tool definition rather than in `cli.rs`.
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        _shell_cwd: Option<&Path>,
+    ) -> Result<crate::tool::CliInvocation, AgentToolError> {
+        Ok(crate::tool::CliInvocation::Bash {
+            line: build_bash_cli_line(self.spec().name.as_str(), tokens),
+        })
+    }
+
+    /// True for tools that emit a single text payload the CLI should
+    /// stream out raw (no JSON envelope) when stdout is non-interactive.
+    /// Currently only `read_file` opts in.
+    fn cli_plain_text_stdout(&self) -> bool {
+        false
+    }
 }
 
 #[async_trait]
@@ -1159,7 +1182,7 @@ impl GetSessionTool {
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetSessionArgs {
     #[serde(default)]
@@ -1183,38 +1206,14 @@ impl TypedTool for GetSessionTool {
         CallingConventions::BASH
     }
 
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "session_id": { "type": "string" }
-            },
-            "additionalProperties": false
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean" },
-                "session": { "type": "object" }
-            }
-        })
-    }
-
     fn usage(&self) -> Option<String> {
         Some("get_session [session_id]".to_string())
     }
 
     fn parse_bash_args(
-
         &self,
-
         tokens: &[String],
-
         _shell_cwd: Option<&Path>,
-
     ) -> Result<Json, AgentToolError> {
         if tokens.is_empty() {
             return Ok(json!({}));
@@ -1223,6 +1222,65 @@ impl TypedTool for GetSessionTool {
             return Ok(json!({ "session_id": tokens[0].trim() }));
         }
         parse_default_bash_exec_args(tokens)
+    }
+
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        _shell_cwd: Option<&Path>,
+    ) -> Result<crate::CliInvocation, AgentToolError> {
+        // Accept `--session-id <v>`, `session_id=<v>`, or one positional;
+        // otherwise rebuild a bash line and let `parse_bash_args` handle it.
+        let mut session_id: Option<String> = None;
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            match tokens[idx].as_str() {
+                "--session-id" => {
+                    idx += 1;
+                    session_id = Some(
+                        tokens
+                            .get(idx)
+                            .ok_or_else(|| AgentToolError::InvalidArgs(
+                                "missing value for `--session-id` (get_session)".to_string(),
+                            ))?
+                            .clone(),
+                    );
+                }
+                token if token.starts_with("--") => {
+                    return Err(AgentToolError::InvalidArgs(format!(
+                        "unsupported flag `{token}` (get_session)"
+                    )));
+                }
+                token if token.contains('=') => {
+                    let (key, value) = token.split_once('=').unwrap();
+                    match key {
+                        "session_id" | "session" => session_id = Some(value.to_string()),
+                        _ => {
+                            return Err(AgentToolError::InvalidArgs(format!(
+                                "unsupported arg `{key}` (get_session)"
+                            )))
+                        }
+                    }
+                }
+                value => {
+                    if session_id.is_some() {
+                        return Err(AgentToolError::InvalidArgs(format!(
+                            "unexpected positional arg `{value}` (get_session)"
+                        )));
+                    }
+                    session_id = Some(value.to_string());
+                }
+            }
+            idx += 1;
+        }
+
+        let mut forwarded = Vec::new();
+        if let Some(id) = session_id {
+            forwarded.push(format!("session_id={id}"));
+        }
+        Ok(crate::CliInvocation::Bash {
+            line: build_bash_cli_line(TOOL_GET_SESSION, &forwarded),
+        })
     }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
@@ -1292,7 +1350,7 @@ impl LoadMemoryTool {
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, JsonSchema)]
 pub struct LoadMemoryArgs {
     #[serde(default)]
     pub token_limit: Option<u64>,
@@ -1316,6 +1374,19 @@ impl Serialize for LoadMemoryOutput {
     }
 }
 
+impl JsonSchema for LoadMemoryOutput {
+    fn schema_name() -> String {
+        "LoadMemoryOutput".to_string()
+    }
+    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 #[async_trait]
 impl TypedTool for LoadMemoryTool {
     type Args = LoadMemoryArgs;
@@ -1331,24 +1402,6 @@ impl TypedTool for LoadMemoryTool {
     }
     fn calling(&self) -> CallingConventions {
         CallingConventions::from_legacy(true, false, true)
-    }
-
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "token_limit": {"type":"number"},
-                "tags": {
-                    "type":"array",
-                    "items": {"type":"string"}
-                },
-                "current_time": {"type":"string"}
-            }
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({ "type": "string" })
     }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
@@ -1415,7 +1468,7 @@ impl SetMemoryTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SetMemoryArgs {
     pub key: String,
     pub content: String,
@@ -1436,21 +1489,6 @@ impl TypedTool for SetMemoryTool {
     }
     fn calling(&self) -> CallingConventions {
         CallingConventions::from_legacy(true, false, true)
-    }
-
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "key": {"type":"string"},
-                "content": {"type":"string"}
-            },
-            "required": ["key", "content"]
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({ "type": "object" })
     }
 
     fn usage(&self) -> Option<String> {
@@ -1519,7 +1557,7 @@ impl RemoveMemoryTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct RemoveMemoryArgs {
     pub key: String,
 }
@@ -1539,20 +1577,6 @@ impl TypedTool for RemoveMemoryTool {
     }
     fn calling(&self) -> CallingConventions {
         CallingConventions::from_legacy(true, false, true)
-    }
-
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "key": {"type":"string"}
-            },
-            "required": ["key"]
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({ "type": "object" })
     }
 
     fn usage(&self) -> Option<String> {
@@ -1662,7 +1686,7 @@ impl CreateWorkspaceTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct CreateWorkspaceArgs {
     pub name: String,
     pub summary: String,
@@ -1685,31 +1709,6 @@ impl TypedTool for CreateWorkspaceTool {
         CallingConventions::BASH
     }
 
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": { "type": "string" },
-                "summary": { "type": "string" }
-            },
-            "required": ["name", "summary"],
-            "additionalProperties": false
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean" },
-                "workspace": { "type": "object" },
-                "binding": { "type": "object" },
-                "summary_path": { "type": "string" },
-                "session_id": { "type": "string" },
-                "session_updated": { "type": "boolean" }
-            }
-        })
-    }
 
     fn usage(&self) -> Option<String> {
         Some("create_workspace <name> <summary>".to_string())
@@ -1810,11 +1809,14 @@ impl BindExternalWorkspaceTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BindExternalWorkspaceArgs {
+    /// Local mount name.
     pub name: String,
+    /// Absolute or relative source workspace path.
     pub workspace_path: String,
+    /// Optional target agent DID. Defaults to current agent DID.
     #[serde(default)]
     pub agent_did: Option<String>,
 }
@@ -1834,29 +1836,6 @@ impl TypedTool for BindExternalWorkspaceTool {
     }
     fn calling(&self) -> CallingConventions {
         CallingConventions::BASH
-    }
-
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": { "type": "string", "description": "Local mount name." },
-                "workspace_path": { "type": "string", "description": "Absolute or relative source workspace path." },
-                "agent_did": { "type": "string", "description": "Optional target agent DID. Defaults to current agent DID." }
-            },
-            "required": ["name", "workspace_path"],
-            "additionalProperties": false
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean" },
-                "binding": { "type": "object" }
-            }
-        })
     }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
@@ -1919,9 +1898,10 @@ impl ListExternalWorkspacesTool {
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListExternalWorkspacesArgs {
+    /// Optional agent DID. Defaults to current agent DID.
     #[serde(default)]
     pub agent_did: Option<String>,
 }
@@ -1943,25 +1923,6 @@ impl TypedTool for ListExternalWorkspacesTool {
         CallingConventions::BASH
     }
 
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "agent_did": { "type": "string", "description": "Optional agent DID. Defaults to current agent DID." }
-            },
-            "additionalProperties": false
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean" },
-                "workspaces": { "type": "array", "items": { "type": "object" } }
-            }
-        })
-    }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         let mut out = TOOL_LIST_EXTERNAL_WORKSPACES.to_string();
@@ -2005,7 +1966,7 @@ impl TypedTool for ListExternalWorkspacesTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct BindWorkspaceArgs {
     pub workspace: String,
 }
@@ -2025,29 +1986,6 @@ impl TypedTool for BindWorkspaceTool {
     }
     fn calling(&self) -> CallingConventions {
         CallingConventions::BASH
-    }
-
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "workspace": { "type": "string" }
-            },
-            "required": ["workspace"],
-            "additionalProperties": false
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean" },
-                "binding": { "type": "object" },
-                "session_id": { "type": "string" },
-                "session_updated": { "type": "boolean" }
-            }
-        })
     }
 
     fn usage(&self) -> Option<String> {
@@ -2523,6 +2461,18 @@ impl AgentTool for RegisteredTool {
     ) -> Result<AgentToolResult, AgentToolError> {
         self.inner.exec(ctx, line, shell_cwd).await
     }
+
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<crate::tool::CliInvocation, AgentToolError> {
+        self.inner.parse_cli_args(tokens, shell_cwd)
+    }
+
+    fn cli_plain_text_stdout(&self) -> bool {
+        self.inner.cli_plain_text_stdout()
+    }
 }
 
 #[derive(Default)]
@@ -2887,6 +2837,25 @@ impl AgentToolManager {
     pub fn get_any_tool(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
         self.get_registered_tool(name)
     }
+}
+
+/// Stitch a tool name plus argv tokens back into a bash command line,
+/// shell-quoting each token. Used by tools whose CLI form is "just the
+/// bash form" so they can produce the line their `exec` consumes.
+pub fn build_bash_cli_line(tool_name: &str, tokens: &[String]) -> String {
+    let mut line = String::from(tool_name);
+    for token in tokens {
+        line.push(' ');
+        line.push_str(&shell_quote_token(token));
+    }
+    line
+}
+
+fn shell_quote_token(raw: &str) -> String {
+    if raw.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", raw.replace('\'', "'\"'\"'"))
 }
 
 pub fn tokenize_bash_command_line(line: &str) -> Result<Vec<String>, AgentToolError> {

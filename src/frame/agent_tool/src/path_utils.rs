@@ -20,6 +20,22 @@ pub fn normalize_abs_path(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Resolve a CLI-provided raw path against the shell's working
+/// directory, canonicalizing if possible. Used by `write_file` /
+/// `edit_file` CLI parsers to expand relative paths the user typed.
+pub fn rewrite_path_with_shell_cwd(raw_path: String, current_dir: &Path) -> String {
+    let path = Path::new(raw_path.trim());
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        current_dir.join(path)
+    };
+    std::fs::canonicalize(&absolute)
+        .unwrap_or_else(|_| normalize_abs_path(&absolute))
+        .to_string_lossy()
+        .to_string()
+}
+
 pub fn to_abs_path(path: &Path) -> Result<PathBuf, AgentToolError> {
     if path.is_absolute() {
         Ok(normalize_abs_path(path))

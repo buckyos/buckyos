@@ -15,9 +15,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use schemars::{schema_for, JsonSchema};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::{json, Value as Json};
+use serde_json::Value as Json;
 
 use crate::file_tools::FileWriteAuditBackend;
 use crate::workspace::WorkspaceRuntimeBackend;
@@ -210,6 +211,26 @@ impl ToolHost for BasicToolHost {
     }
 }
 
+/// Where the value for a CLI content field comes from. `Inline` is the
+/// raw flag value; `Stdin` defers reading until dispatch.
+#[derive(Clone, Debug)]
+pub enum ContentInput {
+    Inline(String),
+    Stdin,
+}
+
+/// What the CLI dispatcher should do once a tool has parsed its argv.
+/// `Bash` reuses the tool's `exec` path; `Json` calls `call` after the
+/// dispatcher resolves any optional stdin into the named field.
+#[derive(Clone, Debug)]
+pub enum CliInvocation {
+    Bash { line: String },
+    Json {
+        args: Json,
+        content_input: Option<(String, ContentInput)>,
+    },
+}
+
 /// Runtime context passed to typed tools.
 pub struct ToolCtx<'a> {
     session: &'a SessionRuntimeContext,
@@ -253,8 +274,8 @@ impl<'a> ToolCtx<'a> {
 /// return values stored on the instance.
 #[async_trait]
 pub trait TypedTool: Send + Sync + 'static {
-    type Args: DeserializeOwned + Send;
-    type Output: Serialize + Send;
+    type Args: DeserializeOwned + JsonSchema + Send;
+    type Output: Serialize + JsonSchema + Send;
 
     fn name(&self) -> &str;
 
@@ -266,12 +287,15 @@ pub trait TypedTool: Send + Sync + 'static {
         CallingConventions::ALL
     }
 
+    /// Default impl derives the schema from `Self::Args` via `schemars`.
+    /// Tools whose args are a runtime-defined `serde_json::Value` (MCP,
+    /// Worklog) override this to supply a richer hand-written schema.
     fn args_schema(&self) -> Json {
-        json!({ "type": "object" })
+        serde_json::to_value(schema_for!(Self::Args)).unwrap_or_else(|_| Json::Object(Default::default()))
     }
 
     fn output_schema(&self) -> Json {
-        json!({ "type": "object" })
+        serde_json::to_value(schema_for!(Self::Output)).unwrap_or_else(|_| Json::Object(Default::default()))
     }
 
     fn usage(&self) -> Option<String> {
@@ -305,6 +329,27 @@ pub trait TypedTool: Send + Sync + 'static {
         _shell_cwd: Option<&Path>,
     ) -> Result<Json, AgentToolError> {
         crate::parse_default_bash_exec_args(tokens)
+    }
+
+    /// Parse a CLI argv (after the tool name) into either a bash-style
+    /// invocation or a JSON args object with optional stdin pickup.
+    /// Default just stitches tokens back into a bash line; tools whose
+    /// CLI uses `--flag value` syntax override this.
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        _shell_cwd: Option<&Path>,
+    ) -> Result<CliInvocation, AgentToolError> {
+        Ok(CliInvocation::Bash {
+            line: crate::build_bash_cli_line(self.name(), tokens),
+        })
+    }
+
+    /// Returns true if the CLI should pipe non-JSON `stdout` for this
+    /// tool, stripping the envelope. Currently only `read_file` opts in,
+    /// when the caller is a non-interactive shell.
+    fn cli_plain_text_stdout(&self) -> bool {
+        false
     }
 
     async fn execute(
@@ -409,6 +454,18 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
         let output = self.inner.execute(&tool_ctx, typed).await?;
         finalize_typed_result(&self.inner, output, cmd_line)
     }
+
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<CliInvocation, AgentToolError> {
+        self.inner.parse_cli_args(tokens, shell_cwd)
+    }
+
+    fn cli_plain_text_stdout(&self) -> bool {
+        self.inner.cli_plain_text_stdout()
+    }
 }
 
 fn finalize_typed_result<T: TypedTool>(
@@ -434,6 +491,7 @@ fn finalize_typed_result<T: TypedTool>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn calling_conventions_bitflags_round_trip() {
@@ -453,12 +511,12 @@ mod tests {
         assert!(!CallingConventions::EMPTY.supports_bash());
     }
 
-    #[derive(serde::Deserialize)]
+    #[derive(serde::Deserialize, JsonSchema)]
     struct EchoArgs {
         message: String,
     }
 
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, JsonSchema)]
     struct EchoOutput {
         echoed: String,
     }

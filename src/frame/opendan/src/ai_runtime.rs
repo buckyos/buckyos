@@ -14,6 +14,7 @@ use buckyos_api::{
     OpenDanWorkspaceWorklogsResult,
 };
 use log::info;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::{fs, task};
@@ -127,7 +128,7 @@ pub struct CreateSubAgentRequest {
     pub self_md: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct CreateSubAgentResult {
     pub did: String,
     pub parent_did: String,
@@ -1343,11 +1344,14 @@ impl OpenDanExternalWorkspaceRuntime {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, JsonSchema)]
 struct RuntimeCreateSubAgentArgs {
+    /// Sub-agent local name.
     name: String,
+    /// Optional sub-agent DID.
     #[serde(default)]
     did: Option<String>,
+    /// Optional parent DID. Defaults to current agent DID.
     #[serde(default)]
     parent_did: Option<String>,
     #[serde(default)]
@@ -1356,7 +1360,7 @@ struct RuntimeCreateSubAgentArgs {
     self_md: Option<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, JsonSchema)]
 struct RuntimeCreateSubAgentOutput {
     ok: bool,
     sub_agent: CreateSubAgentResult,
@@ -1377,31 +1381,6 @@ impl crate::agent_tool::TypedTool for RuntimeCreateSubAgentTool {
 
     fn calling(&self) -> crate::agent_tool::CallingConventions {
         crate::agent_tool::CallingConventions::BASH
-    }
-
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": { "type": "string", "description": "Sub-agent local name." },
-                "did": { "type": "string", "description": "Optional sub-agent DID." },
-                "parent_did": { "type": "string", "description": "Optional parent DID. Defaults to current agent DID." },
-                "role_md": { "type": "string" },
-                "self_md": { "type": "string" }
-            },
-            "required": ["name"],
-            "additionalProperties": false
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean" },
-                "sub_agent": { "type": "object" }
-            }
-        })
     }
 
     fn build_cmd_line(&self, _args: &Self::Args) -> Option<String> {

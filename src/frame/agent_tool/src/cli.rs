@@ -18,32 +18,26 @@ use tokio::process::Command;
 
 use crate::{
     cli_envelope_from_tool_result, cli_error_envelope, cli_exit_code_for_error,
-    cli_success_envelope, normalize_abs_path, now_ms, parse_read_file_bash_args,
-    render_cli_output, rewrite_read_file_path_with_shell_cwd, session_record_path, AgentMemory,
-    AgentMemoryConfig, AgentToolError, AgentToolManager, AgentToolResult, BindWorkspaceTool,
-    CliPendingReason, CliResultEnvelope, CliRunOutput, CliStatus, CreateWorkspaceTool,
-    EditFileTool, FileToolConfig, GetSessionTool, NoopFileWriteAudit, ReadFileTool,
-    RemoveMemoryTool, SessionRuntimeContext, SessionViewBackend, SetMemoryTool, TodoTool,
-    TodoToolConfig, WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE,
-    TOOL_CREATE_WORKSPACE, TOOL_GET_SESSION, TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY,
+    cli_success_envelope, normalize_abs_path, now_ms, render_cli_output, session_record_path,
+    AgentMemory, AgentMemoryConfig, AgentToolError, AgentToolManager, AgentToolResult,
+    BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput, CliStatus,
+    CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool, NoopFileWriteAudit,
+    ReadFileTool, RemoveMemoryTool, SessionRuntimeContext, SessionViewBackend, SetMemoryTool,
+    TodoTool, TodoToolConfig, WorkspaceToolBackend, WriteFileTool,
 };
 
-const TOOL_TODO: &str = "todo";
-const TOOL_READ_FILE: &str = "read_file";
-const TOOL_WRITE_FILE: &str = "write_file";
-const TOOL_EDIT_FILE: &str = "edit_file";
 const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
 const TOOL_NAMES: [&str; 11] = [
-    TOOL_READ_FILE,
-    TOOL_WRITE_FILE,
-    TOOL_EDIT_FILE,
-    TOOL_GET_SESSION,
-    TOOL_SET_MEMORY,
-    TOOL_REMOVE_MEMORY,
-    TOOL_TODO,
-    TOOL_CREATE_WORKSPACE,
-    TOOL_BIND_WORKSPACE,
+    "read_file",
+    "write_file",
+    "edit_file",
+    "get_session",
+    "set_memory",
+    "remove_memory",
+    "todo",
+    "create_workspace",
+    "bind_workspace",
     TOOL_CHECK_TASK,
     TOOL_CANCEL_TASK,
 ];
@@ -109,28 +103,10 @@ impl CliRuntimeEnv {
     }
 }
 
-#[derive(Clone, Debug)]
-enum ContentInput {
-    Inline(String),
-    Stdin,
-}
-
-/// How a tool should be dispatched once the CLI has parsed its arguments.
-/// Stage 4 collapsed the per-tool variants down to a generic `Tool` form so
-/// adding a new tool is a registry entry, not a new ParsedCommand arm.
-#[derive(Clone, Debug)]
-enum ToolInvocation {
-    /// Bash-style: hand the original line to the tool's `exec`.
-    Bash { line: String },
-    /// Pre-parsed JSON args. If `content_input` is set, the CLI resolves
-    /// stdin (or the provided override) before injecting it into `args` as
-    /// the named field.
-    Json {
-        args: Json,
-        content_input: Option<(String, ContentInput)>,
-    },
-}
-
+/// What the parser produced. The dispatcher resolves the tool against
+/// the registry and asks it to parse its own argv via
+/// `AgentTool::parse_cli_args`. Pseudo-tools (`check_task`/`cancel_task`)
+/// stay as variants because they don't live in the tool registry.
 #[derive(Clone, Debug)]
 enum ParsedCommand {
     CommandNotFound {
@@ -140,15 +116,9 @@ enum ParsedCommand {
     Help {
         tool_name: Option<String>,
     },
-    /// Generic tool dispatch. Stage 4 unified the previous
-    /// `BashTool/ReadFile/WriteFile/EditFile` variants into this single
-    /// shape — the CLI parses each tool's flags once into either a bash
-    /// line or a JSON args object and the dispatcher routes through the
-    /// `AgentToolManager` registry. Plain-text read mode is decided at
-    /// dispatch time by `env.use_plain_text_read_output()`.
     Tool {
         tool_name: String,
-        invocation: ToolInvocation,
+        raw_tokens: Vec<String>,
     },
     CheckTask {
         tool_name: String,
@@ -198,20 +168,26 @@ async fn execute(
         )),
         ParsedCommand::Tool {
             tool_name,
-            invocation,
+            raw_tokens,
         } => {
-            // Plain-text read mode: caller is a non-interactive shell
-            // expecting raw file contents on stdout. Run the tool and
-            // strip the JSON envelope before printing.
-            let plain_read_output =
-                tool_name == TOOL_READ_FILE && env.use_plain_text_read_output();
-            if plain_read_output {
-                return match dispatch_tool(&env, &tool_name, invocation, stdin_override).await {
+            let mgr = build_cli_tool_manager(&env).await?;
+            let Some(tool) = mgr.get_any_tool(&tool_name) else {
+                return Err(AgentToolError::NotFound(tool_name));
+            };
+            let invocation =
+                tool.parse_cli_args(&raw_tokens, Some(env.current_dir.as_path()))?;
+
+            // Tools that opt in to plain-text stdout (read_file) get the
+            // payload unwrapped when the CLI is being piped to another
+            // process. Otherwise emit the standard JSON envelope.
+            let plain = tool.cli_plain_text_stdout() && env.use_plain_text_read_output();
+            if plain {
+                return match dispatch_tool(&env, tool.as_ref(), invocation, stdin_override).await {
                     Ok(result) => Ok(render_plain_read_file_output(result)),
                     Err(err) => Ok(render_plain_error_output(&err)),
                 };
             }
-            let result = dispatch_tool(&env, &tool_name, invocation, stdin_override).await?;
+            let result = dispatch_tool(&env, tool.as_ref(), invocation, stdin_override).await?;
             Ok(render_cli_output(
                 &success_envelope(&tool_name, result),
                 EXIT_SUCCESS,
@@ -254,26 +230,21 @@ async fn execute(
     }
 }
 
-/// Single dispatcher that resolves the named tool against the registry
-/// and routes through `exec` (bash form) or `call` (json form). Stage 4
-/// replaced the per-tool `execute_bash_tool` + `run_read_file` /
-/// `run_write_file` / `run_edit_file` siblings with this one entry point.
+/// Routes a CliInvocation through `exec` (bash form) or `call` (json
+/// form), resolving any optional stdin pickup before the JSON args go
+/// in.
 async fn dispatch_tool(
     env: &CliRuntimeEnv,
-    tool_name: &str,
-    invocation: ToolInvocation,
+    tool: &dyn crate::AgentTool,
+    invocation: crate::CliInvocation,
     stdin_override: Option<String>,
 ) -> Result<AgentToolResult, AgentToolError> {
-    let mgr = build_cli_tool_manager(env).await?;
-    let Some(tool) = mgr.get_any_tool(tool_name) else {
-        return Err(AgentToolError::NotFound(tool_name.to_string()));
-    };
     match invocation {
-        ToolInvocation::Bash { line } => {
+        crate::CliInvocation::Bash { line } => {
             tool.exec(&env.call_ctx, &line, Some(env.current_dir.as_path()))
                 .await
         }
-        ToolInvocation::Json {
+        crate::CliInvocation::Json {
             mut args,
             content_input,
         } => {
@@ -281,7 +252,8 @@ async fn dispatch_tool(
                 let content = resolve_content_input(ci, stdin_override).await?;
                 let map = args.as_object_mut().ok_or_else(|| {
                     AgentToolError::InvalidArgs(format!(
-                        "{tool_name} args must be object"
+                        "{} args must be object",
+                        tool.spec().name
                     ))
                 })?;
                 map.insert(field, Json::String(content));
@@ -292,12 +264,12 @@ async fn dispatch_tool(
 }
 
 async fn resolve_content_input(
-    input: ContentInput,
+    input: crate::ContentInput,
     stdin_override: Option<String>,
 ) -> Result<String, AgentToolError> {
     match input {
-        ContentInput::Inline(value) => Ok(value),
-        ContentInput::Stdin => {
+        crate::ContentInput::Inline(value) => Ok(value),
+        crate::ContentInput::Stdin => {
             if let Some(value) = stdin_override {
                 return Ok(value);
             }
@@ -372,32 +344,18 @@ fn parse_tool_command(
     }
 
     match tool_name.as_str() {
-        TOOL_READ_FILE => {
-            // The execute() entry sets `plain_read_output` against the env
-            // when this name reaches the dispatcher; here we just record
-            // the read_file kind by name.
-            let args = parse_read_file_cli_args(tokens, current_dir)?;
-            Ok(ParsedCommand::Tool {
-                tool_name,
-                invocation: ToolInvocation::Json {
-                    args,
-                    content_input: None,
-                },
-            })
-        }
-        TOOL_WRITE_FILE => parse_write_file_cli_args(tool_name, tokens, current_dir),
-        TOOL_EDIT_FILE => parse_edit_file_cli_args(tool_name, tokens, current_dir),
-        TOOL_GET_SESSION => parse_get_session_cli_command(tool_name, tokens),
-        TOOL_SET_MEMORY
-        | TOOL_REMOVE_MEMORY
-        | TOOL_TODO
-        | TOOL_CREATE_WORKSPACE
-        | TOOL_BIND_WORKSPACE => Ok(parse_passthrough_bash_command(tool_name, tokens)),
         TOOL_CHECK_TASK => parse_check_task_cli_command(tool_name, tokens),
         TOOL_CANCEL_TASK => parse_cancel_task_cli_command(tool_name, tokens),
-        _ => Err(AgentToolError::InvalidArgs(format!(
-            "unsupported tool `{tool_name}`"
-        ))),
+        _ => {
+            // All real tools defer their argv parsing to the registry's
+            // `AgentTool::parse_cli_args`; the dispatcher will look up
+            // `tool_name` in the manager built per-process.
+            let _ = current_dir;
+            Ok(ParsedCommand::Tool {
+                tool_name,
+                raw_tokens: tokens.to_vec(),
+            })
+        }
     }
 }
 
@@ -490,319 +448,6 @@ fn parse_task_id_value(raw: &str, tool_name: &str) -> Result<i64, AgentToolError
     raw.trim()
         .parse::<i64>()
         .map_err(|_| with_tool_usage(format!("invalid task_id `{}`", raw.trim()), tool_name))
-}
-
-fn parse_get_session_cli_command(
-    tool_name: String,
-    tokens: &[String],
-) -> Result<ParsedCommand, AgentToolError> {
-    if tokens.is_empty() {
-        return Ok(ParsedCommand::Tool {
-            tool_name: tool_name.clone(),
-            invocation: ToolInvocation::Bash { line: tool_name },
-        });
-    }
-
-    let mut session_id: Option<String> = None;
-    let mut idx = 0usize;
-    while idx < tokens.len() {
-        match tokens[idx].as_str() {
-            "--session-id" => {
-                idx += 1;
-                let value = tokens.get(idx).ok_or_else(|| {
-                    with_tool_usage("missing value for `--session-id`", TOOL_GET_SESSION)
-                })?;
-                session_id = Some(value.clone());
-            }
-            token if token.starts_with("--") => {
-                return Err(with_tool_usage(
-                    format!("unsupported flag `{token}`"),
-                    TOOL_GET_SESSION,
-                ));
-            }
-            token if token.contains('=') => {
-                let (key, value) = token
-                    .split_once('=')
-                    .ok_or_else(|| with_tool_usage("invalid key=value arg", TOOL_GET_SESSION))?;
-                match key {
-                    "session_id" | "session" => {
-                        session_id = Some(value.to_string());
-                    }
-                    _ => {
-                        return Err(with_tool_usage(
-                            format!("unsupported arg `{key}`"),
-                            TOOL_GET_SESSION,
-                        ));
-                    }
-                }
-            }
-            value => {
-                if session_id.is_some() {
-                    return Err(with_tool_usage(
-                        format!("unexpected positional arg `{value}`"),
-                        TOOL_GET_SESSION,
-                    ));
-                }
-                session_id = Some(value.to_string());
-            }
-        }
-        idx += 1;
-    }
-
-    let mut forwarded = Vec::new();
-    if let Some(session_id) = session_id {
-        forwarded.push(format!("session_id={session_id}"));
-    }
-    Ok(ParsedCommand::Tool {
-        tool_name: tool_name.clone(),
-        invocation: ToolInvocation::Bash {
-            line: build_bash_cli_line(&tool_name, &forwarded),
-        },
-    })
-}
-
-fn parse_passthrough_bash_command(tool_name: String, tokens: &[String]) -> ParsedCommand {
-    ParsedCommand::Tool {
-        tool_name: tool_name.clone(),
-        invocation: ToolInvocation::Bash {
-            line: build_bash_cli_line(&tool_name, tokens),
-        },
-    }
-}
-
-fn parse_read_file_cli_args(tokens: &[String], current_dir: &Path) -> Result<Json, AgentToolError> {
-    let mut args = parse_read_file_bash_args(tokens)?;
-    rewrite_read_file_path_with_shell_cwd(&mut args, current_dir);
-    Ok(args)
-}
-
-fn parse_write_file_cli_args(
-    tool_name: String,
-    tokens: &[String],
-    current_dir: &Path,
-) -> Result<ParsedCommand, AgentToolError> {
-    if tokens.is_empty() {
-        return Err(with_tool_usage(
-            "missing required arg `path`",
-            TOOL_WRITE_FILE,
-        ));
-    }
-
-    let mut args = serde_json::Map::<String, Json>::new();
-    let mut path: Option<String> = None;
-    let mut content: Option<ContentInput> = None;
-    let mut mode: Option<String> = None;
-    let mut idx = 0usize;
-
-    while idx < tokens.len() {
-        match tokens[idx].as_str() {
-            "--mode" => {
-                idx += 1;
-                let value = tokens.get(idx).ok_or_else(|| {
-                    with_tool_usage("missing value for `--mode`", TOOL_WRITE_FILE)
-                })?;
-                mode = Some(value.clone());
-            }
-            "--content" => {
-                idx += 1;
-                let value = tokens.get(idx).ok_or_else(|| {
-                    with_tool_usage("missing value for `--content`", TOOL_WRITE_FILE)
-                })?;
-                content = Some(ContentInput::Inline(value.clone()));
-            }
-            "--content-stdin" => {
-                content = Some(ContentInput::Stdin);
-            }
-            token if token.starts_with("--") => {
-                return Err(with_tool_usage(
-                    format!("unsupported flag `{token}`"),
-                    TOOL_WRITE_FILE,
-                ));
-            }
-            token if token.contains('=') => {
-                let (key, value) = token
-                    .split_once('=')
-                    .ok_or_else(|| with_tool_usage("invalid key=value arg", TOOL_WRITE_FILE))?;
-                match key {
-                    "path" => path = Some(value.to_string()),
-                    "mode" => mode = Some(value.to_string()),
-                    "content" => content = Some(ContentInput::Inline(value.to_string())),
-                    "content_stdin" => {
-                        if value == "true" {
-                            content = Some(ContentInput::Stdin);
-                        } else {
-                            return Err(with_tool_usage(
-                                "content_stdin must be `true` when provided",
-                                TOOL_WRITE_FILE,
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(with_tool_usage(
-                            format!("unsupported arg `{key}`"),
-                            TOOL_WRITE_FILE,
-                        ));
-                    }
-                }
-            }
-            value => {
-                if path.is_none() {
-                    path = Some(value.to_string());
-                } else {
-                    return Err(with_tool_usage(
-                        format!("unexpected positional arg `{value}`"),
-                        TOOL_WRITE_FILE,
-                    ));
-                }
-            }
-        }
-        idx += 1;
-    }
-
-    let path =
-        path.ok_or_else(|| with_tool_usage("missing required arg `path`", TOOL_WRITE_FILE))?;
-    let content = content.ok_or_else(|| {
-        with_tool_usage(
-            "one of `--content` or `--content-stdin` is required",
-            TOOL_WRITE_FILE,
-        )
-    })?;
-    args.insert(
-        "path".to_string(),
-        Json::String(rewrite_path_with_shell_cwd(path, current_dir)),
-    );
-    if let Some(mode) = mode {
-        args.insert("mode".to_string(), Json::String(mode));
-    }
-
-    Ok(ParsedCommand::Tool {
-        tool_name,
-        invocation: ToolInvocation::Json {
-            args: Json::Object(args),
-            content_input: Some(("content".to_string(), content)),
-        },
-    })
-}
-
-fn parse_edit_file_cli_args(
-    tool_name: String,
-    tokens: &[String],
-    current_dir: &Path,
-) -> Result<ParsedCommand, AgentToolError> {
-    if tokens.is_empty() {
-        return Err(with_tool_usage(
-            "missing required arg `path`",
-            TOOL_EDIT_FILE,
-        ));
-    }
-
-    let mut args = serde_json::Map::<String, Json>::new();
-    let mut path: Option<String> = None;
-    let mut pos_chunk: Option<String> = None;
-    let mut new_content: Option<ContentInput> = None;
-    let mut mode: Option<String> = None;
-    let mut idx = 0usize;
-
-    while idx < tokens.len() {
-        match tokens[idx].as_str() {
-            "--mode" => {
-                idx += 1;
-                let value = tokens
-                    .get(idx)
-                    .ok_or_else(|| with_tool_usage("missing value for `--mode`", TOOL_EDIT_FILE))?;
-                mode = Some(value.clone());
-            }
-            "--pos-chunk" => {
-                idx += 1;
-                let value = tokens.get(idx).ok_or_else(|| {
-                    with_tool_usage("missing value for `--pos-chunk`", TOOL_EDIT_FILE)
-                })?;
-                pos_chunk = Some(value.clone());
-            }
-            "--new-content" => {
-                idx += 1;
-                let value = tokens.get(idx).ok_or_else(|| {
-                    with_tool_usage("missing value for `--new-content`", TOOL_EDIT_FILE)
-                })?;
-                new_content = Some(ContentInput::Inline(value.clone()));
-            }
-            "--new-content-stdin" => {
-                new_content = Some(ContentInput::Stdin);
-            }
-            token if token.starts_with("--") => {
-                return Err(with_tool_usage(
-                    format!("unsupported flag `{token}`"),
-                    TOOL_EDIT_FILE,
-                ));
-            }
-            token if token.contains('=') => {
-                let (key, value) = token
-                    .split_once('=')
-                    .ok_or_else(|| with_tool_usage("invalid key=value arg", TOOL_EDIT_FILE))?;
-                match key {
-                    "path" => path = Some(value.to_string()),
-                    "mode" => mode = Some(value.to_string()),
-                    "pos_chunk" => pos_chunk = Some(value.to_string()),
-                    "new_content" => new_content = Some(ContentInput::Inline(value.to_string())),
-                    "new_content_stdin" => {
-                        if value == "true" {
-                            new_content = Some(ContentInput::Stdin);
-                        } else {
-                            return Err(with_tool_usage(
-                                "new_content_stdin must be `true` when provided",
-                                TOOL_EDIT_FILE,
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(with_tool_usage(
-                            format!("unsupported arg `{key}`"),
-                            TOOL_EDIT_FILE,
-                        ));
-                    }
-                }
-            }
-            value => {
-                if path.is_none() {
-                    path = Some(value.to_string());
-                } else {
-                    return Err(with_tool_usage(
-                        format!("unexpected positional arg `{value}`"),
-                        TOOL_EDIT_FILE,
-                    ));
-                }
-            }
-        }
-        idx += 1;
-    }
-
-    let path =
-        path.ok_or_else(|| with_tool_usage("missing required arg `path`", TOOL_EDIT_FILE))?;
-    let pos_chunk = pos_chunk
-        .ok_or_else(|| with_tool_usage("missing required arg `--pos-chunk`", TOOL_EDIT_FILE))?;
-    let new_content = new_content.ok_or_else(|| {
-        with_tool_usage(
-            "one of `--new-content` or `--new-content-stdin` is required",
-            TOOL_EDIT_FILE,
-        )
-    })?;
-
-    args.insert(
-        "path".to_string(),
-        Json::String(rewrite_path_with_shell_cwd(path, current_dir)),
-    );
-    args.insert("pos_chunk".to_string(), Json::String(pos_chunk));
-    if let Some(mode) = mode {
-        args.insert("mode".to_string(), Json::String(mode));
-    }
-
-    Ok(ParsedCommand::Tool {
-        tool_name,
-        invocation: ToolInvocation::Json {
-            args: Json::Object(args),
-            content_input: Some(("new_content".to_string(), new_content)),
-        },
-    })
 }
 
 fn cli_state_root(env: &CliRuntimeEnv) -> PathBuf {
@@ -1167,30 +812,39 @@ fn render_plain_error_output(err: &AgentToolError) -> CliRunOutput {
     }
 }
 
-async fn build_help_envelope(_env: &CliRuntimeEnv, tool_name: Option<&str>) -> CliResultEnvelope {
-    static_help_envelope(tool_name)
-}
-
-fn static_help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
+/// Help text is built from each tool's own `usage()` rather than a
+/// duplicated static table — the manager is the source of truth.
+async fn build_help_envelope(env: &CliRuntimeEnv, tool_name: Option<&str>) -> CliResultEnvelope {
+    let mgr = match build_cli_tool_manager(env).await {
+        Ok(mgr) => mgr,
+        Err(err) => return cli_error_envelope(tool_name.map(str::to_string).as_deref(), &err),
+    };
+    let tool_usage = |name: &str| -> String {
+        if let Some(tool) = mgr.get_any_tool(name) {
+            if let Some(usage) = tool.spec().usage {
+                return usage;
+            }
+        }
+        match name {
+            TOOL_CHECK_TASK => "check_task <task_id>".to_string(),
+            TOOL_CANCEL_TASK => "cancel_task <task_id> [--recursive]".to_string(),
+            _ => format!("{name} ..."),
+        }
+    };
     match tool_name {
-        Some(tool_name) => cli_success_envelope(
-            Some(tool_name.to_string()),
-            json!({
-                "tool": tool_name,
-                "usage": static_tool_usage(tool_name),
-            }),
+        Some(name) => cli_success_envelope(
+            Some(name.to_string()),
+            json!({ "tool": name, "usage": tool_usage(name) }),
             "show usage",
         ),
         None => cli_success_envelope(
             None,
             json!({
                 "usage": generic_usage(),
-                "tools": TOOL_NAMES.iter().map(|tool_name| {
-                    json!({
-                        "name": tool_name,
-                        "usage": static_tool_usage(tool_name),
-                    })
-                }).collect::<Vec<_>>(),
+                "tools": TOOL_NAMES.iter().map(|name| json!({
+                    "name": name,
+                    "usage": tool_usage(name),
+                })).collect::<Vec<_>>(),
             }),
             "show usage",
         ),
@@ -1212,38 +866,16 @@ fn render_command_not_found_log(command: Option<&str>, argv: &[String]) -> Strin
 }
 
 fn with_tool_usage(message: impl Into<String>, tool_name: &str) -> AgentToolError {
-    let message = message.into();
-    AgentToolError::InvalidArgs(format!(
-        "{message}\nUsage: {}",
-        static_tool_usage(tool_name)
-    ))
-}
-
-fn static_tool_usage(tool_name: &str) -> &'static str {
-    match tool_name {
-        TOOL_READ_FILE => {
-            "read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice"
-        }
-        TOOL_WRITE_FILE => {
-            "write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)"
-        }
-        TOOL_EDIT_FILE => {
-            "edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)"
-        }
-        TOOL_GET_SESSION => "get_session [session_id]",
-        TOOL_SET_MEMORY => "set_memory <key> <content>",
-        TOOL_REMOVE_MEMORY => "remove_memory <key>",
-        TOOL_TODO => "todo <command> [args...]",
-        TOOL_CREATE_WORKSPACE => "create_workspace <name> <summary>",
-        TOOL_BIND_WORKSPACE => "bind_workspace <workspace_id|workspace_path>",
+    let usage = match tool_name {
         TOOL_CHECK_TASK => "check_task <task_id>",
         TOOL_CANCEL_TASK => "cancel_task <task_id> [--recursive]",
         _ => "agent_tool <tool> ...",
-    }
+    };
+    AgentToolError::InvalidArgs(format!("{}\nUsage: {usage}", message.into()))
 }
 
-fn generic_usage() -> &'static str {
-    "agent_tool <read_file|write_file|edit_file|get_session|set_memory|remove_memory|todo|create_workspace|bind_workspace|check_task|cancel_task> [args...]"
+fn generic_usage() -> String {
+    format!("agent_tool <{}> [args...]", TOOL_NAMES.join("|"))
 }
 
 fn first_string_env(keys: &[&str]) -> Option<String> {
@@ -1276,17 +908,6 @@ fn os_to_string(value: &OsString) -> Result<String, AgentToolError> {
     })
 }
 
-fn rewrite_path_with_shell_cwd(raw_path: String, current_dir: &Path) -> String {
-    let path = Path::new(raw_path.trim());
-    if path.is_absolute() {
-        return canonicalize_or_normalize(path.to_path_buf(), None)
-            .to_string_lossy()
-            .to_string();
-    }
-    canonicalize_or_normalize(path.to_path_buf(), Some(current_dir))
-        .to_string_lossy()
-        .to_string()
-}
 
 fn session_file_path(state_root: &Path, session_id: &str) -> Result<PathBuf, AgentToolError> {
     session_record_path(
@@ -1858,22 +1479,6 @@ async fn interrupt_task_if_supported(task: &Task) -> Option<String> {
     } else {
         format!("tmux interrupt `{tmux_target}` failed: {stderr}")
     })
-}
-
-fn build_bash_cli_line(tool_name: &str, tokens: &[String]) -> String {
-    let mut line = String::from(tool_name);
-    for token in tokens {
-        line.push(' ');
-        line.push_str(&shell_quote_token(token));
-    }
-    line
-}
-
-fn shell_quote_token(raw: &str) -> String {
-    if raw.is_empty() {
-        return "''".to_string();
-    }
-    format!("'{}'", raw.replace('\'', "'\"'\"'"))
 }
 
 fn canonicalize_or_normalize(path: PathBuf, base_dir: Option<&Path>) -> PathBuf {

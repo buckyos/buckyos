@@ -608,6 +608,19 @@ impl Serialize for TodoOutput {
     }
 }
 
+impl schemars::JsonSchema for TodoOutput {
+    fn schema_name() -> String {
+        "TodoOutput".to_string()
+    }
+    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::Object.into()),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 const TODO_BASH_TOKENS_KEY: &str = "_bash_tokens";
 
 #[async_trait]

@@ -3,13 +3,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use log::warn;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
 
 use crate::{
-    resolve_path_from_root, u64_to_usize_arg, AgentToolError, CallingConventions,
-    SessionRuntimeContext, ToolCtx, TypedTool,
+    resolve_path_from_root, rewrite_path_with_shell_cwd, u64_to_usize_arg, AgentToolError,
+    CallingConventions, CliInvocation, ContentInput, SessionRuntimeContext, ToolCtx, TypedTool,
 };
 
 pub const TOOL_EDIT_FILE: &str = "edit_file";
@@ -147,7 +148,7 @@ impl EditFileTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct EditFileArgs {
     pub path: String,
     pub pos_chunk: String,
@@ -156,7 +157,7 @@ pub struct EditFileArgs {
     pub mode: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 pub struct EditFileOutput {
     pub matched: bool,
     pub changed: bool,
@@ -187,26 +188,20 @@ impl TypedTool for EditFileTool {
         CallingConventions::ACTION
     }
 
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "pos_chunk": { "type": "string" },
-                "new_content": { "type": "string" },
-                "mode": { "type": "string", "enum": ["replace", "after", "before"] }
-            },
-            "required": ["path", "pos_chunk", "new_content"],
-            "additionalProperties": true
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({ "type": "object" })
-    }
-
     fn usage(&self) -> Option<String> {
         Some("edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)".to_string())
+    }
+
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<CliInvocation, AgentToolError> {
+        parse_write_or_edit_cli(
+            tokens,
+            shell_cwd,
+            WriteOrEditCliSpec::EDIT_FILE,
+        )
     }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
@@ -394,7 +389,7 @@ impl WriteFileTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct WriteFileArgs {
     pub path: String,
     pub content: String,
@@ -402,7 +397,7 @@ pub struct WriteFileArgs {
     pub mode: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 pub struct WriteFileOutput {
     pub created: bool,
     pub changed: bool,
@@ -437,25 +432,20 @@ impl TypedTool for WriteFileTool {
         CallingConventions::ACTION
     }
 
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "content": { "type": "string" },
-                "mode": { "type": "string", "enum": ["new", "append", "write"] }
-            },
-            "required": ["path", "content"],
-            "additionalProperties": true
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({ "type": "object" })
-    }
-
     fn usage(&self) -> Option<String> {
         Some("write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)".to_string())
+    }
+
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<CliInvocation, AgentToolError> {
+        parse_write_or_edit_cli(
+            tokens,
+            shell_cwd,
+            WriteOrEditCliSpec::WRITE_FILE,
+        )
     }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
@@ -623,7 +613,7 @@ details:
     "content": $read_result
 */
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct ReadFileArgs {
     pub path: String,
     #[serde(default)]
@@ -632,7 +622,7 @@ pub struct ReadFileArgs {
     pub first_chunk: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 pub struct ReadFileOutput {
     pub content: String,
     pub matched: bool,
@@ -667,41 +657,39 @@ impl TypedTool for ReadFileTool {
         CallingConventions::from_legacy(true, false, true)
     }
 
-    fn args_schema(&self) -> Json {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "range": {},
-                "first_chunk": { "type": "string" }
-            },
-            "required": ["path"],
-            "additionalProperties": true
-        })
-    }
-
-    fn output_schema(&self) -> Json {
-        json!({ "type": "object" })
-    }
-
     fn usage(&self) -> Option<String> {
         Some("read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice".to_string())
     }
 
     fn parse_bash_args(
-
         &self,
-
         tokens: &[String],
-
         shell_cwd: Option<&Path>,
-
     ) -> Result<Json, AgentToolError> {
         let mut args = parse_read_file_bash_args(tokens)?;
         if let Some(cwd) = shell_cwd {
             rewrite_read_file_path_with_shell_cwd(&mut args, cwd);
         }
         Ok(args)
+    }
+
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<CliInvocation, AgentToolError> {
+        let mut args = parse_read_file_bash_args(tokens)?;
+        if let Some(cwd) = shell_cwd {
+            rewrite_read_file_path_with_shell_cwd(&mut args, cwd);
+        }
+        Ok(CliInvocation::Json {
+            args,
+            content_input: None,
+        })
+    }
+
+    fn cli_plain_text_stdout(&self) -> bool {
+        true
     }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
@@ -1452,6 +1440,145 @@ fn build_simple_diff(
 
 fn is_path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
+}
+
+/// Shared shape for the `write_file` and `edit_file` CLI parsers — the
+/// two tools share path + mode + a stdin-capable content field, and
+/// `edit_file` adds a required `--pos-chunk` argument.
+#[derive(Clone, Copy)]
+pub(crate) struct WriteOrEditCliSpec {
+    pub tool_name: &'static str,
+    pub extra_required: Option<(&'static str, &'static str)>,
+    pub content_flag: &'static str,
+    pub content_stdin_flag: &'static str,
+    pub content_field: &'static str,
+}
+
+impl WriteOrEditCliSpec {
+    pub const WRITE_FILE: Self = Self {
+        tool_name: TOOL_WRITE_FILE,
+        extra_required: None,
+        content_flag: "--content",
+        content_stdin_flag: "--content-stdin",
+        content_field: "content",
+    };
+    pub const EDIT_FILE: Self = Self {
+        tool_name: TOOL_EDIT_FILE,
+        extra_required: Some(("--pos-chunk", "pos_chunk")),
+        content_flag: "--new-content",
+        content_stdin_flag: "--new-content-stdin",
+        content_field: "new_content",
+    };
+
+    fn usage_err(&self, msg: impl Into<String>) -> AgentToolError {
+        AgentToolError::InvalidArgs(format!("{} ({})", msg.into(), self.tool_name))
+    }
+}
+
+pub(crate) fn parse_write_or_edit_cli(
+    tokens: &[String],
+    shell_cwd: Option<&Path>,
+    spec: WriteOrEditCliSpec,
+) -> Result<CliInvocation, AgentToolError> {
+    if tokens.is_empty() {
+        return Err(spec.usage_err("missing required arg `path`"));
+    }
+    let mut path: Option<String> = None;
+    let mut mode: Option<String> = None;
+    let mut content: Option<ContentInput> = None;
+    let mut extra: Option<String> = None;
+    let mut idx = 0usize;
+
+    while idx < tokens.len() {
+        let token = tokens[idx].as_str();
+        if token == "--mode" {
+            idx += 1;
+            mode = Some(
+                tokens
+                    .get(idx)
+                    .ok_or_else(|| spec.usage_err("missing value for `--mode`"))?
+                    .clone(),
+            );
+        } else if token == spec.content_flag {
+            idx += 1;
+            content = Some(ContentInput::Inline(
+                tokens
+                    .get(idx)
+                    .ok_or_else(|| spec.usage_err(format!("missing value for `{}`", spec.content_flag)))?
+                    .clone(),
+            ));
+        } else if token == spec.content_stdin_flag {
+            content = Some(ContentInput::Stdin);
+        } else if let Some((flag, _field)) = spec.extra_required.filter(|(f, _)| token == *f) {
+            idx += 1;
+            extra = Some(
+                tokens
+                    .get(idx)
+                    .ok_or_else(|| spec.usage_err(format!("missing value for `{flag}`")))?
+                    .clone(),
+            );
+        } else if token.starts_with("--") {
+            return Err(spec.usage_err(format!("unsupported flag `{token}`")));
+        } else if let Some((key, value)) = token.split_once('=') {
+            match key {
+                "path" => path = Some(value.to_string()),
+                "mode" => mode = Some(value.to_string()),
+                k if k == spec.content_field => {
+                    content = Some(ContentInput::Inline(value.to_string()))
+                }
+                k if k == format!("{}_stdin", spec.content_field) => {
+                    if value == "true" {
+                        content = Some(ContentInput::Stdin);
+                    } else {
+                        return Err(spec.usage_err(format!(
+                            "{}_stdin must be `true` when provided",
+                            spec.content_field
+                        )));
+                    }
+                }
+                k if matches!(spec.extra_required, Some((_, field)) if field == k) => {
+                    extra = Some(value.to_string());
+                }
+                _ => return Err(spec.usage_err(format!("unsupported arg `{key}`"))),
+            }
+        } else if path.is_none() {
+            path = Some(token.to_string());
+        } else {
+            return Err(spec.usage_err(format!("unexpected positional arg `{token}`")));
+        }
+        idx += 1;
+    }
+
+    let path = path.ok_or_else(|| spec.usage_err("missing required arg `path`"))?;
+    let content = content.ok_or_else(|| {
+        spec.usage_err(format!(
+            "one of `{}` or `{}` is required",
+            spec.content_flag, spec.content_stdin_flag
+        ))
+    })?;
+    if let Some((flag, _)) = spec.extra_required {
+        if extra.is_none() {
+            return Err(spec.usage_err(format!("missing required arg `{flag}`")));
+        }
+    }
+
+    let mut args = serde_json::Map::<String, Json>::new();
+    let path = match shell_cwd {
+        Some(cwd) => rewrite_path_with_shell_cwd(path, cwd),
+        None => path,
+    };
+    args.insert("path".to_string(), Json::String(path));
+    if let Some(mode) = mode {
+        args.insert("mode".to_string(), Json::String(mode));
+    }
+    if let (Some((_, field)), Some(value)) = (spec.extra_required, extra) {
+        args.insert(field.to_string(), Json::String(value));
+    }
+
+    Ok(CliInvocation::Json {
+        args: Json::Object(args),
+        content_input: Some((spec.content_field.to_string(), content)),
+    })
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ authors = ["BuckyOS DAO","waterflier","codex5.3"]
 async-trait = {workspace = true}
 serde = {workspace = true}
 serde_json = {workspace = true}
+schemars = {workspace = true}
 serde_yaml = "0.9"
 thiserror = {workspace = true}
 agent_tool = { path = "../agent_tool" }
