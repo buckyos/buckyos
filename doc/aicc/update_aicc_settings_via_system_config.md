@@ -1,39 +1,67 @@
 # 通过 system_config 更新 AICC 配置
 
-## 1. 目的
+本文说明如何把 AICC Provider settings 写入 `system_config`，并触发 AICC 在线重载。新版模型路由以 `doc/aicc/aicc_router.md` 为准：Provider settings 只负责声明 Provider instance、部署类型、凭据、endpoint 和模型清单；逻辑模型选择由 Provider inventory、默认逻辑目录树、SessionConfig 和 request policy 完成。
 
-本文记录如何把 AICC 的模型入口等配置写入 `system_config`，并让 AICC 在线生效。
+## 1. 配置位置
 
-## 2. AICC 配置存储位置
+AICC settings 存储在：
 
-AICC 作为 `KernelService`，其 settings 路径为：
+```text
+services/aicc/settings
+```
 
-- `services/aicc/settings`
+AICC 启动和 `reload_settings` / `service.reload_settings` 时会读取该 key，并重建 Provider registry 与 ModelRegistry。
 
-说明：AICC 在启动和 `reload_settings` 时会读取该路径内容并重建 provider 注册。
+## 2. Settings 基本结构
 
-## 3. 更新方式总览
+示例：
 
-可以通过 `system_config` 的 kRPC 方法更新该 key：
+```json
+{
+  "openai": {
+    "enabled": true,
+    "api_token": "sk-xxx",
+    "instances": [
+      {
+        "provider_instance_name": "openai-primary",
+        "provider_type": "cloud_api",
+        "provider_driver": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "timeout_ms": 60000,
+        "models": ["gpt-5.2", "gpt-5-mini"],
+        "default_model": "gpt-5.2",
+        "features": ["plan", "json_output", "tool_calling"]
+      }
+    ]
+  }
+}
+```
+
+字段要点：
+
+- `provider_instance_name` 是 Provider instance 的唯一名。旧字段 `instance_id` 可能仍被部分 Provider 兼容，但新配置统一使用 `provider_instance_name`。
+- `provider_type` 是可信部署类型，不是厂商名。常用值：`cloud_api`、`local_inference`、`proxy_unknown`。
+- `provider_driver` 是厂商或适配器名，例如 `openai`、`claude`、`google-gemini`、`minimax`。
+- 精确模型名由 AICC/Provider inventory 形成，格式是 `<provider_model_id>@<provider_instance_name>`，例如 `gpt-5.2@openai-primary`。
+- 新版路由不要求在 settings 里维护静态 alias；Provider 通过 inventory 的 `logical_mounts` 挂到 `llm.chat`、`llm.plan`、`llm.gpt5` 等逻辑目录。
+
+## 3. 更新方式
+
+通过 `system_config` kRPC 更新：
 
 - 全量覆盖：`sys_config_set`
 - 局部更新：`sys_config_set_by_json_path`
-- 事务更新：`sys_config_exec_tx`（可选）
+- 事务更新：`sys_config_exec_tx`，按需要使用
 
-更新后调用 AICC 的 `reload_settings` 使变更生效。
+下列示例均为：
 
-## 4. 步骤（推荐）
+```text
+POST /kapi/system_config
+```
 
-1. 读取当前配置（可选，便于备份）
-2. 写入新配置（全量或局部）
-3. 调用 AICC `reload_settings`
-4. 用一次 `complete` 做联调验证
+请求体使用 kRPC 结构：`method`、`params`、`sys`。
 
-## 5. kRPC 请求示例
-
-下列示例均为 `POST /kapi/system_config`，请求体使用 kRPC 结构（`method/params/sys`）。
-
-### 5.1 读取当前 AICC 配置
+## 4. 读取当前配置
 
 ```json
 {
@@ -45,22 +73,24 @@ AICC 作为 `KernelService`，其 settings 路径为：
 }
 ```
 
-### 5.2 全量覆盖写入（sys_config_set）
+建议变更前先备份旧值。
 
-注意：`value` 是字符串类型，内部 JSON 需要序列化后再传。
+## 5. 全量覆盖
+
+`value` 是字符串，不是对象；内部 JSON 需要先序列化。
 
 ```json
 {
   "method": "sys_config_set",
   "params": {
     "key": "services/aicc/settings",
-    "value": "{\"openai\":{\"enabled\":true,\"api_token\":\"sk-xxx\",\"instances\":[{\"instance_id\":\"openai-user-1\",\"provider_type\":\"openai\",\"base_url\":\"https://api.openai.com/v1\",\"models\":[\"gpt-5.4\"],\"default_model\":\"gpt-5.4\"}]}}"
+    "value": "{\"openai\":{\"enabled\":true,\"api_token\":\"sk-xxx\",\"instances\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_driver\":\"openai\",\"base_url\":\"https://api.openai.com/v1\",\"timeout_ms\":60000,\"models\":[\"gpt-5.2\",\"gpt-5-mini\"],\"default_model\":\"gpt-5.2\",\"features\":[\"plan\",\"json_output\",\"tool_calling\"]}]}}"
   },
   "sys": [3002, "<session_token>", "trace-aicc-cfg-set"]
 }
 ```
 
-### 5.3 局部更新（sys_config_set_by_json_path）
+## 6. 局部更新
 
 示例：只更新 `/openai` 节点。
 
@@ -70,25 +100,34 @@ AICC 作为 `KernelService`，其 settings 路径为：
   "params": {
     "key": "services/aicc/settings",
     "json_path": "/openai",
-    "value": "{\"enabled\":true,\"api_token\":\"sk-xxx\",\"instances\":[{\"instance_id\":\"openai-user-1\",\"provider_type\":\"openai\",\"base_url\":\"https://api.openai.com/v1\",\"models\":[\"gpt-5.4\"],\"default_model\":\"gpt-5.4\"}]}"
+    "value": "{\"enabled\":true,\"api_token\":\"sk-xxx\",\"instances\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_driver\":\"openai\",\"base_url\":\"https://api.openai.com/v1\",\"timeout_ms\":60000,\"models\":[\"gpt-5.2\",\"gpt-5-mini\"],\"default_model\":\"gpt-5.2\",\"features\":[\"plan\",\"json_output\",\"tool_calling\"]}]}"
   },
   "sys": [3003, "<session_token>", "trace-aicc-cfg-patch"]
 }
 ```
 
-## 6. 触发生效（AICC 热重载）
+## 7. 触发 AICC 重载
 
-`POST /kapi/aicc`：
+写入 system_config 后调用：
+
+```text
+POST /kapi/aicc
+```
 
 ```json
 {
-  "method": "reload_settings",
+  "method": "service.reload_settings",
   "params": {},
   "sys": [3004, "<session_token>", "trace-aicc-reload"]
 }
 ```
 
-成功时通常返回：
+兼容 method：
+
+- `reload_settings`
+- `service.reload_settings`
+
+成功响应：
 
 ```json
 {
@@ -100,26 +139,110 @@ AICC 作为 `KernelService`，其 settings 路径为：
 }
 ```
 
-## 7. 验证建议
+## 8. 验证配置已生效
 
-1. 先用 `model.alias = llm.plan.default` 发一条最小 `complete` 请求。
-2. 若失败，优先检查：
-- `no_provider_available`：模型映射或 provider 未注册成功
-- `provider_start_failed`：上游模型接口调用失败
-- `resource_invalid`：请求资源/格式不合法
+先查模型目录：
 
-## 8. 注意事项
+```json
+{
+  "method": "models.list",
+  "params": {},
+  "sys": [3005, "<session_token>", "trace-aicc-models"]
+}
+```
 
-- `sys_config_set` / `set_by_json_path` 都受 RBAC 控制，token 需有对应 key 写权限。
-- `value` 参数是字符串，不是对象；调用端要先做 JSON 序列化。
-- 建议先 `sys_config_get` 备份旧值，再变更。
-- 变更后务必调用 AICC `reload_settings`，否则不会立即生效。
+确认返回中包含：
 
-## 9. 参考代码
+- Provider instance：`openai-primary`
+- 模型 exact model：例如 `gpt-5.2@openai-primary`
+- 目标 `logical_mounts`：例如 `llm.chat`、`llm.openai`、`llm.gpt5`
 
-- `src/kernel/buckyos-api/src/runtime.rs`
-- `src/kernel/buckyos-api/src/system_config.rs`
+再发最小 AI 调用：
+
+```json
+{
+  "method": "llm.chat",
+  "params": {
+    "capability": "llm",
+    "model": {
+      "alias": "llm.chat"
+    },
+    "requirements": {},
+    "payload": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "ping"
+        }
+      ]
+    }
+  },
+  "sys": [3006, "<session_token>", "trace-aicc-ping"]
+}
+```
+
+强制指定 Provider 验证：
+
+```json
+{
+  "method": "llm.chat",
+  "params": {
+    "capability": "llm",
+    "model": {
+      "alias": "gpt-5.2@openai-primary"
+    },
+    "requirements": {
+      "extra": {
+        "allow_fallback": false,
+        "runtime_failover": false
+      }
+    },
+    "payload": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "ping"
+        }
+      ]
+    }
+  },
+  "sys": [3007, "<session_token>", "trace-aicc-exact"]
+}
+```
+
+## 9. 常见错误
+
+- `no_provider_available`：Provider 未注册、`logical_mounts` 不包含目标逻辑目录、Provider 不可用、策略过滤后无候选。
+- `model_alias_not_mapped`：目标逻辑模型名无法解析，也没有 legacy alias 兼容映射。
+- `max_cost_exceeded`：所有候选超过 `requirements.max_cost_usd`。
+- `resource_invalid`：payload resources 格式不合法。
+- `provider_start_failed`：Provider 已选中，但上游调用失败。
+
+排查顺序：
+
+1. `sys_config_get` 确认 settings 已写入。
+2. `service.reload_settings` 确认 `providers_registered > 0`。
+3. `models.list` 查看 inventory、exact model 和 `logical_mounts`。
+4. 先用 `model.alias=<exact_model>` 验证 Provider 本身，再用逻辑模型名验证路由。
+
+## 10. 注意事项
+
+- `sys_config_set` 和 `sys_config_set_by_json_path` 受 RBAC 控制，token 需要有 `services/aicc/settings` 写权限。
+- `value` 必须是字符串；调用端负责 JSON 序列化。
+- `provider_type=local_inference` 具有安全含义，只能用于可信本地推理实例。
+- 不确定部署边界的代理服务使用 `proxy_unknown`，不要伪装成本地推理。
+- 变更后需要调用 `reload_settings` 或 `service.reload_settings`；只写 system_config 不会让运行中的 AICC 立即重建 Provider registry。
+
+## 11. 参考代码
+
 - `src/frame/aicc/src/main.rs`
+- `src/frame/aicc/src/aicc.rs`
+- `src/frame/aicc/src/model_registry.rs`
+- `src/frame/aicc/src/model_session.rs`
+- `src/frame/aicc/src/model_types.rs`
 - `src/frame/aicc/src/openai.rs`
+- `src/frame/aicc/src/claude.rs`
 - `src/frame/aicc/src/gimini.rs`
 - `src/frame/aicc/src/minimax.rs`
+- `src/kernel/buckyos-api/src/aicc_client.rs`
+- `src/kernel/buckyos-api/src/system_config.rs`

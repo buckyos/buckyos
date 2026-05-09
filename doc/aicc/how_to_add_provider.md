@@ -1,167 +1,199 @@
-# AICC 新增 Provider 开发指南（参考 commit `8d169271`）
+# AICC 新增 Provider 开发指南
 
-本文基于 `8d1692712ef4e80615bd49b6d3b9e46422999072`（新增 Claude Provider）和 AICC 当前实现，总结一套可复用的 Provider 接入流程，目标是让开发者可以按同一套路新增任意模型厂商 Provider。
+本文面向要接入新模型厂商或新部署形态的开发者。新版 AICC 路由以 `doc/aicc/aicc_router.md` 为准：Provider 不再只向 `ModelCatalog` 注册平铺 alias，而是通过 `ProviderInventory` 声明实体模型、精确模型名、API 类型、逻辑挂载点和动态状态；AICC 再用 `ModelRegistry + SessionConfig + Scheduler` 完成路由。
 
-## 1. 先理解 AICC 的接入边界
+## 1. Provider 接入边界
 
-AICC 的 Provider 接口定义在 `src/frame/aicc/src/aicc.rs`，核心约束是：
+Provider 代码主要落在 `src/frame/aicc/src/`。每个 Provider 需要实现 `Provider` trait：
 
-- 每个 Provider 必须实现 `Provider` trait：
-  - `instance()`: 返回 Provider 实例元信息（`instance_id`、`provider_type`、`capabilities`、`features` 等）
-  - `estimate_cost()`: 给路由器打分时用的成本/延迟估计
-  - `start()`: 真正调用上游模型 API
-  - `cancel()`: 可取消任务的 Provider 需实现；不支持可返回 `Ok(())`
-- 路由并不直接认识“某厂商模型名”，而是走 `ModelCatalog` 的 alias 映射：
-  - `alias + capability + provider_type -> provider_model`
-- Provider 的可见性来自 `Registry`，路由只会在 Registry 里挑实例。
+- `inventory()`：返回 `ProviderInventory`
+- `estimate_cost()`：返回动态成本、延迟、配额状态等估算
+- `start()`：实际调用上游模型 API
+- `cancel()`：可取消任务时实现；不支持时可返回 `Ok(())`
 
-结论：新增 Provider 的本质，是“注册 Provider 实例 + 注册 alias 映射 + 实现 start/错误分类”。
+一个 Provider instance 是可独立调度和计费的实例，不等同于厂商。关键字段：
 
-## 2. 对照 Claude 实现的最小改动面
+- `provider_instance_name`：实例唯一名，例如 `openai-primary`
+- `provider_type`：可信部署类型，例如 `cloud_api`、`local_inference`、`proxy_unknown`
+- `provider_driver`：厂商或适配器名，例如 `openai`、`claude`、`google-gemini`、`minimax`
+- `models[]`：该实例声明的实体模型清单
 
-参考 `8d169271`，新增 `claude` 时改了这些关键点：
+每个模型必须能形成精确模型名：
 
-- 新增 Provider 模块：`src/frame/aicc/src/claude.rs`
-- 复用/新增协议转换层：`src/frame/aicc/src/claude_protocol.rs`
-- 在 crate 对外导出模块：`src/frame/aicc/src/lib.rs`
-- 在服务入口注册 Provider：`src/frame/aicc/src/main.rs` 的 `apply_provider_settings()`
-- 增加 adapter 协议测试：`src/frame/aicc/tests/adapter_protocol_tests.rs`
-- 控制面板后端补 Provider 卡片/保存逻辑：`src/frame/control_panel/src/main.rs`
-- 控制面板 web mock/API 对齐：`src/frame/control_panel/web/src/api/index.ts`
-- （可选但建议）补系统默认配置生成：`src/kernel/scheduler/src/system_config_builder.rs`
-- （同次提交但非 Provider 接入必需）`src/rootfs/bin/buckyos_jarvis/behaviors/*.yaml`
+```text
+<provider_model_id>@<provider_instance_name>
+```
 
-可直接把这套“落点清单”作为你新增 Provider 的 checklist。
+例如：
 
-## 3. 新增一个 Provider 的标准步骤
+```text
+gpt-5.2@openai-primary
+claude-sonnet-4.5@claude-main
+```
 
-## 步骤 1：新增 `<provider>.rs`，定义实例配置与 Provider 结构
+## 2. 最小改动面
 
-建议直接参照 `claude.rs` / `minimax.rs` 的结构：
+新增一个 Provider 通常涉及：
 
-- `XXXInstanceConfig`：实例级配置（`provider_instance_name`、`provider_type`、`provider_driver`、`base_url`、`timeout_ms`、`models`、`default_model`、`features`）
-  - `provider_type` 是可信部署类型，常见值为 `cloud_api` / `local_inference` / `proxy_unknown`
-  - `provider_driver` 表示厂商/实现名，例如 `openai`、`claude`、`google-gemini`、`minimax`
-- `XXXProvider`：
-  - `instance: ProviderInstance`
-  - `inventory: ProviderInventory`
-  - `client: reqwest::Client`
-  - `api_token`、`base_url`
-- `new(cfg, api_token)` 中组装 `ProviderInstance` 和 `ProviderInventory`，每个模型必须声明 exact model name（`<provider_model_id>@<provider_instance_name>`）、`api_types`、`logical_mounts`、capability、pricing、health。
+- 新增 Provider 模块：`src/frame/aicc/src/<provider>.rs`
+- 如有协议转换复杂度，新增：`src/frame/aicc/src/<provider>_protocol.rs`
+- 导出模块：`src/frame/aicc/src/lib.rs`
+- 接入服务启动注册：`src/frame/aicc/src/main.rs` 的 `apply_provider_settings()`
+- Provider settings 解析、实例构建、inventory 构建
+- Provider 协议/错误分类测试：`src/frame/aicc/tests/adapter_protocol_tests.rs` 或 Provider 模块内单测
+- 如需控制面板配置，接入 `src/frame/control_panel/src/aicc_settings.rs` 和相关 web API/UI
+- 如需开箱默认配置，更新 `src/kernel/scheduler/src/system_config_builder.rs`
 
-## 步骤 2：实现 Provider 协议转换层（建议独立文件）
+## 3. 实现步骤
 
-若上游 API 与 AICC `CompleteRequest` 不同，建议新增 `<provider>_protocol.rs`，职责清晰：
+### 步骤 1：定义 settings 与 Provider 结构
 
-- 将 AICC 请求转换为上游请求 JSON
-- 做参数白名单/兼容转换（例如 `tool_choice`、`tools`、`response_format`）
-- 在“请求不合法”时直接返回 `ProviderError::fatal(...)`
+建议参考 `openai.rs`、`claude.rs`、`gimini.rs`、`minimax.rs`、`fal.rs`。
 
-Claude 就走了这条路线：`claude.rs` 调用 `claude_protocol::convert_complete_request(...)`。
+实例配置建议包含：
 
-## 步骤 3：实现 `start()` 与错误分类
+```rust
+provider_instance_name
+provider_type
+provider_driver
+base_url
+timeout_ms
+models
+default_model
+features
+```
 
-这是稳定性关键：
+Provider 结构通常包含：
 
-- `start()` 按 capability 分发（例如 `LlmRouter` -> `start_llm(...)`）
-- HTTP 429、5xx、网络错误统一标记 `retryable`
-- 参数错误、协议错误、解析错误通常标记 `fatal`
-- 返回 `ProviderStartResult::Immediate(AiResponseSummary { ... })` 时建议把 `provider_io` 放到 `extra` 里，便于排障
+```rust
+instance: ProviderInstance
+inventory: ProviderInventory
+client: reqwest::Client
+api_token / api_key
+base_url
+```
 
-可直接参考 `claude.rs` 的 `classify_api_error()` 和 `start_llm()`。
+Settings 解析建议：
 
-## 步骤 4：实现 settings 解析与实例构建
+- 支持 `enabled=false` 时返回 `Ok(0)` 或 `Ok(None)`
+- 支持 `api_key` / `api_token` 兼容别名
+- 支持 `instance_id` 作为 `provider_instance_name` 的旧字段兼容，但新文档和新配置统一写 `provider_instance_name`
+- 对空模型名、重复模型名做清洗
+- 不要把厂商名写进 `provider_type`；厂商名放 `provider_driver`
 
-每个 Provider 都应有自己的 settings 解析函数：
+### 步骤 2：构建 ProviderInventory
 
-- `parse_<provider>_settings(settings: &Value) -> Result<Option<...>>`
-  - 不存在或 `enabled=false` 返回 `Ok(None)`
-  - `api_token` 缺失时报错
-- `build_<provider>_instances(...)`
-  - 填默认模型、默认特性
-  - 清洗模型列表（去空、去重）
+`ProviderInventory` 是新版路由的核心输入。每个模型应声明：
 
-建议支持 `api_key`/`api_token` 双别名，降低配置迁移成本（Claude 已实现）。
+- `provider_model_id`
+- `exact_model`
+- `api_types`
+- `logical_mounts`
+- `capabilities`
+- `attributes`
+- `pricing`
+- `health`
 
-## 步骤 5：注册 Provider 到 Registry 和 ModelRegistry
+示意：
+
+```rust
+provider_model_metadata(
+    provider_instance_name,
+    provider_model_id,
+    vec![ApiType::LlmChat],
+    llm_logical_mounts(provider_driver, provider_model_id),
+)
+```
+
+`logical_mounts` 应表达模型可挂载到哪些逻辑目录，例如：
+
+- `llm.chat`
+- `llm.plan`
+- `llm.gpt5`
+- `llm.claude`
+- `image.txt2img.gemini`
+
+AICC 会把多个 Provider 的 inventory 汇入 `ModelRegistry`，同一个逻辑模型名可以产生多个候选。
+
+### 步骤 3：实现协议转换层
+
+如果上游 API 与 AICC `AiMethodRequest` 差异较大，建议拆出 `<provider>_protocol.rs`：
+
+- 把 `payload.messages` / `payload.text` / `payload.input_json` 转成上游请求
+- 处理 `tools`、`tool_choice`、`response_format`、`max_tokens` 等参数白名单
+- 对不合法请求返回 fatal 类错误
+- 将上游响应转成 `AiResponseSummary`
+
+协议层只做结构转换，不做路由决策。
+
+### 步骤 4：实现 `start()` 和错误分类
+
+`start()` 按 `api_type` 或 method 分发到具体调用：
+
+- LLM：`llm.chat` / `llm.completion`
+- 图像：`image.txt2img` / `image.img2img`
+- 视觉、音频、视频等按 Provider 能力支持
+
+错误分类要稳定：
+
+- HTTP 429、5xx、网络错误、超时：通常标记 `retryable`
+- 认证失败、参数错误、协议错误、响应解析错误：通常标记 `fatal`
+- 上游返回的配额耗尽应反映到 route trace 或 inventory health，避免后续继续命中同一异常候选
+
+同步完成时返回：
+
+```rust
+ProviderStartResult::Immediate(AiResponseSummary { ... })
+```
+
+建议把脱敏后的上游请求/响应摘要放到 `extra.provider_io`，便于排障。
+
+### 步骤 5：注册 Provider 和 inventory
 
 新增 `register_<provider>_providers(center, settings)`：
 
-- 创建 Provider 实例并 `center.registry().add_provider(provider)`
-- 把 `add_provider` 返回的 `ProviderInventory` 写入 `center.model_registry().write()?.apply_inventory(inventory)`
-- 不再向 `ModelCatalog` 写 alias；默认路由由 inventory 里的 `logical_mounts` 和 `SessionConfig` 决定
+1. 解析 settings
+2. 构建 Provider instance
+3. `center.registry().add_provider(provider)`
+4. 将返回的 `ProviderInventory` 写入 `center.model_registry().write()?.apply_inventory(inventory)`
 
-如果 Provider 支持多 capability（如 `LlmRouter + Text2Image`），inventory 中要为不同模型声明正确的 `ApiType` 和 logical mount（见 `openai.rs` / `gimini.rs`）。
+示意：
 
-## 步骤 6：把模块接进启动链路
+```rust
+let inventory = center.registry().add_provider(provider);
+center
+    .model_registry()
+    .write()
+    .map_err(|_| anyhow!("model registry lock poisoned"))?
+    .apply_inventory(inventory)?;
+```
 
-两处必须改：
+`src/frame/aicc/src/main.rs` 的 `apply_provider_settings()` 会在 reload 时清空注册表并重建，因此新增 Provider 必须接入这个入口。
 
-- `src/frame/aicc/src/lib.rs`：`pub mod <provider>;`
-- `src/frame/aicc/src/main.rs`：
-  - `mod <provider>;`
-  - `use crate::<provider>::register_<provider>_providers;`
-  - 在 `apply_provider_settings()` 中调用注册函数并累加 `registered_total`
+### 步骤 6：接入默认逻辑目录
 
-注意：当前入口是“全量清空后重建”注册表，新增 Provider 要遵守这个初始化模式。
+默认逻辑目录由 `default_logical_tree` 应用到全局 session config。Provider 不应在代码里硬编码“唯一默认模型”，而应通过 `logical_mounts` 声明自己可作为哪些逻辑目录的候选。
 
-## 步骤 7：补充配置下发（建议）
+如果需要额外的逻辑目录，请同步检查：
 
-如果你希望开箱即用，需在系统配置构建里补默认配置：
+- `doc/aicc/aicc_router.md`
+- `doc/aicc/aicc 逻辑模型目录.md`
+- `src/frame/aicc/src/default_logical_tree.rs`
 
-- `src/kernel/scheduler/src/system_config_builder.rs`
-  - 在 `build_aicc_settings()` 插入 `<provider>` 配置块
-  - 给出 `instances` 的默认样例
+### 步骤 7：保留 legacy alias 兼容层
 
-这样用户在安装/启动后就能直接得到结构正确的 settings。
+当前代码中仍有 `ModelCatalog` 和 `alias_map` 兼容逻辑。新增 Provider 可以保留默认 alias 或自定义 alias 以兼容旧调用，但新接入不应只依赖 alias。
 
-## 步骤 8：测试分层（必须）
+优先级建议：
 
-至少补两类测试：
+1. Provider inventory 的 `logical_mounts`
+2. 默认 `SessionConfig` 的逻辑目录和 items
+3. request/session 级 `session_config_patch`
+4. legacy `ModelCatalog` alias 兼容层
 
-- Provider 本地单元测试（建议放 `<provider>.rs` 内 `#[cfg(test)]`）：
-  - 默认实例构建
-  - alias 注册与解析
-- adapter 协议测试（`src/frame/aicc/tests/adapter_protocol_tests.rs`）：
-  - 200 成功
-  - 429 retryable
-  - 4xx fatal
-  - 网络/超时 retryable
+## 4. Settings 模板
 
-Claude 在 `8d169271` 就是按这套补齐。
-
-## 步骤 9：补齐控制面板/UI 配置接入（建议）
-
-如果你希望“新增 Provider 后用户可在控制面板里查看、编辑、诊断”，需要同时接入 `control_panel`：
-
-- 控制面板后端 Provider 卡片：
-  - 文件：`src/frame/control_panel/src/main.rs`
-  - 在 `ai_provider_cards(...)` 中补 `<provider>` 对应的 card 生成逻辑（可参考 `ai_claude_provider_card` / `ai_minimax_provider_card`）
-  - 统一处理 `status`、`credentialConfigured`、`maskedApiKey`、`defaultModel`、`endpoint`
-- 控制面板保存逻辑：
-  - 文件：`src/frame/control_panel/src/main.rs`
-  - 在 `handle_ai_provider_set(...)` 中为你的 `provider_id` 增加写回分支，把用户修改落到 `services/aicc/settings`
-  - 建议同步维护 `provider_type`、`instances[0].base_url`、`instances[0].default_model`、`api_token/api_key` 兼容字段
-- 控制面板诊断/重载链路：
-  - 复用已有 `ai.provider.test` 与 `ai.reload` RPC（无需重复造接口）
-  - 确认新增 Provider 在 reload 后能被 `ai.provider.list` 正确反映
-- Web UI 页面与路由：
-  - 文件：`src/frame/control_panel/web/src/routes/router.tsx`、`src/frame/control_panel/web/src/ui/pages/*.tsx`
-  - 若已有 AI Provider 管理页，补展示字段与编辑表单；若无入口，需新增页面并挂路由
-  - API 层使用 `src/frame/control_panel/web/src/api/index.ts` 的 `fetchAiProviders` / `saveAiProvider` / `runAiProviderDiagnostic` / `reloadAiProviderSettings`
-- 文档同步：
-  - 同步更新 `doc/aicc/local_provider.md` 或 Provider 专属文档，明确“系统配置入口”和“控制面板入口”两条路径
-
-最小验收建议：
-
-1. 控制面板可看到新 Provider 卡片（状态、模型、endpoint 正确）
-2. 在 UI 修改默认模型/endpoint/API Key 后，`services/aicc/settings` 实际更新
-3. 点击 reload 后，AICC 路由能命中新 Provider（非仅 UI 假状态）
-4. 诊断接口能给出可读结果（成功或可定位错误码）
-
-## 4. 推荐的 settings 模板
-
-下面是一个最小可用模板（以 `myprovider` 为例）：
+最小可用模板：
 
 ```json
 {
@@ -170,7 +202,7 @@ Claude 在 `8d169271` 就是按这套补齐。
     "api_token": "YOUR_TOKEN",
     "instances": [
       {
-        "provider_instance_name": "myprovider-default",
+        "provider_instance_name": "myprovider-primary",
         "provider_type": "cloud_api",
         "provider_driver": "myprovider",
         "base_url": "https://api.example.com/v1",
@@ -184,23 +216,77 @@ Claude 在 `8d169271` 就是按这套补齐。
 }
 ```
 
-更新后调用 `reload_settings` 使其生效。
+本地推理 Provider 应使用：
 
-## 5. 常见坑（按出现频率）
+```json
+{
+  "provider_type": "local_inference"
+}
+```
 
-- 只注册了 Provider，没写入 `ModelRegistry`：路由会报 `no_provider_available`
-- inventory 的 `api_types` / `logical_mounts` 写错：看起来“有模型”，实际仍不可路由
-- 把 4xx 都标 retryable：会导致无意义重试放大故障
-- 把厂商名继续写进 `provider_type`：`provider_type` 应是可信部署类型，厂商名放到 `provider_driver`
-- 忘记在 `main.rs` 接入 `register_*`：Provider 文件存在但永远不会启用
-- 只改了 AICC 没改 control_panel：后端可用但 UI 不可配置/不可观测
+不确定实际部署边界的代理服务应使用：
 
-## 6. 建议的开发顺序（最快闭环）
+```json
+{
+  "provider_type": "proxy_unknown"
+}
+```
 
-1. 复制 `claude.rs` 为模板改名，先跑通 `LlmRouter`
-2. 接入 `lib.rs` + `main.rs` 注册链路
-3. 补 settings 解析与 inventory 注册
-4. 先写 adapter 4 条协议测试（200/429/400/网络错误）
-5. 最后补细节能力（tool calling、json_output、多 capability）
+`local_only` 策略只应信任 AICC settings 中的 `provider_type`，不能只信任 Provider 自己在 inventory attributes 里的声明。
 
-按以上顺序，通常可以最快把“可用 Provider”上线，再迭代高级能力。
+## 5. 控制面板接入
+
+如果希望用户在控制面板中查看、编辑、诊断 Provider，需要同步接入：
+
+- Provider 卡片展示
+- 保存 `services/aicc/settings`
+- `ai.provider.test`
+- `ai.reload`
+- `ai.provider.list`
+
+保存逻辑应写回：
+
+- `enabled`
+- `api_token` / `api_key`
+- `instances[0].provider_instance_name`
+- `instances[0].provider_type`
+- `instances[0].provider_driver`
+- `instances[0].base_url`
+- `instances[0].models`
+- `instances[0].default_model`
+
+保存后调用 `service.reload_settings` 或 `reload_settings`，并用 `models.list` 验证 inventory 已更新。
+
+## 6. 测试要求
+
+至少覆盖：
+
+- settings 解析：enabled、token 缺失、默认 instance、字段别名
+- inventory 构建：精确模型名、`api_types`、`logical_mounts`、去重
+- 成本估算：cost、latency、quota state
+- 协议转换：最小成功请求
+- 错误分类：429/5xx/network 为 retryable，4xx 参数错误为 fatal
+- 路由验证：`model.alias=llm.chat` 或目标逻辑目录能命中新 Provider
+- 精确模型验证：`model.alias=<model>@<provider_instance_name>` 能强制命中新 Provider
+
+常用验证：
+
+```bash
+cargo test -p aicc
+```
+
+或在 `src` 下跑完整构建：
+
+```bash
+uv run buckyos-build.py
+```
+
+## 7. 常见问题
+
+- 只注册 Provider，没写 `ModelRegistry`：`models.list` 能看到 Provider 但逻辑路由无候选。
+- `logical_mounts` 写错：`model.alias=llm.chat` 等逻辑名无法命中。
+- `api_types` 漏写：Provider 看起来有模型，但目标 method 被过滤。
+- 把 `provider_type` 写成 `openai` / `claude`：这会破坏本地/云端/代理的安全策略判断。
+- 精确模型名没带 provider instance：无法表达强制指定 Provider。
+- 只改 AICC 不改 control_panel：后端可用但用户无法配置、诊断或 reload。
+- 只维护 legacy alias：短期兼容可用，但不符合新版路由语义。
