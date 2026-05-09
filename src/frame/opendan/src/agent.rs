@@ -413,7 +413,7 @@ impl AIAgent {
             .map_err(|err| anyhow!("register memory tools failed: {err}"))?;
 
         tools
-            .register_tool(GetSessionTool::new(session_store.clone()))
+            .register_typed_tool(GetSessionTool::new(session_store.clone()))
             .map_err(|err| anyhow!("register session tool failed: {err}"))?;
         tools
             .register_tool(LoadSkillTool::new(session_store.clone()))

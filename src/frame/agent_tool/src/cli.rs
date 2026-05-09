@@ -21,7 +21,7 @@ use crate::{
     cli_envelope_from_tool_result, cli_error_envelope, cli_exit_code_for_error,
     cli_success_envelope, normalize_abs_path, parse_read_file_bash_args, render_cli_output,
     rewrite_read_file_path_with_shell_cwd, session_record_path, AgentMemory, AgentMemoryConfig,
-    AgentTool, AgentToolError, AgentToolResult, BindWorkspaceTool, CliPendingReason,
+    AgentToolError, AgentToolManager, AgentToolResult, BindWorkspaceTool, CliPendingReason,
     CliResultEnvelope, CliRunOutput, CliStatus, CreateWorkspaceTool, EditFileTool, FileToolConfig,
     GetSessionTool, NoopFileWriteAudit, ReadFileTool, RemoveMemoryTool, SessionRuntimeContext,
     SessionViewBackend, SetMemoryTool, TodoTool, TodoToolConfig, WorkspaceToolBackend,
@@ -116,6 +116,22 @@ enum ContentInput {
     Stdin,
 }
 
+/// How a tool should be dispatched once the CLI has parsed its arguments.
+/// Stage 4 collapsed the per-tool variants down to a generic `Tool` form so
+/// adding a new tool is a registry entry, not a new ParsedCommand arm.
+#[derive(Clone, Debug)]
+enum ToolInvocation {
+    /// Bash-style: hand the original line to the tool's `exec`.
+    Bash { line: String },
+    /// Pre-parsed JSON args. If `content_input` is set, the CLI resolves
+    /// stdin (or the provided override) before injecting it into `args` as
+    /// the named field.
+    Json {
+        args: Json,
+        content_input: Option<(String, ContentInput)>,
+    },
+}
+
 #[derive(Clone, Debug)]
 enum ParsedCommand {
     CommandNotFound {
@@ -125,23 +141,15 @@ enum ParsedCommand {
     Help {
         tool_name: Option<String>,
     },
-    BashTool {
+    /// Generic tool dispatch. Stage 4 unified the previous
+    /// `BashTool/ReadFile/WriteFile/EditFile` variants into this single
+    /// shape — the CLI parses each tool's flags once into either a bash
+    /// line or a JSON args object and the dispatcher routes through the
+    /// `AgentToolManager` registry. Plain-text read mode is decided at
+    /// dispatch time by `env.use_plain_text_read_output()`.
+    Tool {
         tool_name: String,
-        line: String,
-    },
-    ReadFile {
-        tool_name: String,
-        args: Json,
-    },
-    WriteFile {
-        tool_name: String,
-        args: Json,
-        content: ContentInput,
-    },
-    EditFile {
-        tool_name: String,
-        args: Json,
-        new_content: ContentInput,
+        invocation: ToolInvocation,
     },
     CheckTask {
         tool_name: String,
@@ -189,54 +197,22 @@ async fn execute(
             &build_help_envelope(&env, tool_name.as_deref()).await,
             EXIT_SUCCESS,
         )),
-        ParsedCommand::BashTool { tool_name, line } => {
-            let result = execute_bash_tool(&env, &tool_name, &line).await?;
-            Ok(render_cli_output(
-                &success_envelope(&tool_name, result),
-                EXIT_SUCCESS,
-            ))
-        }
-        ParsedCommand::ReadFile { tool_name, args } => {
-            if env.use_plain_text_read_output() {
-                match run_read_file(&env, args).await {
+        ParsedCommand::Tool {
+            tool_name,
+            invocation,
+        } => {
+            // Plain-text read mode: caller is a non-interactive shell
+            // expecting raw file contents on stdout. Run the tool and
+            // strip the JSON envelope before printing.
+            let plain_read_output =
+                tool_name == TOOL_READ_FILE && env.use_plain_text_read_output();
+            if plain_read_output {
+                return match dispatch_tool(&env, &tool_name, invocation, stdin_override).await {
                     Ok(result) => Ok(render_plain_read_file_output(result)),
                     Err(err) => Ok(render_plain_error_output(&err)),
-                }
-            } else {
-                let result = run_read_file(&env, args).await?;
-                Ok(render_cli_output(
-                    &success_envelope(&tool_name, result),
-                    EXIT_SUCCESS,
-                ))
+                };
             }
-        }
-        ParsedCommand::WriteFile {
-            tool_name,
-            mut args,
-            content,
-        } => {
-            let content = resolve_content_input(content, stdin_override).await?;
-            let map = args.as_object_mut().ok_or_else(|| {
-                AgentToolError::InvalidArgs("write_file args must be object".to_string())
-            })?;
-            map.insert("content".to_string(), Json::String(content));
-            let result = run_write_file(&env, args).await?;
-            Ok(render_cli_output(
-                &success_envelope(&tool_name, result),
-                EXIT_SUCCESS,
-            ))
-        }
-        ParsedCommand::EditFile {
-            tool_name,
-            mut args,
-            new_content,
-        } => {
-            let new_content = resolve_content_input(new_content, stdin_override).await?;
-            let map = args.as_object_mut().ok_or_else(|| {
-                AgentToolError::InvalidArgs("edit_file args must be object".to_string())
-            })?;
-            map.insert("new_content".to_string(), Json::String(new_content));
-            let result = run_edit_file(&env, args).await?;
+            let result = dispatch_tool(&env, &tool_name, invocation, stdin_override).await?;
             Ok(render_cli_output(
                 &success_envelope(&tool_name, result),
                 EXIT_SUCCESS,
@@ -275,6 +251,43 @@ async fn execute(
                 &build_cancel_task_envelope(&tool_name, after, recursive, interrupt_error),
                 EXIT_SUCCESS,
             ))
+        }
+    }
+}
+
+/// Single dispatcher that resolves the named tool against the registry
+/// and routes through `exec` (bash form) or `call` (json form). Stage 4
+/// replaced the per-tool `execute_bash_tool` + `run_read_file` /
+/// `run_write_file` / `run_edit_file` siblings with this one entry point.
+async fn dispatch_tool(
+    env: &CliRuntimeEnv,
+    tool_name: &str,
+    invocation: ToolInvocation,
+    stdin_override: Option<String>,
+) -> Result<AgentToolResult, AgentToolError> {
+    let mgr = build_cli_tool_manager(env).await?;
+    let Some(tool) = mgr.get_any_tool(tool_name) else {
+        return Err(AgentToolError::NotFound(tool_name.to_string()));
+    };
+    match invocation {
+        ToolInvocation::Bash { line } => {
+            tool.exec(&env.call_ctx, &line, Some(env.current_dir.as_path()))
+                .await
+        }
+        ToolInvocation::Json {
+            mut args,
+            content_input,
+        } => {
+            if let Some((field, ci)) = content_input {
+                let content = resolve_content_input(ci, stdin_override).await?;
+                let map = args.as_object_mut().ok_or_else(|| {
+                    AgentToolError::InvalidArgs(format!(
+                        "{tool_name} args must be object"
+                    ))
+                })?;
+                map.insert(field, Json::String(content));
+            }
+            tool.call(&env.call_ctx, args).await
         }
     }
 }
@@ -360,10 +373,19 @@ fn parse_tool_command(
     }
 
     match tool_name.as_str() {
-        TOOL_READ_FILE => Ok(ParsedCommand::ReadFile {
-            tool_name,
-            args: parse_read_file_cli_args(tokens, current_dir)?,
-        }),
+        TOOL_READ_FILE => {
+            // The execute() entry sets `plain_read_output` against the env
+            // when this name reaches the dispatcher; here we just record
+            // the read_file kind by name.
+            let args = parse_read_file_cli_args(tokens, current_dir)?;
+            Ok(ParsedCommand::Tool {
+                tool_name,
+                invocation: ToolInvocation::Json {
+                    args,
+                    content_input: None,
+                },
+            })
+        }
         TOOL_WRITE_FILE => parse_write_file_cli_args(tool_name, tokens, current_dir),
         TOOL_EDIT_FILE => parse_edit_file_cli_args(tool_name, tokens, current_dir),
         TOOL_GET_SESSION => parse_get_session_cli_command(tool_name, tokens),
@@ -476,9 +498,9 @@ fn parse_get_session_cli_command(
     tokens: &[String],
 ) -> Result<ParsedCommand, AgentToolError> {
     if tokens.is_empty() {
-        return Ok(ParsedCommand::BashTool {
+        return Ok(ParsedCommand::Tool {
             tool_name: tool_name.clone(),
-            line: tool_name,
+            invocation: ToolInvocation::Bash { line: tool_name },
         });
     }
 
@@ -532,16 +554,20 @@ fn parse_get_session_cli_command(
     if let Some(session_id) = session_id {
         forwarded.push(format!("session_id={session_id}"));
     }
-    Ok(ParsedCommand::BashTool {
+    Ok(ParsedCommand::Tool {
         tool_name: tool_name.clone(),
-        line: build_bash_cli_line(&tool_name, &forwarded),
+        invocation: ToolInvocation::Bash {
+            line: build_bash_cli_line(&tool_name, &forwarded),
+        },
     })
 }
 
 fn parse_passthrough_bash_command(tool_name: String, tokens: &[String]) -> ParsedCommand {
-    ParsedCommand::BashTool {
+    ParsedCommand::Tool {
         tool_name: tool_name.clone(),
-        line: build_bash_cli_line(&tool_name, tokens),
+        invocation: ToolInvocation::Bash {
+            line: build_bash_cli_line(&tool_name, tokens),
+        },
     }
 }
 
@@ -650,10 +676,12 @@ fn parse_write_file_cli_args(
         args.insert("mode".to_string(), Json::String(mode));
     }
 
-    Ok(ParsedCommand::WriteFile {
+    Ok(ParsedCommand::Tool {
         tool_name,
-        args: Json::Object(args),
-        content,
+        invocation: ToolInvocation::Json {
+            args: Json::Object(args),
+            content_input: Some(("content".to_string(), content)),
+        },
     })
 }
 
@@ -769,10 +797,12 @@ fn parse_edit_file_cli_args(
         args.insert("mode".to_string(), Json::String(mode));
     }
 
-    Ok(ParsedCommand::EditFile {
+    Ok(ParsedCommand::Tool {
         tool_name,
-        args: Json::Object(args),
-        new_content,
+        invocation: ToolInvocation::Json {
+            args: Json::Object(args),
+            content_input: Some(("new_content".to_string(), new_content)),
+        },
     })
 }
 
@@ -1064,86 +1094,43 @@ impl WorkspaceToolBackend for CliWorkspaceBackend {
     }
 }
 
-async fn execute_bash_tool(
-    env: &CliRuntimeEnv,
-    tool_name: &str,
-    line: &str,
-) -> Result<AgentToolResult, AgentToolError> {
-    match tool_name {
-        TOOL_GET_SESSION => {
-            build_get_session_tool(env)?
-                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
-                .await
-        }
-        TOOL_TODO => {
-            build_todo_tool(env)?
-                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
-                .await
-        }
-        TOOL_CREATE_WORKSPACE => {
-            build_create_workspace_tool(env)?
-                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
-                .await
-        }
-        TOOL_BIND_WORKSPACE => {
-            build_bind_workspace_tool(env)?
-                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
-                .await
-        }
-        TOOL_SET_MEMORY => {
-            build_set_memory_tool(env)
-                .await?
-                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
-                .await
-        }
-        TOOL_REMOVE_MEMORY => {
-            build_remove_memory_tool(env)
-                .await?
-                .exec(&env.call_ctx, line, Some(env.current_dir.as_path()))
-                .await
-        }
-        _ => Err(AgentToolError::NotFound(tool_name.to_string())),
-    }
-}
+/// Single registry-of-tools used by the CLI dispatcher. Replaces the
+/// per-tool `build_xxx_tool` factories — adding a new tool here is a one
+/// line `register_typed_tool` call instead of a new branch in
+/// `execute_bash_tool`. Built per-process invocation because the CLI is
+/// short-lived and tools depend on the resolved env.
+async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager, AgentToolError> {
+    let mgr = AgentToolManager::new();
+    let state_root = cli_state_root(env);
+    let file_cfg = build_cli_file_tool_config(env);
 
-fn build_get_session_tool(env: &CliRuntimeEnv) -> Result<GetSessionTool, AgentToolError> {
-    Ok(GetSessionTool::new(Arc::new(CliSessionBackend {
-        state_root: cli_state_root(env),
-    })))
-}
+    mgr.register_typed_tool(GetSessionTool::new(Arc::new(CliSessionBackend {
+        state_root: state_root.clone(),
+    })))?;
 
-fn build_todo_tool(env: &CliRuntimeEnv) -> Result<TodoTool, AgentToolError> {
-    TodoTool::new(TodoToolConfig::with_db_path(
-        cli_state_root(env).join("todo").join("todo.db"),
-    ))
-}
+    let todo_tool = TodoTool::new(TodoToolConfig::with_db_path(
+        state_root.join("todo").join("todo.db"),
+    ))?;
+    mgr.register_tool(todo_tool)?;
 
-fn build_create_workspace_tool(env: &CliRuntimeEnv) -> Result<CreateWorkspaceTool, AgentToolError> {
-    Ok(CreateWorkspaceTool::new(Arc::new(CliWorkspaceBackend {
-        state_root: cli_state_root(env),
+    let workspace_backend = Arc::new(CliWorkspaceBackend {
+        state_root: state_root.clone(),
         agent_id: env.call_ctx.agent_name.clone(),
-    })))
-}
+    });
+    mgr.register_typed_tool(CreateWorkspaceTool::new(workspace_backend.clone()))?;
+    mgr.register_typed_tool(BindWorkspaceTool::new(workspace_backend))?;
 
-fn build_bind_workspace_tool(env: &CliRuntimeEnv) -> Result<BindWorkspaceTool, AgentToolError> {
-    Ok(BindWorkspaceTool::new(Arc::new(CliWorkspaceBackend {
-        state_root: cli_state_root(env),
-        agent_id: env.call_ctx.agent_name.clone(),
-    })))
-}
+    let memory_backend: Arc<AgentMemory> =
+        Arc::new(AgentMemory::new(AgentMemoryConfig::new(state_root)).await?);
+    mgr.register_typed_tool(SetMemoryTool::new(memory_backend.clone()))?;
+    mgr.register_typed_tool(RemoveMemoryTool::new(memory_backend))?;
 
-async fn build_memory_backend(env: &CliRuntimeEnv) -> Result<Arc<AgentMemory>, AgentToolError> {
-    AgentMemory::new(AgentMemoryConfig::new(cli_state_root(env)))
-        .await
-        .map(Arc::new)
-}
+    let audit = Arc::new(NoopFileWriteAudit);
+    mgr.register_typed_tool(ReadFileTool::new(file_cfg.clone()))?;
+    mgr.register_typed_tool(WriteFileTool::new(file_cfg.clone(), audit.clone()))?;
+    mgr.register_typed_tool(EditFileTool::new(file_cfg, audit))?;
 
-async fn build_set_memory_tool(env: &CliRuntimeEnv) -> Result<SetMemoryTool, AgentToolError> {
-    Ok(SetMemoryTool::new(build_memory_backend(env).await?))
-}
-
-async fn build_remove_memory_tool(env: &CliRuntimeEnv) -> Result<RemoveMemoryTool, AgentToolError> {
-    Ok(RemoveMemoryTool::new(build_memory_backend(env).await?))
+    Ok(mgr)
 }
 
 fn build_cli_file_tool_config(env: &CliRuntimeEnv) -> FileToolConfig {
@@ -1153,39 +1140,6 @@ fn build_cli_file_tool_config(env: &CliRuntimeEnv) -> FileToolConfig {
         cfg.allowed_write_roots.clear();
     }
     cfg
-}
-
-fn build_read_file_tool(env: &CliRuntimeEnv) -> ReadFileTool {
-    ReadFileTool::new(build_cli_file_tool_config(env))
-}
-
-fn build_write_file_tool(env: &CliRuntimeEnv) -> WriteFileTool {
-    WriteFileTool::new(
-        build_cli_file_tool_config(env),
-        Arc::new(NoopFileWriteAudit),
-    )
-}
-
-fn build_edit_file_tool(env: &CliRuntimeEnv) -> EditFileTool {
-    EditFileTool::new(
-        build_cli_file_tool_config(env),
-        Arc::new(NoopFileWriteAudit),
-    )
-}
-
-async fn run_read_file(env: &CliRuntimeEnv, args: Json) -> Result<AgentToolResult, AgentToolError> {
-    build_read_file_tool(env).call(&env.call_ctx, args).await
-}
-
-async fn run_write_file(
-    env: &CliRuntimeEnv,
-    args: Json,
-) -> Result<AgentToolResult, AgentToolError> {
-    build_write_file_tool(env).call(&env.call_ctx, args).await
-}
-
-async fn run_edit_file(env: &CliRuntimeEnv, args: Json) -> Result<AgentToolResult, AgentToolError> {
-    build_edit_file_tool(env).call(&env.call_ctx, args).await
 }
 
 fn success_envelope(tool_name: &str, result: AgentToolResult) -> CliResultEnvelope {

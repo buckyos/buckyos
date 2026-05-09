@@ -330,19 +330,19 @@ impl AgentWorkshop {
                         )?;
                     }
                     TOOL_EDIT_FILE => {
-                        tool_mgr.register_tool(SharedEditFileTool::new(
+                        tool_mgr.register_typed_tool(SharedEditFileTool::new(
                             self.build_file_tool_config(tool)?,
                             Arc::new(write_audit.clone()),
                         ))?;
                     }
                     TOOL_WRITE_FILE => {
-                        tool_mgr.register_tool(SharedWriteFileTool::new(
+                        tool_mgr.register_typed_tool(SharedWriteFileTool::new(
                             self.build_file_tool_config(tool)?,
                             Arc::new(write_audit.clone()),
                         ))?;
                     }
                     TOOL_READ_FILE => {
-                        tool_mgr.register_tool(SharedReadFileTool::new(
+                        tool_mgr.register_typed_tool(SharedReadFileTool::new(
                             self.build_file_tool_config(tool)?,
                         ))?;
                     }
@@ -365,7 +365,7 @@ impl AgentWorkshop {
                             self.local_workspace_mgr.clone(),
                             session_store.clone(),
                         ));
-                        tool_mgr.register_tool(SharedCreateWorkspaceTool::new(Arc::new(
+                        tool_mgr.register_typed_tool(SharedCreateWorkspaceTool::new(Arc::new(
                             ManagedWorkspaceToolBackend::new(runtime),
                         )))?;
                     }
@@ -374,7 +374,7 @@ impl AgentWorkshop {
                             self.local_workspace_mgr.clone(),
                             session_store.clone(),
                         ));
-                        tool_mgr.register_tool(SharedBindWorkspaceTool::new(Arc::new(
+                        tool_mgr.register_typed_tool(SharedBindWorkspaceTool::new(Arc::new(
                             ManagedWorkspaceToolBackend::new(runtime),
                         )))?;
                     }

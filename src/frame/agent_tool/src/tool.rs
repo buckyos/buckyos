@@ -298,6 +298,27 @@ pub trait TypedTool: Send + Sync + 'static {
         "ok".to_string()
     }
 
+    /// Optional title hook. Tools that produce richer headlines (file
+    /// tools want `edit_file foo.rs mode=replace => success (line 42)`)
+    /// override this; the default returns `None` and the bridge falls
+    /// back to `derive_default_title`. The hook only sees the output
+    /// struct, so per-call data needed to render the title (file path,
+    /// operation, matched flag, etc.) must live on `Self::Output`.
+    fn build_title(_output: &Self::Output) -> Option<String> {
+        None
+    }
+
+    /// Parse bash tokens (after the tool name) into a JSON arg object that
+    /// `Self::Args` can deserialize from. Tools with positional bash forms
+    /// override this; the default produces the same key=value/JSON parsing
+    /// as the legacy `parse_default_bash_exec_args`.
+    fn parse_bash_args(
+        tokens: &[String],
+        _shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        crate::parse_default_bash_exec_args(tokens)
+    }
+
     async fn execute(
         &self,
         ctx: &ToolCtx<'_>,
@@ -365,14 +386,7 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
         let cmd_line = T::build_cmd_line(&typed).unwrap_or_else(|| T::NAME.to_string());
         let tool_ctx = ToolCtx::new(ctx, self.host.as_ref());
         let output = self.inner.execute(&tool_ctx, typed).await?;
-        let summary = T::build_summary(&output);
-        let detail = serde_json::to_value(&output).map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "serialize output for `{}` failed: {err}",
-                T::NAME
-            ))
-        })?;
-        Ok(build_builtin_tool_result(detail, cmd_line, summary).with_tool(T::NAME.to_string()))
+        finalize_typed_result::<T>(output, cmd_line)
     }
 
     async fn exec(
@@ -381,23 +395,43 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
         line: &str,
         shell_cwd: Option<&Path>,
     ) -> Result<AgentToolResult, AgentToolError> {
-        // Use the default tokenizer + key=value/JSON arg parser, then
-        // route through `call`. Per-tool bash quirks are migrated as
-        // tools opt into the typed trait (see Stage 3 in the plan).
-        let _ = (ctx, shell_cwd);
         let tokens = crate::tokenize_bash_command_line(line)?;
         if tokens.is_empty() {
             return Err(AgentToolError::InvalidArgs(
                 "empty bash command line".to_string(),
             ));
         }
-        let args = crate::parse_default_bash_exec_args(&tokens[1..])?;
-        // Re-enter through `call` so the same arg-parse / context flow
-        // applies; we cannot pass shell_cwd through the legacy bridge
-        // yet — that arrives in stage 3 when typed tools own their
-        // bash entry point too.
-        AgentTool::call(self, ctx, args).await
+        // Hand bash tokens to the typed parser so each tool encodes its
+        // own positional/keyword bash quirks instead of overriding
+        // `exec` directly. Default falls back to `parse_default_bash_exec_args`.
+        let args = T::parse_bash_args(&tokens[1..], shell_cwd)?;
+        let typed: T::Args = serde_json::from_value(args).map_err(|err| {
+            AgentToolError::InvalidArgs(format!("invalid args for `{}`: {err}", T::NAME))
+        })?;
+        let cmd_line = T::build_cmd_line(&typed).unwrap_or_else(|| line.trim().to_string());
+        let tool_ctx = ToolCtx::new(ctx, self.host.as_ref()).with_shell_cwd(shell_cwd);
+        let output = self.inner.execute(&tool_ctx, typed).await?;
+        finalize_typed_result::<T>(output, cmd_line)
     }
+}
+
+fn finalize_typed_result<T: TypedTool>(
+    output: T::Output,
+    cmd_line: String,
+) -> Result<AgentToolResult, AgentToolError> {
+    let summary = T::build_summary(&output);
+    let title = T::build_title(&output);
+    let detail = serde_json::to_value(&output).map_err(|err| {
+        AgentToolError::ExecFailed(format!(
+            "serialize output for `{}` failed: {err}",
+            T::NAME
+        ))
+    })?;
+    let mut result = build_builtin_tool_result(detail, cmd_line, summary).with_tool(T::NAME);
+    if let Some(custom_title) = title {
+        result.title = custom_title;
+    }
+    Ok(result)
 }
 
 #[cfg(test)]

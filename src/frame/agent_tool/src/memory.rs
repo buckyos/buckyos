@@ -124,13 +124,13 @@ impl AgentMemory {
 
     pub fn register_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
         if !tool_mgr.has_tool(TOOL_LOAD_MEMORY) {
-            tool_mgr.register_tool(LoadMemoryTool::new(Arc::new(self.clone())))?;
+            tool_mgr.register_typed_tool(LoadMemoryTool::new(Arc::new(self.clone())))?;
         }
         if !tool_mgr.has_tool(TOOL_SET_MEMORY) {
-            tool_mgr.register_tool(SetMemoryTool::new(Arc::new(self.clone())))?;
+            tool_mgr.register_typed_tool(SetMemoryTool::new(Arc::new(self.clone())))?;
         }
         if !tool_mgr.has_tool(TOOL_REMOVE_MEMORY) {
-            tool_mgr.register_tool(RemoveMemoryTool::new(Arc::new(self.clone())))?;
+            tool_mgr.register_typed_tool(RemoveMemoryTool::new(Arc::new(self.clone())))?;
         }
         Ok(())
     }

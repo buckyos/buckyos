@@ -15,8 +15,8 @@ use tokio::task;
 
 use crate::agent_tool::{
     now_ms, optional_trimmed_string_arg as optional_string, optional_u64_arg as optional_u64,
-    require_string_arg as require_string, u64_to_usize_arg as u64_to_usize, AgentTool,
-    AgentToolError, AgentToolResult, ToolSpec,
+    require_string_arg as require_string, u64_to_usize_arg as u64_to_usize, AgentToolError,
+    AgentToolResult, TypedToolHandle,
 };
 use crate::behavior::SessionRuntimeContext;
 
@@ -246,23 +246,29 @@ impl WorklogService {
     }
 }
 
-#[derive(Clone)]
+/// Opendan-side wrapper that bundles the WorklogService with a registered
+/// agent tool. The shipped tool is `TypedToolHandle<agent_tool::WorklogTool>`,
+/// which exposes the legacy `AgentTool` impl needed by the manager. Callers
+/// that need direct service access call `service()`.
 pub struct WorklogTool {
     service: WorklogService,
-    inner: ::agent_tool::WorklogTool,
+    handle: TypedToolHandle<::agent_tool::WorklogTool>,
 }
 
 impl WorklogTool {
     pub fn new(cfg: WorklogToolConfig) -> Result<Self, AgentToolError> {
         let service = WorklogService::new(cfg)?;
-        Ok(Self {
-            inner: ::agent_tool::WorklogTool::new(Arc::new(service.clone())),
-            service,
-        })
+        let inner = ::agent_tool::WorklogTool::new(Arc::new(service.clone()));
+        let handle = TypedToolHandle::with_null_host(inner);
+        Ok(Self { service, handle })
     }
 
     pub fn service(&self) -> &WorklogService {
         &self.service
+    }
+
+    pub fn into_handle(self) -> TypedToolHandle<::agent_tool::WorklogTool> {
+        self.handle
     }
 
     pub async fn list_worklog_records(
@@ -271,30 +277,17 @@ impl WorklogTool {
     ) -> Result<Vec<WorklogRecord>, AgentToolError> {
         self.service.list_worklog_records(options).await
     }
-}
 
-#[async_trait]
-impl AgentTool for WorklogTool {
-    fn spec(&self) -> ToolSpec {
-        self.inner.spec()
-    }
-
-    fn support_bash(&self) -> bool {
-        self.inner.support_bash()
-    }
-    fn support_action(&self) -> bool {
-        self.inner.support_action()
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        self.inner.support_llm_tool_call()
-    }
-
-    async fn call(
+    /// Convenience wrapper that forwards to the underlying typed handle's
+    /// JSON dispatch path. Tests and prompt rendering paths use this to
+    /// invoke worklog actions without going through `AgentToolManager`.
+    pub async fn call(
         &self,
         ctx: &SessionRuntimeContext,
         args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        self.inner.call(ctx, args).await
+    ) -> Result<crate::agent_tool::AgentToolResult, AgentToolError> {
+        use crate::agent_tool::AgentTool;
+        AgentTool::call(&self.handle, ctx, args).await
     }
 }
 

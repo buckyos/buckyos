@@ -738,7 +738,9 @@ async fn build_large_read_file_results(
     fixture: &PromptFixture,
     step_idx: u32,
 ) -> HashMap<String, AgentToolResult> {
-    let tool = ReadFileTool::new(FileToolConfig::new(fixture.cwd_dir.clone()));
+    let tool = crate::agent_tool::TypedToolHandle::with_null_host(ReadFileTool::new(
+        FileToolConfig::new(fixture.cwd_dir.clone()),
+    ));
     let ctx = ToolSessionRuntimeContext {
         trace_id: format!("prompt-read-trace-{step_idx}"),
         agent_name: "did:web:agent.example.com".to_string(),
@@ -763,16 +765,16 @@ async fn build_large_read_file_results(
             .await
             .expect("write realistic read_file payload");
 
-        let result = tool
-            .call(
-                &ctx,
-                json!({
-                    "path": path,
-                    "range": "1-40"
-                }),
-            )
-            .await
-            .expect("call read_file tool");
+        let result = crate::agent_tool::AgentTool::call(
+            &tool,
+            &ctx,
+            json!({
+                "path": path,
+                "range": "1-40"
+            }),
+        )
+        .await
+        .expect("call read_file tool");
         results.insert(format!("read_file_{file_idx:02}"), result);
     }
     results

@@ -3,12 +3,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use log::warn;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
 
 use crate::{
-    optional_string_arg, require_string_arg, resolve_path_from_root, tokenize_bash_command_line,
-    u64_to_usize_arg, AgentTool, AgentToolError, AgentToolResult, SessionRuntimeContext, ToolSpec,
+    resolve_path_from_root, u64_to_usize_arg, AgentToolError, CallingConventions,
+    SessionRuntimeContext, ToolCtx, TypedTool,
 };
 
 pub const TOOL_EDIT_FILE: &str = "edit_file";
@@ -146,49 +147,127 @@ impl EditFileTool {
     }
 }
 
+#[derive(Deserialize)]
+pub struct EditFileArgs {
+    pub path: String,
+    pub pos_chunk: String,
+    pub new_content: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct EditFileOutput {
+    pub matched: bool,
+    pub changed: bool,
+    #[serde(rename = "mode")]
+    pub operation: String,
+    #[serde(rename = "line")]
+    pub line_no: Option<usize>,
+    pub diff: String,
+    pub diff_truncated: bool,
+    #[serde(skip)]
+    pub file_path: String,
+}
+
 #[async_trait]
-impl AgentTool for EditFileTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_EDIT_FILE.to_string(),
-            description: "Edit file.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "pos_chunk": { "type": "string" },
-                    "new_content": { "type": "string" },
-                    "mode": { "type": "string", "enum": ["replace", "after", "before"] }
-                },
-                "required": ["path", "pos_chunk", "new_content"],
-                "additionalProperties": true
-            }),
-            output_schema: json!({"type": "object"}),
-            usage: Some(
-                "edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)"
-                    .to_string(),
-            ),
+impl TypedTool for EditFileTool {
+    type Args = EditFileArgs;
+    type Output = EditFileOutput;
+
+    const NAME: &'static str = TOOL_EDIT_FILE;
+    const DESCRIPTION: &'static str = "Edit file.";
+    const CALLING: CallingConventions = CallingConventions::ACTION;
+
+    fn args_schema() -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "pos_chunk": { "type": "string" },
+                "new_content": { "type": "string" },
+                "mode": { "type": "string", "enum": ["replace", "after", "before"] }
+            },
+            "required": ["path", "pos_chunk", "new_content"],
+            "additionalProperties": true
+        })
+    }
+
+    fn output_schema() -> Json {
+        json!({ "type": "object" })
+    }
+
+    fn usage() -> Option<&'static str> {
+        Some(
+            "edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)",
+        )
+    }
+
+    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+        let mode = normalize_edit_mode(args.mode.as_deref()).unwrap_or("replace");
+        Some(build_edit_request_cmd_line(
+            &args.path,
+            mode,
+            args.pos_chunk.as_str(),
+        ))
+    }
+
+    fn build_summary(output: &Self::Output) -> String {
+        if output.changed {
+            let line_text = output
+                .line_no
+                .map(|line| format!(" at line {line}"))
+                .unwrap_or_default();
+            build_summary_with_optional_block(
+                format!(
+                    "edited {} with {}{line_text}",
+                    output.file_path, output.operation
+                ),
+                "diff",
+                &output.diff,
+            )
+        } else if !output.matched {
+            format!("edit {} skipped, anchor not found", output.file_path)
+        } else {
+            format!("edit {} made no change", output.file_path)
         }
     }
 
-    fn support_bash(&self) -> bool {
-        false
+    fn build_title(output: &Self::Output) -> Option<String> {
+        let status = if !output.matched {
+            "anchor not found".to_string()
+        } else if output.changed {
+            match output.line_no {
+                Some(line) => format!("success (line {line})"),
+                None => "success".to_string(),
+            }
+        } else {
+            "no change".to_string()
+        };
+        Some(format!(
+            "{TOOL_EDIT_FILE} {} mode={} => {status}",
+            output.file_path, output.operation
+        ))
     }
 
-    fn support_action(&self) -> bool {
-        true
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let file_path = require_string_arg(&args, "path")?;
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let file_path = args.path.trim().to_string();
+        if file_path.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `path`".to_string(),
+            ));
+        }
+        let pos_chunk = args.pos_chunk;
+        if pos_chunk.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `pos_chunk`".to_string(),
+            ));
+        }
+        let mode = normalize_edit_mode(args.mode.as_deref())?;
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
         self.cfg.ensure_write_path_allowed(&abs_path, &file_path)?;
 
@@ -199,9 +278,7 @@ impl AgentTool for EditFileTool {
             String::new()
         };
 
-        let pos_chunk = require_string_arg(&args, "pos_chunk")?;
-        let new_content = require_string_arg(&args, "new_content")?;
-        let mode = parse_edit_mode(&args)?;
+        let new_content = args.new_content;
         let (operation, updated_content, matched) =
             if let Some(anchor_pos) = original_content.find(&pos_chunk) {
                 let updated = match mode {
@@ -222,7 +299,7 @@ impl AgentTool for EditFileTool {
                         out.insert_str(anchor_pos, &new_content);
                         out
                     }
-                    _ => unreachable!("validated by parse_edit_mode"),
+                    _ => unreachable!("validated by normalize_edit_mode"),
                 };
                 (mode.to_string(), updated, true)
             } else {
@@ -254,11 +331,16 @@ impl AgentTool for EditFileTool {
             self.cfg.max_diff_lines,
         );
         if changed {
+            let audit_args = json!({
+                "path": file_path,
+                "pos_chunk": pos_chunk,
+                "mode": operation,
+            });
             if let Err(err) = self
                 .write_audit
                 .record_file_write(
-                    ctx,
-                    &args,
+                    ctx.session(),
+                    &audit_args,
                     &FileWriteAuditRecord {
                         file_path: file_path.clone(),
                         operation: operation.clone(),
@@ -282,53 +364,15 @@ impl AgentTool for EditFileTool {
         let line_no = original_content.find(&pos_chunk).map(|pos| {
             original_content[..pos].bytes().filter(|b| *b == b'\n').count() + 1
         });
-        let details = json!({
-            "matched": matched,
-            "changed": changed,
-            "mode": operation,
-            "line": line_no,
-            "diff": diff,
-            "diff_truncated": diff_truncated,
-        });
-        let summary = if changed {
-            let line_text = line_no
-                .map(|line| format!(" at line {line}"))
-                .unwrap_or_default();
-            build_summary_with_optional_block(
-                format!("edited {file_path} with {operation}{line_text}"),
-                "diff",
-                &diff,
-            )
-        } else if !matched {
-            format!("edit {file_path} skipped, anchor not found")
-        } else {
-            format!("edit {file_path} made no change")
-        };
-        let cmd_line = build_edit_result_cmd_line(
-            &file_path,
+        Ok(EditFileOutput {
             matched,
-            operation.as_str(),
+            changed,
+            operation,
             line_no,
-            &pos_chunk,
-        );
-        let title_status = if !matched {
-            "anchor not found".to_string()
-        } else if changed {
-            match line_no {
-                Some(line) => format!("success (line {line})"),
-                None => "success".to_string(),
-            }
-        } else {
-            "no change".to_string()
-        };
-        let title = format!(
-            "{TOOL_EDIT_FILE} {file_path} mode={operation} => {title_status}"
-        );
-        Ok(AgentToolResult::from_details(details)
-            .with_is_agent_tool(true)
-            .with_cmd_line(cmd_line)
-            .with_title(title)
-            .with_result(summary))
+            diff,
+            diff_truncated,
+            file_path,
+        })
     }
 }
 
@@ -344,53 +388,111 @@ impl WriteFileTool {
     }
 }
 
+#[derive(Deserialize)]
+pub struct WriteFileArgs {
+    pub path: String,
+    pub content: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct WriteFileOutput {
+    pub created: bool,
+    pub changed: bool,
+    pub bytes_written: usize,
+    pub line_count: usize,
+    #[serde(skip)]
+    pub file_path: String,
+    #[serde(skip)]
+    pub operation: String,
+    #[serde(skip)]
+    pub content_preview: String,
+    #[serde(skip)]
+    pub content_len: usize,
+    #[serde(skip)]
+    pub bytes_after: usize,
+}
+
 #[async_trait]
-impl AgentTool for WriteFileTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_WRITE_FILE.to_string(),
-            description: "Write file.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "content": { "type": "string" },
-                    "mode": { "type": "string", "enum": ["new", "append", "write"] }
-                },
-                "required": ["path", "content"],
-                "additionalProperties": true
-            }),
-            output_schema: json!({"type": "object"}),
-            usage: Some(
-                "write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)"
-                    .to_string(),
+impl TypedTool for WriteFileTool {
+    type Args = WriteFileArgs;
+    type Output = WriteFileOutput;
+
+    const NAME: &'static str = TOOL_WRITE_FILE;
+    const DESCRIPTION: &'static str = "Write file.";
+    const CALLING: CallingConventions = CallingConventions::ACTION;
+
+    fn args_schema() -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "content": { "type": "string" },
+                "mode": { "type": "string", "enum": ["new", "append", "write"] }
+            },
+            "required": ["path", "content"],
+            "additionalProperties": true
+        })
+    }
+
+    fn output_schema() -> Json {
+        json!({ "type": "object" })
+    }
+
+    fn usage() -> Option<&'static str> {
+        Some(
+            "write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)",
+        )
+    }
+
+    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+        let mode = normalize_write_mode(args.mode.as_deref()).unwrap_or("write");
+        Some(build_write_request_cmd_line(&args.path, mode))
+    }
+
+    fn build_summary(output: &Self::Output) -> String {
+        build_summary_with_optional_block(
+            format!(
+                "{} {}, wrote {} bytes across {}",
+                describe_write_operation(output.operation.as_str()),
+                output.file_path,
+                output.content_len,
+                describe_line_count(output.line_count),
             ),
-        }
+            "content",
+            &output.content_preview,
+        )
     }
 
-    fn support_bash(&self) -> bool {
-        false
+    fn build_title(output: &Self::Output) -> Option<String> {
+        let mode_label = match output.operation.as_str() {
+            "append" => "append",
+            "new" | "create" => "new",
+            _ => "write",
+        };
+        Some(format!(
+            "{TOOL_WRITE_FILE} {} mode={mode_label} => success ({} bytes)",
+            output.file_path, output.bytes_after,
+        ))
     }
 
-    fn support_action(&self) -> bool {
-        true
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let file_path = require_string_arg(&args, "path")?;
-        let content = require_string_arg(&args, "content")?;
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let file_path = args.path.trim().to_string();
+        if file_path.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `path`".to_string(),
+            ));
+        }
+        let content = args.content;
+        let mode = normalize_write_mode(args.mode.as_deref())?;
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
         self.cfg.ensure_write_path_allowed(&abs_path, &file_path)?;
 
-        let mode = parse_write_mode(&args)?;
         let exists = fs::metadata(&abs_path).await.is_ok();
         if mode == "new" && exists {
             return Err(AgentToolError::InvalidArgs(format!(
@@ -414,7 +516,7 @@ impl AgentTool for WriteFileTool {
         }
         .to_string();
         let updated_content = if mode == "append" {
-            format!("{original_content}{content}")
+            format!("{original_content}{}", content)
         } else {
             content.clone()
         };
@@ -440,11 +542,15 @@ impl AgentTool for WriteFileTool {
             &updated_content,
             self.cfg.max_diff_lines,
         );
+        let audit_args = json!({
+            "path": file_path,
+            "mode": operation,
+        });
         if let Err(err) = self
             .write_audit
             .record_file_write(
-                ctx,
-                &args,
+                ctx.session(),
+                &audit_args,
                 &FileWriteAuditRecord {
                     file_path: file_path.clone(),
                     operation: operation.clone(),
@@ -465,41 +571,17 @@ impl AgentTool for WriteFileTool {
         }
 
         let written_lines = count_content_lines(&content);
-        let details = json!({
-            "created": !exists,
-            "changed": changed,
-            "bytes_written": updated_content.len(),
-            "line_count": written_lines,
-        });
-        let summary = build_summary_with_optional_block(
-            format!(
-                "{} {file_path}, wrote {} bytes across {}",
-                describe_write_operation(operation.as_str()),
-                content.len(),
-                describe_line_count(written_lines),
-            ),
-            "content",
-            &build_content_preview(&content),
-        );
-        let cmd_line = build_write_result_cmd_line(
-            &file_path,
-            operation.as_str(),
-            written_lines,
-        );
-        let title = format!(
-            "{TOOL_WRITE_FILE} {file_path} mode={} => success ({} bytes)",
-            match operation.as_str() {
-                "append" => "append",
-                "new" | "create" => "new",
-                _ => "write",
-            },
-            updated_content.len(),
-        );
-        Ok(AgentToolResult::from_details(details)
-            .with_is_agent_tool(true)
-            .with_cmd_line(cmd_line)
-            .with_title(title)
-            .with_result(summary))
+        Ok(WriteFileOutput {
+            created: !exists,
+            changed,
+            bytes_written: updated_content.len(),
+            line_count: written_lines,
+            file_path,
+            operation,
+            content_preview: build_content_preview(&content),
+            content_len: content.len(),
+            bytes_after: updated_content.len(),
+        })
     }
 }
 
@@ -529,53 +611,135 @@ details:
     "content": $read_result
 */
 
+#[derive(Deserialize)]
+pub struct ReadFileArgs {
+    pub path: String,
+    #[serde(default)]
+    pub range: Option<Json>,
+    #[serde(default)]
+    pub first_chunk: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ReadFileOutput {
+    pub content: String,
+    pub matched: bool,
+    pub line_range: String,
+    pub bytes: usize,
+    pub line_count: usize,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
+    pub preview_truncated: bool,
+    #[serde(skip)]
+    pub file_path: String,
+    #[serde(skip)]
+    pub preview: String,
+    #[serde(skip)]
+    pub cmd_line: String,
+}
+
 #[async_trait]
-impl AgentTool for ReadFileTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_READ_FILE.to_string(),
-            description: "Read file.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "range": {},
-                    "first_chunk": { "type": "string" }
-                },
-                "required": ["path"],
-                "additionalProperties": true
-            }),
-            output_schema: json!({"type": "object"}),
-            usage: Some(
-                "read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice"
-                    .to_string(),
-            ),
+impl TypedTool for ReadFileTool {
+    type Args = ReadFileArgs;
+    type Output = ReadFileOutput;
+
+    const NAME: &'static str = TOOL_READ_FILE;
+    const DESCRIPTION: &'static str = "Read file.";
+    const CALLING: CallingConventions = CallingConventions::from_legacy(true, false, true);
+
+    fn args_schema() -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "range": {},
+                "first_chunk": { "type": "string" }
+            },
+            "required": ["path"],
+            "additionalProperties": true
+        })
+    }
+
+    fn output_schema() -> Json {
+        json!({ "type": "object" })
+    }
+
+    fn usage() -> Option<&'static str> {
+        Some(
+            "read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice",
+        )
+    }
+
+    fn parse_bash_args(
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        let mut args = parse_read_file_bash_args(tokens)?;
+        if let Some(cwd) = shell_cwd {
+            rewrite_read_file_path_with_shell_cwd(&mut args, cwd);
+        }
+        Ok(args)
+    }
+
+    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+        Some(build_read_result_cmd_line(
+            &args.path,
+            args.first_chunk.as_deref(),
+            args.range.as_ref(),
+        ))
+    }
+
+    fn build_summary(output: &Self::Output) -> String {
+        if output.matched {
+            let lines_text = match (output.start_line, output.end_line) {
+                (Some(start), Some(end)) if start == end => format!("1 line at {start}"),
+                (Some(start), Some(end)) => {
+                    format!("{} lines at {start}-{end}", output.line_count)
+                }
+                _ => "0 lines".to_string(),
+            };
+            let base = format!(
+                "succeeded, read {} bytes across {lines_text}",
+                output.bytes
+            );
+            if output.preview.is_empty() {
+                base
+            } else {
+                format!("{base}\n```content\n{}\n```", output.preview)
+            }
+        } else {
+            "succeeded, first_chunk was not found, read 0 bytes across 0 lines".to_string()
         }
     }
 
-    fn support_bash(&self) -> bool {
-        true
+    fn build_title(output: &Self::Output) -> Option<String> {
+        Some(format!(
+            "{} => {}",
+            output.cmd_line,
+            if output.matched {
+                "success"
+            } else {
+                "anchor not found"
+            }
+        ))
     }
 
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        true
-    }
-
-    async fn call(
+    async fn execute(
         &self,
-        _ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let file_path = require_string_arg(&args, "path")?;
+        _ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let file_path = args.path.trim().to_string();
+        if file_path.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `path`".to_string(),
+            ));
+        }
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
         self.cfg.ensure_read_path_allowed(&abs_path, &file_path)?;
 
         let full_content = read_text_file_lossy(&abs_path).await?;
-        let first_chunk = optional_string_arg(&args, "first_chunk")?;
+        let first_chunk = args.first_chunk.clone();
         let (chunk_content, matched, chunk_start_line) =
             if let Some(first_chunk) = first_chunk.as_deref() {
                 if let Some(pos) = full_content.find(first_chunk) {
@@ -594,7 +758,7 @@ impl AgentTool for ReadFileTool {
         let chunk_lines = split_lines_preserve_ending(&chunk_content);
         let total_chunk_lines = chunk_lines.len();
         let (range_start, range_end, line_range_label) =
-            if let Some((start, end)) = parse_line_range(&args, total_chunk_lines)? {
+            if let Some((start, end)) = parse_line_range(args.range.as_ref(), total_chunk_lines)? {
                 (start, end, format!("{start}-{end}"))
             } else if total_chunk_lines == 0 {
                 (1usize, 0usize, String::new())
@@ -618,72 +782,25 @@ impl AgentTool for ReadFileTool {
         let end_line = start_line.map(|start| start + read_line_count.saturating_sub(1));
         let preview = build_read_file_output_preview(start_line, &selected_lines);
         let preview_truncated = read_line_count > READ_FILE_PREVIEW_MAX_LINES;
-        let summary = if matched {
-            let lines_text = match (start_line, end_line) {
-                (Some(start), Some(end)) if start == end => format!("1 line at {start}"),
-                (Some(start), Some(end)) => format!("{read_line_count} lines at {start}-{end}"),
-                _ => "0 lines".to_string(),
-            };
-            let base = format!(
-                "succeeded, read {} bytes across {lines_text}",
-                content.len()
-            );
-            if preview.is_empty() {
-                base
-            } else {
-                format!("{base}\n```content\n{preview}\n```")
-            }
-        } else {
-            "succeeded, first_chunk was not found, read 0 bytes across 0 lines".to_string()
-        };
-        let details = json!({
-            "content": content,
-            "matched": matched,
-            "line_range": line_range_label,
-            "bytes": content.len(),
-            "line_count": read_line_count,
-            "start_line": start_line,
-            "end_line": end_line,
-            "preview_truncated": preview_truncated,
-        });
+        let bytes = content.len();
         let cmd_line = build_read_result_cmd_line(
             &file_path,
             first_chunk.as_deref(),
-            args.get("range"),
+            args.range.as_ref(),
         );
-        let title = format!(
-            "{cmd_line} => {}",
-            if matched { "success" } else { "anchor not found" }
-        );
-        Ok(AgentToolResult::from_details(details)
-            .with_is_agent_tool(true)
-            .with_cmd_line(cmd_line)
-            .with_title(title)
-            .with_result(summary))
-    }
-
-    async fn exec(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
-        shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "empty bash command line".to_string(),
-            ));
-        }
-
-        let mut args = parse_read_file_bash_args(&tokens[1..])?;
-
-        if let Some(shell_cwd) = shell_cwd {
-            rewrite_read_file_path_with_shell_cwd(&mut args, shell_cwd);
-        }
-        let mut result = self.call(ctx, args).await?;
-        result = result.with_command_metadata_from_line(line.trim());
-
-        Ok(result)
+        Ok(ReadFileOutput {
+            content,
+            matched,
+            line_range: line_range_label,
+            bytes,
+            line_count: read_line_count,
+            start_line,
+            end_line,
+            preview_truncated,
+            file_path,
+            preview,
+            cmd_line,
+        })
     }
 }
 
@@ -780,11 +897,8 @@ pub fn rewrite_read_file_path_with_shell_cwd(args: &mut Json, shell_cwd: &Path) 
     );
 }
 
-fn parse_edit_mode(args: &Json) -> Result<&'static str, AgentToolError> {
-    let raw = args
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("replace");
+fn normalize_edit_mode(raw: Option<&str>) -> Result<&'static str, AgentToolError> {
+    let raw = raw.unwrap_or("replace");
     match raw.trim().to_ascii_lowercase().as_str() {
         "" | "replace" => Ok("replace"),
         "after" => Ok("after"),
@@ -795,8 +909,8 @@ fn parse_edit_mode(args: &Json) -> Result<&'static str, AgentToolError> {
     }
 }
 
-fn parse_write_mode(args: &Json) -> Result<&'static str, AgentToolError> {
-    let raw = args.get("mode").and_then(|v| v.as_str()).unwrap_or("write");
+fn normalize_write_mode(raw: Option<&str>) -> Result<&'static str, AgentToolError> {
+    let raw = raw.unwrap_or("write");
     match raw.trim().to_ascii_lowercase().as_str() {
         "new" | "create" => Ok("new"),
         "append" => Ok("append"),
@@ -829,18 +943,18 @@ struct LineRangeSpec {
 }
 
 fn parse_line_range(
-    args: &Json,
+    raw: Option<&Json>,
     total_lines: usize,
 ) -> Result<Option<(usize, usize)>, AgentToolError> {
-    let Some(spec) = parse_line_range_spec(args)? else {
+    let Some(spec) = parse_line_range_spec(raw)? else {
         return Ok(None);
     };
     let (start, end) = resolve_line_range(spec, total_lines)?;
     Ok(Some((start, end)))
 }
 
-fn parse_line_range_spec(args: &Json) -> Result<Option<LineRangeSpec>, AgentToolError> {
-    let Some(raw) = args.get("range") else {
+fn parse_line_range_spec(raw: Option<&Json>) -> Result<Option<LineRangeSpec>, AgentToolError> {
+    let Some(raw) = raw else {
         return Ok(None);
     };
 
@@ -1175,35 +1289,20 @@ fn build_read_result_cmd_line(
     cmd
 }
 
-fn build_write_result_cmd_line(path: &str, operation: &str, line_count: usize) -> String {
-    let line_text = describe_line_count(line_count);
-    let mode_text = match operation {
+fn build_write_request_cmd_line(path: &str, mode: &str) -> String {
+    let mode_text = match mode {
         "append" => "append",
         "new" | "create" => "new",
         _ => "write",
     };
-    format!("{TOOL_WRITE_FILE} {path} mode={mode_text} ({line_text})")
+    format!("{TOOL_WRITE_FILE} {path} mode={mode_text}")
 }
 
-fn build_edit_result_cmd_line(
-    path: &str,
-    matched: bool,
-    operation: &str,
-    line_no: Option<usize>,
-    pos_chunk: &str,
-) -> String {
-    let mut cmd = format!(
-        "{TOOL_EDIT_FILE} {path} mode={operation} anchor=\"{}\"",
+fn build_edit_request_cmd_line(path: &str, mode: &str, pos_chunk: &str) -> String {
+    format!(
+        "{TOOL_EDIT_FILE} {path} mode={mode} anchor=\"{}\"",
         compact_cmd_param_preview(pos_chunk)
-    );
-    if !matched {
-        cmd.push_str(" (anchor not found)");
-        return cmd;
-    }
-    if let Some(line_no) = line_no {
-        cmd.push_str(format!(" line={line_no}").as_str());
-    }
-    cmd
+    )
 }
 
 fn split_lines_preserve_ending(content: &str) -> Vec<String> {
@@ -1336,60 +1435,25 @@ fn is_path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
 mod tests {
     use super::*;
 
+    fn pr(value: Json, total: usize) -> Result<Option<(usize, usize)>, AgentToolError> {
+        parse_line_range(Some(&value), total)
+    }
+
     #[test]
     fn parse_line_range_text_formats() {
-        assert_eq!(
-            parse_line_range(&json!({"range": "10,20"}), 100).expect("parse"),
-            Some((10, 20))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "10:20"}), 100).expect("parse"),
-            Some((10, 20))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "10"}), 100).expect("parse"),
-            Some((10, 10))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "10,+5"}), 100).expect("parse"),
-            Some((10, 14))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": ",30"}), 100).expect("parse"),
-            Some((1, 30))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-30,"}), 100).expect("parse"),
-            Some((71, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-30,$"}), 100).expect("parse"),
-            Some((71, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-1"}), 100).expect("parse"),
-            Some((100, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-5,-1"}), 100).expect("parse"),
-            Some((96, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "10,$"}), 100).expect("parse"),
-            Some((10, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "$"}), 100).expect("parse"),
-            Some((100, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "1-2"}), 100).expect("parse"),
-            Some((1, 2))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-"}), 100).expect("parse"),
-            None
-        );
+        assert_eq!(pr(json!("10,20"), 100).expect("parse"), Some((10, 20)));
+        assert_eq!(pr(json!("10:20"), 100).expect("parse"), Some((10, 20)));
+        assert_eq!(pr(json!("10"), 100).expect("parse"), Some((10, 10)));
+        assert_eq!(pr(json!("10,+5"), 100).expect("parse"), Some((10, 14)));
+        assert_eq!(pr(json!(",30"), 100).expect("parse"), Some((1, 30)));
+        assert_eq!(pr(json!("-30,"), 100).expect("parse"), Some((71, 100)));
+        assert_eq!(pr(json!("-30,$"), 100).expect("parse"), Some((71, 100)));
+        assert_eq!(pr(json!("-1"), 100).expect("parse"), Some((100, 100)));
+        assert_eq!(pr(json!("-5,-1"), 100).expect("parse"), Some((96, 100)));
+        assert_eq!(pr(json!("10,$"), 100).expect("parse"), Some((10, 100)));
+        assert_eq!(pr(json!("$"), 100).expect("parse"), Some((100, 100)));
+        assert_eq!(pr(json!("1-2"), 100).expect("parse"), Some((1, 2)));
+        assert_eq!(pr(json!("-"), 100).expect("parse"), None);
     }
 
     #[test]
@@ -1425,43 +1489,29 @@ mod tests {
     #[test]
     fn parse_line_range_json_formats() {
         assert_eq!(
-            parse_line_range(&json!({"range": {"start": 10, "end": 20}}), 100).expect("parse"),
+            pr(json!({"start": 10, "end": 20}), 100).expect("parse"),
             Some((10, 20))
         );
+        assert_eq!(pr(json!({"start": 10}), 100).expect("parse"), Some((10, 10)));
         assert_eq!(
-            parse_line_range(&json!({"range": {"start": 10}}), 100).expect("parse"),
-            Some((10, 10))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": {"start": -5}}), 100).expect("parse"),
+            pr(json!({"start": -5}), 100).expect("parse"),
             Some((96, 100))
         );
         assert_eq!(
-            parse_line_range(&json!({"range": {"start": 10, "count": 5}}), 100).expect("parse"),
+            pr(json!({"start": 10, "count": 5}), 100).expect("parse"),
             Some((10, 14))
         );
-        assert_eq!(
-            parse_line_range(&json!({"range": [10, 20]}), 100).expect("parse"),
-            Some((10, 20))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": [10]}), 100).expect("parse"),
-            Some((10, 10))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": 10}), 100).expect("parse"),
-            Some((10, 10))
-        );
+        assert_eq!(pr(json!([10, 20]), 100).expect("parse"), Some((10, 20)));
+        assert_eq!(pr(json!([10]), 100).expect("parse"), Some((10, 10)));
+        assert_eq!(pr(json!(10), 100).expect("parse"), Some((10, 10)));
     }
 
     #[test]
     fn parse_line_range_errors_on_invalid_forms() {
-        assert!(parse_line_range(&json!({"range": "0"}), 10).is_err());
-        assert!(parse_line_range(&json!({"range": "10,+0"}), 10).is_err());
-        assert!(
-            parse_line_range(&json!({"range": {"start": 1, "end": 2, "count": 3}}), 10).is_err()
-        );
-        assert!(parse_line_range(&json!({"range": {"count": 3}}), 10).is_err());
-        assert!(parse_line_range(&json!({"range": [1, 2, 3]}), 10).is_err());
+        assert!(pr(json!("0"), 10).is_err());
+        assert!(pr(json!("10,+0"), 10).is_err());
+        assert!(pr(json!({"start": 1, "end": 2, "count": 3}), 10).is_err());
+        assert!(pr(json!({"count": 3}), 10).is_err());
+        assert!(pr(json!([1, 2, 3]), 10).is_err());
     }
 }

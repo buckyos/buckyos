@@ -876,10 +876,10 @@ mod tests {
         let backend = Arc::new(ManagedWorkspaceToolBackend::new(runtime.clone()));
         let tool_mgr = AgentToolManager::new();
         tool_mgr
-            .register_tool(CreateWorkspaceTool::new(backend.clone()))
+            .register_typed_tool(CreateWorkspaceTool::new(backend.clone()))
             .expect("register create tool");
         tool_mgr
-            .register_tool(BindWorkspaceTool::new(backend))
+            .register_typed_tool(BindWorkspaceTool::new(backend))
             .expect("register bind tool");
 
         let create_result = tool_mgr
@@ -939,7 +939,7 @@ mod tests {
             state: Arc::new(tokio::sync::Mutex::new(FakeWorkspaceState::default())),
         });
         let backend = Arc::new(ManagedWorkspaceToolBackend::new(runtime.clone()));
-        let tool = BindWorkspaceTool::new(backend);
+        let tool = crate::TypedToolHandle::with_null_host(BindWorkspaceTool::new(backend));
 
         {
             let mut guard = runtime.state.lock().await;
@@ -960,10 +960,14 @@ mod tests {
                 .insert("session-1".to_string(), "ws-old".to_string());
         }
 
-        let err = tool
-            .exec(&call_ctx("session-1"), "bind_workspace ws-demo", None)
-            .await
-            .expect_err("rebind should fail");
+        let err = crate::AgentTool::exec(
+            &tool,
+            &call_ctx("session-1"),
+            "bind_workspace ws-demo",
+            None,
+        )
+        .await
+        .expect_err("rebind should fail");
         assert!(err
             .to_string()
             .contains("already bound local workspace `ws-old`"));
@@ -994,10 +998,10 @@ mod tests {
 
         let tool_mgr = AgentToolManager::new();
         tool_mgr
-            .register_tool(BindExternalWorkspaceTool::new(backend.clone()))
+            .register_typed_tool(BindExternalWorkspaceTool::new(backend.clone()))
             .expect("register bind external tool");
         tool_mgr
-            .register_tool(ListExternalWorkspacesTool::new(backend))
+            .register_typed_tool(ListExternalWorkspacesTool::new(backend))
             .expect("register list external tool");
 
         let bind_result = tool_mgr

@@ -182,10 +182,10 @@ impl AiRuntime {
         tool_mgr.register_tool(RuntimeCreateSubAgentTool {
             runtime: Arc::new(self.clone()),
         })?;
-        tool_mgr.register_tool(SharedBindExternalWorkspaceTool::new(
+        tool_mgr.register_typed_tool(SharedBindExternalWorkspaceTool::new(
             external_backend.clone(),
         ))?;
-        tool_mgr.register_tool(SharedListExternalWorkspacesTool::new(external_backend))?;
+        tool_mgr.register_typed_tool(SharedListExternalWorkspacesTool::new(external_backend))?;
         Ok(())
     }
 
