@@ -279,27 +279,19 @@ impl AgentTool for EditFileTool {
             }
         }
 
+        let line_no = original_content.find(&pos_chunk).map(|pos| {
+            original_content[..pos].bytes().filter(|b| *b == b'\n').count() + 1
+        });
         let details = json!({
-            "update": {
-                "mode": operation,
-                "matched": matched,
-                "changed": changed,
-                "line": original_content.find(&pos_chunk).map(|pos| {
-                    original_content[..pos].bytes().filter(|b| *b == b'\n').count() + 1
-                })
-            },
-            "content": updated_content,
+            "matched": matched,
+            "changed": changed,
+            "mode": operation,
+            "line": line_no,
+            "diff": diff,
+            "diff_truncated": diff_truncated,
         });
         let summary = if changed {
-            let line_text = original_content
-                .find(&pos_chunk)
-                .map(|pos| {
-                    original_content[..pos]
-                        .bytes()
-                        .filter(|b| *b == b'\n')
-                        .count()
-                        + 1
-                })
+            let line_text = line_no
                 .map(|line| format!(" at line {line}"))
                 .unwrap_or_default();
             build_summary_with_optional_block(
@@ -312,21 +304,30 @@ impl AgentTool for EditFileTool {
         } else {
             format!("edit {file_path} made no change")
         };
+        let cmd_line = build_edit_result_cmd_line(
+            &file_path,
+            matched,
+            operation.as_str(),
+            line_no,
+            &pos_chunk,
+        );
+        let title_status = if !matched {
+            "anchor not found".to_string()
+        } else if changed {
+            match line_no {
+                Some(line) => format!("success (line {line})"),
+                None => "success".to_string(),
+            }
+        } else {
+            "no change".to_string()
+        };
+        let title = format!(
+            "{TOOL_EDIT_FILE} {file_path} mode={operation} => {title_status}"
+        );
         Ok(AgentToolResult::from_details(details)
             .with_is_agent_tool(true)
-            .with_cmd_line(build_edit_result_cmd_line(
-                &file_path,
-                matched,
-                operation.as_str(),
-                original_content.find(&pos_chunk).map(|pos| {
-                    original_content[..pos]
-                        .bytes()
-                        .filter(|b| *b == b'\n')
-                        .count()
-                        + 1
-                }),
-                &pos_chunk,
-            ))
+            .with_cmd_line(cmd_line)
+            .with_title(title)
             .with_result(summary))
     }
 }
@@ -463,26 +464,41 @@ impl AgentTool for WriteFileTool {
             );
         }
 
+        let written_lines = count_content_lines(&content);
         let details = json!({
-            "content": updated_content
+            "created": !exists,
+            "changed": changed,
+            "bytes_written": updated_content.len(),
+            "line_count": written_lines,
         });
         let summary = build_summary_with_optional_block(
             format!(
                 "{} {file_path}, wrote {} bytes across {}",
                 describe_write_operation(operation.as_str()),
                 content.len(),
-                describe_line_count(count_content_lines(&content)),
+                describe_line_count(written_lines),
             ),
             "content",
             &build_content_preview(&content),
         );
+        let cmd_line = build_write_result_cmd_line(
+            &file_path,
+            operation.as_str(),
+            written_lines,
+        );
+        let title = format!(
+            "{TOOL_WRITE_FILE} {file_path} mode={} => success ({} bytes)",
+            match operation.as_str() {
+                "append" => "append",
+                "new" | "create" => "new",
+                _ => "write",
+            },
+            updated_content.len(),
+        );
         Ok(AgentToolResult::from_details(details)
             .with_is_agent_tool(true)
-            .with_cmd_line(build_write_result_cmd_line(
-                &file_path,
-                operation.as_str(),
-                count_content_lines(&content),
-            ))
+            .with_cmd_line(cmd_line)
+            .with_title(title)
             .with_result(summary))
     }
 }
@@ -621,9 +637,6 @@ impl AgentTool for ReadFileTool {
             "succeeded, first_chunk was not found, read 0 bytes across 0 lines".to_string()
         };
         let details = json!({
-            "ok": true,
-            "path": file_path,
-            "abs_path": abs_path.to_string_lossy().to_string(),
             "content": content,
             "matched": matched,
             "line_range": line_range_label,
@@ -632,15 +645,20 @@ impl AgentTool for ReadFileTool {
             "start_line": start_line,
             "end_line": end_line,
             "preview_truncated": preview_truncated,
-            "pwd": self.cfg.root_dir.to_string_lossy().to_string(),
         });
+        let cmd_line = build_read_result_cmd_line(
+            &file_path,
+            first_chunk.as_deref(),
+            args.get("range"),
+        );
+        let title = format!(
+            "{cmd_line} => {}",
+            if matched { "success" } else { "anchor not found" }
+        );
         Ok(AgentToolResult::from_details(details)
             .with_is_agent_tool(true)
-            .with_cmd_line(build_read_result_cmd_line(
-                &file_path,
-                first_chunk.as_deref(),
-                args.get("range"),
-            ))
+            .with_cmd_line(cmd_line)
+            .with_title(title)
             .with_result(summary))
     }
 
@@ -1135,7 +1153,7 @@ fn build_read_result_cmd_line(
     first_chunk: Option<&str>,
     range: Option<&Json>,
 ) -> String {
-    let mut cmd = format!("read {path}");
+    let mut cmd = format!("{TOOL_READ_FILE} {path}");
     if let Some(first_chunk) = first_chunk {
         cmd.push_str(
             format!(
@@ -1159,11 +1177,12 @@ fn build_read_result_cmd_line(
 
 fn build_write_result_cmd_line(path: &str, operation: &str, line_count: usize) -> String {
     let line_text = describe_line_count(line_count);
-    match operation {
-        "append" => format!("append {path} and write {line_text}"),
-        "new" | "create" => format!("create {path} and write {line_text}"),
-        _ => format!("write {path} with {line_text}"),
-    }
+    let mode_text = match operation {
+        "append" => "append",
+        "new" | "create" => "new",
+        _ => "write",
+    };
+    format!("{TOOL_WRITE_FILE} {path} mode={mode_text} ({line_text})")
 }
 
 fn build_edit_result_cmd_line(
@@ -1173,35 +1192,18 @@ fn build_edit_result_cmd_line(
     line_no: Option<usize>,
     pos_chunk: &str,
 ) -> String {
+    let mut cmd = format!(
+        "{TOOL_EDIT_FILE} {path} mode={operation} anchor=\"{}\"",
+        compact_cmd_param_preview(pos_chunk)
+    );
     if !matched {
-        return format!(
-            "edit {path}, anchor not found for \"{}\"",
-            compact_cmd_param_preview(pos_chunk)
-        );
+        cmd.push_str(" (anchor not found)");
+        return cmd;
     }
-
-    match operation {
-        "replace" => match line_no {
-            Some(line_no) => format!(
-                "edit {path}, replace [{}:{}] to new content",
-                compact_cmd_param_preview(pos_chunk),
-                line_no
-            ),
-            None => format!(
-                "edit {path}, replace [{}] to new content",
-                compact_cmd_param_preview(pos_chunk)
-            ),
-        },
-        "before" => match line_no {
-            Some(line_no) => format!("edit {path}, insert content before line:{line_no}"),
-            None => format!("edit {path}, insert content before anchor"),
-        },
-        "after" => match line_no {
-            Some(line_no) => format!("edit {path}, insert content after line:{line_no}"),
-            None => format!("edit {path}, insert content after anchor"),
-        },
-        _ => format!("edit {path}"),
+    if let Some(line_no) = line_no {
+        cmd.push_str(format!(" line={line_no}").as_str());
     }
+    cmd
 }
 
 fn split_lines_preserve_ending(content: &str) -> Vec<String> {
@@ -1415,7 +1417,7 @@ mod tests {
             chunk.push_str("line-x\n");
         }
         let cmd = build_read_result_cmd_line("demo.txt", Some(&chunk), Some(&json!("1-5")));
-        assert!(cmd.contains("read demo.txt first_chunk=\""));
+        assert!(cmd.contains("read_file demo.txt first_chunk=\""));
         assert!(cmd.contains(" range=1-5"));
         assert!(cmd.contains("...(total 80 lines)..."));
     }

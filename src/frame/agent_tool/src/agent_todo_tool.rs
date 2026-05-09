@@ -7,8 +7,8 @@ use serde::Deserialize;
 use serde_json::{json, Value as Json};
 
 use crate::{
-    build_builtin_tool_result, tokenize_bash_command_line, AgentTool, AgentToolError,
-    AgentToolResult, SessionRuntimeContext, ToolSpec,
+    build_builtin_tool_result, derive_default_title, tokenize_bash_command_line, AgentTool,
+    AgentToolError, AgentToolResult, SessionRuntimeContext, ToolSpec,
 };
 
 use super::*;
@@ -787,7 +787,16 @@ impl AgentTool for TodoTool {
             }
         };
 
-        self.call(ctx, args).await
+        let mut result = self.call(ctx, args).await?;
+        // Bash entry: prefer the original command line so subcommand args
+        // (title/ref/state/...) survive in cmd_args.
+        result.cmd_name = None;
+        result.cmd_args = None;
+        result = result.with_command_metadata_from_line(line.trim());
+        if result.title.trim().is_empty() {
+            result.title = derive_default_title(&result);
+        }
+        Ok(result)
     }
 
     async fn call(
@@ -801,6 +810,7 @@ impl AgentTool for TodoTool {
             .and_then(Json::as_str)
             .unwrap_or_default()
             .to_string();
+        let cmd_line = build_todo_call_cmd_line(&action, &args);
         let result = match action.as_str() {
             "list" => self.call_list(args).await,
             "get" => self.call_get(args).await,
@@ -830,9 +840,98 @@ impl AgentTool for TodoTool {
         }
 
         result.map(|details| {
-            build_builtin_tool_result(details, format!("{TOOL_TODO} {action}"), "ok")
+            let summary = summarize_todo_action(&action, &details);
+            build_builtin_tool_result(details, cmd_line, summary)
         })
     }
+}
+
+fn build_todo_call_cmd_line(action: &str, args: &Json) -> String {
+    let mut out = format!("{TOOL_TODO} {action}");
+    if let Some(workspace_id) = args
+        .get("workspace_id")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        out.push_str(format!(" workspace_id={workspace_id}").as_str());
+    }
+    if let Some(todo_ref) = args
+        .get("todo_ref")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        out.push_str(format!(" todo_ref={todo_ref}").as_str());
+    }
+    if let Some(states) = args.get("states").and_then(Json::as_array) {
+        let labels: Vec<String> = states
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect();
+        if !labels.is_empty() {
+            out.push_str(format!(" states={}", labels.join(",")).as_str());
+        }
+    }
+    if let Some(limit) = args.get("limit").and_then(Json::as_u64) {
+        out.push_str(format!(" limit={limit}").as_str());
+    }
+    if let Some(offset) = args.get("offset").and_then(Json::as_u64) {
+        if offset > 0 {
+            out.push_str(format!(" offset={offset}").as_str());
+        }
+    }
+    if let Some(token_budget) = args.get("token_budget").and_then(Json::as_u64) {
+        out.push_str(format!(" token_budget={token_budget}").as_str());
+    }
+    if let Some(op_id) = args
+        .get("delta")
+        .and_then(|delta| delta.get("op_id"))
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        out.push_str(format!(" op_id={op_id}").as_str());
+    }
+    out
+}
+
+fn summarize_todo_action(action: &str, details: &Json) -> String {
+    if let Some(text) = details
+        .get("text")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("{action}: {}", todo_truncate_text(text, 160));
+    }
+    if let Some(items) = details.get("items").and_then(Json::as_array) {
+        return format!("{action}: {} item(s)", items.len());
+    }
+    if let Some(item) = details.get("item") {
+        if let Some(id) = item.get("id").and_then(Json::as_str) {
+            return format!("{action}: {id}");
+        }
+    }
+    if let Some(version) = details.get("new_version").and_then(Json::as_u64) {
+        return format!("{action}: version {version}");
+    }
+    if let Some(has_pending) = details.get("has_pending").and_then(Json::as_bool) {
+        return format!(
+            "{action}: {}",
+            if has_pending { "pending" } else { "no pending" }
+        );
+    }
+    action.to_string()
+}
+
+fn todo_truncate_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut out: String = value.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 impl TodoTool {

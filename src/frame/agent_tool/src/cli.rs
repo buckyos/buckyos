@@ -1718,6 +1718,7 @@ fn build_check_task_envelope(tool_name: &str, task: Task) -> CliResultEnvelope {
     CliResultEnvelope {
         is_agent_tool,
         status: top_status,
+        title: String::new(),
         summary,
         tool: is_agent_tool.then_some(tool_name.to_string()),
         cmd_line: if is_agent_tool {
@@ -1778,6 +1779,7 @@ fn build_cancel_task_envelope(
     CliResultEnvelope {
         is_agent_tool: true,
         status: CliStatus::Success,
+        title: format!("{tool_name} {} => success", task.id),
         summary,
         tool: Some(tool_name.to_string()),
         cmd_line: Some(format!("{tool_name} {}", task.id)),
@@ -2004,7 +2006,7 @@ mod tests {
         assert_eq!(output.exit_code, EXIT_SUCCESS);
         let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
         assert_eq!(payload["status"], "success");
-        assert_eq!(payload["cmd_name"], "read");
+        assert_eq!(payload["cmd_name"], "read_file");
         let cmd_args = payload["cmd_args"].as_str().expect("cmd_args string");
         assert!(cmd_args.ends_with("/demo.txt range=1-1"));
         assert_eq!(payload["detail"]["content"], "line-1\n");

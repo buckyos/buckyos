@@ -971,9 +971,9 @@ mod tests {
     }
 
     fn assert_read_file_cli_payload(payload: &Json, expected_content: &str) {
-        assert_eq!(payload["is_agent_tool"], true);
+        assert_eq!(payload["agent_tool_protocol"], "1");
         assert_eq!(payload["status"], "success");
-        assert_eq!(payload["cmd_name"], "read");
+        assert_eq!(payload["cmd_name"], "read_file");
         assert!(payload["cmd_args"].is_string(), "payload={payload}");
         let content = payload["detail"]["content"].as_str().unwrap_or_default();
         assert_eq!(content, expected_content);
@@ -1036,14 +1036,13 @@ else:
 
 cmd_args = path if not range_spec else f"{path} range={range_spec}"
 print(json.dumps({
-    "is_agent_tool": True,
-    "cmd_name": "read",
+    "agent_tool_protocol": "1",
+    "cmd_name": "read_file",
     "cmd_args": cmd_args,
     "status": "success",
     "summary": "read mock content",
     "detail": {
         "ok": True,
-        "path": path,
         "content": content,
     },
 }, ensure_ascii=False))
@@ -1616,8 +1615,8 @@ esac
         .await
         .expect("before edit should succeed");
         assert_eq!(before_result.status, AgentToolStatus::Success);
-        assert_eq!(before_result["update"]["matched"], true);
-        assert_eq!(before_result["update"]["changed"], true);
+        assert_eq!(before_result["matched"], true);
+        assert_eq!(before_result["changed"], true);
 
         let miss_result = call(
             &tool_mgr,
@@ -1632,8 +1631,8 @@ esac
         .await
         .expect("miss should not fail");
         assert_eq!(miss_result.status, AgentToolStatus::Success);
-        assert_eq!(miss_result["update"]["matched"], false);
-        assert_eq!(miss_result["update"]["changed"], false);
+        assert_eq!(miss_result["matched"], false);
+        assert_eq!(miss_result["changed"], false);
 
         let content = fs::read_to_string(root.join("notes/anchor.txt"))
             .await

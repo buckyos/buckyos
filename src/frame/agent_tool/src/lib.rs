@@ -310,7 +310,14 @@ pub enum AgentToolPendingReason {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentToolResult {
-    #[serde(default)]
+    #[serde(
+        default,
+        rename = "agent_tool_protocol",
+        alias = "is_agent_tool",
+        skip_serializing_if = "skip_protocol_marker",
+        serialize_with = "serialize_protocol_marker",
+        deserialize_with = "deserialize_protocol_marker"
+    )]
     pub is_agent_tool: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmd_name: Option<String>,
@@ -325,6 +332,8 @@ pub struct AgentToolResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_wait: Option<String>,
 
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
     #[serde(default)]
     pub summary: String,
     #[serde(rename = "detail", default = "default_json_object")]
@@ -340,6 +349,73 @@ pub struct AgentToolResult {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+}
+
+/// Current `agent_tool_protocol` schema version emitted in the AgentToolResult JSON.
+pub const AGENT_TOOL_PROTOCOL_VERSION: &str = "1";
+
+fn skip_protocol_marker(value: &bool) -> bool {
+    !*value
+}
+
+fn serialize_protocol_marker<S>(_value: &bool, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(AGENT_TOOL_PROTOCOL_VERSION)
+}
+
+fn deserialize_protocol_marker<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    use std::fmt;
+
+    struct V;
+    impl<'de> Visitor<'de> for V {
+        type Value = bool;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "agent_tool_protocol marker (string \"1\" or boolean)")
+        }
+        fn visit_bool<E>(self, value: bool) -> Result<bool, E>
+        where
+            E: de::Error,
+        {
+            Ok(value)
+        }
+        fn visit_str<E>(self, value: &str) -> Result<bool, E>
+        where
+            E: de::Error,
+        {
+            Ok(!value.trim().is_empty())
+        }
+        fn visit_string<E>(self, value: String) -> Result<bool, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(value.as_str())
+        }
+        fn visit_unit<E>(self) -> Result<bool, E>
+        where
+            E: de::Error,
+        {
+            Ok(false)
+        }
+        fn visit_none<E>(self) -> Result<bool, E>
+        where
+            E: de::Error,
+        {
+            Ok(false)
+        }
+        fn visit_some<D>(self, deserializer: D) -> Result<bool, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_any(V)
+        }
+    }
+    deserializer.deserialize_any(V)
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -368,9 +444,18 @@ pub struct CliRunOutput {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CliResultEnvelope {
-    #[serde(default)]
+    #[serde(
+        default,
+        rename = "agent_tool_protocol",
+        alias = "is_agent_tool",
+        skip_serializing_if = "skip_protocol_marker",
+        serialize_with = "serialize_protocol_marker",
+        deserialize_with = "deserialize_protocol_marker"
+    )]
     pub is_agent_tool: bool,
     pub status: CliStatus,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
@@ -435,6 +520,7 @@ impl AgentToolResult {
         Self {
             is_agent_tool: false,
             status: AgentToolStatus::Success,
+            title: String::new(),
             summary: String::new(),
             details,
             return_code: None,
@@ -447,6 +533,11 @@ impl AgentToolResult {
             estimated_wait: None,
             output: None,
         }
+    }
+
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
     }
 
     pub fn with_status(mut self, status: AgentToolStatus) -> Self {
@@ -608,12 +699,22 @@ impl AgentToolResult {
     fn render_agent_tool_for_level(&self, level: AgentHistoryShowLevel) -> String {
         match level {
             AgentHistoryShowLevel::Min => {
-                self.render_command_with_status(self.history_compact_command_text())
+                let title = self.title.trim();
+                if title.is_empty() {
+                    self.render_command_with_status(self.history_compact_command_text())
+                } else {
+                    title.to_string()
+                }
             }
             AgentHistoryShowLevel::Mini | AgentHistoryShowLevel::Medium => {
                 let summary = self.summary.trim();
                 if summary.is_empty() {
-                    self.render_command_with_status(self.history_compact_command_text())
+                    let title = self.title.trim();
+                    if title.is_empty() {
+                        self.render_command_with_status(self.history_compact_command_text())
+                    } else {
+                        title.to_string()
+                    }
                 } else {
                     summary.to_string()
                 }
@@ -831,10 +932,33 @@ pub(crate) fn build_builtin_tool_result(
     cmd_line: impl Into<String>,
     summary: impl Into<String>,
 ) -> AgentToolResult {
-    AgentToolResult::from_details(details)
+    let cmd_line = cmd_line.into();
+    let summary = summary.into();
+    let mut result = AgentToolResult::from_details(details)
         .with_is_agent_tool(true)
         .with_cmd_line(cmd_line)
-        .with_result(summary)
+        .with_result(summary);
+    if result.title.trim().is_empty() {
+        result.title = derive_default_title(&result);
+    }
+    result
+}
+
+pub(crate) fn derive_default_title(result: &AgentToolResult) -> String {
+    let cmd = result
+        .command_line_text()
+        .map(|value| truncate_text(value.trim(), HISTORY_COMPACT_CMD_MAX_CHARS))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "action".to_string());
+    let status_text = match result.status {
+        AgentToolStatus::Success => "success".to_string(),
+        AgentToolStatus::Error => "error".to_string(),
+        AgentToolStatus::Pending => match result.pending_reason {
+            Some(reason) => format!("pending ({})", history_pending_reason_label(reason)),
+            None => "pending".to_string(),
+        },
+    };
+    format!("{cmd} => {status_text}")
 }
 
 fn history_pending_reason_label(reason: AgentToolPendingReason) -> &'static str {
@@ -896,6 +1020,7 @@ impl CliResultEnvelope {
         Self {
             is_agent_tool: true,
             status: result.status.into(),
+            title: result.title.clone(),
             summary: if result.summary.trim().is_empty() {
                 "completed".to_string()
             } else {
@@ -915,9 +1040,14 @@ impl CliResultEnvelope {
 
     pub fn error(tool_name: Option<&str>, err: &AgentToolError) -> Self {
         let message = err.to_string();
+        let title = match tool_name {
+            Some(name) => format!("{name} => error"),
+            None => "error".to_string(),
+        };
         Self {
             is_agent_tool: true,
             status: CliStatus::Error,
+            title,
             summary: message.clone(),
             tool: tool_name.map(|value| value.to_string()),
             cmd_line: None,
@@ -935,6 +1065,7 @@ impl CliResultEnvelope {
         Self {
             is_agent_tool: true,
             status: CliStatus::Success,
+            title: String::new(),
             summary: summary.into(),
             tool,
             cmd_line: None,
@@ -952,6 +1083,7 @@ impl CliResultEnvelope {
         let Self {
             is_agent_tool,
             status,
+            title,
             summary,
             tool: _tool,
             cmd_line,
@@ -967,6 +1099,7 @@ impl CliResultEnvelope {
             .with_is_agent_tool(is_agent_tool)
             .with_status(status.into())
             .with_result(summary);
+        result.title = title;
         if let Some(cmd_line) = cmd_line.as_deref() {
             result = result.with_command_metadata_from_line(cmd_line);
         }
@@ -976,6 +1109,9 @@ impl CliResultEnvelope {
         result.check_after = check_after;
         result.pending_reason = pending_reason.map(Into::into);
         result.estimated_wait = estimated_wait;
+        if result.is_agent_tool && result.title.trim().is_empty() {
+            result.title = derive_default_title(&result);
+        }
         result
     }
 }
@@ -1278,11 +1414,23 @@ impl AgentTool for LoadMemoryTool {
 
         let preview = self
             .backend
-            .load_memory_preview(token_limit, tags, current_time)
+            .load_memory_preview(token_limit, tags.clone(), current_time.clone())
             .await?;
+
+        let mut cmd_line = TOOL_LOAD_MEMORY.to_string();
+        if let Some(limit) = token_limit {
+            cmd_line.push_str(format!(" token_limit={limit}").as_str());
+        }
+        if !tags.is_empty() {
+            cmd_line.push_str(format!(" tags={}", tags.join(",")).as_str());
+        }
+        if let Some(time) = current_time.as_ref() {
+            cmd_line.push_str(format!(" current_time={time}").as_str());
+        }
+
         Ok(build_builtin_tool_result(
             Json::String(preview.rendered),
-            TOOL_LOAD_MEMORY.to_string(),
+            cmd_line,
             format!("loaded {} memory item(s)", preview.item_count),
         ))
     }
@@ -1743,8 +1891,10 @@ impl AgentTool for BindExternalWorkspaceTool {
                 "ok": true,
                 "binding": binding
             }),
-            TOOL_BIND_EXTERNAL_WORKSPACE.to_string(),
-            "ok",
+            format!(
+                "{TOOL_BIND_EXTERNAL_WORKSPACE} {name} {workspace_path} agent_did={agent_did}"
+            ),
+            format!("bound {name} -> {workspace_path}"),
         ))
     }
 }
@@ -1807,13 +1957,14 @@ impl AgentTool for ListExternalWorkspacesTool {
             .backend
             .list_external_workspaces(agent_did.as_str())
             .await?;
+        let count = workspaces.as_array().map(|arr| arr.len()).unwrap_or(0);
         Ok(build_builtin_tool_result(
             json!({
                 "ok": true,
                 "workspaces": workspaces
             }),
-            TOOL_LIST_EXTERNAL_WORKSPACES.to_string(),
-            "ok",
+            format!("{TOOL_LIST_EXTERNAL_WORKSPACES} agent_did={agent_did}"),
+            format!("listed {count} external workspace(s)"),
         ))
     }
 }
@@ -2010,18 +2161,60 @@ impl AgentTool for WorklogTool {
         ctx: &SessionRuntimeContext,
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
+        let action_input = args
+            .get("action")
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .to_string();
+        let cmd_line = build_worklog_manage_cmd_line(&action_input, &args);
         let details = self.backend.execute_action(ctx, args).await?;
         let action = details
             .get("action")
             .and_then(Json::as_str)
-            .unwrap_or("worklog")
+            .filter(|value| !value.is_empty())
+            .unwrap_or(action_input.as_str())
             .to_string();
-        Ok(build_builtin_tool_result(
-            details,
-            TOOL_WORKLOG_MANAGE.to_string(),
-            action,
-        ))
+        Ok(build_builtin_tool_result(details, cmd_line, action))
     }
+}
+
+fn build_worklog_manage_cmd_line(action: &str, args: &Json) -> String {
+    let mut out = TOOL_WORKLOG_MANAGE.to_string();
+    if !action.is_empty() {
+        out.push_str(format!(" {action}").as_str());
+    }
+    for key in [
+        "log_id",
+        "id",
+        "step_id",
+        "owner_session_id",
+        "workspace_id",
+        "todo_id",
+        "type",
+        "status",
+        "tag",
+    ] {
+        if let Some(value) = args
+            .get(key)
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            out.push_str(format!(" {key}={value}").as_str());
+        }
+    }
+    if let Some(limit) = args.get("limit").and_then(Json::as_u64) {
+        out.push_str(format!(" limit={limit}").as_str());
+    }
+    if let Some(offset) = args.get("offset").and_then(Json::as_u64) {
+        if offset > 0 {
+            out.push_str(format!(" offset={offset}").as_str());
+        }
+    }
+    if let Some(token_budget) = args.get("token_budget").and_then(Json::as_u64) {
+        out.push_str(format!(" token_budget={token_budget}").as_str());
+    }
+    out
 }
 
 pub struct MCPTool {
@@ -2906,7 +3099,7 @@ mod tests {
         assert_eq!(result.summary, "list_worklog");
         assert_eq!(
             result.command_line_text().as_deref(),
-            Some("worklog_manage")
+            Some("worklog_manage list_worklog")
         );
         assert_eq!(result["action"], "list_worklog");
     }
