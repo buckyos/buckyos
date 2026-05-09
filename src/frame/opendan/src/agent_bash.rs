@@ -18,9 +18,9 @@ use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, AgentToolStatus,
-    CliResultEnvelope, ToolSpec, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE,
-    TOOL_GET_SESSION, TOOL_READ_FILE, TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY, TOOL_WRITE_FILE,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, AgentToolStatus, ToolSpec,
+    TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION, TOOL_READ_FILE,
+    TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -1873,11 +1873,9 @@ fn decode_exec_bash_json_result(
         return None;
     }
 
-    let result = if let Ok(envelope) = serde_json::from_str::<CliResultEnvelope>(payload) {
-        envelope.into_tool_result()
-    } else {
-        serde_json::from_str::<AgentToolResult>(payload).ok()?
-    };
+    // Stage 2 unified `CliResultEnvelope` and `AgentToolResult` so the
+    // CLI emits the canonical struct directly.
+    let result = serde_json::from_str::<AgentToolResult>(payload).ok()?;
     if !result.is_agent_tool {
         return None;
     }

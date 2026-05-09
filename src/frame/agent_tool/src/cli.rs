@@ -18,7 +18,8 @@ use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::{
-    cli_exit_code_for_error, normalize_abs_path, parse_read_file_bash_args, render_cli_output,
+    cli_envelope_from_tool_result, cli_error_envelope, cli_exit_code_for_error,
+    cli_success_envelope, normalize_abs_path, parse_read_file_bash_args, render_cli_output,
     rewrite_read_file_path_with_shell_cwd, session_record_path, AgentMemory, AgentMemoryConfig,
     AgentTool, AgentToolError, AgentToolResult, BindWorkspaceTool, CliPendingReason,
     CliResultEnvelope, CliRunOutput, CliStatus, CreateWorkspaceTool, EditFileTool, FileToolConfig,
@@ -159,7 +160,7 @@ pub async fn run_process() -> CliRunOutput {
         Ok(env) => env,
         Err(err) => {
             let exit_code = cli_exit_code_for_error(&err);
-            return render_cli_output(&CliResultEnvelope::error(None, &err), exit_code);
+            return render_cli_output(&cli_error_envelope(None, &err), exit_code);
         }
     };
 
@@ -167,7 +168,7 @@ pub async fn run_process() -> CliRunOutput {
         Ok(output) => output,
         Err(err) => {
             let exit_code = cli_exit_code_for_error(&err);
-            render_cli_output(&CliResultEnvelope::error(None, &err), exit_code)
+            render_cli_output(&cli_error_envelope(None, &err), exit_code)
         }
     }
 }
@@ -1188,7 +1189,7 @@ async fn run_edit_file(env: &CliRuntimeEnv, args: Json) -> Result<AgentToolResul
 }
 
 fn success_envelope(tool_name: &str, result: AgentToolResult) -> CliResultEnvelope {
-    CliResultEnvelope::from_tool_result(tool_name, result)
+    cli_envelope_from_tool_result(tool_name, result)
 }
 
 fn render_plain_read_file_output(result: AgentToolResult) -> CliRunOutput {
@@ -1219,7 +1220,7 @@ async fn build_help_envelope(_env: &CliRuntimeEnv, tool_name: Option<&str>) -> C
 
 fn static_help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
     match tool_name {
-        Some(tool_name) => CliResultEnvelope::success(
+        Some(tool_name) => cli_success_envelope(
             Some(tool_name.to_string()),
             json!({
                 "tool": tool_name,
@@ -1227,7 +1228,7 @@ fn static_help_envelope(tool_name: Option<&str>) -> CliResultEnvelope {
             }),
             "show usage",
         ),
-        None => CliResultEnvelope::success(
+        None => cli_success_envelope(
             None,
             json!({
                 "usage": generic_usage(),
@@ -1715,45 +1716,63 @@ fn build_check_task_envelope(tool_name: &str, task: Task) -> CliResultEnvelope {
         }
     }
 
-    CliResultEnvelope {
-        is_agent_tool,
-        status: top_status,
-        title: String::new(),
-        summary,
-        tool: is_agent_tool.then_some(tool_name.to_string()),
-        cmd_line: if is_agent_tool {
-            Some(format!("{tool_name} {}", task.id))
-        } else {
-            task.data
-                .get("command")
-                .and_then(Json::as_str)
-                .map(|value| value.to_string())
-        },
-        detail,
-        output: task
-            .data
-            .get("output")
+    let cmd_line = if is_agent_tool {
+        Some(format!("{tool_name} {}", task.id))
+    } else {
+        task.data
+            .get("command")
             .and_then(Json::as_str)
-            .map(|value| value.to_string()),
-        return_code: task
-            .data
-            .get("return_code")
-            .or_else(|| task.data.get("exit_code"))
-            .and_then(Json::as_i64)
-            .and_then(|value| i32::try_from(value).ok()),
-        pending_reason,
-        task_id: Some(task.id.to_string()),
-        estimated_wait: task
-            .data
-            .get("estimated_wait")
-            .and_then(Json::as_str)
-            .map(|value| value.to_string()),
-        check_after: task
-            .data
-            .get("check_after")
-            .and_then(Json::as_u64)
-            .or_else(|| (top_status == CliStatus::Pending).then_some(5)),
+            .map(|value| value.to_string())
+    };
+    let output = task
+        .data
+        .get("output")
+        .and_then(Json::as_str)
+        .map(|value| value.to_string());
+    let return_code = task
+        .data
+        .get("return_code")
+        .or_else(|| task.data.get("exit_code"))
+        .and_then(Json::as_i64)
+        .and_then(|value| i32::try_from(value).ok());
+    let estimated_wait = task
+        .data
+        .get("estimated_wait")
+        .and_then(Json::as_str)
+        .map(|value| value.to_string());
+    let check_after = task
+        .data
+        .get("check_after")
+        .and_then(Json::as_u64)
+        .or_else(|| (top_status == CliStatus::Pending).then_some(5));
+
+    let mut envelope = AgentToolResult::from_details(detail)
+        .with_is_agent_tool(is_agent_tool)
+        .with_status(top_status)
+        .with_result(summary)
+        .with_task_id(task.id.to_string());
+    if is_agent_tool {
+        envelope = envelope.with_tool(tool_name);
     }
+    if let Some(cmd_line) = cmd_line.as_deref() {
+        envelope = envelope.with_command_metadata_from_line(cmd_line);
+    }
+    if let Some(output) = output {
+        envelope = envelope.with_output(output);
+    }
+    if let Some(rc) = return_code {
+        envelope = envelope.with_return_code(rc);
+    }
+    if let Some(reason) = pending_reason {
+        envelope = envelope.with_pending_reason(reason);
+    }
+    if let Some(wait) = estimated_wait {
+        envelope = envelope.with_estimated_wait(wait);
+    }
+    if let Some(after) = check_after {
+        envelope = envelope.with_check_after(after);
+    }
+    envelope
 }
 
 fn build_cancel_task_envelope(
@@ -1776,21 +1795,14 @@ fn build_cancel_task_envelope(
         None => format!("canceled task {}", task.id),
     };
 
-    CliResultEnvelope {
-        is_agent_tool: true,
-        status: CliStatus::Success,
-        title: format!("{tool_name} {} => success", task.id),
-        summary,
-        tool: Some(tool_name.to_string()),
-        cmd_line: Some(format!("{tool_name} {}", task.id)),
-        detail,
-        output: None,
-        return_code: None,
-        pending_reason: None,
-        task_id: Some(task.id.to_string()),
-        estimated_wait: None,
-        check_after: None,
-    }
+    AgentToolResult::from_details(detail)
+        .with_is_agent_tool(true)
+        .with_status(CliStatus::Success)
+        .with_result(summary)
+        .with_title(format!("{tool_name} {} => success", task.id))
+        .with_tool(tool_name)
+        .with_cmd_line(format!("{tool_name} {}", task.id))
+        .with_task_id(task.id.to_string())
 }
 
 fn normalized_task_detail(task: &Task) -> Json {

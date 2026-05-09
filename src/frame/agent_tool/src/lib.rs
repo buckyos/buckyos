@@ -19,7 +19,13 @@ pub mod memory;
 pub mod path_utils;
 pub mod runtime_utils;
 pub mod todo;
+pub mod tool;
 pub mod workspace;
+
+pub use tool::{
+    BasicToolHost, CallingConventions, NullToolHost, ToolCtx, ToolHost, TypedTool,
+    TypedToolHandle,
+};
 
 pub use file_tools::{
     parse_read_file_bash_args, rewrite_read_file_path_with_shell_cwd, EditFileTool, FileToolConfig,
@@ -319,6 +325,11 @@ pub struct AgentToolResult {
         deserialize_with = "deserialize_protocol_marker"
     )]
     pub is_agent_tool: bool,
+    /// Logical tool name when the result is the rendered output of a
+    /// registered agent tool. Used by the CLI envelope and surfaces in
+    /// downstream consumers; absent for raw bash results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmd_name: Option<String>,
     #[serde(default)]
@@ -418,23 +429,16 @@ where
     deserializer.deserialize_any(V)
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CliStatus {
-    Success,
-    Error,
-    Pending,
-}
+/// CLI envelope status. Stage 2 collapsed the historical `CliStatus`
+/// enum into the canonical `AgentToolStatus`; the alias is kept so
+/// CLI-facing call sites read naturally.
+pub type CliStatus = AgentToolStatus;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CliPendingReason {
-    LongRunning,
-    UserApproval,
-    #[serde(alias = "external_callback")]
-    WaitForInstall,
-}
+/// CLI envelope pending reason. Same story as `CliStatus` — kept as an
+/// alias for readability while stage 2 unifies the two enums.
+pub type CliPendingReason = AgentToolPendingReason;
 
+/// Output of running an agent tool through the CLI front-end.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CliRunOutput {
     pub exit_code: i32,
@@ -442,39 +446,10 @@ pub struct CliRunOutput {
     pub stderr: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct CliResultEnvelope {
-    #[serde(
-        default,
-        rename = "agent_tool_protocol",
-        alias = "is_agent_tool",
-        skip_serializing_if = "skip_protocol_marker",
-        serialize_with = "serialize_protocol_marker",
-        deserialize_with = "deserialize_protocol_marker"
-    )]
-    pub is_agent_tool: bool,
-    pub status: CliStatus,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub title: String,
-    pub summary: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cmd_line: Option<String>,
-    pub detail: Json,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub return_code: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_reason: Option<CliPendingReason>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub estimated_wait: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub check_after: Option<u64>,
-}
+/// Stage 2 unified `AgentToolResult` and `CliResultEnvelope` into one
+/// type. This alias keeps the historical name pointing at the new
+/// canonical struct so existing call sites keep compiling.
+pub type CliResultEnvelope = AgentToolResult;
 
 pub const CLI_EXIT_SUCCESS: i32 = 0;
 pub const CLI_EXIT_ERROR: i32 = 1;
@@ -519,6 +494,7 @@ impl AgentToolResult {
     pub fn from_details(details: Json) -> Self {
         Self {
             is_agent_tool: false,
+            tool: None,
             status: AgentToolStatus::Success,
             title: String::new(),
             summary: String::new(),
@@ -537,6 +513,14 @@ impl AgentToolResult {
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
+        self
+    }
+
+    /// Tag the result with the registered tool name. Empty/whitespace
+    /// inputs clear the field.
+    pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
+        let tool = tool.into();
+        self.tool = (!tool.trim().is_empty()).then_some(tool);
         self
     }
 
@@ -1014,110 +998,77 @@ fn take_tail_lines(content: &str, max_lines: usize) -> String {
     out
 }
 
-impl CliResultEnvelope {
-    pub fn from_tool_result(tool_name: &str, result: AgentToolResult) -> Self {
-        let detail = result.details.clone();
-        Self {
-            is_agent_tool: true,
-            status: result.status.into(),
-            title: result.title.clone(),
-            summary: if result.summary.trim().is_empty() {
-                "completed".to_string()
-            } else {
-                result.summary.clone()
-            },
-            tool: Some(tool_name.to_string()),
-            cmd_line: result.command_line_text(),
-            detail,
-            output: result.output,
-            return_code: result.return_code,
-            pending_reason: result.pending_reason.map(Into::into),
-            task_id: result.task_id,
-            estimated_wait: result.estimated_wait,
-            check_after: result.check_after,
-        }
+/// Build a CLI success envelope from an existing `AgentToolResult`.
+/// Replaces the old `CliResultEnvelope::from_tool_result` adapter.
+pub fn cli_envelope_from_tool_result(tool_name: &str, mut result: AgentToolResult) -> AgentToolResult {
+    result.is_agent_tool = true;
+    if result.summary.trim().is_empty() {
+        result.summary = "completed".to_string();
     }
-
-    pub fn error(tool_name: Option<&str>, err: &AgentToolError) -> Self {
-        let message = err.to_string();
-        let title = match tool_name {
-            Some(name) => format!("{name} => error"),
-            None => "error".to_string(),
-        };
-        Self {
-            is_agent_tool: true,
-            status: CliStatus::Error,
-            title,
-            summary: message.clone(),
-            tool: tool_name.map(|value| value.to_string()),
-            cmd_line: None,
-            detail: json!({}),
-            output: Some(message.clone()),
-            return_code: None,
-            pending_reason: None,
-            task_id: None,
-            estimated_wait: None,
-            check_after: None,
-        }
+    if !tool_name.trim().is_empty() {
+        result.tool = Some(tool_name.to_string());
     }
-
-    pub fn success(tool: Option<String>, detail: Json, summary: impl Into<String>) -> Self {
-        Self {
-            is_agent_tool: true,
-            status: CliStatus::Success,
-            title: String::new(),
-            summary: summary.into(),
-            tool,
-            cmd_line: None,
-            detail,
-            output: None,
-            return_code: None,
-            pending_reason: None,
-            task_id: None,
-            estimated_wait: None,
-            check_after: None,
-        }
+    if result.is_agent_tool && result.title.trim().is_empty() {
+        result.title = derive_default_title(&result);
     }
+    result
+}
 
-    pub fn into_tool_result(self) -> AgentToolResult {
-        let Self {
-            is_agent_tool,
-            status,
-            title,
-            summary,
-            tool: _tool,
-            cmd_line,
-            detail,
-            output,
-            return_code,
-            pending_reason,
-            task_id,
-            estimated_wait,
-            check_after,
-        } = self;
-        let mut result = AgentToolResult::from_details(detail)
-            .with_is_agent_tool(is_agent_tool)
-            .with_status(status.into())
-            .with_result(summary);
-        result.title = title;
-        if let Some(cmd_line) = cmd_line.as_deref() {
-            result = result.with_command_metadata_from_line(cmd_line);
-        }
-        result.output = result.output.or(output);
-        result.return_code = result.return_code.or(return_code);
-        result.task_id = task_id;
-        result.check_after = check_after;
-        result.pending_reason = pending_reason.map(Into::into);
-        result.estimated_wait = estimated_wait;
-        if result.is_agent_tool && result.title.trim().is_empty() {
-            result.title = derive_default_title(&result);
-        }
-        result
+/// Build the CLI envelope returned when a tool errors out before
+/// producing a result. Replaces `CliResultEnvelope::error`.
+pub fn cli_error_envelope(tool_name: Option<&str>, err: &AgentToolError) -> AgentToolResult {
+    let message = err.to_string();
+    let title = match tool_name {
+        Some(name) => format!("{name} => error"),
+        None => "error".to_string(),
+    };
+    AgentToolResult {
+        is_agent_tool: true,
+        tool: tool_name.map(|value| value.to_string()),
+        cmd_name: None,
+        status: AgentToolStatus::Error,
+        task_id: None,
+        pending_reason: None,
+        check_after: None,
+        estimated_wait: None,
+        title,
+        summary: message.clone(),
+        details: json!({}),
+        cmd_args: None,
+        return_code: None,
+        partial_output: None,
+        output: Some(message),
     }
 }
 
-pub fn render_cli_output(payload: &CliResultEnvelope, exit_code: i32) -> CliRunOutput {
-    let stdout = serde_json::to_string(&payload.clone().into_tool_result()).unwrap_or_else(|_| {
+/// Build the CLI envelope returned for synthetic success messages
+/// (help output, etc.). Replaces `CliResultEnvelope::success`.
+pub fn cli_success_envelope(
+    tool: Option<String>,
+    detail: Json,
+    summary: impl Into<String>,
+) -> AgentToolResult {
+    AgentToolResult {
+        is_agent_tool: true,
+        tool,
+        cmd_name: None,
+        status: AgentToolStatus::Success,
+        task_id: None,
+        pending_reason: None,
+        check_after: None,
+        estimated_wait: None,
+        title: String::new(),
+        summary: summary.into(),
+        details: detail,
+        cmd_args: None,
+        return_code: None,
+        partial_output: None,
+        output: None,
+    }
+}
+
+pub fn render_cli_output(payload: &AgentToolResult, exit_code: i32) -> CliRunOutput {
+    let stdout = serde_json::to_string(payload).unwrap_or_else(|_| {
         "{\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
             .to_string()
     });
@@ -1134,46 +1085,6 @@ pub fn cli_exit_code_for_error(err: &AgentToolError) -> i32 {
         AgentToolError::AlreadyExists(_)
         | AgentToolError::ExecFailed(_)
         | AgentToolError::Timeout => CLI_EXIT_ERROR,
-    }
-}
-
-impl From<AgentToolStatus> for CliStatus {
-    fn from(value: AgentToolStatus) -> Self {
-        match value {
-            AgentToolStatus::Success => CliStatus::Success,
-            AgentToolStatus::Error => CliStatus::Error,
-            AgentToolStatus::Pending => CliStatus::Pending,
-        }
-    }
-}
-
-impl From<CliStatus> for AgentToolStatus {
-    fn from(value: CliStatus) -> Self {
-        match value {
-            CliStatus::Success => AgentToolStatus::Success,
-            CliStatus::Error => AgentToolStatus::Error,
-            CliStatus::Pending => AgentToolStatus::Pending,
-        }
-    }
-}
-
-impl From<AgentToolPendingReason> for CliPendingReason {
-    fn from(value: AgentToolPendingReason) -> Self {
-        match value {
-            AgentToolPendingReason::LongRunning => CliPendingReason::LongRunning,
-            AgentToolPendingReason::UserApproval => CliPendingReason::UserApproval,
-            AgentToolPendingReason::WaitForInstall => CliPendingReason::WaitForInstall,
-        }
-    }
-}
-
-impl From<CliPendingReason> for AgentToolPendingReason {
-    fn from(value: CliPendingReason) -> Self {
-        match value {
-            CliPendingReason::LongRunning => AgentToolPendingReason::LongRunning,
-            CliPendingReason::UserApproval => AgentToolPendingReason::UserApproval,
-            CliPendingReason::WaitForInstall => AgentToolPendingReason::WaitForInstall,
-        }
     }
 }
 
@@ -2417,9 +2328,7 @@ fn compact_json_text(value: &Json, max_chars: usize) -> String {
 struct RegisteredTool {
     spec: ToolSpec,
     inner: Arc<dyn AgentTool>,
-    support_bash: bool,
-    support_action: bool,
-    support_llm_tool_call: bool,
+    calling: CallingConventions,
 }
 
 #[async_trait]
@@ -2429,15 +2338,15 @@ impl AgentTool for RegisteredTool {
     }
 
     fn support_bash(&self) -> bool {
-        self.support_bash
+        self.calling.supports_bash()
     }
 
     fn support_action(&self) -> bool {
-        self.support_action
+        self.calling.supports_action()
     }
 
     fn support_llm_tool_call(&self) -> bool {
-        self.support_llm_tool_call
+        self.calling.supports_llm_tool_call()
     }
 
     async fn call(
@@ -2468,6 +2377,7 @@ struct ToolNamespaceRegistry {
 #[derive(Clone)]
 pub struct AgentToolManager {
     namespaces: Arc<StdRwLock<ToolNamespaceRegistry>>,
+    host: Arc<dyn ToolHost>,
 }
 
 impl Default for AgentToolManager {
@@ -2478,9 +2388,26 @@ impl Default for AgentToolManager {
 
 impl AgentToolManager {
     pub fn new() -> Self {
+        Self::with_host(Arc::new(NullToolHost))
+    }
+
+    pub fn with_host(host: Arc<dyn ToolHost>) -> Self {
         Self {
             namespaces: Arc::new(StdRwLock::new(ToolNamespaceRegistry::default())),
+            host,
         }
+    }
+
+    /// Currently configured `ToolHost`. Stage 3 will start consuming
+    /// this for typed-tool registrations; for now it is exposed so
+    /// embedders can share a single host between manager-managed and
+    /// ad-hoc tool invocations.
+    pub fn host(&self) -> Arc<dyn ToolHost> {
+        self.host.clone()
+    }
+
+    pub fn set_host(&mut self, host: Arc<dyn ToolHost>) {
+        self.host = host;
     }
 
     pub fn register_tool<T>(&self, tool: T) -> Result<(), AgentToolError>
@@ -2488,6 +2415,17 @@ impl AgentToolManager {
         T: AgentTool + 'static,
     {
         self.register_tool_arc(Arc::new(tool))
+    }
+
+    /// Register a `TypedTool` implementation. The manager wraps it
+    /// into a `TypedToolHandle` capturing the current host so the
+    /// tool gets `ctx.host()` access at call time.
+    pub fn register_typed_tool<T>(&self, tool: T) -> Result<(), AgentToolError>
+    where
+        T: TypedTool,
+    {
+        let handle = TypedToolHandle::new(tool, self.host.clone());
+        self.register_tool_arc(Arc::new(handle))
     }
 
     pub fn register_tool_arc(&self, tool: Arc<dyn AgentTool>) -> Result<(), AgentToolError> {
@@ -2512,10 +2450,12 @@ impl AgentToolManager {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.to_string());
-        let support_bash = tool.support_bash();
-        let support_action = tool.support_action();
-        let support_llm_tool_call = tool.support_llm_tool_call();
-        if !support_bash && !support_action && !support_llm_tool_call {
+        let calling = CallingConventions::from_legacy(
+            tool.support_bash(),
+            tool.support_action(),
+            tool.support_llm_tool_call(),
+        );
+        if calling.is_empty() {
             return Err(AgentToolError::InvalidArgs(format!(
                 "tool `{}` must support at least one namespace",
                 normalized_name
@@ -2525,9 +2465,7 @@ impl AgentToolManager {
         let registered: Arc<dyn AgentTool> = Arc::new(RegisteredTool {
             spec,
             inner: tool,
-            support_bash,
-            support_action,
-            support_llm_tool_call,
+            calling,
         });
 
         let mut guard = self
@@ -2540,12 +2478,12 @@ impl AgentToolManager {
         guard
             .all_tools
             .insert(normalized_name.clone(), registered.clone());
-        if support_llm_tool_call {
+        if calling.supports_llm_tool_call() {
             guard
                 .llm_tools
                 .insert(normalized_name.clone(), registered.clone());
         }
-        if support_bash {
+        if calling.supports_bash() {
             guard
                 .bash_cmds
                 .insert(normalized_name.clone(), registered.clone());
