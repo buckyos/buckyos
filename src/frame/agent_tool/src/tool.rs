@@ -1,18 +1,15 @@
-//! Stage 1/2 refactoring scaffold.
+//! Typed tool trait and runtime context.
 //!
-//! - `TypedTool` is the new strongly-typed trait that tools should target.
-//!   Tools provide associated `Args`/`Output` types plus a small set of
-//!   `const`s; the legacy `AgentTool` interface (JSON in, JSON out) is
-//!   produced automatically by [`TypedToolHandle`].
-//! - `CallingConventions` replaces the three `support_*` booleans on the
-//!   legacy trait with a single bitflag value.
-//! - `ToolHost` collapses the per-feature backend traits
-//!   (`SessionViewBackend`, `WorkspaceRuntimeBackend`,
-//!   `FileWriteAuditBackend`, ...) into one accessor trait so a tool
-//!   only needs to hold `Arc<dyn ToolHost>` instead of one Arc per
-//!   backend.
-//! - `ToolCtx` is the runtime context handed to typed tools at execution
-//!   time (session info + host + shell cwd).
+//! - [`TypedTool`] is the user-facing trait. Tools provide associated
+//!   `Args`/`Output` types plus a small set of overridable methods;
+//!   the legacy `AgentTool` interface (JSON in, JSON out) is produced
+//!   automatically by [`TypedToolHandle`].
+//! - [`CallingConventions`] is a bitflag value that replaces the three
+//!   `support_bash`/`support_action`/`support_llm_tool_call` booleans.
+//! - [`ToolHost`] collapses the per-feature backend traits into one
+//!   accessor surface so a tool only holds `Arc<dyn ToolHost>`.
+//! - [`ToolCtx`] is the runtime context passed at execution time
+//!   (session info + host + shell cwd).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -31,9 +28,6 @@ use crate::{
 };
 
 /// Bitflag summary of how a tool may be invoked.
-///
-/// Replaces `AgentTool::support_bash`/`support_action`/`support_llm_tool_call`
-/// with a single flag value carried as a const on the typed trait.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CallingConventions(u8);
 
@@ -129,8 +123,7 @@ pub trait ToolHost: Send + Sync {
 }
 
 /// Empty host. Used as the default when nobody has set a host on the
-/// tool manager. Tools that ask for a service from a `NullToolHost`
-/// receive `None` and must error or fall back to a stub behavior.
+/// tool manager.
 pub struct NullToolHost;
 impl ToolHost for NullToolHost {}
 
@@ -138,8 +131,7 @@ fn null_host() -> Arc<dyn ToolHost> {
     Arc::new(NullToolHost)
 }
 
-/// Composes individual backend Arcs into a single `ToolHost` so callers
-/// who already hold typed backends can promote them in one step.
+/// Composes individual backend Arcs into a single `ToolHost`.
 #[derive(Default, Clone)]
 pub struct BasicToolHost {
     pub session_view: Option<Arc<dyn SessionViewBackend>>,
@@ -219,10 +211,6 @@ impl ToolHost for BasicToolHost {
 }
 
 /// Runtime context passed to typed tools.
-///
-/// Carries the per-call `SessionRuntimeContext`, a pointer to the
-/// shared host services, and an optional shell cwd that bash-driven
-/// invocations want to thread through.
 pub struct ToolCtx<'a> {
     session: &'a SessionRuntimeContext,
     host: &'a dyn ToolHost,
@@ -256,63 +244,63 @@ impl<'a> ToolCtx<'a> {
     }
 }
 
-/// New typed tool trait. Tools targeting this trait declare their input
-/// and output types directly; argument deserialization, output
-/// serialization and the legacy `AgentTool` plumbing are produced by
-/// [`TypedToolHandle`] at registration time.
+/// Typed tool trait. The single user-facing trait for built-in and
+/// dynamically-named tools alike. The legacy `AgentTool` interface is
+/// produced automatically via [`TypedToolHandle`].
 ///
-/// Stage 1 keeps `args_schema` / `output_schema` as plain JSON returned
-/// by overrideable functions; later stages can swap the defaults to
-/// schemars-derived schemas without changing this trait.
+/// All metadata is exposed through `&self` methods so static tools
+/// can return `&'static str` literals while dynamic tools (MCP) can
+/// return values stored on the instance.
 #[async_trait]
 pub trait TypedTool: Send + Sync + 'static {
     type Args: DeserializeOwned + Send;
     type Output: Serialize + Send;
 
-    const NAME: &'static str;
-    const DESCRIPTION: &'static str;
-    const CALLING: CallingConventions = CallingConventions::ALL;
+    fn name(&self) -> &str;
 
-    fn args_schema() -> Json {
-        json!({"type": "object"})
+    fn description(&self) -> &str {
+        ""
     }
 
-    fn output_schema() -> Json {
-        json!({"type": "object"})
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::ALL
     }
 
-    fn usage() -> Option<&'static str> {
+    fn args_schema(&self) -> Json {
+        json!({ "type": "object" })
+    }
+
+    fn output_schema(&self) -> Json {
+        json!({ "type": "object" })
+    }
+
+    fn usage(&self) -> Option<String> {
         None
     }
 
     /// Optional hook to render a per-call command line into the
-    /// AgentToolResult metadata. Tools can use the args to generate a
-    /// human-readable invocation snippet; default returns `None`,
-    /// meaning the bridge falls back to the tool name.
-    fn build_cmd_line(_args: &Self::Args) -> Option<String> {
+    /// `AgentToolResult` metadata. Default returns `None`, meaning the
+    /// bridge falls back to the tool name.
+    fn build_cmd_line(&self, _args: &Self::Args) -> Option<String> {
         None
     }
 
-    /// Optional hook for the post-call summary string in the result.
-    fn build_summary(_output: &Self::Output) -> String {
+    /// Optional hook for the post-call summary string.
+    fn build_summary(&self, _output: &Self::Output) -> String {
         "ok".to_string()
     }
 
-    /// Optional title hook. Tools that produce richer headlines (file
-    /// tools want `edit_file foo.rs mode=replace => success (line 42)`)
-    /// override this; the default returns `None` and the bridge falls
-    /// back to `derive_default_title`. The hook only sees the output
-    /// struct, so per-call data needed to render the title (file path,
-    /// operation, matched flag, etc.) must live on `Self::Output`.
-    fn build_title(_output: &Self::Output) -> Option<String> {
+    /// Optional title hook. Returning `Some` overrides the default
+    /// `derive_default_title` rendering.
+    fn build_title(&self, _output: &Self::Output) -> Option<String> {
         None
     }
 
-    /// Parse bash tokens (after the tool name) into a JSON arg object that
-    /// `Self::Args` can deserialize from. Tools with positional bash forms
-    /// override this; the default produces the same key=value/JSON parsing
-    /// as the legacy `parse_default_bash_exec_args`.
+    /// Parse bash tokens (after the tool name) into a JSON arg object
+    /// that `Self::Args` can deserialize from. Default produces the
+    /// same key=value/JSON parsing as `parse_default_bash_exec_args`.
     fn parse_bash_args(
+        &self,
         tokens: &[String],
         _shell_cwd: Option<&Path>,
     ) -> Result<Json, AgentToolError> {
@@ -327,8 +315,7 @@ pub trait TypedTool: Send + Sync + 'static {
 }
 
 /// Adapter wrapping a `TypedTool` so it satisfies the legacy
-/// `AgentTool` trait. The host pointer is captured at construction
-/// time and threaded into every `execute` call via `ToolCtx`.
+/// `AgentTool` trait used for type-erased dispatch by the manager.
 pub struct TypedToolHandle<T: TypedTool> {
     inner: T,
     host: Arc<dyn ToolHost>,
@@ -355,24 +342,24 @@ impl<T: TypedTool> TypedToolHandle<T> {
 impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: T::NAME.to_string(),
-            description: T::DESCRIPTION.to_string(),
-            args_schema: T::args_schema(),
-            output_schema: T::output_schema(),
-            usage: T::usage().map(|s| s.to_string()),
+            name: self.inner.name().to_string(),
+            description: self.inner.description().to_string(),
+            args_schema: self.inner.args_schema(),
+            output_schema: self.inner.output_schema(),
+            usage: self.inner.usage(),
         }
     }
 
     fn support_bash(&self) -> bool {
-        T::CALLING.supports_bash()
+        self.inner.calling().supports_bash()
     }
 
     fn support_action(&self) -> bool {
-        T::CALLING.supports_action()
+        self.inner.calling().supports_action()
     }
 
     fn support_llm_tool_call(&self) -> bool {
-        T::CALLING.supports_llm_tool_call()
+        self.inner.calling().supports_llm_tool_call()
     }
 
     async fn call(
@@ -381,12 +368,18 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
         let typed: T::Args = serde_json::from_value(args).map_err(|err| {
-            AgentToolError::InvalidArgs(format!("invalid args for `{}`: {err}", T::NAME))
+            AgentToolError::InvalidArgs(format!(
+                "invalid args for `{}`: {err}",
+                self.inner.name()
+            ))
         })?;
-        let cmd_line = T::build_cmd_line(&typed).unwrap_or_else(|| T::NAME.to_string());
+        let cmd_line = self
+            .inner
+            .build_cmd_line(&typed)
+            .unwrap_or_else(|| self.inner.name().to_string());
         let tool_ctx = ToolCtx::new(ctx, self.host.as_ref());
         let output = self.inner.execute(&tool_ctx, typed).await?;
-        finalize_typed_result::<T>(output, cmd_line)
+        finalize_typed_result(&self.inner, output, cmd_line)
     }
 
     async fn exec(
@@ -401,33 +394,37 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
                 "empty bash command line".to_string(),
             ));
         }
-        // Hand bash tokens to the typed parser so each tool encodes its
-        // own positional/keyword bash quirks instead of overriding
-        // `exec` directly. Default falls back to `parse_default_bash_exec_args`.
-        let args = T::parse_bash_args(&tokens[1..], shell_cwd)?;
+        let args = self.inner.parse_bash_args(&tokens[1..], shell_cwd)?;
         let typed: T::Args = serde_json::from_value(args).map_err(|err| {
-            AgentToolError::InvalidArgs(format!("invalid args for `{}`: {err}", T::NAME))
+            AgentToolError::InvalidArgs(format!(
+                "invalid args for `{}`: {err}",
+                self.inner.name()
+            ))
         })?;
-        let cmd_line = T::build_cmd_line(&typed).unwrap_or_else(|| line.trim().to_string());
+        let cmd_line = self
+            .inner
+            .build_cmd_line(&typed)
+            .unwrap_or_else(|| line.trim().to_string());
         let tool_ctx = ToolCtx::new(ctx, self.host.as_ref()).with_shell_cwd(shell_cwd);
         let output = self.inner.execute(&tool_ctx, typed).await?;
-        finalize_typed_result::<T>(output, cmd_line)
+        finalize_typed_result(&self.inner, output, cmd_line)
     }
 }
 
 fn finalize_typed_result<T: TypedTool>(
+    tool: &T,
     output: T::Output,
     cmd_line: String,
 ) -> Result<AgentToolResult, AgentToolError> {
-    let summary = T::build_summary(&output);
-    let title = T::build_title(&output);
+    let summary = tool.build_summary(&output);
+    let title = tool.build_title(&output);
     let detail = serde_json::to_value(&output).map_err(|err| {
         AgentToolError::ExecFailed(format!(
             "serialize output for `{}` failed: {err}",
-            T::NAME
+            tool.name()
         ))
     })?;
-    let mut result = build_builtin_tool_result(detail, cmd_line, summary).with_tool(T::NAME);
+    let mut result = build_builtin_tool_result(detail, cmd_line, summary).with_tool(tool.name());
     if let Some(custom_title) = title {
         result.title = custom_title;
     }
@@ -444,7 +441,10 @@ mod tests {
         assert!(cc.supports_bash());
         assert!(!cc.supports_action());
         assert!(cc.supports_llm_tool_call());
-        assert_eq!(cc.bits(), CallingConventions::BASH.bits() | CallingConventions::LLM.bits());
+        assert_eq!(
+            cc.bits(),
+            CallingConventions::BASH.bits() | CallingConventions::LLM.bits()
+        );
 
         let combined = CallingConventions::BASH | CallingConventions::LLM;
         assert!(combined.contains(CallingConventions::BASH));
@@ -470,9 +470,13 @@ mod tests {
         type Args = EchoArgs;
         type Output = EchoOutput;
 
-        const NAME: &'static str = "typed_echo";
-        const DESCRIPTION: &'static str = "echo a message";
-        const CALLING: CallingConventions = CallingConventions::ALL;
+        fn name(&self) -> &str {
+            "typed_echo"
+        }
+
+        fn description(&self) -> &str {
+            "echo a message"
+        }
 
         async fn execute(
             &self,

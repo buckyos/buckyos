@@ -2201,7 +2201,6 @@ mod tests {
 
     use super::*;
     use crate::agent_session::AgentSession;
-    use crate::agent_tool::AgentTool;
     use crate::agent_tool::{AgentMemory, AgentMemoryConfig};
     use crate::behavior::types::{SessionRuntimeContext, StepLimits};
     use crate::step_record::LLMStepRecord;

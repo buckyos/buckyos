@@ -3,7 +3,6 @@ use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use buckyos_api::{
@@ -19,14 +18,14 @@ use tokio::process::Command;
 
 use crate::{
     cli_envelope_from_tool_result, cli_error_envelope, cli_exit_code_for_error,
-    cli_success_envelope, normalize_abs_path, parse_read_file_bash_args, render_cli_output,
-    rewrite_read_file_path_with_shell_cwd, session_record_path, AgentMemory, AgentMemoryConfig,
-    AgentToolError, AgentToolManager, AgentToolResult, BindWorkspaceTool, CliPendingReason,
-    CliResultEnvelope, CliRunOutput, CliStatus, CreateWorkspaceTool, EditFileTool, FileToolConfig,
-    GetSessionTool, NoopFileWriteAudit, ReadFileTool, RemoveMemoryTool, SessionRuntimeContext,
-    SessionViewBackend, SetMemoryTool, TodoTool, TodoToolConfig, WorkspaceToolBackend,
-    WriteFileTool, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_GET_SESSION,
-    TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY,
+    cli_success_envelope, normalize_abs_path, now_ms, parse_read_file_bash_args,
+    render_cli_output, rewrite_read_file_path_with_shell_cwd, session_record_path, AgentMemory,
+    AgentMemoryConfig, AgentToolError, AgentToolManager, AgentToolResult, BindWorkspaceTool,
+    CliPendingReason, CliResultEnvelope, CliRunOutput, CliStatus, CreateWorkspaceTool,
+    EditFileTool, FileToolConfig, GetSessionTool, NoopFileWriteAudit, ReadFileTool,
+    RemoveMemoryTool, SessionRuntimeContext, SessionViewBackend, SetMemoryTool, TodoTool,
+    TodoToolConfig, WorkspaceToolBackend, WriteFileTool, TOOL_BIND_WORKSPACE,
+    TOOL_CREATE_WORKSPACE, TOOL_GET_SESSION, TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY,
 };
 
 const TOOL_TODO: &str = "todo";
@@ -1111,7 +1110,7 @@ async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager,
     let todo_tool = TodoTool::new(TodoToolConfig::with_db_path(
         state_root.join("todo").join("todo.db"),
     ))?;
-    mgr.register_tool(todo_tool)?;
+    mgr.register_typed_tool(todo_tool)?;
 
     let workspace_backend = Arc::new(CliWorkspaceBackend {
         state_root: state_root.clone(),
@@ -1287,13 +1286,6 @@ fn rewrite_path_with_shell_cwd(raw_path: String, current_dir: &Path) -> String {
     canonicalize_or_normalize(path.to_path_buf(), Some(current_dir))
         .to_string_lossy()
         .to_string()
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 fn session_file_path(state_root: &Path, session_id: &str) -> Result<PathBuf, AgentToolError> {

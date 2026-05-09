@@ -175,11 +175,19 @@ impl TypedTool for EditFileTool {
     type Args = EditFileArgs;
     type Output = EditFileOutput;
 
-    const NAME: &'static str = TOOL_EDIT_FILE;
-    const DESCRIPTION: &'static str = "Edit file.";
-    const CALLING: CallingConventions = CallingConventions::ACTION;
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_EDIT_FILE
+
+    }
+    fn description(&self) -> &str {
+        "Edit file."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::ACTION
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -193,17 +201,15 @@ impl TypedTool for EditFileTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({ "type": "object" })
     }
 
-    fn usage() -> Option<&'static str> {
-        Some(
-            "edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)",
-        )
+    fn usage(&self) -> Option<String> {
+        Some("edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)".to_string())
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         let mode = normalize_edit_mode(args.mode.as_deref()).unwrap_or("replace");
         Some(build_edit_request_cmd_line(
             &args.path,
@@ -212,7 +218,7 @@ impl TypedTool for EditFileTool {
         ))
     }
 
-    fn build_summary(output: &Self::Output) -> String {
+    fn build_summary(&self, output: &Self::Output) -> String {
         if output.changed {
             let line_text = output
                 .line_no
@@ -233,7 +239,7 @@ impl TypedTool for EditFileTool {
         }
     }
 
-    fn build_title(output: &Self::Output) -> Option<String> {
+    fn build_title(&self, output: &Self::Output) -> Option<String> {
         let status = if !output.matched {
             "anchor not found".to_string()
         } else if output.changed {
@@ -419,11 +425,19 @@ impl TypedTool for WriteFileTool {
     type Args = WriteFileArgs;
     type Output = WriteFileOutput;
 
-    const NAME: &'static str = TOOL_WRITE_FILE;
-    const DESCRIPTION: &'static str = "Write file.";
-    const CALLING: CallingConventions = CallingConventions::ACTION;
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_WRITE_FILE
+
+    }
+    fn description(&self) -> &str {
+        "Write file."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::ACTION
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -436,22 +450,20 @@ impl TypedTool for WriteFileTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({ "type": "object" })
     }
 
-    fn usage() -> Option<&'static str> {
-        Some(
-            "write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)",
-        )
+    fn usage(&self) -> Option<String> {
+        Some("write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)".to_string())
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         let mode = normalize_write_mode(args.mode.as_deref()).unwrap_or("write");
         Some(build_write_request_cmd_line(&args.path, mode))
     }
 
-    fn build_summary(output: &Self::Output) -> String {
+    fn build_summary(&self, output: &Self::Output) -> String {
         build_summary_with_optional_block(
             format!(
                 "{} {}, wrote {} bytes across {}",
@@ -465,7 +477,7 @@ impl TypedTool for WriteFileTool {
         )
     }
 
-    fn build_title(output: &Self::Output) -> Option<String> {
+    fn build_title(&self, output: &Self::Output) -> Option<String> {
         let mode_label = match output.operation.as_str() {
             "append" => "append",
             "new" | "create" => "new",
@@ -643,11 +655,19 @@ impl TypedTool for ReadFileTool {
     type Args = ReadFileArgs;
     type Output = ReadFileOutput;
 
-    const NAME: &'static str = TOOL_READ_FILE;
-    const DESCRIPTION: &'static str = "Read file.";
-    const CALLING: CallingConventions = CallingConventions::from_legacy(true, false, true);
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_READ_FILE
+
+    }
+    fn description(&self) -> &str {
+        "Read file."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::from_legacy(true, false, true)
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -660,19 +680,22 @@ impl TypedTool for ReadFileTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({ "type": "object" })
     }
 
-    fn usage() -> Option<&'static str> {
-        Some(
-            "read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice",
-        )
+    fn usage(&self) -> Option<String> {
+        Some("read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice".to_string())
     }
 
     fn parse_bash_args(
+
+        &self,
+
         tokens: &[String],
+
         shell_cwd: Option<&Path>,
+
     ) -> Result<Json, AgentToolError> {
         let mut args = parse_read_file_bash_args(tokens)?;
         if let Some(cwd) = shell_cwd {
@@ -681,7 +704,7 @@ impl TypedTool for ReadFileTool {
         Ok(args)
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         Some(build_read_result_cmd_line(
             &args.path,
             args.first_chunk.as_deref(),
@@ -689,7 +712,7 @@ impl TypedTool for ReadFileTool {
         ))
     }
 
-    fn build_summary(output: &Self::Output) -> String {
+    fn build_summary(&self, output: &Self::Output) -> String {
         if output.matched {
             let lines_text = match (output.start_line, output.end_line) {
                 (Some(start), Some(end)) if start == end => format!("1 line at {start}"),
@@ -712,7 +735,7 @@ impl TypedTool for ReadFileTool {
         }
     }
 
-    fn build_title(output: &Self::Output) -> Option<String> {
+    fn build_title(&self, output: &Self::Output) -> Option<String> {
         Some(format!(
             "{} => {}",
             output.cmd_line,

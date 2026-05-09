@@ -18,7 +18,7 @@ use super::{
 use crate::agent_environment::{AgentEnvironment, PromptTemplateContext, TemplateRenderMode};
 use crate::agent_session::AgentSession;
 use crate::agent_tool::{
-    AgentTool, AgentToolResult, FileToolConfig, ReadFileTool,
+    AgentToolResult, FileToolConfig, ReadFileTool,
     SessionRuntimeContext as ToolSessionRuntimeContext, TodoTool, TodoToolConfig,
 };
 use crate::step_record::LLMStepRecord;

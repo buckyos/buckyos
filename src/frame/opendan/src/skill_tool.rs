@@ -2,15 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::sync::Mutex;
 
 use crate::agent_session::{AgentSession, AgentSessionMgr, SessionSkillScope};
-use crate::agent_tool::{
-    optional_trimmed_string_arg, require_trimmed_string_arg, AgentTool, AgentToolError,
-    AgentToolResult, ToolSpec,
-};
-use crate::behavior::SessionRuntimeContext;
+use crate::agent_tool::{AgentToolError, CallingConventions, ToolCtx, TypedTool};
 use crate::workspace::agent_skill::{self, AgentSkillSpec};
 use crate::workspace_path::{
     resolve_agent_env_root, resolve_agent_env_root_from_local_workspace_hint,
@@ -42,143 +39,205 @@ impl UnloadSkillTool {
     }
 }
 
+#[derive(Deserialize)]
+pub struct LoadSkillArgs {
+    pub skill: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct LoadSkillOutput {
+    ok: bool,
+    scope: &'static str,
+    skill: String,
+    name: String,
+    path: String,
+}
+
 #[async_trait]
-impl AgentTool for LoadSkillTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_LOAD_SKILL.to_string(),
-            description: "Load a prompt skill into the current behavior or the whole session."
-                .to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "skill": { "type": "string" },
-                    "scope": { "type": "string", "enum": ["behavior", "session"] }
-                },
-                "required": ["skill"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "scope": { "type": "string" },
-                    "skill": { "type": "string" },
-                    "path": { "type": "string" }
-                }
-            }),
-            usage: Some("load_skill <skill> [behavior|session]".to_string()),
-        }
+impl TypedTool for LoadSkillTool {
+    type Args = LoadSkillArgs;
+    type Output = LoadSkillOutput;
+
+    fn name(&self) -> &str {
+        TOOL_LOAD_SKILL
     }
 
-    fn support_bash(&self) -> bool {
-        false
+    fn description(&self) -> &str {
+        "Load a prompt skill into the current behavior or the whole session."
     }
 
-    fn support_action(&self) -> bool {
-        true
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::ACTION | CallingConventions::LLM
     }
 
-    fn support_llm_tool_call(&self) -> bool {
-        true
+    fn args_schema(&self) -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "skill": { "type": "string" },
+                "scope": { "type": "string", "enum": ["behavior", "session"] }
+            },
+            "required": ["skill"],
+            "additionalProperties": false
+        })
     }
 
-    async fn call(
+    fn output_schema(&self) -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "scope": { "type": "string" },
+                "skill": { "type": "string" },
+                "path": { "type": "string" }
+            }
+        })
+    }
+
+    fn usage(&self) -> Option<String> {
+        Some("load_skill <skill> [behavior|session]".to_string())
+    }
+
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        let scope = args
+            .scope
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("behavior");
+        Some(format!("{TOOL_LOAD_SKILL} {} {}", args.skill.trim(), scope))
+    }
+
+    fn build_summary(&self, output: &Self::Output) -> String {
+        format!("loaded skill `{}` into {} scope", output.name, output.scope)
+    }
+
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let skill_ref = require_trimmed_string_arg(&args, "skill")?;
-        let scope = parse_skill_scope(optional_trimmed_string_arg(&args, "scope")?.as_deref())?;
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let skill_ref = args.skill.trim();
+        if skill_ref.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing or invalid `skill`".to_string(),
+            ));
+        }
+        let scope = parse_skill_scope(args.scope.as_deref())?;
 
+        let session_id = ctx.session().session_id.as_str();
         self.session_store
-            .refresh_status_from_disk(ctx.session_id.as_str())
+            .refresh_status_from_disk(session_id)
             .await?;
         let session = self
             .session_store
-            .get_session(ctx.session_id.as_str())
+            .get_session(session_id)
             .await
             .ok_or_else(|| {
-                AgentToolError::InvalidArgs(format!("session not found: {}", ctx.session_id))
+                AgentToolError::InvalidArgs(format!("session not found: {}", session_id))
             })?;
 
-        let resolved = resolve_skill_for_session(session.clone(), skill_ref.as_str()).await?;
+        let resolved = resolve_skill_for_session(session.clone(), skill_ref).await?;
         {
             let mut guard = session.lock().await;
             guard.load_skill_ref(resolved.reference.as_str(), scope);
             self.session_store.save_session_locked(&guard).await?;
         }
 
-        Ok(AgentToolResult::from_details(json!({
-            "ok": true,
-            "scope": render_scope(scope),
-            "skill": resolved.reference,
-            "name": resolved.name,
-            "path": resolved.path,
-        }))
-        .with_is_agent_tool(true)
-        .with_cmd_line(format!("load_skill {} {}", skill_ref, render_scope(scope)))
-        .with_result(format!(
-            "loaded skill `{}` into {} scope",
-            resolved.name,
-            render_scope(scope)
-        )))
+        Ok(LoadSkillOutput {
+            ok: true,
+            scope: render_scope(scope),
+            skill: resolved.reference,
+            name: resolved.name,
+            path: resolved.path,
+        })
     }
 }
 
+#[derive(Deserialize)]
+pub struct UnloadSkillArgs {
+    pub skill: String,
+}
+
+#[derive(Serialize)]
+pub struct UnloadSkillOutput {
+    ok: bool,
+    skill: String,
+}
+
 #[async_trait]
-impl AgentTool for UnloadSkillTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_UNLOAD_SKILL.to_string(),
-            description: "Unload a previously loaded prompt skill from the current session."
-                .to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "skill": { "type": "string" }
-                },
-                "required": ["skill"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "skill": { "type": "string" }
-                }
-            }),
-            usage: Some("unload_skill <skill>".to_string()),
-        }
+impl TypedTool for UnloadSkillTool {
+    type Args = UnloadSkillArgs;
+    type Output = UnloadSkillOutput;
+
+    fn name(&self) -> &str {
+        TOOL_UNLOAD_SKILL
     }
 
-    fn support_bash(&self) -> bool {
-        false
+    fn description(&self) -> &str {
+        "Unload a previously loaded prompt skill from the current session."
     }
 
-    fn support_action(&self) -> bool {
-        true
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::ACTION | CallingConventions::LLM
     }
 
-    fn support_llm_tool_call(&self) -> bool {
-        true
+    fn args_schema(&self) -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "skill": { "type": "string" }
+            },
+            "required": ["skill"],
+            "additionalProperties": false
+        })
     }
 
-    async fn call(
+    fn output_schema(&self) -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "skill": { "type": "string" }
+            }
+        })
+    }
+
+    fn usage(&self) -> Option<String> {
+        Some("unload_skill <skill>".to_string())
+    }
+
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        Some(format!("{TOOL_UNLOAD_SKILL} {}", args.skill.trim()))
+    }
+
+    fn build_summary(&self, output: &Self::Output) -> String {
+        format!("unloaded skill `{}`", output.skill)
+    }
+
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let skill_ref = require_trimmed_string_arg(&args, "skill")?;
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let skill_ref = args.skill.trim().to_string();
+        if skill_ref.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing or invalid `skill`".to_string(),
+            ));
+        }
+        let session_id = ctx.session().session_id.as_str();
         self.session_store
-            .refresh_status_from_disk(ctx.session_id.as_str())
+            .refresh_status_from_disk(session_id)
             .await?;
         let session = self
             .session_store
-            .get_session(ctx.session_id.as_str())
+            .get_session(session_id)
             .await
             .ok_or_else(|| {
-                AgentToolError::InvalidArgs(format!("session not found: {}", ctx.session_id))
+                AgentToolError::InvalidArgs(format!("session not found: {}", session_id))
             })?;
 
         {
@@ -187,13 +246,10 @@ impl AgentTool for UnloadSkillTool {
             self.session_store.save_session_locked(&guard).await?;
         }
 
-        Ok(AgentToolResult::from_details(json!({
-            "ok": true,
-            "skill": skill_ref,
-        }))
-        .with_is_agent_tool(true)
-        .with_cmd_line(format!("unload_skill {}", skill_ref))
-        .with_result(format!("unloaded skill `{}`", skill_ref)))
+        Ok(UnloadSkillOutput {
+            ok: true,
+            skill: skill_ref,
+        })
     }
 }
 
@@ -262,6 +318,8 @@ fn build_session_skill_roots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_tool::NullToolHost;
+    use crate::behavior::SessionRuntimeContext;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -299,16 +357,22 @@ mod tests {
         store.save_session("s1").await.expect("save session");
 
         let tool = LoadSkillTool::new(store.clone());
-        tool.call(
-            &SessionRuntimeContext {
-                trace_id: "t1".to_string(),
-                agent_name: "did:test:agent".to_string(),
-                behavior: "plan".to_string(),
-                step_idx: 0,
-                wakeup_id: "w1".to_string(),
-                session_id: "s1".to_string(),
+        let ctx = SessionRuntimeContext {
+            trace_id: "t1".to_string(),
+            agent_name: "did:test:agent".to_string(),
+            behavior: "plan".to_string(),
+            step_idx: 0,
+            wakeup_id: "w1".to_string(),
+            session_id: "s1".to_string(),
+        };
+        let host = NullToolHost;
+        let tool_ctx = ToolCtx::new(&ctx, &host);
+        tool.execute(
+            &tool_ctx,
+            LoadSkillArgs {
+                skill: "planner".to_string(),
+                scope: Some("session".to_string()),
             },
-            json!({"skill": "planner", "scope": "session"}),
         )
         .await
         .expect("load skill");

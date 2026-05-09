@@ -6,9 +6,10 @@ use log::{info, warn};
 use serde::Deserialize;
 use serde_json::{json, Value as Json};
 
+use serde::Serialize;
+
 use crate::{
-    build_builtin_tool_result, derive_default_title, tokenize_bash_command_line, AgentTool,
-    AgentToolError, AgentToolResult, SessionRuntimeContext, ToolSpec,
+    AgentToolError, CallingConventions, SessionRuntimeContext, ToolCtx, TypedTool,
 };
 
 use super::*;
@@ -593,15 +594,41 @@ impl TodoTool {
     }
 }
 
+/// Wrapper around the JSON details produced by a todo dispatch.
+/// `Serialize` emits only `details` so the AgentToolResult payload
+/// matches the legacy shape; `action` rides along for `build_summary`.
+pub struct TodoOutput {
+    action: String,
+    details: Json,
+}
+
+impl Serialize for TodoOutput {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.details.serialize(serializer)
+    }
+}
+
+const TODO_BASH_TOKENS_KEY: &str = "_bash_tokens";
+
 #[async_trait]
-impl AgentTool for TodoTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_TODO.to_string(),
-            description:
-                "Workspace todo CLI with sqlite/oplog persistence and PDCA state guardrails."
-                    .to_string(),
-            args_schema: json!({
+impl TypedTool for TodoTool {
+    type Args = Json;
+    type Output = TodoOutput;
+
+    fn name(&self) -> &str {
+        TOOL_TODO
+    }
+
+    fn description(&self) -> &str {
+        "Workspace todo CLI with sqlite/oplog persistence and PDCA state guardrails."
+    }
+
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn args_schema(&self) -> Json {
+        json!({
                 "type": "object",
                 "properties": {
                     "action": {
@@ -650,70 +677,111 @@ impl AgentTool for TodoTool {
                 },
                 "required": ["action"],
                 "additionalProperties": true
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "action": { "type": "string" },
-                    "items": { "type": "array", "items": { "type": "object" } },
-                    "item": { "type": "object" },
-                    "notes": { "type": "array", "items": { "type": "object" } },
-                    "deps": { "type": "array", "items": { "type": "string" } },
-                    "version": { "type": "integer" },
-                    "new_version": { "type": "integer" },
-                    "before_version": { "type": "integer" },
-                    "op_id": { "type": "string" },
-                    "errors": { "type": "array", "items": { "type": "object" } },
-                    "counts_by_status": { "type": "object" },
-                    "has_pending": { "type": "boolean" },
-                    "text": { "type": "string" }
+            })
+    }
+
+    fn output_schema(&self) -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "action": { "type": "string" },
+                "items": { "type": "array", "items": { "type": "object" } },
+                "item": { "type": "object" },
+                "notes": { "type": "array", "items": { "type": "object" } },
+                "deps": { "type": "array", "items": { "type": "string" } },
+                "version": { "type": "integer" },
+                "new_version": { "type": "integer" },
+                "before_version": { "type": "integer" },
+                "op_id": { "type": "string" },
+                "errors": { "type": "array", "items": { "type": "object" } },
+                "counts_by_status": { "type": "object" },
+                "has_pending": { "type": "boolean" },
+                "text": { "type": "string" }
+            }
+        })
+    }
+
+    fn usage(&self) -> Option<String> {
+        Some(TODO_USAGE.to_string())
+    }
+
+    fn parse_bash_args(
+        &self,
+        tokens: &[String],
+        _shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        let tokens_json: Vec<Json> = tokens.iter().map(|t| Json::String(t.clone())).collect();
+        Ok(json!({ TODO_BASH_TOKENS_KEY: tokens_json }))
+    }
+
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        if let Some(tokens) = args.get(TODO_BASH_TOKENS_KEY).and_then(Json::as_array) {
+            let mut parts = vec![TOOL_TODO.to_string()];
+            for tok in tokens {
+                if let Some(s) = tok.as_str() {
+                    parts.push(s.to_string());
                 }
-            }),
-            usage: Some(TODO_USAGE.to_string()),
+            }
+            return Some(parts.join(" "));
         }
+        let action = args.get("action").and_then(Json::as_str).unwrap_or("");
+        Some(build_todo_call_cmd_line(action, args))
     }
 
-    fn support_bash(&self) -> bool {
-        true
-    }
-    fn support_action(&self) -> bool {
-        false
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        false
+    fn build_summary(&self, output: &Self::Output) -> String {
+        summarize_todo_action(&output.action, &output.details)
     }
 
-    async fn exec(
+    async fn execute(
+        &self,
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        if let Some(tokens_json) = args.get(TODO_BASH_TOKENS_KEY).cloned() {
+            let tokens = tokens_json
+                .as_array()
+                .ok_or_else(|| AgentToolError::InvalidArgs(
+                    format!("`{TODO_BASH_TOKENS_KEY}` must be an array"),
+                ))?
+                .iter()
+                .map(|t| {
+                    t.as_str().map(str::to_string).ok_or_else(|| {
+                        AgentToolError::InvalidArgs(format!(
+                            "`{TODO_BASH_TOKENS_KEY}` items must be strings"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return self.dispatch_bash(ctx.session(), &tokens, ctx.shell_cwd()).await;
+        }
+        self.dispatch_action(ctx.session(), args).await
+    }
+}
+
+impl TodoTool {
+    async fn dispatch_bash(
         &self,
         ctx: &SessionRuntimeContext,
-        line: &str,
+        tokens: &[String],
         shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
+    ) -> Result<TodoOutput, AgentToolError> {
         if tokens.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "empty bash command line".to_string(),
-            ));
-        }
-        if tokens.len() < 2 {
             return Err(AgentToolError::InvalidArgs(
                 "missing todo subcommand".to_string(),
             ));
         }
-
-        let subcommand = tokens[1].trim().to_lowercase();
-        let cli_args = TodoCliArgs::parse(&tokens[2..])?;
+        let subcommand = tokens[0].trim().to_lowercase();
+        let cli_args = TodoCliArgs::parse(&tokens[1..])?;
         if subcommand == "help" {
-            return Ok(build_builtin_tool_result(
-                json!({
+            return Ok(TodoOutput {
+                action: "help".to_string(),
+                details: json!({
                     "ok": true,
                     "tool": TOOL_TODO,
                     "usage": TODO_USAGE
                 }),
-                line.trim().to_string(),
-                "show usage",
-            ));
+            });
         }
         let workspace_id =
             self.resolve_workspace_id_for_exec(cli_args.flag_string("ws")?, ctx, shell_cwd)?;
@@ -782,35 +850,33 @@ impl AgentTool for TodoTool {
             _ => {
                 return Err(AgentToolError::InvalidArgs(format!(
                     "unsupported todo subcommand `{}`",
-                    tokens[1]
+                    tokens[0]
                 )));
             }
         };
 
-        let mut result = self.call(ctx, args).await?;
-        // Bash entry: prefer the original command line so subcommand args
-        // (title/ref/state/...) survive in cmd_args.
-        result.cmd_name = None;
-        result.cmd_args = None;
-        result = result.with_command_metadata_from_line(line.trim());
-        if result.title.trim().is_empty() {
-            result.title = derive_default_title(&result);
-        }
-        Ok(result)
+        self.dispatch_action(ctx, args).await
     }
 
-    async fn call(
+    async fn dispatch_action(
         &self,
         ctx: &SessionRuntimeContext,
         args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let action = require_string(&args, "action")?;
+    ) -> Result<TodoOutput, AgentToolError> {
+        let action = args
+            .get("action")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AgentToolError::InvalidArgs("missing or invalid `action`".to_string())
+            })?
+            .to_string();
         let workspace_id = args
             .get("workspace_id")
             .and_then(Json::as_str)
             .unwrap_or_default()
             .to_string();
-        let cmd_line = build_todo_call_cmd_line(&action, &args);
         let result = match action.as_str() {
             "list" => self.call_list(args).await,
             "get" => self.call_get(args).await,
@@ -839,10 +905,7 @@ impl AgentTool for TodoTool {
             }
         }
 
-        result.map(|details| {
-            let summary = summarize_todo_action(&action, &details);
-            build_builtin_tool_result(details, cmd_line, summary)
-        })
+        result.map(|details| TodoOutput { action, details })
     }
 }
 
@@ -897,6 +960,9 @@ fn build_todo_call_cmd_line(action: &str, args: &Json) -> String {
 }
 
 fn summarize_todo_action(action: &str, details: &Json) -> String {
+    if action == "help" {
+        return "show usage".to_string();
+    }
     if let Some(text) = details
         .get("text")
         .and_then(Json::as_str)
@@ -1495,16 +1561,18 @@ mod tests {
         tool: &TodoTool,
         ctx: &SessionRuntimeContext,
         args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        tool.call(ctx, args).await
+    ) -> Result<crate::AgentToolResult, AgentToolError> {
+        let handle = crate::TypedToolHandle::with_null_host(tool.clone());
+        crate::AgentTool::call(&handle, ctx, args).await
     }
 
     async fn exec(
         tool: &TodoTool,
         ctx: &SessionRuntimeContext,
         line: &str,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        tool.exec(ctx, line, None).await
+    ) -> Result<crate::AgentToolResult, AgentToolError> {
+        let handle = crate::TypedToolHandle::with_null_host(tool.clone());
+        crate::AgentTool::exec(&handle, ctx, line, None).await
     }
 
     fn tool_for_test() -> TodoTool {

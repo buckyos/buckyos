@@ -348,7 +348,7 @@ impl AgentWorkshop {
                     }
                     TOOL_TODO_MANAGE => {
                         let policy = TodoToolPolicy::from_tool_config(&self.cfg, tool)?;
-                        tool_mgr.register_tool(TodoTool::new(TodoToolConfig {
+                        tool_mgr.register_typed_tool(TodoTool::new(TodoToolConfig {
                             db_path: policy.db_path,
                             default_list_limit: policy.default_list_limit,
                             max_list_limit: policy.max_list_limit,

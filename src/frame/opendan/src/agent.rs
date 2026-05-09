@@ -416,10 +416,10 @@ impl AIAgent {
             .register_typed_tool(GetSessionTool::new(session_store.clone()))
             .map_err(|err| anyhow!("register session tool failed: {err}"))?;
         tools
-            .register_tool(LoadSkillTool::new(session_store.clone()))
+            .register_typed_tool(LoadSkillTool::new(session_store.clone()))
             .map_err(|err| anyhow!("register load_skill tool failed: {err}"))?;
         tools
-            .register_tool(UnloadSkillTool::new(session_store.clone()))
+            .register_typed_tool(UnloadSkillTool::new(session_store.clone()))
             .map_err(|err| anyhow!("register unload_skill tool failed: {err}"))?;
 
         let behavior_cfg_cache = Arc::new(RwLock::new(HashMap::new()));

@@ -20,15 +20,13 @@ use tokio::{fs, task};
 
 use crate::agent_tool::{normalize_abs_path, now_ms};
 use crate::agent_tool::{
-    optional_trimmed_string_arg as optional_string, require_trimmed_string_arg as require_string,
-    sanitize_session_id_for_path, session_record_path, AgentTool, AgentToolError, AgentToolManager,
-    AgentToolResult, BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool,
+    sanitize_session_id_for_path, session_record_path, AgentToolError, AgentToolManager,
+    BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool,
     ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
     ListExternalWorkspacesTool as SharedListExternalWorkspacesTool,
-    ManagedExternalWorkspaceBackend, TodoAdminListOptions, TodoTool, TodoToolConfig, ToolSpec,
+    ManagedExternalWorkspaceBackend, TodoAdminListOptions, TodoTool, TodoToolConfig,
     TOOL_CREATE_SUB_AGENT,
 };
-use crate::behavior::SessionRuntimeContext;
 use crate::worklog::{WorklogListOptions, WorklogService, WorklogToolConfig};
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
@@ -179,7 +177,7 @@ impl AiRuntime {
                 workspace_bindings_file_name: self.cfg.workspace_bindings_file_name.clone(),
             },
         ));
-        tool_mgr.register_tool(RuntimeCreateSubAgentTool {
+        tool_mgr.register_typed_tool(RuntimeCreateSubAgentTool {
             runtime: Arc::new(self.clone()),
         })?;
         tool_mgr.register_typed_tool(SharedBindExternalWorkspaceTool::new(
@@ -1345,65 +1343,110 @@ impl OpenDanExternalWorkspaceRuntime {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct RuntimeCreateSubAgentArgs {
+    name: String,
+    #[serde(default)]
+    did: Option<String>,
+    #[serde(default)]
+    parent_did: Option<String>,
+    #[serde(default)]
+    role_md: Option<String>,
+    #[serde(default)]
+    self_md: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct RuntimeCreateSubAgentOutput {
+    ok: bool,
+    sub_agent: CreateSubAgentResult,
+}
+
 #[async_trait]
-impl AgentTool for RuntimeCreateSubAgentTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_CREATE_SUB_AGENT.to_string(),
-            description: "Create a sub-agent under current agent runtime root.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Sub-agent local name." },
-                    "did": { "type": "string", "description": "Optional sub-agent DID." },
-                    "parent_did": { "type": "string", "description": "Optional parent DID. Defaults to current agent DID." },
-                    "role_md": { "type": "string" },
-                    "self_md": { "type": "string" }
-                },
-                "required": ["name"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "sub_agent": { "type": "object" }
-                }
-            }),
-            usage: None,
-        }
+impl crate::agent_tool::TypedTool for RuntimeCreateSubAgentTool {
+    type Args = RuntimeCreateSubAgentArgs;
+    type Output = RuntimeCreateSubAgentOutput;
+
+    fn name(&self) -> &str {
+        TOOL_CREATE_SUB_AGENT
     }
 
-    fn support_bash(&self) -> bool {
-        true
-    }
-    fn support_action(&self) -> bool {
-        false
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        false
+    fn description(&self) -> &str {
+        "Create a sub-agent under current agent runtime root."
     }
 
-    async fn call(
+    fn calling(&self) -> crate::agent_tool::CallingConventions {
+        crate::agent_tool::CallingConventions::BASH
+    }
+
+    fn args_schema(&self) -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "Sub-agent local name." },
+                "did": { "type": "string", "description": "Optional sub-agent DID." },
+                "parent_did": { "type": "string", "description": "Optional parent DID. Defaults to current agent DID." },
+                "role_md": { "type": "string" },
+                "self_md": { "type": "string" }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        })
+    }
+
+    fn output_schema(&self) -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "sub_agent": { "type": "object" }
+            }
+        })
+    }
+
+    fn build_cmd_line(&self, _args: &Self::Args) -> Option<String> {
+        Some(TOOL_CREATE_SUB_AGENT.to_string())
+    }
+
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_name.clone());
+        ctx: &crate::agent_tool::ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let name = args.name.trim();
+        if name.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing or invalid `name`".to_string(),
+            ));
+        }
+        let parent_did = args
+            .parent_did
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| ctx.session().agent_name.clone());
         let req = CreateSubAgentRequest {
-            name: require_string(&args, "name")?,
-            did: optional_string(&args, "did")?,
-            role_md: optional_string(&args, "role_md")?,
-            self_md: optional_string(&args, "self_md")?,
+            name: name.to_string(),
+            did: args.did.and_then(|v| {
+                let trimmed = v.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }),
+            role_md: args.role_md.and_then(|v| {
+                let trimmed = v.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }),
+            self_md: args.self_md.and_then(|v| {
+                let trimmed = v.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }),
         };
 
         let result = self.runtime.create_sub_agent(&parent_did, req).await?;
-        Ok(AgentToolResult::from_details(json!({
-        "ok": true,
-        "sub_agent": result
-        }))
-        .with_cmd_line(TOOL_CREATE_SUB_AGENT.to_string())
-        .with_result("ok"))
+        Ok(RuntimeCreateSubAgentOutput {
+            ok: true,
+            sub_agent: result,
+        })
     }
 }
 
@@ -1608,6 +1651,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::behavior::SessionRuntimeContext;
 
     async fn write_agent_doc(path: &Path, did: &str) {
         fs::create_dir_all(path).await.expect("create agent dir");

@@ -1,3 +1,9 @@
+// TODO(stage 5/12): split this file into trait.rs / envelope.rs / host.rs /
+// manager.rs / tools/*.rs (target ≤600 lines per file). Deferred from the
+// initial cleanup pass because the AgentToolResult/MCPTool/manager blocks
+// share several private helpers (`truncate_text`, `compact_json_text`,
+// history constants) that need coordinated relocation.
+
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
@@ -17,7 +23,6 @@ pub mod file_tools;
 pub mod json_args;
 pub mod memory;
 pub mod path_utils;
-pub mod runtime_utils;
 pub mod todo;
 pub mod tool;
 pub mod workspace;
@@ -42,7 +47,13 @@ pub use path_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,
     sanitize_session_id_for_path, session_record_path, to_abs_path, MAX_SESSION_ID_LEN,
 };
-pub use runtime_utils::now_ms;
+pub fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 pub use todo::{
     get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
     TodoAdminListItem, TodoAdminListOptions, TodoAdminListResult, TodoTool, TodoToolConfig,
@@ -1088,6 +1099,19 @@ pub fn cli_exit_code_for_error(err: &AgentToolError) -> i32 {
     }
 }
 
+/// Type-erased dispatch trait used internally by [`AgentToolManager`].
+///
+/// **Prefer [`TypedTool`] for new tools** — it gives you typed
+/// `Args`/`Output`, automatic JSON (de)serialization and removes the
+/// `spec()` boilerplate. The manager wraps every `TypedTool` into a
+/// `TypedToolHandle` that implements this trait, so registering a
+/// typed tool via [`AgentToolManager::register_typed_tool`] is the
+/// idiomatic path.
+///
+/// Implement this trait directly only when the tool needs to produce
+/// non-trivial [`AgentToolResult`] variants the typed pipeline cannot
+/// express (e.g. `Pending` long-running tasks with `task_id`,
+/// `partial_output`, custom `pending_reason`).
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
@@ -1147,12 +1171,19 @@ impl TypedTool for GetSessionTool {
     type Args = GetSessionArgs;
     type Output = Json;
 
-    const NAME: &'static str = TOOL_GET_SESSION;
-    const DESCRIPTION: &'static str =
-        "Read current session state and status. Used by runtime before each LLM round.";
-    const CALLING: CallingConventions = CallingConventions::BASH;
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_GET_SESSION
+
+    }
+    fn description(&self) -> &str {
+        "Read current session state and status. Used by runtime before each LLM round."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1162,7 +1193,7 @@ impl TypedTool for GetSessionTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1172,13 +1203,18 @@ impl TypedTool for GetSessionTool {
         })
     }
 
-    fn usage() -> Option<&'static str> {
-        Some("get_session [session_id]")
+    fn usage(&self) -> Option<String> {
+        Some("get_session [session_id]".to_string())
     }
 
     fn parse_bash_args(
+
+        &self,
+
         tokens: &[String],
+
         _shell_cwd: Option<&Path>,
+
     ) -> Result<Json, AgentToolError> {
         if tokens.is_empty() {
             return Ok(json!({}));
@@ -1189,7 +1225,7 @@ impl TypedTool for GetSessionTool {
         parse_default_bash_exec_args(tokens)
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         match args.session_id.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
             Some(id) => Some(format!("{TOOL_GET_SESSION} {id}")),
             None => Some(TOOL_GET_SESSION.to_string()),
@@ -1285,11 +1321,19 @@ impl TypedTool for LoadMemoryTool {
     type Args = LoadMemoryArgs;
     type Output = LoadMemoryOutput;
 
-    const NAME: &'static str = TOOL_LOAD_MEMORY;
-    const DESCRIPTION: &'static str = "Read memory summary using default retrieval strategy.";
-    const CALLING: CallingConventions = CallingConventions::from_legacy(true, false, true);
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_LOAD_MEMORY
+
+    }
+    fn description(&self) -> &str {
+        "Read memory summary using default retrieval strategy."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::from_legacy(true, false, true)
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1303,11 +1347,11 @@ impl TypedTool for LoadMemoryTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({ "type": "string" })
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         let mut out = TOOL_LOAD_MEMORY.to_string();
         if let Some(limit) = args.token_limit {
             out.push_str(format!(" token_limit={limit}").as_str());
@@ -1333,7 +1377,7 @@ impl TypedTool for LoadMemoryTool {
         Some(out)
     }
 
-    fn build_summary(output: &Self::Output) -> String {
+    fn build_summary(&self, output: &Self::Output) -> String {
         format!("loaded {} memory item(s)", output.item_count)
     }
 
@@ -1382,11 +1426,19 @@ impl TypedTool for SetMemoryTool {
     type Args = SetMemoryArgs;
     type Output = Json;
 
-    const NAME: &'static str = TOOL_SET_MEMORY;
-    const DESCRIPTION: &'static str = "Store a memory entry by key and content.";
-    const CALLING: CallingConventions = CallingConventions::from_legacy(true, false, true);
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_SET_MEMORY
+
+    }
+    fn description(&self) -> &str {
+        "Store a memory entry by key and content."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::from_legacy(true, false, true)
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1397,17 +1449,22 @@ impl TypedTool for SetMemoryTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({ "type": "object" })
     }
 
-    fn usage() -> Option<&'static str> {
-        Some("set_memory <key> <content> | set_memory key=<key> content=<content>")
+    fn usage(&self) -> Option<String> {
+        Some("set_memory <key> <content> | set_memory key=<key> content=<content>".to_string())
     }
 
     fn parse_bash_args(
+
+        &self,
+
         tokens: &[String],
+
         _shell_cwd: Option<&Path>,
+
     ) -> Result<Json, AgentToolError> {
         if tokens.len() >= 2 && !tokens[0].contains('=') {
             return Ok(json!({
@@ -1418,7 +1475,7 @@ impl TypedTool for SetMemoryTool {
         parse_default_bash_exec_args(tokens)
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         Some(format!("{TOOL_SET_MEMORY} {}", args.key.trim()))
     }
 
@@ -1472,12 +1529,19 @@ impl TypedTool for RemoveMemoryTool {
     type Args = RemoveMemoryArgs;
     type Output = Json;
 
-    const NAME: &'static str = TOOL_REMOVE_MEMORY;
-    const DESCRIPTION: &'static str =
-        "Remove a memory entry by key and delete its stored file.";
-    const CALLING: CallingConventions = CallingConventions::from_legacy(true, false, true);
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_REMOVE_MEMORY
+
+    }
+    fn description(&self) -> &str {
+        "Remove a memory entry by key and delete its stored file."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::from_legacy(true, false, true)
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1487,17 +1551,22 @@ impl TypedTool for RemoveMemoryTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({ "type": "object" })
     }
 
-    fn usage() -> Option<&'static str> {
-        Some("remove_memory <key> | remove_memory key=<key>")
+    fn usage(&self) -> Option<String> {
+        Some("remove_memory <key> | remove_memory key=<key>".to_string())
     }
 
     fn parse_bash_args(
+
+        &self,
+
         tokens: &[String],
+
         _shell_cwd: Option<&Path>,
+
     ) -> Result<Json, AgentToolError> {
         if tokens.is_empty() {
             return Err(AgentToolError::InvalidArgs("key is required".to_string()));
@@ -1508,7 +1577,7 @@ impl TypedTool for RemoveMemoryTool {
         parse_default_bash_exec_args(tokens)
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         Some(format!("{TOOL_REMOVE_MEMORY} {}", args.key.trim()))
     }
 
@@ -1604,12 +1673,19 @@ impl TypedTool for CreateWorkspaceTool {
     type Args = CreateWorkspaceArgs;
     type Output = Json;
 
-    const NAME: &'static str = TOOL_CREATE_WORKSPACE;
-    const DESCRIPTION: &'static str =
-        "创建session的wrokspace并设置为session的default workspace";
-    const CALLING: CallingConventions = CallingConventions::BASH;
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_CREATE_WORKSPACE
+
+    }
+    fn description(&self) -> &str {
+        "创建session的wrokspace并设置为session的default workspace"
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1621,7 +1697,7 @@ impl TypedTool for CreateWorkspaceTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1635,13 +1711,18 @@ impl TypedTool for CreateWorkspaceTool {
         })
     }
 
-    fn usage() -> Option<&'static str> {
-        Some("create_workspace <name> <summary>")
+    fn usage(&self) -> Option<String> {
+        Some("create_workspace <name> <summary>".to_string())
     }
 
     fn parse_bash_args(
+
+        &self,
+
         tokens: &[String],
+
         _shell_cwd: Option<&Path>,
+
     ) -> Result<Json, AgentToolError> {
         if tokens.len() < 2 {
             return Err(AgentToolError::InvalidArgs(
@@ -1668,7 +1749,7 @@ impl TypedTool for CreateWorkspaceTool {
         Ok(json!({ "name": name, "summary": summary }))
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         Some(format!("{TOOL_CREATE_WORKSPACE} {} {}", args.name, args.summary))
     }
 
@@ -1743,12 +1824,19 @@ impl TypedTool for BindExternalWorkspaceTool {
     type Args = BindExternalWorkspaceArgs;
     type Output = Json;
 
-    const NAME: &'static str = TOOL_BIND_EXTERNAL_WORKSPACE;
-    const DESCRIPTION: &'static str =
-        "Bind an external workspace directory so this agent can access it from runtime.";
-    const CALLING: CallingConventions = CallingConventions::BASH;
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_BIND_EXTERNAL_WORKSPACE
+
+    }
+    fn description(&self) -> &str {
+        "Bind an external workspace directory so this agent can access it from runtime."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1761,7 +1849,7 @@ impl TypedTool for BindExternalWorkspaceTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1771,7 +1859,7 @@ impl TypedTool for BindExternalWorkspaceTool {
         })
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         let agent = args.agent_did.as_deref().map(str::trim).unwrap_or("");
         let mut out = format!(
             "{TOOL_BIND_EXTERNAL_WORKSPACE} {} {}",
@@ -1784,7 +1872,7 @@ impl TypedTool for BindExternalWorkspaceTool {
         Some(out)
     }
 
-    fn build_summary(_output: &Self::Output) -> String {
+    fn build_summary(&self, _output: &Self::Output) -> String {
         "ok".to_string()
     }
 
@@ -1843,12 +1931,19 @@ impl TypedTool for ListExternalWorkspacesTool {
     type Args = ListExternalWorkspacesArgs;
     type Output = Json;
 
-    const NAME: &'static str = TOOL_LIST_EXTERNAL_WORKSPACES;
-    const DESCRIPTION: &'static str =
-        "List bound external workspaces visible to current agent.";
-    const CALLING: CallingConventions = CallingConventions::BASH;
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_LIST_EXTERNAL_WORKSPACES
+
+    }
+    fn description(&self) -> &str {
+        "List bound external workspaces visible to current agent."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1858,7 +1953,7 @@ impl TypedTool for ListExternalWorkspacesTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1868,7 +1963,7 @@ impl TypedTool for ListExternalWorkspacesTool {
         })
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         let mut out = TOOL_LIST_EXTERNAL_WORKSPACES.to_string();
         if let Some(agent) = args
             .agent_did
@@ -1881,7 +1976,7 @@ impl TypedTool for ListExternalWorkspacesTool {
         Some(out)
     }
 
-    fn build_summary(output: &Self::Output) -> String {
+    fn build_summary(&self, output: &Self::Output) -> String {
         let count = output
             .get("workspaces")
             .and_then(Json::as_array)
@@ -1920,11 +2015,19 @@ impl TypedTool for BindWorkspaceTool {
     type Args = BindWorkspaceArgs;
     type Output = Json;
 
-    const NAME: &'static str = TOOL_BIND_WORKSPACE;
-    const DESCRIPTION: &'static str = "设置agent_session的当前workspace";
-    const CALLING: CallingConventions = CallingConventions::BASH;
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_BIND_WORKSPACE
+
+    }
+    fn description(&self) -> &str {
+        "设置agent_session的当前workspace"
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1935,7 +2038,7 @@ impl TypedTool for BindWorkspaceTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -1947,13 +2050,18 @@ impl TypedTool for BindWorkspaceTool {
         })
     }
 
-    fn usage() -> Option<&'static str> {
-        Some("bind_workspace <workspace_id|workspace_path>")
+    fn usage(&self) -> Option<String> {
+        Some("bind_workspace <workspace_id|workspace_path>".to_string())
     }
 
     fn parse_bash_args(
+
+        &self,
+
         tokens: &[String],
+
         _shell_cwd: Option<&Path>,
+
     ) -> Result<Json, AgentToolError> {
         if tokens.is_empty() {
             return Err(AgentToolError::InvalidArgs(
@@ -1989,7 +2097,7 @@ impl TypedTool for BindWorkspaceTool {
         Ok(json!({ "workspace": workspace }))
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         Some(format!("{TOOL_BIND_WORKSPACE} {}", args.workspace.trim()))
     }
 
@@ -2025,12 +2133,19 @@ impl TypedTool for WorklogTool {
     type Args = Json;
     type Output = Json;
 
-    const NAME: &'static str = TOOL_WORKLOG_MANAGE;
-    const DESCRIPTION: &'static str =
-        "Structured workspace worklog with event records, step summary and prompt-safe rendering.";
-    const CALLING: CallingConventions = CallingConventions::BASH;
+    fn name(&self) -> &str {
 
-    fn args_schema() -> Json {
+        TOOL_WORKLOG_MANAGE
+
+    }
+    fn description(&self) -> &str {
+        "Structured workspace worklog with event records, step summary and prompt-safe rendering."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn args_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -2079,7 +2194,7 @@ impl TypedTool for WorklogTool {
         })
     }
 
-    fn output_schema() -> Json {
+    fn output_schema(&self) -> Json {
         json!({
             "type": "object",
             "properties": {
@@ -2095,12 +2210,12 @@ impl TypedTool for WorklogTool {
         })
     }
 
-    fn build_cmd_line(args: &Self::Args) -> Option<String> {
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
         let action = args.get("action").and_then(Json::as_str).unwrap_or("");
         Some(build_worklog_manage_cmd_line(action, args))
     }
 
-    fn build_summary(output: &Self::Output) -> String {
+    fn build_summary(&self, output: &Self::Output) -> String {
         output
             .get("action")
             .and_then(Json::as_str)
@@ -2225,28 +2340,44 @@ impl MCPTool {
 }
 
 #[async_trait]
-impl AgentTool for MCPTool {
-    fn spec(&self) -> ToolSpec {
-        self.spec.clone()
+impl TypedTool for MCPTool {
+    type Args = Json;
+    type Output = Json;
+
+    fn name(&self) -> &str {
+        self.spec.name.as_str()
     }
 
-    fn support_bash(&self) -> bool {
-        true
+    fn description(&self) -> &str {
+        self.spec.description.as_str()
     }
 
-    fn support_action(&self) -> bool {
-        true
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH | CallingConventions::ACTION
     }
 
-    fn support_llm_tool_call(&self) -> bool {
-        false
+    fn args_schema(&self) -> Json {
+        self.spec.args_schema.clone()
     }
 
-    async fn call(
+    fn output_schema(&self) -> Json {
+        self.spec.output_schema.clone()
+    }
+
+    fn build_cmd_line(&self, _args: &Self::Args) -> Option<String> {
+        Some(self.spec.name.clone())
+    }
+
+    fn build_summary(&self, _output: &Self::Output) -> String {
+        "OK".to_string()
+    }
+
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let ctx = ctx.session();
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": format!(
@@ -2307,9 +2438,7 @@ impl AgentTool for MCPTool {
             )));
         }
 
-        Ok(AgentToolResult::from_details(result)
-            .with_cmd_line(self.spec.name.clone())
-            .with_result("OK"))
+        Ok(result)
     }
 }
 
@@ -2527,7 +2656,7 @@ impl AgentToolManager {
     }
 
     pub fn register_mcp_tool(&self, cfg: MCPToolConfig) -> Result<(), AgentToolError> {
-        self.register_tool(MCPTool::new(cfg)?)
+        self.register_typed_tool(MCPTool::new(cfg)?)
     }
 
     pub fn unregister_tool(&self, name: &str) -> bool {
