@@ -405,12 +405,11 @@ impl AIAgent {
             )
             .map_err(|err| anyhow!("register workshop tools failed: {err}"))?;
 
-        let memory = AgentMemory::new(AgentMemoryConfig::new(agent_root.clone()))
-            .await
+        // TODO(agent_memory_v2): wire opendan to the new agent_memory API
+        // (load/set/list, no register_tools, no async open). Stubbing for now so
+        // the breaking-change branch compiles.
+        let memory = AgentMemory::open(AgentMemoryConfig::new(agent_root.clone()))
             .map_err(|err| anyhow!("init agent memory failed: {err}"))?;
-        memory
-            .register_tools(&tools)
-            .map_err(|err| anyhow!("register memory tools failed: {err}"))?;
 
         tools
             .register_typed_tool(GetSessionTool::new(session_store.clone()))
@@ -589,11 +588,12 @@ impl AIAgent {
         }
 
         let now_ms = current_time.timestamp_millis().max(0) as u64;
-        let memory_items = self
-            .memory
-            .load_memory(Some(1024), vec![], Some(current_time))
-            .await
-            .map_err(|err| anyhow!("load self-check memory failed: {err}"))?;
+        // TODO(agent_memory_v2): rewrite self-check temporal filter against the
+        // new AgentMemory::load(LoadOptions) → Vec<LoadItem> API. Until then
+        // self-check sees no memory items, so it will only fire via the periodic
+        // force-trigger path.
+        let _ = &self.memory;
+        let memory_items: Vec<crate::agent_tool::MemoryRankItem> = Vec::new();
         if memory_items.is_empty() {
             debug!(
                 "agent.self_check_timer.skip_empty_memory: agent={} tick={}",
@@ -2806,17 +2806,10 @@ impl AIAgent {
                 continue;
             }
 
-            if let Err(err) = self
-                .memory
-                .set_memory(key, content.as_str(), source.clone())
-                .await
-            {
-                warn!(
-                    "agent.set_memory failed: did={:?} key={} err={}",
-                    self.did, key, err
-                );
-                continue;
-            }
+            // TODO(agent_memory_v2): port to AgentMemory::set(key, content, reason).
+            // The old API took a Json `source` blob; the new one takes a single
+            // `reason: &str`. Stubbed for the breaking-change branch.
+            let _ = (&self.memory, key, content.as_str(), &source);
 
             let parsed_content = parse_memory_content_for_self_check(content.as_str());
             let reminder_like =
@@ -6170,24 +6163,9 @@ system: "self check behavior"
         .expect("load agent");
 
         let current_time = Utc::now();
-        agent
-            .memory
-            .set_memory(
-                "self/check/demo",
-                format!(
-                    r#"{{"summary":"pending self-check item","importance":1,"trigger_at":"{}"}}"#,
-                    current_time.to_rfc3339()
-                )
-                .as_str(),
-                json!({
-                    "kind": "test",
-                    "name": "self-check",
-                    "retrieved_at": current_time.to_rfc3339(),
-                    "locator": "unit-test"
-                }),
-            )
-            .await
-            .expect("set memory");
+        // TODO(agent_memory_v2): re-seed memory through the new AgentMemory::set
+        // API once the self-check pipeline is ported. Stubbed for compile.
+        let _ = &agent.memory;
 
         agent
             .run_self_check_timer_tick(1, current_time)
@@ -6285,20 +6263,9 @@ system: "self check behavior"
         .await
         .expect("load agent");
 
-        agent
-            .memory
-            .set_memory(
-                "self/check/untimed",
-                r#"{"summary":"plain note without explicit time","importance":1}"#,
-                json!({
-                    "kind": "test",
-                    "name": "self-check",
-                    "retrieved_at": Utc::now().to_rfc3339(),
-                    "locator": "unit-test"
-                }),
-            )
-            .await
-            .expect("set untimed memory");
+        // TODO(agent_memory_v2): re-seed memory through AgentMemory::set once
+        // ported. Stubbed for compile.
+        let _ = &agent.memory;
 
         agent
             .run_self_check_timer_tick(1, Utc::now())

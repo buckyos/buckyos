@@ -256,6 +256,7 @@ impl VerifyReport {
     }
 }
 
+#[derive(Clone)]
 pub struct AgentMemory {
     cfg: AgentMemoryConfig,
 }

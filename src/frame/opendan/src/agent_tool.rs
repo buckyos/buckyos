@@ -10,6 +10,26 @@ pub use ::agent_tool::*;
 use crate::behavior::{BehaviorConfig, BehaviorExecInput, PolicyEngine};
 pub use crate::buildin_tool::{TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_WRITE_FILE};
 
+// TODO(agent_memory_v2): placeholder for the old structured rank item produced by
+// the pre-beta2.2 memory pipeline. The new agent_memory crate returns LoadItem
+// (flat string content) only; this stub keeps opendan compiling while the
+// self-check / prompt code is ported to the new shape.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryRankItem {
+    pub key: String,
+    pub ts: String,
+    pub source: serde_json::Value,
+    pub content: serde_json::Value,
+    pub importance: i64,
+    pub recency_hours: i64,
+    pub token_estimate: usize,
+    pub tags: Vec<String>,
+    pub type_name: String,
+    pub summary: String,
+    pub tag_score: i64,
+    pub ts_unix_ms: i64,
+}
+
 pub const TOOL_CREATE_SUB_AGENT: &str = "create_sub_agent";
 
 #[derive(Clone)]
