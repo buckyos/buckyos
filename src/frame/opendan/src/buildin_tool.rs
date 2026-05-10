@@ -5,9 +5,9 @@ use serde_json::{json, Value as Json};
 
 pub use ::agent_tool::{
     normalize_abs_path, parse_read_file_bash_args, rewrite_read_file_path_with_shell_cwd,
-    EditFileTool, FileToolConfig, FileWriteAuditBackend, FileWriteAuditRecord, GlobTool,
-    NoopFileWriteAudit, ReadFileTool, WriteFileTool, TOOL_EDIT_FILE, TOOL_GLOB, TOOL_READ_FILE,
-    TOOL_WRITE_FILE,
+    EditFileTool, FileToolConfig, FileWriteAuditBackend, FileWriteAuditRecord, GlobTool, GrepTool,
+    NoopFileWriteAudit, ReadFileTool, WriteFileTool, TOOL_EDIT_FILE, TOOL_GLOB, TOOL_GREP,
+    TOOL_READ_FILE, TOOL_WRITE_FILE,
 };
 
 use crate::agent_tool::{

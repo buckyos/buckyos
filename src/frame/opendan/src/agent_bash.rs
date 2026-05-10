@@ -20,7 +20,7 @@ use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
     AgentTool, AgentToolError, AgentToolManager, AgentToolResult, AgentToolStatus,
     CallingConventions, ToolSpec, AGENT_TOOL_PROTOCOL_VERSION, TOOL_BIND_WORKSPACE,
-    TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION, TOOL_GLOB, TOOL_READ_FILE,
+    TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION, TOOL_GLOB, TOOL_GREP, TOOL_READ_FILE,
     TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
@@ -45,8 +45,9 @@ const EXEC_BASH_LONG_RUNNING_TASK_TYPE: &str = "exec_bash";
 const EXEC_BASH_SESSION_TOOL_ROOT: &str = "tools";
 const EXEC_BASH_AGENT_TOOL_BIN: &str = "agent_tool";
 const EXEC_BASH_COMMAND_NOT_FOUND_PROXY: &str = "__command_not_found__";
-const EXEC_BASH_AGENT_CLI_TOOL_NAMES: [&str; 10] = [
+const EXEC_BASH_AGENT_CLI_TOOL_NAMES: [&str; 11] = [
     TOOL_GLOB,
+    TOOL_GREP,
     TOOL_READ_FILE,
     TOOL_WRITE_FILE,
     TOOL_EDIT_FILE,

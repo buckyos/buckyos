@@ -21,12 +21,12 @@ use crate::agent_tool::{normalize_root_path, u64_to_usize_arg};
 use crate::agent_tool::{
     read_bool_from_map, read_string_from_map, read_u64_from_map, AgentToolError, AgentToolManager,
     BindWorkspaceTool as SharedBindWorkspaceTool, CreateWorkspaceTool as SharedCreateWorkspaceTool,
-    EditFileTool as SharedEditFileTool, FileToolConfig, GlobTool as SharedGlobTool, MCPToolConfig,
-    ManagedWorkspaceToolBackend, ReadFileTool as SharedReadFileTool, SessionWorkspaceBindingView,
-    TodoTool, TodoToolConfig, WorkspaceRecordView, WorkspaceRuntimeBackend,
-    WriteFileTool as SharedWriteFileTool, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE,
-    TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_GLOB, TOOL_READ_FILE, TOOL_TODO_MANAGE,
-    TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
+    EditFileTool as SharedEditFileTool, FileToolConfig, GlobTool as SharedGlobTool,
+    GrepTool as SharedGrepTool, MCPToolConfig, ManagedWorkspaceToolBackend,
+    ReadFileTool as SharedReadFileTool, SessionWorkspaceBindingView, TodoTool, TodoToolConfig,
+    WorkspaceRecordView, WorkspaceRuntimeBackend, WriteFileTool as SharedWriteFileTool,
+    TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_GLOB,
+    TOOL_GREP, TOOL_READ_FILE, TOOL_TODO_MANAGE, TOOL_WORKLOG_MANAGE, TOOL_WRITE_FILE,
 };
 use crate::buildin_tool::{
     parse_workspace_relative_roots, WorkshopWriteAudit as BuiltinWorkshopWriteAudit,
@@ -90,6 +90,7 @@ impl Default for AgentWorkshopToolsConfig {
             enabled_tools: vec![
                 WorkshopToolConfig::enabled(TOOL_EXEC_BASH),
                 WorkshopToolConfig::enabled(TOOL_GLOB),
+                WorkshopToolConfig::enabled(TOOL_GREP),
                 WorkshopToolConfig::enabled(TOOL_EDIT_FILE),
                 WorkshopToolConfig::enabled(TOOL_WRITE_FILE),
                 WorkshopToolConfig::enabled(TOOL_READ_FILE),
@@ -333,6 +334,11 @@ impl AgentWorkshop {
                     }
                     TOOL_GLOB => {
                         tool_mgr.register_typed_tool(SharedGlobTool::new(
+                            self.build_file_tool_config(tool)?,
+                        ))?;
+                    }
+                    TOOL_GREP => {
+                        tool_mgr.register_typed_tool(SharedGrepTool::new(
                             self.build_file_tool_config(tool)?,
                         ))?;
                     }

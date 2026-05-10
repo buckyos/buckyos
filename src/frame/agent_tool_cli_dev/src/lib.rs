@@ -24,16 +24,17 @@ use agent_tool::{
     normalize_abs_path, now_ms, render_cli_output, session_record_path, AgentToolError,
     AgentToolManager, AgentToolPendingReason, AgentToolResult, AgentToolStatus, BindWorkspaceTool,
     CliRunOutput, CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool, GlobTool,
-    NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, SessionViewBackend, TodoTool,
-    TodoToolConfig, WorkspaceToolBackend, WriteFileTool,
+    GrepTool, NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, SessionViewBackend,
+    TodoTool, TodoToolConfig, WorkspaceToolBackend, WriteFileTool,
 };
 
 const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
 const TOOL_AGENT_MEMORY: &str = "agent-memory";
 const TOOL_AGENT_MEMORY_SNAKE: &str = "agent_memory";
-const TOOL_NAMES: [&str; 12] = [
+const TOOL_NAMES: [&str; 13] = [
     "Glob",
+    "Grep",
     "read_file",
     "write_file",
     "edit_file",
@@ -1330,6 +1331,7 @@ async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager,
 
     let audit = Arc::new(NoopFileWriteAudit);
     mgr.register_typed_tool(GlobTool::new(file_cfg.clone()))?;
+    mgr.register_typed_tool(GrepTool::new(file_cfg.clone()))?;
     mgr.register_typed_tool(ReadFileTool::new(file_cfg.clone()))?;
     mgr.register_typed_tool(WriteFileTool::new(file_cfg.clone(), audit.clone()))?;
     mgr.register_typed_tool(EditFileTool::new(file_cfg, audit))?;
