@@ -20,6 +20,7 @@ use tokio::time::{timeout, Duration};
 
 pub mod agent_memory;
 pub mod file_tools;
+pub mod glob_tool;
 pub mod json_args;
 pub mod path_utils;
 pub mod todo;
@@ -36,6 +37,7 @@ pub use file_tools::{
     FileWriteAuditBackend, FileWriteAuditRecord, NoopFileWriteAudit, ReadFileTool, WriteFileTool,
     TOOL_EDIT_FILE, TOOL_READ_FILE, TOOL_WRITE_FILE,
 };
+pub use glob_tool::{GlobTool, TOOL_GLOB};
 pub use json_args::{
     optional_string_arg, optional_trimmed_string_arg, optional_u64_arg, read_bool_from_map,
     read_string_from_map, read_u64_from_map, require_string_arg, require_trimmed_string_arg,

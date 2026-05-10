@@ -8,7 +8,9 @@ use tokio::sync::RwLock;
 pub use ::agent_tool::*;
 
 use crate::behavior::{BehaviorConfig, BehaviorExecInput, PolicyEngine};
-pub use crate::buildin_tool::{TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_READ_FILE, TOOL_WRITE_FILE};
+pub use crate::buildin_tool::{
+    TOOL_EDIT_FILE, TOOL_EXEC_BASH, TOOL_GLOB, TOOL_READ_FILE, TOOL_WRITE_FILE,
+};
 
 // TODO(agent_memory_v2): placeholder for the old structured rank item produced by
 // the pre-beta2.2 memory pipeline. The new agent_memory crate returns LoadItem
