@@ -1,9 +1,8 @@
 //! Typed tool trait and runtime context.
 //!
-//! - [`TypedTool`] is the user-facing trait. Tools provide associated
-//!   `Args`/`Output` types plus a small set of overridable methods;
-//!   the legacy `AgentTool` interface (JSON in, JSON out) is produced
-//!   automatically by [`TypedToolHandle`].
+//! - [`TypedTool`] is the user-facing trait for typed implementations.
+//!   [`TypedToolHandle`] provides the runtime-erased `AgentTool`
+//!   interface used by the manager.
 //! - [`CallingConventions`] is a bitflag value that replaces the three
 //!   `support_bash`/`support_action`/`support_llm_tool_call` booleans.
 //! - [`ToolHost`] collapses the per-feature backend traits into one
@@ -23,9 +22,9 @@ use serde_json::Value as Json;
 use crate::file_tools::FileWriteAuditBackend;
 use crate::workspace::WorkspaceRuntimeBackend;
 use crate::{
-    build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult, ExternalWorkspaceBackend,
-    MemoryLoadBackend, MemoryMutationBackend, SessionRuntimeContext, SessionViewBackend, ToolSpec,
-    WorklogActionBackend, WorkspaceToolBackend,
+    build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult,
+    ExternalWorkspaceBackend, MemoryLoadBackend, MemoryMutationBackend, SessionRuntimeContext,
+    SessionViewBackend, ToolSpec, WorklogActionBackend, WorkspaceToolBackend,
 };
 
 /// Bitflag summary of how a tool may be invoked.
@@ -224,7 +223,9 @@ pub enum ContentInput {
 /// dispatcher resolves any optional stdin into the named field.
 #[derive(Clone, Debug)]
 pub enum CliInvocation {
-    Bash { line: String },
+    Bash {
+        line: String,
+    },
     Json {
         args: Json,
         content_input: Option<(String, ContentInput)>,
@@ -265,9 +266,9 @@ impl<'a> ToolCtx<'a> {
     }
 }
 
-/// Typed tool trait. The single user-facing trait for built-in and
-/// dynamically-named tools alike. The legacy `AgentTool` interface is
-/// produced automatically via [`TypedToolHandle`].
+/// Typed tool trait. The high-level trait for built-in and
+/// dynamically-named tools alike. The runtime-erased `AgentTool`
+/// interface is produced via [`TypedToolHandle`].
 ///
 /// All metadata is exposed through `&self` methods so static tools
 /// can return `&'static str` literals while dynamic tools (MCP) can
@@ -291,11 +292,13 @@ pub trait TypedTool: Send + Sync + 'static {
     /// Tools whose args are a runtime-defined `serde_json::Value` (MCP,
     /// Worklog) override this to supply a richer hand-written schema.
     fn args_schema(&self) -> Json {
-        serde_json::to_value(schema_for!(Self::Args)).unwrap_or_else(|_| Json::Object(Default::default()))
+        serde_json::to_value(schema_for!(Self::Args))
+            .unwrap_or_else(|_| Json::Object(Default::default()))
     }
 
     fn output_schema(&self) -> Json {
-        serde_json::to_value(schema_for!(Self::Output)).unwrap_or_else(|_| Json::Object(Default::default()))
+        serde_json::to_value(schema_for!(Self::Output))
+            .unwrap_or_else(|_| Json::Object(Default::default()))
     }
 
     fn usage(&self) -> Option<String> {
@@ -359,8 +362,8 @@ pub trait TypedTool: Send + Sync + 'static {
     ) -> Result<Self::Output, AgentToolError>;
 }
 
-/// Adapter wrapping a `TypedTool` so it satisfies the legacy
-/// `AgentTool` trait used for type-erased dispatch by the manager.
+/// Adapter wrapping a `TypedTool` so it satisfies the `AgentTool`
+/// trait used for type-erased dispatch by the manager.
 pub struct TypedToolHandle<T: TypedTool> {
     inner: T,
     host: Arc<dyn ToolHost>,
@@ -395,16 +398,8 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
         }
     }
 
-    fn support_bash(&self) -> bool {
-        self.inner.calling().supports_bash()
-    }
-
-    fn support_action(&self) -> bool {
-        self.inner.calling().supports_action()
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        self.inner.calling().supports_llm_tool_call()
+    fn calling(&self) -> CallingConventions {
+        self.inner.calling()
     }
 
     async fn call(
@@ -413,10 +408,7 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
         args: Json,
     ) -> Result<AgentToolResult, AgentToolError> {
         let typed: T::Args = serde_json::from_value(args).map_err(|err| {
-            AgentToolError::InvalidArgs(format!(
-                "invalid args for `{}`: {err}",
-                self.inner.name()
-            ))
+            AgentToolError::InvalidArgs(format!("invalid args for `{}`: {err}", self.inner.name()))
         })?;
         let cmd_line = self
             .inner
@@ -441,10 +433,7 @@ impl<T: TypedTool> AgentTool for TypedToolHandle<T> {
         }
         let args = self.inner.parse_bash_args(&tokens[1..], shell_cwd)?;
         let typed: T::Args = serde_json::from_value(args).map_err(|err| {
-            AgentToolError::InvalidArgs(format!(
-                "invalid args for `{}`: {err}",
-                self.inner.name()
-            ))
+            AgentToolError::InvalidArgs(format!("invalid args for `{}`: {err}", self.inner.name()))
         })?;
         let cmd_line = self
             .inner

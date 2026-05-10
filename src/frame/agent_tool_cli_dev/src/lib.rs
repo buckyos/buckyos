@@ -16,7 +16,7 @@ use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
-use crate::{
+use agent_tool::{
     cli_error_result, cli_exit_code_for_error, cli_result_from_tool_result, cli_success_result,
     normalize_abs_path, now_ms, render_cli_output, session_record_path, AgentMemory,
     AgentMemoryConfig, AgentToolError, AgentToolManager, AgentToolPendingReason, AgentToolResult,
@@ -41,8 +41,8 @@ const TOOL_NAMES: [&str; 11] = [
     TOOL_CHECK_TASK,
     TOOL_CANCEL_TASK,
 ];
-const EXIT_SUCCESS: i32 = crate::CLI_EXIT_SUCCESS;
-const EXIT_COMMAND_NOT_FOUND: i32 = crate::CLI_EXIT_COMMAND_NOT_FOUND;
+const EXIT_SUCCESS: i32 = agent_tool::CLI_EXIT_SUCCESS;
+const EXIT_COMMAND_NOT_FOUND: i32 = agent_tool::CLI_EXIT_COMMAND_NOT_FOUND;
 const COMMAND_NOT_FOUND_PROXY: &str = "__command_not_found__";
 const MAIN_BINARY_NAME: &str = "agent_tool";
 const DEFAULT_AGENT_NAME: &str = "did:opendan:cli";
@@ -174,8 +174,7 @@ async fn execute(
             let Some(tool) = mgr.get_any_tool(&tool_name) else {
                 return Err(AgentToolError::NotFound(tool_name));
             };
-            let invocation =
-                tool.parse_cli_args(&raw_tokens, Some(env.current_dir.as_path()))?;
+            let invocation = tool.parse_cli_args(&raw_tokens, Some(env.current_dir.as_path()))?;
 
             // Tools that opt in to plain-text stdout (read_file) get the
             // payload unwrapped when the CLI is being piped to another
@@ -235,26 +234,23 @@ async fn execute(
 /// in.
 async fn dispatch_tool(
     env: &CliRuntimeEnv,
-    tool: &dyn crate::AgentTool,
-    invocation: crate::CliInvocation,
+    tool: &dyn agent_tool::AgentTool,
+    invocation: agent_tool::CliInvocation,
     stdin_override: Option<String>,
 ) -> Result<AgentToolResult, AgentToolError> {
     match invocation {
-        crate::CliInvocation::Bash { line } => {
+        agent_tool::CliInvocation::Bash { line } => {
             tool.exec(&env.call_ctx, &line, Some(env.current_dir.as_path()))
                 .await
         }
-        crate::CliInvocation::Json {
+        agent_tool::CliInvocation::Json {
             mut args,
             content_input,
         } => {
             if let Some((field, ci)) = content_input {
                 let content = resolve_content_input(ci, stdin_override).await?;
                 let map = args.as_object_mut().ok_or_else(|| {
-                    AgentToolError::InvalidArgs(format!(
-                        "{} args must be object",
-                        tool.spec().name
-                    ))
+                    AgentToolError::InvalidArgs(format!("{} args must be object", tool.spec().name))
                 })?;
                 map.insert(field, Json::String(content));
             }
@@ -264,12 +260,12 @@ async fn dispatch_tool(
 }
 
 async fn resolve_content_input(
-    input: crate::ContentInput,
+    input: agent_tool::ContentInput,
     stdin_override: Option<String>,
 ) -> Result<String, AgentToolError> {
     match input {
-        crate::ContentInput::Inline(value) => Ok(value),
-        crate::ContentInput::Stdin => {
+        agent_tool::ContentInput::Inline(value) => Ok(value),
+        agent_tool::ContentInput::Stdin => {
             if let Some(value) = stdin_override {
                 return Ok(value);
             }
@@ -908,7 +904,6 @@ fn os_to_string(value: &OsString) -> Result<String, AgentToolError> {
     })
 }
 
-
 fn session_file_path(state_root: &Path, session_id: &str) -> Result<PathBuf, AgentToolError> {
     session_record_path(
         &state_root.join("sessions"),
@@ -1267,8 +1262,7 @@ fn build_check_task_result(tool_name: &str, task: Task) -> AgentToolResult {
     let top_status = task_protocol_status(&task);
     let summary = task_summary(&task, top_status);
     let pending_reason = task_pending_reason(&task);
-    let is_exec_bash_task =
-        task.data.get("kind").and_then(Json::as_str) == Some("tool.exec_bash");
+    let is_exec_bash_task = task.data.get("kind").and_then(Json::as_str) == Some("tool.exec_bash");
     let mut detail = if is_exec_bash_task {
         json!({})
     } else {
@@ -1421,7 +1415,9 @@ fn task_summary(task: &Task, protocol_status: AgentToolStatus) -> String {
             }
             (AgentToolStatus::Pending, _) => format!("task {} is still running", task.id),
             (AgentToolStatus::Success, _) => format!("task {} completed", task.id),
-            (AgentToolStatus::Error, TaskStatus::Canceled) => format!("task {} was canceled", task.id),
+            (AgentToolStatus::Error, TaskStatus::Canceled) => {
+                format!("task {} was canceled", task.id)
+            }
             (AgentToolStatus::Error, _) => format!("task {} failed", task.id),
         })
 }
@@ -1432,7 +1428,9 @@ fn task_pending_reason(task: &Task) -> Option<AgentToolPendingReason> {
         .and_then(Json::as_str)
         .and_then(|value| match value {
             "user_approval" => Some(AgentToolPendingReason::UserApproval),
-            "wait_for_install" | "external_callback" => Some(AgentToolPendingReason::WaitForInstall),
+            "wait_for_install" | "external_callback" => {
+                Some(AgentToolPendingReason::WaitForInstall)
+            }
             "long_running" => Some(AgentToolPendingReason::LongRunning),
             _ => None,
         })

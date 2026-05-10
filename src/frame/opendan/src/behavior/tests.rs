@@ -14,7 +14,7 @@ use tokio::fs;
 use super::*;
 use crate::agent_environment::AgentEnvironment;
 use crate::agent_tool::{
-    AgentTool, AgentToolManager, AgentToolResult, DoAction, DoActions, ToolSpec,
+    AgentTool, AgentToolManager, AgentToolResult, CallingConventions, DoAction, DoActions, ToolSpec,
 };
 use crate::test_utils::{MockAicc, MockTaskMgrHandler};
 
@@ -78,14 +78,8 @@ impl AgentTool for EchoTool {
         }
     }
 
-    fn support_bash(&self) -> bool {
-        false
-    }
-    fn support_action(&self) -> bool {
-        true
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        false
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::ACTION
     }
 
     async fn call(

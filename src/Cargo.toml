@@ -23,6 +23,7 @@ members = [
     "./frame/msg_center",
     "./frame/control_panel",
     "./frame/agent_tool",
+    "./frame/agent_tool_cli_dev",
     "./frame/opendan",
 
     "./tools/buckycli", 

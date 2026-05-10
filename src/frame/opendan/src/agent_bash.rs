@@ -18,9 +18,10 @@ use tokio::time::{sleep, Duration, Instant};
 
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
-    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, AgentToolStatus, ToolSpec,
-    AGENT_TOOL_PROTOCOL_VERSION, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE,
-    TOOL_GET_SESSION, TOOL_READ_FILE, TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY, TOOL_WRITE_FILE,
+    AgentTool, AgentToolError, AgentToolManager, AgentToolResult, AgentToolStatus,
+    CallingConventions, ToolSpec, AGENT_TOOL_PROTOCOL_VERSION, TOOL_BIND_WORKSPACE,
+    TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION, TOOL_READ_FILE, TOOL_REMOVE_MEMORY,
+    TOOL_SET_MEMORY, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -200,16 +201,8 @@ impl AgentTool for ExecBashTool {
         }
     }
 
-    fn support_bash(&self) -> bool {
-        false
-    }
-
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        true
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::LLM
     }
 
     async fn call(

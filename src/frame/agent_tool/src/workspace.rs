@@ -701,9 +701,9 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
-        AgentTool, AgentToolManager, BindExternalWorkspaceTool, BindWorkspaceTool,
-        CreateWorkspaceTool, ListExternalWorkspacesTool, SessionRuntimeContext,
-        TOOL_BIND_EXTERNAL_WORKSPACE, TOOL_BIND_WORKSPACE, TOOL_LIST_EXTERNAL_WORKSPACES,
+        AgentToolManager, BindExternalWorkspaceTool, BindWorkspaceTool, CreateWorkspaceTool,
+        ListExternalWorkspacesTool, SessionRuntimeContext, TOOL_BIND_EXTERNAL_WORKSPACE,
+        TOOL_BIND_WORKSPACE, TOOL_LIST_EXTERNAL_WORKSPACES,
     };
 
     #[derive(Default)]

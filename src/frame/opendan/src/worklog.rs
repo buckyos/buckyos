@@ -248,8 +248,8 @@ impl WorklogService {
 
 /// Opendan-side wrapper that bundles the WorklogService with a registered
 /// agent tool. The shipped tool is `TypedToolHandle<agent_tool::WorklogTool>`,
-/// which exposes the legacy `AgentTool` impl needed by the manager. Callers
-/// that need direct service access call `service()`.
+/// which exposes the runtime-erased `AgentTool` impl used by the manager.
+/// Callers that need direct service access call `service()`.
 pub struct WorklogTool {
     service: WorklogService,
     handle: TypedToolHandle<::agent_tool::WorklogTool>,

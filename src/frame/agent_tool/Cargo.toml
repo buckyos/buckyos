@@ -22,7 +22,3 @@ hex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-
-[[bin]]
-name = "agent_tool"
-path = "src/main.rs"
