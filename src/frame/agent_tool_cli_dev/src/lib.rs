@@ -16,31 +16,37 @@ use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
+use agent_tool::agent_memory::{
+    AgentMemory, AgentMemoryConfig, AgentMemoryError, LoadOptions,
+};
 use agent_tool::{
     cli_error_result, cli_exit_code_for_error, cli_result_from_tool_result, cli_success_result,
-    normalize_abs_path, now_ms, render_cli_output, session_record_path, AgentMemory,
-    AgentMemoryConfig, AgentToolError, AgentToolManager, AgentToolPendingReason, AgentToolResult,
-    AgentToolStatus, BindWorkspaceTool, CliRunOutput, CreateWorkspaceTool, EditFileTool,
-    FileToolConfig, GetSessionTool, NoopFileWriteAudit, ReadFileTool, RemoveMemoryTool,
-    SessionRuntimeContext, SessionViewBackend, SetMemoryTool, TodoTool, TodoToolConfig,
-    WorkspaceToolBackend, WriteFileTool,
+    normalize_abs_path, now_ms, render_cli_output, session_record_path, AgentToolError,
+    AgentToolManager, AgentToolPendingReason, AgentToolResult, AgentToolStatus, BindWorkspaceTool,
+    CliRunOutput, CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool,
+    NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, SessionViewBackend, TodoTool,
+    TodoToolConfig, WorkspaceToolBackend, WriteFileTool,
 };
 
 const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
+const TOOL_AGENT_MEMORY: &str = "agent-memory";
+const TOOL_AGENT_MEMORY_SNAKE: &str = "agent_memory";
 const TOOL_NAMES: [&str; 11] = [
     "read_file",
     "write_file",
     "edit_file",
     "get_session",
-    "set_memory",
-    "remove_memory",
     "todo",
     "create_workspace",
     "bind_workspace",
+    TOOL_AGENT_MEMORY,
+    TOOL_AGENT_MEMORY_SNAKE,
     TOOL_CHECK_TASK,
     TOOL_CANCEL_TASK,
 ];
+const AGENT_MEMORY_ROOT_ENV: &str = "AGENT_MEMORY_ROOT";
+const AGENT_MEMORY_DIR_NAME: &str = "memory";
 const EXIT_SUCCESS: i32 = agent_tool::CLI_EXIT_SUCCESS;
 const EXIT_COMMAND_NOT_FOUND: i32 = agent_tool::CLI_EXIT_COMMAND_NOT_FOUND;
 const COMMAND_NOT_FOUND_PROXY: &str = "__command_not_found__";
@@ -129,6 +135,50 @@ enum ParsedCommand {
         task_id: i64,
         recursive: bool,
     },
+    AgentMemory {
+        tool_name: String,
+        invocation: AgentMemoryInvocation,
+    },
+}
+
+/// Parsed `agent-memory` command before execution. Mirrors §3.1/§4.x of the
+/// v2.8 contract. `root_override` is the resolved `--root` / env / default.
+#[derive(Clone, Debug)]
+struct AgentMemoryInvocation {
+    root_override: Option<PathBuf>,
+    quiet: bool,
+    verb: AgentMemoryVerb,
+}
+
+#[derive(Clone, Debug)]
+enum AgentMemoryVerb {
+    Init,
+    Set {
+        key: String,
+        /// `Some` → content was passed as positional argv (form A).
+        /// `None` → content must come from stdin (form B).
+        content: Option<String>,
+        reason: String,
+    },
+    Remove {
+        key: String,
+        reason: Option<String>,
+    },
+    Get {
+        key: String,
+    },
+    List {
+        prefix: Option<String>,
+    },
+    Load {
+        tags: Vec<String>,
+        max_records: Option<usize>,
+        max_bytes: Option<usize>,
+    },
+    Verify {
+        repair: bool,
+    },
+    Compact,
 }
 
 pub async fn run_process() -> CliRunOutput {
@@ -202,6 +252,10 @@ async fn execute(
                 EXIT_SUCCESS,
             ))
         }
+        ParsedCommand::AgentMemory {
+            tool_name,
+            invocation,
+        } => Ok(dispatch_agent_memory(&env, &tool_name, invocation, stdin_override).await),
         ParsedCommand::CancelTask {
             tool_name,
             task_id,
@@ -342,6 +396,9 @@ fn parse_tool_command(
     match tool_name.as_str() {
         TOOL_CHECK_TASK => parse_check_task_cli_command(tool_name, tokens),
         TOOL_CANCEL_TASK => parse_cancel_task_cli_command(tool_name, tokens),
+        TOOL_AGENT_MEMORY | TOOL_AGENT_MEMORY_SNAKE => {
+            parse_agent_memory_cli_command(tool_name, tokens)
+        }
         _ => {
             // All real tools defer their argv parsing to the registry's
             // `AgentTool::parse_cli_args`; the dispatcher will look up
@@ -444,6 +501,512 @@ fn parse_task_id_value(raw: &str, tool_name: &str) -> Result<i64, AgentToolError
     raw.trim()
         .parse::<i64>()
         .map_err(|_| with_tool_usage(format!("invalid task_id `{}`", raw.trim()), tool_name))
+}
+
+// =================================================================
+//  agent-memory CLI
+// =================================================================
+
+const AGENT_MEMORY_USAGE: &str = "agent-memory [--root <path>] [--quiet] \
+<init|set|remove|get|list|load|verify|compact> [...]";
+
+fn agent_memory_invalid(message: impl Into<String>) -> AgentToolError {
+    AgentToolError::InvalidArgs(format!("{}\nUsage: {}", message.into(), AGENT_MEMORY_USAGE))
+}
+
+/// Parse `agent-memory` argv per §3.1 + §4.x.
+///
+/// Global flags (`--root`, `--quiet`) are recognized before the verb.
+/// Each verb has its own positional/flag rules; per §4.2 the `set` verb's
+/// disambiguation between argv-form and stdin-form looks ONLY at positional
+/// count.
+fn parse_agent_memory_cli_command(
+    tool_name: String,
+    tokens: &[String],
+) -> Result<ParsedCommand, AgentToolError> {
+    let mut root_override: Option<PathBuf> = None;
+    let mut quiet = false;
+    let mut idx = 0usize;
+
+    while idx < tokens.len() {
+        match tokens[idx].as_str() {
+            "--root" => {
+                idx += 1;
+                let value = tokens
+                    .get(idx)
+                    .ok_or_else(|| agent_memory_invalid("missing value for `--root`"))?;
+                root_override = Some(PathBuf::from(value));
+            }
+            v if v.starts_with("--root=") => {
+                root_override = Some(PathBuf::from(&v["--root=".len()..]));
+            }
+            "--quiet" => {
+                quiet = true;
+            }
+            // First non-flag token ends the global-flag region.
+            _ => break,
+        }
+        idx += 1;
+    }
+
+    let verb_token = tokens
+        .get(idx)
+        .ok_or_else(|| agent_memory_invalid("missing verb"))?
+        .clone();
+    let rest = &tokens[idx + 1..];
+
+    let verb = match verb_token.as_str() {
+        "init" => parse_agent_memory_init(rest)?,
+        "set" => parse_agent_memory_set(rest)?,
+        "remove" => parse_agent_memory_remove(rest)?,
+        "get" => parse_agent_memory_get(rest)?,
+        "list" => parse_agent_memory_list(rest)?,
+        "load" => parse_agent_memory_load(rest)?,
+        "verify" => parse_agent_memory_verify(rest)?,
+        "compact" => parse_agent_memory_compact(rest)?,
+        other => {
+            return Err(agent_memory_invalid(format!("unknown verb `{other}`")));
+        }
+    };
+
+    Ok(ParsedCommand::AgentMemory {
+        tool_name,
+        invocation: AgentMemoryInvocation {
+            root_override,
+            quiet,
+            verb,
+        },
+    })
+}
+
+fn parse_agent_memory_init(rest: &[String]) -> Result<AgentMemoryVerb, AgentToolError> {
+    if !rest.is_empty() {
+        return Err(agent_memory_invalid(format!(
+            "`init` takes no arguments, got `{}`",
+            rest.join(" ")
+        )));
+    }
+    Ok(AgentMemoryVerb::Init)
+}
+
+fn parse_agent_memory_set(rest: &[String]) -> Result<AgentMemoryVerb, AgentToolError> {
+    let mut positionals: Vec<String> = Vec::new();
+    let mut reason: Option<String> = None;
+    let mut idx = 0usize;
+    while idx < rest.len() {
+        let token = &rest[idx];
+        match token.as_str() {
+            "--reason" => {
+                idx += 1;
+                let value = rest
+                    .get(idx)
+                    .ok_or_else(|| agent_memory_invalid("missing value for `--reason`"))?;
+                reason = Some(value.clone());
+            }
+            v if v.starts_with("--reason=") => {
+                reason = Some(v["--reason=".len()..].to_string());
+            }
+            v if v.starts_with("--") => {
+                return Err(agent_memory_invalid(format!(
+                    "unsupported flag `{v}` for `set`"
+                )));
+            }
+            v => positionals.push(v.to_string()),
+        }
+        idx += 1;
+    }
+    let reason = reason.ok_or_else(|| agent_memory_invalid("`set` requires `--reason`"))?;
+    if reason.trim().is_empty() {
+        return Err(agent_memory_invalid("`--reason` must not be empty"));
+    }
+    match positionals.len() {
+        2 => {
+            let mut it = positionals.into_iter();
+            let key = it.next().unwrap();
+            let content = it.next().unwrap();
+            Ok(AgentMemoryVerb::Set {
+                key,
+                content: Some(content),
+                reason,
+            })
+        }
+        1 => {
+            let key = positionals.into_iter().next().unwrap();
+            Ok(AgentMemoryVerb::Set {
+                key,
+                content: None,
+                reason,
+            })
+        }
+        n => Err(agent_memory_invalid(format!(
+            "`set` expects 1 or 2 positional arguments, got {n}"
+        ))),
+    }
+}
+
+fn parse_agent_memory_remove(rest: &[String]) -> Result<AgentMemoryVerb, AgentToolError> {
+    let mut positionals: Vec<String> = Vec::new();
+    let mut reason: Option<String> = None;
+    let mut idx = 0usize;
+    while idx < rest.len() {
+        let token = &rest[idx];
+        match token.as_str() {
+            "--reason" => {
+                idx += 1;
+                let value = rest
+                    .get(idx)
+                    .ok_or_else(|| agent_memory_invalid("missing value for `--reason`"))?;
+                reason = Some(value.clone());
+            }
+            v if v.starts_with("--reason=") => {
+                reason = Some(v["--reason=".len()..].to_string());
+            }
+            v if v.starts_with("--") => {
+                return Err(agent_memory_invalid(format!(
+                    "unsupported flag `{v}` for `remove`"
+                )));
+            }
+            v => positionals.push(v.to_string()),
+        }
+        idx += 1;
+    }
+    if positionals.len() != 1 {
+        return Err(agent_memory_invalid(format!(
+            "`remove` expects exactly 1 positional argument (key), got {}",
+            positionals.len()
+        )));
+    }
+    Ok(AgentMemoryVerb::Remove {
+        key: positionals.into_iter().next().unwrap(),
+        reason,
+    })
+}
+
+fn parse_agent_memory_get(rest: &[String]) -> Result<AgentMemoryVerb, AgentToolError> {
+    if rest.len() != 1 {
+        return Err(agent_memory_invalid(format!(
+            "`get` expects exactly 1 positional argument (key), got {}",
+            rest.len()
+        )));
+    }
+    Ok(AgentMemoryVerb::Get {
+        key: rest[0].clone(),
+    })
+}
+
+fn parse_agent_memory_list(rest: &[String]) -> Result<AgentMemoryVerb, AgentToolError> {
+    match rest.len() {
+        0 => Ok(AgentMemoryVerb::List { prefix: None }),
+        1 => Ok(AgentMemoryVerb::List {
+            prefix: Some(rest[0].clone()),
+        }),
+        n => Err(agent_memory_invalid(format!(
+            "`list` expects 0 or 1 positional arguments, got {n}"
+        ))),
+    }
+}
+
+fn parse_agent_memory_load(rest: &[String]) -> Result<AgentMemoryVerb, AgentToolError> {
+    let mut tags_arg: Option<String> = None;
+    let mut max_records: Option<usize> = None;
+    let mut max_bytes: Option<usize> = None;
+    let mut idx = 0usize;
+    while idx < rest.len() {
+        let token = &rest[idx];
+        match token.as_str() {
+            "--max-records" => {
+                idx += 1;
+                let value = rest
+                    .get(idx)
+                    .ok_or_else(|| agent_memory_invalid("missing value for `--max-records`"))?;
+                max_records = Some(parse_load_count(value, "max-records")?);
+            }
+            v if v.starts_with("--max-records=") => {
+                max_records = Some(parse_load_count(&v["--max-records=".len()..], "max-records")?);
+            }
+            "--max-bytes" => {
+                idx += 1;
+                let value = rest
+                    .get(idx)
+                    .ok_or_else(|| agent_memory_invalid("missing value for `--max-bytes`"))?;
+                max_bytes = Some(parse_load_count(value, "max-bytes")?);
+            }
+            v if v.starts_with("--max-bytes=") => {
+                max_bytes = Some(parse_load_count(&v["--max-bytes=".len()..], "max-bytes")?);
+            }
+            v if v.starts_with("--") => {
+                return Err(agent_memory_invalid(format!(
+                    "unsupported flag `{v}` for `load`"
+                )));
+            }
+            v => {
+                if tags_arg.is_some() {
+                    return Err(agent_memory_invalid(
+                        "`load` takes a single positional <tag1,tag2,...>",
+                    ));
+                }
+                tags_arg = Some(v.to_string());
+            }
+        }
+        idx += 1;
+    }
+
+    let raw_tags = tags_arg.unwrap_or_default();
+    let tags: Vec<String> = if raw_tags.is_empty() {
+        Vec::new()
+    } else {
+        raw_tags
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+
+    Ok(AgentMemoryVerb::Load {
+        tags,
+        max_records,
+        max_bytes,
+    })
+}
+
+fn parse_load_count(raw: &str, name: &str) -> Result<usize, AgentToolError> {
+    raw.trim()
+        .parse::<usize>()
+        .map_err(|_| agent_memory_invalid(format!("invalid `--{name}` value `{raw}`")))
+}
+
+fn parse_agent_memory_verify(rest: &[String]) -> Result<AgentMemoryVerb, AgentToolError> {
+    let mut repair = false;
+    for token in rest {
+        match token.as_str() {
+            "--repair" => repair = true,
+            v => {
+                return Err(agent_memory_invalid(format!(
+                    "unsupported argument `{v}` for `verify`"
+                )))
+            }
+        }
+    }
+    Ok(AgentMemoryVerb::Verify { repair })
+}
+
+fn parse_agent_memory_compact(rest: &[String]) -> Result<AgentMemoryVerb, AgentToolError> {
+    if !rest.is_empty() {
+        return Err(agent_memory_invalid(format!(
+            "`compact` takes no arguments, got `{}`",
+            rest.join(" ")
+        )));
+    }
+    Ok(AgentMemoryVerb::Compact)
+}
+
+/// Resolve `--root` → env var `AGENT_MEMORY_ROOT` → `<state_root>/memory`.
+fn resolve_agent_memory_root(env: &CliRuntimeEnv, override_path: Option<PathBuf>) -> PathBuf {
+    if let Some(p) = override_path {
+        return canonicalize_or_normalize(p, Some(env.current_dir.as_path()));
+    }
+    if let Some(value) = first_path_env(&[AGENT_MEMORY_ROOT_ENV], &env.current_dir) {
+        return value;
+    }
+    cli_state_root(env).join(AGENT_MEMORY_DIR_NAME)
+}
+
+fn agent_memory_exit_code(err: &AgentMemoryError) -> i32 {
+    err.exit_code()
+}
+
+/// Map an `AgentMemoryError` to a CLI run output. By spec §3 the default
+/// channel is plain text on stdout and a short message on stderr; no JSON
+/// envelope.
+fn agent_memory_error_output(err: AgentMemoryError, quiet: bool) -> CliRunOutput {
+    let exit_code = agent_memory_exit_code(&err);
+    CliRunOutput {
+        exit_code,
+        stdout: String::new(),
+        stderr: if quiet {
+            String::new()
+        } else {
+            format!("{err}\n")
+        },
+    }
+}
+
+/// Execute one `agent-memory` invocation. Runs the synchronous library API
+/// inside `spawn_blocking` so the async runtime is not stalled.
+async fn dispatch_agent_memory(
+    env: &CliRuntimeEnv,
+    _tool_name: &str,
+    invocation: AgentMemoryInvocation,
+    stdin_override: Option<String>,
+) -> CliRunOutput {
+    let AgentMemoryInvocation {
+        root_override,
+        quiet,
+        verb,
+    } = invocation;
+
+    let root = resolve_agent_memory_root(env, root_override);
+
+    // `set` form B reads content from stdin BEFORE spawn_blocking so we can
+    // surface the same async stdin path as the rest of the CLI.
+    let resolved_verb = match verb {
+        AgentMemoryVerb::Set {
+            key,
+            content,
+            reason,
+        } if content.is_none() => match read_stdin_content(stdin_override).await {
+            Ok(content) => {
+                if content.is_empty() {
+                    return CliRunOutput {
+                        exit_code: 1,
+                        stdout: String::new(),
+                        stderr: if quiet {
+                            String::new()
+                        } else {
+                            "agent-memory: stdin produced 0 bytes; refusing empty content\n"
+                                .to_string()
+                        },
+                    };
+                }
+                AgentMemoryVerb::Set {
+                    key,
+                    content: Some(content),
+                    reason,
+                }
+            }
+            Err(err) => {
+                return CliRunOutput {
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: if quiet { String::new() } else { format!("{err}\n") },
+                }
+            }
+        },
+        v => v,
+    };
+
+    let result = tokio::task::spawn_blocking(move || run_agent_memory_blocking(&root, resolved_verb))
+        .await
+        .unwrap_or_else(|join| {
+            Err(AgentMemoryError::Invalid(format!(
+                "agent-memory worker panicked: {join}"
+            )))
+        });
+
+    match result {
+        Ok(stdout) => CliRunOutput {
+            exit_code: 0,
+            stdout,
+            stderr: String::new(),
+        },
+        Err(err) => agent_memory_error_output(err, quiet),
+    }
+}
+
+/// Stdin path for §4.2 form B. We honor `stdin_override` (used in tests) and
+/// otherwise read all of stdin to EOF. Refusing TTY stdin is left to the
+/// caller because the interactive notion is not meaningful in this harness.
+async fn read_stdin_content(stdin_override: Option<String>) -> Result<String, AgentToolError> {
+    if let Some(s) = stdin_override {
+        return Ok(s);
+    }
+    let mut stdin = io::stdin();
+    let mut buf = String::new();
+    stdin
+        .read_to_string(&mut buf)
+        .await
+        .map_err(|err| AgentToolError::ExecFailed(format!("read stdin failed: {err}")))?;
+    Ok(buf)
+}
+
+/// Synchronous worker: opens the memory root and dispatches a single verb.
+/// The returned `String` is the verb's stdout body per §5 (or empty for
+/// verbs with no stdout output).
+fn run_agent_memory_blocking(
+    root: &Path,
+    verb: AgentMemoryVerb,
+) -> Result<String, AgentMemoryError> {
+    let cfg = AgentMemoryConfig::new(root);
+    let mem = AgentMemory::open(cfg)?;
+    match verb {
+        AgentMemoryVerb::Init => Ok(String::new()),
+        AgentMemoryVerb::Set {
+            key,
+            content,
+            reason,
+        } => {
+            let content = content.expect("stdin form resolved earlier");
+            mem.set(&key, &content, &reason)?;
+            Ok(String::new())
+        }
+        AgentMemoryVerb::Remove { key, reason } => {
+            mem.remove(&key, reason.as_deref())?;
+            Ok(String::new())
+        }
+        AgentMemoryVerb::Get { key } => mem.get(&key),
+        AgentMemoryVerb::List { prefix } => {
+            let keys = mem.list(prefix.as_deref())?;
+            let mut out = keys.join("\n");
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            Ok(out)
+        }
+        AgentMemoryVerb::Load {
+            tags,
+            max_records,
+            max_bytes,
+        } => {
+            let mut opts = LoadOptions::default();
+            if let Some(n) = max_records {
+                opts.max_records = n;
+            }
+            if let Some(n) = max_bytes {
+                opts.max_bytes = n;
+            }
+            let items = mem.load(&tags, opts)?;
+            Ok(AgentMemory::format_load_items(&items))
+        }
+        AgentMemoryVerb::Verify { repair } => {
+            let report = mem.verify(repair)?;
+            Ok(format_verify_report(&report))
+        }
+        AgentMemoryVerb::Compact => {
+            mem.compact()?;
+            Ok(String::new())
+        }
+    }
+}
+
+fn format_verify_report(report: &agent_tool::VerifyReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("OK_KEYS {}\n", report.ok_keys));
+    out.push_str(&format!("ORPHAN_FILES {}\n", report.orphan_files.len()));
+    for p in &report.orphan_files {
+        out.push_str(&format!("  orphan {}\n", p.display()));
+    }
+    out.push_str(&format!(
+        "TOMBSTONE_RESIDUE {}\n",
+        report.tombstone_residue.len()
+    ));
+    for p in &report.tombstone_residue {
+        out.push_str(&format!("  tombstone {}\n", p.display()));
+    }
+    out.push_str(&format!(
+        "MISSING_CONTENT {}\n",
+        report.missing_content.len()
+    ));
+    for k in &report.missing_content {
+        out.push_str(&format!("  missing {}\n", k));
+    }
+    out.push_str(&format!("DIGEST_MISMATCH {}\n", report.digest_mismatch.len()));
+    for k in &report.digest_mismatch {
+        out.push_str(&format!("  mismatch {}\n", k));
+    }
+    if report.repaired_index {
+        out.push_str("REPAIRED_INDEX 1\n");
+    }
+    out
 }
 
 fn cli_state_root(env: &CliRuntimeEnv) -> PathBuf {
@@ -760,10 +1323,9 @@ async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager,
     mgr.register_typed_tool(CreateWorkspaceTool::new(workspace_backend.clone()))?;
     mgr.register_typed_tool(BindWorkspaceTool::new(workspace_backend))?;
 
-    let memory_backend: Arc<AgentMemory> =
-        Arc::new(AgentMemory::new(AgentMemoryConfig::new(state_root)).await?);
-    mgr.register_typed_tool(SetMemoryTool::new(memory_backend.clone()))?;
-    mgr.register_typed_tool(RemoveMemoryTool::new(memory_backend))?;
+    // NOTE: agent-memory is no longer a TypedTool — it has its own
+    // top-level CLI dispatch (see `dispatch_agent_memory`) so the agent
+    // can invoke it directly via shell per the v2.8 contract.
 
     let audit = Arc::new(NoopFileWriteAudit);
     mgr.register_typed_tool(ReadFileTool::new(file_cfg.clone()))?;
@@ -1636,7 +2198,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_memory_and_remove_memory_aliases_manage_memory_files() {
+    async fn agent_memory_set_get_remove_roundtrip() {
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().join("agent");
         let cwd = root.join("workspace");
@@ -1644,41 +2206,278 @@ mod tests {
             .await
             .expect("create workspace dir");
 
+        // set
         let set_output = execute(
             vec![
-                OsString::from("/tmp/set_memory"),
-                OsString::from("remind/bob/20260323"),
-                OsString::from("weekly meeting"),
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("set"),
+                OsString::from("/user/preference/style"),
+                OsString::from("concise english"),
+                OsString::from("--reason"),
+                OsString::from("user conversation;c=1"),
             ],
             test_env(root.clone(), cwd.clone()),
             None,
         )
         .await
-        .expect("run set_memory");
+        .expect("run agent-memory set");
         assert_eq!(set_output.exit_code, EXIT_SUCCESS);
 
         let memory_path = root
             .join("memory")
-            .join("remind")
-            .join("bob")
-            .join("20260323");
+            .join("user")
+            .join("preference")
+            .join("style");
         let content = fs::read_to_string(&memory_path)
             .await
             .expect("read memory file");
-        assert_eq!(content, "weekly meeting");
+        assert_eq!(content, "concise english");
 
+        // get echoes content directly (no envelope, per §4.5)
+        let get_output = execute(
+            vec![
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("get"),
+                OsString::from("/user/preference/style"),
+            ],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("run agent-memory get");
+        assert_eq!(get_output.exit_code, EXIT_SUCCESS);
+        assert_eq!(get_output.stdout, "concise english");
+
+        // remove
         let remove_output = execute(
             vec![
-                OsString::from("/tmp/remove_memory"),
-                OsString::from("remind/bob/20260323"),
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("remove"),
+                OsString::from("/user/preference/style"),
+                OsString::from("--reason"),
+                OsString::from("user removed"),
+            ],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("run agent-memory remove");
+        assert_eq!(remove_output.exit_code, EXIT_SUCCESS);
+        assert!(fs::metadata(&memory_path).await.is_err());
+
+        // get after remove → exit 1
+        let get_after = execute(
+            vec![
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("get"),
+                OsString::from("/user/preference/style"),
             ],
             test_env(root.clone(), cwd),
             None,
         )
         .await
-        .expect("run remove_memory");
-        assert_eq!(remove_output.exit_code, EXIT_SUCCESS);
-        assert!(fs::metadata(&memory_path).await.is_err());
+        .expect("run agent-memory get-after-remove");
+        assert_eq!(get_after.exit_code, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_memory_set_form_b_reads_stdin() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
+
+        let body = "Importance: 3\nExpired-At: 2030-01-01T00:00:00Z\n\nbody text";
+        let output = execute(
+            vec![
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("set"),
+                OsString::from("/user/note"),
+                OsString::from("--reason"),
+                OsString::from("user conversation;c=1"),
+            ],
+            test_env(root.clone(), cwd),
+            Some(body.to_string()),
+        )
+        .await
+        .expect("run agent-memory set form B");
+        assert_eq!(output.exit_code, EXIT_SUCCESS);
+
+        let stored = fs::read_to_string(root.join("memory").join("user").join("note"))
+            .await
+            .expect("read stored content");
+        assert_eq!(stored, body);
+    }
+
+    #[tokio::test]
+    async fn agent_memory_load_emits_size_prefixed_records() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
+
+        execute(
+            vec![
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("set"),
+                OsString::from("/user/dental"),
+                OsString::from("Dental followup at 10am"),
+                OsString::from("--reason"),
+                OsString::from("user conversation;c=1"),
+            ],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("seed");
+
+        let load_output = execute(
+            vec![
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("load"),
+                OsString::from("dental"),
+            ],
+            test_env(root.clone(), cwd),
+            None,
+        )
+        .await
+        .expect("run agent-memory load");
+        assert_eq!(load_output.exit_code, EXIT_SUCCESS);
+        assert!(load_output.stdout.contains("KEY /user/dental\n"));
+        assert!(load_output.stdout.contains("---\n"));
+        assert!(load_output.stdout.contains("\nEND\n"));
+        assert!(load_output.stdout.contains("MATCHED dental"));
+    }
+
+    #[tokio::test]
+    async fn agent_memory_list_returns_keys_per_line() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
+
+        for k in ["/user/a", "/user/b", "/kb/c"] {
+            execute(
+                vec![
+                    OsString::from("/tmp/agent-memory"),
+                    OsString::from("set"),
+                    OsString::from(k),
+                    OsString::from("x"),
+                    OsString::from("--reason"),
+                    OsString::from("r"),
+                ],
+                test_env(root.clone(), cwd.clone()),
+                None,
+            )
+            .await
+            .expect("seed");
+        }
+
+        let output = execute(
+            vec![
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("list"),
+                OsString::from("/user/"),
+            ],
+            test_env(root.clone(), cwd),
+            None,
+        )
+        .await
+        .expect("run agent-memory list");
+        assert_eq!(output.exit_code, EXIT_SUCCESS);
+        assert_eq!(output.stdout, "/user/a\n/user/b\n");
+    }
+
+    #[tokio::test]
+    async fn agent_memory_set_missing_reason_returns_invalid_args() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd)
+            .await
+            .expect("create workspace dir");
+
+        let result = execute(
+            vec![
+                OsString::from("/tmp/agent-memory"),
+                OsString::from("set"),
+                OsString::from("/user/k"),
+                OsString::from("v"),
+            ],
+            test_env(root, cwd),
+            None,
+        )
+        .await;
+        let err = result.expect_err("set without --reason must fail at parse");
+        assert!(matches!(err, AgentToolError::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn agent_memory_load_parser_splits_tags_and_flags() {
+        let parsed = parse_agent_memory_cli_command(
+            "agent-memory".into(),
+            &[
+                "load".into(),
+                "dental,phone case,reminder".into(),
+                "--max-records".into(),
+                "10".into(),
+                "--max-bytes=4096".into(),
+            ],
+        )
+        .expect("parse load");
+        match parsed {
+            ParsedCommand::AgentMemory {
+                invocation:
+                    AgentMemoryInvocation {
+                        verb:
+                            AgentMemoryVerb::Load {
+                                tags,
+                                max_records,
+                                max_bytes,
+                            },
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(tags, vec!["dental", "phone case", "reminder"]);
+                assert_eq!(max_records, Some(10));
+                assert_eq!(max_bytes, Some(4096));
+            }
+            other => panic!("unexpected parsed command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_memory_root_override_resolves_relative_to_cwd() {
+        let parsed = parse_agent_memory_cli_command(
+            "agent-memory".into(),
+            &[
+                "--root".into(),
+                "/tmp/custom-root".into(),
+                "init".into(),
+            ],
+        )
+        .expect("parse init with --root");
+        match parsed {
+            ParsedCommand::AgentMemory {
+                invocation:
+                    AgentMemoryInvocation {
+                        root_override,
+                        verb: AgentMemoryVerb::Init,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(root_override, Some(PathBuf::from("/tmp/custom-root")));
+            }
+            other => panic!("unexpected parsed command: {other:?}"),
+        }
     }
 
     #[test]

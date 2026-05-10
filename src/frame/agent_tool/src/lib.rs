@@ -11,7 +11,6 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
-use chrono::Utc;
 use log::{info, warn};
 use schemars::JsonSchema;
 use serde::ser::SerializeSeq;
@@ -19,9 +18,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as Json};
 use tokio::time::{timeout, Duration};
 
+pub mod agent_memory;
 pub mod file_tools;
 pub mod json_args;
-pub mod memory;
 pub mod path_utils;
 pub mod todo;
 pub mod tool;
@@ -42,7 +41,10 @@ pub use json_args::{
     read_string_from_map, read_u64_from_map, require_string_arg, require_trimmed_string_arg,
     u64_to_usize_arg,
 };
-pub use memory::{AgentMemory, AgentMemoryConfig, MemoryRankItem};
+pub use agent_memory::{
+    AgentMemory, AgentMemoryConfig, AgentMemoryError, Envelope as AgentMemoryEnvelope, LoadItem,
+    LoadOptions, Preamble, VerifyReport,
+};
 pub use path_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,
     rewrite_path_with_shell_cwd, sanitize_session_id_for_path, session_record_path, to_abs_path,
@@ -1145,315 +1147,12 @@ impl TypedTool for GetSessionTool {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct MemoryLoadPreview {
-    pub rendered: String,
-    pub item_count: usize,
-}
-
-#[async_trait]
-pub trait MemoryLoadBackend: Send + Sync {
-    async fn load_memory_preview(
-        &self,
-        token_limit: Option<u32>,
-        tags: Vec<String>,
-        current_time: Option<String>,
-    ) -> Result<MemoryLoadPreview, AgentToolError>;
-}
-
-#[async_trait]
-pub trait MemoryMutationBackend: Send + Sync {
-    async fn set_memory(
-        &self,
-        key: String,
-        content: String,
-        source: Json,
-    ) -> Result<Json, AgentToolError>;
-    async fn remove_memory(&self, key: String, source: Json) -> Result<Json, AgentToolError>;
-}
-
-#[derive(Clone)]
-pub struct LoadMemoryTool {
-    backend: Arc<dyn MemoryLoadBackend>,
-}
-
-impl LoadMemoryTool {
-    pub fn new(backend: Arc<dyn MemoryLoadBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-#[derive(Default, Deserialize, JsonSchema)]
-pub struct LoadMemoryArgs {
-    #[serde(default)]
-    pub token_limit: Option<u64>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub current_time: Option<String>,
-}
-
-pub struct LoadMemoryOutput {
-    pub rendered: String,
-    pub item_count: usize,
-}
-
-impl Serialize for LoadMemoryOutput {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        Json::String(self.rendered.clone()).serialize(serializer)
-    }
-}
-
-impl JsonSchema for LoadMemoryOutput {
-    fn schema_name() -> String {
-        "LoadMemoryOutput".to_string()
-    }
-    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        schemars::schema::SchemaObject {
-            instance_type: Some(schemars::schema::InstanceType::String.into()),
-            ..Default::default()
-        }
-        .into()
-    }
-}
-
-#[async_trait]
-impl TypedTool for LoadMemoryTool {
-    type Args = LoadMemoryArgs;
-    type Output = LoadMemoryOutput;
-
-    fn name(&self) -> &str {
-        TOOL_LOAD_MEMORY
-    }
-    fn description(&self) -> &str {
-        "Read memory summary using default retrieval strategy."
-    }
-    fn calling(&self) -> CallingConventions {
-        CallingConventions::from_legacy(true, false, true)
-    }
-
-    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
-        let mut out = TOOL_LOAD_MEMORY.to_string();
-        if let Some(limit) = args.token_limit {
-            out.push_str(format!(" token_limit={limit}").as_str());
-        }
-        let tags: Vec<&str> = args
-            .tags
-            .iter()
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .collect();
-        if !tags.is_empty() {
-            out.push_str(format!(" tags={}", tags.join(",")).as_str());
-        }
-        if let Some(time) = args
-            .current_time
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            out.push_str(format!(" current_time={time}").as_str());
-        }
-        Some(out)
-    }
-
-    fn build_summary(&self, output: &Self::Output) -> String {
-        format!("loaded {} memory item(s)", output.item_count)
-    }
-
-    async fn execute(
-        &self,
-        _ctx: &ToolCtx<'_>,
-        args: Self::Args,
-    ) -> Result<Self::Output, AgentToolError> {
-        let token_limit = args.token_limit.map(|n| n.min(u32::MAX as u64) as u32);
-        let tags: Vec<String> = args
-            .tags
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let preview = self
-            .backend
-            .load_memory_preview(token_limit, tags, args.current_time)
-            .await?;
-        Ok(LoadMemoryOutput {
-            rendered: preview.rendered,
-            item_count: preview.item_count,
-        })
-    }
-}
-
-#[derive(Clone)]
-pub struct SetMemoryTool {
-    backend: Arc<dyn MemoryMutationBackend>,
-}
-
-impl SetMemoryTool {
-    pub fn new(backend: Arc<dyn MemoryMutationBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct SetMemoryArgs {
-    pub key: String,
-    pub content: String,
-}
-
-#[async_trait]
-impl TypedTool for SetMemoryTool {
-    type Args = SetMemoryArgs;
-    type Output = Json;
-
-    fn name(&self) -> &str {
-        TOOL_SET_MEMORY
-    }
-    fn description(&self) -> &str {
-        "Store a memory entry by key and content."
-    }
-    fn calling(&self) -> CallingConventions {
-        CallingConventions::from_legacy(true, false, true)
-    }
-
-    fn usage(&self) -> Option<String> {
-        Some("set_memory <key> <content> | set_memory key=<key> content=<content>".to_string())
-    }
-
-    fn parse_bash_args(
-        &self,
-
-        tokens: &[String],
-
-        _shell_cwd: Option<&Path>,
-    ) -> Result<Json, AgentToolError> {
-        if tokens.len() >= 2 && !tokens[0].contains('=') {
-            return Ok(json!({
-                "key": tokens[0].trim(),
-                "content": tokens[1..].join(" ")
-            }));
-        }
-        parse_default_bash_exec_args(tokens)
-    }
-
-    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
-        Some(format!("{TOOL_SET_MEMORY} {}", args.key.trim()))
-    }
-
-    async fn execute(
-        &self,
-        ctx: &ToolCtx<'_>,
-        args: Self::Args,
-    ) -> Result<Self::Output, AgentToolError> {
-        let key = args.key.trim();
-        if key.is_empty() {
-            return Err(AgentToolError::InvalidArgs("key is required".to_string()));
-        }
-        let session = ctx.session();
-        let source = json!({
-            "kind": "tool",
-            "name": TOOL_SET_MEMORY,
-            "retrieved_at": Utc::now().to_rfc3339(),
-            "locator": {
-                "trace_id": session.trace_id,
-                "session_id": session.session_id,
-                "agent_name": session.agent_name,
-                "behavior": session.behavior,
-                "step_idx": session.step_idx,
-                "wakeup_id": session.wakeup_id
-            }
-        });
-        self.backend
-            .set_memory(key.to_string(), args.content, source)
-            .await
-    }
-}
-
-#[derive(Clone)]
-pub struct RemoveMemoryTool {
-    backend: Arc<dyn MemoryMutationBackend>,
-}
-
-impl RemoveMemoryTool {
-    pub fn new(backend: Arc<dyn MemoryMutationBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct RemoveMemoryArgs {
-    pub key: String,
-}
-
-#[async_trait]
-impl TypedTool for RemoveMemoryTool {
-    type Args = RemoveMemoryArgs;
-    type Output = Json;
-
-    fn name(&self) -> &str {
-        TOOL_REMOVE_MEMORY
-    }
-    fn description(&self) -> &str {
-        "Remove a memory entry by key and delete its stored file."
-    }
-    fn calling(&self) -> CallingConventions {
-        CallingConventions::from_legacy(true, false, true)
-    }
-
-    fn usage(&self) -> Option<String> {
-        Some("remove_memory <key> | remove_memory key=<key>".to_string())
-    }
-
-    fn parse_bash_args(
-        &self,
-
-        tokens: &[String],
-
-        _shell_cwd: Option<&Path>,
-    ) -> Result<Json, AgentToolError> {
-        if tokens.is_empty() {
-            return Err(AgentToolError::InvalidArgs("key is required".to_string()));
-        }
-        if tokens.len() == 1 && !tokens[0].contains('=') {
-            return Ok(json!({ "key": tokens[0].trim() }));
-        }
-        parse_default_bash_exec_args(tokens)
-    }
-
-    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
-        Some(format!("{TOOL_REMOVE_MEMORY} {}", args.key.trim()))
-    }
-
-    async fn execute(
-        &self,
-        ctx: &ToolCtx<'_>,
-        args: Self::Args,
-    ) -> Result<Self::Output, AgentToolError> {
-        let key = args.key.trim();
-        if key.is_empty() {
-            return Err(AgentToolError::InvalidArgs("key is required".to_string()));
-        }
-        let session = ctx.session();
-        let source = json!({
-            "kind": "tool",
-            "name": TOOL_REMOVE_MEMORY,
-            "retrieved_at": Utc::now().to_rfc3339(),
-            "locator": {
-                "trace_id": session.trace_id,
-                "session_id": session.session_id,
-                "agent_name": session.agent_name,
-                "behavior": session.behavior,
-                "step_idx": session.step_idx,
-                "wakeup_id": session.wakeup_id
-            }
-        });
-        self.backend.remove_memory(key.to_string(), source).await
-    }
-}
+// NOTE(beta2.2): the legacy MemoryLoadBackend / MemoryMutationBackend traits
+// and their `LoadMemoryTool` / `SetMemoryTool` / `RemoveMemoryTool` wrappers
+// were removed in the v2.8 rewrite. Agents now invoke the `agent-memory`
+// CLI via the standard bash tool; the in-process API lives in
+// `crate::agent_memory`. The TOOL_*_MEMORY constants above are kept only as
+// stable command names for prompt scaffolding.
 
 #[async_trait]
 pub trait WorklogActionBackend: Send + Sync {

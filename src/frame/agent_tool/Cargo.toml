@@ -19,6 +19,9 @@ rusqlite = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+blake3 = { workspace = true }
+fs2 = { workspace = true }
+percent-encoding = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

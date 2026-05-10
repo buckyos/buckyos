@@ -23,8 +23,8 @@ use crate::file_tools::FileWriteAuditBackend;
 use crate::workspace::WorkspaceRuntimeBackend;
 use crate::{
     build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult,
-    ExternalWorkspaceBackend, MemoryLoadBackend, MemoryMutationBackend, SessionRuntimeContext,
-    SessionViewBackend, ToolSpec, WorklogActionBackend, WorkspaceToolBackend,
+    ExternalWorkspaceBackend, SessionRuntimeContext, SessionViewBackend, ToolSpec,
+    WorklogActionBackend, WorkspaceToolBackend,
 };
 
 /// Bitflag summary of how a tool may be invoked.
@@ -108,12 +108,6 @@ pub trait ToolHost: Send + Sync {
     fn external_workspace(&self) -> Option<&dyn ExternalWorkspaceBackend> {
         None
     }
-    fn memory_load(&self) -> Option<&dyn MemoryLoadBackend> {
-        None
-    }
-    fn memory_mutation(&self) -> Option<&dyn MemoryMutationBackend> {
-        None
-    }
     fn worklog_action(&self) -> Option<&dyn WorklogActionBackend> {
         None
     }
@@ -138,8 +132,6 @@ pub struct BasicToolHost {
     pub workspace_runtime: Option<Arc<dyn WorkspaceRuntimeBackend>>,
     pub workspace_tool: Option<Arc<dyn WorkspaceToolBackend>>,
     pub external_workspace: Option<Arc<dyn ExternalWorkspaceBackend>>,
-    pub memory_load: Option<Arc<dyn MemoryLoadBackend>>,
-    pub memory_mutation: Option<Arc<dyn MemoryMutationBackend>>,
     pub worklog_action: Option<Arc<dyn WorklogActionBackend>>,
     pub file_write_audit: Option<Arc<dyn FileWriteAuditBackend>>,
 }
@@ -165,14 +157,6 @@ impl BasicToolHost {
         self.external_workspace = Some(backend);
         self
     }
-    pub fn with_memory_load(mut self, backend: Arc<dyn MemoryLoadBackend>) -> Self {
-        self.memory_load = Some(backend);
-        self
-    }
-    pub fn with_memory_mutation(mut self, backend: Arc<dyn MemoryMutationBackend>) -> Self {
-        self.memory_mutation = Some(backend);
-        self
-    }
     pub fn with_worklog_action(mut self, backend: Arc<dyn WorklogActionBackend>) -> Self {
         self.worklog_action = Some(backend);
         self
@@ -195,12 +179,6 @@ impl ToolHost for BasicToolHost {
     }
     fn external_workspace(&self) -> Option<&dyn ExternalWorkspaceBackend> {
         self.external_workspace.as_deref()
-    }
-    fn memory_load(&self) -> Option<&dyn MemoryLoadBackend> {
-        self.memory_load.as_deref()
-    }
-    fn memory_mutation(&self) -> Option<&dyn MemoryMutationBackend> {
-        self.memory_mutation.as_deref()
     }
     fn worklog_action(&self) -> Option<&dyn WorklogActionBackend> {
         self.worklog_action.as_deref()
