@@ -891,7 +891,7 @@ mod tests {
             .expect("create workspace tool call")
             .expect("tool matched");
 
-        assert!(create_result.is_agent_tool);
+        assert_eq!(create_result.agent_tool_protocol, "1");
         assert_eq!(create_result["ok"], true);
         let workspace_id = create_result["workspace"]["workspace_id"]
             .as_str()
@@ -1019,7 +1019,7 @@ mod tests {
             .await
             .expect("bind external workspace");
 
-        assert!(bind_result.is_agent_tool);
+        assert_eq!(bind_result.agent_tool_protocol, "1");
         let mount_path = bind_result["binding"]["mount"]
             .as_str()
             .expect("mount path");
@@ -1038,7 +1038,7 @@ mod tests {
             )
             .await
             .expect("list external workspaces");
-        assert!(list_result.is_agent_tool);
+        assert_eq!(list_result.agent_tool_protocol, "1");
         let workspaces = list_result["workspaces"]
             .as_array()
             .expect("workspaces array");

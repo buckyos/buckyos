@@ -1055,12 +1055,12 @@ mod tests {
 
         assert!(rendered.contains("<step behavior=\"plan\" step_num=2 step_time=\""));
         assert!(rendered.contains("<reply_msg>reply-2</reply_msg>"));
-        assert!(rendered.contains("<action>- tool-2 => success"));
+        assert!(rendered.contains("<action>- action-2"));
         assert!(!rendered.contains("step-2-line-9"));
 
         assert!(rendered.contains("<step behavior=\"plan\" step_num=4 step_time=\""));
         assert!(rendered.contains("<reply_msg>reply-4</reply_msg>"));
-        assert!(rendered.contains("<action>- tool-4 => success"));
+        assert!(rendered.contains("<action>- tool-4"));
         assert!(rendered.contains("step-4-line-9"));
         assert!(!rendered.contains("thinking-4"));
         assert!(rendered.contains("</steps_summary>"));

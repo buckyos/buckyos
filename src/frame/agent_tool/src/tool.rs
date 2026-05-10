@@ -566,7 +566,7 @@ mod tests {
             .expect("call");
         assert_eq!(result.details["echoed"], "hi");
         assert_eq!(result.summary, "ok");
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, "1");
     }
 
     #[tokio::test]

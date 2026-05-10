@@ -306,8 +306,7 @@ pub enum AgentHistoryShowLevel {
 
 const HISTORY_COMPACT_CMD_MAX_CHARS: usize = 96;
 const HISTORY_STD_DETAILS_MAX_CHARS: usize = 1600;
-const HISTORY_BASH_OUTPUT_MINI_LINES: usize = 8;
-const HISTORY_BASH_OUTPUT_FULL_LINES: usize = 512;
+const HISTORY_OUTPUT_FULL_LINES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -329,15 +328,8 @@ pub enum AgentToolPendingReason {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentToolResult {
-    #[serde(
-        default,
-        rename = "agent_tool_protocol",
-        alias = "is_agent_tool",
-        skip_serializing_if = "skip_protocol_marker",
-        serialize_with = "serialize_protocol_marker",
-        deserialize_with = "deserialize_protocol_marker"
-    )]
-    pub is_agent_tool: bool,
+    #[serde(deserialize_with = "deserialize_agent_tool_protocol")]
+    pub agent_tool_protocol: String,
     /// Logical tool name when the result is the rendered output of a
     /// registered agent tool. Used by the CLI front-end and surfaces in
     /// downstream consumers; absent for raw bash results.
@@ -360,10 +352,9 @@ pub struct AgentToolResult {
     pub title: String,
     #[serde(default)]
     pub summary: String,
-    #[serde(rename = "detail", default = "default_json_object")]
+    #[serde(rename = "detail", default = "default_result_detail")]
     pub details: Json,
 
-    //下面的都是is_agent_tool = false 的属性
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmd_args: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -378,68 +369,26 @@ pub struct AgentToolResult {
 /// Current `agent_tool_protocol` schema version emitted in the AgentToolResult JSON.
 pub const AGENT_TOOL_PROTOCOL_VERSION: &str = "1";
 
-fn skip_protocol_marker(value: &bool) -> bool {
-    !*value
+fn default_agent_tool_protocol() -> String {
+    AGENT_TOOL_PROTOCOL_VERSION.to_string()
 }
 
-fn serialize_protocol_marker<S>(_value: &bool, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(AGENT_TOOL_PROTOCOL_VERSION)
+fn default_result_detail() -> Json {
+    json!({})
 }
 
-fn deserialize_protocol_marker<'de, D>(deserializer: D) -> Result<bool, D::Error>
+fn deserialize_agent_tool_protocol<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    use serde::de::{self, Visitor};
-    use std::fmt;
-
-    struct V;
-    impl<'de> Visitor<'de> for V {
-        type Value = bool;
-        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "agent_tool_protocol marker (string \"1\" or boolean)")
-        }
-        fn visit_bool<E>(self, value: bool) -> Result<bool, E>
-        where
-            E: de::Error,
-        {
-            Ok(value)
-        }
-        fn visit_str<E>(self, value: &str) -> Result<bool, E>
-        where
-            E: de::Error,
-        {
-            Ok(!value.trim().is_empty())
-        }
-        fn visit_string<E>(self, value: String) -> Result<bool, E>
-        where
-            E: de::Error,
-        {
-            self.visit_str(value.as_str())
-        }
-        fn visit_unit<E>(self) -> Result<bool, E>
-        where
-            E: de::Error,
-        {
-            Ok(false)
-        }
-        fn visit_none<E>(self) -> Result<bool, E>
-        where
-            E: de::Error,
-        {
-            Ok(false)
-        }
-        fn visit_some<D>(self, deserializer: D) -> Result<bool, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            deserializer.deserialize_any(V)
-        }
+    let value = String::deserialize(deserializer)?;
+    if value == AGENT_TOOL_PROTOCOL_VERSION {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "unsupported agent_tool_protocol `{value}`"
+        )))
     }
-    deserializer.deserialize_any(V)
 }
 
 /// Output of running an agent tool through the CLI front-end.
@@ -492,7 +441,7 @@ fn truncate_prompt_stream_lines(content: &str, max_lines: usize) -> String {
 impl AgentToolResult {
     pub fn from_details(details: Json) -> Self {
         Self {
-            is_agent_tool: false,
+            agent_tool_protocol: default_agent_tool_protocol(),
             tool: None,
             status: AgentToolStatus::Success,
             title: String::new(),
@@ -525,11 +474,6 @@ impl AgentToolResult {
 
     pub fn with_status(mut self, status: AgentToolStatus) -> Self {
         self.status = status;
-        self
-    }
-
-    pub fn with_is_agent_tool(mut self, is_agent_tool: bool) -> Self {
-        self.is_agent_tool = is_agent_tool;
         self
     }
 
@@ -650,19 +594,11 @@ impl AgentToolResult {
     }
 
     pub fn render_for_level(&self, level: AgentHistoryShowLevel) -> String {
-        if self.is_agent_tool {
-            self.render_agent_tool_for_level(level)
-        } else {
-            self.render_bash_result_for_level(level)
-        }
+        self.render_protocol_result_for_level(level)
     }
 
     pub fn render_for_last_step(&self) -> String {
-        if self.is_agent_tool {
-            self.render_agent_tool_for_last_step()
-        } else {
-            self.render_bash_result_for_last_step()
-        }
+        self.render_protocol_result_for_last_step()
     }
 
     pub fn command_line_text(&self) -> Option<String> {
@@ -679,7 +615,7 @@ impl AgentToolResult {
         })
     }
 
-    fn render_agent_tool_for_level(&self, level: AgentHistoryShowLevel) -> String {
+    fn render_protocol_result_for_level(&self, level: AgentHistoryShowLevel) -> String {
         match level {
             AgentHistoryShowLevel::Min => {
                 let title = self.title.trim();
@@ -702,111 +638,48 @@ impl AgentToolResult {
                     summary.to_string()
                 }
             }
-            AgentHistoryShowLevel::Full => {
-                let command = self
-                    .history_compact_command_text()
-                    .or_else(|| self.command_line_text())
-                    .unwrap_or_else(|| "action".to_string());
-                let mut lines = vec![command];
-                let mut body = vec![self.history_result_text()];
-                if let Some(details) = self.render_agent_tool_details_block() {
-                    body.push(details);
-                }
-                lines.push("```result".to_string());
-                lines.push(body.join("\n"));
-                lines.push("```".to_string());
-                lines.join("\n")
-            }
+            AgentHistoryShowLevel::Full => self.render_protocol_full(false),
         }
     }
 
-    fn render_agent_tool_for_last_step(&self) -> String {
+    fn render_protocol_result_for_last_step(&self) -> String {
+        self.render_protocol_full(true)
+    }
+
+    fn render_protocol_full(&self, uncompressed: bool) -> String {
         let command = self
             .command_line_text()
             .or_else(|| self.history_compact_command_text())
             .unwrap_or_else(|| "action".to_string());
-        let mut lines = vec![command, "```result".to_string(), self.history_result_text()];
-        if let Some(details) = self.render_agent_tool_details_block_uncompressed() {
+        let mut lines = vec![command];
+        let mut has_body = false;
+        if let Some(output) = self
+            .output
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push("```output".to_string());
+            lines.push(if uncompressed {
+                output.to_string()
+            } else {
+                take_head_lines(output, HISTORY_OUTPUT_FULL_LINES)
+            });
+            lines.push("```".to_string());
+            has_body = true;
+        }
+        if let Some(details) = if uncompressed {
+            self.render_details_block_uncompressed()
+        } else {
+            self.render_details_block()
+        } {
+            lines.push("```json".to_string());
             lines.push(details);
-        }
-        lines.push("```".to_string());
-
-        if let Some(output) = self
-            .output
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            lines.push("```output".to_string());
-            lines.push(output.to_string());
             lines.push("```".to_string());
+            has_body = true;
         }
-
-        lines.join("\n")
-    }
-
-    fn render_bash_result_for_level(&self, level: AgentHistoryShowLevel) -> String {
-        let command = match level {
-            AgentHistoryShowLevel::Min | AgentHistoryShowLevel::Mini => {
-                self.history_compact_command_text()
-            }
-            AgentHistoryShowLevel::Medium | AgentHistoryShowLevel::Full => self
-                .command_line_text()
-                .or_else(|| self.history_compact_command_text()),
-        };
-        let mut lines = vec![self.render_command_with_status(command)];
-
-        let excerpt = match level {
-            AgentHistoryShowLevel::Min => None,
-            AgentHistoryShowLevel::Mini => match self.status {
-                AgentToolStatus::Error => {
-                    self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES)
-                }
-                _ => None,
-            },
-            AgentHistoryShowLevel::Medium => match self.status {
-                AgentToolStatus::Error => {
-                    self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES)
-                }
-                AgentToolStatus::Success => {
-                    self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_MINI_LINES)
-                }
-                AgentToolStatus::Pending => None,
-            },
-            AgentHistoryShowLevel::Full => match self.status {
-                AgentToolStatus::Error => {
-                    self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_FULL_LINES)
-                }
-                AgentToolStatus::Success => {
-                    self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_FULL_LINES)
-                }
-                AgentToolStatus::Pending => None,
-            },
-        };
-
-        if let Some(excerpt) = excerpt {
-            lines.push("```output".to_string());
-            lines.push(excerpt);
-            lines.push("```".to_string());
+        if !has_body {
+            lines.push(self.history_result_text());
         }
-        lines.join("\n")
-    }
-
-    fn render_bash_result_for_last_step(&self) -> String {
-        let command = self
-            .command_line_text()
-            .or_else(|| self.history_compact_command_text());
-        let mut lines = vec![self.render_command_with_status(command)];
-
-        if let Some(output) = self
-            .output
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            lines.push("```output".to_string());
-            lines.push(output.to_string());
-            lines.push("```".to_string());
-        }
-
         lines.join("\n")
     }
 
@@ -859,7 +732,7 @@ impl AgentToolResult {
             })
     }
 
-    fn render_agent_tool_details_block(&self) -> Option<String> {
+    fn render_details_block(&self) -> Option<String> {
         match &self.details {
             Json::Null => None,
             Json::Object(map) if map.is_empty() => None,
@@ -872,7 +745,7 @@ impl AgentToolResult {
         }
     }
 
-    fn render_agent_tool_details_block_uncompressed(&self) -> Option<String> {
+    fn render_details_block_uncompressed(&self) -> Option<String> {
         match &self.details {
             Json::Null => None,
             Json::Object(map) if map.is_empty() => None,
@@ -882,18 +755,6 @@ impl AgentToolResult {
         }
     }
 
-    fn render_output_excerpt(&self, head: bool, max_lines: usize) -> Option<String> {
-        let output = self
-            .output
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-        if head {
-            Some(take_head_lines(output, max_lines))
-        } else {
-            Some(take_tail_lines(output, max_lines))
-        }
-    }
 }
 
 impl Deref for AgentToolResult {
@@ -918,7 +779,6 @@ pub(crate) fn build_builtin_tool_result(
     let cmd_line = cmd_line.into();
     let summary = summary.into();
     let mut result = AgentToolResult::from_details(details)
-        .with_is_agent_tool(true)
         .with_cmd_line(cmd_line)
         .with_result(summary);
     if result.title.trim().is_empty() {
@@ -981,34 +841,16 @@ fn take_head_lines(content: &str, max_lines: usize) -> String {
     out
 }
 
-fn take_tail_lines(content: &str, max_lines: usize) -> String {
-    if max_lines == 0 {
-        return String::new();
-    }
-    let lines = content.lines().collect::<Vec<_>>();
-    if lines.len() <= max_lines {
-        return content.to_string();
-    }
-    let start = lines.len().saturating_sub(max_lines);
-    let mut out = String::from("... [TRUNCATED: showing last ");
-    out.push_str(max_lines.to_string().as_str());
-    out.push_str(" lines only] ...\n");
-    out.push_str(lines[start..].join("\n").as_str());
-    out
-}
-
-/// Decorate an `AgentToolResult` produced by a tool with the
-/// CLI-specific defaults (mark it as agent_tool output, fill in the
-/// tool name and a default summary/title when missing).
+/// Decorate an `AgentToolResult` produced by a tool with the CLI-specific
+/// defaults (fill in the tool name and a default summary/title when missing).
 pub fn cli_result_from_tool_result(tool_name: &str, mut result: AgentToolResult) -> AgentToolResult {
-    result.is_agent_tool = true;
     if result.summary.trim().is_empty() {
         result.summary = "completed".to_string();
     }
     if !tool_name.trim().is_empty() {
         result.tool = Some(tool_name.to_string());
     }
-    if result.is_agent_tool && result.title.trim().is_empty() {
+    if result.title.trim().is_empty() {
         result.title = derive_default_title(&result);
     }
     result
@@ -1023,7 +865,7 @@ pub fn cli_error_result(tool_name: Option<&str>, err: &AgentToolError) -> AgentT
         None => "error".to_string(),
     };
     AgentToolResult {
-        is_agent_tool: true,
+        agent_tool_protocol: default_agent_tool_protocol(),
         tool: tool_name.map(|value| value.to_string()),
         cmd_name: None,
         status: AgentToolStatus::Error,
@@ -1049,7 +891,7 @@ pub fn cli_success_result(
     summary: impl Into<String>,
 ) -> AgentToolResult {
     AgentToolResult {
-        is_agent_tool: true,
+        agent_tool_protocol: default_agent_tool_protocol(),
         tool,
         cmd_name: None,
         status: AgentToolStatus::Success,
@@ -1069,7 +911,7 @@ pub fn cli_success_result(
 
 pub fn render_cli_output(payload: &AgentToolResult, exit_code: i32) -> CliRunOutput {
     let stdout = serde_json::to_string(payload).unwrap_or_else(|_| {
-        "{\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
+        "{\"agent_tool_protocol\":\"1\",\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
             .to_string()
     });
     CliRunOutput {
@@ -3120,7 +2962,7 @@ mod tests {
             .expect("bash help succeeds")
             .expect("tool matched");
 
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, AGENT_TOOL_PROTOCOL_VERSION);
         assert_eq!(result.summary, "show usage");
         assert_eq!(
             result.command_line_text().as_deref(),
@@ -3141,7 +2983,7 @@ mod tests {
         .await
         .expect("get session");
 
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, AGENT_TOOL_PROTOCOL_VERSION);
         assert_eq!(result.summary, "ok");
         assert_eq!(
             result.command_line_text().as_deref(),
@@ -3162,7 +3004,7 @@ mod tests {
         .await
         .expect("worklog call");
 
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, AGENT_TOOL_PROTOCOL_VERSION);
         assert_eq!(result.summary, "list_worklog");
         assert_eq!(
             result.command_line_text().as_deref(),
@@ -3190,13 +3032,42 @@ mod tests {
     }
 
     #[test]
+    fn agent_tool_result_deserialize_requires_protocol_marker() {
+        assert!(
+            serde_json::from_value::<AgentToolResult>(json!({
+                "agent_tool_protocol": "1",
+                "status": "success",
+                "summary": "ok",
+                "detail": {}
+            }))
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<AgentToolResult>(json!({
+                "is_agent_tool": true,
+                "status": "success",
+                "summary": "ok",
+                "detail": {}
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<AgentToolResult>(json!({
+                "status": "success",
+                "summary": "ok",
+                "detail": {}
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn render_for_level_standard_agent_tool_uses_summary_and_details() {
         let result = AgentToolResult::from_details(json!({
             "ok": true,
             "path": "demo.txt",
             "bytes": 12
         }))
-        .with_is_agent_tool(true)
         .with_cmd_line("read_file demo.txt range=1-2")
         .with_result("read 12 bytes");
 
@@ -3207,25 +3078,25 @@ mod tests {
         assert!(min.contains("read_file demo.txt range=1-2 => success"));
         assert_eq!(mini, "read 12 bytes");
         assert!(full.contains("read_file demo.txt range=1-2"));
-        assert!(full.contains("```result"));
+        assert!(full.contains("```json"));
         assert!(full.contains("\"path\": \"demo.txt\""));
     }
 
     #[test]
-    fn render_for_level_non_agent_tool_shows_tail_on_failure() {
+    fn render_for_level_bash_result_uses_summary_for_compressed_levels() {
         let result = AgentToolResult::from_details(json!({}))
             .with_cmd_line("cargo test --package demo")
             .with_status(AgentToolStatus::Error)
             .with_return_code(1)
+            .with_result("cargo test failed with exit code 1")
             .with_output("line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nline-8\nline-9");
 
         let mini = result.render_for_level(AgentHistoryShowLevel::Mini);
         let full = result.render_for_level(AgentHistoryShowLevel::Full);
 
-        assert!(mini.contains("cargo test --package demo => failed (line-9)"));
-        assert!(mini.contains("```output"));
-        assert!(mini.contains("line-9"));
-        assert!(full.contains("cargo test --package demo => failed (line-9)"));
+        assert_eq!(mini, "cargo test failed with exit code 1");
+        assert!(full.contains("cargo test --package demo"));
+        assert!(full.contains("```output"));
         assert!(full.contains("line-1"));
         assert!(full.contains("line-9"));
     }
@@ -3259,7 +3130,7 @@ mod tests {
             .render_for_last_step();
 
         assert!(rendered.contains("sed -n"));
-        assert!(rendered.contains("demo.log => success"));
+        assert!(rendered.contains("demo.log"));
         assert!(rendered.contains("line-01"));
         assert!(rendered.contains("line-30"));
         assert!(!rendered.contains("TRUNCATED"));

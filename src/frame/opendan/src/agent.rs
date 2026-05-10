@@ -4154,10 +4154,12 @@ fn build_action_error_result(
     message: &str,
 ) -> AgentToolResult {
     let mut result = AgentToolResult::from_details(json!({}))
-        .with_is_agent_tool(true)
         .with_status(AgentToolStatus::Error)
         .with_result(message.trim().to_string())
         .with_output(message.trim().to_string());
+    if let Some(tool_name) = tool_name {
+        result = result.with_tool(tool_name);
+    }
     annotate_action_result(&mut result, tool_name, detail_action, action_cmd_line);
     result
 }
@@ -4187,7 +4189,9 @@ fn action_result_kind(result: &AgentToolResult) -> Option<&str> {
         .get("kind")
         .and_then(Json::as_str)
         .or_else(|| {
-            if result.is_agent_tool {
+            let has_structured_detail = !matches!(&result.details, Json::Null)
+                && !matches!(&result.details, Json::Object(map) if map.is_empty());
+            if result.tool.is_some() || has_structured_detail {
                 Some("call_tool")
             } else {
                 Some("exec")

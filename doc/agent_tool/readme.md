@@ -96,7 +96,7 @@ AgentTool CLI 可执行文件启动
 ### 当前协议要点
 
 - 顶层协议对象统一为 `AgentToolResult`
-- 对 builtin tool，固定字段优先是 `is_agent_tool / cmd_name / status / summary / detail`
+- 对 builtin tool，固定字段优先是 `agent_tool_protocol / cmd_name / status / summary / detail`
 - `detail` 是内置工具结构化数据
 - `output` 不是 builtin tool 默认字段，只在明确需要 bash 主文本输出时才使用
 - `pending_reason` 当前统一使用 `long_running | user_approval | wait_for_install`

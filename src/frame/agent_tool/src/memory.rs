@@ -1251,7 +1251,7 @@ mod tests {
             )
             .await
             .expect("call load_memory tool");
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, "1");
         let memory_text = result.as_str().expect("load_memory returns string");
         assert!(memory_text.contains("agent/status/current"));
     }
@@ -1298,7 +1298,7 @@ mod tests {
             )
             .await
             .expect("call remove_memory tool");
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, "1");
         assert_eq!(result.details["valid"], false);
         assert!(fs::metadata(&memory_path).await.is_err());
     }

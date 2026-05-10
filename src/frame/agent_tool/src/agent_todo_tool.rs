@@ -1629,7 +1629,7 @@ mod tests {
 
         let result = exec(&tool, &ctx, "todo help").await.expect("todo help");
 
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, "1");
         assert_eq!(result.summary, "show usage");
         assert_eq!(result.command_line_text().as_deref(), Some("todo help"));
         assert_eq!(result["tool"], TOOL_TODO);
@@ -2005,7 +2005,7 @@ mod tests {
         assert_eq!(t002["item"]["priority"], 20);
 
         let next = exec(&tool, &ctx, "todo next").await.expect("todo next");
-        assert!(next.is_agent_tool);
+        assert_eq!(next.agent_tool_protocol, "1");
         assert_eq!(next["item"]["todo_code"], "T001");
 
         exec(&tool, &ctx, "todo start T001")

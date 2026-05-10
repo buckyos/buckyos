@@ -19,8 +19,8 @@ use tokio::time::{sleep, Duration, Instant};
 use crate::agent_session::AgentSessionMgr;
 use crate::agent_tool::{
     AgentTool, AgentToolError, AgentToolManager, AgentToolResult, AgentToolStatus, ToolSpec,
-    TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE, TOOL_GET_SESSION, TOOL_READ_FILE,
-    TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY, TOOL_WRITE_FILE,
+    AGENT_TOOL_PROTOCOL_VERSION, TOOL_BIND_WORKSPACE, TOOL_CREATE_WORKSPACE, TOOL_EDIT_FILE,
+    TOOL_GET_SESSION, TOOL_READ_FILE, TOOL_REMOVE_MEMORY, TOOL_SET_MEMORY, TOOL_WRITE_FILE,
 };
 use crate::behavior::SessionRuntimeContext;
 use crate::buildin_tool::{
@@ -1873,11 +1873,20 @@ fn decode_exec_bash_json_result(
         return None;
     }
 
-    // The CLI emits the canonical `AgentToolResult` directly.
-    let result = serde_json::from_str::<AgentToolResult>(payload).ok()?;
-    if !result.is_agent_tool {
+    let marker = serde_json::from_str::<Json>(payload)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("agent_tool_protocol")
+                .and_then(Json::as_str)
+                .map(str::to_string)
+        })?;
+    if marker != AGENT_TOOL_PROTOCOL_VERSION {
         return None;
     }
+
+    // The CLI emits the canonical `AgentToolResult` directly.
+    let result = serde_json::from_str::<AgentToolResult>(payload).ok()?;
     Some(
         result
             .with_cmd_line(command)
@@ -2005,7 +2014,7 @@ fn build_exec_bash_pending_task_data(
     summary: &str,
 ) -> Json {
     json!({
-        "is_agent_tool": false,
+        "agent_tool_protocol": AGENT_TOOL_PROTOCOL_VERSION,
         "kind": "tool.exec_bash",
         "status": "pending",
         "pending_reason": "long_running",
@@ -2047,7 +2056,7 @@ fn build_exec_bash_final_task_data(
     let (output, output_truncated) =
         truncate_bytes(run_result.mixed_output.as_bytes(), max_output_bytes);
     json!({
-        "is_agent_tool": false,
+        "agent_tool_protocol": AGENT_TOOL_PROTOCOL_VERSION,
         "kind": "tool.exec_bash",
         "status": if run_result.exit_code == 0 { "success" } else { "error" },
         "summary": summary,

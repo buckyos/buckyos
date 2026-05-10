@@ -1133,7 +1133,7 @@ esac
         assert_eq!(result.status, AgentToolStatus::Success);
         assert_eq!(result.return_code, Some(0));
         assert_eq!(result.output.as_deref(), Some("hello-linux"));
-        assert!(!result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, "1");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1198,7 +1198,7 @@ esac
         assert_eq!(task.data["status"], "success");
         assert_eq!(task.data["exit_code"], 0);
         assert_eq!(task.data["output"], "done");
-        assert_eq!(task.data["is_agent_tool"], false);
+        assert_eq!(task.data["agent_tool_protocol"], "1");
 
         let _ = fs::remove_dir_all(root).await;
     }
@@ -1240,7 +1240,7 @@ esac
 
         assert_eq!(result.status, AgentToolStatus::Success);
         assert_eq!(result.return_code, Some(0));
-        assert_eq!(result.is_agent_tool, true);
+        assert_eq!(result.agent_tool_protocol, "1");
         assert_eq!(result.cmd_name.as_deref(), Some(TOOL_READ_FILE));
         assert_eq!(result["content"], "L1\n");
 
@@ -1444,13 +1444,13 @@ esac
 
         let first_bash = &results[1];
         assert_eq!(first_bash.status, AgentToolStatus::Success);
-        assert_eq!(first_bash.is_agent_tool, true);
+        assert_eq!(first_bash.agent_tool_protocol, "1");
         assert_eq!(first_bash.cmd_name.as_deref(), Some(TOOL_READ_FILE));
         assert_eq!(first_bash["content"], "L1\n");
 
         let second_bash = &results[3];
         assert_eq!(second_bash.status, AgentToolStatus::Success);
-        assert_eq!(second_bash.is_agent_tool, true);
+        assert_eq!(second_bash.agent_tool_protocol, "1");
         assert_eq!(second_bash.cmd_name.as_deref(), Some(TOOL_READ_FILE));
         assert_eq!(second_bash["content"], "L1\nL2-updated\n");
 

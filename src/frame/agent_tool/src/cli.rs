@@ -1267,29 +1267,26 @@ fn build_check_task_result(tool_name: &str, task: Task) -> AgentToolResult {
     let top_status = task_protocol_status(&task);
     let summary = task_summary(&task, top_status);
     let pending_reason = task_pending_reason(&task);
-    let is_agent_tool = task
-        .data
-        .get("is_agent_tool")
-        .and_then(Json::as_bool)
-        .unwrap_or(true);
-    let mut detail = if is_agent_tool {
-        normalized_task_detail(&task)
-    } else {
+    let is_exec_bash_task =
+        task.data.get("kind").and_then(Json::as_str) == Some("tool.exec_bash");
+    let mut detail = if is_exec_bash_task {
         json!({})
+    } else {
+        normalized_task_detail(&task)
     };
-    if is_agent_tool {
+    if !is_exec_bash_task {
         if let Some(map) = detail.as_object_mut() {
             map.insert("task".to_string(), json!(task.clone()));
         }
     }
 
-    let cmd_line = if is_agent_tool {
-        Some(format!("{tool_name} {}", task.id))
-    } else {
+    let cmd_line = if is_exec_bash_task {
         task.data
             .get("command")
             .and_then(Json::as_str)
             .map(|value| value.to_string())
+    } else {
+        Some(format!("{tool_name} {}", task.id))
     };
     let output = task
         .data
@@ -1314,11 +1311,10 @@ fn build_check_task_result(tool_name: &str, task: Task) -> AgentToolResult {
         .or_else(|| (top_status == AgentToolStatus::Pending).then_some(5));
 
     let mut result = AgentToolResult::from_details(detail)
-        .with_is_agent_tool(is_agent_tool)
         .with_status(top_status)
         .with_result(summary)
         .with_task_id(task.id.to_string());
-    if is_agent_tool {
+    if !is_exec_bash_task {
         result = result.with_tool(tool_name);
     }
     if let Some(cmd_line) = cmd_line.as_deref() {
@@ -1363,7 +1359,6 @@ fn build_cancel_task_result(
     };
 
     AgentToolResult::from_details(detail)
-        .with_is_agent_tool(true)
         .with_status(AgentToolStatus::Success)
         .with_result(summary)
         .with_title(format!("{tool_name} {} => success", task.id))
