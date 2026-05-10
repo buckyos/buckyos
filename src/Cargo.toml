@@ -24,6 +24,7 @@ members = [
     "./frame/control_panel",
     "./frame/agent_tool",
     "./frame/agent_tool_cli_dev",
+    "./frame/llm_context",
     "./frame/opendan",
 
     "./tools/buckycli", 
