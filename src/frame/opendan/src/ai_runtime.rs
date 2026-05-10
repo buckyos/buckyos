@@ -8,10 +8,9 @@ use async_trait::async_trait;
 use buckyos_api::{
     OpenDanAgentInfo, OpenDanAgentListResult, OpenDanAgentSessionListResult,
     OpenDanAgentSessionRecord, OpenDanHandler, OpenDanListAgentSessionsReq, OpenDanListAgentsReq,
-    OpenDanListWorkshopSubAgentsReq, OpenDanListWorkshopTodosReq, OpenDanListWorkshopWorklogsReq,
-    OpenDanServerHandler, OpenDanSubAgentInfo, OpenDanTodoItem, OpenDanWorklogItem,
-    OpenDanWorkspaceInfo, OpenDanWorkspaceSubAgentsResult, OpenDanWorkspaceTodosResult,
-    OpenDanWorkspaceWorklogsResult,
+    OpenDanListWorkshopSubAgentsReq, OpenDanListWorkshopTodosReq, OpenDanServerHandler,
+    OpenDanSubAgentInfo, OpenDanTodoItem, OpenDanWorkspaceInfo, OpenDanWorkspaceSubAgentsResult,
+    OpenDanWorkspaceTodosResult,
 };
 use log::info;
 use schemars::JsonSchema;
@@ -22,13 +21,11 @@ use tokio::{fs, task};
 use crate::agent_tool::{normalize_abs_path, now_ms};
 use crate::agent_tool::{
     sanitize_session_id_for_path, session_record_path, AgentToolError, AgentToolManager,
-    BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool,
-    ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
-    ListExternalWorkspacesTool as SharedListExternalWorkspacesTool,
+    BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool, ExternalWorkspaceRuntimeBackend,
+    ExternalWorkspaceServiceConfig, ListExternalWorkspacesTool as SharedListExternalWorkspacesTool,
     ManagedExternalWorkspaceBackend, TodoAdminListOptions, TodoTool, TodoToolConfig,
     TOOL_CREATE_SUB_AGENT,
 };
-use crate::worklog::{WorklogListOptions, WorklogService, WorklogToolConfig};
 
 const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
 const DEFAULT_SUB_AGENTS_DIR: &str = "sub-agents";
@@ -481,10 +478,8 @@ impl OpenDanRuntimeKrpcHandler {
         let agent_root = PathBuf::from(&agent.root);
         let agent_env_root = agent_env_root_from_agent_root(&self.runtime.cfg, &agent_root);
         let todo_db = todo_db_path(&agent_env_root);
-        let worklog_db = worklog_db_path(&agent_env_root);
         let updated_at = latest_modified_ms(&[
             agent_env_root.join("worklog").join("agent-loop.jsonl"),
-            worklog_db,
             todo_db,
         ])
         .await;
@@ -579,7 +574,6 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
         let agent_env_root =
             agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
         let todo_db = todo_db_path(&agent_env_root);
-        let worklog_db = worklog_db_path(&agent_env_root);
 
         let sub_agent_total = self
             .runtime
@@ -591,93 +585,34 @@ impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
             .count() as u64;
 
         let todo_db_for_count = todo_db.clone();
-        let worklog_db_for_count = worklog_db.clone();
         let agent_id_owned = agent.did.clone();
-        let (todo_total, worklog_total) =
-            task::spawn_blocking(move || -> KRPCResult<(u64, u64)> {
-                let (_, todo_total) = query_workshop_todos_sync(
-                    &todo_db_for_count,
-                    &agent_id_owned,
-                    None,
-                    true,
-                    None,
-                    1,
-                    0,
-                )?;
-                let (_, worklog_total) = query_workshop_worklogs_sync(
-                    &worklog_db_for_count,
-                    &agent_id_owned,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    1,
-                    0,
-                )?;
-                Ok((todo_total, worklog_total))
-            })
-            .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!("query workspace summary failed: {error}"))
-            })??;
+        let todo_total = task::spawn_blocking(move || -> KRPCResult<u64> {
+            let (_, todo_total) = query_workshop_todos_sync(
+                &todo_db_for_count,
+                &agent_id_owned,
+                None,
+                true,
+                None,
+                1,
+                0,
+            )?;
+            Ok(todo_total)
+        })
+        .await
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("query workspace summary failed: {error}"))
+        })??;
 
         Ok(OpenDanWorkspaceInfo {
             workspace_id: format!("workspace:{}", agent.did),
             agent_id: agent.did.clone(),
             workspace_path: Some(agent_env_root.to_string_lossy().to_string()),
             todo_db_path: Some(todo_db.to_string_lossy().to_string()),
-            worklog_db_path: Some(worklog_db.to_string_lossy().to_string()),
             summary: Some(json!({
                 "todo_total": todo_total,
-                "worklog_total": worklog_total,
                 "sub_agent_total": sub_agent_total,
             })),
             extra: None,
-        })
-    }
-
-    async fn handle_list_workshop_worklogs(
-        &self,
-        request: OpenDanListWorkshopWorklogsReq,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanWorkspaceWorklogsResult> {
-        let agent = self.find_agent(&request.agent_id).await?;
-        let agent_env_root =
-            agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
-        let db_path = worklog_db_path(&agent_env_root);
-
-        let limit = normalize_limit(request.limit);
-        let offset = parse_cursor(request.cursor.as_deref())?;
-
-        let agent_id = request.agent_id.clone();
-        let owner_session_id = normalize_owner_session_id(request.owner_session_id.as_str())?;
-        let log_type = request.log_type.clone();
-        let status = request.status.clone();
-        let step_id = request.step_id.clone();
-        let keyword = request.keyword.clone();
-        let (items, total) = task::spawn_blocking(move || {
-            query_workshop_worklogs_sync(
-                &db_path,
-                &agent_id,
-                Some(owner_session_id.as_str()),
-                log_type.as_deref(),
-                status.as_deref(),
-                step_id.as_deref(),
-                keyword.as_deref(),
-                limit,
-                offset,
-            )
-        })
-        .await
-        .map_err(|error| {
-            RPCErrors::ReasonError(format!("list workshop worklogs join failed: {error}"))
-        })??;
-
-        Ok(OpenDanWorkspaceWorklogsResult {
-            next_cursor: build_next_cursor(offset, items.len(), total),
-            items,
-            total: Some(total),
         })
     }
 
@@ -934,22 +869,6 @@ fn map_workshop_todo_statuses(
     Ok(statuses)
 }
 
-fn parse_worklog_record_type(value: &str) -> KRPCResult<crate::worklog::WorklogRecordType> {
-    use crate::worklog::WorklogRecordType;
-
-    match normalize_filter(value).as_str() {
-        "getmessage" | "get_message" => Ok(WorklogRecordType::GetMessage),
-        "replymessage" | "reply_message" => Ok(WorklogRecordType::ReplyMessage),
-        "functionrecord" | "function_record" => Ok(WorklogRecordType::FunctionRecord),
-        "actionrecord" | "action_record" => Ok(WorklogRecordType::ActionRecord),
-        "createsubagent" | "create_sub_agent" => Ok(WorklogRecordType::CreateSubAgent),
-        "stepsummary" | "step_summary" => Ok(WorklogRecordType::StepSummary),
-        other => Err(RPCErrors::ReasonError(format!(
-            "unsupported worklog type filter `{other}`"
-        ))),
-    }
-}
-
 fn normalize_owner_session_id(value: &str) -> KRPCResult<String> {
     let normalized = value.trim();
     if normalized.is_empty() {
@@ -967,10 +886,6 @@ fn agent_env_root_from_agent_root(cfg: &AiRuntimeConfig, agent_root: &Path) -> P
 
 fn todo_db_path(agent_env_root: &Path) -> PathBuf {
     agent_env_root.join("todo").join("todo.db")
-}
-
-fn worklog_db_path(agent_env_root: &Path) -> PathBuf {
-    agent_env_root.join("worklog").join("worklog.db")
 }
 
 async fn latest_modified_ms(paths: &[PathBuf]) -> Option<u64> {
@@ -1063,56 +978,6 @@ fn query_workshop_todos_sync(
                     "todo_code": item.todo_code,
                 })),
             }
-        })
-        .collect::<Vec<_>>();
-
-    Ok((items, listed.total))
-}
-
-fn query_workshop_worklogs_sync(
-    db_path: &Path,
-    agent_id_hint: &str,
-    owner_session_id: Option<&str>,
-    log_type: Option<&str>,
-    status: Option<&str>,
-    step_id: Option<&str>,
-    keyword: Option<&str>,
-    limit: usize,
-    offset: usize,
-) -> KRPCResult<(Vec<OpenDanWorklogItem>, u64)> {
-    if !db_path.exists() {
-        return Ok((vec![], 0));
-    }
-    let service = WorklogService::new(WorklogToolConfig::with_db_path(db_path.to_path_buf()))
-        .map_err(agent_tool_error_to_rpc)?;
-    let listed = tokio::runtime::Handle::current()
-        .block_on(service.list_worklog_page(WorklogListOptions {
-            owner_session_id: owner_session_id.map(str::to_string),
-            workspace_id: None,
-            step_id: step_id.map(str::to_string),
-            record_type: log_type.map(parse_worklog_record_type).transpose()?,
-            status: status.map(str::to_string),
-            impact_level: None,
-            tag: None,
-            keyword: keyword.map(str::to_string),
-            limit: Some(limit),
-            offset,
-        }))
-        .map_err(agent_tool_error_to_rpc)?;
-
-    let items = listed
-        .records
-        .into_iter()
-        .map(|record| OpenDanWorklogItem {
-            log_id: record.id,
-            log_type: record.record_type.as_str().to_string(),
-            status: record.status,
-            timestamp: record.timestamp,
-            agent_id: record.agent_did.or_else(|| Some(agent_id_hint.to_string())),
-            related_agent_id: record.subagent_did.or(record.related_agent_id),
-            step_id: record.step_id,
-            summary: record.summary,
-            payload: Some(record.payload),
         })
         .collect::<Vec<_>>();
 
