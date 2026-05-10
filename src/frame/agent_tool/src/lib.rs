@@ -339,7 +339,7 @@ pub struct AgentToolResult {
     )]
     pub is_agent_tool: bool,
     /// Logical tool name when the result is the rendered output of a
-    /// registered agent tool. Used by the CLI envelope and surfaces in
+    /// registered agent tool. Used by the CLI front-end and surfaces in
     /// downstream consumers; absent for raw bash results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
@@ -442,15 +442,6 @@ where
     deserializer.deserialize_any(V)
 }
 
-/// CLI envelope status. Stage 2 collapsed the historical `CliStatus`
-/// enum into the canonical `AgentToolStatus`; the alias is kept so
-/// CLI-facing call sites read naturally.
-pub type CliStatus = AgentToolStatus;
-
-/// CLI envelope pending reason. Same story as `CliStatus` — kept as an
-/// alias for readability while stage 2 unifies the two enums.
-pub type CliPendingReason = AgentToolPendingReason;
-
 /// Output of running an agent tool through the CLI front-end.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CliRunOutput {
@@ -458,11 +449,6 @@ pub struct CliRunOutput {
     pub stdout: String,
     pub stderr: String,
 }
-
-/// Stage 2 unified `AgentToolResult` and `CliResultEnvelope` into one
-/// type. This alias keeps the historical name pointing at the new
-/// canonical struct so existing call sites keep compiling.
-pub type CliResultEnvelope = AgentToolResult;
 
 pub const CLI_EXIT_SUCCESS: i32 = 0;
 pub const CLI_EXIT_ERROR: i32 = 1;
@@ -1011,9 +997,10 @@ fn take_tail_lines(content: &str, max_lines: usize) -> String {
     out
 }
 
-/// Build a CLI success envelope from an existing `AgentToolResult`.
-/// Replaces the old `CliResultEnvelope::from_tool_result` adapter.
-pub fn cli_envelope_from_tool_result(tool_name: &str, mut result: AgentToolResult) -> AgentToolResult {
+/// Decorate an `AgentToolResult` produced by a tool with the
+/// CLI-specific defaults (mark it as agent_tool output, fill in the
+/// tool name and a default summary/title when missing).
+pub fn cli_result_from_tool_result(tool_name: &str, mut result: AgentToolResult) -> AgentToolResult {
     result.is_agent_tool = true;
     if result.summary.trim().is_empty() {
         result.summary = "completed".to_string();
@@ -1027,9 +1014,9 @@ pub fn cli_envelope_from_tool_result(tool_name: &str, mut result: AgentToolResul
     result
 }
 
-/// Build the CLI envelope returned when a tool errors out before
-/// producing a result. Replaces `CliResultEnvelope::error`.
-pub fn cli_error_envelope(tool_name: Option<&str>, err: &AgentToolError) -> AgentToolResult {
+/// Build the CLI result returned when a tool errors out before
+/// producing a result of its own.
+pub fn cli_error_result(tool_name: Option<&str>, err: &AgentToolError) -> AgentToolResult {
     let message = err.to_string();
     let title = match tool_name {
         Some(name) => format!("{name} => error"),
@@ -1054,9 +1041,9 @@ pub fn cli_error_envelope(tool_name: Option<&str>, err: &AgentToolError) -> Agen
     }
 }
 
-/// Build the CLI envelope returned for synthetic success messages
-/// (help output, etc.). Replaces `CliResultEnvelope::success`.
-pub fn cli_success_envelope(
+/// Build the CLI result returned for synthetic success messages such
+/// as `--help`, where there is no underlying tool execution.
+pub fn cli_success_result(
     tool: Option<String>,
     detail: Json,
     summary: impl Into<String>,
@@ -1159,7 +1146,7 @@ pub trait AgentTool: Send + Sync {
     }
 
     /// True for tools that emit a single text payload the CLI should
-    /// stream out raw (no JSON envelope) when stdout is non-interactive.
+    /// stream out raw (no JSON wrapper) when stdout is non-interactive.
     /// Currently only `read_file` opts in.
     fn cli_plain_text_stdout(&self) -> bool {
         false

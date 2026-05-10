@@ -17,13 +17,13 @@ use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::{
-    cli_envelope_from_tool_result, cli_error_envelope, cli_exit_code_for_error,
-    cli_success_envelope, normalize_abs_path, now_ms, render_cli_output, session_record_path,
-    AgentMemory, AgentMemoryConfig, AgentToolError, AgentToolManager, AgentToolResult,
-    BindWorkspaceTool, CliPendingReason, CliResultEnvelope, CliRunOutput, CliStatus,
-    CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool, NoopFileWriteAudit,
-    ReadFileTool, RemoveMemoryTool, SessionRuntimeContext, SessionViewBackend, SetMemoryTool,
-    TodoTool, TodoToolConfig, WorkspaceToolBackend, WriteFileTool,
+    cli_error_result, cli_exit_code_for_error, cli_result_from_tool_result, cli_success_result,
+    normalize_abs_path, now_ms, render_cli_output, session_record_path, AgentMemory,
+    AgentMemoryConfig, AgentToolError, AgentToolManager, AgentToolPendingReason, AgentToolResult,
+    AgentToolStatus, BindWorkspaceTool, CliRunOutput, CreateWorkspaceTool, EditFileTool,
+    FileToolConfig, GetSessionTool, NoopFileWriteAudit, ReadFileTool, RemoveMemoryTool,
+    SessionRuntimeContext, SessionViewBackend, SetMemoryTool, TodoTool, TodoToolConfig,
+    WorkspaceToolBackend, WriteFileTool,
 };
 
 const TOOL_CHECK_TASK: &str = "check_task";
@@ -137,7 +137,7 @@ pub async fn run_process() -> CliRunOutput {
         Ok(env) => env,
         Err(err) => {
             let exit_code = cli_exit_code_for_error(&err);
-            return render_cli_output(&cli_error_envelope(None, &err), exit_code);
+            return render_cli_output(&cli_error_result(None, &err), exit_code);
         }
     };
 
@@ -145,7 +145,7 @@ pub async fn run_process() -> CliRunOutput {
         Ok(output) => output,
         Err(err) => {
             let exit_code = cli_exit_code_for_error(&err);
-            render_cli_output(&cli_error_envelope(None, &err), exit_code)
+            render_cli_output(&cli_error_result(None, &err), exit_code)
         }
     }
 }
@@ -163,7 +163,7 @@ async fn execute(
             stderr: render_command_not_found_log(command.as_deref(), &argv),
         }),
         ParsedCommand::Help { tool_name } => Ok(render_cli_output(
-            &build_help_envelope(&env, tool_name.as_deref()).await,
+            &build_help_result(&env, tool_name.as_deref()).await,
             EXIT_SUCCESS,
         )),
         ParsedCommand::Tool {
@@ -179,7 +179,7 @@ async fn execute(
 
             // Tools that opt in to plain-text stdout (read_file) get the
             // payload unwrapped when the CLI is being piped to another
-            // process. Otherwise emit the standard JSON envelope.
+            // process. Otherwise emit the standard JSON result.
             let plain = tool.cli_plain_text_stdout() && env.use_plain_text_read_output();
             if plain {
                 return match dispatch_tool(&env, tool.as_ref(), invocation, stdin_override).await {
@@ -189,7 +189,7 @@ async fn execute(
             }
             let result = dispatch_tool(&env, tool.as_ref(), invocation, stdin_override).await?;
             Ok(render_cli_output(
-                &success_envelope(&tool_name, result),
+                &success_result(&tool_name, result),
                 EXIT_SUCCESS,
             ))
         }
@@ -199,7 +199,7 @@ async fn execute(
                 AgentToolError::ExecFailed(format!("get task `{task_id}` failed: {err}"))
             })?;
             Ok(render_cli_output(
-                &build_check_task_envelope(&tool_name, task),
+                &build_check_task_result(&tool_name, task),
                 EXIT_SUCCESS,
             ))
         }
@@ -223,7 +223,7 @@ async fn execute(
                 AgentToolError::ExecFailed(format!("reload task `{task_id}` failed: {err}"))
             })?;
             Ok(render_cli_output(
-                &build_cancel_task_envelope(&tool_name, after, recursive, interrupt_error),
+                &build_cancel_task_result(&tool_name, after, recursive, interrupt_error),
                 EXIT_SUCCESS,
             ))
         }
@@ -786,8 +786,8 @@ fn build_cli_file_tool_config(env: &CliRuntimeEnv) -> FileToolConfig {
     cfg
 }
 
-fn success_envelope(tool_name: &str, result: AgentToolResult) -> CliResultEnvelope {
-    cli_envelope_from_tool_result(tool_name, result)
+fn success_result(tool_name: &str, result: AgentToolResult) -> AgentToolResult {
+    cli_result_from_tool_result(tool_name, result)
 }
 
 fn render_plain_read_file_output(result: AgentToolResult) -> CliRunOutput {
@@ -814,10 +814,10 @@ fn render_plain_error_output(err: &AgentToolError) -> CliRunOutput {
 
 /// Help text is built from each tool's own `usage()` rather than a
 /// duplicated static table — the manager is the source of truth.
-async fn build_help_envelope(env: &CliRuntimeEnv, tool_name: Option<&str>) -> CliResultEnvelope {
+async fn build_help_result(env: &CliRuntimeEnv, tool_name: Option<&str>) -> AgentToolResult {
     let mgr = match build_cli_tool_manager(env).await {
         Ok(mgr) => mgr,
-        Err(err) => return cli_error_envelope(tool_name.map(str::to_string).as_deref(), &err),
+        Err(err) => return cli_error_result(tool_name.map(str::to_string).as_deref(), &err),
     };
     let tool_usage = |name: &str| -> String {
         if let Some(tool) = mgr.get_any_tool(name) {
@@ -832,12 +832,12 @@ async fn build_help_envelope(env: &CliRuntimeEnv, tool_name: Option<&str>) -> Cl
         }
     };
     match tool_name {
-        Some(name) => cli_success_envelope(
+        Some(name) => cli_success_result(
             Some(name.to_string()),
             json!({ "tool": name, "usage": tool_usage(name) }),
             "show usage",
         ),
-        None => cli_success_envelope(
+        None => cli_success_result(
             None,
             json!({
                 "usage": generic_usage(),
@@ -1263,7 +1263,7 @@ async fn build_task_manager_client(
     })
 }
 
-fn build_check_task_envelope(tool_name: &str, task: Task) -> CliResultEnvelope {
+fn build_check_task_result(tool_name: &str, task: Task) -> AgentToolResult {
     let top_status = task_protocol_status(&task);
     let summary = task_summary(&task, top_status);
     let pending_reason = task_pending_reason(&task);
@@ -1311,43 +1311,43 @@ fn build_check_task_envelope(tool_name: &str, task: Task) -> CliResultEnvelope {
         .data
         .get("check_after")
         .and_then(Json::as_u64)
-        .or_else(|| (top_status == CliStatus::Pending).then_some(5));
+        .or_else(|| (top_status == AgentToolStatus::Pending).then_some(5));
 
-    let mut envelope = AgentToolResult::from_details(detail)
+    let mut result = AgentToolResult::from_details(detail)
         .with_is_agent_tool(is_agent_tool)
         .with_status(top_status)
         .with_result(summary)
         .with_task_id(task.id.to_string());
     if is_agent_tool {
-        envelope = envelope.with_tool(tool_name);
+        result = result.with_tool(tool_name);
     }
     if let Some(cmd_line) = cmd_line.as_deref() {
-        envelope = envelope.with_command_metadata_from_line(cmd_line);
+        result = result.with_command_metadata_from_line(cmd_line);
     }
     if let Some(output) = output {
-        envelope = envelope.with_output(output);
+        result = result.with_output(output);
     }
     if let Some(rc) = return_code {
-        envelope = envelope.with_return_code(rc);
+        result = result.with_return_code(rc);
     }
     if let Some(reason) = pending_reason {
-        envelope = envelope.with_pending_reason(reason);
+        result = result.with_pending_reason(reason);
     }
     if let Some(wait) = estimated_wait {
-        envelope = envelope.with_estimated_wait(wait);
+        result = result.with_estimated_wait(wait);
     }
     if let Some(after) = check_after {
-        envelope = envelope.with_check_after(after);
+        result = result.with_check_after(after);
     }
-    envelope
+    result
 }
 
-fn build_cancel_task_envelope(
+fn build_cancel_task_result(
     tool_name: &str,
     task: Task,
     recursive: bool,
     interrupt_error: Option<String>,
-) -> CliResultEnvelope {
+) -> AgentToolResult {
     let mut detail = normalized_task_detail(&task);
     if let Some(map) = detail.as_object_mut() {
         map.insert("task".to_string(), json!(task.clone()));
@@ -1364,7 +1364,7 @@ fn build_cancel_task_envelope(
 
     AgentToolResult::from_details(detail)
         .with_is_agent_tool(true)
-        .with_status(CliStatus::Success)
+        .with_status(AgentToolStatus::Success)
         .with_result(summary)
         .with_title(format!("{tool_name} {} => success", task.id))
         .with_tool(tool_name)
@@ -1397,21 +1397,21 @@ fn normalized_task_detail(task: &Task) -> Json {
     detail
 }
 
-fn task_protocol_status(task: &Task) -> CliStatus {
+fn task_protocol_status(task: &Task) -> AgentToolStatus {
     match task.status {
         TaskStatus::Completed => match task.data.get("status").and_then(Json::as_str) {
-            Some("error") => CliStatus::Error,
-            _ => CliStatus::Success,
+            Some("error") => AgentToolStatus::Error,
+            _ => AgentToolStatus::Success,
         },
-        TaskStatus::Failed | TaskStatus::Canceled => CliStatus::Error,
+        TaskStatus::Failed | TaskStatus::Canceled => AgentToolStatus::Error,
         TaskStatus::Pending
         | TaskStatus::Running
         | TaskStatus::Paused
-        | TaskStatus::WaitingForApproval => CliStatus::Pending,
+        | TaskStatus::WaitingForApproval => AgentToolStatus::Pending,
     }
 }
 
-fn task_summary(task: &Task, protocol_status: CliStatus) -> String {
+fn task_summary(task: &Task, protocol_status: AgentToolStatus) -> String {
     task.data
         .get("summary")
         .and_then(Json::as_str)
@@ -1421,30 +1421,30 @@ fn task_summary(task: &Task, protocol_status: CliStatus) -> String {
         .or_else(|| task.message.as_ref().map(|value| value.trim().to_string()))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| match (protocol_status, task.status) {
-            (CliStatus::Pending, TaskStatus::WaitingForApproval) => {
+            (AgentToolStatus::Pending, TaskStatus::WaitingForApproval) => {
                 format!("task {} is waiting for approval", task.id)
             }
-            (CliStatus::Pending, _) => format!("task {} is still running", task.id),
-            (CliStatus::Success, _) => format!("task {} completed", task.id),
-            (CliStatus::Error, TaskStatus::Canceled) => format!("task {} was canceled", task.id),
-            (CliStatus::Error, _) => format!("task {} failed", task.id),
+            (AgentToolStatus::Pending, _) => format!("task {} is still running", task.id),
+            (AgentToolStatus::Success, _) => format!("task {} completed", task.id),
+            (AgentToolStatus::Error, TaskStatus::Canceled) => format!("task {} was canceled", task.id),
+            (AgentToolStatus::Error, _) => format!("task {} failed", task.id),
         })
 }
 
-fn task_pending_reason(task: &Task) -> Option<CliPendingReason> {
+fn task_pending_reason(task: &Task) -> Option<AgentToolPendingReason> {
     task.data
         .get("pending_reason")
         .and_then(Json::as_str)
         .and_then(|value| match value {
-            "user_approval" => Some(CliPendingReason::UserApproval),
-            "wait_for_install" | "external_callback" => Some(CliPendingReason::WaitForInstall),
-            "long_running" => Some(CliPendingReason::LongRunning),
+            "user_approval" => Some(AgentToolPendingReason::UserApproval),
+            "wait_for_install" | "external_callback" => Some(AgentToolPendingReason::WaitForInstall),
+            "long_running" => Some(AgentToolPendingReason::LongRunning),
             _ => None,
         })
         .or_else(|| match task.status {
-            TaskStatus::WaitingForApproval => Some(CliPendingReason::UserApproval),
+            TaskStatus::WaitingForApproval => Some(AgentToolPendingReason::UserApproval),
             TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused => {
-                Some(CliPendingReason::LongRunning)
+                Some(AgentToolPendingReason::LongRunning)
             }
             _ => None,
         })

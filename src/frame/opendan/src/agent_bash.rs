@@ -1873,8 +1873,7 @@ fn decode_exec_bash_json_result(
         return None;
     }
 
-    // Stage 2 unified `CliResultEnvelope` and `AgentToolResult` so the
-    // CLI emits the canonical struct directly.
+    // The CLI emits the canonical `AgentToolResult` directly.
     let result = serde_json::from_str::<AgentToolResult>(payload).ok()?;
     if !result.is_agent_tool {
         return None;
