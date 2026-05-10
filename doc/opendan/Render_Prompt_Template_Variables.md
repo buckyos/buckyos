@@ -256,7 +256,7 @@ __OPENDAN_VAR(current_todo, $workspace.todolist.next_ready_todo)
 - History Message
 - Session Step Records
 
-(worklog后期将只用于workspace的审计，不再在promp中使用)
+（Worklog 已不再进入 Prompt，仅作为审计/调试日志保存到本地 DB。详见 `Agent Worklog.md` 顶部的 beta2.2 调整说明。）
 
 #### 4.2.5 Execution Context
 

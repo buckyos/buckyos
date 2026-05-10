@@ -5,8 +5,6 @@ use serde_json::Value as Json;
 
 pub(crate) const WORKSHOP_INDEX_FILE_NAME: &str = "index.json";
 pub(crate) const WORKSHOP_TODO_DB_REL_PATH: &str = "todo/todo.db";
-pub(crate) const WORKSHOP_WORKLOG_DB_REL_PATH: &str = "worklog/worklog.db";
-pub(crate) const LOCAL_WORKSPACE_WORKLOG_DB_REL_PATH: &str = "worklog/worklog.db";
 pub(crate) const WORKSPACES_LOCAL_DIR: &str = "workspaces";
 
 #[derive(Clone, Debug, Default, Deserialize)]

@@ -309,7 +309,6 @@ pub struct BehaviorMemoryConfig {
     pub agent_memory: BehaviorMemoryBucketConfig,
     pub history_messages: BehaviorMemoryBucketConfig,
     pub session_step_records: BehaviorMemoryBucketConfig,
-    pub workspace_worklog: BehaviorMemoryBucketConfig,
 
     pub first_prompt: Option<String>,
     pub last_prompt: Option<String>,
@@ -322,7 +321,6 @@ impl Default for BehaviorMemoryConfig {
             agent_memory: BehaviorMemoryBucketConfig::default(),
             history_messages: BehaviorMemoryBucketConfig::default(),
             session_step_records: BehaviorMemoryBucketConfig::default(),
-            workspace_worklog: BehaviorMemoryBucketConfig::default(),
             first_prompt: None,
             last_prompt: None,
         }
@@ -334,7 +332,6 @@ impl BehaviorMemoryConfig {
         self.agent_memory.normalize();
         self.history_messages.normalize();
         self.session_step_records.normalize();
-        self.workspace_worklog.normalize();
         self.first_prompt = Self::normalize_optional_text(self.first_prompt.take());
         self.last_prompt = Self::normalize_optional_text(self.last_prompt.take());
     }
@@ -344,7 +341,6 @@ impl BehaviorMemoryConfig {
             && self.agent_memory.is_empty()
             && self.history_messages.is_empty()
             && self.session_step_records.is_empty()
-            && self.workspace_worklog.is_empty()
             && self
                 .first_prompt
                 .as_ref()

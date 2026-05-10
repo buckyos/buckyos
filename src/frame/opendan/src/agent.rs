@@ -3228,13 +3228,12 @@ impl AIAgent {
             guard.just_readed_input_msg.clone()
         };
         for msg in Self::collect_step_input_new_msgs(step_inputs.as_slice()) {
-            let snippet = msg
+            let content = msg
                 .get_msg()
                 .await
                 .ok()
-                .map(|msg_obj| msg_obj.content.content.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .map(|value| compact_text_for_log(value.as_str(), 220))
+                .map(|msg_obj| msg_obj.content.content.clone())
+                .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| format!("kind={:?}", msg.record.msg_kind));
             let payload = json!({
                 "msg_id": msg.record.msg_id,
@@ -3242,8 +3241,7 @@ impl AIAgent {
                 "from": msg.record.from.to_string(),
                 "to": msg.record.to.to_string(),
                 "channel": format!("{:?}", msg.record.box_kind),
-                "snippet": snippet.clone(),
-                "content_digest": snippet,
+                "content": content,
             });
             let mut guard = session.lock().await;
             if let Err(err) = guard
@@ -3287,7 +3285,7 @@ impl AIAgent {
         };
 
         for reply in reply_history {
-            let said = reply.outbound.content.content.trim();
+            let said = reply.outbound.content.content.clone();
             let to = reply
                 .outbound
                 .to
@@ -3298,7 +3296,7 @@ impl AIAgent {
                 "out_msg_id": reply.result.msg_id,
                 "to": to,
                 "reply_to": reply_to_msg_id.clone(),
-                "content_digest": compact_text_for_log(said, 220),
+                "content": said,
                 "delivery_count": reply.result.deliveries.len(),
             });
 
@@ -3336,10 +3334,10 @@ impl AIAgent {
             let status = if tool_record.ok { "OK" } else { "FAILED" };
             let payload = WorklogActionPayload {
                 action_type: "function".to_string(),
-                cmd_digest: Some(tool_record.tool_name.clone()),
+                cmd: Some(tool_record.tool_name.clone()),
                 tool_name: Some(tool_record.tool_name.clone()),
                 exec_id: Some(tool_record.call_id.clone()),
-                result_digest: Some(
+                result_text: Some(
                     tool_record
                         .error
                         .clone()
@@ -3347,7 +3345,7 @@ impl AIAgent {
                 ),
                 exit_code: None,
                 cwd: None,
-                stderr_digest: tool_record.error.clone(),
+                stderr: tool_record.error.clone(),
                 tool_result: None,
             };
             self.append_worklog_action_record(session.clone(), trace, status, payload)
@@ -3382,14 +3380,13 @@ impl AIAgent {
 
             let payload = crate::worklog::WorklogActionPayload {
                 action_type: action_type.to_string(),
-                cmd_digest: Some(compact_text_for_log(cmd_digest.as_str(), 220)),
+                cmd: Some(cmd_digest),
                 tool_name: action_result_tool_name(result),
                 exec_id: Some(exec_id),
-                result_digest: Some(compact_text_for_log(rendered.as_str(), 220)),
+                result_text: Some(rendered),
                 exit_code: result.return_code,
                 cwd: extract_action_result_pwd(result),
-                stderr_digest: action_result_error_text(result)
-                    .map(|v| compact_text_for_log(v.as_str(), 220)),
+                stderr: action_result_error_text(result),
                 tool_result: Some(result.clone()),
             };
             self.append_worklog_action_record(session.clone(), trace, status, payload)

@@ -496,35 +496,6 @@ impl LocalWorkspaceManager {
             .await
     }
 
-    pub async fn append_step_summary_worklog(
-        &self,
-        session_id: &str,
-        agent_name: &str,
-        behavior: &str,
-        step_idx: u32,
-        record: Json,
-    ) -> Result<WorklogRecord, AgentToolError> {
-        let session_id = validate_session_id(session_id)?;
-        let Some(binding) = self.get_bound_local_workspace(session_id).await? else {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "session `{session_id}` has no bound local workspace"
-            )));
-        };
-
-        let workspace_path = self
-            .get_local_workspace_path(binding.local_workspace_id.as_str())
-            .await?;
-        let worklog_db = workspace_path.join("worklog").join("worklog.db");
-        let service = WorklogService::new(WorklogToolConfig::with_db_path(worklog_db))?;
-        let record = Self::ensure_workspace_id_in_worklog_record(
-            record,
-            binding.local_workspace_id.as_str(),
-        );
-        service
-            .append_step_summary_for_session(session_id, agent_name, behavior, step_idx, record)
-            .await
-    }
-
     pub async fn get_local_workspace_path(
         &self,
         local_workspace_id: &str,

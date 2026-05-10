@@ -1590,7 +1590,7 @@ impl TypedTool for WorklogTool {
         TOOL_WORKLOG_MANAGE
     }
     fn description(&self) -> &str {
-        "Structured workspace worklog with event records, step summary and prompt-safe rendering."
+        "Append-only audit log of agent runtime events. Used for debugging and post-hoc analysis; does not feed into prompts."
     }
     fn calling(&self) -> CallingConventions {
         CallingConventions::BASH
@@ -1604,41 +1604,20 @@ impl TypedTool for WorklogTool {
                     "type": "string",
                     "enum": [
                         "append_worklog",
-                        "append_step_summary",
-                        "mark_step_committed",
                         "list_worklog",
-                        "get_worklog",
-                        "list_step",
-                        "build_prompt_worklog",
-                        "append",
-                        "list",
-                        "get",
-                        "render_for_prompt"
+                        "get_worklog"
                     ]
                 },
                 "record": { "type": "object" },
-                "log_id": { "type": "string" },
                 "id": { "type": "string" },
                 "step_id": { "type": "string" },
                 "owner_session_id": { "type": "string" },
                 "workspace_id": { "type": "string" },
-                "todo_id": { "type": "string" },
-                "type": {
-                    "type": "string",
-                    "enum": [
-                        "GetMessage",
-                        "ReplyMessage",
-                        "FunctionRecord",
-                        "ActionRecord",
-                        "CreateSubAgent",
-                        "StepSummary"
-                    ]
-                },
+                "type": { "type": "string" },
                 "status": { "type": "string" },
-                "tag": { "type": "string" },
+                "keyword": { "type": "string" },
                 "limit": { "type": "integer", "minimum": 1 },
-                "offset": { "type": "integer", "minimum": 0 },
-                "token_budget": { "type": "integer", "minimum": 1 }
+                "offset": { "type": "integer", "minimum": 0 }
             },
             "required": ["action"],
             "additionalProperties": true
@@ -1653,10 +1632,7 @@ impl TypedTool for WorklogTool {
                 "action": { "type": "string" },
                 "record": { "type": "object" },
                 "records": { "type": "array", "items": { "type": "object" } },
-                "total": { "type": "integer" },
-                "text": { "type": "string" },
-                "prompt_text": { "type": "string" },
-                "updated": { "type": "integer" }
+                "total": { "type": "integer" }
             }
         })
     }
@@ -1690,15 +1666,13 @@ fn build_worklog_manage_cmd_line(action: &str, args: &Json) -> String {
         out.push_str(format!(" {action}").as_str());
     }
     for key in [
-        "log_id",
         "id",
         "step_id",
         "owner_session_id",
         "workspace_id",
-        "todo_id",
         "type",
         "status",
-        "tag",
+        "keyword",
     ] {
         if let Some(value) = args
             .get(key)
@@ -1716,9 +1690,6 @@ fn build_worklog_manage_cmd_line(action: &str, args: &Json) -> String {
         if offset > 0 {
             out.push_str(format!(" offset={offset}").as_str());
         }
-    }
-    if let Some(token_budget) = args.get("token_budget").and_then(Json::as_u64) {
-        out.push_str(format!(" token_budget={token_budget}").as_str());
     }
     out
 }

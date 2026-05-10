@@ -545,26 +545,23 @@ detail 关键字段：
 
 用途：
 
-- 结构化 worklog 增删查渲染
+- Append-only 审计日志的写入与查询。Worklog 不再进入 Prompt，仅供调试 / 事后分析。
 
 输入顶层字段：
 
 ```json
 {
-  "action": "append_worklog|append_step_summary|mark_step_committed|list_worklog|get_worklog|list_step|build_prompt_worklog|append|list|get|render_for_prompt",
+  "action": "append_worklog|list_worklog|get_worklog",
   "record": {},
-  "log_id": "string",
   "id": "string",
   "step_id": "string",
   "owner_session_id": "string",
   "workspace_id": "string",
-  "todo_id": "string",
-  "type": "GetMessage|ReplyMessage|FunctionRecord|ActionRecord|CreateSubAgent|StepSummary",
+  "type": "string (open enum, e.g. GetMessage / ReplyMessage / agent.file.write)",
   "status": "string",
-  "tag": "string",
+  "keyword": "string",
   "limit": 20,
-  "offset": 0,
-  "token_budget": 1000
+  "offset": 0
 }
 ```
 
@@ -574,9 +571,6 @@ detail 常见字段：
 - `record`
 - `records`
 - `total`
-- `text`
-- `prompt_text`
-- `updated`
 
 输出约定：
 
@@ -584,6 +578,9 @@ detail 常见字段：
 - `cmd_name` 应为 `worklog_manage`
 - `cmd_args` 表达 action 和对应输入参数
 - `summary` 默认使用 action 名或紧凑操作结果
+
+> 历史接口 `append_step_summary / mark_step_committed / list_step / build_prompt_worklog / render_for_prompt`
+> 已在 beta2.2 简化中移除，调用会返回 `unsupported action` 错误。详见 `notepads/worklog简化.md`。
 
 ### 5.12 `check_task`
 

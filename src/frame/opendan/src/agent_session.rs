@@ -23,14 +23,11 @@ use crate::agent_tool::{sanitize_session_id_for_path, session_record_path, Agent
 use crate::behavior::config::BehaviorSkillMode;
 use crate::behavior::SessionRuntimeContext;
 use crate::step_record::{LLMStepPromptRenderOptions, LLMStepRecord, LLMStepRecordLog};
-use crate::worklog::{render_worklog_prompt_line, render_worklog_prompt_line_from_parts};
 use crate::workspace::agent_skill::{
     move_skill_ref_to_front, normalize_unique_skill_refs, remove_skill_ref,
 };
 use crate::workspace::LocalWorkspaceManager;
-use crate::workspace_path::{
-    resolve_agent_env_root, resolve_bound_workspace_root, WORKSHOP_WORKLOG_DB_REL_PATH,
-};
+use crate::workspace_path::resolve_bound_workspace_root;
 
 const DEFAULT_SESSION_FILE: &str = "session.json";
 const DEFAULT_SESSION_SUMMARY_FILE: &str = "summary.md";
@@ -280,16 +277,6 @@ impl AgentSession {
             self.workspace_info.as_ref(),
             &self.pwd,
         )
-    }
-
-    pub fn resolve_workspace_worklog_db_path(&self) -> Option<PathBuf> {
-        if let Some(local_workspace_path) = self.resolve_default_local_workspace_path() {
-            let worklog_db_path = local_workspace_path.join("worklog").join("worklog.db");
-            if worklog_db_path.is_file() {
-                return Some(worklog_db_path);
-            }
-        }
-        resolve_workspace_worklog_db_path(self.workspace_info.as_ref(), &self.pwd)
     }
 
     pub fn effective_loaded_skills(&self) -> Vec<String> {
@@ -583,10 +570,22 @@ impl AgentSession {
         item: Json,
         local_workspace_mgr: Option<&LocalWorkspaceManager>,
     ) -> Result<(), AgentToolError> {
-        let has_local_workspace = self.has_bound_local_workspace();
-        let mut prompt_line = Self::render_worklog_prompt_line_from_session_item(&item);
+        let event_type = item
+            .get("type")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Worklog")
+            .to_string();
+        let status = item
+            .get("status")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("UNKNOWN")
+            .to_string();
 
-        if has_local_workspace {
+        if self.has_bound_local_workspace() {
             let Some(local_workspace_mgr) = local_workspace_mgr else {
                 return Err(AgentToolError::InvalidArgs(format!(
                     "session `{}` is bound to local workspace but LocalWorkspaceManager is missing",
@@ -605,7 +604,7 @@ impl AgentSession {
                     .await?;
             }
 
-            let appended = local_workspace_mgr
+            local_workspace_mgr
                 .append_worklog(
                     self.session_id.as_str(),
                     self.owner_agent.as_str(),
@@ -614,7 +613,6 @@ impl AgentSession {
                     item,
                 )
                 .await?;
-            prompt_line = render_worklog_prompt_line(&appended);
         } else {
             self.worklog.push(item);
             if self.worklog.len() > 256 {
@@ -625,38 +623,11 @@ impl AgentSession {
 
         self.updated_at_ms = now_ms();
         self.last_activity_ms = self.updated_at_ms;
-        info!("{}", prompt_line);
+        info!(
+            "worklog: session={} step={} type={} status={}",
+            self.session_id, self.step_index, event_type, status
+        );
         Ok(())
-    }
-
-    fn render_worklog_prompt_line_from_session_item(item: &Json) -> String {
-        let record_type = item
-            .get("type")
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("Worklog");
-        let status = item
-            .get("status")
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("UNKNOWN");
-        let summary = item
-            .get("summary")
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let prompt_digest = item
-            .get("prompt_view")
-            .and_then(Json::as_object)
-            .and_then(|view| view.get("digest"))
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let payload = item.get("payload").cloned().unwrap_or(Json::Null);
-
-        render_worklog_prompt_line_from_parts(record_type, status, prompt_digest, summary, &payload)
     }
 
     pub fn should_ready_by_wait_timeout(&self, now_ms: u64) -> bool {
@@ -1447,15 +1418,6 @@ impl ::agent_tool::SessionViewBackend for AgentSessionMgr {
     }
 }
 
-fn resolve_workspace_worklog_db_path(
-    workspace_info: Option<&Json>,
-    session_cwd: &Path,
-) -> Option<PathBuf> {
-    resolve_agent_env_root(workspace_info, session_cwd)
-        .map(|root| root.join(WORKSHOP_WORKLOG_DB_REL_PATH))
-        .filter(|path| path.is_file())
-}
-
 fn resolve_default_local_workspace_path(
     local_workspace_id: Option<&str>,
     workspace_info: Option<&Json>,
@@ -1551,7 +1513,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worklog::{WorklogListOptions, WorklogRecordType, WorklogTool, WorklogToolConfig};
+    use crate::worklog::{WorklogListOptions, WorklogTool, WorklogToolConfig};
     use crate::workspace::{
         CreateLocalWorkspaceRequest, LocalWorkspaceManagerConfig, WorkspaceOwner,
     };
@@ -1662,7 +1624,7 @@ mod tests {
             .await
             .expect("list workspace records");
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].record_type, WorklogRecordType::FunctionRecord);
+        assert_eq!(records[0].event_type, "FunctionRecord");
     }
 
     #[tokio::test]
@@ -1919,36 +1881,4 @@ mod tests {
         assert_eq!(restored_guard.pwd, bound_workspace_path);
     }
 
-    #[tokio::test]
-    async fn session_resolve_workspace_worklog_db_path_uses_bound_workspace() {
-        let root = tempfile::tempdir().expect("create temp dir");
-        let local_workspace_id = "ws-demo";
-        let workspace_path = root.path().join("workspaces").join(local_workspace_id);
-        let worklog_db_path = workspace_path.join("worklog").join("worklog.db");
-        fs::create_dir_all(worklog_db_path.parent().expect("worklog parent"))
-            .await
-            .expect("create worklog parent");
-        fs::write(&worklog_db_path, b"")
-            .await
-            .expect("create worklog db");
-
-        let mut session = AgentSession::new("work-resolve-db", "did:opendan:test", Some("plan"));
-        session.local_workspace_id = Some(local_workspace_id.to_string());
-        session.pwd = workspace_path.join("project");
-        session.workspace_info = Some(json!({
-            "local_workspace_id": local_workspace_id,
-            "binding": {
-                "workspace_path": workspace_path.to_string_lossy().to_string()
-            }
-        }));
-
-        assert_eq!(
-            session.resolve_default_local_workspace_path(),
-            Some(workspace_path.clone())
-        );
-        assert_eq!(
-            session.resolve_workspace_worklog_db_path(),
-            Some(worklog_db_path)
-        );
-    }
 }
