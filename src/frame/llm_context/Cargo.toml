@@ -13,6 +13,8 @@ buckyos-api = { path = "../../kernel/buckyos-api" }
 agent_tool = { path = "../agent_tool" }
 tokio = { workspace = true }
 log = { workspace = true }
+chrono = { workspace = true }
+fs2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -114,12 +114,20 @@
 //! - **错误归一化 wire format** → 由 ToolManager / provider adapter 自定,
 //!   §A.4 "错误归一化 wire format 不进 waist"。
 
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use agent_tool::{
+    AgentToolManager, AgentToolResult, AgentToolStatus, EditFileTool, FileToolConfig,
+    GlobTool, GrepTool, NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, WriteFileTool,
+};
 use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiToolCall};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::deps::{
@@ -400,7 +408,7 @@ impl LocalLLMContext {
         // 构造 deps + waist LLMContext。注入 TurnHook 让 waist 在每轮 LLM
         // 推理前把当前 snapshot 写盘——这是"crash recovery 不重复扣费"的关键
         // 落点(§3.12 / §6.6)。
-        let deps = build_deps(&dir, llm.clone(), snapshot_store.clone())?;
+        let deps = build_deps(&dir, &run_id, llm.clone(), snapshot_store.clone())?;
         let waist_req = request.lower_to_waist(&run_id);
         let ctx = LLMContext::new(waist_req, deps);
 
@@ -511,7 +519,7 @@ impl LocalLLMContext {
             });
         }
 
-        let deps = build_deps(&dir, llm.clone(), snapshot_store.clone())?;
+        let deps = build_deps(&dir, &run_id, llm.clone(), snapshot_store.clone())?;
         let ctx = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps)
             .map_err(|e| LocalLLMContextError::CorruptedRun {
                 run_id: run_id.clone(),
@@ -630,7 +638,12 @@ impl LocalLLMContext {
         snapshot: LLMContextSnapshot,
         rewritten: Vec<AiMessage>,
     ) -> Result<(), LocalLLMContextError> {
-        let deps = build_deps(&self.dir, self.llm.clone(), self.snapshot_store.clone())?;
+        let deps = build_deps(
+            &self.dir,
+            &self.run_id,
+            self.llm.clone(),
+            self.snapshot_store.clone(),
+        )?;
         // **resume 前落盘**(crash recovery 第二个落点)。
         self.snapshot_store.put_next(&snapshot)?;
         let ctx = LLMContext::resume(
@@ -680,9 +693,31 @@ impl LocalLLMContext {
     /// 这是工程权衡:严格的"per-process lock 只能拿一次"会让 `resume_or_new`
     /// 的实现非常啰嗦(必须把 `new_run` 拆成无锁内部版本)。考虑到 OneShot
     /// 总是单进程使用,同进程重入是安全的。
-    fn acquire_dir_lock(_dir: &Path) -> Result<(), LocalLLMContextError> {
-        // TODO[crash-recovery]: 用 `fs2::FileExt::try_lock_exclusive` 或
-        // `fd-lock` crate 实现真正的 flock。当前是 no-op 占位,land 前必须实现。
+    ///
+    /// 实现:`<dir>/.lock` 文件 + `fs2::FileExt::try_lock_exclusive`。锁在
+    /// 进程级 registry 里挂着,生命周期 = 进程退出(File 句柄关闭 → flock 释放)。
+    /// 不再尝试 release(避免 TOCTOU),配合 `drop_lock_if_held` 的 no-op 语义。
+    fn acquire_dir_lock(dir: &Path) -> Result<(), LocalLLMContextError> {
+        let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+        let mut guard = dir_lock_registry().lock().map_err(|_| {
+            LocalLLMContextError::LockFailed("dir lock registry poisoned".into())
+        })?;
+        if guard.contains_key(&key) {
+            return Ok(());
+        }
+        let lock_path = dir.join(".lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        FileExt::try_lock_exclusive(&file).map_err(|e| {
+            LocalLLMContextError::LockFailed(format!(
+                "another process holds the dir lock on {}: {e}",
+                dir.display()
+            ))
+        })?;
+        guard.insert(key, file);
         Ok(())
     }
 
@@ -840,6 +875,10 @@ pub enum LocalLLMContextError {
     NoActiveContext,
     #[error("compressor failed: {0}")]
     CompressorFailed(String),
+    #[error("failed to acquire dir lock: {0}")]
+    LockFailed(String),
+    #[error("failed to wire tool: {0}")]
+    ToolWiringFailed(String),
 }
 
 // =========================================================================
@@ -883,28 +922,27 @@ fn write_run_outcome(
     run_id: &str,
     outcome: &LLMContextOutcome,
 ) -> Result<(), LocalLLMContextError> {
-    // 注意:LLMContextOutcome 不一定实现 Serialize(snapshot 内部有 Arc 等);
-    // 这里只归档"对外可见"的摘要。具体 schema 看 waist 当前定义。
-    // 占位实现:把 outcome 的 Debug 文本写下来,等 waist 提供 Serialize 派生
-    // 再切回 JSON。
     let run_dir = dir.join("runs").join(run_id);
     std::fs::create_dir_all(run_dir.join("outcomes"))?;
     let path = run_dir.join("outcomes").join("final.json");
-    let summary = format!("{:#?}\n", outcome);
-    std::fs::write(path, summary)?;
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(outcome)
+        .map_err(|e| LocalLLMContextError::Serialization(e.to_string()))?;
+    std::fs::write(&tmp, &bytes)?;
+    std::fs::rename(&tmp, &path)?;
     Ok(())
 }
 
 fn generate_run_id() -> String {
     // 形如 20260510-103045-a7f3。用本地时间(给 ops 读 dir 时友好),
     // 后缀 4 字节 hex 防同秒冲突。
-    let now = SystemTime::now()
+    let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    let suffix = format!("{:04x}", (now & 0xffff) ^ ((now >> 16) & 0xffff));
-    // TODO[ops]: 切到 chrono::Local::now().format("%Y%m%d-%H%M%S")。
-    format!("{}-{}", now, suffix)
+    let suffix = format!("{:04x}", (now_ms & 0xffff) ^ ((now_ms >> 16) & 0xffff));
+    format!("{}-{}", ts, suffix)
 }
 
 fn now_unix_ms() -> u64 {
@@ -914,17 +952,26 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn drop_lock_if_held(_dir: &Path) {
-    // TODO[crash-recovery]: 配合 acquire_dir_lock 实现。
+/// **故意 no-op**(进程级 lock 不释放,避免 `resume_or_new → new_run` 之间的
+/// TOCTOU 窗口)。当 `LocalLLMContext` drop / 进程退出时,registry 里的 `File`
+/// 句柄随之关闭,OS 自动释放 flock。
+fn drop_lock_if_held(_dir: &Path) {}
+
+static DIR_LOCK_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, File>>> = OnceLock::new();
+
+fn dir_lock_registry() -> &'static Mutex<HashMap<PathBuf, File>> {
+    DIR_LOCK_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn build_deps(
     dir: &Path,
+    run_id: &str,
     llm: Arc<dyn LlmClient>,
     snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<LLMContextDeps, LocalLLMContextError> {
     let workspace = dir.join("workspace");
-    let tools: Arc<dyn ToolManager> = Arc::new(LocalDirToolManager::new(workspace));
+    let tools: Arc<dyn ToolManager> =
+        Arc::new(LocalDirToolManager::new(workspace, run_id.to_string())?);
     let worklog: Arc<dyn WorklogSink> = Arc::new(NoopWorklogSink);
     let hook: Arc<dyn TurnHook> = Arc::new(SnapshotPersistingTurnHook { snapshot_store });
     Ok(LLMContextDeps::new(llm, tools)
@@ -967,13 +1014,51 @@ impl TurnHook for SnapshotPersistingTurnHook {
 /// 细节,泄漏即破坏双中立性(§A.2)。
 pub struct LocalDirToolManager {
     workspace: PathBuf,
-    // TODO: agent_tool::AgentToolManager + 原子 step_idx + 固定 SessionRuntimeContext 模板。
+    inner: AgentToolManager,
+    step_idx: AtomicU32,
+    session_template: SessionRuntimeContext,
 }
 
 impl LocalDirToolManager {
-    pub fn new(workspace: PathBuf) -> Self {
-        Self { workspace }
+    /// 构造:在 `workspace` 上注册 ReadFile / WriteFile / EditFile / Glob / Grep。
+    /// `run_id` 进 `SessionRuntimeContext.trace_id` / `session_id`,让 agent_tool
+    /// 的日志能跟 OneShot run 关联。
+    pub fn new(workspace: PathBuf, run_id: String) -> Result<Self, LocalLLMContextError> {
+        let inner = AgentToolManager::new();
+        let cfg = FileToolConfig::new(workspace.clone());
+        let write_audit = Arc::new(NoopFileWriteAudit);
+        inner
+            .register_typed_tool(ReadFileTool::new(cfg.clone()))
+            .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
+        inner
+            .register_typed_tool(WriteFileTool::new(cfg.clone(), write_audit.clone()))
+            .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
+        inner
+            .register_typed_tool(EditFileTool::new(cfg.clone(), write_audit))
+            .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
+        inner
+            .register_typed_tool(GlobTool::new(cfg.clone()))
+            .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
+        inner
+            .register_typed_tool(GrepTool::new(cfg))
+            .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
+
+        let session_template = SessionRuntimeContext {
+            trace_id: run_id.clone(),
+            agent_name: "oneshot".to_string(),
+            behavior: "oneshot".to_string(),
+            step_idx: 0,
+            wakeup_id: String::new(),
+            session_id: run_id,
+        };
+        Ok(Self {
+            workspace,
+            inner,
+            step_idx: AtomicU32::new(0),
+            session_template,
+        })
     }
+
     pub fn workspace(&self) -> &Path {
         &self.workspace
     }
@@ -982,20 +1067,65 @@ impl LocalDirToolManager {
 #[async_trait]
 impl ToolManager for LocalDirToolManager {
     async fn call_tool(&self, call: AiToolCall) -> Observation {
-        // TODO[tools]: 真实实现。当前返回 Error 让纯对话用例能跑通。
-        Observation::Error {
-            call_id: call.call_id,
-            message: format!(
-                "tool `{}` not wired yet (workspace = {})",
-                call.name,
-                self.workspace.display()
-            ),
+        let call_id = call.call_id.clone();
+        let mut ctx = self.session_template.clone();
+        ctx.step_idx = self.step_idx.fetch_add(1, Ordering::SeqCst) + 1;
+        match self.inner.call_tool(&ctx, call).await {
+            Ok(result) => map_result_to_observation(call_id, result),
+            Err(e) => Observation::Error {
+                call_id,
+                message: e.to_string(),
+            },
         }
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
-        // TODO[tools]: 注册 ReadFile / WriteFile / EditFile / Glob / Grep / ExecBash。
-        Vec::new()
+        self.inner
+            .list_tool_specs()
+            .into_iter()
+            .map(|spec| ToolSpecLite {
+                name: spec.name,
+                description: spec.description,
+                args_schema: spec.args_schema,
+            })
+            .collect()
+    }
+}
+
+/// 三态映射(注释 §953 起规定的契约):
+/// - `Success` → `Observation::Success`,`content` = `details`,`bytes` 用 JSON 长度近似;
+/// - `Error`   → `Observation::Error`,`message` 优先 `summary`,fallback `output`;
+/// - `Pending` → `Observation::Pending`(由 ToolPolicy.allow_deferred 决定是否合法,
+///   不在这里 gate)。
+fn map_result_to_observation(call_id: String, result: AgentToolResult) -> Observation {
+    match result.status {
+        AgentToolStatus::Success => {
+            let bytes = serde_json::to_vec(&result.details)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            Observation::Success {
+                call_id,
+                content: result.details,
+                bytes,
+                truncated: false,
+            }
+        }
+        AgentToolStatus::Error => {
+            let message = if !result.summary.trim().is_empty() {
+                result.summary
+            } else if let Some(out) = result
+                .output
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                out.to_string()
+            } else {
+                "tool error".to_string()
+            };
+            Observation::Error { call_id, message }
+        }
+        AgentToolStatus::Pending => Observation::Pending { call_id },
     }
 }
 
@@ -1003,9 +1133,9 @@ impl ToolManager for LocalDirToolManager {
 // 后续待办(本 L4 自己能闭环的,已不依赖 waist)
 // =========================================================================
 //
-// 1. **`LLMContextOutcome` 归档格式** —— `write_run_outcome` 走 serde JSON
-//    更佳;当前用 Debug 文本作占位。waist outcome 已派生 Serialize,后续可
-//    直接切换到 `serde_json::to_vec_pretty`。
-// 2. **`LocalDirToolManager` + 真实 tool 集合** —— 接 agent_tool 的
-//    ReadFile / WriteFile / EditFile / Glob / Grep / ExecBash 等,sandbox 在
-//    `<dir>/workspace` 下。生产 v1 ship 的最后一块。
+// 1. **ExecBash** —— 当前 `LocalDirToolManager` 注册了 Read/Write/Edit/Glob/Grep,
+//    bash 执行没接入(`opendan` 那边的 `BuiltinExecBashTool` 依赖 task_mgr +
+//    session_store,引入会让 L4 OneShot 变重)。生产场景需要时再单独注入。
+// 2. **轮前落盘的失败可观测性** —— `SnapshotPersistingTurnHook::before_inference`
+//    当前吞掉 IO 错误以保持"hook 不打断主循环"约束。后续可以挂一个 log::warn
+//    + 计数器,让 ops 能看到"轮前落盘最近失败次数"。
