@@ -2,17 +2,19 @@
 
 ## 1. 目标
 
-本文基于 `doc/aicc` 目录下的 AICC 设计文档，制定 AICC 模块的分层测试验收方案。目标是在不依赖真实模型、不产生不可控费用的前提下，先用确定性的 Mock 模型覆盖协议、路由、任务、资源、配置、异常和安全语义；再通过 gateway 使用真实模型完成端到端验收。
+本文基于 `doc/aicc` 目录下的 AICC 设计文档，制定 AICC 模块的分层测试验收方案。目标是在不依赖真实模型、不产生不可控费用的前提下，先用确定性的 Mock 模型覆盖协议、路由、任务、资源、配置、异常和安全语义；再通过 gateway 访问由 `buckyos-devkit` 临时启动的 group 环境，使用真实模型完成端到端验收，并在验收结束后清理该临时环境。
 
 验收方案需要覆盖：
 
 1. AICC 文档中说明的各类能力、控制面和运行时行为。
-2. 主流模型接口协议，包括 OpenAI、Claude、Gemini、OpenAI-compatible / OpenRouter、fal 等 Provider 的请求参数、响应格式、错误格式和 streaming 差异。
+2. 主流模型接口协议，包括 OpenAI、Claude、Google / Gemini、OpenAI-compatible / OpenRouter、fal 等 Provider 的请求参数、响应格式、错误格式和 streaming 差异。
 3. 文本、结构化数据、图片、音频、视频等输入输出格式。
 4. 非结构化数据的 `url`、`base64`、`named_object`、artifact 输出策略。
 5. AICC 的异步任务与进度观察语义，以及 Provider-native streaming 到 task data / final summary 的适配。
 6. 路由、Provider、协议、任务、权限、预算、资源、配置等异常路径。
 7. 低成本、确定性 Mock 模型前期测试，以及真实模型的 gateway 验收。
+8. gateway 验收必须覆盖 `openai`、`fal`、`google`、`claude`、`openrouter`、`sn` 六类 Provider；其中 `sn` Provider 不需要 API key。
+9. gateway 真实模型验收按 Provider 与其支持模型的笛卡尔积生成用例，每个用例执行一条复杂 workflow。
 
 ## 2. 设计依据
 
@@ -48,7 +50,7 @@
 | L1 白盒单测 | AICC 内部模块 | `src/frame/aicc/tests`；如需测试非 `pub` 程序块，可嵌入对应实现文件 | Rust Mock Provider | `cargo test -p aicc` | 精细覆盖路由、调度、协议转换、任务、usage log、异常分支 |
 | L2 AiccClient 黑盒 | `AiccClient` | `src/kernel/buckyos-api/tests/aicc_client_test.rs` | In-process Mock AICC server | `cargo test -p buckyos-api --test aicc_client_test` | 验证 SDK client 的 request/response、错误、任务接口语义 |
 | L3 本地 kRPC 黑盒 | `/kapi/aicc` | `test/aicc_test` | TypeScript Mock Provider | 启动本机 BuckyOS + AICC 后运行 TS 用例 | 验证真实服务进程、配置重载、kRPC、task-manager、资源链路 |
-| L4 Gateway 验收 | gateway 远程访问 | `test/aicc_test` | 真实模型 | TOML 配置驱动 | 验证真实部署链路；每个真实 Provider 只跑一条复杂 workflow |
+| L4 Gateway 验收 | gateway 远程访问 | `test/aicc_test` | 真实模型 | `buckyos-devkit` 临时 group + 自动 runner | 验证真实部署链路；覆盖 Provider × 支持模型的笛卡尔积；每个用例执行一条复杂 workflow |
 
 分层原则：
 
@@ -56,6 +58,8 @@
 - L4 使用真实模型，受网络、模型状态、额度和内容不确定性影响，不要求 100% 通过，但必须报告失败原因。
 - Mock 阶段不得访问真实模型，不得依赖外网，不得依赖真实 API key。
 - 真实模型验收只验证协议事实、任务状态、artifact、usage、trace 和错误分类，不断言自然语言结果全文。
+- L4 的被测 BuckyOS 环境由 runner 通过 `buckyos-devkit` 构造为临时 group；执行脚本的宿主机只作为客户端经 gateway 访问，不在被测 group 内直接调用本地服务。
+- L4 runner 必须在结束时清理新构造的 group 环境；清理失败作为 warning 写入报告，不能掩盖原始测试失败。
 
 ## 4. 用例优先级
 
@@ -173,9 +177,10 @@
 |---|---|---|---|---|
 | OpenAI | Responses API、image generation/edit、audio transcription/speech、embedding | text、tool calls、JSON schema、image/audio artifact、usage | SSE delta 归并；图片/音频直接 artifact | tool call、JSON schema、vision content part、rate limit、context too long |
 | Claude | Messages API、content blocks、tool use、vision block | text block、tool_use、stop_reason、usage | SSE event stream 归并 | content block 转换、tool schema、vision fallback、overloaded/rate limit |
-| Gemini | `generateContent`、多模态 parts、embedding、image/video/audio | candidates、function_call、safety、media outputs | streamGenerateContent / 长任务 operation | parts 映射、safety block、multimodal embedding space、video operation |
+| Google / Gemini | `generateContent`、多模态 parts、embedding、image/video/audio | candidates、function_call、safety、media outputs | streamGenerateContent / 长任务 operation | parts 映射、safety block、multimodal embedding space、video operation |
 | OpenAI-compatible / OpenRouter | Chat completions 或 responses-like | OpenAI-like，但字段可能缺失或扩展 | SSE 兼容差异 | 兼容字段缺失、模型名映射、provider-specific error |
 | fal | 图片/音频/视频工具型任务 | artifact URL / operation status | 异步 submit + poll | upscale、bg_remove、audio.enhance、video.upscale、operation timeout |
+| SN AI Provider | AICC 内置 SN provider settings，经 SN 转发到兼容模型服务 | OpenAI-like 或 SN 归一响应 | 由 SN provider 能力决定 | 无 API key 参数、SN 链路可达性、provider instance 命名、usage / trace 归因 |
 
 P0 Provider 最小集合按 `aicc_provider_plan.md`：
 
@@ -184,7 +189,29 @@ P0 Provider 最小集合按 `aicc_provider_plan.md`：
 - `google.rs` / 当前实现中的 Gemini adapter
 - `fal.rs`
 
-OpenRouter 作为 P1 optional provider，用于长尾模型、成本 fallback 和兼容性测试。
+OpenRouter 在 Mock 和 Provider adapter 单测中仍可作为 P1 optional provider；在 L4 gateway 真实模型验收中必须纳入 Provider 覆盖矩阵，用于验证 OpenAI-compatible 长尾模型、成本 fallback 和兼容性。
+
+### 8.1 L4 真实 Provider 与模型矩阵
+
+L4 不再按“每 Provider 一条用例”收敛，而是由 runner 在测试开始时读取当前临时 group 中的 `models.list` / Provider inventory，生成以下矩阵：
+
+```text
+case_set = {
+  provider in [openai, fal, google, claude, openrouter, sn]
+} x {
+  model in provider.supported_models
+}
+```
+
+矩阵生成规则：
+
+1. `supported_models` 以 AICC 实际注册并可被 `models.list` 观察到的模型为准，包含精确模型名和其支持的 `api_types`。
+2. 同一个 Provider 下同一个物理模型如果支持多个 `api_types`，runner 应选择能覆盖该模型主要能力的复杂 workflow；必要时一个模型可拆成 `llm` / `media` / `embedding` 等子用例，但报告必须仍能按 Provider × model 聚合。
+3. Provider 已启用但没有任何可用模型时，生成一个 `skipped` 诊断用例，原因记为 `provider_has_no_models`。
+4. `sn` Provider 不需要 API key；如果临时 group 的 SN provider 没有注册成功，应判为环境或配置失败，而不是 key 缺失。
+5. `openai`、`fal`、`google`、`claude`、`openrouter` 缺少对应 API key 时，该 Provider 的全部真实模型用例标记为 `skipped`，并在报告中按 Provider 汇总。
+6. 每个真实模型用例最多执行 3 次 attempt：首次失败后只重跑同一个 Provider × model × workflow 用例 2 次；任意一次 attempt 成功则该用例最终为 `passed`。
+7. attempt 失败原因必须全部保留在报告中，最终成功的用例也要记录之前失败 attempt 的 `failure_class`、错误码和耗时，便于分析不稳定性。
 
 ## 9. Mock Provider 契约
 
@@ -333,10 +360,13 @@ system_config 写入 settings
 
 真实模型成本受控：
 
-- 每个真实 Provider 只设计一条复杂 workflow。
-- 每条 workflow 尽量覆盖该 Provider 最有代表性的能力。
+- 每个真实 Provider 按其支持模型展开用例；每个 Provider × model 用例执行一条复杂 workflow。
+- 每条 workflow 尽量覆盖该 Provider / model 最有代表性的能力。
+- 首次失败后只重跑同一个 Provider × model × workflow 用例，最多累计 3 次 attempt。
+- 任意 attempt 成功则该用例成功，所有 attempt 摘要都写入报告。
 - 不断言自然语言全文，只断言协议事实。
 - 未配置 API key 或 Provider 未启用时用例标记为 `skipped`，不算失败。
+- `sn` Provider 不需要 API key，缺 key 不得作为 skip 原因。
 - 真实模型返回可理解错误时，报告记录为 `failed` 或 `partial`，保留错误码、Provider 摘要、trace id。
 
 每条真实模型 workflow 至少断言：
@@ -353,11 +383,12 @@ system_config 写入 settings
 
 | Provider | Workflow |
 |---|---|
-| OpenAI | `llm.chat` 多轮 + JSON schema + tool call + image/audio 或 embedding 子步骤 |
-| Claude | 多模态 `llm.chat` + tool use + vision caption/OCR fallback |
-| Gemini | 多模态 `llm.chat` + embedding/multimodal 或 image/video operation |
-| fal | `image.upscale` 或 `video.upscale` 异步任务 + artifact 读取 |
-| OpenAI-compatible / OpenRouter | `llm.chat` 复杂 JSON 输出 + 兼容字段检查 |
+| OpenAI | 每个模型执行 `llm.chat` 多轮 + JSON schema + tool call + image/audio 或 embedding 子步骤 |
+| Claude | 每个模型执行多模态 `llm.chat` + tool use + vision caption/OCR fallback |
+| Google | 每个模型执行多模态 `llm.chat` + embedding/multimodal 或 image/video operation |
+| fal | 每个模型执行 `image.upscale` / `image.bg_remove` / `audio.enhance` / `video.upscale` 中匹配能力的异步任务 + artifact 读取 |
+| OpenRouter | 每个模型执行 `llm.chat` 复杂 JSON 输出 + OpenAI-compatible 兼容字段检查 |
+| SN AI Provider | 每个模型执行无 key 的 gateway 转发 workflow，验证 provider 归因、usage 和 trace |
 
 ## 16. 统一执行脚本
 
@@ -376,8 +407,12 @@ test/aicc_test/run_acceptance.{ts|py}
 5. 写入 Mock settings，调用 `service.reload_settings`。
 6. 调用 `models.list` 验证 Mock Provider 生效。
 7. 执行本地 kRPC TS 用例。
-8. 如 TOML 配置启用 gateway，则执行真实模型 workflow。
-9. 生成报告。
+8. 如 TOML 配置启用 gateway，则通过 `buckyos-devkit` 创建临时 group。
+9. 从宿主机经 gateway 登录临时 group，并写入真实 Provider settings。
+10. 调用 `models.list` 生成 Provider × model 矩阵。
+11. 执行真实模型 workflow；失败 case 最多累计 3 次 attempt。
+12. 生成报告。
+13. 清理本次 runner 创建的临时 group。
 
 报告输出：
 
@@ -389,7 +424,10 @@ test/aicc_test/reports/acceptance/<run_id>/
   cargo_buckyos_api.log
   local_krpc/
   gateway/
+    matrix.json
+    attempts/
   artifacts/
+  cleanup.log
 ```
 
 ## 17. 报告 Schema
@@ -427,6 +465,8 @@ test/aicc_test/reports/acceptance/<run_id>/
       "model": "gpt-5.2@openai-mock-1",
       "provider": "openai-mock-1",
       "status": "passed",
+      "attempts_total": 1,
+      "passed_after_attempt": 1,
       "error_code": null,
       "trace_id": "trace-aicc-001",
       "duration_ms": 20,
@@ -436,7 +476,18 @@ test/aicc_test/reports/acceptance/<run_id>/
       },
       "artifacts": [],
       "skip_reason": null,
-      "failure_reason": null
+      "failure_reason": null,
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": "passed",
+          "failure_class": null,
+          "error_code": null,
+          "duration_ms": 20,
+          "task_id": null,
+          "trace_id": "trace-aicc-001"
+        }
+      ]
     }
   ]
 }
@@ -483,9 +534,13 @@ test/aicc_test/reports/acceptance/<run_id>/
 ### 19.2 Gateway 阶段
 
 - gateway 链路、鉴权、配置读取、报告生成必须稳定。
-- 每个真实 Provider 至少一条复杂 workflow。
+- 被测环境必须由 `buckyos-devkit` 临时 group 启动，宿主机 runner 作为客户端通过 gateway 访问。
+- Provider 覆盖必须包含 `openai`、`fal`、`google`、`claude`、`openrouter`、`sn`。
+- 用例覆盖必须按 Provider × 支持模型的笛卡尔积生成；每个用例执行一条复杂 workflow。
+- 每个失败用例必须额外重试 2 次，累计最多 3 次；任意一次成功则最终判定为成功。
 - 真实模型内容不要求固定，但协议、任务状态、错误分类、trace、usage 记录必须可判定。
 - 真实模型失败不能吞掉原因，必须进入报告。
+- 测试完成后必须清理临时 group；如果清理失败，报告记录 `cleanup_failed` warning。
 
 ## 20. 待实现任务清单
 
@@ -494,7 +549,7 @@ test/aicc_test/reports/acceptance/<run_id>/
 3. 在 `test/aicc_test` 增加 TypeScript Mock Provider。
 4. 在 `test/aicc_test` 增加本地 kRPC 用例。
 5. 在 `test/aicc_test` 增加 gateway TOML 配置和真实模型 workflow。
-6. 增加统一 runner 和验收报告输出。
+6. 增加统一 runner 和验收报告输出，支持 `buckyos-devkit` 临时 group 生命周期、Provider × model 矩阵生成和失败用例最多 3 次 attempt。
 7. 增加 fixture 目录和固定测试资源。
 8. 增加日志、trace、报告脱敏扫描。
 
@@ -506,13 +561,13 @@ test/aicc_test/reports/acceptance/<run_id>/
 |---|---|---|
 | M0 | L1 白盒单测 + L2 AiccClient 黑盒测试 | Rust Mock Provider 可用；`cargo test -p aicc` 和 `cargo test -p buckyos-api --test aicc_client_test` 的 P0 用例 100% 通过 |
 | M1 | L3 本地 kRPC + TypeScript Mock Provider | 本机 BuckyOS + AICC 启动后，可通过 TS Mock Provider 完成配置重载、`models.list`、各类 method、task、usage、trace 和异常路径测试 |
-| M2 | L4 gateway + 真实模型验收 | TOML 配置驱动真实模型 workflow；报告可区分 passed / failed / skipped / partial；真实模型失败原因可追踪 |
+| M2 | L4 gateway + 真实模型验收 | runner 能启动临时 group，经 gateway 执行 Provider × model 矩阵 workflow，报告可区分 passed / failed / skipped / partial；真实模型失败原因和重试 attempt 可追踪 |
 
 里程碑边界：
 
 - M0 只要求进程内确定性测试，不启动完整 BuckyOS。
 - M1 要求真实 AICC 服务进程和本地 kRPC 链路可用，但仍不访问真实模型。
-- M2 允许访问真实模型，主要用于发布前验收和远程部署验证。
+- M2 允许访问真实模型，主要用于发布前验收和远程部署验证；M2 完成后必须清理 runner 创建的临时 group。
 
 ## 22. 当前实现现状与缺口
 
@@ -533,6 +588,8 @@ test/aicc_test/reports/acceptance/<run_id>/
 | 统一 Mock Provider 契约 | `src/frame/aicc/tests`、`test/aicc_test` | Rust Mock 和 TS Mock 的行为控制字段应保持一致 |
 | TypeScript Mock Provider | `test/aicc_test` | 用于 L3 本地 kRPC 确定性测试 |
 | 统一验收 runner | `test/aicc_test/run_acceptance.{ts|py}` | 串联 cargo test、本地 kRPC、gateway、报告输出 |
+| `buckyos-devkit` group 管理 | `test/aicc_test/run_acceptance.{ts|py}` 或独立 helper | 创建、启动、探测、清理临时 group；支持从空白虚拟机模板 clone 多节点 |
+| L4 Provider × model 矩阵生成 | `test/aicc_test/cases/gateway_cases.toml` 或 runner 动态生成 | 根据 `models.list` / inventory 生成真实模型用例，覆盖 openai/fal/google/claude/openrouter/sn |
 | fixture 目录 | `test/aicc_test/fixtures`，必要时 Rust tests 内也保留最小 fixture | 固定图片、音频、视频、文档、mask、embedding 大批量输入 |
 | 报告 schema 固化 | `test/aicc_test/reports/acceptance` | 输出 `summary.json` 和 `summary.md`，方便 CI / 发布验收读取 |
 | 脱敏扫描 | runner 或独立检查脚本 | 扫描报告、trace、task data、日志摘要 |
@@ -564,7 +621,7 @@ l1_provider_openai_stream_merge
 l2_client_idempotency_conflict
 l3_krpc_reload_settings_mock_openai
 l3_resource_named_object_image_txt2img
-l4_gateway_openai_complex_workflow
+l4_gateway_openai_gpt_5_4_complex_workflow
 l4_gateway_fal_video_upscale_workflow
 ```
 
@@ -639,10 +696,12 @@ usage_output_tokens = 3
 3. `cargo test -p buckyos-api --test aicc_client_test` 通过。
 4. 本地 kRPC Mock 验收能完成 `reload_settings -> models.list -> route -> provider call -> task / usage / trace` 闭环。
 5. gateway runner 能读取 TOML 配置并生成 `summary.md` 和 `summary.json`。
-6. 已配置真实 key 的 Provider 至少各有一条 workflow 结果；未配置 key 的 Provider 标记为 `skipped`。
-7. 报告、trace、task data、日志摘要中不得出现 API key、session token、原始 prompt 全文和原始文件内容。
-8. 真实模型调用次数和成本在报告中可见。
-9. 所有 failed / partial 用例都有明确失败原因、错误码或 Provider 摘要。
+6. gateway runner 能通过 `buckyos-devkit` 启动临时 group，并从宿主机经 gateway 完成访问。
+7. 已配置真实 key 的 Provider 必须覆盖其全部可用模型；`sn` Provider 必须无 key 覆盖；未配置 key 的 Provider 在普通开发验收中标记为 `skipped`，发布强覆盖验收中应 preflight 失败。
+8. 报告、trace、task data、日志摘要中不得出现 API key、session token、原始 prompt 全文和原始文件内容。
+9. 真实模型调用次数、attempt 次数和成本在报告中可见。
+10. 所有 failed / partial 用例都有明确失败原因、错误码或 Provider 摘要。
+11. runner 创建的临时 group 已清理，或报告中明确记录保留原因和清理命令。
 
 ## 26. 性能与并发最低要求
 
@@ -723,11 +782,15 @@ usage_output_tokens = 3
 
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
-| `l4_gateway_openai_complex_workflow` | P2 | OpenAI 文本、JSON schema、tool call、usage、trace |
-| `l4_gateway_claude_complex_workflow` | P2 | Claude 多模态或 vision、tool use、usage、trace |
-| `l4_gateway_gemini_complex_workflow` | P2 | Gemini 多模态、safety / function call / operation 语义 |
-| `l4_gateway_fal_media_workflow` | P2 | fal image/video/audio 工具型异步任务和 artifact |
+| `l4_gateway_openai_<model>_complex_workflow` | P2 | OpenAI 每个支持模型的文本、JSON schema、tool call、usage、trace |
+| `l4_gateway_claude_<model>_complex_workflow` | P2 | Claude 每个支持模型的多模态或 vision、tool use、usage、trace |
+| `l4_gateway_google_<model>_complex_workflow` | P2 | Google / Gemini 每个支持模型的多模态、safety / function call / operation 语义 |
+| `l4_gateway_openrouter_<model>_complex_workflow` | P2 | OpenRouter 每个支持模型的 OpenAI-compatible 协议兼容、usage、trace |
+| `l4_gateway_fal_<model>_media_workflow` | P2 | fal 每个支持模型的 image/video/audio 工具型异步任务和 artifact |
+| `l4_gateway_sn_<model>_complex_workflow` | P2 | SN AI Provider 每个支持模型的无 key 链路、usage、trace、provider 归因 |
 | `l4_gateway_models_list` | P2 | 真实环境 inventory、逻辑目录和 Provider health 可诊断 |
+
+L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型名归一化得到；报告中必须保留原始精确模型名。
 
 ## 28. 执行命令约定
 
@@ -773,6 +836,32 @@ pnpm run acceptance:gateway -- --config ./aicc_acceptance.toml
 
 真实模型验收必须显式传入配置文件；不应从开发者环境变量中隐式读取 key 后直接发起调用，避免误触发费用。
 
+推荐最终提供一个全量自动化入口，用于发布前一次性执行 L1/L2/L3/L4 并输出报告：
+
+```bash
+cd test/aicc_test
+pnpm run acceptance:all -- \
+  --openai-key "<openai-api-key>" \
+  --fal-key "<fal-api-key>" \
+  --google-key "<google-api-key>" \
+  --claude-key "<claude-api-key>"
+```
+
+`acceptance:all` 的职责：
+
+1. 固定从仓库根目录或 `src` 目录解析路径，避免工作目录差异。
+2. 执行 L1/L2 Rust 单测。
+3. 执行 L3 本地 Mock 验收。
+4. 使用 `buckyos-devkit` 创建并启动 L4 临时 group，通过 gateway 访问该 group。
+5. 将传入的 4 个 key 写入临时 group 的 AICC settings；`sn` Provider 不需要 key。
+6. 对 `openrouter`，runner 优先读取配置文件或临时 group settings 中的 `openrouter` key；如果发布验收要求强覆盖但缺 key，应在 preflight 阶段失败。普通开发验收可将 openrouter 矩阵标记为 `skipped`。
+7. 动态读取 `models.list`，生成 Provider × model 矩阵。
+8. 每个矩阵用例执行复杂 workflow，失败后最多额外执行 2 次。
+9. 输出 `summary.md`、`summary.json` 和脱敏后的 attempt 明细。
+10. 清理 runner 新建的临时 group。
+
+为了让参数尽可能少，`sn` 不设置 key；OpenRouter key 不作为默认必填命令行参数，但发布验收若要求 OpenRouter 强覆盖，必须通过 `--openrouter-key` 或配置文件提供。
+
 ## 29. Gateway TOML 配置约定
 
 真实模型验收通过 TOML 配置驱动。建议配置结构：
@@ -781,6 +870,14 @@ pnpm run acceptance:gateway -- --config ./aicc_acceptance.toml
 gateway_host = "https://example-zone.example"
 report_dir = "reports/acceptance"
 mode = "gateway"
+
+[environment]
+managed_by_devkit = true
+group_name = "aicc-acceptance-${run_id}"
+group_template = "2zone_sn"
+blank_vm_template = "aicc-blank"
+cleanup_on_exit = true
+keep_on_failure = false
 
 [auth]
 token = ""
@@ -792,39 +889,70 @@ login_appid = "buckycli"
 app_id = "aicc-acceptance"
 default_model_alias = "llm.plan"
 timeout_ms = 300000
-max_real_model_calls_per_provider = 1
+max_attempts_per_case = 3
 allow_real_model_calls = false
 fail_on_partial = false
+matrix_mode = "provider_model_cartesian"
+providers = ["openai", "fal", "google", "claude", "openrouter", "sn"]
 
 [providers.openai]
 enabled = true
 api_key = ""
-model_alias = "llm.gpt5"
 
 [providers.claude]
 enabled = true
 api_key = ""
-model_alias = "llm.claude"
 
-[providers.gemini]
+[providers.google]
 enabled = true
 api_key = ""
-model_alias = "llm.gemini"
 
 [providers.fal]
 enabled = true
 api_key = ""
 image_url = ""
 video_url = ""
+
+[providers.openrouter]
+enabled = true
+api_key = ""
+
+[providers.sn]
+enabled = true
+api_key = ""
+requires_api_key = false
 ```
 
 配置规则：
 
 - `allow_real_model_calls` 默认为 `false`。只有显式设为 `true` 才允许发起真实模型调用。
-- `max_real_model_calls_per_provider` 默认为 `1`，防止真实模型验收失控。
-- Provider `enabled=true` 但缺 key 时，用例标记 `skipped`。
+- `matrix_mode=provider_model_cartesian` 时，runner 必须按 Provider × 该 Provider 支持模型生成 L4 用例。
+- `max_attempts_per_case` 默认为 `3`；只有首轮失败的用例才继续执行第 2 / 第 3 次 attempt。
+- Provider `enabled=true` 但缺 key 时，用例标记 `skipped`；发布强覆盖模式下，缺 key 可在 preflight 直接失败。
+- `sn` Provider 的 `requires_api_key=false`，缺 key 不应导致 skipped。
 - Provider key 不写入报告和日志。
 - runner 应把最终生效配置的脱敏摘要写入报告。
+- `managed_by_devkit=true` 时，runner 负责创建、启动、探测和清理 group；`keep_on_failure=true` 只用于人工排查，报告必须明确标注遗留环境名。
+
+### 29.1 `buckyos-devkit` 临时 group 生命周期
+
+L4 runner 应把被测环境视为一次性资源，推荐流程：
+
+1. 生成唯一 `run_id` 和 `group_name`，例如 `aicc-acceptance-20260511-153000`。
+2. 检查 `buckyos-devkit` / `buckyos-devtest`、Multipass、Python、`uv`、`cargo`、`pnpm` 是否可用。
+3. 构造或复用空白 VM 模板；如果本次需要多个虚拟机，先构造一个空白虚拟机，再 clone 出 SN、OOD、普通节点等实例，然后按 group 配置修改 hostname、hosts、端口映射和 app 参数。
+4. 使用 group template 生成临时 group 配置，最小建议为 `sn + alice-ood1`；需要多 Provider 节点或 gateway 冗余时再扩展节点。
+5. 执行 `create_vms` / `install` / `start`，并等待 gateway、system-config、verify-hub、scheduler、task-manager、AICC 全部可访问。
+6. 宿主机 runner 通过 gateway 登录并获取测试 token，后续所有 L4 调用都经 gateway 访问 `/kapi/aicc` 和相关 task / artifact 接口。
+7. 写入真实 Provider settings，触发 `reload_settings`，调用 `models.list` 生成 Provider × model 矩阵。
+8. 运行 L4 矩阵用例并收集报告。
+9. 默认执行 `stop` / `clean_vms` 清理临时 group；除非显式 `keep_on_failure=true`，失败环境也必须清理。
+
+清理约束：
+
+- runner 只能清理自己创建且带有本次 `run_id` 标签或命名前缀的 group / VM。
+- 清理前应把必要日志、AICC settings 脱敏摘要、`models.list` 输出和失败 attempt 摘要复制到报告目录。
+- 清理失败不能覆盖测试结论，应记录为 `cleanup_failed` warning，并列出残留 group / VM 名称。
 
 ## 30. 真实模型判定规则
 
@@ -854,6 +982,15 @@ video_url = ""
 - trace 缺失或泄露敏感信息。
 - Provider key、token、原始 prompt 出现在报告中。
 
+真实模型重试判定：
+
+1. 重试粒度是单个 Provider × model × workflow 用例，不得扩大到整个 Provider 或整个测试批次。
+2. 第 1 次 attempt 失败后，runner 应立即重跑同一用例；第 2 次仍失败时再重跑第 3 次。
+3. 任意 attempt 满足通过断言，则该 case 最终状态为 `passed`，并在报告中标注 `passed_after_attempt=N`。
+4. 三次 attempt 全部失败时，该 case 最终状态为 `failed`，主失败原因取最后一次 attempt，同时保留全部 attempt 明细。
+5. `skipped` 不重试；preflight / 配置错误不重试；明显安全失败不重试。
+6. 对已经返回 `running` 或已提交异步任务的 attempt，不允许在同一个 task 上静默重复提交；重试必须创建新的 case attempt id，并在报告中记录可能产生的真实费用。
+
 ## 31. 测试环境确定性要求
 
 Mock 阶段必须保证执行环境确定：
@@ -873,7 +1010,9 @@ Mock 阶段必须保证执行环境确定：
 | 风险 | 影响 | 处理策略 |
 |---|---|---|
 | 真实模型输出不稳定 | gateway 用例误报 | 只断言协议事实，不断言自然语言全文 |
-| 真实模型费用失控 | 成本风险 | `allow_real_model_calls=false` 默认值、每 Provider 限制调用次数 |
+| 真实模型费用失控 | 成本风险 | `allow_real_model_calls=false` 默认值、按 Provider × model 生成前先输出预计用例数；失败用例最多 3 次 attempt；报告统计真实调用次数和估算成本 |
+| L4 临时环境残留 | 占用本机资源、污染后续测试 | group 名带 `run_id`，默认 `cleanup_on_exit=true`；只清理 runner 创建的 group；清理失败写 warning |
+| VM 多节点构造慢 | 发布验收耗时长 | 先构造空白 VM，再 clone 出所需节点；只在需要 gateway / SN / 多节点路径时扩展节点数 |
 | Mock 与真实 Provider 差异过大 | Mock 通过但真实失败 | Mock 按 Provider 原生协议构造请求/响应，不只 mock AICC 内部 trait |
 | Streaming 语义混乱 | UI 或 task 状态不一致 | AICC 协议只验最终 summary；中间态只验 task data / event |
 | 使用量重复写入 | 账单和统计错误 | 幂等并发测试、usage 唯一约束测试 |
@@ -946,14 +1085,15 @@ json_schema = "assertions/llm_chat_summary.schema.json"
 no_sensitive_log = true
 
 [[cases]]
-case_id = "l4_gateway_openai_complex_workflow"
+case_id = "l4_gateway_openai_${model_slug}_complex_workflow"
 layer = "L4"
 priority = "P2"
 method = "workflow"
 provider = "openai"
+model = "${exact_model}"
 timeout_ms = 300000
 requires = ["gateway", "real_model", "api_key:openai"]
-max_real_model_calls = 1
+max_attempts = 3
 expect_status = "partial_or_passed"
 expect_usage = true
 expect_trace = true
@@ -975,7 +1115,9 @@ expect_trace = true
 | `expect_status` | `succeeded`、`running`、`failed`、`partial_or_passed` |
 | `expect_usage` | 是否必须存在 usage |
 | `expect_trace` | 是否必须存在 route trace |
-| `max_real_model_calls` | L4 真实模型调用上限 |
+| `max_attempts` | L4 单 case 最大 attempt 数；真实模型默认 3 |
+| `matrix_source` | L4 动态矩阵来源，推荐 `models.list` |
+| `model_slug` | 由精确模型名归一化得到的稳定用例 ID 片段 |
 
 Runner 要求：
 
@@ -983,6 +1125,8 @@ Runner 要求：
 - `requires` 不满足时标记 `skipped`，并记录 `skip_reason`。
 - 同一 manifest 内 `case_id` 必须唯一。
 - 报告中的 case 顺序应与 manifest 顺序一致，便于人工阅读。
+- L4 动态矩阵用例可以由模板 case 展开；展开后的 `case_id` 必须唯一，并保留 `provider`、`model`、`api_types`、`matrix_source`。
+- L4 attempt 明细必须挂在同一个 case 下，不能展开成多个独立 case 影响通过率统计。
 
 ## 35. Mock Provider HTTP 接口约定
 
@@ -1108,6 +1252,9 @@ Fixture 要求：
 7. 校验 fixture manifest。
 8. 创建本次 `run_id` 和报告目录。
 9. 如果是 L4，确认 `allow_real_model_calls=true`，否则跳过真实调用。
+10. 如果是 L4，确认 `buckyos-devkit`、Multipass 和临时 group template 可用。
+11. 如果是 L4，创建或 clone 临时 group VM，启动后通过 gateway 完成登录和 `/kapi/aicc` 连通性检查。
+12. 如果是 L4，调用 `models.list` 生成 Provider × model 矩阵，并在真正执行前把矩阵摘要写入报告。
 
 执行后应做 cleanup：
 
@@ -1116,6 +1263,8 @@ Fixture 要求：
 3. 清理测试 session config 和 session route binding。
 4. 清理未完成的 Mock task 或记录到报告。
 5. 保留报告、输入、输出和脱敏后的 Provider 请求摘要。
+6. 如果是 L4，停止并清理本次 runner 新建的临时 group / VM。
+7. 如果 `keep_on_failure=true`，保留临时 group，但必须在报告中写入 group 名、节点名和手工清理命令。
 
 清理失败不能覆盖原始测试失败原因，应作为单独 warning 写入报告。
 
@@ -1167,8 +1316,9 @@ Fixture 要求：
 | 6 | 增加 L2 `aicc_client_test.rs` | `src/kernel/buckyos-api/tests` |
 | 7 | 对齐 Rust Mock Provider 与 TS Mock scenario 契约 | `src/frame/aicc/tests`、`test/aicc_test` |
 | 8 | 增加 Provider-specific protocol P0 用例 | `src/frame/aicc/tests` |
-| 9 | 增加 gateway TOML 和真实模型 workflow | `test/aicc_test` |
-| 10 | 接入脱敏扫描和发布验收报告 | `test/aicc_test` |
+| 9 | 增加 gateway TOML、`buckyos-devkit` 临时 group 管理和真实模型 workflow | `test/aicc_test` |
+| 10 | 增加 Provider × model 矩阵生成、失败 case 三次 attempt 和 attempt 报告 | `test/aicc_test` |
+| 11 | 接入脱敏扫描和发布验收报告 | `test/aicc_test` |
 
 每个任务完成后至少应能回答：
 
@@ -1251,7 +1401,8 @@ Fixture 要求：
 # AICC Acceptance Report
 
 - Run ID: 20260509-acceptance-001
-- Mode: local_mock
+- Mode: acceptance_all
+- Gateway group: aicc-acceptance-20260509-001
 - Started: 2026-05-09T10:00:00Z
 - Finished: 2026-05-09T10:04:31Z
 - Status: failed
@@ -1263,9 +1414,20 @@ Fixture 要求：
 | L1 | 18 | 0 | 0 | 0 | 42s |
 | L2 | 3 | 0 | 0 | 0 | 8s |
 | L3 | 10 | 1 | 1 | 0 | 3m41s |
-| L4 | 0 | 0 | 4 | 0 | 0s |
+| L4 | 18 | 1 | 5 | 1 | 41m12s |
 
-Total: 31 passed, 1 failed, 5 skipped, 0 partial.
+Total: 49 passed, 2 failed, 6 skipped, 1 partial.
+
+## L4 Matrix
+
+| Provider | Models | Passed | Failed | Skipped | Partial | Attempts |
+|---|---:|---:|---:|---:|---:|---:|
+| openai | 4 | 4 | 0 | 0 | 0 | 5 |
+| claude | 3 | 3 | 0 | 0 | 0 | 3 |
+| google | 4 | 3 | 1 | 0 | 0 | 7 |
+| fal | 4 | 4 | 0 | 0 | 0 | 4 |
+| openrouter | 5 | 0 | 0 | 5 | 0 | 0 |
+| sn | 3 | 3 | 0 | 0 | 0 | 3 |
 
 ## Failed Cases
 
@@ -1286,17 +1448,25 @@ Total: 31 passed, 1 failed, 5 skipped, 0 partial.
 
 | Case | Reason |
 |---|---|
-| l4_gateway_openai_complex_workflow | allow_real_model_calls=false |
-| l4_gateway_claude_complex_workflow | missing api_key:claude |
+| l4_gateway_openai_* | allow_real_model_calls=false |
+| l4_gateway_claude_* | missing api_key:claude |
+| l4_gateway_openrouter_* | missing api_key:openrouter |
 
 ## Cost
 
-| Provider | Real calls | Estimated cost |
-|---|---:|---:|
-| openai | 0 | USD 0 |
-| claude | 0 | USD 0 |
-| gemini | 0 | USD 0 |
-| fal | 0 | USD 0 |
+| Provider | Real calls | Attempts | Estimated cost |
+|---|---:|---:|---:|
+| openai | 5 | 5 | USD 0.42 |
+| claude | 3 | 3 | USD 0.31 |
+| google | 7 | 7 | USD 0.28 |
+| fal | 4 | 4 | USD 0.16 |
+| openrouter | 0 | 0 | USD 0 |
+| sn | 3 | 3 | USD 0 |
+
+## Cleanup
+
+- Temporary group: cleaned
+- Cleanup warnings: 0
 
 ## Security Scan
 
@@ -1312,7 +1482,8 @@ Total: 31 passed, 1 failed, 5 skipped, 0 partial.
 - `summary.json` 面向 CI、脚本和后续分析。
 - 失败用例必须提供 trace id、task id、failure class 和脱敏输入输出目录。
 - skipped 不能只显示数量，必须显示原因。
-- L4 报告必须显示真实模型调用次数和估算成本。
+- L4 报告必须显示真实模型调用次数、attempt 次数、Provider × model 覆盖矩阵和估算成本。
+- L4 报告必须显示临时 group 是否已清理；如未清理，必须显示保留原因和手工清理命令。
 
 ## 43. 第一阶段明确不做
 
@@ -1325,7 +1496,7 @@ Total: 31 passed, 1 failed, 5 skipped, 0 partial.
 5. 不实现复杂账单、发票、余额或对账逻辑。
 6. 不把 Provider 原始完整响应写入报告。
 7. 不把原始 prompt、原始文件内容、API key、session token 写入报告或普通日志。
-8. 不要求所有真实模型 Provider 在无 key 环境下通过。
+8. 不要求所有需要 API key 的真实模型 Provider 在无 key 环境下通过；`sn` Provider 例外，它本身不需要 API key。
 9. 不要求 `agent.computer_use` 在第一阶段接入真实桌面或浏览器环境。
 10. 不要求所有视频、音乐等高成本能力在 Mock 阶段之外真实执行。
 11. 不引入新的通用测试框架或依赖，除非先单独确认。
