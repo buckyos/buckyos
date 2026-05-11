@@ -133,14 +133,13 @@ pub async fn compress(
     let summarize_messages = vec![
         AiMessage::new(
             "system".to_string(),
-            format!(
-                "You are a context-compression assistant. Summarise the following \
-                 conversation in at most {} tokens. Preserve decisions, factual \
-                 claims, identifiers, file paths, error messages, and any pending \
-                 obligations. Omit pleasantries and chain-of-thought. Output a \
-                 single dense paragraph with no markdown headings.",
-                summary_budget
-            ),
+            "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\n\
+             - You already have all the context you need in the conversation above.\n\
+             - Your task is to create a detailed summary of the conversation so far, \
+             paying close attention to the user's explicit requests and your previous actions.\n\
+             - This summary should be thorough in capturing technical details, patterns, and \
+             architectural decisions that would be essential for continuing work without losing context."
+                .to_string(),
         ),
         AiMessage::new("user".to_string(), middle_text),
     ];
