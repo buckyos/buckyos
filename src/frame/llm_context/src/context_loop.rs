@@ -101,6 +101,19 @@ impl LLMContext {
             ResumeFill::RewrittenHistory { history } => {
                 state.accumulated = history;
             }
+            ResumeFill::ResumeFromMidRun => {
+                // §3.1 / §6.6 nail this down: a mid-run recovery is only valid
+                // when the snapshot is **not** in any suspended state.
+                // Suspended snapshots carry data the caller must feed back
+                // through the matching ResumeFill variant; silently treating
+                // them as mid-run would drop unanswered tool_use entries from
+                // the accumulated transcript.
+                if !state.pending_tool_calls.is_empty() {
+                    return Err(LLMComputeError::SnapshotCorrupted(
+                        "ResumeFromMidRun fill but snapshot has pending tool calls".to_string(),
+                    ));
+                }
+            }
         }
 
         Ok(Self {
@@ -148,7 +161,13 @@ impl LLMContext {
                 return budget_outcome;
             }
 
-            // 1. Inference
+            // 1. Inference — fire TurnHook (§3.12) before the call so the L4
+            // persistence layer can checkpoint "right before we pay for the
+            // next inference".
+            if let Some(hook) = &self.deps.turn_hook {
+                let snap = self.snapshot();
+                hook.before_inference(&snap);
+            }
             let infer_req = self.build_inference_request();
             let response = match self.deps.llm.infer(infer_req).await {
                 Ok(resp) => resp,

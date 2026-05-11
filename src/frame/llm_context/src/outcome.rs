@@ -15,6 +15,9 @@ use crate::state::LLMContextSnapshot;
 
 /// What the scheduler feeds back when resuming from a suspended outcome.
 /// The variant must match the suspension that produced the snapshot.
+///
+/// Serialised as a tagged enum (`{"kind": "...", ...}`) so snapshot + fill can
+/// travel over JSON across processes (L4 OneShot crash recovery relies on this).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResumeFill {
@@ -26,6 +29,17 @@ pub enum ResumeFill {
     /// Paired with `ContextLimitReached`. The scheduler decides how to
     /// compress — waist just replaces accumulated history with this.
     RewrittenHistory { history: Vec<AiMessage> },
+    /// "Crashed-mid-run" recovery (§3.1 / §6.6 of the design doc). The
+    /// snapshot was *not* produced by a suspension outcome but was persisted
+    /// by an L4 persistence layer at an outcome boundary or via a
+    /// [`crate::deps::TurnHook`] before the next inference.
+    ///
+    /// No payload — there is nothing for the caller to feed back. The waist
+    /// validates on resume that the snapshot is *not* in any suspended state
+    /// (`pending_tool_calls` must be empty); mid-run snapshots paired with
+    /// a different fill variant — or suspended snapshots paired with this
+    /// variant — both yield `LLMComputeError::SnapshotCorrupted`.
+    ResumeFromMidRun,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

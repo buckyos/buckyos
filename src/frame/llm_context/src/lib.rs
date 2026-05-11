@@ -9,6 +9,8 @@
 pub mod context_loop;
 pub mod deps;
 pub mod error;
+pub mod llm_compress;
+pub mod local_llm_context;
 pub mod observation;
 pub mod outcome;
 pub mod request;
@@ -18,7 +20,7 @@ pub use context_loop::LLMContext;
 pub use deps::{
     AllowAllPolicy, ByteHeuristicTokenizer, LLMContextDeps, LlmClient,
     LlmInferenceRequest, NoopWorklogSink, PolicyEngine, ToolManager,
-    ToolSpecLite, Tokenizer, WorkEvent, WorklogSink,
+    ToolSpecLite, Tokenizer, TurnHook, WorkEvent, WorklogSink,
 };
 pub use error::LLMComputeError;
 pub use observation::{Observation, PendingToolCall, ToolExecRecord};
@@ -30,6 +32,11 @@ pub use request::{
     BudgetAction, BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorClass,
     ErrorMode, ErrorPolicy, HumanPolicy, LLMContextRequest, ModelPolicy,
     OutputSpec, ToolMode, ToolPolicy,
+};
+pub use local_llm_context::{
+    Compressor, FileSnapshotStore, LocalLLMContext, OneShotRequest, RunMetaState,
+    RunStatus, SnapshotStore, SuspendKind, DEFAULT_CONTEXT_YIELD_RATIO,
+    DEFAULT_ERROR_MODE, DEFAULT_MAX_CONSECUTIVE_ERRORS,
 };
 pub use state::{LLMContextSnapshot, LLMContextState};
 

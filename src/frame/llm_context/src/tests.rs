@@ -6,14 +6,15 @@ use buckyos_api::{AiMessage, AiResponseSummary, AiToolCall, AiUsage};
 use serde_json::json;
 
 use crate::deps::{
-    LLMContextDeps, LlmClient, LlmInferenceRequest, ToolManager, ToolSpecLite,
+    LLMContextDeps, LlmClient, LlmInferenceRequest, ToolManager, ToolSpecLite, TurnHook,
 };
 use crate::error::LLMComputeError;
 use crate::observation::Observation;
-use crate::outcome::{ContextOutput, LLMContextOutcome};
+use crate::outcome::{ContextOutput, LLMContextOutcome, ResumeFill};
 use crate::request::{
     ContextOwnerRef, LLMContextRequest, ModelPolicy, OutputSpec, ToolMode, ToolPolicy,
 };
+use crate::state::LLMContextSnapshot;
 use crate::LLMContext;
 
 /// Scripted LLM responses popped off in order.
@@ -149,6 +150,64 @@ async fn one_tool_round_then_done() {
     assert_eq!(trace.tool_trace.len(), 1);
     assert_eq!(trace.tool_trace[0].tool_name, "echo");
     assert!(trace.tool_trace[0].ok);
+}
+
+struct CountingHook {
+    count: Arc<Mutex<u32>>,
+}
+
+impl TurnHook for CountingHook {
+    fn before_inference(&self, _snapshot: &LLMContextSnapshot) {
+        *self.count.lock().unwrap() += 1;
+    }
+}
+
+#[tokio::test]
+async fn turn_hook_fires_before_each_inference() {
+    let llm = Arc::new(ScriptedLlm::new(vec![AiResponseSummary {
+        text: Some("hello back".into()),
+        ..Default::default()
+    }]));
+    let count = Arc::new(Mutex::new(0));
+    let hook: Arc<dyn TurnHook> = Arc::new(CountingHook {
+        count: count.clone(),
+    });
+    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools)).with_turn_hook(hook);
+    let mut ctx = LLMContext::new(base_request(), deps);
+
+    let _ = ctx.run().await;
+    // exactly one inference happened ⇒ hook fired exactly once.
+    assert_eq!(*count.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn resume_from_mid_run_continues_loop() {
+    // Run once to get a snapshot at the outcome boundary.
+    let llm = Arc::new(ScriptedLlm::new(vec![AiResponseSummary {
+        text: Some("first reply".into()),
+        ..Default::default()
+    }]));
+    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(base_request(), deps);
+    let _ = ctx.run().await;
+    let snapshot = ctx.snapshot();
+
+    // Resume the mid-run snapshot. A second LLM call must succeed because
+    // the snapshot is *not* in a suspended state.
+    let llm2 = Arc::new(ScriptedLlm::new(vec![AiResponseSummary {
+        text: Some("after resume".into()),
+        ..Default::default()
+    }]));
+    let deps2 = LLMContextDeps::new(llm2, Arc::new(EchoTools));
+    let mut ctx2 = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps2)
+        .expect("resume should succeed for non-suspended snapshot");
+    match ctx2.run().await {
+        LLMContextOutcome::Done { output, .. } => match output {
+            ContextOutput::Text { content } => assert_eq!(content, "after resume"),
+            _ => panic!("expected text"),
+        },
+        other => panic!("unexpected outcome: {other:?}"),
+    }
 }
 
 #[tokio::test]

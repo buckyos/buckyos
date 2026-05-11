@@ -14,6 +14,7 @@ use serde_json::Value;
 use crate::error::LLMComputeError;
 use crate::observation::Observation;
 use crate::request::{LLMContextRequest, ToolPolicy};
+use crate::state::LLMContextSnapshot;
 
 /// One inference request sent down to the provider adapter.
 #[derive(Debug, Clone)]
@@ -141,6 +142,21 @@ pub trait Tokenizer: Send + Sync {
     fn count_tokens(&self, text: &str) -> u32;
 }
 
+/// Per-turn hook invoked **before** every LLM inference (§3.12 of the design
+/// doc). The hook receives a read-only view of the current snapshot, so an L4
+/// persistence layer can flush it to disk and achieve "no double-bill on
+/// crash" semantics.
+///
+/// Constraints:
+/// - Hook implementations should be fast — the waist blocks the inference
+///   until the hook returns, so any I/O lengthens end-to-end latency.
+/// - Hooks must not panic. Internal failure modes (e.g. write errors) are an
+///   effect-side concern; the waist does not surface them.
+/// - Hooks receive `&LLMContextSnapshot` and must not mutate waist state.
+pub trait TurnHook: Send + Sync {
+    fn before_inference(&self, snapshot: &LLMContextSnapshot);
+}
+
 /// No-op worklog sink. Useful for tests and `OneShot` scenarios.
 pub struct NoopWorklogSink;
 
@@ -181,6 +197,9 @@ pub struct LLMContextDeps {
     pub policy: Arc<dyn PolicyEngine>,
     pub worklog: Arc<dyn WorklogSink>,
     pub tokenizer: Arc<dyn Tokenizer>,
+    /// Optional per-turn hook (§3.12). Default `None` — schedulers that do
+    /// not need pre-inference snapshots are unaffected.
+    pub turn_hook: Option<Arc<dyn TurnHook>>,
 }
 
 impl LLMContextDeps {
@@ -191,6 +210,7 @@ impl LLMContextDeps {
             policy: Arc::new(AllowAllPolicy),
             worklog: Arc::new(NoopWorklogSink),
             tokenizer: Arc::new(ByteHeuristicTokenizer),
+            turn_hook: None,
         }
     }
 
@@ -206,6 +226,11 @@ impl LLMContextDeps {
 
     pub fn with_tokenizer(mut self, tokenizer: Arc<dyn Tokenizer>) -> Self {
         self.tokenizer = tokenizer;
+        self
+    }
+
+    pub fn with_turn_hook(mut self, hook: Arc<dyn TurnHook>) -> Self {
+        self.turn_hook = Some(hook);
         self
     }
 }
