@@ -134,6 +134,7 @@ use crate::deps::{
     LLMContextDeps, LlmClient, NoopWorklogSink, ToolManager, ToolSpecLite, TurnHook,
     WorklogSink,
 };
+use crate::llm_compress::LlmSummarizeCompressor;
 use crate::observation::Observation;
 use crate::outcome::{LLMContextOutcome, ResumeFill};
 use crate::request::{
@@ -157,6 +158,12 @@ pub const DEFAULT_ERROR_MODE: ErrorMode = ErrorMode::Suspend;
 /// 默认连续错误上限。配合 FeedAsObservation 才有意义;Suspend 模式下
 /// 第一次错误就挂起,这个值不会被触发,但仍保留作为切换 mode 时的默认。
 pub const DEFAULT_MAX_CONSECUTIVE_ERRORS: u32 = 3;
+
+/// `drive_to_terminal_auto` 在调用方没显式给 token 预算时使用的兜底。
+/// 选 32K 是经验数:既小到不会让 summarize 出来还是塞不下 provider window,
+/// 又大到能给 LLM 留出连贯的 system + 最近若干轮上下文。如果 caller 在 budget
+/// 里给了更精确的信号(max_total_tokens / AbsoluteTokens),会优先用那些。
+pub const DEFAULT_AUTO_COMPRESS_TARGET_TOKENS: u32 = 32_768;
 
 // =========================================================================
 // 用户面接口:OneShotRequest
@@ -576,6 +583,53 @@ impl LocalLLMContext {
         }
     }
 
+    /// 与 [`Self::drive_to_terminal`] 等价,但**自动用** [`LlmSummarizeCompressor`]
+    /// 作为压缩策略 —— caller 不用自己挑 compressor。
+    ///
+    /// 默认 compressor 的来源:
+    /// - **LLM client** = `self.llm`(同一个 client,retry / quota / 路由都复用)。
+    /// - **summarize 模型** = `request.model_policy.preferred`。如果该字段为空,
+    ///   返回错误(我们不假装猜一个模型 alias —— 那会让排错变成"为什么调用
+    ///   了一个我从没配过的模型")。
+    /// - **target_token_budget** = `auto_compress_target_tokens(&self.request)`(优先
+    ///   读 `budget.max_total_tokens` / `context_yield_threshold = AbsoluteTokens`,
+    ///   都没有则用 `DEFAULT_AUTO_COMPRESS_TARGET_TOKENS`)。
+    ///
+    /// 需要更精细控制(改 keep-recent 长度、换不同的副本模型 summarize、走
+    /// 非 LLM 的截断策略)时,显式构造一个 [`Compressor`] 实现传给
+    /// [`Self::drive_to_terminal`]。
+    pub async fn drive_to_terminal_auto(
+        &mut self,
+    ) -> Result<LLMContextOutcome, LocalLLMContextError> {
+        let compressor = self.default_compressor()?;
+        self.drive_to_terminal(&compressor).await
+    }
+
+    /// 构造默认 [`LlmSummarizeCompressor`]。暴露这个方法是给那些"想自己拿来
+    /// 跑别的循环,但又懒得手写 deps"的高级 caller(例:测试、外部 driver)。
+    pub fn default_compressor(&self) -> Result<LlmSummarizeCompressor, LocalLLMContextError> {
+        let model_alias = self
+            .request
+            .model_policy
+            .as_ref()
+            .map(|p| p.preferred.clone())
+            .unwrap_or_default();
+        if model_alias.trim().is_empty() {
+            return Err(LocalLLMContextError::ToolWiringFailed(
+                "cannot build default compressor: request.model_policy.preferred is empty"
+                    .to_string(),
+            ));
+        }
+        let target = auto_compress_target_tokens(&self.request);
+        let deps = build_deps(
+            &self.dir,
+            &self.run_id,
+            self.llm.clone(),
+            self.snapshot_store.clone(),
+        )?;
+        Ok(LlmSummarizeCompressor::new(deps, model_alias, target))
+    }
+
     /// **单步驱动**:跑一次 `LLMContext::run().await`,落盘,刷新 meta。
     ///
     /// 通常通过 [`Self::drive_to_terminal`] 调用;暴露出来给需要逐步驱动
@@ -719,6 +773,90 @@ impl LocalLLMContext {
         })?;
         guard.insert(key, file);
         Ok(())
+    }
+
+    /// **基于上一次跑完的 run 拼一个"追加 user 消息"的 follow-up request**。
+    ///
+    /// 用途:让 OneShot 在 CLI 层"像 agent 一样"被驱动——上一轮 run 跑完
+    /// (`status=Completed`)后,用这个方法把上一轮 snapshot 里的 `accumulated`
+    /// 历史 + 一条新消息打成新的 [`OneShotRequest`],再交给 [`Self::new_run`]
+    /// 起新 run。新 run 的 `run_id` **不复用**,每"轮对话"对应一个独立的
+    /// `<dir>/runs/<run_id>/`,审计链保持清晰。
+    ///
+    /// 行为:
+    /// - `dir` 下找最近一次 run(按 `last_updated_unix_ms`)。不存在 →
+    ///   [`LocalLLMContextError::NoCompletedRunToAppend`]。
+    /// - 该 run 必须是 [`RunStatus::Completed`];`Running` / `Suspended` 都拒绝
+    ///   (那些有自己的处理路径:`resume_or_new` / 低层 `ResumeFill` API)。
+    /// - 拷贝 `request.json` 的其它字段(objective / model_policy / tool_policy /
+    ///   output / budget / human_policy / error_policy);`input` 设为 snapshot
+    ///   的 `state.accumulated` + `new_message`。
+    ///
+    /// **不持锁、不写盘**——纯只读。caller 拿到结果之后还需要调
+    /// [`Self::new_run`] 才会真正启动新 run(那里会走完整 lock + write 流程)。
+    pub fn prepare_followup_request(
+        dir: &Path,
+        new_message: AiMessage,
+    ) -> Result<OneShotRequest, LocalLLMContextError> {
+        let latest = Self::find_latest_run(dir)?.ok_or_else(|| {
+            LocalLLMContextError::NoCompletedRunToAppend {
+                hint: format!("no prior run found under {}/runs", dir.display()),
+            }
+        })?;
+        if latest.status != RunStatus::Completed {
+            return Err(LocalLLMContextError::NoCompletedRunToAppend {
+                hint: format!(
+                    "latest run `{}` has status {:?}; only Completed runs can be appended to",
+                    latest.run_id, latest.status
+                ),
+            });
+        }
+        let idx = latest.latest_snapshot_idx.ok_or_else(|| {
+            LocalLLMContextError::CorruptedRun {
+                run_id: latest.run_id.clone(),
+                reason: "completed run has no snapshot on disk".into(),
+            }
+        })?;
+        let snapshot_store = FileSnapshotStore::new(dir.join("runs").join(&latest.run_id));
+        let snapshot = snapshot_store.get(idx)?;
+        let prior_request = read_run_request(dir, &latest.run_id)?;
+        let mut input = snapshot.state.accumulated;
+        input.push(new_message);
+        Ok(OneShotRequest {
+            objective: prior_request.objective,
+            input,
+            model_policy: prior_request.model_policy,
+            tool_policy: prior_request.tool_policy,
+            output: prior_request.output,
+            budget: prior_request.budget,
+            human_policy: prior_request.human_policy,
+            error_policy: prior_request.error_policy,
+        })
+    }
+
+    /// 扫描 `<dir>/runs/*/state.json`,返回 `last_updated_unix_ms` 最大的那条
+    /// meta(不限 status)。给 [`Self::prepare_followup_request`] 用——它需要
+    /// 找到"最后那次跑的 run"无论状态,再自己校验。
+    fn find_latest_run(dir: &Path) -> Result<Option<RunMetaState>, LocalLLMContextError> {
+        let runs_dir = dir.join("runs");
+        if !runs_dir.exists() {
+            return Ok(None);
+        }
+        let mut candidates: Vec<RunMetaState> = Vec::new();
+        for entry in std::fs::read_dir(&runs_dir)? {
+            let entry = entry?;
+            let state_path = entry.path().join("state.json");
+            if !state_path.is_file() {
+                continue;
+            }
+            if let Ok(bytes) = std::fs::read(&state_path) {
+                if let Ok(meta) = serde_json::from_slice::<RunMetaState>(&bytes) {
+                    candidates.push(meta);
+                }
+            }
+        }
+        candidates.sort_by_key(|m| m.last_updated_unix_ms);
+        Ok(candidates.pop())
     }
 
     /// 扫描 `<dir>/runs/*/state.json`,找 `status=Running` 的那个。
@@ -875,6 +1013,8 @@ pub enum LocalLLMContextError {
     NoActiveContext,
     #[error("compressor failed: {0}")]
     CompressorFailed(String),
+    #[error("cannot prepare follow-up request: {hint}")]
+    NoCompletedRunToAppend { hint: String },
     #[error("failed to acquire dir lock: {0}")]
     LockFailed(String),
     #[error("failed to wire tool: {0}")]
@@ -931,6 +1071,28 @@ fn write_run_outcome(
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+/// 给 `drive_to_terminal_auto` 用的目标 token 预算推导。
+///
+/// 优先级:
+/// 1. `budget.max_total_tokens` → 取 60%(留 40% 余量给 resume 后继续累计)。
+/// 2. `context_yield_threshold = AbsoluteTokens(N)` → 同样取 60%(yield 阈值
+///    意味着"再增长就要让出来",压缩目标显然得低于它)。
+/// 3. 兜底 [`DEFAULT_AUTO_COMPRESS_TARGET_TOKENS`]。
+///
+/// 不处理 `ContextThreshold::Ratio` —— 那是相对 provider window 的比例,OneShot
+/// 这一层不知道 window 大小;靠 caller 给绝对信号才能用上。
+fn auto_compress_target_tokens(req: &OneShotRequest) -> u32 {
+    if let Some(b) = req.budget.as_ref() {
+        if let Some(max) = b.max_total_tokens {
+            return ((max as u64) * 60 / 100).max(8_192).min(u32::MAX as u64) as u32;
+        }
+        if let Some(ContextThreshold::AbsoluteTokens { value }) = b.context_yield_threshold {
+            return ((value as u64) * 60 / 100).max(8_192) as u32;
+        }
+    }
+    DEFAULT_AUTO_COMPRESS_TARGET_TOKENS
 }
 
 fn generate_run_id() -> String {

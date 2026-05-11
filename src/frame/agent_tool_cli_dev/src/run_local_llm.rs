@@ -9,12 +9,14 @@
 //! ```text
 //!   agent_tool run_local_llm \
 //!     --dir <local-llm-dir> \
-//!     --model <alias>       \              # 必填：AICC model alias
+//!     [--model <alias>]     \              # AICC model alias（除非 --append，否则必填）
 //!     [--objective <text>]  \              # 任务目标（写进 worklog，不进 prompt）
 //!     [--system <text>]     \              # 追加一条 system message
 //!     [--user <text>]       \              # 追加一条 user message
 //!     [--input-file <path>] \              # 读取 JSON 数组（Vec<AiMessage>）作为初始历史
 //!     [--input-stdin]       \              # 把 stdin 当作一条 user message
+//!     [--append <text>]     \              # 把 text 当作 user message 追加到上一轮 Completed
+//!                                          #   run 之后并起新一轮（与其它输入 flag / --new 互斥）
 //!     [--temperature <f>]   \              # 采样温度
 //!     [--max-tokens <n>]    \              # max_completion_tokens
 //!     [--max-rounds <n>]    \              # ToolPolicy.max_rounds（默认 8）
@@ -24,8 +26,9 @@
 //!     [--output <path>]                    # 把 final outcome 写到文件（不写则只打印）
 //! ```
 //!
-//! 至少要提供 `--user` / `--system` / `--input-file` / `--input-stdin` 中的一项，
-//! 否则没有任何输入消息，AICC 会拒绝请求。
+//! 至少要提供 `--user` / `--system` / `--input-file` / `--input-stdin` /
+//! `--append` 中的一项；前四个 flag 互相可以叠加构成初始 input，`--append`
+//! 是"接着上一轮跑"的独立路径，跟那四个互斥。
 //!
 //! ## 设计要点
 //!
@@ -90,30 +93,57 @@ pub async fn run_subcommand(args: Vec<String>) -> i32 {
 }
 
 async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 构造 input 消息列表
-    let input = build_input_messages(&opts).await?;
-    if input.is_empty() {
-        return Err(
-            "no input messages — provide at least one of --system / --user / \
-                    --input-file / --input-stdin"
-                .into(),
-        );
-    }
+    // 1. 构造 OneShotRequest —— 走 --append 还是常规 input flag 是两条路。
+    let mut request = if let Some(text) = opts.append.as_ref() {
+        if opts.system.is_some()
+            || opts.user.is_some()
+            || opts.input_file.is_some()
+            || opts.input_stdin
+            || opts.force_new
+        {
+            return Err(
+                "--append is mutually exclusive with --system / --user / \
+                        --input-file / --input-stdin / --new"
+                    .into(),
+            );
+        }
+        // 从上一轮 Completed run 继承 objective / policies / 累积历史，再 push
+        // 这一条新 user 消息。CLI 后面的 tuning override 还会覆盖一遍。
+        LocalLLMContext::prepare_followup_request(
+            &opts.dir,
+            AiMessage::new("user".into(), text.clone()),
+        )?
+    } else {
+        let input = build_input_messages(&opts).await?;
+        if input.is_empty() {
+            return Err(
+                "no input messages — provide at least one of --system / --user / \
+                        --input-file / --input-stdin / --append"
+                    .into(),
+            );
+        }
+        OneShotRequest::new(
+            opts.objective
+                .clone()
+                .unwrap_or_else(|| "run_local_llm dev test".to_string()),
+            input,
+        )
+    };
 
-    // 2. 构造 OneShotRequest
-    let mut request = OneShotRequest::new(
-        opts.objective
-            .clone()
-            .unwrap_or_else(|| "run_local_llm dev test".to_string()),
-        input,
-    );
-    request.model_policy = Some(llm_context::ModelPolicy {
-        preferred: opts.model.clone(),
-        fallbacks: Vec::new(),
-        temperature: opts.temperature,
-        max_completion_tokens: opts.max_tokens,
-        provider_options: None,
-    });
+    // 2. CLI tuning overrides
+    //
+    // --model 没给只在 --append 路径下合法（CLI 解析器已经强制过），此时让
+    // model_policy 沿用 prior request.json 的值。其它 tuning flag 是 CLI 的
+    // 既有行为：始终用 CLI 值覆盖（含默认值）。
+    if let Some(m) = opts.model.as_ref() {
+        request.model_policy = Some(llm_context::ModelPolicy {
+            preferred: m.clone(),
+            fallbacks: Vec::new(),
+            temperature: opts.temperature,
+            max_completion_tokens: opts.max_tokens,
+            provider_options: None,
+        });
+    }
     request.tool_policy = Some(ToolPolicy {
         mode: if opts.no_tools {
             ToolMode::None
@@ -129,6 +159,10 @@ async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
             strict: false,
         });
     }
+    if let Some(obj) = opts.objective.as_ref() {
+        // 显式给了就覆盖 inherited objective；没给就保留（无论 inherited 还是默认串）。
+        request.objective = obj.clone();
+    }
 
     // 3. 初始化运行时 → 取 AICC client → 包装成 LlmClient
     ensure_buckyos_runtime().await?;
@@ -136,7 +170,10 @@ async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
     let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new(aicc));
 
     // 4. 启动 LocalLLMContext
-    let mut ctx = if opts.force_new {
+    //
+    // --append 永远走 new_run：每一轮对话独立 run_id，审计链清晰；
+    // semantic_hash 也不会因为 input 多了一条而跟旧 run 冲突。
+    let mut ctx = if opts.force_new || opts.append.is_some() {
         LocalLLMContext::new_run(opts.dir.clone(), request, llm)?
     } else {
         LocalLLMContext::resume_or_new(opts.dir.clone(), request, llm)?
@@ -182,17 +219,24 @@ fn outcome_tag(o: &LLMContextOutcome) -> &'static str {
 // CLI 参数解析
 // =========================================================================
 
-const USAGE: &str = r#"Usage: run_local_llm --dir <path> --model <alias> [options]
+const USAGE: &str = r#"Usage: run_local_llm --dir <path> [--model <alias>] [options]
 
 Required:
   --dir <path>           Local LLM context working directory
   --model <alias>        AICC model alias (e.g. "gpt-4o", "default-llm")
+                         Required unless --append is used (then inherited from
+                         the prior run unless overridden).
 
 Input (at least one required):
   --system <text>        Prepend a system message
   --user <text>          Append a user message
   --input-file <path>    Load Vec<AiMessage> from JSON file
   --input-stdin          Read stdin as a single user message
+  --append <text>        Continue the dir's latest Completed run by appending
+                         this as a new user message. Inherits objective/policies
+                         from the prior run.json (CLI tuning flags still
+                         override). Mutually exclusive with --system/--user/
+                         --input-file/--input-stdin/--new.
 
 Tuning:
   --objective <text>     Free-form objective (worklog only, not in prompt)
@@ -213,13 +257,18 @@ Output:
 #[derive(Debug)]
 struct CliOpts {
     dir: PathBuf,
-    model: String,
+    /// `None` 只在 `--append` 模式下合法——会从 prior run 的 request.json
+    /// 继承 model_policy。否则解析阶段就会报错。
+    model: Option<String>,
 
     objective: Option<String>,
     system: Option<String>,
     user: Option<String>,
     input_file: Option<PathBuf>,
     input_stdin: bool,
+    /// `--append <text>` 的值。Some 时走 follow-up run 路径,与其它 input
+    /// flag / `--new` 互斥(在 `run()` 里 enforce)。
+    append: Option<String>,
 
     temperature: Option<f32>,
     max_tokens: Option<u32>,
@@ -245,6 +294,7 @@ impl CliOpts {
         let mut user = None;
         let mut input_file = None;
         let mut input_stdin = false;
+        let mut append: Option<String> = None;
         let mut temperature = None;
         let mut max_tokens = None;
         let mut max_rounds = None;
@@ -269,6 +319,7 @@ impl CliOpts {
                     input_file = Some(PathBuf::from(next_value(args, &mut idx, "--input-file")?));
                 }
                 "--input-stdin" => input_stdin = true,
+                "--append" => append = Some(next_value(args, &mut idx, "--append")?),
                 "--temperature" => {
                     let v = next_value(args, &mut idx, "--temperature")?;
                     temperature = Some(
@@ -304,7 +355,12 @@ impl CliOpts {
         }
 
         let dir = dir.ok_or_else(|| ParseError::Bad("missing --dir".into()))?;
-        let model = model.ok_or_else(|| ParseError::Bad("missing --model".into()))?;
+        // --model 在 --append 模式下可省略(从 prior run 继承);其它路径下必填。
+        if model.is_none() && append.is_none() {
+            return Err(ParseError::Bad(
+                "missing --model (required unless --append is set)".into(),
+            ));
+        }
 
         Ok(Self {
             dir,
@@ -314,6 +370,7 @@ impl CliOpts {
             user,
             input_file,
             input_stdin,
+            append,
             temperature,
             max_tokens,
             max_rounds,
