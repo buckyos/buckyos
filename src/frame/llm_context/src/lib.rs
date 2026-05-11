@@ -33,6 +33,7 @@ pub use request::{
     ErrorMode, ErrorPolicy, HumanPolicy, LLMContextRequest, ModelPolicy,
     OutputSpec, ToolMode, ToolPolicy,
 };
+pub use llm_compress::{compress, LlmSummarizeCompressor, DEFAULT_KEEP_RECENT_MESSAGES};
 pub use local_llm_context::{
     Compressor, FileSnapshotStore, LocalLLMContext, OneShotRequest, RunMetaState,
     RunStatus, SnapshotStore, SuspendKind, DEFAULT_CONTEXT_YIELD_RATIO,

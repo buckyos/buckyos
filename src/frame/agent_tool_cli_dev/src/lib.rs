@@ -16,6 +16,8 @@ use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
+mod run_local_llm;
+
 use agent_tool::agent_memory::{
     AgentMemory, AgentMemoryConfig, AgentMemoryError, LoadOptions,
 };
@@ -185,6 +187,24 @@ enum AgentMemoryVerb {
 
 pub async fn run_process() -> CliRunOutput {
     let args = env::args_os().collect::<Vec<_>>();
+
+    // `agent_tool run_local_llm ...` 走独立的 dev/test 子命令，不经过 tool
+    // dispatcher（它不是一个 AgentTool）。这里短路掉，让它自己负责 stdout /
+    // stderr / exit code（直接 println / eprintln，避免 buffer 大段 JSON）。
+    if args.get(1).and_then(|v| v.to_str()) == Some("run_local_llm") {
+        let sub_args: Vec<String> = args
+            .iter()
+            .skip(2)
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect();
+        let exit_code = run_local_llm::run_subcommand(sub_args).await;
+        return CliRunOutput {
+            exit_code,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+    }
+
     let env = match CliRuntimeEnv::from_process() {
         Ok(env) => env,
         Err(err) => {
