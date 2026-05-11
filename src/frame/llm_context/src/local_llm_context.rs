@@ -66,7 +66,8 @@
 //!   │   │   └── worklog.jsonl             ← append-only 事件流(可选,见下文)
 //!   │   └── 20260510-115422-b9e1/
 //!   │       └── ...
-//!   ├── workspace/                        ← 工具 root(read/write/edit/glob/grep 的 sandbox)
+//!   ├── workspace/                        ← 工具 root(read/write/edit/glob/grep + exec_bash cwd)
+//!   ├── bin/                              ← exec_bash PATH overlay(用户脚本投放点,chmod +x 后盖过系统 PATH)
 //!   └── .lock                             ← 进程级 flock,防止两个 OneShot 抢同一个 dir
 //! ```
 //!
@@ -122,8 +123,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_tool::{
-    AgentToolManager, AgentToolResult, AgentToolStatus, EditFileTool, FileToolConfig,
-    GlobTool, GrepTool, NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, WriteFileTool,
+    AgentToolManager, AgentToolResult, AgentToolStatus, BinOverlayConfig, EditFileTool,
+    ExecBashTool, FileToolConfig, GlobTool, GrepTool, LlmBashConfig, NoopFileWriteAudit,
+    ReadFileTool, SessionRuntimeContext, WriteFileTool,
 };
 use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiToolCall};
@@ -739,6 +741,10 @@ impl LocalLLMContext {
     fn ensure_dir_layout(dir: &Path) -> Result<(), LocalLLMContextError> {
         std::fs::create_dir_all(dir.join("runs"))?;
         std::fs::create_dir_all(dir.join("workspace"))?;
+        // `<dir>/bin` is the user-owned PATH overlay slot for exec_bash; the
+        // agent_tool side only prepends it onto PATH, so we have to mkdir it
+        // here. Users drop chmod +x scripts in to get LLM-callable CLIs.
+        std::fs::create_dir_all(dir.join("bin"))?;
         Ok(())
     }
 
@@ -1131,9 +1137,8 @@ fn build_deps(
     llm: Arc<dyn LlmClient>,
     snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<LLMContextDeps, LocalLLMContextError> {
-    let workspace = dir.join("workspace");
     let tools: Arc<dyn ToolManager> =
-        Arc::new(LocalDirToolManager::new(workspace, run_id.to_string())?);
+        Arc::new(LocalDirToolManager::new(dir.to_path_buf(), run_id.to_string())?);
     let worklog: Arc<dyn WorklogSink> = Arc::new(NoopWorklogSink);
     let hook: Arc<dyn TurnHook> = Arc::new(SnapshotPersistingTurnHook { snapshot_store });
     Ok(LLMContextDeps::new(llm, tools)
@@ -1181,11 +1186,22 @@ pub struct LocalDirToolManager {
     session_template: SessionRuntimeContext,
 }
 
+/// exec_bash 默认 timeout(LLM 单次工具调用),与 OpenDAN agent_bash 默认值对齐。
+const EXEC_BASH_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+/// exec_bash 上限 timeout,防止 LLM 把 timeout_ms 设到天文数字。
+const EXEC_BASH_MAX_TIMEOUT_MS: u64 = 120_000;
+/// exec_bash 单次合并输出上限(stdout+stderr 截断阈值)。
+const EXEC_BASH_MAX_OUTPUT_BYTES: usize = 256 * 1024;
+
 impl LocalDirToolManager {
-    /// 构造:在 `workspace` 上注册 ReadFile / WriteFile / EditFile / Glob / Grep。
-    /// `run_id` 进 `SessionRuntimeContext.trace_id` / `session_id`,让 agent_tool
-    /// 的日志能跟 OneShot run 关联。
-    pub fn new(workspace: PathBuf, run_id: String) -> Result<Self, LocalLLMContextError> {
+    /// 构造:在 `<dir>/workspace` 上注册 ReadFile / WriteFile / EditFile /
+    /// Glob / Grep / ExecBash。`dir` 是 OneShot 根目录(由 `ensure_dir_layout`
+    /// 保证 `workspace` 和 `bin` 子目录存在)。`run_id` 进
+    /// `SessionRuntimeContext.trace_id` / `session_id`,让 agent_tool 的日志
+    /// 能跟 OneShot run 关联。
+    pub fn new(dir: PathBuf, run_id: String) -> Result<Self, LocalLLMContextError> {
+        let workspace = dir.join("workspace");
+        let bin_dir = dir.join("bin");
         let inner = AgentToolManager::new();
         let cfg = FileToolConfig::new(workspace.clone());
         let write_audit = Arc::new(NoopFileWriteAudit);
@@ -1203,6 +1219,19 @@ impl LocalDirToolManager {
             .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
         inner
             .register_typed_tool(GrepTool::new(cfg))
+            .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
+
+        // exec_bash:cwd = `<dir>/workspace`,PATH overlay = `<dir>/bin`。
+        // 用户把 chmod +x 的脚本放进 bin/,LLM 通过 exec_bash 直接命中,
+        // 同名时盖过系统 PATH。
+        let bash_cfg = LlmBashConfig::local_workspace(workspace.clone())
+            .with_overlay(BinOverlayConfig::local(bin_dir))
+            .with_default_timeout_ms(EXEC_BASH_DEFAULT_TIMEOUT_MS)
+            .with_max_timeout_ms(EXEC_BASH_MAX_TIMEOUT_MS)
+            .with_max_output_bytes(EXEC_BASH_MAX_OUTPUT_BYTES)
+            .with_allow_env(true);
+        inner
+            .register_tool(ExecBashTool::new(bash_cfg))
             .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
 
         let session_template = SessionRuntimeContext {
@@ -1295,9 +1324,6 @@ fn map_result_to_observation(call_id: String, result: AgentToolResult) -> Observ
 // 后续待办(本 L4 自己能闭环的,已不依赖 waist)
 // =========================================================================
 //
-// 1. **ExecBash** —— 当前 `LocalDirToolManager` 注册了 Read/Write/Edit/Glob/Grep,
-//    bash 执行没接入(`opendan` 那边的 `BuiltinExecBashTool` 依赖 task_mgr +
-//    session_store,引入会让 L4 OneShot 变重)。生产场景需要时再单独注入。
-// 2. **轮前落盘的失败可观测性** —— `SnapshotPersistingTurnHook::before_inference`
+// 1. **轮前落盘的失败可观测性** —— `SnapshotPersistingTurnHook::before_inference`
 //    当前吞掉 IO 错误以保持"hook 不打断主循环"约束。后续可以挂一个 log::warn
 //    + 计数器,让 ops 能看到"轮前落盘最近失败次数"。

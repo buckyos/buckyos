@@ -23,6 +23,7 @@ pub mod file_tools;
 pub mod glob_tool;
 pub mod grep_tool;
 pub mod json_args;
+pub mod llm_bash;
 pub mod path_utils;
 pub mod todo;
 pub mod tool;
@@ -40,6 +41,10 @@ pub use file_tools::{
 };
 pub use glob_tool::{GlobTool, TOOL_GLOB};
 pub use grep_tool::{GrepTool, TOOL_GREP};
+pub use llm_bash::{
+    BashRunOutput, BashRunRequest, BashRunner, BashTarget, BashTargetSpec, BinOverlayConfig,
+    ExecBashTool, LlmBashConfig, LocalProcessBashRunner, TOOL_EXEC_BASH,
+};
 pub use json_args::{
     optional_string_arg, optional_trimmed_string_arg, optional_u64_arg, read_bool_from_map,
     read_string_from_map, read_u64_from_map, require_string_arg, require_trimmed_string_arg,
