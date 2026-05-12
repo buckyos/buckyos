@@ -109,6 +109,7 @@ type SmokeCase = {
   defaultAlias?: string;
   buildPayload: (runId: string, context: SmokeContext) => SmokePayload;
   check: SummaryCheck;
+  requirements?: Record<string, unknown>;
   capturesGeneratedImage?: boolean;
   returnsUnstructuredData?: boolean;
   requiresGeneratedImage?: boolean;
@@ -228,9 +229,13 @@ const allCases: SmokeCase[] = [
     capability: "llm",
     defaultAlias: AICC_MODEL_ALIAS,
     check: "text",
+    requirements: { must_features: ["web_search"] },
     buildPayload: () => ({
       input_json: {
-        messages: [{ role: "user", content: AICC_TEST_INPUT }],
+        messages: [{
+          role: "user",
+          content: [{ type: "text", text: AICC_TEST_INPUT }],
+        }],
         temperature: 0.2,
         max_output_tokens: 2560,
       },
@@ -245,7 +250,10 @@ const allCases: SmokeCase[] = [
       input_json: {
         messages: [{
           role: "user",
-          content: `${AICC_TEST_INPUT}\n请用一句话回答。`,
+          content: [{
+            type: "text",
+            text: `${AICC_TEST_INPUT}\n请用一句话回答。`,
+          }],
         }],
         temperature: 0.2,
         max_output_tokens: 512,
@@ -898,7 +906,7 @@ function buildMethodPayload(
   return {
     capability: testCase.capability,
     model: { alias: modelAlias },
-    requirements: {},
+    requirements: testCase.requirements ?? {},
     payload: {
       input_json: payload.input_json ?? {},
       resources: payload.resources ?? [],
