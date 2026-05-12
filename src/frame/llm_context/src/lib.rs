@@ -6,6 +6,7 @@
 //! the LLM provider and the tool manager. Schedulers (Agent / Workflow /
 //! OneShot) sit above and below this waist but do not appear here.
 
+pub mod behavior_loop;
 pub mod context_loop;
 pub mod deps;
 pub mod error;
@@ -16,6 +17,10 @@ pub mod outcome;
 pub mod request;
 pub mod state;
 
+pub use behavior_loop::{
+    CompressBudget, CompressError, HistoryCompressor, LLMBehaviorResult,
+    LLMResultParser, StepRecord, StepRenderer,
+};
 pub use context_loop::LLMContext;
 pub use deps::{
     AllowAllPolicy, ByteHeuristicTokenizer, LLMContextDeps, LlmClient,

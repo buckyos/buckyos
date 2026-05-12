@@ -9,6 +9,7 @@ use buckyos_api::{AiMessage, AiResponseSummary, AiUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::behavior_loop::LLMBehaviorResult;
 use crate::error::LLMComputeError;
 use crate::observation::{Observation, PendingToolCall, ToolExecRecord};
 use crate::state::LLMContextSnapshot;
@@ -89,6 +90,9 @@ pub enum LLMContextOutcome {
         usage: AiUsage,
         response: AiResponseSummary,
         trace: ContextRunTrace,
+        /// Behavior Loop payload. `None` for traditional Agent Loop runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        behavior_result: Option<LLMBehaviorResult>,
     },
 
     WaitInput {

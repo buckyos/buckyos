@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiResponseSummary, AiToolCall};
 use serde_json::Value;
 
+use crate::behavior_loop::{HistoryCompressor, LLMResultParser, StepRenderer};
 use crate::error::LLMComputeError;
 use crate::observation::Observation;
 use crate::request::{LLMContextRequest, ToolPolicy};
@@ -200,6 +201,17 @@ pub struct LLMContextDeps {
     /// Optional per-turn hook (§3.12). Default `None` — schedulers that do
     /// not need pre-inference snapshots are unaffected.
     pub turn_hook: Option<Arc<dyn TurnHook>>,
+    /// Behavior Loop: structured parser for LLM responses. `Some` ⇒ Behavior
+    /// mode; `None` ⇒ traditional Agent Loop. The two modes are picked at
+    /// construction time and never mix at runtime.
+    pub result_parser: Option<Arc<dyn LLMResultParser>>,
+    /// Behavior Loop: renders sedimented steps + hot `last_step` back into
+    /// AiMessages for the next inner-run. Required whenever `result_parser`
+    /// is set.
+    pub step_renderer: Option<Arc<dyn StepRenderer>>,
+    /// Behavior Loop: optional history compactor triggered between step
+    /// iterations. `None` disables compression entirely.
+    pub history_compressor: Option<Arc<dyn HistoryCompressor>>,
 }
 
 impl LLMContextDeps {
@@ -211,6 +223,9 @@ impl LLMContextDeps {
             worklog: Arc::new(NoopWorklogSink),
             tokenizer: Arc::new(ByteHeuristicTokenizer),
             turn_hook: None,
+            result_parser: None,
+            step_renderer: None,
+            history_compressor: None,
         }
     }
 
@@ -231,6 +246,34 @@ impl LLMContextDeps {
 
     pub fn with_turn_hook(mut self, hook: Arc<dyn TurnHook>) -> Self {
         self.turn_hook = Some(hook);
+        self
+    }
+
+    pub fn with_result_parser(mut self, parser: Arc<dyn LLMResultParser>) -> Self {
+        self.result_parser = Some(parser);
+        self
+    }
+
+    pub fn with_step_renderer(mut self, renderer: Arc<dyn StepRenderer>) -> Self {
+        self.step_renderer = Some(renderer);
+        self
+    }
+
+    pub fn with_history_compressor(
+        mut self,
+        compressor: Arc<dyn HistoryCompressor>,
+    ) -> Self {
+        self.history_compressor = Some(compressor);
+        self
+    }
+
+    /// Strip Behavior-Loop-only fields so the result can drive an inner
+    /// traditional `run_inner`. The inner LLMContext must not run the
+    /// Behavior dispatch path again — otherwise we'd recurse forever.
+    pub fn into_traditional(mut self) -> Self {
+        self.result_parser = None;
+        self.step_renderer = None;
+        self.history_compressor = None;
         self
     }
 }

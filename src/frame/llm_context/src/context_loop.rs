@@ -20,6 +20,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use buckyos_api::{AiMessage, AiResponseSummary, AiToolCall, AiUsage};
 use serde_json::Value;
 
+use crate::behavior_loop::{
+    CompressBudget, LLMBehaviorResult, StepRecord,
+};
 use crate::deps::{
     resolve_tool_specs, LLMContextDeps, LlmInferenceRequest, WorkEvent,
 };
@@ -46,6 +49,14 @@ pub struct LLMContext {
 
 impl LLMContext {
     pub fn new(request: LLMContextRequest, deps: LLMContextDeps) -> Self {
+        // Behavior-mode invariant: parser without renderer is meaningless —
+        // the renderer is how sedimented steps become the next inner prompt.
+        // Construction failure here would force every caller to handle a
+        // Result; instead we panic, mirroring "missing required dep" semantics
+        // in the rest of the crate.
+        if deps.result_parser.is_some() && deps.step_renderer.is_none() {
+            panic!("LLMContext: result_parser requires step_renderer");
+        }
         let started = now_ms();
         let state = LLMContextState::from_request(&request, started);
         Self {
@@ -55,6 +66,10 @@ impl LLMContext {
             tool_trace: Vec::new(),
             last_response: AiResponseSummary::default(),
         }
+    }
+
+    fn is_behavior_mode(&self) -> bool {
+        self.deps.result_parser.is_some()
     }
 
     /// Resume a previously-yielded context with the data the scheduler
@@ -132,7 +147,9 @@ impl LLMContext {
         }
     }
 
-    /// Run the loop until an outcome is produced.
+    /// Run the loop until an outcome is produced. Dispatches to the Behavior
+    /// outer loop when a result parser is configured, otherwise drives the
+    /// traditional Agent Loop directly.
     pub async fn run(&mut self) -> LLMContextOutcome {
         self.deps
             .worklog
@@ -142,7 +159,11 @@ impl LLMContext {
             })
             .await;
 
-        let outcome = self.run_inner().await;
+        let outcome = if self.is_behavior_mode() {
+            self.run_behavior().await
+        } else {
+            self.run_inner().await
+        };
 
         self.deps
             .worklog
@@ -496,6 +517,7 @@ impl LLMContext {
             usage: self.state.usage.clone(),
             response,
             trace,
+            behavior_result: None,
         }
     }
 
@@ -540,6 +562,334 @@ impl LLMContext {
                     None
                 }
             },
+        }
+    }
+
+    // ===================================================================
+    // Behavior Loop (outer slim-waist scheduler)
+    //
+    // The traditional `run_inner` above is reused as a *subroutine* — one
+    // step iteration of `run_behavior` starts a fresh traditional LLMContext
+    // (with parser/renderer/compressor stripped), runs it to Done, hands the
+    // raw response to the configured parser, and sediments the result as a
+    // `StepRecord`. `run_inner` itself is untouched.
+    // ===================================================================
+
+    async fn run_behavior(&mut self) -> LLMContextOutcome {
+        loop {
+            if let Some(outcome) = self.check_wallclock_budget() {
+                return outcome;
+            }
+
+            // 1. Inner run — get one AiResponseSummary, or bubble up an error
+            //    / budget / yield translation as the outer outcome.
+            let response = match self.run_inner_for_step().await {
+                Ok(resp) => resp,
+                Err(outer) => return outer,
+            };
+
+            // 2. Parser. Failure is folded back as a synthetic error step so
+            //    the next inner-run can self-correct (FeedAsObservation
+            //    semantics, scoped to the behavior loop).
+            let parser = self
+                .deps
+                .result_parser
+                .as_ref()
+                .expect("behavior mode requires result_parser");
+            let result = match parser.parse(&response) {
+                Ok(r) => r,
+                Err(err_msg) => {
+                    self.deps
+                        .worklog
+                        .emit(WorkEvent::OutputParseFailed {
+                            trace_id: self.request.trace.clone(),
+                            error: err_msg.clone(),
+                        })
+                        .await;
+                    let err_step = StepRecord::from_parse_error(&err_msg);
+                    self.sediment(err_step);
+                    if let Some(outcome) = self
+                        .bump_consecutive_errors(LLMComputeError::OutputParse(err_msg))
+                        .await
+                    {
+                        return outcome;
+                    }
+                    continue;
+                }
+            };
+
+            // 3. Wrap into a StepRecord. action_result is filled below if we
+            //    actually dispatch.
+            let mut new_step = StepRecord::from_result(result);
+
+            // 4. Terminal: next_behavior pinned ⇒ finish immediately, action
+            //    (if any) is **not** dispatched.
+            if new_step.next_behavior.is_some() {
+                return self.finish_done_behavior(new_step, response).await;
+            }
+
+            // 5. Dispatch the action (if any). No action = natural ReAct
+            //    convergence ⇒ also terminal.
+            let action = match new_step.action.clone() {
+                Some(a) => a,
+                None => {
+                    return self.finish_done_behavior(new_step, response).await;
+                }
+            };
+
+            let started = now_ms();
+            self.deps
+                .worklog
+                .emit(WorkEvent::ToolCallPlanned {
+                    trace_id: self.request.trace.clone(),
+                    tool: action.name.clone(),
+                    call_id: action.call_id.clone(),
+                })
+                .await;
+            let observation = self.deps.tools.call_tool(action.clone()).await;
+            let duration_ms = now_ms().saturating_sub(started);
+
+            match &observation {
+                Observation::Success { .. } => {
+                    self.tool_trace.push(ToolExecRecord {
+                        tool_name: action.name.clone(),
+                        call_id: action.call_id.clone(),
+                        ok: true,
+                        duration_ms,
+                        error: None,
+                    });
+                    self.deps
+                        .worklog
+                        .emit(WorkEvent::ToolCallFinished {
+                            trace_id: self.request.trace.clone(),
+                            tool: action.name.clone(),
+                            call_id: action.call_id.clone(),
+                            ok: true,
+                            duration_ms,
+                        })
+                        .await;
+                    self.state.consecutive_errors = 0;
+                }
+                Observation::Error { message, .. } => {
+                    self.tool_trace.push(ToolExecRecord {
+                        tool_name: action.name.clone(),
+                        call_id: action.call_id.clone(),
+                        ok: false,
+                        duration_ms,
+                        error: Some(message.clone()),
+                    });
+                    self.deps
+                        .worklog
+                        .emit(WorkEvent::ToolCallFailed {
+                            trace_id: self.request.trace.clone(),
+                            tool: action.name.clone(),
+                            call_id: action.call_id.clone(),
+                            message: message.clone(),
+                        })
+                        .await;
+                    // Error feeds back into the next step via action_result;
+                    // we still count it against the consecutive-error cap.
+                    new_step.action_result = Some(observation.clone());
+                    self.sediment(new_step);
+                    let err = LLMComputeError::ToolFailed {
+                        tool: action.name.clone(),
+                        call_id: action.call_id.clone(),
+                        message: message.clone(),
+                    };
+                    if let Some(outcome) = self.bump_consecutive_errors(err).await {
+                        return outcome;
+                    }
+                    self.maybe_compress().await;
+                    continue;
+                }
+                Observation::Pending { .. } => {
+                    // D7 — Behavior Loop v1 does not support deferred actions
+                    // (would require inner yield). Surface as fatal.
+                    return LLMContextOutcome::Error {
+                        error: LLMComputeError::Internal(
+                            "behavior loop: Pending action not supported in v1"
+                                .to_string(),
+                        ),
+                        usage: self.state.usage.clone(),
+                    };
+                }
+            }
+
+            new_step.action_result = Some(observation);
+            self.sediment(new_step);
+            self.maybe_compress().await;
+        }
+    }
+
+    /// Run one inner traditional LLMContext for the current behavior step.
+    /// Returns the inner `AiResponseSummary` on success, or the outer outcome
+    /// to propagate when the inner ended in a non-Done state.
+    async fn run_inner_for_step(
+        &mut self,
+    ) -> Result<AiResponseSummary, LLMContextOutcome> {
+        let inner_request = self.build_inner_request();
+        let inner_deps = self.deps.clone().into_traditional();
+
+        let mut inner = LLMContext::new(inner_request, inner_deps);
+        let outcome = inner.run_inner().await;
+
+        // Always merge whatever the inner managed to spend, even on error —
+        // we paid for those tokens.
+        let inner_trace = std::mem::take(&mut inner.tool_trace);
+        let inner_task_ids = std::mem::take(&mut inner.state.llm_task_ids);
+        self.tool_trace.extend(inner_trace);
+        self.state.llm_task_ids.extend(inner_task_ids);
+
+        match outcome {
+            LLMContextOutcome::Done { response, usage, .. } => {
+                self.state.usage = merge_usage(&self.state.usage, &usage);
+                Ok(response)
+            }
+            // D7 — inner yields are not supported in v1.
+            LLMContextOutcome::WaitInput { .. }
+            | LLMContextOutcome::PendingTool { .. }
+            | LLMContextOutcome::ContextLimitReached { .. } => {
+                Err(LLMContextOutcome::Error {
+                    error: LLMComputeError::Internal(
+                        "behavior loop: inner LLMContext yielded; not supported in v1"
+                            .to_string(),
+                    ),
+                    usage: self.state.usage.clone(),
+                })
+            }
+            LLMContextOutcome::Error { error, usage } => {
+                self.state.usage = merge_usage(&self.state.usage, &usage);
+                Err(LLMContextOutcome::Error {
+                    error,
+                    usage: self.state.usage.clone(),
+                })
+            }
+            LLMContextOutcome::BudgetExhausted {
+                which,
+                partial,
+                usage,
+            } => {
+                self.state.usage = merge_usage(&self.state.usage, &usage);
+                Err(LLMContextOutcome::BudgetExhausted {
+                    which,
+                    partial,
+                    usage: self.state.usage.clone(),
+                })
+            }
+        }
+    }
+
+    /// Assemble the inner request: system + user_init from the outer request,
+    /// followed by the rendered step history and the hot `last_step`.
+    fn build_inner_request(&self) -> LLMContextRequest {
+        let renderer = self
+            .deps
+            .step_renderer
+            .as_ref()
+            .expect("behavior mode requires step_renderer");
+
+        let mut messages = self.request.input.clone();
+        messages.extend(renderer.render_history(self.state.steps.clone()));
+        if let Some(ref last) = self.state.last_step {
+            let (assistant_msg, user_msg) = renderer.render(last);
+            messages.push(assistant_msg);
+            messages.push(user_msg);
+        }
+
+        let mut inner = self.request.clone();
+        inner.input = messages;
+        inner
+    }
+
+    /// Push `prev_last_step` (if any) into `steps`, install `new_step` as the
+    /// new hot step.
+    fn sediment(&mut self, new_step: StepRecord) {
+        if let Some(prev) = self.state.last_step.replace(new_step) {
+            self.state.steps.push(prev);
+        }
+    }
+
+    /// Run the optional history compressor. Compression failures are
+    /// non-fatal — we log via worklog and continue with the uncompressed
+    /// history.
+    async fn maybe_compress(&mut self) {
+        let Some(compressor) = self.deps.history_compressor.clone() else {
+            return;
+        };
+        let steps_before = self.state.steps.len();
+        if steps_before == 0 {
+            return;
+        }
+        let budget = CompressBudget {
+            target_steps: None,
+            target_tokens: self.request.budget.max_total_tokens,
+        };
+        // Clone so a compressor failure leaves the live history intact.
+        let snapshot = self.state.steps.clone();
+        match compressor.compress(snapshot, budget).await {
+            Ok(compressed) => {
+                let steps_after = compressed.len();
+                self.state.steps = compressed;
+                self.deps
+                    .worklog
+                    .emit(WorkEvent::ContextRewritten {
+                        trace_id: self.request.trace.clone(),
+                        from_messages: steps_before,
+                        to_messages: steps_after,
+                    })
+                    .await;
+            }
+            Err(_) => {
+                // Compressor refused — keep the uncompressed history. Caller
+                // observes the same `steps` it had before the attempt.
+            }
+        }
+    }
+
+    /// Outer-loop counterpart to `handle_error`'s FeedAsObservation cap.
+    /// Returns `Some(outcome)` when we should terminate (cap exceeded).
+    async fn bump_consecutive_errors(
+        &mut self,
+        err: LLMComputeError,
+    ) -> Option<LLMContextOutcome> {
+        self.state.consecutive_errors =
+            self.state.consecutive_errors.saturating_add(1);
+        let cap = self.request.error_policy.max_consecutive_errors;
+        if cap > 0 && self.state.consecutive_errors > cap {
+            return Some(LLMContextOutcome::Error {
+                error: err,
+                usage: self.state.usage.clone(),
+            });
+        }
+        None
+    }
+
+    /// Terminal path for the Behavior Loop. Sediments `last_step` and emits
+    /// `Done.behavior_result = Some(...)`.
+    async fn finish_done_behavior(
+        &mut self,
+        last_step: StepRecord,
+        response: AiResponseSummary,
+    ) -> LLMContextOutcome {
+        let behavior_result = LLMBehaviorResult::from_step(&last_step);
+        self.sediment(last_step);
+
+        let output = ContextOutput::Text {
+            content: response.text.clone().unwrap_or_default(),
+        };
+        let trace = ContextRunTrace {
+            trace_id: self.request.trace.clone().unwrap_or_default(),
+            latency_ms: now_ms().saturating_sub(self.state.started_at_ms),
+            tool_trace: std::mem::take(&mut self.tool_trace),
+            llm_task_ids: std::mem::take(&mut self.state.llm_task_ids),
+        };
+        LLMContextOutcome::Done {
+            reason: None,
+            output,
+            usage: self.state.usage.clone(),
+            response,
+            trace,
+            behavior_result: Some(behavior_result),
         }
     }
 }
