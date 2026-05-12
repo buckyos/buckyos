@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use buckyos_api::{
-    features, AiMessage, AiMethodRequest, AiPayload, BoxKind, Capability, ModelSpec,
+    features, AiMessage, AiMethodRequest, AiPayload, AiRole, BoxKind, Capability, ModelSpec,
     MsgRecordWithObject, Requirements,
 };
 use chrono::{DateTime, Utc};
@@ -98,9 +98,9 @@ impl PromptBuilder {
                 .await;
 
         let ai_messages: Vec<AiMessage> = vec![
-            AiMessage::new("system".to_string(), system_role_prompt_text),
-            AiMessage::new("user".to_string(), memory_prompt_text),
-            AiMessage::new("user".to_string(), input.input_prompt.clone()),
+            AiMessage::text(AiRole::System, system_role_prompt_text),
+            AiMessage::text(AiRole::User, memory_prompt_text),
+            AiMessage::text(AiRole::User, input.input_prompt.clone()),
         ];
 
         let mut must_features = cfg.llm.must_features.clone();
@@ -161,9 +161,10 @@ pub fn render_complete_request_prompt(request: &AiMethodRequest) -> String {
     }
 
     for message in &request.payload.messages {
-        let role = message.role.trim();
-        let content = message.content.trim();
-        if role.is_empty() || content.is_empty() {
+        let role = message.role.as_str();
+        let content = message.text_content();
+        let content = content.trim();
+        if content.is_empty() {
             continue;
         }
         parts.push(format!("<<{role}>>\n{content}\n<</{role}>>"));
@@ -1085,7 +1086,7 @@ mod tests {
             .payload
             .messages
             .first()
-            .map(|msg| msg.content.clone())
+            .map(|msg| msg.text_content())
             .unwrap_or_default();
 
         assert!(system.contains("<<system>>"));
@@ -1128,7 +1129,7 @@ mod tests {
             .payload
             .messages
             .first()
-            .map(|msg| msg.content.clone())
+            .map(|msg| msg.text_content())
             .unwrap_or_default();
 
         assert!(system.contains("<<system>>"));

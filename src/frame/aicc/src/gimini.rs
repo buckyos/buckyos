@@ -811,8 +811,10 @@ impl GoogleGiminiProvider {
             .messages
             .iter()
             .filter_map(|msg| {
-                let content = msg.content.trim();
-                (!content.is_empty()).then(|| (msg.role.clone(), content.to_string()))
+                let content = msg.text_content();
+                let trimmed = content.trim();
+                (!trimmed.is_empty())
+                    .then(|| (msg.role.as_str().to_string(), trimmed.to_string()))
             })
             .collect())
     }
@@ -920,7 +922,7 @@ impl GoogleGiminiProvider {
             .payload
             .messages
             .iter()
-            .map(|msg| msg.content.trim())
+            .map(|msg| msg.text_content().trim().to_string())
             .filter(|msg| !msg.is_empty())
             .collect::<Vec<_>>()
             .join("\n");

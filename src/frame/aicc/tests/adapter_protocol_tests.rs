@@ -634,9 +634,9 @@ async fn proto_t2i_02_prompt_from_messages() {
     let provider = openai_provider(base_url, 500);
     let mut req = base_request_for(Capability::Image, "text2image.default");
     req.payload.text = None;
-    req.payload.messages = vec![buckyos_api::AiMessage::new(
-        "user".to_string(),
-        "draw from message".to_string(),
+    req.payload.messages = vec![buckyos_api::AiMessage::text(
+        buckyos_api::AiRole::User,
+        "draw from message",
     )];
     let res = provider
         .start(

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use buckyos_api::{AiMessage, AiResponseSummary, AiToolCall, AiUsage};
+use buckyos_api::{AiMessage, AiResponseSummary, AiRole, AiToolCall, AiUsage};
 use serde_json::json;
 
 use crate::deps::{
@@ -72,7 +72,7 @@ fn base_request() -> LLMContextRequest {
         owner: ContextOwnerRef::OneShot { id: "t".into() },
         trace: Some("trace-1".into()),
         objective: "test".into(),
-        input: vec![AiMessage::new("user".into(), "hello".into())],
+        input: vec![AiMessage::text(AiRole::User, "hello")],
         model_policy: ModelPolicy {
             preferred: "test-model".into(),
             ..ModelPolicy::default()

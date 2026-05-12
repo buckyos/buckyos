@@ -718,12 +718,13 @@ fn build_messages(req: &AiMethodRequest) -> Result<(Option<String>, Vec<Value>),
 
     if messages.is_empty() && system_parts.is_empty() {
         for msg in req.payload.messages.iter() {
-            let role = msg.role.trim().to_lowercase();
-            let content = msg.content.trim();
-            if role.is_empty() || content.is_empty() {
+            let role = msg.role.as_str();
+            let content = msg.text_content();
+            let content = content.trim();
+            if content.is_empty() {
                 continue;
             }
-            push_message_content(&mut system_parts, &mut messages, role.as_str(), content);
+            push_message_content(&mut system_parts, &mut messages, role, content);
         }
     }
 
@@ -847,7 +848,7 @@ pub(crate) fn convert_complete_request(
 mod tests {
     use super::*;
     use buckyos_api::{
-        value_to_object_map, AiMessage, AiMethodRequest, AiPayload, AiToolSpec, Capability,
+        value_to_object_map, AiMessage, AiMethodRequest, AiPayload, AiRole, AiToolSpec, Capability,
         ModelSpec, Requirements,
     };
 
@@ -868,8 +869,8 @@ mod tests {
     fn convert_complete_request_maps_messages_and_tool_messages() {
         let mut req = base_request();
         req.payload.messages = vec![
-            AiMessage::new("system".to_string(), "system rules".to_string()),
-            AiMessage::new("user".to_string(), "hello".to_string()),
+            AiMessage::text(AiRole::System, "system rules"),
+            AiMessage::text(AiRole::User, "hello"),
         ];
         req.payload.options = Some(json!({
             "max_completion_tokens": 333,
@@ -1062,7 +1063,7 @@ mod tests {
     #[test]
     fn convert_complete_request_prefers_payload_tool_calls_over_option_tools() {
         let mut req = base_request();
-        req.payload.messages = vec![AiMessage::new("user".to_string(), "hello".to_string())];
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "hello")];
         req.payload.tool_specs = vec![AiToolSpec {
             name: "payload_tool".to_string(),
             description: "from payload".to_string(),

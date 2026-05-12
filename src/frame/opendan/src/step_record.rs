@@ -960,8 +960,8 @@ mod tests {
                 Requirements::new(vec![], None, None, None),
                 AiPayload::new(
                     None,
-                    vec![buckyos_api::AiMessage::new(
-                        "user".to_string(),
+                    vec![buckyos_api::AiMessage::text(
+                        buckyos_api::AiRole::User,
                         format!("prompt-{step_num}"),
                     )],
                     vec![],

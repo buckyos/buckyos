@@ -62,7 +62,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use buckyos_api::AiMessage;
+use buckyos_api::{AiMessage, AiRole};
 
 use llm_context::deps::{LLMContextDeps, LlmInferenceRequest};
 use llm_context::error::LLMComputeError;
@@ -102,15 +102,15 @@ pub async fn compress(
 
     let system_prefix_end = history
         .iter()
-        .position(|m| m.role != "system")
+        .position(|m| m.role != AiRole::System)
         .unwrap_or(history.len());
     let system_prefix = &history[..system_prefix_end];
     let body = &history[system_prefix_end..];
 
     let mut tail_start_in_body = body.len().saturating_sub(DEFAULT_KEEP_RECENT_MESSAGES);
-    // 避免 tail 以孤立 `tool` 消息打头——它需要前置 assistant 的 tool_call
-    // 才合法，否则 provider 会拒掉。
-    while tail_start_in_body < body.len() && body[tail_start_in_body].role == "tool" {
+    // 避免 tail 以孤立 tool result 消息打头 —— 它需要前置 assistant 的
+    // tool_use 才合法，否则 provider 会拒掉。
+    while tail_start_in_body < body.len() && body[tail_start_in_body].role == AiRole::Tool {
         tail_start_in_body += 1;
     }
     let middle = &body[..tail_start_in_body];
@@ -132,17 +132,16 @@ pub async fn compress(
 
     let middle_text = render_dialogue(middle);
     let summarize_messages = vec![
-        AiMessage::new(
-            "system".to_string(),
+        AiMessage::text(
+            AiRole::System,
             "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\n\
              - You already have all the context you need in the conversation above.\n\
              - Your task is to create a detailed summary of the conversation so far, \
              paying close attention to the user's explicit requests and your previous actions.\n\
              - This summary should be thorough in capturing technical details, patterns, and \
-             architectural decisions that would be essential for continuing work without losing context."
-                .to_string(),
+             architectural decisions that would be essential for continuing work without losing context.",
         ),
-        AiMessage::new("user".to_string(), middle_text),
+        AiMessage::text(AiRole::User, middle_text),
     ];
 
     let req = LlmInferenceRequest {
@@ -169,8 +168,8 @@ pub async fn compress(
 
     let mut out: Vec<AiMessage> = Vec::with_capacity(system_prefix.len() + 1 + tail.len());
     out.extend_from_slice(system_prefix);
-    out.push(AiMessage::new(
-        "system".to_string(),
+    out.push(AiMessage::text(
+        AiRole::System,
         format!("[Conversation summary]\n{}", summary_text),
     ));
     out.extend_from_slice(tail);
@@ -180,8 +179,8 @@ pub async fn compress(
 fn count_history_tokens(deps: &LLMContextDeps, msgs: &[AiMessage]) -> u32 {
     let mut total: u32 = 0;
     for m in msgs {
-        total = total.saturating_add(deps.tokenizer.count_tokens(&m.role));
-        total = total.saturating_add(deps.tokenizer.count_tokens(&m.content));
+        total = total.saturating_add(deps.tokenizer.count_tokens(m.role.as_str()));
+        total = total.saturating_add(deps.tokenizer.count_tokens(&m.render_for_debug()));
     }
     total
 }
@@ -189,9 +188,9 @@ fn count_history_tokens(deps: &LLMContextDeps, msgs: &[AiMessage]) -> u32 {
 fn render_dialogue(msgs: &[AiMessage]) -> String {
     let mut s = String::new();
     for m in msgs {
-        s.push_str(&m.role);
+        s.push_str(m.role.as_str());
         s.push_str(":\n");
-        s.push_str(&m.content);
+        s.push_str(&m.render_for_debug());
         s.push_str("\n\n");
     }
     s
@@ -240,7 +239,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use buckyos_api::{AiMessage, AiResponseSummary};
+    use buckyos_api::{AiMessage, AiResponseSummary, AiRole};
 
     use super::*;
     use llm_context::deps::{LLMContextDeps, LlmClient, LlmInferenceRequest};
@@ -264,12 +263,12 @@ mod tests {
 
     struct StubTools;
     #[async_trait]
-    impl crate::deps::ToolManager for StubTools {
+    impl llm_context::deps::ToolManager for StubTools {
         async fn call_tool(
             &self,
             call: buckyos_api::AiToolCall,
-        ) -> crate::observation::Observation {
-            crate::observation::Observation::Error {
+        ) -> llm_context::observation::Observation {
+            llm_context::observation::Observation::Error {
                 call_id: call.call_id,
                 message: "stub".to_string(),
             }
@@ -280,12 +279,32 @@ mod tests {
         let llm: Arc<dyn LlmClient> = Arc::new(StaticSummarizer {
             reply: reply.to_string(),
         });
-        let tools: Arc<dyn crate::deps::ToolManager> = Arc::new(StubTools);
+        let tools: Arc<dyn llm_context::deps::ToolManager> = Arc::new(StubTools);
         LLMContextDeps::new(llm, tools)
     }
 
     fn msg(role: &str, content: &str) -> AiMessage {
-        AiMessage::new(role.to_string(), content.to_string())
+        let role = match role {
+            "system" => AiRole::System,
+            "user" => AiRole::User,
+            "assistant" => AiRole::Assistant,
+            "tool" => {
+                // Tool role requires a ToolResult block, not plain text. Tests
+                // that simulate `tool` messages use this helper purely for shape;
+                // wrap the text as a synthetic tool_result keyed by a dummy id.
+                return AiMessage::new(
+                    AiRole::Tool,
+                    vec![buckyos_api::AiContent::tool_result_text(
+                        "dummy-call",
+                        content,
+                        false,
+                    )],
+                );
+            }
+            "developer" => AiRole::Developer,
+            other => panic!("unknown role: {other}"),
+        };
+        AiMessage::text(role, content)
     }
 
     #[tokio::test]
@@ -318,10 +337,10 @@ mod tests {
         }
         let out = compress(&history, &deps, 1024, "test-model").await.unwrap();
         // system prefix + summary + tail (<= DEFAULT_KEEP_RECENT_MESSAGES)
-        assert_eq!(out[0].role, "system");
-        assert_eq!(out[0].content, "you are helpful");
-        assert_eq!(out[1].role, "system");
-        assert!(out[1].content.contains("SUMMARY_OK"));
+        assert_eq!(out[0].role, AiRole::System);
+        assert_eq!(out[0].text_content(), "you are helpful");
+        assert_eq!(out[1].role, AiRole::System);
+        assert!(out[1].text_content().contains("SUMMARY_OK"));
         assert!(out.len() < history.len());
         // tail preserved verbatim
         assert_eq!(out.last().unwrap(), history.last().unwrap());
@@ -352,7 +371,7 @@ mod tests {
         }
         let out = compress(&history, &deps, 512, "test-model").await.unwrap();
         // After system prefix + summary, the first kept message must not be `tool`.
-        let first_non_system = out.iter().find(|m| m.role != "system").unwrap();
-        assert_ne!(first_non_system.role, "tool");
+        let first_non_system = out.iter().find(|m| m.role != AiRole::System).unwrap();
+        assert_ne!(first_non_system.role, AiRole::Tool);
     }
 }

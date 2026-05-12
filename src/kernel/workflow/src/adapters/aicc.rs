@@ -1203,7 +1203,10 @@ mod tests {
         let adapter = AiccAdapter::new(client);
         let executor = ExecutorRef::parse("service::aicc.llm.chat").unwrap();
         let input = json!({
-            "messages": [{"role": "user", "content": "hi"}],
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "text", "text": "hi" }]
+            }],
             "options": {"temperature": 0.2},
             "model": "llm.chat.test",
             "must_features": ["plan"],
@@ -1224,7 +1227,7 @@ mod tests {
         assert_eq!(request.requirements.must_features, vec!["plan".to_string()]);
         assert_eq!(request.requirements.max_cost_usd, Some(0.01));
         assert_eq!(request.payload.messages.len(), 1);
-        assert_eq!(request.payload.messages[0].content, "hi");
+        assert_eq!(request.payload.messages[0].text_content(), "hi");
     }
 
     #[tokio::test]
@@ -1264,7 +1267,10 @@ mod tests {
             .invoke(
                 &executor,
                 &json!({
-                    "messages": [{"role": "user", "content": "hi"}],
+                    "messages": [{
+                        "role": "user",
+                        "content": [{ "type": "text", "text": "hi" }]
+                    }],
                     "model": "llm.chat.test"
                 }),
             )

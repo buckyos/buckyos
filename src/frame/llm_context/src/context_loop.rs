@@ -17,7 +17,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use buckyos_api::{AiMessage, AiResponseSummary, AiToolCall, AiUsage};
+use buckyos_api::{
+    AiContent, AiMessage, AiResponseSummary, AiRole, AiToolCall, AiToolResultContent, AiUsage,
+};
 use serde_json::Value;
 
 use crate::behavior_loop::{
@@ -107,7 +109,7 @@ impl LLMContext {
                     }
                     state
                         .accumulated
-                        .push(tool_observation_message(&call.call.name, &obs));
+                        .push(tool_observation_message(&call.call.call_id, &obs));
                 }
             }
             ResumeFill::HumanInput { message } => {
@@ -340,7 +342,7 @@ impl LLMContext {
                     Observation::Success { .. } => {
                         self.state
                             .accumulated
-                            .push(tool_observation_message(&call.name, &observation));
+                            .push(tool_observation_message(&call.call_id, &observation));
                         self.tool_trace.push(ToolExecRecord {
                             tool_name: call.name.clone(),
                             call_id: call.call_id.clone(),
@@ -384,7 +386,7 @@ impl LLMContext {
                         // still benefits from a coherent transcript.
                         self.state
                             .accumulated
-                            .push(tool_observation_message(&call.name, &observation));
+                            .push(tool_observation_message(&call.call_id, &observation));
 
                         let err = LLMComputeError::ToolFailed {
                             tool: call.name.clone(),
@@ -554,10 +556,9 @@ impl LLMContext {
                     // recoverable errors we push a system message describing
                     // the error so the next inference can see it.
                     if !matches!(&err, LLMComputeError::ToolFailed { .. }) {
-                        self.state.accumulated.push(AiMessage::new(
-                            "system".to_string(),
-                            format!("error: {err}"),
-                        ));
+                        self.state
+                            .accumulated
+                            .push(AiMessage::text(AiRole::System, format!("error: {err}")));
                     }
                     None
                 }
@@ -924,31 +925,48 @@ fn merge_usage(left: &AiUsage, right: &AiUsage) -> AiUsage {
 }
 
 /// Build the assistant message that records the tool_calls about to be
-/// dispatched. We carry both the textual portion of the LLM's reply and a
-/// JSON envelope listing the calls — this keeps the transcript readable on
-/// re-feed even when the provider drops native tool_call slots.
+/// dispatched. Carries the LLM's reply text (if non-empty) plus one
+/// `ToolUse` block per call. Provider lowering rewrites these blocks into
+/// each vendor's native form.
 fn assistant_tool_call_message(text: &str, calls: &[AiToolCall]) -> AiMessage {
-    let envelope = serde_json::json!({
-        "text": text,
-        "tool_calls": calls,
-    });
-    let content =
-        serde_json::to_string(&envelope).unwrap_or_else(|_| text.to_string());
-    AiMessage::new("assistant".to_string(), content)
+    let mut blocks: Vec<AiContent> = Vec::with_capacity(calls.len() + 1);
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        blocks.push(AiContent::text(text.to_string()));
+    }
+    for call in calls {
+        blocks.push(AiContent::tool_use(
+            call.call_id.clone(),
+            call.name.clone(),
+            call.args.clone(),
+        ));
+    }
+    AiMessage::new(AiRole::Assistant, blocks)
 }
 
 /// Build the tool-role message that carries one observation back to the LLM.
-fn tool_observation_message(tool_name: &str, observation: &Observation) -> AiMessage {
-    let content = serde_json::to_string(&serde_json::json!({
-        "tool": tool_name,
-        "observation": observation,
-    }))
-    .unwrap_or_else(|_| match observation {
-        Observation::Success { content, .. } => content.to_string(),
-        Observation::Error { message, .. } => message.clone(),
-        Observation::Pending { call_id } => format!("pending:{call_id}"),
-    });
-    AiMessage::new("tool".to_string(), content)
+/// Keyed by `call_id` so providers can wire it to the originating ToolUse.
+fn tool_observation_message(call_id: &str, observation: &Observation) -> AiMessage {
+    let (content_text, is_error) = match observation {
+        Observation::Success { content, .. } => {
+            let text = if let Some(s) = content.as_str() {
+                s.to_string()
+            } else {
+                serde_json::to_string(content).unwrap_or_else(|_| "{}".to_string())
+            };
+            (text, false)
+        }
+        Observation::Error { message, .. } => (message.clone(), true),
+        Observation::Pending { call_id: cid } => (format!("pending:{cid}"), true),
+    };
+    AiMessage::new(
+        AiRole::Tool,
+        vec![AiContent::ToolResult {
+            call_id: call_id.to_string(),
+            content: vec![AiToolResultContent::text(content_text)],
+            is_error,
+        }],
+    )
 }
 
 fn now_ms() -> u64 {

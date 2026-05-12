@@ -2556,7 +2556,7 @@ mod tests {
     use crate::step_record::LLMStepRecord;
     use crate::workspace::WorkshopWorkspaceRecord;
     use buckyos_api::{
-        AccessGroupLevel, AccountBinding, AiMessage, AiMethodRequest, AiPayload, Capability,
+        AccessGroupLevel, AccountBinding, AiMessage, AiMethodRequest, AiPayload, AiRole, Capability,
         Contact, ContactSource, ModelSpec, Requirements,
     };
     use serde_json::json;
@@ -2775,7 +2775,7 @@ mod tests {
                         Requirements::new(vec![], None, None, None),
                         AiPayload::new(
                             None,
-                            vec![AiMessage::new("user".to_string(), "prompt-0".to_string())],
+                            vec![AiMessage::text(AiRole::User, "prompt-0")],
                             vec![],
                             vec![],
                             None,
@@ -2816,7 +2816,7 @@ mod tests {
                         Requirements::new(vec![], None, None, None),
                         AiPayload::new(
                             None,
-                            vec![AiMessage::new("user".to_string(), "prompt-1".to_string())],
+                            vec![AiMessage::text(AiRole::User, "prompt-1")],
                             vec![],
                             vec![],
                             None,

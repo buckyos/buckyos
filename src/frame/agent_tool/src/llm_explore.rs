@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use buckyos_api::AiMessage;
+use buckyos_api::{AiMessage, AiRole};
 use llm_context::{
     ContextOutput, LLMContextOutcome, LlmClient, ModelPolicy, ToolMode, ToolPolicy,
 };
@@ -272,8 +272,8 @@ fn default_work_dir(description: &str) -> PathBuf {
 
 fn build_request(opts: &CliOpts) -> OneShotRequest {
     let input = vec![
-        AiMessage::new("system".into(), SYSTEM_PROMPT.to_string()),
-        AiMessage::new("user".into(), opts.prompt.clone()),
+        AiMessage::text(AiRole::System, SYSTEM_PROMPT),
+        AiMessage::text(AiRole::User, opts.prompt.clone()),
     ];
     let mut req = OneShotRequest::new(opts.description.clone(), input);
     req.model_policy = Some(ModelPolicy {

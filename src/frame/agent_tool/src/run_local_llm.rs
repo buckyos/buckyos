@@ -52,7 +52,8 @@ use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
     value_to_object_map, AiMessage, AiMethodRequest, AiMethodStatus, AiPayload, AiResponseSummary,
-    AiToolSpec, AiccClient, BuckyOSRuntimeType, Capability, ModelSpec, Requirements, RespFormat,
+    AiRole, AiToolSpec, AiccClient, BuckyOSRuntimeType, Capability, ModelSpec, Requirements,
+    RespFormat,
 };
 use llm_context::{
     LLMComputeError, LLMContextOutcome, LlmClient, LlmInferenceRequest, ToolMode, ToolPolicy,
@@ -112,7 +113,7 @@ async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
         // 这一条新 user 消息。CLI 后面的 tuning override 还会覆盖一遍。
         LocalLLMContext::prepare_followup_request(
             &opts.dir,
-            AiMessage::new("user".into(), text.clone()),
+            AiMessage::text(AiRole::User, text.clone()),
         )?
     } else {
         let input = build_input_messages(&opts).await?;
@@ -396,7 +397,7 @@ async fn build_input_messages(
     let mut msgs: Vec<AiMessage> = Vec::new();
 
     if let Some(sys) = opts.system.as_ref() {
-        msgs.push(AiMessage::new("system".into(), sys.clone()));
+        msgs.push(AiMessage::text(AiRole::System, sys.clone()));
     }
 
     if let Some(path) = opts.input_file.as_ref() {
@@ -407,14 +408,14 @@ async fn build_input_messages(
     }
 
     if let Some(u) = opts.user.as_ref() {
-        msgs.push(AiMessage::new("user".into(), u.clone()));
+        msgs.push(AiMessage::text(AiRole::User, u.clone()));
     }
 
     if opts.input_stdin {
         let mut buf = String::new();
         tokio::io::stdin().read_to_string(&mut buf).await?;
         if !buf.is_empty() {
-            msgs.push(AiMessage::new("user".into(), buf));
+            msgs.push(AiMessage::text(AiRole::User, buf));
         }
     }
 
@@ -587,7 +588,7 @@ impl Compressor for KeepTailCompressor {
         _dir: &std::path::Path,
     ) -> Result<Vec<AiMessage>, LocalLLMContextError> {
         let (sys, rest): (Vec<_>, Vec<_>) =
-            accumulated.into_iter().partition(|m| m.role == "system");
+            accumulated.into_iter().partition(|m| m.role == AiRole::System);
         let kept_tail = if rest.len() > self.tail {
             rest[rest.len() - self.tail..].to_vec()
         } else {

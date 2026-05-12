@@ -258,15 +258,390 @@ pub fn value_to_object_map(value: Value) -> HashMap<String, Value> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// IR-level role for a message in `AiMessage`. Provider lowering rewrites
+/// `Tool` and `Developer` per §1.4 of the AiMessage 重构 design doc.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AiRole {
+    System,
+    User,
+    Assistant,
+    /// IR-internal carrier role for tool results. Each adapter MUST rewrite
+    /// into the provider's native form (function_call_output / tool message
+    /// / nested user+tool_result block / etc.).
+    Tool,
+    /// OpenAI Responses native; other providers fold into nearest `System`
+    /// or downgrade to `System` role.
+    Developer,
+}
+
+impl AiRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::Tool => "tool",
+            Self::Developer => "developer",
+        }
+    }
+}
+
+/// Strict content subset allowed inside `AiContent::ToolResult.content` —
+/// excludes ToolUse / ToolResult / Thinking, which have no meaning nested
+/// inside a tool result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AiToolResultContent {
+    Text { text: String },
+    Image { source: ResourceRef },
+    Document {
+        source: ResourceRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+}
+
+impl AiToolResultContent {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    pub fn text_str(&self) -> Option<&str> {
+        match self {
+            Self::Text { text } => Some(text.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// Content block. Mirrors the Anthropic content-block model, generalized
+/// enough to round-trip OpenAI Responses items and Gemini parts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AiContent {
+    /// Plain text segment.
+    Text { text: String },
+
+    /// Image block; reuses `ResourceRef` (URL / base64 / named object).
+    Image { source: ResourceRef },
+
+    /// Long-document attachment (PDF / large text), mirrors Claude document API.
+    Document {
+        source: ResourceRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+
+    /// Assistant requesting a tool call.
+    ToolUse {
+        call_id: String,
+        name: String,
+        #[serde(default)]
+        args: HashMap<String, Value>,
+    },
+
+    /// Tool result echoed back to the LLM, keyed by `call_id` of the
+    /// originating `ToolUse`.
+    ToolResult {
+        call_id: String,
+        content: Vec<AiToolResultContent>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        is_error: bool,
+    },
+
+    /// Extended thinking / reasoning block. `summary` is OpenAI Responses
+    /// reasoning summary; `text` is Claude thinking plaintext;
+    /// `provider_metadata` holds per-provider signature/state bits that
+    /// aren't worth a dedicated field.
+    Thinking {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
+    },
+
+    /// Provider-specific native item that needs to round-trip but cannot be
+    /// abstracted across providers (OpenAI reasoning item id/encrypted_content,
+    /// Claude server_tool_use / web_search_tool_result, etc.).
+    ///
+    /// Lowering: only blocks whose `provider` matches the target lowering
+    /// destination are restored to their native item; the rest are dropped.
+    ProviderState {
+        provider: String,
+        value: Value,
+    },
+}
+
+#[derive(Debug, thiserror::Error, Clone, PartialEq)]
+pub enum AiMessageError {
+    #[error("block type `{block_type}` is not allowed for role `{role:?}`")]
+    InvalidBlockForRole { role: AiRole, block_type: &'static str },
+    #[error("tool_use / tool_result missing call_id")]
+    MissingCallId,
+    #[error("tool_result content must not be empty")]
+    EmptyToolResult,
+    #[error("role `Tool` requires exactly one ToolResult block")]
+    ToolRoleShape,
+}
+
+impl AiContent {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    pub fn image(source: ResourceRef) -> Self {
+        Self::Image { source }
+    }
+
+    pub fn tool_use(
+        call_id: impl Into<String>,
+        name: impl Into<String>,
+        args: HashMap<String, Value>,
+    ) -> Self {
+        Self::ToolUse {
+            call_id: call_id.into(),
+            name: name.into(),
+            args,
+        }
+    }
+
+    pub fn tool_result_text(call_id: impl Into<String>, text: impl Into<String>, is_error: bool) -> Self {
+        Self::ToolResult {
+            call_id: call_id.into(),
+            content: vec![AiToolResultContent::text(text)],
+            is_error,
+        }
+    }
+
+    fn type_tag(&self) -> &'static str {
+        match self {
+            Self::Text { .. } => "text",
+            Self::Image { .. } => "image",
+            Self::Document { .. } => "document",
+            Self::ToolUse { .. } => "tool_use",
+            Self::ToolResult { .. } => "tool_result",
+            Self::Thinking { .. } => "thinking",
+            Self::ProviderState { .. } => "provider_state",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AiMessage {
-    pub role: String,
-    pub content: String,
+    pub role: AiRole,
+    pub content: Vec<AiContent>,
 }
 
 impl AiMessage {
-    pub fn new(role: String, content: String) -> Self {
+    /// Single text block constructor — covers ~90% of call sites
+    /// (system prompts, plain user/assistant messages).
+    pub fn text(role: AiRole, text: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: vec![AiContent::text(text)],
+        }
+    }
+
+    /// Construct from explicit blocks. Caller is responsible for `validate()`.
+    pub fn new(role: AiRole, content: Vec<AiContent>) -> Self {
         Self { role, content }
+    }
+
+    /// Concatenate all `Text` blocks' `text`, joined by `\n`. Non-text
+    /// blocks are skipped. Use this when you need a string-shaped view of
+    /// the message (transcript rendering, logging).
+    pub fn text_content(&self) -> String {
+        let mut out = String::new();
+        for block in &self.content {
+            if let AiContent::Text { text } = block {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(text);
+            }
+        }
+        out
+    }
+
+    /// First `Text` block's content, if any. Use this for "I used to read
+    /// `&msg.content`" replacement sites.
+    pub fn first_text(&self) -> Option<&str> {
+        self.content.iter().find_map(|block| match block {
+            AiContent::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Human-readable debug rendering of every block. Used by transcript
+    /// dumps and worklog text. Stable enough for snapshot tests.
+    pub fn render_for_debug(&self) -> String {
+        let mut out = String::new();
+        for (idx, block) in self.content.iter().enumerate() {
+            if idx > 0 {
+                out.push('\n');
+            }
+            match block {
+                AiContent::Text { text } => out.push_str(text),
+                AiContent::Image { source: _ } => out.push_str("[image]"),
+                AiContent::Document { title, .. } => {
+                    out.push_str("[document");
+                    if let Some(t) = title {
+                        out.push_str(": ");
+                        out.push_str(t);
+                    }
+                    out.push(']');
+                }
+                AiContent::ToolUse { call_id, name, .. } => {
+                    out.push_str(&format!("[tool_use name={name} call_id={call_id}]"));
+                }
+                AiContent::ToolResult { call_id, content, is_error } => {
+                    out.push_str(&format!(
+                        "[tool_result call_id={call_id}{}]",
+                        if *is_error { " error" } else { "" }
+                    ));
+                    for c in content {
+                        if let AiToolResultContent::Text { text } = c {
+                            out.push('\n');
+                            out.push_str(text);
+                        }
+                    }
+                }
+                AiContent::Thinking { summary, text, .. } => {
+                    out.push_str("[thinking");
+                    if let Some(s) = summary {
+                        out.push_str(" summary=");
+                        out.push_str(s);
+                    }
+                    if let Some(t) = text {
+                        out.push('\n');
+                        out.push_str(t);
+                    }
+                    out.push(']');
+                }
+                AiContent::ProviderState { provider, .. } => {
+                    out.push_str(&format!("[provider_state provider={provider}]"));
+                }
+            }
+        }
+        out
+    }
+
+    /// Rough byte-length estimate used by `llm_compress` to budget context.
+    /// Non-text blocks contribute a conservative constant (~256 bytes for
+    /// Image/Document, ToolUse args measured via JSON).
+    pub fn estimate_text_len(&self) -> usize {
+        let mut total = 0;
+        for block in &self.content {
+            match block {
+                AiContent::Text { text } => total += text.len(),
+                AiContent::Image { .. } | AiContent::Document { .. } => total += 256,
+                AiContent::ToolUse { name, call_id, args } => {
+                    total += name.len() + call_id.len();
+                    if let Ok(s) = serde_json::to_string(args) {
+                        total += s.len();
+                    }
+                }
+                AiContent::ToolResult { content, call_id, .. } => {
+                    total += call_id.len();
+                    for c in content {
+                        match c {
+                            AiToolResultContent::Text { text } => total += text.len(),
+                            AiToolResultContent::Image { .. }
+                            | AiToolResultContent::Document { .. } => total += 256,
+                        }
+                    }
+                }
+                AiContent::Thinking { summary, text, .. } => {
+                    if let Some(s) = summary {
+                        total += s.len();
+                    }
+                    if let Some(t) = text {
+                        total += t.len();
+                    }
+                }
+                AiContent::ProviderState { value, .. } => {
+                    if let Ok(s) = serde_json::to_string(value) {
+                        total += s.len();
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    /// Validate role × content combinations per §1.1 of the design doc.
+    /// `AiPayload::validate_all_messages` calls this for every message before
+    /// the request leaves the aicc client.
+    pub fn validate(&self) -> std::result::Result<(), AiMessageError> {
+        match self.role {
+            AiRole::System | AiRole::Developer => {
+                for block in &self.content {
+                    if !matches!(block, AiContent::Text { .. }) {
+                        return Err(AiMessageError::InvalidBlockForRole {
+                            role: self.role,
+                            block_type: block.type_tag(),
+                        });
+                    }
+                }
+            }
+            AiRole::User => {
+                for block in &self.content {
+                    match block {
+                        AiContent::Text { .. }
+                        | AiContent::Image { .. }
+                        | AiContent::Document { .. } => {}
+                        _ => {
+                            return Err(AiMessageError::InvalidBlockForRole {
+                                role: self.role,
+                                block_type: block.type_tag(),
+                            });
+                        }
+                    }
+                }
+            }
+            AiRole::Assistant => {
+                for block in &self.content {
+                    match block {
+                        AiContent::Text { .. }
+                        | AiContent::ToolUse { .. }
+                        | AiContent::Thinking { .. }
+                        | AiContent::ProviderState { .. } => {}
+                        _ => {
+                            return Err(AiMessageError::InvalidBlockForRole {
+                                role: self.role,
+                                block_type: block.type_tag(),
+                            });
+                        }
+                    }
+                    if let AiContent::ToolUse { call_id, .. } = block {
+                        if call_id.trim().is_empty() {
+                            return Err(AiMessageError::MissingCallId);
+                        }
+                    }
+                }
+            }
+            AiRole::Tool => {
+                if self.content.len() != 1 {
+                    return Err(AiMessageError::ToolRoleShape);
+                }
+                let AiContent::ToolResult { call_id, content, .. } = &self.content[0] else {
+                    return Err(AiMessageError::InvalidBlockForRole {
+                        role: self.role,
+                        block_type: self.content[0].type_tag(),
+                    });
+                };
+                if call_id.trim().is_empty() {
+                    return Err(AiMessageError::MissingCallId);
+                }
+                if content.is_empty() {
+                    return Err(AiMessageError::EmptyToolResult);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -297,6 +672,15 @@ impl AiPayload {
             input_json,
             options,
         }
+    }
+
+    /// Validate every message in `messages`. Called by the aicc client right
+    /// before serializing the payload, so all paths funnel through one gate.
+    pub fn validate_all_messages(&self) -> std::result::Result<(), AiMessageError> {
+        for msg in &self.messages {
+            msg.validate()?;
+        }
+        Ok(())
     }
 
     fn protocol_input_json(&self) -> Value {
@@ -611,6 +995,11 @@ impl AiccClient {
             return Err(RPCErrors::UnknownMethod(method.to_string()));
         }
 
+        request
+            .payload
+            .validate_all_messages()
+            .map_err(|err| RPCErrors::ParseRequestError(format!("invalid AiMessage: {err}")))?;
+
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
@@ -810,10 +1199,7 @@ mod tests {
             Requirements::new(vec![features::PLAN.to_string()], Some(3000), None, None),
             AiPayload::new(
                 Some("write a release note".to_string()),
-                vec![AiMessage::new(
-                    "user".to_string(),
-                    "summarize this commit".to_string(),
-                )],
+                vec![AiMessage::text(AiRole::User, "summarize this commit")],
                 vec![],
                 vec![
                     ResourceRef::url(
@@ -826,7 +1212,9 @@ mod tests {
                     "messages": [
                         {
                             "role": "user",
-                            "content": "summarize this commit"
+                            "content": [
+                                { "type": "text", "text": "summarize this commit" }
+                            ]
                         }
                     ],
                     "text": "write a release note"
@@ -861,8 +1249,16 @@ mod tests {
         assert!(value.pointer("/payload/messages").is_none());
         assert!(value.pointer("/payload/tool_specs").is_none());
         assert_eq!(
-            value.pointer("/payload/input_json/messages/0/content"),
+            value.pointer("/payload/input_json/messages/0/content/0/type"),
+            Some(&json!("text"))
+        );
+        assert_eq!(
+            value.pointer("/payload/input_json/messages/0/content/0/text"),
             Some(&json!("summarize this commit"))
+        );
+        assert_eq!(
+            value.pointer("/payload/input_json/messages/0/role"),
+            Some(&json!("user"))
         );
     }
 

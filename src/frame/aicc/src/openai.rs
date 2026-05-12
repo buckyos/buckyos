@@ -662,7 +662,7 @@ impl OpenAIProvider {
         }
 
         for message in req.payload.messages.iter() {
-            text_len += message.content.len();
+            text_len += message.estimate_text_len();
         }
         if let Some(input_json) = req.payload.input_json.as_ref() {
             text_len += json_text_len(input_json);
@@ -901,10 +901,11 @@ impl OpenAIProvider {
             .messages
             .iter()
             .filter_map(|msg| {
-                let role = msg.role.trim();
-                let content = msg.content.trim();
-                (!role.is_empty() && !content.is_empty())
-                    .then(|| (role.to_string(), content.to_string()))
+                let role = msg.role.as_str();
+                let content = msg.text_content();
+                let content_trimmed = content.trim();
+                (!content_trimmed.is_empty())
+                    .then(|| (role.to_string(), content_trimmed.to_string()))
             })
             .collect())
     }
@@ -1639,7 +1640,7 @@ impl OpenAIProvider {
             .payload
             .messages
             .iter()
-            .map(|msg| msg.content.trim())
+            .map(|msg| msg.text_content().trim().to_string())
             .filter(|msg| !msg.is_empty())
             .collect::<Vec<_>>()
             .join("\n");
@@ -2405,9 +2406,9 @@ impl OpenAIProvider {
             .payload
             .messages
             .iter()
-            .map(|msg| msg.content.trim())
+            .map(|msg| msg.text_content().trim().to_string())
             .filter(|value| !value.is_empty())
-            .map(|value| Value::String(value.to_string()))
+            .map(Value::String)
             .collect::<Vec<_>>();
         if !texts.is_empty() {
             return Ok(Value::Array(texts));

@@ -53,7 +53,7 @@ async fn proto_llm_01_messages_format_valid() {
     );
     let mut req = base_request();
     req.payload.text = None;
-    req.payload.messages = vec![buckyos_api::AiMessage::new("user".into(), "hello".into())];
+    req.payload.messages = vec![buckyos_api::AiMessage::text(buckyos_api::AiRole::User, "hello")];
     let center = center_with_taskmgr(r, c);
     assert_eq!(
         center
@@ -394,7 +394,7 @@ async fn proto_mix_01_text_plus_resource_valid() {
 async fn proto_mix_02_messages_plus_resource_valid() {
     let mut req = base_request();
     req.payload.text = None;
-    req.payload.messages = vec![buckyos_api::AiMessage::new("user".into(), "hi".into())];
+    req.payload.messages = vec![buckyos_api::AiMessage::text(buckyos_api::AiRole::User, "hi")];
     req.payload.resources = vec![buckyos_api::ResourceRef::Url {
         url: "https://example.com/a.png".into(),
         mime_hint: Some("image/png".into()),

@@ -1,7 +1,7 @@
 use crate::{ChatMessageView, ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, BoxKind,
+    ai_methods, get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, AiRole, BoxKind,
     Capability, ModelSpec, Requirements, SystemConfigClient,
 };
 use log::info;
@@ -941,9 +941,9 @@ impl ControlPanelServer {
             Requirements::default(),
             AiPayload::new(
                 None,
-                vec![AiMessage::new(
-                    "user".to_string(),
-                    "Return a compact JSON object that confirms provider connectivity.".to_string(),
+                vec![AiMessage::text(
+                    AiRole::User,
+                    "Return a compact JSON object that confirms provider connectivity.",
                 )],
                 vec![],
                 vec![],
