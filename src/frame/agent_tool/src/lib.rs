@@ -24,7 +24,11 @@ pub mod glob_tool;
 pub mod grep_tool;
 pub mod json_args;
 pub mod llm_bash;
+pub mod llm_compress;
+pub mod llm_explore;
+pub mod local_llm_context;
 pub mod path_utils;
+pub mod run_local_llm;
 pub mod todo;
 pub mod tool;
 pub mod workspace;
@@ -76,6 +80,12 @@ pub use workspace::{
     ManagedWorkspaceRecord, ManagedWorkspaceToolBackend, SessionWorkspaceBindingView,
     WorkspaceErrorSummary, WorkspaceOwner, WorkspaceRecordView, WorkspaceRuntimeBackend,
     WorkspaceStatus, WorkspaceType,
+};
+pub use llm_compress::{compress, LlmSummarizeCompressor, DEFAULT_KEEP_RECENT_MESSAGES};
+pub use local_llm_context::{
+    Compressor, FileSnapshotStore, LocalLLMContext, OneShotRequest, RunMetaState,
+    RunStatus, SnapshotStore, SuspendKind, DEFAULT_CONTEXT_YIELD_RATIO,
+    DEFAULT_ERROR_MODE, DEFAULT_MAX_CONSECUTIVE_ERRORS,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

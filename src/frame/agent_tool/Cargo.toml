@@ -11,6 +11,7 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 thiserror = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
+llm_context = { path = "../llm_context" }
 kRPC = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }

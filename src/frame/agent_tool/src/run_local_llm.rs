@@ -54,11 +54,12 @@ use buckyos_api::{
     value_to_object_map, AiMessage, AiMethodRequest, AiMethodStatus, AiPayload, AiResponseSummary,
     AiToolSpec, AiccClient, BuckyOSRuntimeType, Capability, ModelSpec, Requirements, RespFormat,
 };
-use llm_context::local_llm_context::{Compressor, LocalLLMContextError};
 use llm_context::{
-    LLMComputeError, LLMContextOutcome, LlmClient, LlmInferenceRequest, LocalLLMContext,
-    OneShotRequest, ToolMode, ToolPolicy,
+    LLMComputeError, LLMContextOutcome, LlmClient, LlmInferenceRequest, ToolMode, ToolPolicy,
 };
+
+use crate::local_llm_context::{Compressor, LocalLLMContextError};
+use crate::{LocalLLMContext, OneShotRequest};
 use serde_json::{json, Value};
 use tokio::fs;
 use tokio::io::AsyncReadExt;
@@ -424,7 +425,7 @@ async fn build_input_messages(
 // AICC runtime 接入
 // =========================================================================
 
-async fn ensure_buckyos_runtime() -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn ensure_buckyos_runtime() -> Result<(), Box<dyn std::error::Error>> {
     // 优先复用已经初始化的 runtime（被外层 harness 注入的场景），否则按
     // AppClient 类型初始化一个 —— 这是 DV Test 容器里 buckyos 进程的
     // 通用约定（参见 agent_tool_cli_dev::build_task_manager_client）。
@@ -438,7 +439,7 @@ async fn ensure_buckyos_runtime() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn acquire_aicc_client() -> Result<Arc<AiccClient>, Box<dyn std::error::Error>> {
+pub(crate) async fn acquire_aicc_client() -> Result<Arc<AiccClient>, Box<dyn std::error::Error>> {
     let runtime = get_buckyos_api_runtime()?;
     let client = runtime.get_aicc_client().await?;
     Ok(Arc::new(client))
@@ -448,12 +449,12 @@ async fn acquire_aicc_client() -> Result<Arc<AiccClient>, Box<dyn std::error::Er
 // AICC → LlmClient 适配
 // =========================================================================
 
-struct AiccLlmClient {
+pub(crate) struct AiccLlmClient {
     client: Arc<AiccClient>,
 }
 
 impl AiccLlmClient {
-    fn new(client: Arc<AiccClient>) -> Self {
+    pub(crate) fn new(client: Arc<AiccClient>) -> Self {
         Self { client }
     }
 }
@@ -568,8 +569,14 @@ impl LlmClient for AiccLlmClient {
 // Compressor：保留 system + 最后 N 条
 // =========================================================================
 
-struct KeepTailCompressor {
+pub(crate) struct KeepTailCompressor {
     tail: usize,
+}
+
+impl KeepTailCompressor {
+    pub(crate) fn new(tail: usize) -> Self {
+        Self { tail }
+    }
 }
 
 #[async_trait]

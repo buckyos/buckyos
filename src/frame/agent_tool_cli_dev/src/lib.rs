@@ -16,11 +16,10 @@ use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
-mod run_local_llm;
-
 use agent_tool::agent_memory::{
     AgentMemory, AgentMemoryConfig, AgentMemoryError, LoadOptions,
 };
+use agent_tool::{llm_explore, run_local_llm};
 use agent_tool::{
     cli_error_result, cli_exit_code_for_error, cli_result_from_tool_result, cli_success_result,
     normalize_abs_path, now_ms, render_cli_output, session_record_path, AgentToolError,
@@ -188,9 +187,10 @@ enum AgentMemoryVerb {
 pub async fn run_process() -> CliRunOutput {
     let args = env::args_os().collect::<Vec<_>>();
 
-    // `agent_tool run_local_llm ...` 走独立的 dev/test 子命令，不经过 tool
-    // dispatcher（它不是一个 AgentTool）。这里短路掉，让它自己负责 stdout /
-    // stderr / exit code（直接 println / eprintln，避免 buffer 大段 JSON）。
+    // `agent_tool run_local_llm ...` / `agent_tool llm_explore ...` 走独立的
+    // dev/test 子命令，不经过 tool dispatcher（它们不是 AgentTool）。这里
+    // 短路掉，让它们自己负责 stdout / stderr / exit code（直接 println /
+    // eprintln，避免 buffer 大段 JSON）。
     if args.get(1).and_then(|v| v.to_str()) == Some("run_local_llm") {
         let sub_args: Vec<String> = args
             .iter()
@@ -198,6 +198,20 @@ pub async fn run_process() -> CliRunOutput {
             .map(|v| v.to_string_lossy().into_owned())
             .collect();
         let exit_code = run_local_llm::run_subcommand(sub_args).await;
+        return CliRunOutput {
+            exit_code,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+    }
+
+    if args.get(1).and_then(|v| v.to_str()) == Some("llm_explore") {
+        let sub_args: Vec<String> = args
+            .iter()
+            .skip(2)
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect();
+        let exit_code = llm_explore::run_subcommand(sub_args).await;
         return CliRunOutput {
             exit_code,
             stdout: String::new(),

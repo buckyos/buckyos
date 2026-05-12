@@ -122,29 +122,30 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use agent_tool::{
-    AgentToolManager, AgentToolResult, AgentToolStatus, BinOverlayConfig, EditFileTool,
-    ExecBashTool, FileToolConfig, GlobTool, GrepTool, LlmBashConfig, NoopFileWriteAudit,
-    ReadFileTool, SessionRuntimeContext, WriteFileTool,
-};
 use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiToolCall};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::deps::{
+use llm_context::deps::{
     LLMContextDeps, LlmClient, NoopWorklogSink, ToolManager, ToolSpecLite, TurnHook,
     WorklogSink,
 };
-use crate::llm_compress::LlmSummarizeCompressor;
-use crate::observation::Observation;
-use crate::outcome::{LLMContextOutcome, ResumeFill};
-use crate::request::{
+use llm_context::observation::Observation;
+use llm_context::outcome::{LLMContextOutcome, ResumeFill};
+use llm_context::request::{
     BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorMode, ErrorPolicy,
     LLMContextRequest, ModelPolicy, OutputSpec, ToolPolicy,
 };
-use crate::state::LLMContextSnapshot;
-use crate::LLMContext;
+use llm_context::state::LLMContextSnapshot;
+use llm_context::LLMContext;
+
+use crate::llm_compress::LlmSummarizeCompressor;
+use crate::{
+    AgentToolManager, AgentToolResult, AgentToolStatus, BinOverlayConfig, EditFileTool,
+    ExecBashTool, FileToolConfig, GlobTool, GrepTool, LlmBashConfig, NoopFileWriteAudit,
+    ReadFileTool, SessionRuntimeContext, WriteFileTool,
+};
 
 // =========================================================================
 // 公共配置常量
@@ -209,7 +210,7 @@ pub struct OneShotRequest {
     pub budget: Option<BudgetSpec>,
 
     /// Human-in-the-loop 策略覆盖(`None` → `HumanPolicy::default()`)。
-    pub human_policy: Option<crate::request::HumanPolicy>,
+    pub human_policy: Option<llm_context::request::HumanPolicy>,
 
     /// 错误策略覆盖(`None` → `Suspend` mode + 默认连续错误上限)。
     pub error_policy: Option<ErrorPolicy>,

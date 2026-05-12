@@ -9,7 +9,6 @@ agent_tool = { path = "../agent_tool" }
 async-trait = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 kRPC = { workspace = true }
-llm_context = { path = "../llm_context" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

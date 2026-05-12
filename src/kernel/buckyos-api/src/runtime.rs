@@ -45,6 +45,7 @@ const BUCKYOS_KRPC_TIMEOUT_SECS_ENV: &str = "BUCKYOS_KRPC_TIMEOUT_SECS";
 const BUCKYOS_KRPC_TIMEOUT_SECS_PREFIX: &str = "BUCKYOS_KRPC_TIMEOUT_SECS_";
 const BUCKYOS_HOST_GATEWAY_ENV: &str = "BUCKYOS_HOST_GATEWAY";
 const DEFAULT_DOCKER_HOST_GATEWAY: &str = "host.docker.internal";
+pub const BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV: &str = "BUCKYOS_APPCLIENT_SESSION_TOKEN";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuckyOSRuntimeType {
@@ -367,6 +368,36 @@ impl BuckyOSRuntime {
                 }
                 session_token_keys.push(get_session_token_env_key(self.app_id.as_str(), true));
             }
+            BuckyOSRuntimeType::AppClient => match env::var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV) {
+                Ok(session_token) => {
+                    if session_token.trim().is_empty() {
+                        warn!(
+                            "{} is set but empty, skip AppClient session token bootstrap",
+                            BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV
+                        );
+                    } else {
+                        info!(
+                            "load AppClient session_token from env var success: {}",
+                            BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV
+                        );
+                        let mut this_session_token = self.session_token.write().await;
+                        *this_session_token = session_token;
+                        return Ok(());
+                    }
+                }
+                Err(env::VarError::NotPresent) => {
+                    info!(
+                        "{} not set, skip AppClient session token bootstrap",
+                        BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV
+                    );
+                }
+                Err(error) => {
+                    return Err(RPCErrors::ReasonError(format!(
+                        "read {} from env failed: {}",
+                        BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, error
+                    )));
+                }
+            },
             _ => {
                 info!(
                     "will not load session_token from env var for runtime_type: {:?}",

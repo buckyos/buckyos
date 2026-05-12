@@ -285,7 +285,7 @@ mod tests {
         get_full_appid, get_session_token_env_key, init_buckyos_api_runtime,
         parse_app_identity_from_instance_config, AppDoc, AppServiceInstanceConfig, AppServiceSpec,
         AppType, BuckyOSRuntimeType, ServiceInstallConfig, ServiceInstanceState, ServiceState,
-        SubPkgDesc,
+        SubPkgDesc, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
     };
 
     fn test_env_lock() -> &'static Mutex<()> {
@@ -379,6 +379,38 @@ mod tests {
         assert_eq!(
             runtime.session_token.read().await.as_str(),
             "dummy-session-token"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_appclient_runtime_uses_appclient_session_token_env() {
+        let _lock = test_env_lock().lock().expect("lock env");
+        let temp_root = env::temp_dir().join(format!(
+            "buckyos-appclient-runtime-root-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("unix epoch")
+                .as_nanos()
+        ));
+        let etc_dir = temp_root.join("etc");
+        fs::create_dir_all(&etc_dir).expect("create temp etc dir");
+
+        let prev_root = set_env_var("BUCKYOS_ROOT", temp_root.to_string_lossy().as_ref());
+        let prev_token = set_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, "dummy-appclient-token");
+
+        let result =
+            init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await;
+
+        restore_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, prev_token);
+        restore_env_var("BUCKYOS_ROOT", prev_root);
+        let _ = fs::remove_dir_all(&temp_root);
+
+        let runtime = result.expect("init appclient runtime should load env session token");
+        assert_eq!(runtime.get_app_id(), "buckycli");
+        assert_eq!(
+            runtime.session_token.read().await.as_str(),
+            "dummy-appclient-token"
         );
     }
 }

@@ -64,8 +64,9 @@ use std::path::Path;
 use async_trait::async_trait;
 use buckyos_api::AiMessage;
 
-use crate::deps::{LLMContextDeps, LlmInferenceRequest};
-use crate::error::LLMComputeError;
+use llm_context::deps::{LLMContextDeps, LlmInferenceRequest};
+use llm_context::error::LLMComputeError;
+
 use crate::local_llm_context::{Compressor, LocalLLMContextError};
 
 /// 默认保留尾部多少条非-system 消息（≈ 4 轮 user/assistant 对话）。
@@ -242,7 +243,7 @@ mod tests {
     use buckyos_api::{AiMessage, AiResponseSummary};
 
     use super::*;
-    use crate::deps::{LLMContextDeps, LlmClient, LlmInferenceRequest};
+    use llm_context::deps::{LLMContextDeps, LlmClient, LlmInferenceRequest};
 
     struct StaticSummarizer {
         reply: String,
