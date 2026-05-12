@@ -2231,7 +2231,7 @@ mod tests {
         assert_eq!(payload["status"], "success");
         assert_eq!(
             payload["detail"]["tools"].as_array().map(|v| v.len()),
-            Some(11)
+            Some(13)
         );
     }
 

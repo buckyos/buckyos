@@ -173,7 +173,7 @@ pub async fn create_app(app_config: &str) {
 async fn is_app_exist(app_id: &str) -> Result<bool, String> {
     let api_runtime = get_buckyos_api_runtime().unwrap();
     let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
-    let result = syc_cfg_client.list("/users").await;
+    let result = syc_cfg_client.list("users").await;
     let users = result.map_err(|e| format!("Failed to list users: {}", e))?;
     if users.is_empty() {
         return Ok(false);
@@ -195,7 +195,7 @@ async fn is_app_exist(app_id: &str) -> Result<bool, String> {
 pub async fn delete_app(app_id: &str) {
     let api_runtime = get_buckyos_api_runtime().unwrap();
     let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
-    let result = syc_cfg_client.list("/users").await;
+    let result = syc_cfg_client.list("users").await;
     let users = match result {
         Ok(users) => users,
         Err(e) => {
@@ -210,7 +210,7 @@ pub async fn delete_app(app_id: &str) {
     let mut config_key = String::new();
     let mut config_content = String::new();
     for user in users {
-        let app_key = format!("/users/{}/apps/{}/config", user, app_id);
+        let app_key = format!("users/{}/apps/{}/config", user, app_id);
         if let Ok(content) = syc_cfg_client.get(&app_key).await {
             println!("App {} found for user {}", app_id, user);
             config_key = app_key;
@@ -261,6 +261,18 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         return Err("Missing 'docker_image' in app config.".into());
     }
     let cur_app_count = get_app_count().await.map_err(|e| e.to_string())?;
+    let owner = get_buckyos_api_runtime()
+        .ok()
+        .and_then(|runtime| runtime.user_id.clone())
+        .unwrap_or_else(|| "did:web:unknown".to_string());
+    build_app_service_config_with_index(app_config, owner.as_str(), cur_app_count + 1)
+}
+
+fn build_app_service_config_with_index(
+    app_config: &serde_json::Value,
+    owner: &str,
+    app_index: u64,
+) -> Result<String, String> {
     /*
     let full_app_config = r#"
     {
@@ -340,10 +352,6 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         .and_then(|v| v.as_str())
         .unwrap_or("No description provided")
         .to_string();
-    let owner = get_buckyos_api_runtime()
-        .ok()
-        .and_then(|runtime| runtime.user_id.clone())
-        .unwrap_or_else(|| "did:web:unknown".to_string());
     let now = buckyos_kit::buckyos_get_unix_timestamp();
     let docker_image = app_config
         .get("docker_image")
@@ -508,7 +516,7 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
         tcp_ports,
         udp_ports,
         container_param,
-        cur_app_count + 1,
+        app_index,
         owner,
         data_mount_point,
         expose_config,
@@ -524,17 +532,25 @@ async fn build_app_service_config(app_config: &serde_json::Value) -> Result<Stri
 async fn get_app_count() -> Result<u64, String> {
     let api_runtime = get_buckyos_api_runtime().unwrap();
     let syc_cfg_client = api_runtime.get_system_config_client().await.unwrap();
-    let result = syc_cfg_client.list("/users").await;
-    let users = result.map_err(|e| format!("Failed to list users: {}", e))?;
+    let result = syc_cfg_client.list("users").await;
+    let users = match result {
+        Ok(users) => users,
+        Err(SystemConfigError::KeyNotFound(_)) => return Ok(0),
+        Err(e) => return Err(format!("Failed to list users: {}", e)),
+    };
     if users.is_empty() {
         return Ok(0);
     }
     println!("list uesrs: {:?}", users);
     let mut app_count = 0;
     for user in users {
-        let user_apps_key = format!("/users/{}/apps", user);
+        let user_apps_key = format!("users/{}/apps", user);
         let result = syc_cfg_client.list(&user_apps_key).await;
-        let apps = result.map_err(|e| format!("Failed to list apps for user {}: {}", user, e))?;
+        let apps = match result {
+            Ok(apps) => apps,
+            Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
+            Err(e) => return Err(format!("Failed to list apps for user {}: {}", user, e)),
+        };
         println!("list apps for user {}: {:?}", user, apps);
         app_count += apps.len() as u64;
     }
@@ -547,26 +563,6 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn test_build_app_service_config() {
-        let user_id;
-        match init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await {
-            Ok(mut runtime) => match runtime.login().await {
-                Ok(_) => {
-                    user_id = runtime.user_id.clone().unwrap();
-                    println!("user id {:?}", runtime.user_id);
-                    println!("user config {:?}", runtime.user_config);
-                    set_buckyos_api_runtime(runtime).expect("register global runtime");
-                }
-                Err(e) => {
-                    println!("Failed to login: {}", e);
-                    return;
-                }
-            },
-            Err(e) => {
-                println!("Failed to init buckyos runtime: {}", e);
-                return;
-            }
-        }
-
         let app_config_1 = r#"
         {
             "app_id": "n8n",
@@ -586,8 +582,8 @@ mod tests {
         "#;
         let app_config: serde_json::Value = serde_json::from_str(app_config_1).unwrap();
         println!("App Config: {:?}", app_config);
-        let result = build_app_service_config(&app_config).await;
-        assert!(result.is_ok());
+        let result = build_app_service_config_with_index(&app_config, "devtest", 1);
+        assert!(result.is_ok(), "{:?}", result);
         let full_app_config = result.unwrap();
         println!("Full App Config: {}", full_app_config);
         let _app_config: AppServiceSpec = serde_json::from_str(&full_app_config).unwrap();
@@ -609,8 +605,8 @@ mod tests {
         "#;
         let app_config: serde_json::Value = serde_json::from_str(app_config_2).unwrap();
         println!("App Config: {:?}", app_config);
-        let result = build_app_service_config(&app_config).await;
-        assert!(result.is_ok());
+        let result = build_app_service_config_with_index(&app_config, "devtest", 2);
+        assert!(result.is_ok(), "{:?}", result);
         let full_app_config = result.unwrap();
         println!("Full App Config: {}", full_app_config);
         let _app_config: AppServiceSpec = serde_json::from_str(&full_app_config).unwrap();

@@ -48,7 +48,7 @@ const LLM_TEMPLATES: &[Level2Template] = &[
                 weight: 2.5,
             },
             Level2Item {
-                name: "gpt-pro",
+                name: "gpt_pro",
                 target: "llm.gpt-pro",
                 weight: 2.5,
             },
@@ -80,7 +80,7 @@ const LLM_TEMPLATES: &[Level2Template] = &[
                 weight: 2.5,
             },
             Level2Item {
-                name: "gpt-pro",
+                name: "gpt_pro",
                 target: "llm.gpt-pro",
                 weight: 2.5,
             },
