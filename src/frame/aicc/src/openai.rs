@@ -927,11 +927,32 @@ impl OpenAIProvider {
         let mut messages = vec![];
 
         for (role, content) in Self::canonical_message_texts(req)? {
+            // OpenAI Responses API role 白名单只接受 `assistant / system /
+            // developer / user`,不接受 `tool` —— 但 waist 在多轮 tool loop
+            // 里会用 `role: tool` 回写 observation envelope。把它降级成
+            // `user`,让模型按"上一条 user 消息含 tool 结果"来读;真正想保
+            // 原生 `function_call_output` 结构需要 waist 一起改(还原 call_id)。
+            //
+            // content part `type` 必须匹配 role:
+            //   - assistant → `output_text` / `refusal`
+            //   - 其它 → `input_text`
+            // 早期实现一刀切写死 `input_text`,会被 OpenAI 拒为
+            // `[invalid_value] Invalid value: 'input_text'. Supported values
+            // are: 'output_text' and 'refusal'`。
+            let mapped_role = match role.as_str() {
+                "assistant" | "system" | "developer" | "user" => role.clone(),
+                _ => "user".to_string(),
+            };
+            let content_type = if mapped_role == "assistant" {
+                "output_text"
+            } else {
+                "input_text"
+            };
             messages.push(json!({
-                "role": role,
+                "role": mapped_role,
                 "content": [
                     {
-                        "type": "input_text",
+                        "type": content_type,
                         "text": content
                     }
                 ],

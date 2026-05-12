@@ -2217,15 +2217,13 @@ impl BuckyOSRuntime {
             BuckyOSRuntimeType::AppClient => {
                 //通过Zone Host Name 访问Service总是可以成功的，理论上有SDK的环境不应该使用这种方式。
                 //TODO：如果约束为有SDK的环境，必然有node_gateway,那么这个分支就不必要存在
+                //
+                // kRPC `/kapi/<service>` 一律打到 zone 的裸 host —— `app_host_perfix.<zone_host>`
+                // 这种二级域名只属于 WebUI 静态资源路由，service 维度的 RPC 不走那条路径。
+                // (例：DV test 环境里 `test.buckyos.io` 有 DNS / cert，
+                // `buckycli.test.buckyos.io` 没有。)
                 let host_name = self.zone_id.to_host_name();
-                if self.app_host_perfix.len() > 0 {
-                    return Ok(format!(
-                        "{}://{}.{}/kapi/{}",
-                        schema, self.app_host_perfix, host_name, service_name
-                    ));
-                } else {
-                    return Ok(format!("{}://{}/kapi/{}", schema, host_name, service_name));
-                }
+                return Ok(format!("{}://{}/kapi/{}", schema, host_name, service_name));
             }
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
                 let (result_url, _is_local) = self.get_kernel_service_url(service_name).await?;
