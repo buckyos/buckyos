@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, features, AiArtifact, AiCost, AiMethodRequest, AiResponseSummary, AiUsage,
-    Capability, Feature, ResourceRef,
+    ai_methods, features, AiArtifact, AiContent, AiCost, AiMessage, AiMethodRequest, AiResponseSummary,
+    AiRole, AiToolResultContent, AiUsage, Capability, Feature, ResourceRef,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
@@ -590,7 +590,7 @@ impl GoogleGiminiProvider {
         }
 
         for message in req.payload.messages.iter() {
-            text_len += message.content.len();
+            text_len += message.estimate_text_len();
         }
         if let Some(input_json) = req.payload.input_json.as_ref() {
             text_len += json_text_len(input_json);
@@ -820,17 +820,29 @@ impl GoogleGiminiProvider {
     }
 
     fn build_contents(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
-        let mut contents = vec![];
+        let mut contents: Vec<Value> = vec![];
 
-        for (role, content) in Self::canonical_message_texts(req)? {
-            contents.push(json!({
-                "role": Self::role_to_gimini(role.as_str()),
-                "parts": [
-                    {
-                        "text": content
-                    }
-                ]
-            }));
+        // 主路径:消费 typed `Vec<AiMessage>`,保留 ToolUse/ToolResult/Image
+        // 等 block,转成 Gemini parts(functionCall / functionResponse /
+        // inlineData / fileData / text)。
+        if !req.payload.messages.is_empty() {
+            for msg in req.payload.messages.iter() {
+                Self::lower_message_to_gemini(msg, &mut contents)?;
+            }
+        }
+
+        // 兼容路径:caller 把 messages 塞在 input_json 里,仅做文本降级。
+        if contents.is_empty() {
+            for (role, content) in Self::canonical_message_texts(req)? {
+                contents.push(json!({
+                    "role": Self::role_to_gimini(role.as_str()),
+                    "parts": [
+                        {
+                            "text": content
+                        }
+                    ]
+                }));
+            }
         }
 
         if contents.is_empty() {
@@ -871,6 +883,185 @@ impl GoogleGiminiProvider {
         }
 
         Ok(contents)
+    }
+
+    /// Lower a single `AiMessage` to Gemini `Content` shape. Tool results
+    /// land in a separate `role: "user"` content with a `functionResponse`
+    /// part (Gemini's tool-result convention). System/Developer are folded
+    /// into the `user` role — mirroring the legacy `role_to_gimini` default —
+    /// because this provider doesn't currently surface `systemInstruction`.
+    fn lower_message_to_gemini(
+        msg: &AiMessage,
+        contents: &mut Vec<Value>,
+    ) -> Result<(), ProviderError> {
+        match msg.role {
+            AiRole::Tool => {
+                let Some(AiContent::ToolResult {
+                    call_id,
+                    content,
+                    is_error,
+                }) = msg.content.first()
+                else {
+                    return Ok(());
+                };
+                let mut response_obj = Map::new();
+                let response_text = Self::tool_result_text(content);
+                response_obj.insert("output".to_string(), Value::String(response_text));
+                if *is_error {
+                    response_obj.insert("error".to_string(), Value::Bool(true));
+                }
+                // Gemini convention: functionResponse.name is the tool name; we
+                // don't always have it on the IR side, so reuse call_id as the
+                // stable correlator (model still matches on the immediately
+                // preceding functionCall by position).
+                let part = json!({
+                    "functionResponse": {
+                        "name": call_id,
+                        "response": Value::Object(response_obj),
+                    }
+                });
+                contents.push(json!({
+                    "role": "user",
+                    "parts": [part],
+                }));
+                Ok(())
+            }
+            _ => {
+                let role = match msg.role {
+                    AiRole::Assistant => "model",
+                    _ => "user",
+                };
+                let parts = Self::lower_blocks_to_parts(&msg.content)?;
+                if !parts.is_empty() {
+                    contents.push(json!({
+                        "role": role,
+                        "parts": parts,
+                    }));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn lower_blocks_to_parts(content: &[AiContent]) -> Result<Vec<Value>, ProviderError> {
+        let mut parts = Vec::with_capacity(content.len());
+        for block in content {
+            match block {
+                AiContent::Text { text } => {
+                    if !text.is_empty() {
+                        parts.push(json!({ "text": text }));
+                    }
+                }
+                AiContent::Image { source } => {
+                    parts.push(Self::resource_to_gemini_part(source, None, true)?);
+                }
+                AiContent::Document { source, title } => {
+                    parts.push(Self::resource_to_gemini_part(
+                        source,
+                        title.as_deref(),
+                        false,
+                    )?);
+                }
+                AiContent::ToolUse { call_id, name, args } => {
+                    let args_value = serde_json::to_value(args).unwrap_or_else(|_| json!({}));
+                    parts.push(json!({
+                        "functionCall": {
+                            "name": name,
+                            "args": args_value,
+                            "id": call_id,
+                        }
+                    }));
+                }
+                AiContent::Thinking { text, summary, .. } => {
+                    // Gemini does not surface a verifier-signed thinking block;
+                    // we drop the cryptographic state and keep a textual hint
+                    // so the model still sees the reasoning trace.
+                    let text_slice = text
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| summary.as_deref().filter(|s| !s.is_empty()));
+                    if let Some(text) = text_slice {
+                        parts.push(json!({ "text": text }));
+                    }
+                }
+                AiContent::ProviderState { provider, value } => {
+                    if provider.eq_ignore_ascii_case("google")
+                        || provider.eq_ignore_ascii_case("gemini")
+                    {
+                        parts.push(value.clone());
+                    }
+                }
+                AiContent::ToolResult { .. } => {
+                    // Tool role is handled by the caller; ignore defensively.
+                }
+            }
+        }
+        Ok(parts)
+    }
+
+    fn resource_to_gemini_part(
+        source: &ResourceRef,
+        _title: Option<&str>,
+        is_image: bool,
+    ) -> Result<Value, ProviderError> {
+        match source {
+            ResourceRef::Url { url, mime_hint } => {
+                let mime = mime_hint
+                    .clone()
+                    .unwrap_or_else(|| {
+                        if is_image {
+                            "image/*".to_string()
+                        } else {
+                            "application/octet-stream".to_string()
+                        }
+                    });
+                Ok(json!({
+                    "fileData": {
+                        "fileUri": url,
+                        "mimeType": mime,
+                    }
+                }))
+            }
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "inlineData": {
+                    "mimeType": mime,
+                    "data": data_base64,
+                }
+            })),
+            ResourceRef::NamedObject { obj_id } => Ok(json!({
+                "text": format!("named_object: {}", obj_id),
+            })),
+        }
+    }
+
+    fn tool_result_text(content: &[AiToolResultContent]) -> String {
+        let mut parts = Vec::new();
+        for item in content {
+            match item {
+                AiToolResultContent::Text { text } => parts.push(text.clone()),
+                AiToolResultContent::Image { source } => {
+                    parts.push(Self::resource_placeholder_text(source));
+                }
+                AiToolResultContent::Document { source, title } => {
+                    let mut line = Self::resource_placeholder_text(source);
+                    if let Some(title) = title {
+                        line.push_str(" (");
+                        line.push_str(title);
+                        line.push(')');
+                    }
+                    parts.push(line);
+                }
+            }
+        }
+        parts.join("\n")
+    }
+
+    fn resource_placeholder_text(source: &ResourceRef) -> String {
+        match source {
+            ResourceRef::Url { url, .. } => format!("resource_url: {}", url),
+            ResourceRef::NamedObject { obj_id } => format!("named_object: {}", obj_id),
+            ResourceRef::Base64 { mime, .. } => format!("inline_{}", mime),
+        }
     }
 
     fn extract_text_content(body: &Value) -> Option<String> {

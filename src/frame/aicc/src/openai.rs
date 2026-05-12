@@ -17,8 +17,9 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, features, value_to_object_map, AiArtifact, AiCost, AiMethodRequest,
-    AiResponseSummary, AiToolCall, AiUsage, Capability, ResourceRef,
+    ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
+    AiMethodRequest, AiResponseSummary, AiRole, AiToolCall, AiToolResultContent, AiUsage,
+    Capability, ResourceRef,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use log::{error, info, warn};
@@ -924,43 +925,119 @@ impl OpenAIProvider {
         })
     }
 
-    fn build_messages(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
-        let mut messages = vec![];
+    /// 把 `AiRole` 映射成 OpenAI Responses API 接受的 role 字符串。
+    /// `Tool` 不会出现在 message-role 上 —— ToolResult 走的是 `function_call_output`
+    /// 顶层 item,不再当作 role 消息;但兜底仍降级到 `user` 防止野生数据。
+    fn ai_role_to_openai(role: &AiRole) -> &'static str {
+        match role {
+            AiRole::System => "system",
+            AiRole::Developer => "developer",
+            AiRole::User => "user",
+            AiRole::Assistant => "assistant",
+            _ => "user",
+        }
+    }
 
-        for (role, content) in Self::canonical_message_texts(req)? {
-            // OpenAI Responses API role 白名单只接受 `assistant / system /
-            // developer / user`,不接受 `tool` —— 但 waist 在多轮 tool loop
-            // 里会用 `role: tool` 回写 observation envelope。把它降级成
-            // `user`,让模型按"上一条 user 消息含 tool 结果"来读;真正想保
-            // 原生 `function_call_output` 结构需要 waist 一起改(还原 call_id)。
-            //
-            // content part `type` 必须匹配 role:
-            //   - assistant → `output_text` / `refusal`
-            //   - 其它 → `input_text`
-            // 早期实现一刀切写死 `input_text`,会被 OpenAI 拒为
-            // `[invalid_value] Invalid value: 'input_text'. Supported values
-            // are: 'output_text' and 'refusal'`。
-            let mapped_role = match role.as_str() {
-                "assistant" | "system" | "developer" | "user" => role.clone(),
-                _ => "user".to_string(),
-            };
-            let content_type = if mapped_role == "assistant" {
+    /// 把 waist 喂来的 `Vec<AiMessage>`(每条带 `Vec<AiContent>` blocks)
+    /// 拆成 OpenAI Responses API 的 input array items 列表。
+    ///
+    /// Responses API 的 input array 接受混合 item:
+    /// - `{role, content: [{type, text}]}` —— 普通消息
+    /// - `{type: "function_call", call_id, name, arguments}` —— 顶层 tool 调用
+    /// - `{type: "function_call_output", call_id, output}` —— 顶层 tool 结果
+    ///
+    /// 一条 AiMessage 内若混合 Text + ToolUse 等 block,按顺序拆成多个 items:
+    /// 先把累积的文本 flush 成一个 message item,再 emit function_call,
+    /// 然后继续累积下一段 text。保持原始 block 顺序。
+    fn build_messages(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
+        let mut items: Vec<Value> = vec![];
+
+        // 主路径:消费 typed `Vec<AiContent>`。
+        //
+        // 注意:`AiPayload::Deserialize` 在 wire 反序列化时把 `input_json.messages`
+        // **同时**填进了 `payload.messages` (typed) 和保留在 `input_json` 副本里。
+        // 因此当 caller (waist) 走 AiMessage 路径时,这两个字段都非空。
+        // 必须**优先用 typed**,因为它带 `ToolUse` / `ToolResult` 结构;
+        // 先走 input_json 兼容路径会被 `content_value_to_text` 抽干净
+        // (只留 Text block),tool 信息全丢。
+        for msg in &req.payload.messages {
+            let role_str = Self::ai_role_to_openai(&msg.role);
+            let content_type = if role_str == "assistant" {
                 "output_text"
             } else {
                 "input_text"
             };
-            messages.push(json!({
-                "role": mapped_role,
-                "content": [
-                    {
-                        "type": content_type,
-                        "text": content
+            let mut pending_text_parts: Vec<Value> = Vec::new();
+
+            for block in &msg.content {
+                match block {
+                    AiContent::Text { text } => {
+                        if text.is_empty() {
+                            continue;
+                        }
+                        pending_text_parts.push(json!({
+                            "type": content_type,
+                            "text": text,
+                        }));
                     }
-                ],
-            }));
+                    AiContent::ToolUse { call_id, name, args } => {
+                        // 先把累积的 text 落成 message item,保持顺序。
+                        if !pending_text_parts.is_empty() {
+                            items.push(json!({
+                                "role": role_str,
+                                "content": std::mem::take(&mut pending_text_parts),
+                            }));
+                        }
+                        let arguments_str = serde_json::to_string(args)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        items.push(json!({
+                            "type": "function_call",
+                            "call_id": call_id,
+                            "name": name,
+                            "arguments": arguments_str,
+                        }));
+                    }
+                    AiContent::ToolResult { call_id, content, is_error: _ } => {
+                        // 同上,先 flush 累积的 text。
+                        if !pending_text_parts.is_empty() {
+                            items.push(json!({
+                                "role": role_str,
+                                "content": std::mem::take(&mut pending_text_parts),
+                            }));
+                        }
+                        // Responses API `function_call_output.output` 是单 string。
+                        // 把 ToolResultContent 里所有 Text block 串起来;非 text
+                        // 暂时忽略(image/document 等需要单独走 input_image)。
+                        let output_text = content
+                            .iter()
+                            .filter_map(|c| match c {
+                                AiToolResultContent::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        items.push(json!({
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": output_text,
+                        }));
+                    }
+                    // Image / Document / Thinking 等暂不处理 —— 现阶段 llm_explore /
+                    // run_local_llm 都不产生这些 block,出现的话留给后续阶段。
+                    _ => {}
+                }
+            }
+
+            if !pending_text_parts.is_empty() {
+                items.push(json!({
+                    "role": role_str,
+                    "content": pending_text_parts,
+                }));
+            }
         }
 
-        if messages.is_empty() {
+        // 兜底:caller 只给了 payload.text + resources(没塞 messages)。
+        if items.is_empty() {
             let mut content = String::new();
             if let Some(text) = req.payload.text.as_ref() {
                 content.push_str(text);
@@ -980,35 +1057,47 @@ impl OpenAIProvider {
             }
 
             if !content.trim().is_empty() {
-                messages.push(json!({
+                items.push(json!({
                     "role": "user",
                     "content": [
-                        {
-                            "type": "input_text",
-                            "text": content
-                        }
+                        { "type": "input_text", "text": content }
                     ],
                 }));
             }
         }
 
-        if messages.is_empty() {
+        if items.is_empty() {
             return Err(ProviderError::fatal(
                 "request payload has no usable text/messages for llm",
             ));
         }
 
-        Ok(messages)
+        Ok(items)
     }
 
+    /// Build OpenAI Chat Completions message array. Unlike the Responses
+    /// path, tool calls and tool results live as sibling messages
+    /// (`role:"assistant"+tool_calls`, `role:"tool"+tool_call_id`) rather
+    /// than top-level `function_call` items.
     fn build_chat_messages(req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
-        let mut messages = vec![];
+        let mut messages: Vec<Value> = vec![];
 
-        for (role, content) in Self::canonical_message_texts(req)? {
-            messages.push(json!({
-                "role": role,
-                "content": content,
-            }));
+        // 主路径:消费 typed `Vec<AiMessage>`,保留 ToolUse / ToolResult /
+        // Image / Document 等 block。
+        if !req.payload.messages.is_empty() {
+            for msg in req.payload.messages.iter() {
+                Self::lower_message_to_chat(msg, &mut messages)?;
+            }
+        }
+
+        // 兼容路径:caller 通过 input_json.messages 喂裸 JSON,仅做文本降级。
+        if messages.is_empty() {
+            for (role, content) in Self::canonical_message_texts(req)? {
+                messages.push(json!({
+                    "role": role,
+                    "content": content,
+                }));
+            }
         }
 
         if messages.is_empty() {
@@ -1045,6 +1134,212 @@ impl OpenAIProvider {
         }
 
         Ok(messages)
+    }
+
+    fn lower_message_to_chat(
+        msg: &AiMessage,
+        messages: &mut Vec<Value>,
+    ) -> Result<(), ProviderError> {
+        match msg.role {
+            AiRole::System | AiRole::Developer => {
+                let role = if matches!(msg.role, AiRole::Developer) {
+                    "developer"
+                } else {
+                    "system"
+                };
+                let mut text = String::new();
+                for block in msg.content.iter() {
+                    if let AiContent::Text { text: chunk } = block {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(chunk.as_str());
+                    }
+                }
+                if !text.is_empty() {
+                    messages.push(json!({
+                        "role": role,
+                        "content": text,
+                    }));
+                }
+            }
+            AiRole::User => {
+                let parts = Self::chat_user_content_parts(&msg.content)?;
+                if parts.is_empty() {
+                    return Ok(());
+                }
+                // If only plain text, emit `content: <string>` for legacy
+                // proxies; else use the parts array.
+                let only_text_simple = parts.iter().all(|p| {
+                    p.get("type").and_then(|v| v.as_str()) == Some("text")
+                });
+                if only_text_simple {
+                    let joined = parts
+                        .iter()
+                        .filter_map(|p| p.get("text").and_then(|v| v.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    messages.push(json!({
+                        "role": "user",
+                        "content": joined,
+                    }));
+                } else {
+                    messages.push(json!({
+                        "role": "user",
+                        "content": parts,
+                    }));
+                }
+            }
+            AiRole::Assistant => {
+                let mut text_chunks: Vec<String> = Vec::new();
+                let mut tool_calls: Vec<Value> = Vec::new();
+                for block in &msg.content {
+                    match block {
+                        AiContent::Text { text } => {
+                            if !text.is_empty() {
+                                text_chunks.push(text.clone());
+                            }
+                        }
+                        AiContent::ToolUse { call_id, name, args } => {
+                            let arguments_str = serde_json::to_string(args)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            tool_calls.push(json!({
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": arguments_str,
+                                }
+                            }));
+                        }
+                        AiContent::Thinking { text, summary, .. } => {
+                            // Chat Completions has no canonical thinking
+                            // surface; keep the textual trace so it survives
+                            // a round-trip.
+                            let candidate = text
+                                .as_deref()
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| summary.as_deref().filter(|s| !s.is_empty()));
+                            if let Some(value) = candidate {
+                                text_chunks.push(value.to_string());
+                            }
+                        }
+                        AiContent::ProviderState { provider, value: _ } => {
+                            // No legacy chat-completions surface accepts
+                            // foreign provider state; drop unless target.
+                            let _ = provider;
+                        }
+                        _ => {
+                            // ToolResult / Image / Document not valid on
+                            // assistant turn in Chat Completions.
+                        }
+                    }
+                }
+                let mut body = Map::new();
+                body.insert("role".to_string(), Value::String("assistant".to_string()));
+                if text_chunks.is_empty() {
+                    body.insert("content".to_string(), Value::Null);
+                } else {
+                    body.insert("content".to_string(), Value::String(text_chunks.join("\n")));
+                }
+                if !tool_calls.is_empty() {
+                    body.insert("tool_calls".to_string(), Value::Array(tool_calls));
+                }
+                messages.push(Value::Object(body));
+            }
+            AiRole::Tool => {
+                let Some(AiContent::ToolResult {
+                    call_id,
+                    content,
+                    is_error: _,
+                }) = msg.content.first()
+                else {
+                    return Ok(());
+                };
+                let text = Self::tool_result_text_for_chat(content);
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": text,
+                }));
+            }
+        }
+        Ok(())
+    }
+
+    fn chat_user_content_parts(content: &[AiContent]) -> Result<Vec<Value>, ProviderError> {
+        let mut parts = Vec::with_capacity(content.len());
+        for block in content {
+            match block {
+                AiContent::Text { text } => {
+                    if !text.is_empty() {
+                        parts.push(json!({ "type": "text", "text": text }));
+                    }
+                }
+                AiContent::Image { source } => {
+                    parts.push(Self::chat_image_part(source)?);
+                }
+                AiContent::Document { source, title } => {
+                    // Chat Completions has no dedicated `document` part —
+                    // emit a text reference so the document URL/id is at
+                    // least surfaced to the model.
+                    let mut line = Self::chat_resource_text(source);
+                    if let Some(title) = title.as_deref().filter(|s| !s.is_empty()) {
+                        line = format!("{} ({})", line, title);
+                    }
+                    parts.push(json!({ "type": "text", "text": line }));
+                }
+                _ => {}
+            }
+        }
+        Ok(parts)
+    }
+
+    fn chat_image_part(source: &ResourceRef) -> Result<Value, ProviderError> {
+        match source {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "image_url",
+                "image_url": { "url": url },
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{};base64,{}", mime, data_base64) },
+            })),
+            ResourceRef::NamedObject { obj_id } => Ok(json!({
+                "type": "text",
+                "text": format!("named_object: {}", obj_id),
+            })),
+        }
+    }
+
+    fn chat_resource_text(source: &ResourceRef) -> String {
+        match source {
+            ResourceRef::Url { url, .. } => format!("resource_url: {}", url),
+            ResourceRef::NamedObject { obj_id } => format!("named_object: {}", obj_id),
+            ResourceRef::Base64 { mime, .. } => format!("inline_{}", mime),
+        }
+    }
+
+    fn tool_result_text_for_chat(content: &[AiToolResultContent]) -> String {
+        let mut parts = Vec::new();
+        for item in content {
+            match item {
+                AiToolResultContent::Text { text } => parts.push(text.clone()),
+                AiToolResultContent::Image { source } => {
+                    parts.push(Self::chat_resource_text(source));
+                }
+                AiToolResultContent::Document { source, title } => {
+                    let mut line = Self::chat_resource_text(source);
+                    if let Some(title) = title {
+                        line.push_str(" (");
+                        line.push_str(title);
+                        line.push(')');
+                    }
+                    parts.push(line);
+                }
+            }
+        }
+        parts.join("\n")
     }
 
     fn use_chat_completions_endpoint(&self) -> bool {

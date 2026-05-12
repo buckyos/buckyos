@@ -307,7 +307,7 @@ impl ClaudeProvider {
         }
 
         for message in req.payload.messages.iter() {
-            text_len += message.content.len();
+            text_len += message.estimate_text_len();
         }
         if let Some(input_json) = req.payload.input_json.as_ref() {
             text_len += json_text_len(input_json);

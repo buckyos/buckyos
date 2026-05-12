@@ -1654,7 +1654,7 @@ fn estimate_request_tokens(request: &AiMethodRequest) -> (u64, u64) {
         .map(|text| text.len())
         .unwrap_or(0);
     for message in request.payload.messages.iter() {
-        text_len = text_len.saturating_add(message.content.len());
+        text_len = text_len.saturating_add(message.estimate_text_len());
     }
     if let Some(input_json) = request.payload.input_json.as_ref() {
         text_len = text_len.saturating_add(json_text_len(input_json));

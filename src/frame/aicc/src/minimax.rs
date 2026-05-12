@@ -2,7 +2,7 @@ use crate::aicc::{
     llm_logical_mounts, provider_model_metadata, provider_type_from_settings, AIComputeCenter,
     Provider, ProviderError, ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
-use crate::claude_protocol::convert_complete_request;
+use crate::claude_protocol::{convert_complete_request_with_dialect, ProtocolDialect};
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
     ProviderTypeTrustedSource, QuotaState,
@@ -132,7 +132,7 @@ impl MiniMaxProvider {
         }
 
         for message in req.payload.messages.iter() {
-            text_len += message.content.len();
+            text_len += message.estimate_text_len();
         }
         if let Some(input_json) = req.payload.input_json.as_ref() {
             text_len += json_text_len(input_json);
@@ -228,7 +228,8 @@ impl MiniMaxProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
-        let (request_obj, _ignored) = convert_complete_request(req, provider_model)?;
+        let (request_obj, _ignored) =
+            convert_complete_request_with_dialect(req, provider_model, ProtocolDialect::MiniMax)?;
         let request_value = Value::Object(request_obj.clone());
         let endpoint = format!("{}/messages", self.base_url);
 

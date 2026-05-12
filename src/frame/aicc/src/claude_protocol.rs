@@ -1,8 +1,22 @@
 #![allow(dead_code)]
 
 use crate::aicc::ProviderError;
-use buckyos_api::{AiMethodRequest, AiToolSpec, ResourceRef};
+use buckyos_api::{
+    AiContent, AiMessage, AiMethodRequest, AiRole, AiToolResultContent, AiToolSpec, ResourceRef,
+};
 use serde_json::{json, Map, Value};
+
+/// Tool result lowering dialect.
+///
+/// `Claude` emits native `tool_use` / `tool_result` content blocks.
+/// `MiniMax` exposes the Anthropic surface but per spec we degrade tool
+/// results to plain user text — the upstream endpoint does not reliably
+/// honor native tool_result blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProtocolDialect {
+    Claude,
+    MiniMax,
+}
 
 const CLAUDE_OPTION_ALLOWLIST: &[&str] = &[
     "max_tokens",
@@ -676,55 +690,57 @@ fn content_value_to_text(value: &Value) -> Result<Option<String>, ProviderError>
     }
 }
 
-fn build_messages(req: &AiMethodRequest) -> Result<(Option<String>, Vec<Value>), ProviderError> {
-    let mut system_parts = vec![];
-    let mut messages = vec![];
+fn build_messages(
+    req: &AiMethodRequest,
+    dialect: ProtocolDialect,
+) -> Result<(Option<String>, Vec<Value>), ProviderError> {
+    let mut system_parts: Vec<String> = vec![];
+    let mut messages: Vec<Value> = vec![];
 
-    let canonical_messages = req
-        .payload
-        .input_json
-        .as_ref()
-        .and_then(|value| value.get("messages"))
-        .and_then(|value| value.as_array());
-
-    if let Some(canonical_messages) = canonical_messages {
-        for msg in canonical_messages {
-            let Some(msg_obj) = msg.as_object() else {
-                continue;
-            };
-            let role = msg_obj
-                .get("role")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("user")
-                .to_lowercase();
-            let Some(content) = msg_obj
-                .get("content")
-                .map(content_value_to_text)
-                .transpose()?
-                .flatten()
-            else {
-                continue;
-            };
-            push_message_content(
-                &mut system_parts,
-                &mut messages,
-                role.as_str(),
-                content.as_str(),
-            );
+    // 主路径:消费 typed `Vec<AiMessage>` —— 保留 ToolUse / ToolResult /
+    // Image / Document / Thinking 等 block,不再压缩成纯文本。
+    if !req.payload.messages.is_empty() {
+        for msg in req.payload.messages.iter() {
+            lower_ai_message(msg, dialect, &mut system_parts, &mut messages)?;
         }
     }
 
+    // 兼容路径:caller 直接通过 input_json.messages 喂裸 JSON。这条线现在
+    // 仅承担降级到 text 的兜底 —— 上游已经鼓励走 typed messages。
     if messages.is_empty() && system_parts.is_empty() {
-        for msg in req.payload.messages.iter() {
-            let role = msg.role.as_str();
-            let content = msg.text_content();
-            let content = content.trim();
-            if content.is_empty() {
-                continue;
+        if let Some(canonical_messages) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("messages"))
+            .and_then(|value| value.as_array())
+        {
+            for msg in canonical_messages {
+                let Some(msg_obj) = msg.as_object() else {
+                    continue;
+                };
+                let role = msg_obj
+                    .get("role")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("user")
+                    .to_lowercase();
+                let Some(content) = msg_obj
+                    .get("content")
+                    .map(content_value_to_text)
+                    .transpose()?
+                    .flatten()
+                else {
+                    continue;
+                };
+                push_text_message_content(
+                    &mut system_parts,
+                    &mut messages,
+                    role.as_str(),
+                    content.as_str(),
+                );
             }
-            push_message_content(&mut system_parts, &mut messages, role, content);
         }
     }
 
@@ -749,7 +765,260 @@ fn build_messages(req: &AiMethodRequest) -> Result<(Option<String>, Vec<Value>),
     Ok((system, messages))
 }
 
-fn push_message_content(
+/// Lower a single `AiMessage` (typed content blocks) into Claude / MiniMax
+/// native message form. System/Developer text accumulates into
+/// `system_parts`; everything else lands in `messages`.
+fn lower_ai_message(
+    msg: &AiMessage,
+    dialect: ProtocolDialect,
+    system_parts: &mut Vec<String>,
+    messages: &mut Vec<Value>,
+) -> Result<(), ProviderError> {
+    match msg.role {
+        AiRole::System | AiRole::Developer => {
+            let mut text = String::new();
+            for block in &msg.content {
+                if let AiContent::Text { text: chunk } = block {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(chunk);
+                }
+            }
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                system_parts.push(trimmed.to_string());
+            }
+        }
+        AiRole::User => {
+            let blocks = lower_user_blocks(&msg.content)?;
+            if !blocks.is_empty() {
+                messages.push(json!({ "role": "user", "content": blocks }));
+            }
+        }
+        AiRole::Assistant => {
+            let blocks = lower_assistant_blocks(&msg.content)?;
+            if !blocks.is_empty() {
+                messages.push(json!({ "role": "assistant", "content": blocks }));
+            }
+        }
+        AiRole::Tool => {
+            // Validator guarantees a single ToolResult block; defend against
+            // misuse anyway.
+            let Some(AiContent::ToolResult {
+                call_id,
+                content,
+                is_error,
+            }) = msg.content.first()
+            else {
+                return Ok(());
+            };
+            match dialect {
+                ProtocolDialect::Claude => {
+                    let blocks = lower_tool_result_content_claude(content)?;
+                    let mut tr = json!({
+                        "type": "tool_result",
+                        "tool_use_id": call_id,
+                        "content": blocks,
+                    });
+                    if *is_error {
+                        if let Value::Object(map) = &mut tr {
+                            map.insert("is_error".to_string(), Value::Bool(true));
+                        }
+                    }
+                    messages.push(json!({
+                        "role": "user",
+                        "content": [tr],
+                    }));
+                }
+                ProtocolDialect::MiniMax => {
+                    // Degrade to user text per the MiniMax spec.
+                    let text = tool_result_content_to_text(content);
+                    let body = if *is_error {
+                        format!("tool_result[{}] (error): {}", call_id, text)
+                    } else {
+                        format!("tool_result[{}]: {}", call_id, text)
+                    };
+                    messages.push(text_message("user", body.as_str()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lower_user_blocks(content: &[AiContent]) -> Result<Vec<Value>, ProviderError> {
+    let mut blocks = Vec::with_capacity(content.len());
+    for block in content {
+        match block {
+            AiContent::Text { text } => {
+                if !text.is_empty() {
+                    blocks.push(text_content_block(text));
+                }
+            }
+            AiContent::Image { source } => {
+                blocks.push(image_block_from_source(source)?);
+            }
+            AiContent::Document { source, title } => {
+                blocks.push(document_block_from_source(source, title.as_deref())?);
+            }
+            _ => {
+                // Validator rejects other block types on User role; ignore
+                // defensively rather than fatal.
+            }
+        }
+    }
+    Ok(blocks)
+}
+
+fn lower_assistant_blocks(content: &[AiContent]) -> Result<Vec<Value>, ProviderError> {
+    let mut blocks = Vec::with_capacity(content.len());
+    for block in content {
+        match block {
+            AiContent::Text { text } => {
+                if !text.is_empty() {
+                    blocks.push(text_content_block(text));
+                }
+            }
+            AiContent::ToolUse { call_id, name, args } => {
+                let input = serde_json::to_value(args).unwrap_or_else(|_| json!({}));
+                blocks.push(json!({
+                    "type": "tool_use",
+                    "id": call_id,
+                    "name": name,
+                    "input": input,
+                }));
+            }
+            AiContent::Thinking {
+                text,
+                provider_metadata,
+                summary,
+            } => {
+                // Claude `thinking` blocks pair `thinking` (plaintext) with
+                // `signature` (verifier blob). When we don't have a signature
+                // we fall back to emitting just the summary as text so the
+                // assistant turn isn't reduced to nothing.
+                let signature = provider_metadata
+                    .as_ref()
+                    .and_then(|value| value.get("signature"))
+                    .and_then(|value| value.as_str());
+                if let (Some(thinking), Some(sig)) = (text.as_deref(), signature) {
+                    blocks.push(json!({
+                        "type": "thinking",
+                        "thinking": thinking,
+                        "signature": sig,
+                    }));
+                } else if let Some(summary) = summary.as_deref().filter(|s| !s.is_empty()) {
+                    blocks.push(text_content_block(summary));
+                } else if let Some(thinking) = text.as_deref().filter(|s| !s.is_empty()) {
+                    blocks.push(text_content_block(thinking));
+                }
+            }
+            AiContent::ProviderState { provider, value } => {
+                // Restore native item only when the block was authored by
+                // this provider; other providers' opaque state is dropped.
+                if provider.eq_ignore_ascii_case("anthropic") {
+                    blocks.push(value.clone());
+                }
+            }
+            _ => {
+                // ToolResult / Image / Document not valid on Assistant role —
+                // validator catches this upstream.
+            }
+        }
+    }
+    Ok(blocks)
+}
+
+fn lower_tool_result_content_claude(
+    content: &[AiToolResultContent],
+) -> Result<Vec<Value>, ProviderError> {
+    let mut blocks = Vec::with_capacity(content.len());
+    for item in content {
+        match item {
+            AiToolResultContent::Text { text } => {
+                blocks.push(text_content_block(text));
+            }
+            AiToolResultContent::Image { source } => {
+                blocks.push(image_block_from_source(source)?);
+            }
+            AiToolResultContent::Document { source, title } => {
+                blocks.push(document_block_from_source(source, title.as_deref())?);
+            }
+        }
+    }
+    Ok(blocks)
+}
+
+fn tool_result_content_to_text(content: &[AiToolResultContent]) -> String {
+    let mut parts = Vec::new();
+    for item in content {
+        match item {
+            AiToolResultContent::Text { text } => parts.push(text.clone()),
+            AiToolResultContent::Image { source } => {
+                parts.push(resource_text_placeholder(source));
+            }
+            AiToolResultContent::Document { source, title } => {
+                let mut line = resource_text_placeholder(source);
+                if let Some(title) = title {
+                    line.push_str(" (");
+                    line.push_str(title);
+                    line.push(')');
+                }
+                parts.push(line);
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+fn resource_text_placeholder(source: &ResourceRef) -> String {
+    match source {
+        ResourceRef::Url { url, .. } => format!("resource_url: {}", url),
+        ResourceRef::NamedObject { obj_id } => format!("named_object: {}", obj_id),
+        ResourceRef::Base64 { mime, .. } => format!("inline_{}", mime),
+    }
+}
+
+fn image_block_from_source(source: &ResourceRef) -> Result<Value, ProviderError> {
+    Ok(json!({
+        "type": "image",
+        "source": claude_source_object(source)?,
+    }))
+}
+
+fn document_block_from_source(
+    source: &ResourceRef,
+    title: Option<&str>,
+) -> Result<Value, ProviderError> {
+    let mut obj = Map::new();
+    obj.insert("type".to_string(), Value::String("document".to_string()));
+    obj.insert("source".to_string(), claude_source_object(source)?);
+    if let Some(title) = title.filter(|s| !s.is_empty()) {
+        obj.insert("title".to_string(), Value::String(title.to_string()));
+    }
+    Ok(Value::Object(obj))
+}
+
+fn claude_source_object(source: &ResourceRef) -> Result<Value, ProviderError> {
+    match source {
+        ResourceRef::Url { url, .. } => Ok(json!({
+            "type": "url",
+            "url": url,
+        })),
+        ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+            "type": "base64",
+            "media_type": mime,
+            "data": data_base64,
+        })),
+        ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+            "claude provider cannot lower named_object source `{}` without resolution",
+            obj_id
+        ))),
+    }
+}
+
+fn push_text_message_content(
     system_parts: &mut Vec<String>,
     messages: &mut Vec<Value>,
     role: &str,
@@ -801,10 +1070,18 @@ pub(crate) fn convert_complete_request(
     req: &AiMethodRequest,
     provider_model: &str,
 ) -> Result<(Map<String, Value>, Vec<String>), ProviderError> {
+    convert_complete_request_with_dialect(req, provider_model, ProtocolDialect::Claude)
+}
+
+pub(crate) fn convert_complete_request_with_dialect(
+    req: &AiMethodRequest,
+    provider_model: &str,
+    dialect: ProtocolDialect,
+) -> Result<(Map<String, Value>, Vec<String>), ProviderError> {
     let model = resolve_provider_model(req, provider_model)
         .ok_or_else(|| ProviderError::fatal("provider model is required for claude request"))?;
 
-    let (system, messages) = build_messages(req)?;
+    let (system, messages) = build_messages(req, dialect)?;
 
     let mut request = Map::new();
     request.insert("model".to_string(), Value::String(model));
@@ -1089,6 +1366,102 @@ mod tests {
                 .pointer("/tools/0/name")
                 .and_then(|value| value.as_str()),
             Some("payload_tool")
+        );
+    }
+
+    #[test]
+    fn typed_assistant_tool_use_lowers_to_native_block() {
+        use buckyos_api::AiContent;
+        use std::collections::HashMap;
+
+        let mut req = base_request();
+        let mut args = HashMap::new();
+        args.insert("topic".to_string(), json!("project"));
+        req.payload.messages = vec![
+            AiMessage::text(AiRole::User, "look it up"),
+            AiMessage::new(
+                AiRole::Assistant,
+                vec![AiContent::tool_use("call-1", "load_memory", args)],
+            ),
+            AiMessage::new(
+                AiRole::Tool,
+                vec![AiContent::tool_result_text("call-1", "ok", false)],
+            ),
+        ];
+
+        let (request, _) = convert_complete_request(&req, "claude-3-7-sonnet-20250219")
+            .expect("convert should work");
+        let value = Value::Object(request);
+
+        assert_eq!(
+            value
+                .pointer("/messages/1/content/0/type")
+                .and_then(|v| v.as_str()),
+            Some("tool_use"),
+            "assistant tool_use must lower to native Claude block: {}",
+            value
+        );
+        assert_eq!(
+            value
+                .pointer("/messages/1/content/0/id")
+                .and_then(|v| v.as_str()),
+            Some("call-1")
+        );
+        assert_eq!(
+            value
+                .pointer("/messages/2/content/0/type")
+                .and_then(|v| v.as_str()),
+            Some("tool_result"),
+            "tool role must become Claude tool_result: {}",
+            value
+        );
+        assert_eq!(
+            value
+                .pointer("/messages/2/content/0/tool_use_id")
+                .and_then(|v| v.as_str()),
+            Some("call-1")
+        );
+    }
+
+    #[test]
+    fn minimax_dialect_degrades_tool_result_to_user_text() {
+        use buckyos_api::AiContent;
+
+        let mut req = base_request();
+        req.payload.messages = vec![
+            AiMessage::text(AiRole::User, "look it up"),
+            AiMessage::new(
+                AiRole::Tool,
+                vec![AiContent::tool_result_text("call-1", "ok", false)],
+            ),
+        ];
+
+        let (request, _) = convert_complete_request_with_dialect(
+            &req,
+            "MiniMax-M2.5",
+            ProtocolDialect::MiniMax,
+        )
+        .expect("convert should work");
+        let value = Value::Object(request);
+
+        // The tool result must NOT carry a Claude-shaped tool_result block;
+        // it must collapse to plain user text per the MiniMax spec.
+        assert_ne!(
+            value
+                .pointer("/messages/1/content/0/type")
+                .and_then(|v| v.as_str()),
+            Some("tool_result"),
+            "minimax should not emit tool_result blocks: {}",
+            value
+        );
+        let body = value
+            .pointer("/messages/1/content/0/text")
+            .and_then(|v| v.as_str())
+            .expect("tool result must land as text body");
+        assert!(
+            body.contains("call-1") && body.contains("ok"),
+            "tool result text must carry call_id and payload: {}",
+            body
         );
     }
 }
