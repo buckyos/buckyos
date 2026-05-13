@@ -53,6 +53,103 @@
 
 本文建议新增或固化的对象，主要位于 `Message Tunnel` 抽象层，用于描述外部 IM 原始对象、平台能力、会话事件和转换契约。如果未来需要把这些对象落入公共 SDK，应以现有基础类型为依赖，不应反向改写 `MsgObject`/`MsgRecord` 的既有语义。
 
+### 3.1 现有基础类型 Review
+
+从当前仓库实现看，`MsgCenter` 已经具备理论完整 `Message Tunnel` 所需的主要投递骨架：
+
+- `IngressContext` 能记录 `tunnel_did`、`platform`、`chat_id`、`source_account_id`、`context_id`、`contact_mgr_owner` 和 `extra`，足以承载入站来源、联系人作用域和平台原始上下文。
+- `SendContext` 能记录 `preferred_tunnel`、`priority` 和 `contact_mgr_owner`，足以表达出站投递偏好和联系人作用域。
+- `RouteInfo` 能记录 `tunnel_did`、`platform`、`account_id`、`address`、`chat_id`、`target_did`、`mode`、`priority`、`ext_ids` 和 `extra`，足以表达回投外部 IM 的最小路由。
+- `MsgRecord` 已经把消息事实对象和 owner 视图分离，并支持 `Inbox`、`Outbox`、`GroupInbox`、`TunnelOutbox`、`RequestBox`，这是处理多 owner 状态、投递状态和 UI 会话归类的正确方向。
+- `DeliveryInfo` 和 `DeliveryReportResult` 已经能表达尝试次数、外部消息 ID、送达时间、错误、重试时间和是否可重试，足以支撑基本可靠投递。
+
+不足主要集中在 `MsgObject` 的语义完整性上。当前 `MsgObject` 已经有 `from`、`source`、`to`、`kind`、`thread`、`workspace`、`content`、`proof`、`meta` 等字段，能够支撑基础聊天、群聊、附件引用和平台扩展；但如果要把 `Message Tunnel` 定义为“理论上完整”的 IM 适配层，它还缺少几个一等语义：
+
+- 内容是单个 `MsgContent`，对“文本 + 富文本 + 附件 + 引用 + mention + reaction + fallback”的混合消息表达不够清晰。
+- 会话状态、成员变化、typing、授权变化、消息编辑/删除等事件只能放在 `kind`、`content` 或 `meta` 中约定，缺少稳定的事件 envelope。
+- 外部平台引用没有标准字段，只能放入 `meta[platform]`，不同 tunnel 容易各自发明格式。
+- 未知平台内容虽然可以放进 `meta`，但缺少统一的 `Unknown`/fallback 约定，旧系统或 UI 不容易安全展示。
+- 消息修订、删除、撤回、reaction 这类“指向另一条消息的动作”缺少标准 target 语义。
+
+因此本文建议把现有 `MsgObject` 作为第一个正式版本继续使用其核心身份字段，但补充一个更明确的 v1 内容契约。这个调整不要求兼容旧版本，因为当前还没有正式用户；同时它保持 `MsgObject` 仍是 NamedObject，`MsgRecord` 仍只保存 owner 视图和投递状态。
+
+### 3.2 建议的 `MsgObject` v1 契约
+
+下面定义的是理论完整 `Message Tunnel` 需要的 `MsgObject` 语义契约。已有 `DID`、`ObjId`、`Thread`、`MsgRecord` 等基础类型不在本文重新定义。
+
+```rust
+pub struct MsgObject {
+    pub schema_version: u32,
+    pub from: DID,
+    pub source: Option<DID>,
+    pub to: Vec<DID>,
+    pub kind: MsgObjKind,
+    pub thread: Thread,
+    pub workspace: Option<DID>,
+    pub created_at_ms: u64,
+    pub expires_at_ms: Option<u64>,
+    pub nonce: Option<u64>,
+    pub body: MsgBody,
+    pub external: Vec<ExternalMessageRef>,
+    pub relations: Vec<MsgRelation>,
+    pub proof: Option<String>,
+    pub meta: BTreeMap<String, serde_json::Value>,
+}
+```
+
+- `schema_version`：消息对象 schema 版本。旧系统遇到更高版本时，应尽量读取已知字段并保留未知字段，不应拒绝整条消息。
+- `from`：逻辑发送方。群消息中可以是群 DID；普通消息中通常是作者 DID。
+- `source`：实际作者。群消息中通常是成员 DID；非群消息可为空。
+- `to`：逻辑接收方列表。可以是用户、Agent、群或系统组件 DID。
+- `kind`：消息大类。用于区分聊天消息、群消息、事件、通知、请求等。
+- `thread`：会话、topic、reply thread 或邮件 thread 线索。
+- `workspace`：可选协作空间或上下文 DID。
+- `created_at_ms`：消息创建时间。
+- `expires_at_ms`：可选过期时间。
+- `nonce`：用于避免内容相同但业务语义不同的消息得到同一对象 ID。
+- `body`：标准化消息主体，见 `MsgBody`。
+- `external`：一个或多个外部平台消息引用。跨平台转发、同步和回投时可以保留多个来源。
+- `relations`：当前消息与其他消息或外部消息的关系，例如回复、引用、编辑、删除、reaction。
+- `proof`：签名、证明或可验证材料引用。
+- `meta`：扩展字段。平台原始 payload 应放在 `meta[platform]` 下；secret 不得放入该字段。
+
+```rust
+pub enum MsgBody {
+    Blocks(Vec<MsgContentBlock>),
+    Event(TunnelEvent),
+    Empty {
+        reason: String,
+        raw: serde_json::Value,
+    },
+}
+```
+
+- `Blocks`：普通聊天内容。一个消息可以由多个内容块组成。
+- `Event`：会话状态、成员变化、授权变化、typing、消息状态等事件。
+- `Empty`：无法标准化但仍需要保留事实的消息。`reason` 说明原因，`raw` 保存安全过滤后的原始内容。
+
+```rust
+pub enum MsgRelation {
+    ReplyTo { msg_id: Option<ObjId>, external: Option<ExternalMessageRef> },
+    Quote { msg_id: Option<ObjId>, external: Option<ExternalMessageRef> },
+    EditOf { msg_id: Option<ObjId>, external: Option<ExternalMessageRef> },
+    DeleteOf { msg_id: Option<ObjId>, external: Option<ExternalMessageRef> },
+    ReactionTo { msg_id: Option<ObjId>, external: Option<ExternalMessageRef>, reaction: String },
+    ForwardOf { msg_id: Option<ObjId>, external: Option<ExternalMessageRef> },
+    Unknown { relation_type: String, raw: serde_json::Value },
+}
+```
+
+- `ReplyTo`：回复目标。
+- `Quote`：引用目标。
+- `EditOf`：编辑目标。原 `MsgObject` 不应被直接改写；编辑应作为新消息或事件表达。
+- `DeleteOf`：删除或撤回目标。删除是状态或事件，不应破坏已持久化对象。
+- `ReactionTo`：表态目标。
+- `ForwardOf`：转发来源。
+- `Unknown`：未来平台关系类型。旧系统应保留或忽略，不应崩溃。
+
+`MsgRecord`、`RouteInfo`、`DeliveryInfo` 不建议为理论完整 tunnel 重新定义。它们当前已经把“不可变消息事实”和“可变 owner 视图/投递状态”分开，后续只需要在不破坏既有语义的前提下补充可选字段或把平台扩展放入 `extra`。
+
 ## 4. 外部 IM 对象语义
 
 外部 IM 系统里的账号 ID、会话 ID、消息 ID、群 ID、租户 ID、频道 ID 等，首先是外部平台自己的字符串。它们可以映射为 BuckyOS DID，但只有在确实需要跨系统寻址、授权、联系人合并或系统内长期引用时才应映射。
