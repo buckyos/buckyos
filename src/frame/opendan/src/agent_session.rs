@@ -19,6 +19,7 @@ use tokio::task::JoinHandle;
 use agent_tool::{AgentToolManager, SessionRuntimeContext};
 use llm_context::{
     context_loop::LLMContext,
+    observation::Observation,
     outcome::{ContextOutput, LLMContextOutcome, ResumeFill},
     request::{ContextOwnerRef, LLMContextRequest},
     state::LLMContextSnapshot,
@@ -29,6 +30,8 @@ use crate::ai_runtime::{
     build_session_deps, AgentRuntime, OneLineStatusSink, SessionDepsInput,
 };
 use crate::behavior_cfg::{BehaviorCfg, SwitchMode};
+use crate::session_event_pump::SessionEventPump;
+use crate::task_dispatch::TaskDispatch;
 
 /// Internal wake-up signal for the session worker. The worker consumes the
 /// actual payload from `SessionMeta::pending_inputs` (which is persisted) —
@@ -63,6 +66,12 @@ pub enum PendingInput {
         from: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_did: Option<String>,
+        /// Human-readable display name for the sender, when known. Filled
+        /// either by msg-center (existing `record.from_name`) or by the
+        /// inbound pump via the contact-mgr lookup. Empty / unknown when
+        /// the contact isn't registered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tunnel_did: Option<String>,
         text: String,
@@ -142,6 +151,52 @@ pub struct SessionMeta {
     /// workspace (legacy MVP flow auto-binds on session create).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Async-tool dispatches the LLM is waiting on. Populated by
+    /// `handle_outcome::PendingTool` after each entry is registered with
+    /// `task_mgr` and a `/task_mgr/<task_id>` subscription is in place.
+    /// Persisted so a restart can pick up where it left off — the new
+    /// worker re-subscribes via `event_subscriptions` and resumes when the
+    /// completion events arrive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_task_calls: Vec<PendingTaskCall>,
+    /// Short human-friendly label for this session. Empty for the
+    /// legacy auto-created UI sessions; populated by
+    /// `create_worksession` so worksession-list UIs can show meaningful
+    /// names.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// Goal / task statement. Empty for UI sessions (their job is to
+    /// chat with the human); set by `create_worksession` so the work
+    /// session's first inference has something to drive it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub objective: String,
+    /// Has this session run at least one inference? Used so a freshly
+    /// created Work session auto-kicks (objective drives the first turn,
+    /// no external message needed) while subsequent restarts wait on
+    /// real inputs. Always `false` on the first persist; flipped to
+    /// `true` after the first turn returns from `run_one_turn`.
+    #[serde(default)]
+    pub bootstrap_done: bool,
+}
+
+/// One async tool dispatch tracked at the session level. Bridges the LLM's
+/// `call_id` to the `task_mgr` task that carries the real work, plus the
+/// kevent pattern we listen on for completion. The session uses this map
+/// to recognize incoming completion events and assemble a
+/// `ResumeFill::ToolResults` once every pending call has a result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingTaskCall {
+    /// LLM-side identifier from the `AiToolCall`. Must match what the
+    /// snapshot's `pending_tool_calls` carries — resume validates this.
+    pub call_id: String,
+    /// Tool name (e.g. `download`) — informational, used for logging /
+    /// fallback observation building.
+    pub tool_name: String,
+    /// task_mgr task id returned by `dispatch_async_tool`.
+    pub task_id: i64,
+    /// kevent pattern we subscribed to for this task. Stored so we can
+    /// unsubscribe once the completion arrives.
+    pub event_pattern: String,
 }
 
 /// One persisted kevent subscription belonging to a session.
@@ -179,6 +234,10 @@ impl SessionMeta {
             peer_tunnel_did: None,
             event_subscriptions: Vec::new(),
             workspace_id: None,
+            pending_task_calls: Vec::new(),
+            title: String::new(),
+            objective: String::new(),
+            bootstrap_done: false,
         }
     }
 }
@@ -235,6 +294,11 @@ pub struct AgentSession {
     handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     pub meta: Arc<Mutex<SessionMeta>>,
     pub status: Arc<InMemoryStatus>,
+    /// Per-agent kevent pump handle. `None` for CLI / test runs without a
+    /// kevent client; otherwise the session pushes its current pattern
+    /// list here whenever `subscribe_event` / `unsubscribe_event` mutates
+    /// `event_subscriptions`, so the agent-wide reader rebuilds promptly.
+    event_pump: Option<Arc<SessionEventPump>>,
 
     trace_seq: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -254,6 +318,10 @@ pub struct AgentSessionBuild {
     /// event_subscriptions persisted before the last crash survive into
     /// the new in-memory session.
     pub existing_meta: Option<SessionMeta>,
+    /// Optional event pump handle — when present, the session updates its
+    /// subscription patterns directly through the pump so additions take
+    /// effect without going through the AIAgent layer first.
+    pub event_pump: Option<Arc<SessionEventPump>>,
 }
 
 impl AgentSession {
@@ -296,6 +364,7 @@ impl AgentSession {
             handle: Arc::new(Mutex::new(None)),
             meta: Arc::new(Mutex::new(meta)),
             status: Arc::new(InMemoryStatus::new()),
+            event_pump: b.event_pump,
             trace_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         (session, inbox_rx)
@@ -381,6 +450,14 @@ impl AgentSession {
         *self.handle.lock().await = Some(handle);
     }
 
+    /// Send a no-op wake signal so the worker re-checks `pending_inputs`
+    /// + the bootstrap-turn predicate. Used by `create_work_session` after
+    /// seeding a fresh session, so it runs its first inference without
+    /// waiting for an external message.
+    pub async fn wake(&self) {
+        let _ = self.inbox_tx.send(SessionInput::Wakeup).await;
+    }
+
     pub async fn stop(&self) {
         let _ = self.inbox_tx.send(SessionInput::Cancel).await;
         let handle = self.handle.lock().await.take();
@@ -403,6 +480,7 @@ impl AgentSession {
             record_id,
             from: self.owner.clone(),
             from_did: None,
+            from_name: None,
             tunnel_did: None,
             text,
         })
@@ -439,6 +517,48 @@ impl AgentSession {
             // inputs durable and they'll be replayed next boot.
             let pending = self.meta.lock().await.pending_inputs.clone();
             if pending.is_empty() {
+                // Work session bootstrap: if a freshly-created Work session
+                // has nothing pending and hasn't run yet, drive an initial
+                // turn from its `objective` (per §8.1 step 4 of the design).
+                // After the first successful turn this branch falls through
+                // to the normal recv()-blocking path.
+                let needs_bootstrap = matches!(self.kind, SessionKind::Work)
+                    && self.needs_bootstrap_turn().await;
+                if needs_bootstrap {
+                    self.set_status(SessionStatus::Running).await;
+                    let turn_result = self.run_one_turn(Vec::new()).await;
+                    self.mark_bootstrap_done().await;
+                    match turn_result {
+                        Ok(action) => match action {
+                            NextAction::Idle => self.set_status(SessionStatus::Idle).await,
+                            NextAction::WaitForMsg => {
+                                self.set_status(SessionStatus::WaitingInput).await
+                            }
+                            NextAction::WaitForTool => {
+                                self.set_status(SessionStatus::WaitingTool).await
+                            }
+                            NextAction::End => {
+                                self.set_status(SessionStatus::Ended).await;
+                                let _ = self.reply_tx.send(SessionReply::Ended).await;
+                                return;
+                            }
+                        },
+                        Err(err) => {
+                            warn!(
+                                "opendan.session[{}]: bootstrap turn failed: {err:#}",
+                                self.session_id
+                            );
+                            self.set_status(SessionStatus::Error).await;
+                            let _ = self
+                                .reply_tx
+                                .send(SessionReply::Error {
+                                    message: format!("{err:#}"),
+                                })
+                                .await;
+                        }
+                    }
+                    continue;
+                }
                 match inbox_rx.recv().await {
                     None => {
                         info!(
@@ -458,16 +578,21 @@ impl AgentSession {
                 }
             }
 
-            // Only Msg variants drive a turn in MVP — Event handling lands
-            // when per-session kevent subscriptions are wired. Drop event
-            // entries with a warn for now so they don't wedge the queue.
+            // Three buckets:
+            //   - Msg / generic Event → fold into the next turn as `turn_inputs`
+            //   - Event whose id matches a `pending_task_calls` pattern →
+            //     translates into an `Observation`, used to build a
+            //     `ResumeFill::ToolResults` once every pending call has a
+            //     result.
+            // Latest peer info wins — the most recent Msg in this batch
+            // dictates where outbound replies will be routed.
             let mut human_texts = Vec::new();
             let mut event_summaries = Vec::new();
             let mut consumed_keys = Vec::new();
-            // Latest peer info wins — the most recent Msg in this batch
-            // dictates where outbound replies will be routed.
+            let mut task_completions: Vec<(String, Observation, String, String)> = Vec::new();
             let mut latest_peer_did: Option<String> = None;
             let mut latest_peer_tunnel: Option<String> = None;
+            let pending_task_index = self.pending_task_index().await;
             for input in &pending {
                 match input {
                     PendingInput::Msg {
@@ -489,11 +614,24 @@ impl AgentSession {
                         consumed_keys.push(input.dedup_key());
                     }
                     PendingInput::Event { event_id, data } => {
+                        if let Some(entry) = pending_task_index.get(event_id) {
+                            let obs = observation_from_task_event(&entry.call_id, data);
+                            // Only consume task-completion events when they
+                            // actually carry a terminal status; running /
+                            // progress emissions are ignored so the pump
+                            // doesn't keep waking us mid-task.
+                            if let Some(obs) = obs {
+                                task_completions.push((
+                                    entry.call_id.clone(),
+                                    obs,
+                                    entry.event_pattern.clone(),
+                                    input.dedup_key(),
+                                ));
+                            }
+                            continue;
+                        }
                         // §9.6 event dispatch: surface the event into the
-                        // turn so the LLM can react. We translate it into a
-                        // short system-style note rather than feeding the
-                        // raw JSON as a user message, since events aren't
-                        // user speech.
+                        // turn so the LLM can react.
                         event_summaries.push(format_event_for_turn(event_id, data));
                         consumed_keys.push(input.dedup_key());
                     }
@@ -502,6 +640,84 @@ impl AgentSession {
 
             if latest_peer_did.is_some() || latest_peer_tunnel.is_some() {
                 self.update_peer(latest_peer_did, latest_peer_tunnel).await;
+            }
+
+            // Tool completions take priority — if all pending_task_calls are
+            // accounted for, resume the LLMContext via ResumeFill::ToolResults
+            // and skip the human-text turn (the LLM is mid-run, not at a
+            // free chat boundary).
+            if !task_completions.is_empty() {
+                let consumed_event_keys: Vec<String> = task_completions
+                    .iter()
+                    .map(|(_, _, _, k)| k.clone())
+                    .collect();
+                if self.all_pending_tasks_collected(&task_completions).await {
+                    self.set_status(SessionStatus::Running).await;
+                    let resume_result = self
+                        .resume_with_tool_results(&task_completions)
+                        .await;
+                    match resume_result {
+                        Ok(action) => {
+                            self.discard_consumed(&consumed_event_keys).await;
+                            self.discard_consumed(&consumed_keys).await;
+                            match action {
+                                NextAction::Idle => self.set_status(SessionStatus::Idle).await,
+                                NextAction::WaitForMsg => {
+                                    self.set_status(SessionStatus::WaitingInput).await
+                                }
+                                NextAction::WaitForTool => {
+                                    self.set_status(SessionStatus::WaitingTool).await
+                                }
+                                NextAction::End => {
+                                    self.set_status(SessionStatus::Ended).await;
+                                    let _ = self.reply_tx.send(SessionReply::Ended).await;
+                                    return;
+                                }
+                            }
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!(
+                                "opendan.session[{}]: resume with tool results failed: {err:#}",
+                                self.session_id
+                            );
+                            // Leave pending in place; surface error and wait.
+                            self.set_status(SessionStatus::Error).await;
+                            let _ = self
+                                .reply_tx
+                                .send(SessionReply::Error {
+                                    message: format!("{err:#}"),
+                                })
+                                .await;
+                            match inbox_rx.recv().await {
+                                None => return,
+                                Some(SessionInput::Cancel) => {
+                                    self.set_status(SessionStatus::Idle).await;
+                                    if matches!(self.kind, SessionKind::Work) {
+                                        return;
+                                    }
+                                }
+                                Some(SessionInput::Wakeup) => {}
+                            }
+                            continue;
+                        }
+                    }
+                } else {
+                    // Some calls still outstanding — keep all pending tool
+                    // events on disk and wait for the rest.
+                    self.set_status(SessionStatus::WaitingTool).await;
+                    match inbox_rx.recv().await {
+                        None => return,
+                        Some(SessionInput::Cancel) => {
+                            self.set_status(SessionStatus::Idle).await;
+                            if matches!(self.kind, SessionKind::Work) {
+                                return;
+                            }
+                        }
+                        Some(SessionInput::Wakeup) => {}
+                    }
+                    continue;
+                }
             }
 
             // Events are folded into the same turn as message text — they
@@ -525,6 +741,9 @@ impl AgentSession {
                         NextAction::Idle => self.set_status(SessionStatus::Idle).await,
                         NextAction::WaitForMsg => {
                             self.set_status(SessionStatus::WaitingInput).await
+                        }
+                        NextAction::WaitForTool => {
+                            self.set_status(SessionStatus::WaitingTool).await
                         }
                         NextAction::End => {
                             self.set_status(SessionStatus::Ended).await;
@@ -581,6 +800,215 @@ impl AgentSession {
         if let Err(err) = self.flush_meta().await {
             warn!(
                 "opendan.session[{}]: flush after consume failed: {err:#}",
+                self.session_id
+            );
+        }
+    }
+
+    /// True for a freshly-created Work session that has an objective but
+    /// hasn't run any inference yet — the worker should drive an initial
+    /// turn from the objective rather than block on the inbox.
+    async fn needs_bootstrap_turn(&self) -> bool {
+        let meta = self.meta.lock().await;
+        !meta.bootstrap_done && !meta.objective.trim().is_empty()
+    }
+
+    /// Flip `bootstrap_done = true` and flush. Idempotent — calling twice
+    /// is harmless.
+    async fn mark_bootstrap_done(&self) {
+        let mut changed = false;
+        {
+            let mut meta = self.meta.lock().await;
+            if !meta.bootstrap_done {
+                meta.bootstrap_done = true;
+                changed = true;
+            }
+        }
+        if changed {
+            if let Err(err) = self.flush_meta().await {
+                warn!(
+                    "opendan.session[{}]: flush after bootstrap_done failed: {err:#}",
+                    self.session_id
+                );
+            }
+        }
+    }
+
+    /// Build an event-id → `PendingTaskCall` lookup for the worker loop.
+    /// The kevent pattern for a task is the literal event id
+    /// (`/task_mgr/<task_id>`), so exact match works without globbing.
+    async fn pending_task_index(&self) -> std::collections::HashMap<String, PendingTaskCall> {
+        let meta = self.meta.lock().await;
+        meta.pending_task_calls
+            .iter()
+            .map(|p| (p.event_pattern.clone(), p.clone()))
+            .collect()
+    }
+
+    /// Returns true iff `completions` covers every entry in
+    /// `meta.pending_task_calls` — required by `LLMContext::resume` which
+    /// rejects partial fills.
+    async fn all_pending_tasks_collected(
+        &self,
+        completions: &[(String, Observation, String, String)],
+    ) -> bool {
+        let pending = self.meta.lock().await.pending_task_calls.clone();
+        if completions.len() != pending.len() {
+            return false;
+        }
+        let got: std::collections::HashSet<&str> =
+            completions.iter().map(|(c, _, _, _)| c.as_str()).collect();
+        pending.iter().all(|p| got.contains(p.call_id.as_str()))
+    }
+
+    /// Load the saved snapshot, build a `ResumeFill::ToolResults` from
+    /// `completions`, drive the context to its next outcome, then clear
+    /// the pending_task_calls + unsubscribe from the task patterns.
+    ///
+    /// The completion order in `completions` is not guaranteed to match the
+    /// snapshot's pending order; we reorder using the snapshot's
+    /// `pending_tool_calls` so `LLMContext::resume` accepts the fill.
+    async fn resume_with_tool_results(
+        &self,
+        completions: &[(String, Observation, String, String)],
+    ) -> Result<NextAction> {
+        let snapshot = self
+            .try_load_snapshot()
+            .ok_or_else(|| anyhow!("no snapshot to resume against"))?;
+        let pending_order: Vec<String> = snapshot
+            .state
+            .pending_tool_calls
+            .iter()
+            .map(|p| p.call.call_id.clone())
+            .collect();
+        if pending_order.is_empty() {
+            return Err(anyhow!("snapshot has no pending tool calls to fill"));
+        }
+        let mut by_id: std::collections::HashMap<String, Observation> = completions
+            .iter()
+            .map(|(c, o, _, _)| (c.clone(), o.clone()))
+            .collect();
+        let mut ordered = Vec::with_capacity(pending_order.len());
+        for call_id in &pending_order {
+            match by_id.remove(call_id) {
+                Some(obs) => ordered.push((call_id.clone(), obs)),
+                None => {
+                    return Err(anyhow!(
+                        "missing observation for call_id `{call_id}`"
+                    ));
+                }
+            }
+        }
+        let fill = ResumeFill::ToolResults { results: ordered };
+        let behavior = self.load_current_behavior().await?;
+        let trace_id = self.next_trace_id();
+        let ctx_runtime = SessionRuntimeContext {
+            trace_id: trace_id.clone(),
+            agent_name: self.agent_name.clone(),
+            behavior: behavior.name.clone(),
+            step_idx: snapshot.state.steps.len() as u32,
+            wakeup_id: String::new(),
+            session_id: self.session_id.clone(),
+        };
+        let deps = build_session_deps(
+            &self.runtime,
+            SessionDepsInput {
+                tools: self.tools.clone(),
+                ctx: ctx_runtime,
+                snapshot_path: self.state_snap_path.clone(),
+                approval_required: behavior.approval_required.clone(),
+                one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
+                parser_renderer: behavior.build_parser_and_renderer(),
+            },
+        );
+        let mut ctx = LLMContext::resume(snapshot, fill, deps).map_err(|e| anyhow!("resume: {e}"))?;
+        let outcome = ctx.run().await;
+
+        // Clear pending_task_calls + unsubscribe from /task_mgr/* patterns.
+        // Done before handling the outcome so a subsequent PendingTool emit
+        // (chained tool calls) starts from a clean slate.
+        let patterns: Vec<String> = completions
+            .iter()
+            .map(|(_, _, p, _)| p.clone())
+            .collect();
+        self.clear_pending_task_calls().await;
+        for pattern in patterns {
+            let _ = self.unsubscribe_event(&pattern).await;
+        }
+
+        self.handle_outcome(outcome, &behavior).await
+    }
+
+    /// Empty `meta.pending_task_calls` and flush. Called after a successful
+    /// resume so the next iteration doesn't try to match orphan entries.
+    async fn clear_pending_task_calls(&self) {
+        {
+            let mut meta = self.meta.lock().await;
+            meta.pending_task_calls.clear();
+        }
+        if let Err(err) = self.flush_meta().await {
+            warn!(
+                "opendan.session[{}]: flush after clear_pending_task_calls failed: {err:#}",
+                self.session_id
+            );
+        }
+    }
+
+    /// Append a new pending tool task entry and flush. The caller is
+    /// expected to also call `subscribe_event` so the event pump receives
+    /// completion notifications.
+    async fn add_pending_task_call(&self, entry: PendingTaskCall) {
+        {
+            let mut meta = self.meta.lock().await;
+            // De-dup by call_id — a re-dispatch of the same call (e.g.
+            // after a snapshot reload) shouldn't multiply entries.
+            meta.pending_task_calls
+                .retain(|p| p.call_id != entry.call_id);
+            meta.pending_task_calls.push(entry);
+        }
+        if let Err(err) = self.flush_meta().await {
+            warn!(
+                "opendan.session[{}]: flush after add_pending_task_call failed: {err:#}",
+                self.session_id
+            );
+        }
+    }
+
+    /// Persist `snapshot` to `state.snap` (atomic). Used by the
+    /// PendingTool outcome path so a restart can resume from the freshest
+    /// view — the TurnHook write happens *before* inference, which would
+    /// miss the freshly-populated `pending_tool_calls`.
+    async fn persist_snapshot(&self, snapshot: &LLMContextSnapshot) {
+        let bytes = match serde_json::to_vec(snapshot) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!(
+                    "opendan.session[{}]: snapshot serialize failed: {err}",
+                    self.session_id
+                );
+                return;
+            }
+        };
+        if let Some(parent) = self.state_snap_path.parent() {
+            if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                warn!(
+                    "opendan.session[{}]: snapshot mkdir failed: {err}",
+                    self.session_id
+                );
+                return;
+            }
+        }
+        let tmp = self.state_snap_path.with_extension("snap.tmp");
+        if let Err(err) = tokio::fs::write(&tmp, &bytes).await {
+            warn!(
+                "opendan.session[{}]: snapshot write failed: {err}",
+                self.session_id
+            );
+            return;
+        }
+        if let Err(err) = tokio::fs::rename(&tmp, &self.state_snap_path).await {
+            warn!(
+                "opendan.session[{}]: snapshot rename failed: {err}",
                 self.session_id
             );
         }
@@ -707,6 +1135,20 @@ impl AgentSession {
                 }
             }
         }
+        // Work-session objective: surface as a dedicated block ahead of the
+        // session readme so the LLM sees its task statement first.
+        let (objective, title) = match self.meta.try_lock() {
+            Ok(g) => (g.objective.clone(), g.title.clone()),
+            Err(_) => (String::new(), String::new()),
+        };
+        if !objective.trim().is_empty() {
+            let header = if title.trim().is_empty() {
+                "## Objective".to_string()
+            } else {
+                format!("## Objective: {}", title.trim())
+            };
+            chunks.push(format!("{header}\n{}", objective.trim()));
+        }
         if let Ok(text) = std::fs::read_to_string(self.session_dir.join("readme.md")) {
             if !text.trim().is_empty() {
                 chunks.push(text);
@@ -787,12 +1229,82 @@ impl AgentSession {
                 }
                 Ok(NextAction::WaitForMsg)
             }
-            LLMContextOutcome::PendingTool { .. } => {
-                warn!(
-                    "opendan.session[{}]: PendingTool outcome — async tool dispatch not yet wired",
-                    self.session_id
-                );
-                Ok(NextAction::WaitForMsg)
+            LLMContextOutcome::PendingTool {
+                pending, snapshot, ..
+            } => {
+                // Persist the snapshot first — `pending_tool_calls` is the
+                // load-bearing field for the resume path, and the TurnHook
+                // pre-inference write would have missed it.
+                self.persist_snapshot(&snapshot).await;
+
+                let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
+                    warn!(
+                        "opendan.session[{}]: PendingTool outcome — task_mgr unavailable, parking session",
+                        self.session_id
+                    );
+                    return Ok(NextAction::WaitForMsg);
+                };
+                // Owner key for the dispatched task — fall back to the
+                // session's owner / agent name so multi-tenant deployments
+                // can scope correctly.
+                let owner_for_task = if !self.owner.trim().is_empty() {
+                    self.owner.clone()
+                } else {
+                    self.agent_name.clone()
+                };
+                let dispatcher = TaskDispatch::new(client, owner_for_task);
+
+                let mut dispatched_any = false;
+                for pcall in pending {
+                    let call_id = pcall.call.call_id.clone();
+                    let tool_name = pcall.call.name.clone();
+                    let args_json = serde_json::to_value(&pcall.call.args)
+                        .unwrap_or(serde_json::Value::Null);
+                    match dispatcher
+                        .dispatch_async_tool(
+                            &self.session_id,
+                            &tool_name,
+                            args_json,
+                        )
+                        .await
+                    {
+                        Ok(handle) => {
+                            let pattern = format!("/task_mgr/{}", handle.task_id);
+                            self.add_pending_task_call(PendingTaskCall {
+                                call_id: call_id.clone(),
+                                tool_name: tool_name.clone(),
+                                task_id: handle.task_id,
+                                event_pattern: pattern.clone(),
+                            })
+                            .await;
+                            // subscribe_event refreshes the event pump
+                            // automatically; ignore the bool — adding the
+                            // same pattern twice is a no-op.
+                            if let Err(err) = self.subscribe_event(pattern.clone()).await {
+                                warn!(
+                                    "opendan.session[{}]: subscribe `{pattern}` for task {} failed: {err:#}",
+                                    self.session_id, handle.task_id
+                                );
+                            }
+                            dispatched_any = true;
+                        }
+                        Err(err) => {
+                            warn!(
+                                "opendan.session[{}]: dispatch task for call_id={} tool={} failed: {err:#}",
+                                self.session_id, call_id, tool_name
+                            );
+                        }
+                    }
+                }
+                if !dispatched_any {
+                    // Couldn't park anything externally — session can't
+                    // make progress here. Drop the snapshot so the next
+                    // user message starts a fresh turn rather than trying
+                    // to resume against a snapshot we can't fulfill.
+                    self.discard_snapshot();
+                    return Ok(NextAction::WaitForMsg);
+                }
+                Ok(NextAction::WaitForTool)
             }
             LLMContextOutcome::BudgetExhausted { which, .. } => {
                 let _ = self
@@ -931,6 +1443,7 @@ impl AgentSession {
         }
         if changed {
             self.flush_meta().await?;
+            self.refresh_event_pump().await;
         }
         Ok(changed)
     }
@@ -949,8 +1462,19 @@ impl AgentSession {
         }
         if changed {
             self.flush_meta().await?;
+            self.refresh_event_pump().await;
         }
         Ok(changed)
+    }
+
+    /// Push the session's current pattern list into the event pump so the
+    /// agent-wide kevent reader sees additions / removals immediately. No-op
+    /// when the runtime has no pump (CLI / tests).
+    async fn refresh_event_pump(&self) {
+        if let Some(pump) = self.event_pump.as_ref() {
+            let patterns = self.subscription_patterns().await;
+            pump.set_session_subscriptions(&self.session_id, patterns).await;
+        }
     }
 
     /// Record the workspace this session is currently bound to. Returns
@@ -1090,6 +1614,9 @@ impl AgentSession {
 enum NextAction {
     Idle,
     WaitForMsg,
+    /// Session yielded on async tool dispatch — the worker is parked until
+    /// the matching task-completion events arrive in `pending_inputs`.
+    WaitForTool,
     End,
 }
 
@@ -1103,6 +1630,48 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Build an `Observation` from a task_mgr kevent payload — returns `None`
+/// when the event isn't terminal (the task is still running / progressing
+/// and we should wait). Terminal kinds:
+///   - `Completed` → `Observation::Success` with the task's `data` field
+///     as `content` (falls back to the whole payload when `data` is absent)
+///   - `Failed` / `Canceled` → `Observation::Error` carrying `message`
+fn observation_from_task_event(call_id: &str, data: &serde_json::Value) -> Option<Observation> {
+    let to_status = data.get("to_status").and_then(|v| v.as_str()).unwrap_or("");
+    match to_status {
+        "Completed" => {
+            let content = data
+                .get("data")
+                .cloned()
+                .unwrap_or_else(|| data.clone());
+            let bytes = serde_json::to_vec(&content).map(|v| v.len()).unwrap_or(0);
+            Some(Observation::Success {
+                call_id: call_id.to_string(),
+                content,
+                bytes,
+                truncated: false,
+            })
+        }
+        "Failed" | "Canceled" => {
+            let message = data
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    data.get("error_message")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| format!("task {to_status}"));
+            Some(Observation::Error {
+                call_id: call_id.to_string(),
+                message,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Translate a subscribed kevent into a short note the LLM can react to as
@@ -1191,6 +1760,7 @@ mod tests {
             record_id: "abc".to_string(),
             from: "alice".to_string(),
             from_did: None,
+            from_name: None,
             tunnel_did: None,
             text: "hi".to_string(),
         };
@@ -1234,6 +1804,7 @@ mod tests {
                     record_id: "rec-1".to_string(),
                     from: "alice".to_string(),
                     from_did: Some("did:dev:alice".to_string()),
+                    from_name: Some("Alice".to_string()),
                     tunnel_did: Some("did:dev:tunnel".to_string()),
                     text: "hi".to_string(),
                 },
@@ -1249,6 +1820,15 @@ mod tests {
                 subscribed_at_ms: 0,
             }],
             workspace_id: Some("ws-1".to_string()),
+            pending_task_calls: vec![PendingTaskCall {
+                call_id: "call-1".to_string(),
+                tool_name: "download".to_string(),
+                task_id: 42,
+                event_pattern: "/task_mgr/42".to_string(),
+            }],
+            title: "design review".to_string(),
+            objective: "draft the rollout plan".to_string(),
+            bootstrap_done: true,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let restored: SessionMeta = serde_json::from_str(&json).unwrap();
@@ -1258,12 +1838,14 @@ mod tests {
                 record_id,
                 text,
                 from_did,
+                from_name,
                 tunnel_did,
                 ..
             } => {
                 assert_eq!(record_id, "rec-1");
                 assert_eq!(text, "hi");
                 assert_eq!(from_did.as_deref(), Some("did:dev:alice"));
+                assert_eq!(from_name.as_deref(), Some("Alice"));
                 assert_eq!(tunnel_did.as_deref(), Some("did:dev:tunnel"));
             }
             _ => panic!("expected Msg variant first"),
@@ -1279,6 +1861,54 @@ mod tests {
         assert_eq!(restored.event_subscriptions.len(), 1);
         assert_eq!(restored.event_subscriptions[0].pattern, "/timer/**");
         assert_eq!(restored.workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(restored.pending_task_calls.len(), 1);
+        assert_eq!(restored.pending_task_calls[0].task_id, 42);
+        assert_eq!(restored.pending_task_calls[0].call_id, "call-1");
+        assert_eq!(restored.title, "design review");
+        assert_eq!(restored.objective, "draft the rollout plan");
+        assert!(restored.bootstrap_done);
+    }
+
+    #[test]
+    fn observation_from_task_event_translates_completed() {
+        let payload = serde_json::json!({
+            "to_status": "Completed",
+            "data": {"result": "ok"},
+        });
+        let obs = observation_from_task_event("call-9", &payload).expect("terminal observation");
+        match obs {
+            Observation::Success {
+                call_id, content, ..
+            } => {
+                assert_eq!(call_id, "call-9");
+                assert_eq!(content.get("result").and_then(|v| v.as_str()), Some("ok"));
+            }
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn observation_from_task_event_translates_failed() {
+        let payload = serde_json::json!({
+            "to_status": "Failed",
+            "message": "network unreachable",
+        });
+        let obs = observation_from_task_event("call-9", &payload).expect("terminal observation");
+        match obs {
+            Observation::Error { call_id, message } => {
+                assert_eq!(call_id, "call-9");
+                assert!(message.contains("network"));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn observation_from_task_event_ignores_non_terminal_status() {
+        // Running / Progress events shouldn't move the session — they emit
+        // frequently and the session must wait for the terminal one.
+        let payload = serde_json::json!({"to_status": "Running"});
+        assert!(observation_from_task_event("c", &payload).is_none());
     }
 
     #[test]

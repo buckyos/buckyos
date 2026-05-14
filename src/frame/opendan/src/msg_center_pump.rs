@@ -34,6 +34,7 @@ use tokio::sync::{mpsc, Notify};
 use tokio::time::sleep;
 
 use crate::agent::Inbound;
+use crate::contact::ContactLookup;
 
 /// Per-tick kevent wait. Short enough that shutdown latency stays bounded;
 /// long enough that idle agents don't burn the CPU on RPC churn.
@@ -67,6 +68,10 @@ pub struct PumpConfig {
     pub kevent_client: Arc<KEventClient>,
     pub inbox_tx: mpsc::Sender<Inbound>,
     pub shutdown: Arc<Notify>,
+    /// Optional contact lookup. When set the pump enriches inbound
+    /// records whose `from_name` is missing — keeps the LLM prompt
+    /// readable for unknown peers without spamming get_contact RPCs.
+    pub contact_lookup: Option<Arc<ContactLookup>>,
 }
 
 /// Run the pump loop until `shutdown` is notified or the inbox sender's
@@ -255,7 +260,8 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
     };
 
     let from = record.record.from.to_raw_host_name();
-    let from_did = Some(record.record.from.to_string()).filter(|s| !s.is_empty());
+    let from_did_str = record.record.from.to_string();
+    let from_did = Some(from_did_str.clone()).filter(|s| !s.is_empty());
     let tunnel_did = record
         .record
         .route
@@ -268,10 +274,25 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
         .clone()
         .filter(|s| !s.trim().is_empty());
 
+    // `from_name` enrichment: prefer the value msg-center attached to the
+    // record; otherwise consult ContactLookup. Failures stay as `None` —
+    // the LLM still gets the raw `from` host as a fallback display token.
+    let mut from_name = record
+        .record
+        .from_name
+        .clone()
+        .filter(|s| !s.trim().is_empty());
+    if from_name.is_none() {
+        if let Some(lookup) = cfg.contact_lookup.as_ref() {
+            from_name = lookup.from_name(&record.record.from).await;
+        }
+    }
+
     let inbound = Inbound::Msg {
         record_id,
         from,
         from_did,
+        from_name,
         tunnel_did,
         session_id,
         text,

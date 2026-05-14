@@ -34,6 +34,7 @@ use crate::agent_session::{
     SessionStatus,
 };
 use crate::ai_runtime::AgentRuntime;
+use crate::contact::ContactLookup;
 use crate::local_workspace::LocalWorkspaceManager;
 use crate::msg_center_pump::{self, PumpConfig};
 use crate::session_event_pump::SessionEventPump;
@@ -69,6 +70,12 @@ pub enum Inbound {
         /// session emits an assistant message. `None` for locally-injected
         /// inputs where there is no real peer DID.
         from_did: Option<String>,
+        /// Display name for the sender — populated either by msg-center
+        /// (when its contact-mgr already knows the peer) or by the pump
+        /// via [`ContactLookup`](crate::contact::ContactLookup) when the
+        /// record lands without one. Used in prompts so the LLM sees a
+        /// human-readable name instead of a raw DID.
+        from_name: Option<String>,
         /// Preferred tunnel DID extracted from the msg-center route hint.
         /// Passed through to `msg_center.post_send` as `preferred_tunnel`
         /// so replies ride the same wire whenever possible.
@@ -245,6 +252,10 @@ impl AIAgent {
         let msg_center = self.runtime.msg_center.clone()?;
         let kevent_client = self.runtime.kevent_client.clone()?;
         let owner_did = msg_center_pump::parse_owner_did(&self.config.toml.agent_did)?;
+        let contact_lookup = Some(Arc::new(ContactLookup::new(
+            msg_center.clone(),
+            Some(owner_did.clone()),
+        )));
         let cfg = PumpConfig {
             agent_name: self.agent_name.clone(),
             owner_did,
@@ -252,6 +263,7 @@ impl AIAgent {
             kevent_client,
             inbox_tx: self.inbox_tx.clone(),
             shutdown: self.pump_shutdown.clone(),
+            contact_lookup,
         };
         Some(tokio::spawn(msg_center_pump::run(cfg)))
     }
@@ -329,6 +341,7 @@ impl AIAgent {
                 record_id,
                 from,
                 from_did,
+                from_name,
                 tunnel_did,
                 session_id,
                 text,
@@ -351,6 +364,7 @@ impl AIAgent {
                         record_id: record_id.clone(),
                         from,
                         from_did,
+                        from_name,
                         tunnel_did,
                         text,
                     })
@@ -486,6 +500,14 @@ impl AIAgent {
 
         let tools = build_session_tools(&workspace_root, &session_dir)
             .map_err(|err| anyhow!("build session tools: {err}"))?;
+        // Worksession control tools (create_worksession / forward_msg) are
+        // registered on every session — visibility is gated by the
+        // behavior whitelist downstream.
+        crate::worksession_tools::register_worksession_tools(
+            &tools,
+            Arc::downgrade(&self),
+            &session_id,
+        );
         let behavior_name = behavior_hint.unwrap_or_else(|| match kind {
             SessionKind::Ui => self.config.default_ui_behavior().to_string(),
             SessionKind::Work => self.config.default_work_behavior().to_string(),
@@ -503,6 +525,7 @@ impl AIAgent {
             tools,
             reply_tx,
             existing_meta,
+            event_pump: self.event_pump.clone(),
         });
         let session = Arc::new(session);
         // Reciprocal binding: session ↔ workspace. Session-side first so
@@ -600,6 +623,163 @@ impl AIAgent {
         pump.set_session_subscriptions(session_id, patterns).await;
     }
 
+    /// Create a Work session bound to a workspace and start its worker.
+    /// Used by the `create_worksession` tool. Returns enough info for the
+    /// caller (typically the sub-LLM context from `try_create_worksession`)
+    /// to report back to the parent UI session.
+    pub async fn create_work_session(
+        self: Arc<Self>,
+        params: CreateWorkSessionParams,
+    ) -> Result<CreateWorkSessionOutcome> {
+        let CreateWorkSessionParams {
+            title,
+            objective,
+            workspace_id,
+            behavior,
+            created_by_session_id,
+            reason_messages,
+        } = params;
+        if objective.trim().is_empty() {
+            return Err(anyhow!(
+                "create_work_session: objective must not be empty"
+            ));
+        }
+        let new_session_id = mint_session_id("ws");
+        // Workspace resolution: explicit id reuses; absence mints a new
+        // id deterministic-ish on the session id (so a crash mid-create
+        // doesn't strand two half-built workspaces).
+        let (workspace_id, workspace_status) = match workspace_id {
+            Some(id) if !id.trim().is_empty() => match self.workspaces.load_record(&id).await {
+                Ok(_) => (id, "reused".to_string()),
+                Err(_) => {
+                    // Either NotFound or unreadable — treat as create-with-id
+                    // request so the LLM's intent is honored.
+                    self.workspaces
+                        .create_or_open(&id, &id, Some(&new_session_id))
+                        .await
+                        .map_err(|err| anyhow!("workspace create_or_open: {err}"))?;
+                    (id, "created".to_string())
+                }
+            },
+            _ => {
+                let new_ws_id = mint_session_id("ws");
+                let name = if title.trim().is_empty() {
+                    new_ws_id.clone()
+                } else {
+                    title.trim().to_string()
+                };
+                self.workspaces
+                    .create_or_open(&new_ws_id, &name, Some(&new_session_id))
+                    .await
+                    .map_err(|err| anyhow!("workspace create_or_open: {err}"))?;
+                (new_ws_id, "created".to_string())
+            }
+        };
+
+        // Seed an existing_meta so the session is created with the right
+        // title / objective / kind / workspace binding before its first
+        // worker tick.
+        let mut seed = SessionMeta::new(
+            new_session_id.clone(),
+            SessionKind::Work,
+            behavior
+                .clone()
+                .unwrap_or_else(|| self.config.default_work_behavior().to_string()),
+            created_by_session_id.clone(),
+        );
+        seed.title = title.trim().to_string();
+        seed.objective = objective.trim().to_string();
+        seed.workspace_id = Some(workspace_id.clone());
+
+        // Write a readme.md capturing the origin context so a later
+        // human / debugger can see why this work session exists.
+        let session_dir = self.config.layout.session_dir(&new_session_id);
+        let _ = std::fs::create_dir_all(&session_dir);
+        write_worksession_readme(
+            &session_dir,
+            &seed.title,
+            &seed.objective,
+            &created_by_session_id,
+            &reason_messages,
+        );
+
+        let behavior_name = seed.current_behavior.clone();
+        let session = self
+            .clone()
+            .ensure_session_inner(
+                new_session_id.clone(),
+                SessionKind::Work,
+                created_by_session_id.clone(),
+                Some(behavior_name.clone()),
+                Some(seed),
+            )
+            .await?;
+        // Wake the worker so the bootstrap turn runs even before the
+        // first external input — `needs_bootstrap_turn` will fire on the
+        // freshly-objective-bearing meta.
+        session.wake().await;
+
+        Ok(CreateWorkSessionOutcome {
+            session_id: new_session_id,
+            title: title.trim().to_string(),
+            workspace_id,
+            workspace_status,
+            behavior: behavior_name,
+        })
+    }
+
+    /// Forward a chat message from one session to another's pending queue.
+    /// Returns the synthetic `record_id` used for the forwarded entry so
+    /// the caller can include it in its tool response. Errors when:
+    ///   - target session doesn't exist or isn't a Work session
+    ///   - target session has already Ended
+    pub async fn forward_message(
+        &self,
+        target_session_id: &str,
+        source_session_id: &str,
+        text: &str,
+    ) -> Result<String> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("forward_message: text is empty"));
+        }
+        let target = {
+            let map = self.sessions.lock().await;
+            map.get(target_session_id).cloned()
+        };
+        let Some(target) = target else {
+            return Err(anyhow!(
+                "forward_message: target session `{target_session_id}` not found"
+            ));
+        };
+        if !matches!(target.kind, SessionKind::Work) {
+            return Err(anyhow!(
+                "forward_message: target session `{target_session_id}` is not a work session"
+            ));
+        }
+        let status = target.meta.lock().await.status;
+        if matches!(status, SessionStatus::Ended) {
+            return Err(anyhow!(
+                "forward_message: target session `{target_session_id}` has ended"
+            ));
+        }
+        let record_id = format!(
+            "forward:{source_session_id}:{}",
+            mint_session_id("fwd")
+        );
+        target
+            .enqueue_pending(PendingInput::Msg {
+                record_id: record_id.clone(),
+                from: source_session_id.to_string(),
+                from_did: None,
+                from_name: None,
+                tunnel_did: None,
+                text: trimmed.to_string(),
+            })
+            .await?;
+        Ok(record_id)
+    }
+
     async fn stop_all_sessions(&self) {
         let sessions = {
             let map = self.sessions.lock().await;
@@ -608,6 +788,79 @@ impl AIAgent {
         for s in sessions {
             s.stop().await;
         }
+    }
+}
+
+/// Parameters for [`AIAgent::create_work_session`]. Mirrors the §8.1
+/// `create_worksession` tool args, but in Rust-native form so non-LLM
+/// callers (CLI, tests) can build it directly.
+#[derive(Debug, Clone)]
+pub struct CreateWorkSessionParams {
+    pub title: String,
+    pub objective: String,
+    pub workspace_id: Option<String>,
+    pub behavior: Option<String>,
+    pub created_by_session_id: String,
+    pub reason_messages: Vec<String>,
+}
+
+/// Result of [`AIAgent::create_work_session`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CreateWorkSessionOutcome {
+    pub session_id: String,
+    pub title: String,
+    pub workspace_id: String,
+    /// Always `"created"` or `"reused"` so downstream tooling can branch
+    /// without parsing free-form text.
+    pub workspace_status: String,
+    pub behavior: String,
+}
+
+/// Mint a stable, short id with a prefix. Uses uuid v4 so concurrent
+/// callers don't collide. The prefix is informational — it makes
+/// debugging easier (`ws-...`, `fwd-...`).
+pub fn mint_session_id(prefix: &str) -> String {
+    let short = uuid::Uuid::new_v4().simple().to_string();
+    // Keep only the first 12 hex chars — full uuid is 32, which is
+    // visually noisy in logs and meta files.
+    let short = short.get(..12).unwrap_or(&short).to_string();
+    format!("{prefix}-{short}")
+}
+
+/// Render the work-session readme. Captures title / objective / origin
+/// session / reason messages so a later reader can reconstruct context
+/// without grovelling through agent logs.
+fn write_worksession_readme(
+    session_dir: &std::path::Path,
+    title: &str,
+    objective: &str,
+    created_by: &str,
+    reason_messages: &[String],
+) {
+    let mut buf = String::new();
+    if !title.is_empty() {
+        buf.push_str(&format!("# {title}\n\n"));
+    } else {
+        buf.push_str("# Work session\n\n");
+    }
+    if !objective.is_empty() {
+        buf.push_str("## Objective\n");
+        buf.push_str(objective);
+        buf.push_str("\n\n");
+    }
+    buf.push_str(&format!("## Origin\nCreated by session `{created_by}`.\n"));
+    if !reason_messages.is_empty() {
+        buf.push_str("\n## Reason messages\n");
+        for (i, m) in reason_messages.iter().enumerate() {
+            buf.push_str(&format!("{}. {}\n", i + 1, m.trim()));
+        }
+    }
+    let path = session_dir.join("readme.md");
+    if let Err(err) = std::fs::write(&path, buf) {
+        warn!(
+            "opendan.agent: write {} failed: {err}",
+            path.display()
+        );
     }
 }
 
