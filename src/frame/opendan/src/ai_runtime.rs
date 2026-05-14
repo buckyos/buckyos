@@ -22,8 +22,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, features, value_to_object_map, AiMethodRequest, AiMethodStatus, AiPayload,
-    AiResponseSummary, AiToolCall, AiToolSpec, AiccClient, Capability, ModelSpec, Requirements,
-    RespFormat,
+    AiResponseSummary, AiToolCall, AiToolSpec, AiccClient, Capability, KEventClient,
+    MsgCenterClient, ModelSpec, Requirements, RespFormat,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -550,11 +550,35 @@ impl TurnHook for SessionSnapshotHook {
 pub struct AgentRuntime {
     pub aicc: Arc<AiccClient>,
     pub worklog: Arc<WorklogService>,
+    /// Optional msg-center handle. When set, [`AIAgent`] also pulls inbound
+    /// messages from msg-center inbox boxes and feeds them to the session
+    /// dispatcher; when `None` the agent only consumes whatever pushes into
+    /// `AIAgent::inbox()` (tests / CLI).
+    pub msg_center: Option<Arc<MsgCenterClient>>,
+    /// Optional kevent handle. Paired with `msg_center` to drive the inbox
+    /// pump — when both are set, the pump uses kevent as a poll accelerator
+    /// and falls back to box sweeps on timeout / reader loss.
+    pub kevent_client: Option<Arc<KEventClient>>,
 }
 
 impl AgentRuntime {
     pub fn new(aicc: Arc<AiccClient>, worklog: Arc<WorklogService>) -> Self {
-        Self { aicc, worklog }
+        Self {
+            aicc,
+            worklog,
+            msg_center: None,
+            kevent_client: None,
+        }
+    }
+
+    pub fn with_msg_center(mut self, client: Arc<MsgCenterClient>) -> Self {
+        self.msg_center = Some(client);
+        self
+    }
+
+    pub fn with_kevent_client(mut self, client: Arc<KEventClient>) -> Self {
+        self.kevent_client = Some(client);
+        self
     }
 }
 

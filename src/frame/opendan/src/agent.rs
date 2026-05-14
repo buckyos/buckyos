@@ -25,25 +25,59 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use log::{info, warn};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 
 use crate::agent_bash::build_session_tools;
 use crate::agent_config::AgentConfig;
 use crate::agent_session::{
-    AgentSession, AgentSessionBuild, SessionKind, SessionMeta, SessionReply, SessionStatus,
+    AgentSession, AgentSessionBuild, PendingInput, SessionKind, SessionMeta, SessionReply,
+    SessionStatus,
 };
 use crate::ai_runtime::AgentRuntime;
+use crate::msg_center_pump::{self, PumpConfig};
 
-/// One inbound user/tunnel message. MVP is text-only; multi-modal arrives in
-/// later steps once contact_mgr is wired.
+/// Reason string we tag msg-center ack updates with so audit logs can tell
+/// "the opendan agent picked this up" apart from other consumers.
+const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
+
+/// One inbound item to route to a session. Tagged so messages and events
+/// share the same tokio queue into the dispatcher — keeping with the
+/// "external boundary via buckyos-api, internal dispatch via tokio" rule.
+///
+/// The dispatcher is responsible for:
+///   1. mapping each variant to a target session (by explicit id, by
+///      `from`-tunnel, or by event-id subscription),
+///   2. handing the item to `AgentSession::enqueue_pending` which
+///      durably parks it on the session,
+///   3. acking back to the source (msg-center `update_record_state` for
+///      Msg items; kevent has no per-event ack today).
 #[derive(Debug, Clone)]
-pub struct InboundMsg {
-    /// Originating tunnel / DID. Used to map to (or create) a UI session.
-    pub from: String,
-    /// Optional explicit session_id. When `None`, routing falls back to the
-    /// per-tunnel UI session.
-    pub session_id: Option<String>,
-    pub text: String,
+pub enum Inbound {
+    /// A chat-style message — either pulled from msg-center by the pump or
+    /// injected locally via [`AIAgent::inbox()`].
+    Msg {
+        /// Stable id used both as the dedup key inside the session's
+        /// pending queue and as the ack handle back to msg-center. Locally
+        /// injected items use a synthetic `local-...` id.
+        record_id: String,
+        /// Originating tunnel / DID host name. Drives the
+        /// `tunnel_to_ui_session` lookup when `session_id` is `None`.
+        from: String,
+        /// Optional explicit target. `None` ⇒ resolve via `from`.
+        session_id: Option<String>,
+        text: String,
+    },
+    /// A subscribed kevent. MVP forwards these to the per-tunnel UI session
+    /// as a placeholder — proper per-session kevent subscriptions land
+    /// alongside `session_sub_kevent`.
+    Event {
+        event_id: String,
+        /// When the caller already knows which session should consume this
+        /// event (e.g. timer events that the session itself scheduled),
+        /// they can pre-route by setting this.
+        target_session_id: Option<String>,
+        data: serde_json::Value,
+    },
 }
 
 /// Shutdown signal. Owners drop the sender or `send(())` to start a graceful
@@ -58,10 +92,13 @@ pub struct AIAgent {
     /// Map tunnel/from → UI session id.
     tunnel_to_ui_session: Arc<Mutex<HashMap<String, String>>>,
     sessions: Arc<Mutex<HashMap<String, Arc<AgentSession>>>>,
-    inbox_tx: mpsc::Sender<InboundMsg>,
-    inbox_rx: Arc<Mutex<Option<mpsc::Receiver<InboundMsg>>>>,
+    inbox_tx: mpsc::Sender<Inbound>,
+    inbox_rx: Arc<Mutex<Option<mpsc::Receiver<Inbound>>>>,
     shutdown_tx: ShutdownTx,
     shutdown_rx: Arc<Mutex<Option<ShutdownRx>>>,
+    /// Signalled when `run()` is exiting, so the msg-center pump task can
+    /// drop its kevent reader and return promptly.
+    pump_shutdown: Arc<Notify>,
 }
 
 impl AIAgent {
@@ -91,11 +128,12 @@ impl AIAgent {
             inbox_rx: Arc::new(Mutex::new(Some(inbox_rx))),
             shutdown_tx,
             shutdown_rx: Arc::new(Mutex::new(Some(shutdown_rx))),
+            pump_shutdown: Arc::new(Notify::new()),
         }))
     }
 
     /// Producer-end clone of the inbox. Multiple callers may keep clones.
-    pub fn inbox(&self) -> mpsc::Sender<InboundMsg> {
+    pub fn inbox(&self) -> mpsc::Sender<Inbound> {
         self.inbox_tx.clone()
     }
 
@@ -124,6 +162,8 @@ impl AIAgent {
             .take()
             .ok_or_else(|| anyhow!("AIAgent::run called twice (shutdown already taken)"))?;
 
+        let pump_handle = self.clone().spawn_msg_center_pump();
+
         loop {
             tokio::select! {
                 msg = inbox_rx.recv() => {
@@ -131,8 +171,8 @@ impl AIAgent {
                         info!("opendan.agent[{}]: inbox closed, shutting down", self.agent_name);
                         break;
                     };
-                    if let Err(err) = self.clone().dispatch_msg(msg).await {
-                        warn!("opendan.agent[{}]: dispatch_msg failed: {err:#}", self.agent_name);
+                    if let Err(err) = self.clone().dispatch_inbound(msg).await {
+                        warn!("opendan.agent[{}]: dispatch_inbound failed: {err:#}", self.agent_name);
                     }
                 }
                 _ = shutdown_rx.recv() => {
@@ -141,8 +181,36 @@ impl AIAgent {
                 }
             }
         }
+        self.pump_shutdown.notify_waiters();
+        if let Some(handle) = pump_handle {
+            // Best-effort: pump task observes `pump_shutdown` and exits on its
+            // own; we just wait so the kevent reader is fully closed before
+            // the agent drops.
+            let _ = handle.await;
+        }
         self.stop_all_sessions().await;
         Ok(())
+    }
+
+    /// Spawn the msg-center / kevent inbound pump if the runtime wired both
+    /// dependencies and the agent has a parseable owner DID. Returns `None`
+    /// when any of those is missing — the agent then runs in
+    /// inbox()-only mode, which is the right behavior for tests and CLI.
+    fn spawn_msg_center_pump(
+        self: Arc<Self>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let msg_center = self.runtime.msg_center.clone()?;
+        let kevent_client = self.runtime.kevent_client.clone()?;
+        let owner_did = msg_center_pump::parse_owner_did(&self.config.toml.agent_did)?;
+        let cfg = PumpConfig {
+            agent_name: self.agent_name.clone(),
+            owner_did,
+            msg_center,
+            kevent_client,
+            inbox_tx: self.inbox_tx.clone(),
+            shutdown: self.pump_shutdown.clone(),
+        };
+        Some(tokio::spawn(msg_center_pump::run(cfg)))
     }
 
     /// Restore non-Ended sessions from disk. MVP scope: for each
@@ -207,15 +275,98 @@ impl AIAgent {
         Ok(())
     }
 
-    async fn dispatch_msg(self: Arc<Self>, msg: InboundMsg) -> Result<()> {
-        let session_id = if let Some(sid) = msg.session_id.clone() {
-            sid
-        } else {
-            self.clone().resolve_ui_session(&msg.from).await?
+    async fn dispatch_inbound(self: Arc<Self>, item: Inbound) -> Result<()> {
+        match item {
+            Inbound::Msg {
+                record_id,
+                from,
+                session_id,
+                text,
+            } => {
+                let resolved_id = if let Some(sid) = session_id {
+                    sid
+                } else {
+                    self.clone().resolve_ui_session(&from).await?
+                };
+                let session = self
+                    .clone()
+                    .get_or_create_session(resolved_id, from.clone())
+                    .await?;
+                // enqueue_pending durably parks the input on the session
+                // and only returns once `.meta/session.json` is on disk.
+                // Once it returns we're safe to ack upstream — a crash from
+                // here on leaves the input owned by the session, not lost.
+                session
+                    .enqueue_pending(PendingInput::Msg {
+                        record_id: record_id.clone(),
+                        from,
+                        text,
+                    })
+                    .await?;
+                self.ack_msg_record(record_id).await;
+                Ok(())
+            }
+            Inbound::Event {
+                event_id,
+                target_session_id,
+                data,
+            } => {
+                // Event routing is intentionally narrow in MVP: only
+                // pre-routed events (carrier sets `target_session_id`) are
+                // delivered. Broadcast / pattern-matched event delivery
+                // lands with `session_sub_kevent`.
+                let Some(sid) = target_session_id else {
+                    warn!(
+                        "opendan.agent[{}]: event {} dropped — no target_session_id and broadcast routing not yet wired",
+                        self.agent_name, event_id
+                    );
+                    return Ok(());
+                };
+                let session = {
+                    let map = self.sessions.lock().await;
+                    map.get(&sid).cloned()
+                };
+                let Some(session) = session else {
+                    warn!(
+                        "opendan.agent[{}]: event {} target session {} unknown, dropping",
+                        self.agent_name, event_id, sid
+                    );
+                    return Ok(());
+                };
+                session
+                    .enqueue_pending(PendingInput::Event { event_id, data })
+                    .await?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Best-effort ack to msg-center after the record is durably parked on
+    /// a session. Failure is logged but not returned — the session already
+    /// owns the input, so even a stuck `Reading` record is recoverable
+    /// (msg-center's lease will eventually flip it back to `Unread` and we
+    /// dedup by `record_id` when re-enqueued).
+    async fn ack_msg_record(&self, record_id: String) {
+        // Locally-injected records (synthetic id) never hit msg-center.
+        if record_id.starts_with("local-") {
+            return;
+        }
+        let Some(msg_center) = self.runtime.msg_center.as_ref() else {
+            return;
         };
-        let session = self.clone().get_or_create_session(session_id, msg.from).await?;
-        session.submit_text(msg.text).await?;
-        Ok(())
+        if let Err(err) = msg_center
+            .update_record_state(
+                record_id.clone(),
+                buckyos_api::MsgState::Readed,
+                Some(MSG_ROUTED_REASON.to_string()),
+            )
+            .await
+        {
+            warn!(
+                "opendan.agent[{}]: ack record_id={} failed: {err}",
+                self.agent_name, record_id
+            );
+        }
     }
 
     async fn resolve_ui_session(self: Arc<Self>, from: &str) -> Result<String> {
@@ -287,7 +438,12 @@ impl AIAgent {
             reply_tx,
         });
         let session = Arc::new(session);
-        session.flush_meta().await;
+        if let Err(err) = session.flush_meta().await {
+            warn!(
+                "opendan.agent[{}]: initial flush_meta for session {} failed: {err:#}",
+                self.agent_name, session_id
+            );
+        }
         session.clone().start(inbox_rx).await;
 
         // Reply collector: for MVP just log + (if we had a way) forward to the

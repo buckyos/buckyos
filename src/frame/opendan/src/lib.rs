@@ -23,6 +23,9 @@ pub mod agent_bash;
 // §9 step 6 — AIAgent::run, msg/event dispatch, session restoration, subscriptions.
 pub mod agent;
 
+// §9 step 6 — msg-center / kevent inbound pump that feeds AIAgent::inbox().
+pub mod msg_center_pump;
+
 // §9 step 7 — workspace data model (BehaviorLoop deps stripped; session binding
 //             owned by AgentSession).
 pub mod local_workspace;

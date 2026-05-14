@@ -30,10 +30,50 @@ use crate::ai_runtime::{
 };
 use crate::behavior_cfg::{BehaviorCfg, SwitchMode};
 
+/// Internal wake-up signal for the session worker. The worker consumes the
+/// actual payload from `SessionMeta::pending_inputs` (which is persisted) —
+/// this channel only nudges the worker to check.
 #[derive(Debug, Clone)]
 pub enum SessionInput {
-    HumanText { text: String },
+    /// New item enqueued to `meta.pending_inputs` — worker should re-check.
+    Wakeup,
+    /// Cooperative cancel (used by `stop()`).
     Cancel,
+}
+
+/// One inbound item parked on the session until the worker is ready to
+/// consume it. Persisted as part of [`SessionMeta`] so that a crash between
+/// `enqueue_pending` (which acks the system inbox) and the LLM actually
+/// reading the input never loses a message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PendingInput {
+    /// A user-facing chat message routed in from msg-center / a UI tunnel /
+    /// the local CLI. `record_id` is the msg-center record id when the
+    /// source was msg-center; locally-injected messages use a generated id.
+    Msg {
+        record_id: String,
+        from: String,
+        text: String,
+    },
+    /// A kevent / system event the session has subscribed to. `event_id` is
+    /// the kevent eventid; `data` is the opaque payload.
+    Event {
+        event_id: String,
+        data: serde_json::Value,
+    },
+}
+
+impl PendingInput {
+    /// Stable dedup key. Two `PendingInput`s with the same key are treated
+    /// as the same logical item — the second `enqueue_pending` becomes a
+    /// no-op so a msg-center lease replay can't double-feed the LLM.
+    pub fn dedup_key(&self) -> String {
+        match self {
+            PendingInput::Msg { record_id, .. } => format!("msg:{record_id}"),
+            PendingInput::Event { event_id, .. } => format!("event:{event_id}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,6 +104,12 @@ pub struct SessionMeta {
     pub owner: String,
     #[serde(default)]
     pub one_line_status: String,
+    /// Inputs that have been received from the system but not yet handed to
+    /// the LLM. Persisted so a process crash doesn't lose buffered inputs.
+    /// See [`AgentSession::enqueue_pending`] / the worker loop in
+    /// `run_worker`.
+    #[serde(default)]
+    pub pending_inputs: Vec<PendingInput>,
 }
 
 impl SessionMeta {
@@ -80,6 +126,7 @@ impl SessionMeta {
             status: SessionStatus::Idle,
             owner,
             one_line_status: String::new(),
+            pending_inputs: Vec::new(),
         }
     }
 }
@@ -184,35 +231,76 @@ impl AgentSession {
         (session, inbox_rx)
     }
 
-    pub async fn flush_meta(&self) {
+    /// Persist the current `SessionMeta` to `.meta/session.json`. Returns
+    /// `Ok(())` only after the write has hit disk (so callers like
+    /// `enqueue_pending` can ack upstream once this returns).
+    pub async fn flush_meta(&self) -> Result<()> {
         let dir = self.session_dir.join(".meta");
-        if let Err(err) = tokio::fs::create_dir_all(&dir).await {
-            warn!(
-                "opendan.session[{}]: mkdir {} failed: {err}",
+        tokio::fs::create_dir_all(&dir).await.map_err(|err| {
+            anyhow!(
+                "session[{}]: mkdir {} failed: {err}",
                 self.session_id,
                 dir.display()
-            );
-            return;
-        }
+            )
+        })?;
         let meta = self.meta.lock().await.clone();
-        let bytes = match serde_json::to_vec_pretty(&meta) {
-            Ok(v) => v,
-            Err(err) => {
-                warn!(
-                    "opendan.session[{}]: serialize meta failed: {err}",
-                    self.session_id
-                );
-                return;
-            }
-        };
+        let bytes = serde_json::to_vec_pretty(&meta).map_err(|err| {
+            anyhow!("session[{}]: serialize meta failed: {err}", self.session_id)
+        })?;
         let path = dir.join("session.json");
-        if let Err(err) = tokio::fs::write(&path, bytes).await {
-            warn!(
-                "opendan.session[{}]: write {} failed: {err}",
+        let tmp = path.with_extension("json.tmp");
+        // tmp + rename for crash-consistency: a half-written session.json
+        // would prevent `restore_active_sessions` from booting this session.
+        tokio::fs::write(&tmp, &bytes).await.map_err(|err| {
+            anyhow!(
+                "session[{}]: write {} failed: {err}",
+                self.session_id,
+                tmp.display()
+            )
+        })?;
+        tokio::fs::rename(&tmp, &path).await.map_err(|err| {
+            anyhow!(
+                "session[{}]: rename to {} failed: {err}",
                 self.session_id,
                 path.display()
-            );
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Append `input` to the persistent pending queue. Returns once the
+    /// queue has been flushed to disk — the caller (e.g. msg-center pump,
+    /// CLI inject) can ack upstream the moment this returns, because the
+    /// item is now durably owned by the session and will be replayed across
+    /// restarts.
+    ///
+    /// Duplicates (same `dedup_key`) are silently dropped — the upstream
+    /// system may legitimately replay an entry (msg-center lease timeout,
+    /// kevent retry), and we don't want to feed the LLM the same input
+    /// twice. Callers should treat `Ok(())` as "you may now ack regardless
+    /// of whether the item was newly accepted or deduplicated".
+    pub async fn enqueue_pending(&self, input: PendingInput) -> Result<()> {
+        let key = input.dedup_key();
+        let mut changed = false;
+        {
+            let mut meta = self.meta.lock().await;
+            let already = meta
+                .pending_inputs
+                .iter()
+                .any(|i| i.dedup_key() == key);
+            if !already {
+                meta.pending_inputs.push(input);
+                changed = true;
+            }
         }
+        if changed {
+            self.flush_meta().await?;
+            // Wake the worker. send-failure means the receiver is gone
+            // (worker exiting); the input is still durable on disk, so the
+            // next boot will pick it up. No error path needed.
+            let _ = self.inbox_tx.send(SessionInput::Wakeup).await;
+        }
+        Ok(())
     }
 
     pub async fn start(self: Arc<Self>, mut inbox_rx: mpsc::Receiver<SessionInput>) {
@@ -231,11 +319,22 @@ impl AgentSession {
         }
     }
 
+    /// Convenience: enqueue a locally-injected human message. The synthetic
+    /// `record_id` distinguishes CLI / test injections from msg-center
+    /// records (which use the upstream record id).
     pub async fn submit_text(&self, text: String) -> Result<()> {
-        self.inbox_tx
-            .send(SessionInput::HumanText { text })
-            .await
-            .map_err(|err| anyhow!("session {} inbox closed: {err}", self.session_id))
+        let record_id = format!(
+            "local-{}-{}",
+            self.session_id,
+            self.trace_seq
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.enqueue_pending(PendingInput::Msg {
+            record_id,
+            from: self.owner.clone(),
+            text,
+        })
+        .await
     }
 
     async fn run_worker(self: Arc<Self>, inbox_rx: &mut mpsc::Receiver<SessionInput>) {
@@ -244,48 +343,105 @@ impl AgentSession {
             self.session_id, self.kind
         );
 
+        // First boot might have pending_inputs from a previous run that
+        // never got consumed — process those before waiting for new wakeups.
         loop {
-            let Some(inputs) = self.drain_inputs(inbox_rx).await else {
-                info!(
-                    "opendan.session[{}]: inbox closed, exiting worker",
-                    self.session_id
-                );
-                break;
-            };
-
-            if inputs.iter().any(|i| matches!(i, SessionInput::Cancel)) {
-                self.set_status(SessionStatus::Idle).await;
-                if matches!(self.kind, SessionKind::Work) {
-                    break;
+            // Drain non-Wakeup control signals first so a Cancel doesn't get
+            // stalled behind a turn.
+            while let Ok(signal) = inbox_rx.try_recv() {
+                if matches!(signal, SessionInput::Cancel) {
+                    self.set_status(SessionStatus::Idle).await;
+                    if matches!(self.kind, SessionKind::Work) {
+                        info!(
+                            "opendan.session[{}]: cancel received on work session, exiting worker",
+                            self.session_id
+                        );
+                        return;
+                    }
                 }
-                continue;
             }
 
-            let human_texts: Vec<String> = inputs
-                .into_iter()
-                .filter_map(|i| match i {
-                    SessionInput::HumanText { text } => Some(text),
-                    SessionInput::Cancel => None,
-                })
-                .collect();
+            // Snapshot current pending queue. We DON'T remove items from
+            // `meta.pending_inputs` here — that happens only after the turn
+            // succeeds (handle_turn_result), so a crash mid-turn leaves the
+            // inputs durable and they'll be replayed next boot.
+            let pending = self.meta.lock().await.pending_inputs.clone();
+            if pending.is_empty() {
+                match inbox_rx.recv().await {
+                    None => {
+                        info!(
+                            "opendan.session[{}]: inbox closed, exiting worker",
+                            self.session_id
+                        );
+                        return;
+                    }
+                    Some(SessionInput::Cancel) => {
+                        self.set_status(SessionStatus::Idle).await;
+                        if matches!(self.kind, SessionKind::Work) {
+                            return;
+                        }
+                        continue;
+                    }
+                    Some(SessionInput::Wakeup) => continue,
+                }
+            }
+
+            // Only Msg variants drive a turn in MVP — Event handling lands
+            // when per-session kevent subscriptions are wired. Drop event
+            // entries with a warn for now so they don't wedge the queue.
+            let mut human_texts = Vec::new();
+            let mut consumed_keys = Vec::new();
+            for input in &pending {
+                match input {
+                    PendingInput::Msg { text, .. } => {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            human_texts.push(trimmed.to_string());
+                        }
+                        consumed_keys.push(input.dedup_key());
+                    }
+                    PendingInput::Event { event_id, .. } => {
+                        warn!(
+                            "opendan.session[{}]: event {} consumed without handler (event dispatch is TODO)",
+                            self.session_id, event_id
+                        );
+                        consumed_keys.push(input.dedup_key());
+                    }
+                }
+            }
+
             if human_texts.is_empty() {
+                // Nothing actionable — clear the consumed (events-only) keys
+                // and wait for the next wakeup.
+                self.discard_consumed(&consumed_keys).await;
                 continue;
             }
 
             self.set_status(SessionStatus::Running).await;
-            match self.run_one_turn(human_texts).await {
-                Ok(NextAction::Idle) => self.set_status(SessionStatus::Idle).await,
-                Ok(NextAction::WaitForMsg) => {
-                    self.set_status(SessionStatus::WaitingInput).await
-                }
-                Ok(NextAction::End) => {
-                    self.set_status(SessionStatus::Ended).await;
-                    let _ = self.reply_tx.send(SessionReply::Ended).await;
-                    break;
+            let turn_result = self.run_one_turn(human_texts).await;
+            match turn_result {
+                Ok(action) => {
+                    // Successful turn ⇒ remove the items we just fed to the
+                    // LLM from the persistent queue.
+                    self.discard_consumed(&consumed_keys).await;
+                    match action {
+                        NextAction::Idle => self.set_status(SessionStatus::Idle).await,
+                        NextAction::WaitForMsg => {
+                            self.set_status(SessionStatus::WaitingInput).await
+                        }
+                        NextAction::End => {
+                            self.set_status(SessionStatus::Ended).await;
+                            let _ = self.reply_tx.send(SessionReply::Ended).await;
+                            return;
+                        }
+                    }
                 }
                 Err(err) => {
+                    // Turn failed — leave consumed_keys in `pending_inputs`
+                    // so a restart / manual retry replays them. The session
+                    // moves to Error so the supervisor can intervene.
                     warn!(
-                        "opendan.session[{}]: turn failed: {err:#}",
+                        "opendan.session[{}]: turn failed (pending kept for retry): {err:#}",
                         self.session_id
                     );
                     self.set_status(SessionStatus::Error).await;
@@ -295,21 +451,42 @@ impl AgentSession {
                             message: format!("{err:#}"),
                         })
                         .await;
+                    // Wait for an external signal (Cancel / new Wakeup) before
+                    // retrying — otherwise we'd hot-loop on the same bad
+                    // input.
+                    match inbox_rx.recv().await {
+                        None => return,
+                        Some(SessionInput::Cancel) => {
+                            self.set_status(SessionStatus::Idle).await;
+                            if matches!(self.kind, SessionKind::Work) {
+                                return;
+                            }
+                        }
+                        Some(SessionInput::Wakeup) => {}
+                    }
                 }
             }
         }
     }
 
-    async fn drain_inputs(
-        &self,
-        inbox_rx: &mut mpsc::Receiver<SessionInput>,
-    ) -> Option<Vec<SessionInput>> {
-        let first = inbox_rx.recv().await?;
-        let mut batch = vec![first];
-        while let Ok(extra) = inbox_rx.try_recv() {
-            batch.push(extra);
+    /// Remove items whose `dedup_key` is in `keys` from the persistent queue
+    /// and flush. Called after a turn succeeds — the LLM has now "seen"
+    /// those inputs, so they're safe to drop.
+    async fn discard_consumed(&self, keys: &[String]) {
+        if keys.is_empty() {
+            return;
         }
-        Some(batch)
+        {
+            let mut meta = self.meta.lock().await;
+            meta.pending_inputs
+                .retain(|i| !keys.contains(&i.dedup_key()));
+        }
+        if let Err(err) = self.flush_meta().await {
+            warn!(
+                "opendan.session[{}]: flush after consume failed: {err:#}",
+                self.session_id
+            );
+        }
     }
 
     async fn run_one_turn(&self, human_texts: Vec<String>) -> Result<NextAction> {
@@ -571,7 +748,12 @@ impl AgentSession {
             );
         }
         self.meta.lock().await.current_behavior = new_cfg.name.clone();
-        self.flush_meta().await;
+        if let Err(err) = self.flush_meta().await {
+            warn!(
+                "opendan.session[{}]: flush after behavior switch failed: {err:#}",
+                self.session_id
+            );
+        }
         Ok(())
     }
 
@@ -581,7 +763,12 @@ impl AgentSession {
             g.status = status;
             g.one_line_status = self.status.snapshot();
         }
-        self.flush_meta().await;
+        if let Err(err) = self.flush_meta().await {
+            warn!(
+                "opendan.session[{}]: flush after status set failed: {err:#}",
+                self.session_id
+            );
+        }
     }
 }
 
@@ -656,5 +843,81 @@ mod tests {
             content: String::new(),
         };
         assert!(output_to_text(&out).is_none());
+    }
+
+    #[test]
+    fn pending_input_dedup_key_distinguishes_variants() {
+        let msg = PendingInput::Msg {
+            record_id: "abc".to_string(),
+            from: "alice".to_string(),
+            text: "hi".to_string(),
+        };
+        let event = PendingInput::Event {
+            event_id: "abc".to_string(),
+            data: serde_json::Value::Null,
+        };
+        assert_eq!(msg.dedup_key(), "msg:abc");
+        assert_eq!(event.dedup_key(), "event:abc");
+        assert_ne!(msg.dedup_key(), event.dedup_key());
+    }
+
+    #[test]
+    fn session_meta_round_trips_pending_inputs() {
+        // SessionMeta + PendingInput must round-trip through JSON so
+        // `.meta/session.json` correctly preserves unconsumed inputs across
+        // process restarts. If this breaks, persisted pendings are lost.
+        let meta = SessionMeta {
+            session_id: "s1".to_string(),
+            kind: SessionKind::Ui,
+            current_behavior: "ui_default".to_string(),
+            status: SessionStatus::WaitingInput,
+            owner: "alice".to_string(),
+            one_line_status: String::new(),
+            pending_inputs: vec![
+                PendingInput::Msg {
+                    record_id: "rec-1".to_string(),
+                    from: "alice".to_string(),
+                    text: "hi".to_string(),
+                },
+                PendingInput::Event {
+                    event_id: "/timer/wake".to_string(),
+                    data: serde_json::json!({"tick": 7}),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let restored: SessionMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.pending_inputs.len(), 2);
+        match &restored.pending_inputs[0] {
+            PendingInput::Msg { record_id, text, .. } => {
+                assert_eq!(record_id, "rec-1");
+                assert_eq!(text, "hi");
+            }
+            _ => panic!("expected Msg variant first"),
+        }
+        match &restored.pending_inputs[1] {
+            PendingInput::Event { event_id, data } => {
+                assert_eq!(event_id, "/timer/wake");
+                assert_eq!(data.get("tick").and_then(|v| v.as_i64()), Some(7));
+            }
+            _ => panic!("expected Event variant second"),
+        }
+    }
+
+    #[test]
+    fn session_meta_tolerates_missing_pending_inputs_field() {
+        // Older session.json files were written before pending_inputs
+        // existed; restoring them must default the field to an empty
+        // vec rather than erroring out.
+        let legacy = r#"{
+            "session_id": "old",
+            "kind": "ui",
+            "current_behavior": "ui_default",
+            "status": "idle",
+            "owner": "alice"
+        }"#;
+        let meta: SessionMeta = serde_json::from_str(legacy).unwrap();
+        assert!(meta.pending_inputs.is_empty());
+        assert_eq!(meta.owner, "alice");
     }
 }

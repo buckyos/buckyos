@@ -10,10 +10,10 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
-    BuckyOSRuntimeType, OPENDAN_SERVICE_NAME,
+    BuckyOSRuntimeType, KEventClient, OPENDAN_SERVICE_NAME,
 };
 use buckyos_kit::init_logging;
-use log::{error, info};
+use log::{error, info, warn};
 
 use opendan::agent::AIAgent;
 use opendan::ai_runtime::AgentRuntime;
@@ -48,11 +48,32 @@ async fn bootstrap() -> Result<Arc<AgentRuntime>> {
     let worklog = WorklogService::new(WorklogToolConfig::with_db_path(worklog_db.clone()))
         .with_context(|| format!("open worklog db at {}", worklog_db.display()))?;
 
+    let msg_center = match api_runtime.get_msg_center_client().await {
+        Ok(client) => Some(Arc::new(client)),
+        Err(err) => {
+            warn!("opendan.bootstrap: msg-center unavailable — inbox pump disabled: {err}");
+            None
+        }
+    };
+
+    // KEventClient is local to the process; `source_node` only matters as a
+    // tag on locally published events. Use the opendan service name so the
+    // node-local view is self-describing — the actual subscription patterns
+    // are derived per-agent from `agent.toml`.
+    let kevent_client = Arc::new(KEventClient::new_full(OPENDAN_SERVICE_NAME, None));
+
     info!(
-        "opendan.bootstrap: aicc=ready worklog_db={}",
-        worklog_db.display()
+        "opendan.bootstrap: aicc=ready worklog_db={} msg_center={} kevent=ready",
+        worklog_db.display(),
+        if msg_center.is_some() { "ready" } else { "unavailable" }
     );
-    Ok(Arc::new(AgentRuntime::new(Arc::new(aicc), Arc::new(worklog))))
+
+    let mut runtime = AgentRuntime::new(Arc::new(aicc), Arc::new(worklog))
+        .with_kevent_client(kevent_client);
+    if let Some(client) = msg_center {
+        runtime = runtime.with_msg_center(client);
+    }
+    Ok(Arc::new(runtime))
 }
 
 async fn run() -> Result<()> {
