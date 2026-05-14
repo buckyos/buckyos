@@ -12,6 +12,7 @@ schemars = {workspace = true}
 serde_yaml = "0.9"
 thiserror = {workspace = true}
 agent_tool = { path = "../agent_tool" }
+llm_context = { path = "../llm_context" }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 kRPC = { workspace = true }
 ndn-lib = {workspace = true}
