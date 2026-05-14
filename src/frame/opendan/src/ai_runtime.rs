@@ -32,6 +32,7 @@ use ::agent_tool::{
     AgentToolManager, AgentToolResult, AgentToolStatus, SessionRuntimeContext,
 };
 use llm_context::{
+    behavior_loop::{LLMResultParser, StepRenderer},
     deps::{
         LLMContextDeps, LlmClient, LlmInferenceRequest, PolicyEngine, ToolManager, ToolSpecLite,
         TurnHook, WorkEvent, WorklogSink,
@@ -266,20 +267,32 @@ fn result_to_observation(call_id: String, result: AgentToolResult) -> Observatio
 // PolicyEngine — behavior-driven gate (MVP)
 // =====================================================================
 
-/// `PolicyEngine` for opendan. The waist already enforces
-/// `tool_policy.whitelist` when advertising specs to the LLM; this gate
-/// covers the orthogonal axis of *human approval* (rejected calls become
-/// recoverable errors that the LLM can self-correct against).
+/// `PolicyEngine` for opendan. Two gates:
+///   - `approval_required`: tool calls in this list become recoverable errors
+///     the LLM can self-correct against (or that the L4 worksession can
+///     escalate to a human).
+///   - `enforce_whitelist`: when set, the policy also re-validates each call
+///     against the request's `tool_policy.whitelist`. Defence-in-depth on top
+///     of the waist's spec advertisement, since adversarial LLMs sometimes
+///     emit calls to tools that were never advertised.
 ///
-/// Step 3 (`behavior_cfg`) populates `approval_required` from the active
-/// behavior TOML.
+/// Populated by §9.3 `behavior_cfg` translation in `agent_session::build_deps`.
 pub struct AgentPolicy {
     pub approval_required: Vec<String>,
+    pub enforce_whitelist: bool,
 }
 
 impl AgentPolicy {
     pub fn new(approval_required: Vec<String>) -> Self {
-        Self { approval_required }
+        Self {
+            approval_required,
+            enforce_whitelist: true,
+        }
+    }
+
+    pub fn with_whitelist_enforcement(mut self, enforce: bool) -> Self {
+        self.enforce_whitelist = enforce;
+        self
     }
 }
 
@@ -287,20 +300,33 @@ impl AgentPolicy {
 impl PolicyEngine for AgentPolicy {
     async fn gate_tool_calls(
         &self,
-        _request: &LLMContextRequest,
+        request: &LLMContextRequest,
         calls: Vec<AiToolCall>,
     ) -> Result<Vec<AiToolCall>, String> {
-        if self.approval_required.is_empty() {
-            return Ok(calls);
+        if !self.approval_required.is_empty() {
+            if let Some(blocked) = calls
+                .iter()
+                .find(|c| self.approval_required.iter().any(|n| n == &c.name))
+            {
+                return Err(format!(
+                    "tool `{}` requires human approval",
+                    blocked.name
+                ));
+            }
         }
-        if let Some(blocked) = calls
-            .iter()
-            .find(|c| self.approval_required.iter().any(|n| n == &c.name))
-        {
-            return Err(format!(
-                "tool `{}` requires human approval",
-                blocked.name
-            ));
+        if self.enforce_whitelist {
+            use llm_context::request::ToolMode;
+            if matches!(request.tool_policy.mode, ToolMode::Whitelist) {
+                if let Some(off) = calls
+                    .iter()
+                    .find(|c| !request.tool_policy.whitelist.iter().any(|n| n == &c.name))
+                {
+                    return Err(format!(
+                        "tool `{}` is not in this behavior's whitelist",
+                        off.name
+                    ));
+                }
+            }
         }
         Ok(calls)
     }
@@ -541,6 +567,9 @@ pub struct SessionDepsInput {
     pub snapshot_path: PathBuf,
     pub approval_required: Vec<String>,
     pub one_line_status: Option<Arc<dyn OneLineStatusSink>>,
+    /// Behavior Loop: structured parser + matched renderer. `None` ⇒
+    /// traditional Agent Loop. Filled by [`behavior_cfg`](crate::behavior_cfg).
+    pub parser_renderer: Option<(Arc<dyn LLMResultParser>, Arc<dyn StepRenderer>)>,
 }
 
 /// Assemble per-session `LLMContextDeps`. Step 3 will compose the optional
@@ -553,6 +582,7 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
         snapshot_path,
         approval_required,
         one_line_status,
+        parser_renderer,
     } = input;
 
     let worklog_ctx = WorklogAppendCtx {
@@ -572,8 +602,12 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
     ));
     let hook: Arc<dyn TurnHook> = Arc::new(SessionSnapshotHook::new(snapshot_path));
 
-    LLMContextDeps::new(llm, tools_adapter)
+    let mut deps = LLMContextDeps::new(llm, tools_adapter)
         .with_policy(policy)
         .with_worklog(worklog)
-        .with_turn_hook(hook)
+        .with_turn_hook(hook);
+    if let Some((parser, renderer)) = parser_renderer {
+        deps = deps.with_result_parser(parser).with_step_renderer(renderer);
+    }
+    deps
 }

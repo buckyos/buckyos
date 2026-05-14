@@ -463,20 +463,48 @@ async fn create_work_session(objective: String, source_session_id: String) -> Wo
 
 ## 9. 重构 checklist（给 CodeAgent）
 
-工程顺序建议：
+### 当前进度（2026-05-13）
 
-1. ~~**`llm_context::xml_behavior` + `llm_context::step_record`** — 实现 `XmlBehaviorParser` + `XmlStepRenderer`。~~ ✅ 已完成（27 项单测覆盖容错/多 action/压缩/交替等场景）。详见 §3。
-2. **`opendan::ai_runtime`** — 装配 `LLMContextDeps`，含：
-   - `AiccLlmClient`（包 `aicc_client`，实现 `LlmClient`）
-   - `AgentToolManager`（4 层 bin 合成，实现 `ToolManager`）
-   - `AgentPolicy`（读取 behavior_cfg，实现 `PolicyEngine`）
-   - `OpenDanWorklogSink`（翻译 `WorkEvent` 到 `WorklogService` + 更新 session 一句话状态）
-   - `SessionSnapshotHook`（实现 `TurnHook`，写 `session/.meta/state.snap`）
-3. **`opendan::agent_config`** — 加载 `behaviors/$name.toml`；定义 `BehaviorCfg` 结构（含 `switch_mode`、`tool_whitelist`、`output_spec` 等）。
-4. **`opendan::agent_session`** — `AgentSession` 类型、worker 循环、`build_or_resume_context`、`handle_outcome`、`switch_behavior`（实现三种 mode）。
-5. **`opendan::agent_bash`** — UI session 默认工具集中的 `exec_bash`（拼 4 层 PATH）+ session bin 的脚本管理。
-6. **`opendan::agent`** — `AIAgent::run`、`dispatch_msg_pack` / `dispatch_event_pack`、`restore_active_sessions`、订阅管理。
-7. **`opendan::local_workspace`** — 已有数据模型保留；删掉对老 BehaviorLoop 的依赖；session 绑定逻辑下放到 `AgentSession`。
-8. **删除老代码**：`behavior/`、`workspace/`、`skill_tool.rs`、`step_record.rs`（功能已下沉到 llm_context）；旧的 `AgentSessionMgr` 同步重写。
+**已完成：**
+- §9.1 `llm_context::xml_behavior` + `step_record`：`XmlBehaviorParser` / `XmlStepRenderer` 落地，27 项单测覆盖容错/多 action/压缩/交替等场景。
+- §9.2 `opendan::ai_runtime`：5 个 deps 适配器全部实现并通过 `cargo test -p opendan --lib`（19 项单测全绿）。
+  - `AiccLlmClient` / `OpendanToolAdapter` / `AgentPolicy` / `OpenDanWorklogSink` / `SessionSnapshotHook`
+  - `AgentRuntime { aicc, worklog }` + `SessionDepsInput { parser_renderer, ... }` + `build_session_deps()` 入口
+  - `AgentPolicy` 现在做两道闸：approval list 与 whitelist 防御性二次校验（一线 whitelist 仍由 waist `resolve_tool_specs` 落地）
+- §9.3 `opendan::behavior_cfg` + `opendan::agent_config`：
+  - `BehaviorCfg` TOML 解析、`SwitchMode` / `BehaviorMode` / `BehaviorOutput` 翻译到 waist `ToolPolicy` / `HumanPolicy` / `ErrorPolicy` / `BudgetSpec` / `OutputSpec` / `ModelPolicy`，`build_parser_and_renderer()` 装 `XmlBehaviorParser` + `XmlStepRenderer`
+  - `AgentConfig::open` 容忍 agent.toml 缺失；`builtin_ui_default()` 兜底；`list_behavior_names()` 扫盘
+- §9.4 `opendan::agent_session`（MVP）：
+  - `AgentSession` + `AgentSessionBuild` + `SessionInput` / `SessionReply` / `SessionMeta` / `SessionStatus`
+  - worker 循环：drain_or_wait → run_one_turn → handle_outcome
+  - `build_or_resume`：优先尝试 `state.snap` resume（pending-tool 路径未连，落 warn 走 fresh），HumanInput / ResumeFromMidRun fill 已通
+  - `handle_outcome` 覆盖 Done / WaitInput / PendingTool（warn）/ Budget / Error / ContextLimit
+  - `switch_behavior`（Normal-only；Fork / Independent warn 后按 Normal 处理）
+- §9.5 `opendan::agent_bash`：`build_session_tools(workspace, session_dir)` 注册 `exec_bash` + read/write/edit/glob/grep；`SessionBinLayout` 持有 4 层 bin 路径（System / Runtime / Agent / Session），目前 overlay 仅落 Session 层（upstream `BinOverlayConfig` 是单 `bin_dir`，待 §9.5 后续扩展）
+- §9.6 `opendan::agent`：
+  - `AIAgent::open(root, runtime)` 加载 `AgentConfig`、`AIAgent::run()` 驱动 dispatch loop（`tokio::select` { inbox, shutdown }）
+  - `dispatch_msg` → tunnel → UI session（按需 mint）；`restore_active_sessions()` 从盘上的 `.meta/session.json` 恢复非 Ended
+  - reply 收集任务：每个 session 起一个 logger，把 AssistantText / Error / PromptToHuman / Ended 写日志
+  - `main.rs` 解除 SIGINT-park：bootstrap → `AIAgent::open` → `AIAgent::run`，SIGINT 走 `shutdown()` graceful 退出
+- 工程脚手架：每个 mod 都有单测覆盖（行为/翻译/path-sanitize/truncate 等），`cargo test -p opendan --lib` 19/19 全绿
 
-每个阶段独立编译 + 跑 `cargo test`；阶段 4 之后能拉起一个 UI session 跑 `exec_bash` + `read_file` 的最小回路就算 MVP 通了。
+**未完成（已与用户对齐：不在本批次范围内）：**
+- §9.2 残项：`OpendanToolAdapter` 真正的 4 层 bin 合成（待 upstream `BinOverlayConfig` 扩展成支持多层 PATH 后接入）
+- §9.4 残项：
+  - `PendingTool` outcome 的 async tool dispatch（需 `task_mgr` 接入）
+  - `Fork` / `Independent` switch_mode 的真实实现（目前 fall-through 到 Normal）
+  - `ContextLimitReached` 的消息层压缩 + `ResumeFill::RewrittenHistory` 续跑
+  - "环境感知 message"（auto-recall memory / workspace 状态 / 事件 diff）
+- §9.6 残项：
+  - `EventPack` 订阅 + `dispatch_event_pack`（需 `task_mgr`）
+  - `forward_msg` / `try_create_worksession` 等 UI-session-only 工具
+  - 实际把 reply 送回 tunnel（需 `contact_mgr`，目前仅打日志）
+- §9.7 `local_workspace` — 重写为 `AgentSession`-owned 绑定（占位文件仍空）
+- §9.8 老代码清理 — 旧 `AgentSessionMgr`、`behavior/`、`workspace/`、`skill_tool.rs`、`step_record.rs` 若仍在源树需清理（当前 opendan 子树已无残留，但工程根上可能还有其他位置）
+
+### 工程顺序（剩余）
+
+7. **`opendan::local_workspace`** — 数据模型重写；session 绑定逻辑下放到 `AgentSession`。
+8. **task_mgr / contact_mgr 接入** — 解锁 §9.4 PendingTool、§9.6 forward_msg / EventPack；4 层 bin overlay 扩展待 agent_tool 一并提。
+
+每个阶段独立编译 + 跑 `cargo test`；阶段 6 完成后，opendan 已可拉起一个 UI session 通过 `submit_text` 走 `exec_bash` + 读文件的最小回路（缺最后 tunnel 回送，目前用日志代替）。
