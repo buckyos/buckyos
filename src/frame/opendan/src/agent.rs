@@ -34,7 +34,9 @@ use crate::agent_session::{
     SessionStatus,
 };
 use crate::ai_runtime::AgentRuntime;
+use crate::local_workspace::LocalWorkspaceManager;
 use crate::msg_center_pump::{self, PumpConfig};
+use crate::session_event_pump::SessionEventPump;
 
 /// Reason string we tag msg-center ack updates with so audit logs can tell
 /// "the opendan agent picked this up" apart from other consumers.
@@ -63,6 +65,14 @@ pub enum Inbound {
         /// Originating tunnel / DID host name. Drives the
         /// `tunnel_to_ui_session` lookup when `session_id` is `None`.
         from: String,
+        /// Full DID of the sender, used as the reply target when the
+        /// session emits an assistant message. `None` for locally-injected
+        /// inputs where there is no real peer DID.
+        from_did: Option<String>,
+        /// Preferred tunnel DID extracted from the msg-center route hint.
+        /// Passed through to `msg_center.post_send` as `preferred_tunnel`
+        /// so replies ride the same wire whenever possible.
+        tunnel_did: Option<String>,
         /// Optional explicit target. `None` ⇒ resolve via `from`.
         session_id: Option<String>,
         text: String,
@@ -99,6 +109,13 @@ pub struct AIAgent {
     /// Signalled when `run()` is exiting, so the msg-center pump task can
     /// drop its kevent reader and return promptly.
     pump_shutdown: Arc<Notify>,
+    /// Per-session kevent subscription pump. `None` when the runtime has
+    /// no `kevent_client` (CLI / test). Cheap to keep around: idle pump
+    /// just parks on its `refresh` Notify when no session subscribes.
+    event_pump: Option<Arc<SessionEventPump>>,
+    /// Owns the on-disk workspace records under `<agent_root>/workspace/`.
+    /// Stateless — cloning is just a `PathBuf`.
+    workspaces: LocalWorkspaceManager,
 }
 
 impl AIAgent {
@@ -118,6 +135,16 @@ impl AIAgent {
         };
         let (inbox_tx, inbox_rx) = mpsc::channel(256);
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let pump_shutdown = Arc::new(Notify::new());
+        let event_pump = runtime.kevent_client.as_ref().map(|kc| {
+            SessionEventPump::new(
+                agent_name.clone(),
+                kc.clone(),
+                inbox_tx.clone(),
+                pump_shutdown.clone(),
+            )
+        });
+        let workspaces = LocalWorkspaceManager::new(config.layout.workspaces_dir.clone());
         Ok(Arc::new(Self {
             config: Arc::new(config),
             runtime,
@@ -128,8 +155,17 @@ impl AIAgent {
             inbox_rx: Arc::new(Mutex::new(Some(inbox_rx))),
             shutdown_tx,
             shutdown_rx: Arc::new(Mutex::new(Some(shutdown_rx))),
-            pump_shutdown: Arc::new(Notify::new()),
+            pump_shutdown,
+            event_pump,
+            workspaces,
         }))
+    }
+
+    /// Public accessor for the agent-owned workspace manager. Tools that
+    /// need to enumerate / pick workspaces (e.g. `try_create_worksession`)
+    /// hold this handle.
+    pub fn workspaces(&self) -> &LocalWorkspaceManager {
+        &self.workspaces
     }
 
     /// Producer-end clone of the inbox. Multiple callers may keep clones.
@@ -163,6 +199,10 @@ impl AIAgent {
             .ok_or_else(|| anyhow!("AIAgent::run called twice (shutdown already taken)"))?;
 
         let pump_handle = self.clone().spawn_msg_center_pump();
+        let event_pump_handle = self.event_pump.as_ref().map(|p| {
+            let p = p.clone();
+            tokio::spawn(async move { p.run().await })
+        });
 
         loop {
             tokio::select! {
@@ -186,6 +226,9 @@ impl AIAgent {
             // Best-effort: pump task observes `pump_shutdown` and exits on its
             // own; we just wait so the kevent reader is fully closed before
             // the agent drops.
+            let _ = handle.await;
+        }
+        if let Some(handle) = event_pump_handle {
             let _ = handle.await;
         }
         self.stop_all_sessions().await;
@@ -257,20 +300,25 @@ impl AIAgent {
             "opendan.agent[{}]: restoring session {} (kind={:?})",
             self.agent_name, meta.session_id, meta.kind
         );
+        let session_id = meta.session_id.clone();
+        let kind = meta.kind;
+        let owner = meta.owner.clone();
+        let behavior = meta.current_behavior.clone();
         let _session = self
             .clone()
             .ensure_session_inner(
-                meta.session_id.clone(),
-                meta.kind,
-                meta.owner.clone(),
-                Some(meta.current_behavior.clone()),
+                session_id.clone(),
+                kind,
+                owner.clone(),
+                Some(behavior),
+                Some(meta),
             )
             .await?;
-        if matches!(meta.kind, SessionKind::Ui) && !meta.owner.is_empty() {
+        if matches!(kind, SessionKind::Ui) && !owner.is_empty() {
             self.tunnel_to_ui_session
                 .lock()
                 .await
-                .insert(meta.owner, meta.session_id);
+                .insert(owner, session_id);
         }
         Ok(())
     }
@@ -280,6 +328,8 @@ impl AIAgent {
             Inbound::Msg {
                 record_id,
                 from,
+                from_did,
+                tunnel_did,
                 session_id,
                 text,
             } => {
@@ -300,6 +350,8 @@ impl AIAgent {
                     .enqueue_pending(PendingInput::Msg {
                         record_id: record_id.clone(),
                         from,
+                        from_did,
+                        tunnel_did,
                         text,
                     })
                     .await?;
@@ -394,7 +446,7 @@ impl AIAgent {
         if let Some(s) = self.sessions.lock().await.get(&session_id).cloned() {
             return Ok(s);
         }
-        self.ensure_session_inner(session_id, SessionKind::Ui, owner, None)
+        self.ensure_session_inner(session_id, SessionKind::Ui, owner, None, None)
             .await
     }
 
@@ -404,6 +456,7 @@ impl AIAgent {
         kind: SessionKind,
         owner: String,
         behavior_hint: Option<String>,
+        existing_meta: Option<SessionMeta>,
     ) -> Result<Arc<AgentSession>> {
         {
             let map = self.sessions.lock().await;
@@ -412,10 +465,23 @@ impl AIAgent {
             }
         }
         let session_dir = self.config.layout.session_dir(&session_id);
-        let workspace_root = self.config.layout.workspaces_dir.join(&session_id);
-        // Workspace dir is auto-created for MVP — the proper §8 worksession
-        // creation flow will pick / bind an existing workspace instead.
-        let _ = std::fs::create_dir_all(&workspace_root);
+        // Workspace pick:
+        //   - existing_meta with a workspace_id → reuse (restore path).
+        //   - otherwise → mint a workspace keyed off the session id so the
+        //     legacy MVP file layout is preserved.
+        // The proper §8 worksession creation flow will replace this with
+        // `try_create_worksession` picking an existing workspace.
+        let preselected_ws = existing_meta
+            .as_ref()
+            .and_then(|m| m.workspace_id.clone())
+            .filter(|s| !s.trim().is_empty());
+        let workspace_id = preselected_ws.unwrap_or_else(|| session_id.clone());
+        let workspace_rec = self
+            .workspaces
+            .create_or_open(&workspace_id, &workspace_id, Some(&session_id))
+            .await
+            .map_err(|err| anyhow!("open workspace `{workspace_id}`: {err}"))?;
+        let workspace_root = self.workspaces.workspace_dir(&workspace_rec.workspace_id);
         let _ = std::fs::create_dir_all(&session_dir);
 
         let tools = build_session_tools(&workspace_root, &session_dir)
@@ -436,8 +502,31 @@ impl AIAgent {
             agent_config: self.config.clone(),
             tools,
             reply_tx,
+            existing_meta,
         });
         let session = Arc::new(session);
+        // Reciprocal binding: session ↔ workspace. Session-side first so
+        // its meta is the source of truth; if the workspace-side update
+        // fails the session still has the correct binding.
+        if let Err(err) = session
+            .set_workspace(Some(workspace_rec.workspace_id.clone()))
+            .await
+        {
+            warn!(
+                "opendan.agent[{}]: bind workspace `{}` on session {} failed: {err:#}",
+                self.agent_name, workspace_rec.workspace_id, session_id
+            );
+        }
+        if let Err(err) = self
+            .workspaces
+            .set_current_session(&workspace_rec.workspace_id, Some(&session_id))
+            .await
+        {
+            warn!(
+                "opendan.agent[{}]: workspace `{}` set_current_session failed: {err}",
+                self.agent_name, workspace_rec.workspace_id
+            );
+        }
         if let Err(err) = session.flush_meta().await {
             warn!(
                 "opendan.agent[{}]: initial flush_meta for session {} failed: {err:#}",
@@ -485,7 +574,30 @@ impl AIAgent {
             .lock()
             .await
             .insert(session_id.clone(), session.clone());
+        // Propagate any persisted subscriptions for this session into the
+        // shared event pump. Re-running this for a fresh session is cheap
+        // (no subscriptions yet ⇒ empty list ⇒ no reader rebuild).
+        if let Some(pump) = self.event_pump.as_ref() {
+            let patterns = session.subscription_patterns().await;
+            pump.set_session_subscriptions(&session_id, patterns).await;
+        }
         Ok(session)
+    }
+
+    /// Refresh the event pump's view of a session's subscriptions. Call
+    /// this after `AgentSession::subscribe_event` / `unsubscribe_event`
+    /// from a tool implementation. No-op when the runtime has no kevent
+    /// client (tests, CLI without zone services).
+    pub async fn refresh_session_subscriptions(&self, session_id: &str) {
+        let Some(pump) = self.event_pump.as_ref() else {
+            return;
+        };
+        let session = self.sessions.lock().await.get(session_id).cloned();
+        let patterns = match session {
+            Some(s) => s.subscription_patterns().await,
+            None => Vec::new(),
+        };
+        pump.set_session_subscriptions(session_id, patterns).await;
     }
 
     async fn stop_all_sessions(&self) {

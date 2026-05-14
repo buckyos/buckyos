@@ -56,6 +56,19 @@ async fn bootstrap() -> Result<Arc<AgentRuntime>> {
         }
     };
 
+    // task_mgr is optional too — failing to reach the task-mgr daemon
+    // should degrade async-tool dispatch (PendingTool outcomes) to an
+    // inline warn, not block the agent from running.
+    let task_mgr = match api_runtime.get_task_mgr_client().await {
+        Ok(client) => Some(Arc::new(client)),
+        Err(err) => {
+            warn!(
+                "opendan.bootstrap: task-mgr unavailable — async tool dispatch disabled: {err}"
+            );
+            None
+        }
+    };
+
     // KEventClient is local to the process; `source_node` only matters as a
     // tag on locally published events. Use the opendan service name so the
     // node-local view is self-describing — the actual subscription patterns
@@ -63,15 +76,19 @@ async fn bootstrap() -> Result<Arc<AgentRuntime>> {
     let kevent_client = Arc::new(KEventClient::new_full(OPENDAN_SERVICE_NAME, None));
 
     info!(
-        "opendan.bootstrap: aicc=ready worklog_db={} msg_center={} kevent=ready",
+        "opendan.bootstrap: aicc=ready worklog_db={} msg_center={} task_mgr={} kevent=ready",
         worklog_db.display(),
-        if msg_center.is_some() { "ready" } else { "unavailable" }
+        if msg_center.is_some() { "ready" } else { "unavailable" },
+        if task_mgr.is_some() { "ready" } else { "unavailable" }
     );
 
     let mut runtime = AgentRuntime::new(Arc::new(aicc), Arc::new(worklog))
         .with_kevent_client(kevent_client);
     if let Some(client) = msg_center {
         runtime = runtime.with_msg_center(client);
+    }
+    if let Some(client) = task_mgr {
+        runtime = runtime.with_task_mgr(client);
     }
     Ok(Arc::new(runtime))
 }

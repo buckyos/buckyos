@@ -51,9 +51,20 @@ pub enum PendingInput {
     /// A user-facing chat message routed in from msg-center / a UI tunnel /
     /// the local CLI. `record_id` is the msg-center record id when the
     /// source was msg-center; locally-injected messages use a generated id.
+    ///
+    /// `from` is the raw host-name form used for keying the per-tunnel UI
+    /// session. `from_did` (when present) carries the *full* DID string so
+    /// the session can address replies back to the original peer through
+    /// `msg_center.post_send`. `tunnel_did` is the tunnel route hint pulled
+    /// from `MsgRecord.route.tunnel_did` — used as `preferred_tunnel` on the
+    /// outbound side so the reply rides the same wire whenever possible.
     Msg {
         record_id: String,
         from: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_did: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tunnel_did: Option<String>,
         text: String,
     },
     /// A kevent / system event the session has subscribed to. `event_id` is
@@ -110,6 +121,43 @@ pub struct SessionMeta {
     /// `run_worker`.
     #[serde(default)]
     pub pending_inputs: Vec<PendingInput>,
+    /// Full DID of the most-recently-seen human peer for this session.
+    /// Captured from `PendingInput::Msg.from_did` when present. Used as the
+    /// reply target when an outcome produces assistant text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_did: Option<String>,
+    /// Preferred tunnel DID for outbound replies, captured from
+    /// `PendingInput::Msg.tunnel_did`. Optional — `None` lets msg-center
+    /// pick a route via the contact manager.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_tunnel_did: Option<String>,
+    /// Persisted kevent subscriptions for this session. The agent's event
+    /// pump aggregates these into its reader and routes matched events back
+    /// as `Inbound::Event { target_session_id: Some(<this id>), ... }`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_subscriptions: Vec<EventSubscription>,
+    /// Workspace this session is bound to. The session is the source of
+    /// truth — the workspace record's `current_session` is just a hint /
+    /// conflict-detection field. `None` ⇒ session not yet bound to any
+    /// workspace (legacy MVP flow auto-binds on session create).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
+/// One persisted kevent subscription belonging to a session.
+///
+/// Subscriptions live in `SessionMeta` so that a restart re-establishes the
+/// session's view of the event bus before the worker starts. The pump
+/// aggregates subscriptions across all live sessions and rebuilds its
+/// `EventReader` whenever the union changes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventSubscription {
+    /// kevent pattern — passed through to `KEventClient::create_event_reader`.
+    pub pattern: String,
+    /// Wall-clock timestamp the subscription was added; informational only,
+    /// not used for ordering or matching.
+    #[serde(default)]
+    pub subscribed_at_ms: u64,
 }
 
 impl SessionMeta {
@@ -127,6 +175,10 @@ impl SessionMeta {
             owner,
             one_line_status: String::new(),
             pending_inputs: Vec::new(),
+            peer_did: None,
+            peer_tunnel_did: None,
+            event_subscriptions: Vec::new(),
+            workspace_id: None,
         }
     }
 }
@@ -197,6 +249,11 @@ pub struct AgentSessionBuild {
     pub agent_config: Arc<AgentConfig>,
     pub tools: Arc<AgentToolManager>,
     pub reply_tx: mpsc::Sender<SessionReply>,
+    /// Existing on-disk meta to seed the session with. Used by
+    /// `AIAgent::restore_active_sessions` so pending_inputs / peer info /
+    /// event_subscriptions persisted before the last crash survive into
+    /// the new in-memory session.
+    pub existing_meta: Option<SessionMeta>,
 }
 
 impl AgentSession {
@@ -205,12 +262,25 @@ impl AgentSession {
         let state_snap_path = session_dir.join(".meta").join("state.snap");
         let (inbox_tx, inbox_rx) = mpsc::channel(64);
 
-        let meta = SessionMeta::new(
-            b.session_id.clone(),
-            b.kind,
-            b.current_behavior.clone(),
-            b.owner.clone(),
-        );
+        // Restore path: keep persistent fields (pending_inputs, peer info,
+        // event_subscriptions) but reset transient status to Idle so the
+        // worker re-enters the main loop cleanly.
+        let meta = if let Some(mut existing) = b.existing_meta {
+            existing.session_id = b.session_id.clone();
+            existing.kind = b.kind;
+            existing.current_behavior = b.current_behavior.clone();
+            existing.owner = b.owner.clone();
+            existing.status = SessionStatus::Idle;
+            existing.one_line_status.clear();
+            existing
+        } else {
+            SessionMeta::new(
+                b.session_id.clone(),
+                b.kind,
+                b.current_behavior.clone(),
+                b.owner.clone(),
+            )
+        };
         let session = Self {
             session_id: b.session_id,
             agent_name: b.agent_name,
@@ -332,6 +402,8 @@ impl AgentSession {
         self.enqueue_pending(PendingInput::Msg {
             record_id,
             from: self.owner.clone(),
+            from_did: None,
+            tunnel_did: None,
             text,
         })
         .await
@@ -390,35 +462,60 @@ impl AgentSession {
             // when per-session kevent subscriptions are wired. Drop event
             // entries with a warn for now so they don't wedge the queue.
             let mut human_texts = Vec::new();
+            let mut event_summaries = Vec::new();
             let mut consumed_keys = Vec::new();
+            // Latest peer info wins — the most recent Msg in this batch
+            // dictates where outbound replies will be routed.
+            let mut latest_peer_did: Option<String> = None;
+            let mut latest_peer_tunnel: Option<String> = None;
             for input in &pending {
                 match input {
-                    PendingInput::Msg { text, .. } => {
+                    PendingInput::Msg {
+                        text,
+                        from_did,
+                        tunnel_did,
+                        ..
+                    } => {
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
                             human_texts.push(trimmed.to_string());
                         }
+                        if let Some(did) = from_did.as_ref().filter(|s| !s.trim().is_empty()) {
+                            latest_peer_did = Some(did.clone());
+                        }
+                        if let Some(t) = tunnel_did.as_ref().filter(|s| !s.trim().is_empty()) {
+                            latest_peer_tunnel = Some(t.clone());
+                        }
                         consumed_keys.push(input.dedup_key());
                     }
-                    PendingInput::Event { event_id, .. } => {
-                        warn!(
-                            "opendan.session[{}]: event {} consumed without handler (event dispatch is TODO)",
-                            self.session_id, event_id
-                        );
+                    PendingInput::Event { event_id, data } => {
+                        // §9.6 event dispatch: surface the event into the
+                        // turn so the LLM can react. We translate it into a
+                        // short system-style note rather than feeding the
+                        // raw JSON as a user message, since events aren't
+                        // user speech.
+                        event_summaries.push(format_event_for_turn(event_id, data));
                         consumed_keys.push(input.dedup_key());
                     }
                 }
             }
 
-            if human_texts.is_empty() {
-                // Nothing actionable — clear the consumed (events-only) keys
-                // and wait for the next wakeup.
+            if latest_peer_did.is_some() || latest_peer_tunnel.is_some() {
+                self.update_peer(latest_peer_did, latest_peer_tunnel).await;
+            }
+
+            // Events are folded into the same turn as message text — they
+            // arrive interleaved chronologically and represent the same
+            // "what's new since last inference" surface to the LLM.
+            let mut turn_inputs = human_texts;
+            turn_inputs.extend(event_summaries);
+            if turn_inputs.is_empty() {
                 self.discard_consumed(&consumed_keys).await;
                 continue;
             }
 
             self.set_status(SessionStatus::Running).await;
-            let turn_result = self.run_one_turn(human_texts).await;
+            let turn_result = self.run_one_turn(turn_inputs).await;
             match turn_result {
                 Ok(action) => {
                     // Successful turn ⇒ remove the items we just fed to the
@@ -654,6 +751,11 @@ impl AgentSession {
                 ..
             } => {
                 if let Some(text) = output_to_text(&output) {
+                    // Outbound first: send the reply through msg-center so
+                    // the original peer receives it. Failure is logged but
+                    // not fatal — local SessionReply::AssistantText still
+                    // fires so CLI / log consumers see the answer.
+                    self.post_outbound_text(&text).await;
                     let _ = self
                         .reply_tx
                         .send(SessionReply::AssistantText { text })
@@ -770,6 +872,219 @@ impl AgentSession {
             );
         }
     }
+
+    /// Stash the latest peer routing info (DID + tunnel) extracted from a
+    /// `PendingInput::Msg` batch. Persisted via `flush_meta` so a restart
+    /// still knows where to reply to.
+    async fn update_peer(&self, peer_did: Option<String>, peer_tunnel: Option<String>) {
+        let mut changed = false;
+        {
+            let mut meta = self.meta.lock().await;
+            if let Some(did) = peer_did {
+                if meta.peer_did.as_deref() != Some(did.as_str()) {
+                    meta.peer_did = Some(did);
+                    changed = true;
+                }
+            }
+            if let Some(t) = peer_tunnel {
+                if meta.peer_tunnel_did.as_deref() != Some(t.as_str()) {
+                    meta.peer_tunnel_did = Some(t);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            if let Err(err) = self.flush_meta().await {
+                warn!(
+                    "opendan.session[{}]: flush after peer update failed: {err:#}",
+                    self.session_id
+                );
+            }
+        }
+    }
+
+    /// Add `pattern` to the session's persistent kevent subscription list.
+    /// No-op if the pattern is already subscribed. Returns `true` when the
+    /// subscription set actually changed so the caller can refresh the
+    /// agent-wide event pump.
+    pub async fn subscribe_event(&self, pattern: impl Into<String>) -> Result<bool> {
+        let pattern = pattern.into();
+        let trimmed = pattern.trim();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+        let now = now_ms();
+        let mut changed = false;
+        {
+            let mut meta = self.meta.lock().await;
+            if !meta
+                .event_subscriptions
+                .iter()
+                .any(|s| s.pattern == trimmed)
+            {
+                meta.event_subscriptions.push(EventSubscription {
+                    pattern: trimmed.to_string(),
+                    subscribed_at_ms: now,
+                });
+                changed = true;
+            }
+        }
+        if changed {
+            self.flush_meta().await?;
+        }
+        Ok(changed)
+    }
+
+    /// Remove `pattern` from the session's subscriptions. Returns `true`
+    /// when something was actually removed.
+    pub async fn unsubscribe_event(&self, pattern: &str) -> Result<bool> {
+        let mut changed = false;
+        {
+            let mut meta = self.meta.lock().await;
+            let before = meta.event_subscriptions.len();
+            meta.event_subscriptions.retain(|s| s.pattern != pattern);
+            if meta.event_subscriptions.len() != before {
+                changed = true;
+            }
+        }
+        if changed {
+            self.flush_meta().await?;
+        }
+        Ok(changed)
+    }
+
+    /// Record the workspace this session is currently bound to. Returns
+    /// `true` if the binding actually changed so the caller can drive the
+    /// reciprocal update on the workspace record (set its
+    /// `current_session`). Persisted via `flush_meta`.
+    pub async fn set_workspace(&self, workspace_id: Option<String>) -> Result<bool> {
+        let mut changed = false;
+        {
+            let mut meta = self.meta.lock().await;
+            if meta.workspace_id != workspace_id {
+                meta.workspace_id = workspace_id;
+                changed = true;
+            }
+        }
+        if changed {
+            self.flush_meta().await?;
+        }
+        Ok(changed)
+    }
+
+    /// Snapshot the session's currently-bound workspace id, if any.
+    pub async fn workspace_id(&self) -> Option<String> {
+        self.meta.lock().await.workspace_id.clone()
+    }
+
+    /// Snapshot the session's current subscription patterns.
+    pub async fn subscription_patterns(&self) -> Vec<String> {
+        self.meta
+            .lock()
+            .await
+            .event_subscriptions
+            .iter()
+            .map(|s| s.pattern.clone())
+            .collect()
+    }
+
+    /// Compose + post an assistant reply through msg-center back to the
+    /// session's last-known peer. Quietly skips when any prerequisite is
+    /// missing (no msg-center bound, no peer DID, locally-injected session,
+    /// unparseable agent DID). Errors are warn-logged; the local reply path
+    /// is unaffected.
+    async fn post_outbound_text(&self, text: &str) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        // UI sessions are the only ones that reply through msg-center
+        // today — work sessions surface their result via report.md instead.
+        if !matches!(self.kind, SessionKind::Ui) {
+            return;
+        }
+        let Some(msg_center) = self.runtime.msg_center.as_ref().cloned() else {
+            return;
+        };
+        let (peer_did_str, peer_tunnel_str) = {
+            let meta = self.meta.lock().await;
+            (meta.peer_did.clone(), meta.peer_tunnel_did.clone())
+        };
+        let Some(peer_did_str) = peer_did_str else {
+            return;
+        };
+        let Ok(peer_did) = name_lib::DID::from_str(&peer_did_str) else {
+            warn!(
+                "opendan.session[{}]: outbound skipped — unparseable peer_did `{}`",
+                self.session_id, peer_did_str
+            );
+            return;
+        };
+        let agent_did_raw = self.agent_config.toml.agent_did.trim();
+        if agent_did_raw.is_empty() {
+            warn!(
+                "opendan.session[{}]: outbound skipped — agent.toml has no agent_did",
+                self.session_id
+            );
+            return;
+        }
+        let Ok(agent_did) = name_lib::DID::from_str(agent_did_raw) else {
+            warn!(
+                "opendan.session[{}]: outbound skipped — agent_did `{}` is not parseable",
+                self.session_id, agent_did_raw
+            );
+            return;
+        };
+        if agent_did == peer_did {
+            // Don't echo back to ourselves — locally-injected sessions
+            // sometimes set peer = owner = agent.
+            return;
+        }
+        let tunnel = peer_tunnel_str
+            .as_deref()
+            .and_then(|raw| name_lib::DID::from_str(raw).ok());
+
+        let mut msg = ndn_lib::MsgObject {
+            from: agent_did.clone(),
+            to: vec![peer_did.clone()],
+            kind: ndn_lib::MsgObjKind::Chat,
+            created_at_ms: now_ms(),
+            content: ndn_lib::MsgContent {
+                format: Some(ndn_lib::MsgContentFormat::TextPlain),
+                content: trimmed.to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        msg.thread.topic = Some(self.session_id.clone());
+        msg.thread.correlation_id = Some(self.session_id.clone());
+        msg.meta.insert(
+            "session_id".to_string(),
+            serde_json::Value::String(self.session_id.clone()),
+        );
+        msg.meta.insert(
+            "owner_session_id".to_string(),
+            serde_json::Value::String(self.session_id.clone()),
+        );
+
+        let send_ctx = buckyos_api::SendContext {
+            contact_mgr_owner: Some(agent_did),
+            preferred_tunnel: tunnel,
+            ..Default::default()
+        };
+
+        match msg_center.post_send(msg, Some(send_ctx), None).await {
+            Ok(result) if result.ok => {}
+            Ok(result) => warn!(
+                "opendan.session[{}]: outbound rejected — reason={:?}",
+                self.session_id, result.reason
+            ),
+            Err(err) => warn!(
+                "opendan.session[{}]: outbound post_send failed: {err}",
+                self.session_id
+            ),
+        }
+    }
 }
 
 enum NextAction {
@@ -781,6 +1096,31 @@ enum NextAction {
 enum BuiltContext {
     Fresh(LLMContext),
     Resumed(LLMContext),
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Translate a subscribed kevent into a short note the LLM can react to as
+/// part of the next turn. Keeps the JSON payload but tags it so the model
+/// knows this came from the environment, not from a human.
+fn format_event_for_turn(event_id: &str, data: &serde_json::Value) -> String {
+    let body = if data.is_null() {
+        String::new()
+    } else if let Ok(rendered) = serde_json::to_string(data) {
+        rendered
+    } else {
+        data.to_string()
+    };
+    if body.is_empty() {
+        format!("[environment event] {event_id}")
+    } else {
+        format!("[environment event] {event_id} {body}")
+    }
 }
 
 fn compose_human_text(texts: &[String]) -> Option<String> {
@@ -850,6 +1190,8 @@ mod tests {
         let msg = PendingInput::Msg {
             record_id: "abc".to_string(),
             from: "alice".to_string(),
+            from_did: None,
+            tunnel_did: None,
             text: "hi".to_string(),
         };
         let event = PendingInput::Event {
@@ -859,6 +1201,20 @@ mod tests {
         assert_eq!(msg.dedup_key(), "msg:abc");
         assert_eq!(event.dedup_key(), "event:abc");
         assert_ne!(msg.dedup_key(), event.dedup_key());
+    }
+
+    #[test]
+    fn format_event_for_turn_includes_id_and_data() {
+        let s = format_event_for_turn("/timer/wake", &serde_json::json!({"tick": 1}));
+        assert!(s.contains("/timer/wake"));
+        assert!(s.contains("tick"));
+    }
+
+    #[test]
+    fn format_event_for_turn_handles_null_payload() {
+        let s = format_event_for_turn("/timer/wake", &serde_json::Value::Null);
+        assert!(s.contains("/timer/wake"));
+        assert!(!s.contains("null"));
     }
 
     #[test]
@@ -877,6 +1233,8 @@ mod tests {
                 PendingInput::Msg {
                     record_id: "rec-1".to_string(),
                     from: "alice".to_string(),
+                    from_did: Some("did:dev:alice".to_string()),
+                    tunnel_did: Some("did:dev:tunnel".to_string()),
                     text: "hi".to_string(),
                 },
                 PendingInput::Event {
@@ -884,14 +1242,29 @@ mod tests {
                     data: serde_json::json!({"tick": 7}),
                 },
             ],
+            peer_did: Some("did:dev:alice".to_string()),
+            peer_tunnel_did: Some("did:dev:tunnel".to_string()),
+            event_subscriptions: vec![EventSubscription {
+                pattern: "/timer/**".to_string(),
+                subscribed_at_ms: 0,
+            }],
+            workspace_id: Some("ws-1".to_string()),
         };
         let json = serde_json::to_string(&meta).unwrap();
         let restored: SessionMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.pending_inputs.len(), 2);
         match &restored.pending_inputs[0] {
-            PendingInput::Msg { record_id, text, .. } => {
+            PendingInput::Msg {
+                record_id,
+                text,
+                from_did,
+                tunnel_did,
+                ..
+            } => {
                 assert_eq!(record_id, "rec-1");
                 assert_eq!(text, "hi");
+                assert_eq!(from_did.as_deref(), Some("did:dev:alice"));
+                assert_eq!(tunnel_did.as_deref(), Some("did:dev:tunnel"));
             }
             _ => panic!("expected Msg variant first"),
         }
@@ -902,6 +1275,10 @@ mod tests {
             }
             _ => panic!("expected Event variant second"),
         }
+        assert_eq!(restored.peer_did.as_deref(), Some("did:dev:alice"));
+        assert_eq!(restored.event_subscriptions.len(), 1);
+        assert_eq!(restored.event_subscriptions[0].pattern, "/timer/**");
+        assert_eq!(restored.workspace_id.as_deref(), Some("ws-1"));
     }
 
     #[test]

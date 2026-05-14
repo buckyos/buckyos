@@ -255,6 +255,13 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
     };
 
     let from = record.record.from.to_raw_host_name();
+    let from_did = Some(record.record.from.to_string()).filter(|s| !s.is_empty());
+    let tunnel_did = record
+        .record
+        .route
+        .as_ref()
+        .and_then(|r| r.tunnel_did.as_ref().map(|d| d.to_string()))
+        .filter(|s| !s.is_empty());
     let session_id = record
         .record
         .ui_session_id
@@ -264,6 +271,8 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
     let inbound = Inbound::Msg {
         record_id,
         from,
+        from_did,
+        tunnel_did,
         session_id,
         text,
     };

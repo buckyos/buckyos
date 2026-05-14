@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, features, value_to_object_map, AiMethodRequest, AiMethodStatus, AiPayload,
     AiResponseSummary, AiToolCall, AiToolSpec, AiccClient, Capability, KEventClient,
-    MsgCenterClient, ModelSpec, Requirements, RespFormat,
+    MsgCenterClient, ModelSpec, Requirements, RespFormat, TaskManagerClient,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -559,6 +559,12 @@ pub struct AgentRuntime {
     /// pump — when both are set, the pump uses kevent as a poll accelerator
     /// and falls back to box sweeps on timeout / reader loss.
     pub kevent_client: Option<Arc<KEventClient>>,
+    /// Optional task-manager handle. Wired through to async-tool dispatch
+    /// (§9.4 `PendingTool` outcome) and cross-session task notifications.
+    /// `None` ⇒ async-tool dispatch falls back to inline blocking execution
+    /// + the session worker logs a warning when it can't park a long-running
+    /// tool externally.
+    pub task_mgr: Option<Arc<TaskManagerClient>>,
 }
 
 impl AgentRuntime {
@@ -568,6 +574,7 @@ impl AgentRuntime {
             worklog,
             msg_center: None,
             kevent_client: None,
+            task_mgr: None,
         }
     }
 
@@ -578,6 +585,11 @@ impl AgentRuntime {
 
     pub fn with_kevent_client(mut self, client: Arc<KEventClient>) -> Self {
         self.kevent_client = Some(client);
+        self
+    }
+
+    pub fn with_task_mgr(mut self, client: Arc<TaskManagerClient>) -> Self {
+        self.task_mgr = Some(client);
         self
     }
 }

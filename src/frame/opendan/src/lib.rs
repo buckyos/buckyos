@@ -26,9 +26,20 @@ pub mod agent;
 // §9 step 6 — msg-center / kevent inbound pump that feeds AIAgent::inbox().
 pub mod msg_center_pump;
 
+// §9 step 6 — per-session kevent subscription pump (routes Inbound::Event to
+// the right session based on AgentSession.event_subscriptions).
+pub mod session_event_pump;
+
 // §9 step 7 — workspace data model (BehaviorLoop deps stripped; session binding
 //             owned by AgentSession).
 pub mod local_workspace;
+
+// §9 step 8 — task_mgr / contact_mgr skeletons.
+//   contact     : ContactLookup for from_name enrichment + forward_msg helpers.
+//   task_dispatch: TaskDispatch wraps TaskManagerClient for async-tool dispatch
+//                  (consumed when the §9.4 PendingTool outcome wires through).
+pub mod contact;
+pub mod task_dispatch;
 
 // Worklog SQLite service (unchanged from beta2.x — consumed by ai_runtime's
 // OpenDanWorklogSink).
