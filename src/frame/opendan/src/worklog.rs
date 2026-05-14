@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use log::info;
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
@@ -11,12 +9,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::task;
 
-use crate::agent_tool::{
+use ::agent_tool::{
     now_ms, optional_trimmed_string_arg as optional_string, optional_u64_arg as optional_u64,
-    require_string_arg as require_string, u64_to_usize_arg as u64_to_usize, AgentToolError,
-    AgentToolResult, TypedToolHandle,
+    u64_to_usize_arg as u64_to_usize, AgentToolError, AgentToolResult,
 };
-use crate::behavior::SessionRuntimeContext;
+
+/// Per-append context carried by `OpenDanWorklogSink` and other producers.
+/// Replaces the old `SessionRuntimeContext` dependency now that the AgentTool
+/// wrapper layer has moved out of this module.
+#[derive(Clone, Debug, Default)]
+pub struct WorklogAppendCtx {
+    pub trace_id: String,
+    pub agent_name: String,
+    pub behavior: String,
+    pub session_id: String,
+}
 
 const DEFAULT_LIST_LIMIT: usize = 64;
 const DEFAULT_MAX_LIST_LIMIT: usize = 256;
@@ -151,14 +158,13 @@ impl WorklogService {
                 "session_id cannot be empty".to_string(),
             ));
         }
-        let ctx = SessionRuntimeContext {
+        let ctx = WorklogAppendCtx {
             trace_id: "session-worklog".to_string(),
             agent_name: agent_name.trim().to_string(),
             behavior: behavior.trim().to_string(),
-            step_idx,
-            wakeup_id: "append_worklog".to_string(),
             session_id: sid.to_string(),
         };
+        let _ = step_idx; // step_idx is carried via the record payload's step_id
         let args = json!({
             "record": record,
             "session_id": sid,
@@ -167,133 +173,18 @@ impl WorklogService {
         self.run_db("worklog append", move |conn| insert_record(conn, input))
             .await
     }
-}
 
-/// Opendan-side wrapper that bundles the WorklogService with a registered
-/// agent tool handle so the runtime can dispatch worklog actions through the
-/// shared AgentTool plumbing.
-pub struct WorklogTool {
-    service: WorklogService,
-    handle: TypedToolHandle<::agent_tool::WorklogTool>,
-}
-
-impl WorklogTool {
-    pub fn new(cfg: WorklogToolConfig) -> Result<Self, AgentToolError> {
-        let service = WorklogService::new(cfg)?;
-        let inner = ::agent_tool::WorklogTool::new(Arc::new(service.clone()));
-        let handle = TypedToolHandle::with_null_host(inner);
-        Ok(Self { service, handle })
-    }
-
-    pub fn service(&self) -> &WorklogService {
-        &self.service
-    }
-
-    pub fn into_handle(self) -> TypedToolHandle<::agent_tool::WorklogTool> {
-        self.handle
-    }
-
-    pub async fn list_worklog_records(
+    /// Direct append entry used by `OpenDanWorklogSink`. Bypasses the legacy
+    /// AgentTool action dispatch in favor of a typed context + raw record JSON.
+    pub async fn append_record(
         &self,
-        options: WorklogListOptions,
-    ) -> Result<Vec<WorklogRecord>, AgentToolError> {
-        self.service.list_worklog_records(options).await
-    }
-
-    pub async fn call(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<crate::agent_tool::AgentToolResult, AgentToolError> {
-        use crate::agent_tool::AgentTool;
-        AgentTool::call(&self.handle, ctx, args).await
-    }
-}
-
-impl WorklogService {
-    pub async fn execute_action(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<Json, AgentToolError> {
-        let action = require_string(&args, "action")?;
-        match action.as_str() {
-            "append_worklog" => self.call_append_worklog(ctx, args).await,
-            "list_worklog" => self.call_list_worklog(args).await,
-            "get_worklog" => self.call_get_worklog(args).await,
-            _ => Err(AgentToolError::InvalidArgs(format!(
-                "unsupported action `{action}`, expected append_worklog/list_worklog/get_worklog"
-            ))),
-        }
-    }
-}
-
-impl WorklogService {
-    async fn call_append_worklog(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<Json, AgentToolError> {
+        ctx: &WorklogAppendCtx,
+        record: Json,
+    ) -> Result<WorklogRecord, AgentToolError> {
+        let args = json!({ "record": record });
         let input = AppendRecordInput::parse(ctx, &args)?;
-        let inserted = self
-            .run_db("worklog append", move |conn| insert_record(conn, input))
-            .await?;
-
-        Ok(json!({
-            "ok": true,
-            "action": "append_worklog",
-            "record": inserted,
-        }))
-    }
-
-    async fn call_list_worklog(&self, args: Json) -> Result<Json, AgentToolError> {
-        let filters =
-            ListFilters::parse(&args, self.cfg.default_list_limit, self.cfg.max_list_limit)?;
-        let limit = filters.limit;
-        let offset = filters.offset;
-        let filters_for_db = filters.clone();
-        let listed = self
-            .run_db("worklog list", move |conn| {
-                list_records(conn, &filters_for_db)
-            })
-            .await?;
-        Ok(json!({
-            "ok": true,
-            "action": "list_worklog",
-            "records": listed.records,
-            "total": listed.total,
-            "limit": limit,
-            "offset": offset
-        }))
-    }
-
-    async fn call_get_worklog(&self, args: Json) -> Result<Json, AgentToolError> {
-        let id = require_string(&args, "id")?;
-        let id_for_db = id.clone();
-        let got = self
-            .run_db("worklog get", move |conn| get_record(conn, &id_for_db))
-            .await?;
-        let Some(record) = got else {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "worklog `{id}` not found"
-            )));
-        };
-        Ok(json!({
-            "ok": true,
-            "action": "get_worklog",
-            "record": record,
-        }))
-    }
-}
-
-#[async_trait]
-impl ::agent_tool::WorklogActionBackend for WorklogService {
-    async fn execute_action(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<Json, AgentToolError> {
-        WorklogService::execute_action(self, ctx, args).await
+        self.run_db("worklog append", move |conn| insert_record(conn, input))
+            .await
     }
 }
 
@@ -378,7 +269,7 @@ struct AppendRecordInput {
 }
 
 impl AppendRecordInput {
-    fn parse(ctx: &SessionRuntimeContext, args: &Json) -> Result<Self, AgentToolError> {
+    fn parse(ctx: &WorklogAppendCtx, args: &Json) -> Result<Self, AgentToolError> {
         let raw = args.get("record").unwrap_or(args);
         let map = raw.as_object().ok_or_else(|| {
             AgentToolError::InvalidArgs("`record` must be a json object".to_string())
@@ -557,6 +448,7 @@ struct ListFilters {
 }
 
 impl ListFilters {
+    #[allow(dead_code)] // retained for upcoming ai_runtime list-API wiring
     fn parse(args: &Json, default_limit: usize, max_limit: usize) -> Result<Self, AgentToolError> {
         let owner_session_id = optional_string(args, "owner_session_id")?;
         let workspace_id = optional_string(args, "workspace_id")?;
@@ -809,6 +701,7 @@ fn list_records(conn: &Connection, filters: &ListFilters) -> Result<ListResult, 
     Ok(ListResult { records, total })
 }
 
+#[allow(dead_code)] // retained for upcoming ai_runtime get-by-id wiring
 fn get_record(conn: &Connection, id: &str) -> Result<Option<WorklogRecord>, AgentToolError> {
     let mut stmt = conn
         .prepare("SELECT record_json FROM worklogs WHERE log_id = ? LIMIT 1")
@@ -921,96 +814,73 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[tokio::test]
-    async fn worklog_tool_supports_append_and_list() {
-        let dir = tempdir().expect("temp dir");
-        let db = dir.path().join("worklog.db");
-        let tool = WorklogTool::new(WorklogToolConfig::with_db_path(db)).expect("create tool");
-        let ctx = SessionRuntimeContext {
-            trace_id: "trace-1".to_string(),
+    fn test_ctx(session: &str) -> WorklogAppendCtx {
+        WorklogAppendCtx {
+            trace_id: format!("trace-{session}"),
             agent_name: "did:opendan:test".to_string(),
             behavior: "DO".to_string(),
-            step_idx: 1,
-            wakeup_id: "wakeup-1".to_string(),
-            session_id: "sess-1".to_string(),
-        };
+            session_id: session.to_string(),
+        }
+    }
 
-        let rsp = tool
-            .call(
+    #[tokio::test]
+    async fn worklog_service_supports_append_and_list() {
+        let dir = tempdir().expect("temp dir");
+        let db = dir.path().join("worklog.db");
+        let svc = WorklogService::new(WorklogToolConfig::with_db_path(db)).expect("create svc");
+        let ctx = test_ctx("sess-1");
+
+        let inserted = svc
+            .append_record(
                 &ctx,
                 json!({
-                    "action": "append_worklog",
-                    "record": {
-                        "type": "FunctionRecord",
-                        "owner_session_id": "sess-1",
-                        "step_id": "step-1",
-                        "status": "OK",
-                        "payload": {
-                            "tool_name": "todo_manage",
-                            "result_text": "ok"
-                        }
+                    "type": "FunctionRecord",
+                    "owner_session_id": "sess-1",
+                    "step_id": "step-1",
+                    "status": "OK",
+                    "payload": {
+                        "tool_name": "todo_manage",
+                        "result_text": "ok"
                     }
                 }),
             )
             .await
             .expect("append");
-        assert!(rsp["record"]["id"].is_string());
+        assert!(!inserted.id.is_empty());
 
-        let list = tool
-            .call(
-                &ctx,
-                json!({
-                    "action": "list_worklog",
-                    "owner_session_id": "sess-1"
-                }),
-            )
-            .await
-            .expect("list");
-        assert_eq!(list["total"].as_u64().unwrap_or(0), 1);
-
-        let rust_records = tool
-            .list_worklog_records(WorklogListOptions {
+        let page = svc
+            .list_worklog_page(WorklogListOptions {
                 owner_session_id: Some("sess-1".to_string()),
                 ..Default::default()
             })
             .await
-            .expect("list records by rust api");
-        assert_eq!(rust_records.len(), 1);
-        assert_eq!(rust_records[0].event_type, "FunctionRecord");
+            .expect("list");
+        assert_eq!(page.total, 1);
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].event_type, "FunctionRecord");
     }
 
     #[tokio::test]
     async fn worklog_open_event_type_accepts_custom_names() {
         let dir = tempdir().expect("temp dir");
         let db = dir.path().join("worklog.db");
-        let tool = WorklogTool::new(WorklogToolConfig::with_db_path(db)).expect("create tool");
-        let ctx = SessionRuntimeContext {
-            trace_id: "trace-2".to_string(),
-            agent_name: "did:opendan:test".to_string(),
-            behavior: "DO".to_string(),
-            step_idx: 2,
-            wakeup_id: "wakeup-2".to_string(),
-            session_id: "sess-2".to_string(),
-        };
+        let svc = WorklogService::new(WorklogToolConfig::with_db_path(db)).expect("create svc");
+        let ctx = test_ctx("sess-2");
 
-        // Custom event type name not in the legacy enum.
-        let _ = tool
-            .call(
+        let _ = svc
+            .append_record(
                 &ctx,
                 json!({
-                    "action": "append_worklog",
-                    "record": {
-                        "type": "agent.file.write",
-                        "owner_session_id": "sess-2",
-                        "status": "OK",
-                        "payload": { "path": "/tmp/x" }
-                    }
+                    "type": "agent.file.write",
+                    "owner_session_id": "sess-2",
+                    "status": "OK",
+                    "payload": { "path": "/tmp/x" }
                 }),
             )
             .await
             .expect("append");
 
-        let records = tool
+        let records = svc
             .list_worklog_records(WorklogListOptions {
                 owner_session_id: Some("sess-2".to_string()),
                 ..Default::default()

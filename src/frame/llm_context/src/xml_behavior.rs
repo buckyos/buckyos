@@ -9,8 +9,8 @@
 //!
 //! ```xml
 //! <response>
-//!   <thinking>...free-form reasoning...</thinking>
 //!   <observation>...reading of the previous action's result...</observation>
+//!   <thinking>...free-form reasoning...</thinking>
 //!   <action tool="exec_bash" call_id="optional">
 //!     {"command": "ls -la"}
 //!   </action>
