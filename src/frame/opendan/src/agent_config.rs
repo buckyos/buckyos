@@ -80,6 +80,11 @@ pub struct AgentTomlFile {
     /// Event types this agent listens for. Plumbed through to task_mgr at
     /// `AIAgent::init_subscribers` time.
     pub subscribe_events: Vec<String>,
+    /// Text injected as the `reason` of `Observation::Cancelled` when the
+    /// session-layer interrupt path winds down outstanding tool calls.
+    /// Empty ⇒ the runtime falls back to a built-in default
+    /// (`"user requested cancel"`). See `AgentSession::interrupt`.
+    pub cancel_reason: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -119,6 +124,18 @@ impl AgentConfig {
             AgentTomlFile::default()
         };
         Ok(Self { layout, toml })
+    }
+
+    /// Text used as `Observation::Cancelled.reason` during session-layer
+    /// interrupts. Falls back to a built-in default when the on-disk value
+    /// is empty (matches the "near-empty agent.toml still boots" contract).
+    pub fn cancel_reason(&self) -> &str {
+        let configured = self.toml.cancel_reason.trim();
+        if configured.is_empty() {
+            "user requested cancel"
+        } else {
+            configured
+        }
     }
 
     pub fn default_ui_behavior(&self) -> &str {

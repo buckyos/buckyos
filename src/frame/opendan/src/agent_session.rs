@@ -45,6 +45,29 @@ pub enum SessionInput {
     Cancel,
 }
 
+/// How an interrupt should wind down outstanding tool calls. Chosen
+/// per-call by the caller of [`AgentSession::interrupt`] — different
+/// upper-layer control flows targeting the same session may legitimately
+/// want different strategies, so this is not a per-behavior or per-agent
+/// default.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptMode {
+    /// Inject `Observation::Cancelled` for every pending tool call and
+    /// drive the existing LLMContext to a terminal outcome (with the
+    /// resumed snapshot's `tool_policy.max_rounds` overridden to 0 so any
+    /// further tool attempt is rejected as `BudgetExhausted(ToolRounds)`).
+    /// Side effects already dispatched externally stay recorded in
+    /// accumulated history — the next turn can reason about them.
+    Graceful,
+    /// Discard the trailing assistant turn that owns the unresolved
+    /// `tool_use` blocks (and everything after it in accumulated), then
+    /// continue from the truncated history. The interrupted side effects
+    /// vanish from the LLM's view; externally-dispatched task_mgr tasks
+    /// may still complete but their results never reach the LLM.
+    Discard,
+}
+
 /// One inbound item parked on the session until the worker is ready to
 /// consume it. Persisted as part of [`SessionMeta`] so that a crash between
 /// `enqueue_pending` (which acks the system inbox) and the LLM actually
@@ -83,6 +106,12 @@ pub enum PendingInput {
         event_id: String,
         data: serde_json::Value,
     },
+    /// A session-layer interrupt request. Enqueued by upper-layer control
+    /// flows that want to cut into the worker's stream — e.g. "stop the
+    /// long tool, the user just said something more important". `id` is
+    /// the enqueue-time tag that makes the dedup key unique (so a re-fired
+    /// interrupt does not silently coalesce with a stale one).
+    Interrupt { mode: InterruptMode, id: String },
 }
 
 impl PendingInput {
@@ -93,6 +122,7 @@ impl PendingInput {
         match self {
             PendingInput::Msg { record_id, .. } => format!("msg:{record_id}"),
             PendingInput::Event { event_id, .. } => format!("event:{event_id}"),
+            PendingInput::Interrupt { id, .. } => format!("interrupt:{id}"),
         }
     }
 }
@@ -526,6 +556,28 @@ impl AgentSession {
         Ok(())
     }
 
+    /// Enqueue an interrupt barrier. The worker drains its queue strictly
+    /// in order: items enqueued *before* this call are processed first
+    /// (within the same logical turn), then the interrupt fires, then any
+    /// items enqueued *after* this call run in a fresh turn. Upper-layer
+    /// flows that want "stop, then send this message" should call
+    /// `interrupt` and then `enqueue_pending(Msg)` in that order.
+    ///
+    /// The interrupt is a no-op when the session has no outstanding
+    /// pending tool calls at the moment the worker processes it (the
+    /// session is already at an outcome boundary; there is nothing to
+    /// wind down). It is safe to call regardless of session state — the
+    /// worker enforces the precondition.
+    pub async fn interrupt(&self, mode: InterruptMode) -> Result<()> {
+        let id = format!(
+            "{}-{}",
+            now_ms(),
+            self.trace_seq
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        );
+        self.enqueue_pending(PendingInput::Interrupt { mode, id }).await
+    }
+
     pub async fn start(self: Arc<Self>, mut inbox_rx: mpsc::Receiver<SessionInput>) {
         let me = self.clone();
         let handle = tokio::spawn(async move {
@@ -599,7 +651,7 @@ impl AgentSession {
             // `meta.pending_inputs` here — that happens only after the turn
             // succeeds (handle_turn_result), so a crash mid-turn leaves the
             // inputs durable and they'll be replayed next boot.
-            let pending = self.meta.lock().await.pending_inputs.clone();
+            let mut pending = self.meta.lock().await.pending_inputs.clone();
             if pending.is_empty() {
                 // Work session bootstrap: if a freshly-created Work session
                 // has nothing pending and hasn't run yet, drive an initial
@@ -662,6 +714,49 @@ impl AgentSession {
                 }
             }
 
+            // Interrupt barrier handling. Interrupts split the queue:
+            // anything queued *before* an Interrupt belongs to a prior
+            // logical turn and is processed first; the Interrupt itself
+            // fires on the next loop iteration; anything *after* it runs
+            // as a fresh post-interrupt turn.
+            if let Some(pos) = pending
+                .iter()
+                .position(|p| matches!(p, PendingInput::Interrupt { .. }))
+            {
+                if pos == 0 {
+                    let (mode, key) = match &pending[0] {
+                        PendingInput::Interrupt { mode, .. } => {
+                            (*mode, pending[0].dedup_key())
+                        }
+                        _ => unreachable!("position matched Interrupt"),
+                    };
+                    self.set_status(SessionStatus::Running).await;
+                    if let Err(err) = self.execute_interrupt(mode).await {
+                        warn!(
+                            "opendan.session[{}]: interrupt({mode:?}) failed: {err:#}",
+                            self.session_id
+                        );
+                        self.set_status(SessionStatus::Error).await;
+                        let _ = self
+                            .reply_tx
+                            .send(SessionReply::Error {
+                                message: format!("interrupt failed: {err:#}"),
+                            })
+                            .await;
+                    }
+                    // Consume the interrupt entry unconditionally — a
+                    // failed execute_interrupt is logged + surfaced, but
+                    // we don't want the bad entry pinning the queue.
+                    self.discard_consumed(&[key]).await;
+                    continue;
+                }
+                // Interrupt later in the queue — only process the prefix
+                // this iteration. Truncating drops the Interrupt and
+                // anything after it from this drain pass; they remain in
+                // `meta.pending_inputs` and surface on the next loop.
+                pending.truncate(pos);
+            }
+
             // Three buckets:
             //   - Msg / generic Event → fold into the next turn as `turn_inputs`
             //   - Event whose id matches a `pending_task_calls` pattern →
@@ -718,6 +813,12 @@ impl AgentSession {
                         // turn so the LLM can react.
                         event_summaries.push(format_event_for_turn(event_id, data));
                         consumed_keys.push(input.dedup_key());
+                    }
+                    PendingInput::Interrupt { .. } => {
+                        // The partition step above truncates the queue at
+                        // the first Interrupt; any remaining one in this
+                        // loop would be a programming error.
+                        unreachable!("Interrupt should be filtered before drain")
                     }
                 }
             }
@@ -809,6 +910,27 @@ impl AgentSession {
             // "what's new since last inference" surface to the LLM.
             let mut turn_inputs = human_texts;
             turn_inputs.extend(event_summaries);
+
+            // If the snapshot is currently mid-PendingTool and the upper
+            // layer queued bare Msg/Event entries without an Interrupt
+            // barrier, defer: starting a fresh turn here would discard
+            // the in-flight tool round. Upper layers that want immediate
+            // attention should `interrupt()` first, then `enqueue_pending`.
+            if !turn_inputs.is_empty() && self.snapshot_has_pending_tool_calls().await {
+                self.set_status(SessionStatus::WaitingTool).await;
+                match inbox_rx.recv().await {
+                    None => return,
+                    Some(SessionInput::Cancel) => {
+                        self.set_status(SessionStatus::Idle).await;
+                        if matches!(self.kind, SessionKind::Work) {
+                            return;
+                        }
+                    }
+                    Some(SessionInput::Wakeup) => {}
+                }
+                continue;
+            }
+
             if turn_inputs.is_empty() {
                 self.discard_consumed(&consumed_keys).await;
                 continue;
@@ -1042,6 +1164,193 @@ impl AgentSession {
         self.handle_outcome(outcome, &behavior, final_snapshot).await
     }
 
+    /// True iff the worker should not start a fresh turn yet because a
+    /// tool round is still in flight. Backed by `meta.pending_task_calls`
+    /// (opendan only enters PendingTool via task_mgr-dispatched tools, so
+    /// meta is the source of truth for the worker's gating decisions).
+    async fn snapshot_has_pending_tool_calls(&self) -> bool {
+        !self.meta.lock().await.pending_task_calls.is_empty()
+    }
+
+    /// Wind down all in-flight tool calls (per `mode`), persist the
+    /// resulting snapshot, and clear session-level pending bookkeeping
+    /// (`meta.pending_task_calls` + the corresponding event subscriptions).
+    /// Best-effort cancels the upstream task_mgr tasks too.
+    ///
+    /// No-op when there are no pending tool calls — the session is already
+    /// at an outcome boundary; there is nothing to interrupt.
+    async fn execute_interrupt(&self, mode: InterruptMode) -> Result<()> {
+        let snapshot = match self.try_load_snapshot() {
+            Some(s) => s,
+            None => {
+                info!(
+                    "opendan.session[{}]: interrupt({mode:?}) — no snapshot on disk, noop",
+                    self.session_id
+                );
+                return Ok(());
+            }
+        };
+        if snapshot.state.pending_tool_calls.is_empty() {
+            info!(
+                "opendan.session[{}]: interrupt({mode:?}) — snapshot has no pending tool calls, noop",
+                self.session_id
+            );
+            return Ok(());
+        }
+
+        // Best-effort upstream cancel. The session-layer cancellation
+        // (Cancelled observations injected below) is what matters for the
+        // LLM's view; this just lets task_mgr release the slot for tools
+        // that honour cancel signals.
+        let pending_task_entries: Vec<PendingTaskCall> =
+            self.meta.lock().await.pending_task_calls.clone();
+        if let Some(client) = self.runtime.task_mgr.as_ref().cloned() {
+            for entry in &pending_task_entries {
+                if let Err(err) = client.cancel_task(entry.task_id, true).await {
+                    warn!(
+                        "opendan.session[{}]: interrupt: cancel_task({}) failed (best effort): {err:#}",
+                        self.session_id, entry.task_id
+                    );
+                }
+            }
+        }
+        // Unsubscribe regardless of cancel outcome — once we've decided to
+        // interrupt, late-arriving task events are stale and would route
+        // into a snapshot that no longer carries the call.
+        for entry in &pending_task_entries {
+            if let Err(err) = self.unsubscribe_event(&entry.event_pattern).await {
+                warn!(
+                    "opendan.session[{}]: interrupt: unsubscribe `{}` failed: {err:#}",
+                    self.session_id, entry.event_pattern
+                );
+            }
+        }
+
+        let pending_calls = snapshot.state.pending_tool_calls.clone();
+        let reason = self.agent_config.cancel_reason().to_string();
+
+        match mode {
+            InterruptMode::Graceful => {
+                self.execute_interrupt_graceful(snapshot, &pending_calls, reason)
+                    .await?
+            }
+            InterruptMode::Discard => {
+                self.execute_interrupt_discard(snapshot, &pending_calls).await?
+            }
+        }
+
+        self.clear_pending_task_calls().await;
+        Ok(())
+    }
+
+    /// Graceful interrupt: feed `Observation::Cancelled` for each pending
+    /// call via `ResumeFill::ToolResults` and drive the resumed context to
+    /// a terminal outcome. The resumed snapshot has `tool_policy.max_rounds`
+    /// overridden to 0 so the LLM's wind-down inference cannot launch new
+    /// tool calls — any attempt becomes `BudgetExhausted(ToolRounds)` and
+    /// the partial assistant text is preserved in `accumulated`.
+    async fn execute_interrupt_graceful(
+        &self,
+        snapshot: LLMContextSnapshot,
+        pending_calls: &[llm_context::observation::PendingToolCall],
+        reason: String,
+    ) -> Result<()> {
+        let results: Vec<(String, Observation)> = pending_calls
+            .iter()
+            .map(|p| {
+                (
+                    p.call.call_id.clone(),
+                    Observation::Cancelled {
+                        call_id: p.call.call_id.clone(),
+                        reason: reason.clone(),
+                    },
+                )
+            })
+            .collect();
+
+        let mut tp = snapshot.request.tool_policy.clone();
+        tp.max_rounds = 0;
+        let snap_winddown = apply_overrides_to_snapshot(
+            snapshot,
+            RequestOverrides {
+                tool_policy: Some(tp),
+                reset_rounds: true,
+                ..Default::default()
+            },
+        );
+
+        let behavior = self.load_current_behavior().await?;
+        let trace_id = self.next_trace_id();
+        let ctx_runtime = SessionRuntimeContext {
+            trace_id,
+            agent_name: self.agent_name.clone(),
+            behavior: behavior.name.clone(),
+            step_idx: snap_winddown.state.steps.len() as u32,
+            wakeup_id: String::new(),
+            session_id: self.session_id.clone(),
+        };
+        let deps = build_session_deps(
+            &self.runtime,
+            SessionDepsInput {
+                tools: self.tools.clone(),
+                ctx: ctx_runtime,
+                snapshot_path: self.state_snap_path.clone(),
+                approval_required: behavior.approval_required.clone(),
+                one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
+                parser_renderer: behavior.build_parser_and_renderer(),
+            },
+        );
+
+        let mut ctx = LLMContext::resume(
+            snap_winddown,
+            ResumeFill::ToolResults { results },
+            deps,
+        )
+        .map_err(|e| anyhow!("interrupt graceful resume: {e}"))?;
+        // Whether the outcome is Done (LLM produced a clean acknowledgement)
+        // or BudgetExhausted(ToolRounds) (LLM tried to launch a new tool and
+        // got rejected), the post-run snapshot captures everything we want
+        // — including the partial assistant text — in `state.accumulated`.
+        let _outcome = ctx.run().await;
+        let final_snapshot = ctx.snapshot();
+        self.persist_snapshot(&final_snapshot).await;
+        Ok(())
+    }
+
+    /// Discard interrupt: locate the trailing assistant turn that owns the
+    /// unresolved `tool_use` blocks and truncate `accumulated` at (before)
+    /// that index. Then clear `pending_tool_calls` and persist. Any tool
+    /// side effects already in flight externally are *not* reflected in
+    /// the post-truncation history.
+    async fn execute_interrupt_discard(
+        &self,
+        mut snapshot: LLMContextSnapshot,
+        pending_calls: &[llm_context::observation::PendingToolCall],
+    ) -> Result<()> {
+        let pending_ids: std::collections::HashSet<&str> = pending_calls
+            .iter()
+            .map(|p| p.call.call_id.as_str())
+            .collect();
+
+        let cutoff = snapshot.state.accumulated.iter().rposition(|msg| {
+            matches!(msg.role, AiRole::Assistant)
+                && msg.content.iter().any(|c| matches!(c,
+                    AiContent::ToolUse { call_id, .. } if pending_ids.contains(call_id.as_str())
+                ))
+        });
+        if let Some(idx) = cutoff {
+            snapshot.state.accumulated.truncate(idx);
+        } else {
+            warn!(
+                "opendan.session[{}]: interrupt(Discard): no assistant turn owns the pending tool_use blocks; clearing pending_tool_calls without truncation",
+                self.session_id
+            );
+        }
+        snapshot.state.pending_tool_calls.clear();
+        self.persist_snapshot(&snapshot).await;
+        Ok(())
+    }
+
     /// Empty `meta.pending_task_calls` and flush. Called after a successful
     /// resume so the next iteration doesn't try to match orphan entries.
     async fn clear_pending_task_calls(&self) {
@@ -1262,16 +1571,31 @@ impl AgentSession {
 
         if let Some(snapshot) = self.try_load_snapshot() {
             if snapshot.state.pending_tool_calls.is_empty() {
-                let fill = if let Some(text) = user_message_text.clone() {
-                    ResumeFill::HumanInput {
-                        message: AiMessage::text(AiRole::User, text),
-                    }
-                } else {
-                    ResumeFill::ResumeFromMidRun
-                };
+                if let Some(text) = user_message_text.clone() {
+                    // Idle session + new user message: build a fresh
+                    // LLMContext whose conversation history *is* the
+                    // snapshot's accumulated (already includes the system
+                    // segment that was sediment-cloned at first inference),
+                    // with the new user turn appended. Per-turn state
+                    // (consecutive_errors, usage, steps, trace) resets here;
+                    // cross-turn accumulation lives on SessionMeta.
+                    let LLMContextSnapshot { mut request, state } = snapshot;
+                    let mut input = state.accumulated;
+                    input.push(AiMessage::text(AiRole::User, text));
+                    request.input = input;
+                    request.trace = Some(trace_id.to_string());
+                    let fresh = LLMContext::new(request.clone(), deps.clone());
+                    return Ok((BuiltContext::Fresh(fresh), request, deps));
+                }
+                // No new user input — resume the snapshot in place
+                // (crash-recovery / idle re-entry without driver).
                 let request = snapshot.request.clone();
-                let resumed = LLMContext::resume(snapshot, fill, deps.clone())
-                    .map_err(|e| anyhow!("resume: {e}"))?;
+                let resumed = LLMContext::resume(
+                    snapshot,
+                    ResumeFill::ResumeFromMidRun,
+                    deps.clone(),
+                )
+                .map_err(|e| anyhow!("resume: {e}"))?;
                 return Ok((BuiltContext::Resumed(resumed), request, deps));
             }
             warn!(
@@ -1515,8 +1839,9 @@ impl AgentSession {
                         // Behavior state machine yields: current intent has
                         // run its course, no autonomous next step — park
                         // the session until the next user message arrives.
-                        // Persist the post-run snapshot so the resume path
-                        // (`build_or_resume` → `ResumeFill::HumanInput`)
+                        // Persist the post-run snapshot so the next-turn
+                        // rebuild (`build_or_resume` → `LLMContext::new`
+                        // from `state.accumulated + [new_user_msg]`)
                         // continues from the final assistant turn rather
                         // than the stale pre-inference TurnHook write.
                         // The worker maps `WaitForMsg` to
@@ -2334,7 +2659,8 @@ fn now_ms() -> u64 {
 /// and we should wait). Terminal kinds:
 ///   - `Completed` → `Observation::Success` with the task's `data` field
 ///     as `content` (falls back to the whole payload when `data` is absent)
-///   - `Failed` / `Canceled` → `Observation::Error` carrying `message`
+///   - `Failed` → `Observation::Error` carrying `message`
+///   - `Canceled` → `Observation::Cancelled` carrying the upstream reason
 fn observation_from_task_event(call_id: &str, data: &serde_json::Value) -> Option<Observation> {
     let to_status = data.get("to_status").and_then(|v| v.as_str()).unwrap_or("");
     match to_status {
@@ -2351,7 +2677,7 @@ fn observation_from_task_event(call_id: &str, data: &serde_json::Value) -> Optio
                 truncated: false,
             })
         }
-        "Failed" | "Canceled" => {
+        "Failed" => {
             let message = data
                 .get("message")
                 .and_then(|v| v.as_str())
@@ -2361,10 +2687,26 @@ fn observation_from_task_event(call_id: &str, data: &serde_json::Value) -> Optio
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                 })
-                .unwrap_or_else(|| format!("task {to_status}"));
+                .unwrap_or_else(|| "task Failed".to_string());
             Some(Observation::Error {
                 call_id: call_id.to_string(),
                 message,
+            })
+        }
+        "Canceled" => {
+            let reason = data
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    data.get("error_message")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| "task Canceled".to_string());
+            Some(Observation::Cancelled {
+                call_id: call_id.to_string(),
+                reason,
             })
         }
         _ => None,

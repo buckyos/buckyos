@@ -31,19 +31,6 @@ pub enum ResumeFill {
     /// Paired with `PendingTool`. `(call_id, observation)` must cover every
     /// pending call from the snapshot.
     ToolResults { results: Vec<(String, Observation)> },
-    /// Resume an idle/non-suspended snapshot with a fresh user message.
-    /// Typical use: a session reached Done (or yielded "wait for next user
-    /// message" through `behavior_result.next_behavior`), persisted its
-    /// snapshot, and a later inbound user message rewakes it via the same
-    /// snapshot + this fill.
-    ///
-    /// TODO(beta2.2+): re-evaluate whether this belongs on the waist at all.
-    /// The semantics ("long task was idle when a new user message arrived")
-    /// arguably live in the session state machine; the waist could expose
-    /// only `ResumeFromMidRun` and let the session-layer wrapper append the
-    /// new user message before resuming. Deferred until we've validated the
-    /// `WAIT_USER_MSG` next_behavior path end-to-end.
-    HumanInput { message: AiMessage },
     /// Paired with `ContextLimitReached`. The scheduler decides how to
     /// compress — waist just replaces accumulated history with this.
     RewrittenHistory { history: Vec<AiMessage> },

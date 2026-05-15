@@ -112,9 +112,6 @@ impl LLMContext {
                         .push(tool_observation_message(&call.call.call_id, &obs));
                 }
             }
-            ResumeFill::HumanInput { message } => {
-                state.accumulated.push(message);
-            }
             ResumeFill::RewrittenHistory { history } => {
                 state.accumulated = history;
             }
@@ -400,6 +397,23 @@ impl LLMContext {
                             return outcome;
                         }
                         had_error = true;
+                    }
+                    Observation::Cancelled { .. } => {
+                        // `Cancelled` is only ever produced by the
+                        // session-layer interrupt path (injected through
+                        // `ResumeFill::ToolResults`); a `ToolManager`
+                        // should never emit it from `call_tool`.
+                        let err = LLMComputeError::Internal(
+                            "tool returned Cancelled inline; only valid via ResumeFill::ToolResults"
+                                .to_string(),
+                        );
+                        if let Some(outcome) =
+                            self.handle_error(ErrorClass::Fatal(err)).await
+                        {
+                            return outcome;
+                        }
+                        had_error = true;
+                        break;
                     }
                 }
             }
@@ -723,6 +737,18 @@ impl LLMContext {
                         usage: self.state.usage.clone(),
                     };
                 }
+                Observation::Cancelled { .. } => {
+                    // Same rationale as the traditional-loop arm: Cancelled
+                    // must arrive via ResumeFill, never inline. Surface as
+                    // fatal so a misbehaving ToolManager is visible.
+                    return LLMContextOutcome::Error {
+                        error: LLMComputeError::Internal(
+                            "behavior loop: tool returned Cancelled inline; only valid via ResumeFill::ToolResults"
+                                .to_string(),
+                        ),
+                        usage: self.state.usage.clone(),
+                    };
+                }
             }
 
             new_step.action_result = Some(observation);
@@ -966,6 +992,12 @@ fn tool_observation_message(call_id: &str, observation: &Observation) -> AiMessa
         }
         Observation::Error { message, .. } => (message.clone(), true),
         Observation::Pending { call_id: cid } => (format!("pending:{cid}"), true),
+        Observation::Cancelled { reason, .. } => {
+            // `is_error=false` — the call did not fail, it was interrupted.
+            // The text marker lets a content-aware renderer / the LLM tell
+            // cancellations apart from successful outputs.
+            (format!("[cancelled] {reason}"), false)
+        }
     };
     AiMessage::new(
         AiRole::Tool,

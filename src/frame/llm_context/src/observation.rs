@@ -23,6 +23,12 @@ pub enum Observation {
     /// Effect layer declared this call is async — its result will arrive via
     /// an external callback. waist then yields `Outcome::PendingTool`.
     Pending { call_id: String },
+    /// The call was cancelled (typically by an upper-layer interrupt) before
+    /// it ran to completion. Distinct from `Error` so renderers / the LLM
+    /// can treat it as "not a failure" — the side effects, if any, are
+    /// still external to this call's observation, but the *resolution* of
+    /// the call is "user / session cancelled, please move on".
+    Cancelled { call_id: String, reason: String },
 }
 
 impl Observation {
@@ -31,6 +37,7 @@ impl Observation {
             Observation::Success { call_id, .. } => call_id,
             Observation::Error { call_id, .. } => call_id,
             Observation::Pending { call_id } => call_id,
+            Observation::Cancelled { call_id, .. } => call_id,
         }
     }
 }

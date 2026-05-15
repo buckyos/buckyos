@@ -180,6 +180,14 @@ fn render_action_result_full(
             let attrs = action_result_attrs(tool, call_id, "pending", false);
             format!("<action_result{attrs}/>")
         }
+        Observation::Cancelled { call_id, reason } => {
+            let (body, _) = clip(reason.as_str(), max_body_chars.max(512));
+            let attrs = action_result_attrs(tool, call_id, "cancelled", false);
+            format!(
+                "<action_result{attrs}>{}</action_result>",
+                xml_escape(&body)
+            )
+        }
     }
 }
 
@@ -212,6 +220,19 @@ fn render_action_result_compact(
         Observation::Pending { call_id } => {
             let attrs = action_result_attrs(tool, call_id, "pending", false);
             format!("<action_result{attrs}/>")
+        }
+        Observation::Cancelled { call_id, reason } => {
+            let (body, _) = clip(reason.as_str(), max_body_chars);
+            let attrs = action_result_attrs(tool, call_id, "cancelled", false);
+            let body = body.trim();
+            if body.is_empty() {
+                format!("<action_result{attrs}/>")
+            } else {
+                format!(
+                    "<action_result{attrs}>{}</action_result>",
+                    xml_escape(body)
+                )
+            }
         }
     }
 }
