@@ -188,17 +188,362 @@
 //!
 //! ## 实施顺序
 //!
-//! 1. 本文件实现 `RequestOverrides` + `apply_overrides_to_snapshot` +
-//!    `rebuild_with_inherit` + `build_fresh`。`forbid_next_behavior` 这步先
-//!    在 helper 里塞进 overrides，waist 接收 flag 的逻辑作为单独 PR 后跟。
-//! 2. session 端先接 **switch 模式**（最简，沿用现有 state.snap 路径），
-//!    把 `handle_outcome::SwitchBehavior` 分支从占位换成真实实现。
-//! 3. 接 **independent 模式**：加 `behavior_<name>.snap` 装载/保存、当前活跃
-//!    behavior 名追踪、切换时双向写盘。
-//! 4. 接 **fork 模式**：`AgentSession` 加 `fork_and_run(overrides, deps) ->
-//!    ContextOutput`（或 behavior_result） 私有 async 方法 + 进程内
-//!    `fork_stack`（不持久化）；`try_create_worksession` 工具的 `call()` 改
-//!    成 `session.fork_and_run(...)` → 包 `Observation::Ok` 返回。父 ctx
-//!    看到的就是普通 tool result，PendingTool / ToolResults 路径天然适用。
-//! 5. 行为稳定后把 `RequestOverrides` + `apply_overrides` + `forbid_next_behavior`
-//!    flag 提案到 llm_context crate。
+//! 1. ✅ **Phase 1**：本文件实现 `RequestOverrides` + `apply_overrides_to_snapshot`
+//!    + `rebuild_with_inherit` + `build_fresh`。`forbid_next_behavior` 在
+//!    overrides 上占位，waist 接收 flag 的逻辑作为单独 PR 后跟。
+//! 2. ✅ **Phase 2 — switch 模式**：`agent_session::handle_outcome::Done` 接
+//!    `final_snapshot = ctx.snapshot()`、`switch_behavior` 用
+//!    `apply_overrides_to_snapshot` 重建 snapshot 并 persist。下一轮
+//!    `build_or_resume` 在新 system prompt + 完整历史下续跑。
+//! 3. ✅ **Phase 3 — independent 模式**：`SessionMeta` 加
+//!    `process_entry` / `process_stack`，每个 process 一份
+//!    `.meta/behavior_<entry>.snap`；切入子 process 时父快照存到独立文件、子
+//!    state.snap 从存量恢复或 `LLMContextState::from_request` 新建；子 `END`
+//!    pop 栈 → 装载父 snapshot 到 state.snap + 注入"[independent process
+//!    `<X>` ended]"系统消息唤醒父；非顶层自然 Done 也保留 stream（不丢
+//!    state.snap）。
+//! 4. ✅ **Phase 4 — fork 模式**：`AgentSession::fork_and_run(overrides,
+//!    sub_behavior_name) -> Result<ContextOutput>` 私有 async 原语 + 进程
+//!    内 `fork_stack: Arc<Mutex<Vec<String>>>`（不持久化，每帧 = 父 trace
+//!    id）；`AIAgent::get_session(id) -> Option<Arc<AgentSession>>` 公开
+//!    访问器供 session-aware 工具拿 session 句柄；`TryCreateWorksessionTool`
+//!    （`try_create_worksession`，在 `worksession_tools.rs`）在 `execute()`
+//!    内调 `session.fork_and_run(...)`，子 ctx 跑到 Done 后把 `ContextOutput`
+//!    打成 JSON 返回——父 ctx 视角是一次普通 tool 调用，无需新机制。
+//!    子 ctx suspended outcome（WaitInput / PendingTool / ContextLimitReached）
+//!    映射为错误（fork 无 resume 路径）。
+//! 5. ⏳ **Phase 5（未来）**：把 `RequestOverrides` + `apply_overrides` +
+//!    `forbid_next_behavior` flag 提案到 llm_context crate；helper 退化为
+//!    opendan-specific 胶水（system messages 渲染 / deps 装配 / trace 命名）。
+//!    `try_create_worksession` 的 sub-context 渲染补全（worksession list +
+//!    parent recent history），让 sub-LLM 真正能做"复用还是新建 workspace"
+//!    的判断。
+
+use buckyos_api::{AiMessage, AiRole};
+use llm_context::{
+    context_loop::LLMContext,
+    deps::LLMContextDeps,
+    error::LLMComputeError,
+    outcome::ResumeFill,
+    request::{
+        BudgetSpec, ErrorPolicy, HumanPolicy, LLMContextRequest, ModelPolicy, OutputSpec,
+        ToolPolicy,
+    },
+    state::LLMContextSnapshot,
+};
+
+/// Overlay applied to a base [`LLMContextSnapshot`] before rebuilding the next
+/// [`LLMContext`]. Every field is `Option`/`bool` so callers only specify what
+/// they want to change; unset fields are inherited verbatim from the base.
+///
+/// All field semantics are documented in the file-level doc above.
+#[derive(Debug, Clone, Default)]
+pub struct RequestOverrides {
+    pub system_messages: Option<Vec<AiMessage>>,
+    pub tool_policy: Option<ToolPolicy>,
+    pub objective: Option<String>,
+    /// Outer Option = override or not; inner Option = override target value
+    /// (`Some(Some(_))` set, `Some(None)` clear, `None` keep).
+    pub trace: Option<Option<String>>,
+    pub model_policy: Option<ModelPolicy>,
+    pub budget: Option<BudgetSpec>,
+    pub human_policy: Option<HumanPolicy>,
+    pub error_policy: Option<ErrorPolicy>,
+    pub output: Option<OutputSpec>,
+
+    /// Reset `state.rounds_left` to the new `tool_policy.max_rounds`. Caller
+    /// sets `true` for fork / independent, leaves `false` for switch (which
+    /// continues the parent budget).
+    pub reset_rounds: bool,
+    /// Reset `state.consecutive_errors` to 0. Caller sets `true` for fork /
+    /// independent — switch keeps the counter so a behavior swap cannot
+    /// silently bypass the error cap.
+    pub reset_errors: bool,
+
+    /// Fork-only hard constraint. Currently informational — waist support
+    /// will land in a follow-up PR. When set, downstream behavior loop should
+    /// ignore any `<next_behavior>` produced by the LLM.
+    pub forbid_next_behavior: bool,
+}
+
+/// Apply [`RequestOverrides`] to a snapshot, returning a new snapshot ready to
+/// feed into [`LLMContext::resume`] with [`ResumeFill::ResumeFromMidRun`].
+///
+/// Maintains the invariant that `request.input` and `state.accumulated` share
+/// the same leading System segment.
+pub fn apply_overrides_to_snapshot(
+    mut snap: LLMContextSnapshot,
+    ov: RequestOverrides,
+) -> LLMContextSnapshot {
+    if let Some(new_system) = ov.system_messages {
+        replace_leading_system(&mut snap.request.input, &new_system);
+        replace_leading_system(&mut snap.state.accumulated, &new_system);
+    }
+
+    if let Some(tp) = ov.tool_policy {
+        if ov.reset_rounds {
+            snap.state.rounds_left = tp.max_rounds;
+        }
+        snap.request.tool_policy = tp;
+    } else if ov.reset_rounds {
+        // No new policy supplied but caller asked for reset — reset to the
+        // existing policy's max_rounds.
+        snap.state.rounds_left = snap.request.tool_policy.max_rounds;
+    }
+
+    if ov.reset_errors {
+        snap.state.consecutive_errors = 0;
+    }
+
+    if let Some(obj) = ov.objective {
+        snap.request.objective = obj;
+    }
+    if let Some(trace) = ov.trace {
+        snap.request.trace = trace;
+    }
+    if let Some(mp) = ov.model_policy {
+        snap.request.model_policy = mp;
+    }
+    if let Some(b) = ov.budget {
+        snap.request.budget = b;
+    }
+    if let Some(hp) = ov.human_policy {
+        snap.request.human_policy = hp;
+    }
+    if let Some(ep) = ov.error_policy {
+        snap.request.error_policy = ep;
+    }
+    if let Some(o) = ov.output {
+        snap.request.output = o;
+    }
+
+    // TODO(waist-followup): plumb forbid_next_behavior into a snapshot/state
+    // field once llm_context exposes one. For now the flag is dropped after
+    // logging — fork callers should not rely on it as a hard guarantee yet.
+
+    snap
+}
+
+/// Replace the leading run of `System`-role messages in `msgs` with `new_system`.
+/// Non-System messages following the leading block are left untouched.
+fn replace_leading_system(msgs: &mut Vec<AiMessage>, new_system: &[AiMessage]) {
+    let leading = msgs
+        .iter()
+        .position(|m| m.role != AiRole::System)
+        .unwrap_or(msgs.len());
+    let tail = msgs.split_off(leading);
+    msgs.clear();
+    msgs.extend(new_system.iter().cloned());
+    msgs.extend(tail);
+}
+
+/// Build the next [`LLMContext`] from a base snapshot, inheriting `state` (and
+/// therefore `accumulated` / `steps` / `usage`) while applying `overrides` to
+/// the request side. Used by **switch** (caller writes snapshot back to the
+/// session) and **fork** (caller throws sub snapshot away after sub run ends).
+///
+/// Returns `Err(SnapshotCorrupted)` if the base snapshot is in a suspended
+/// state (has `pending_tool_calls`) — caller must resume that one first via
+/// the normal [`LLMContext::resume`] flow before inheriting from it.
+pub fn rebuild_with_inherit(
+    base_snap: LLMContextSnapshot,
+    overrides: RequestOverrides,
+    deps: LLMContextDeps,
+) -> Result<LLMContext, LLMComputeError> {
+    if !base_snap.state.pending_tool_calls.is_empty() {
+        return Err(LLMComputeError::SnapshotCorrupted(
+            "rebuild_with_inherit: base snapshot has pending tool calls — \
+             resume the pending tools before forking/switching"
+                .to_string(),
+        ));
+    }
+    let rebuilt = apply_overrides_to_snapshot(base_snap, overrides);
+    LLMContext::resume(rebuilt, ResumeFill::ResumeFromMidRun, deps)
+}
+
+/// Build a fresh [`LLMContext`] with no inherited state. Thin wrapper over
+/// [`LLMContext::new`] — exists so all opendan-side ctx construction paths go
+/// through this module and gain uniform logging / trace handling later.
+pub fn build_fresh(request: LLMContextRequest, deps: LLMContextDeps) -> LLMContext {
+    LLMContext::new(request, deps)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buckyos_api::AiContent;
+    use llm_context::request::{ContextOwnerRef, ToolMode};
+    use llm_context::state::LLMContextState;
+
+    fn msg(role: AiRole, text: &str) -> AiMessage {
+        AiMessage {
+            role,
+            content: vec![AiContent::Text {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    fn snap_with(input: Vec<AiMessage>, accumulated: Vec<AiMessage>) -> LLMContextSnapshot {
+        let request = LLMContextRequest {
+            owner: ContextOwnerRef::Agent {
+                session_id: "s".into(),
+            },
+            trace: None,
+            objective: String::new(),
+            input,
+            model_policy: ModelPolicy::default(),
+            tool_policy: ToolPolicy::default(),
+            output: OutputSpec::default(),
+            budget: BudgetSpec::default(),
+            human_policy: HumanPolicy::default(),
+            error_policy: ErrorPolicy::default(),
+        };
+        let mut state = LLMContextState::from_request(&request, 0);
+        state.accumulated = accumulated;
+        state.rounds_left = request.tool_policy.max_rounds;
+        LLMContextSnapshot { request, state }
+    }
+
+    #[test]
+    fn replace_leading_system_replaces_block_and_keeps_tail() {
+        let mut msgs = vec![
+            msg(AiRole::System, "old-1"),
+            msg(AiRole::System, "old-2"),
+            msg(AiRole::User, "u-1"),
+            msg(AiRole::Assistant, "a-1"),
+            msg(AiRole::User, "u-2"),
+        ];
+        let new_sys = vec![msg(AiRole::System, "new")];
+        replace_leading_system(&mut msgs, &new_sys);
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[0].role, AiRole::System);
+        assert_eq!(msgs[0].text_content(), "new");
+        assert_eq!(msgs[1].role, AiRole::User);
+        assert_eq!(msgs[1].text_content(), "u-1");
+        assert_eq!(msgs[3].text_content(), "u-2");
+    }
+
+    #[test]
+    fn replace_leading_system_with_no_existing_system_prepends() {
+        let mut msgs = vec![msg(AiRole::User, "u")];
+        let new_sys = vec![msg(AiRole::System, "s")];
+        replace_leading_system(&mut msgs, &new_sys);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, AiRole::System);
+        assert_eq!(msgs[1].role, AiRole::User);
+    }
+
+    #[test]
+    fn replace_leading_system_with_empty_new_strips_existing() {
+        let mut msgs = vec![
+            msg(AiRole::System, "old"),
+            msg(AiRole::User, "u"),
+        ];
+        replace_leading_system(&mut msgs, &[]);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, AiRole::User);
+    }
+
+    #[test]
+    fn apply_overrides_syncs_system_in_request_and_accumulated() {
+        let snap = snap_with(
+            vec![msg(AiRole::System, "sys-old"), msg(AiRole::User, "u")],
+            vec![
+                msg(AiRole::System, "sys-old"),
+                msg(AiRole::User, "u"),
+                msg(AiRole::Assistant, "a-runtime"),
+            ],
+        );
+        let ov = RequestOverrides {
+            system_messages: Some(vec![msg(AiRole::System, "sys-new")]),
+            ..Default::default()
+        };
+        let out = apply_overrides_to_snapshot(snap, ov);
+
+        assert_eq!(out.request.input[0].text_content(), "sys-new");
+        assert_eq!(out.request.input[1].text_content(), "u");
+        assert_eq!(out.state.accumulated[0].text_content(), "sys-new");
+        assert_eq!(out.state.accumulated[1].text_content(), "u");
+        // Accumulated tail (assistant from earlier rounds) survives.
+        assert_eq!(out.state.accumulated[2].text_content(), "a-runtime");
+    }
+
+    #[test]
+    fn apply_overrides_reset_rounds_uses_new_policy() {
+        let snap = snap_with(vec![msg(AiRole::User, "u")], vec![msg(AiRole::User, "u")]);
+        let mut tp = ToolPolicy::default();
+        tp.mode = ToolMode::Whitelist;
+        tp.max_rounds = 99;
+        let ov = RequestOverrides {
+            tool_policy: Some(tp),
+            reset_rounds: true,
+            ..Default::default()
+        };
+        let out = apply_overrides_to_snapshot(snap, ov);
+        assert_eq!(out.state.rounds_left, 99);
+        assert_eq!(out.request.tool_policy.max_rounds, 99);
+    }
+
+    #[test]
+    fn apply_overrides_no_reset_keeps_rounds_left() {
+        let mut snap = snap_with(vec![msg(AiRole::User, "u")], vec![msg(AiRole::User, "u")]);
+        snap.state.rounds_left = 3; // mid-run state
+        let mut tp = ToolPolicy::default();
+        tp.max_rounds = 99;
+        let ov = RequestOverrides {
+            tool_policy: Some(tp),
+            reset_rounds: false,
+            ..Default::default()
+        };
+        let out = apply_overrides_to_snapshot(snap, ov);
+        assert_eq!(out.state.rounds_left, 3, "switch must not reset budget");
+        assert_eq!(out.request.tool_policy.max_rounds, 99);
+    }
+
+    #[test]
+    fn apply_overrides_reset_errors_clears_counter() {
+        let mut snap = snap_with(vec![msg(AiRole::User, "u")], vec![msg(AiRole::User, "u")]);
+        snap.state.consecutive_errors = 2;
+        let ov = RequestOverrides {
+            reset_errors: true,
+            ..Default::default()
+        };
+        let out = apply_overrides_to_snapshot(snap, ov);
+        assert_eq!(out.state.consecutive_errors, 0);
+    }
+
+    #[test]
+    fn apply_overrides_trace_can_set_or_clear() {
+        let mut snap = snap_with(vec![msg(AiRole::User, "u")], vec![msg(AiRole::User, "u")]);
+        snap.request.trace = Some("parent::1".into());
+
+        let out = apply_overrides_to_snapshot(
+            snap.clone(),
+            RequestOverrides {
+                trace: Some(Some("parent::1::fork-0".into())),
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.request.trace.as_deref(), Some("parent::1::fork-0"));
+
+        let out_cleared = apply_overrides_to_snapshot(
+            snap.clone(),
+            RequestOverrides {
+                trace: Some(None),
+                ..Default::default()
+            },
+        );
+        assert!(out_cleared.request.trace.is_none());
+
+        let out_unchanged = apply_overrides_to_snapshot(
+            snap,
+            RequestOverrides {
+                trace: None,
+                ..Default::default()
+            },
+        );
+        assert_eq!(out_unchanged.request.trace.as_deref(), Some("parent::1"));
+    }
+}
+

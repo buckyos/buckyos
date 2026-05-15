@@ -6,7 +6,7 @@
 //! left as `warn!` + idle for now (§9.6 will round these out once contact_mgr /
 //! task_mgr wiring lands).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -22,7 +22,7 @@ use llm_context::{
     observation::Observation,
     outcome::{ContextOutput, LLMContextOutcome, ResumeFill},
     request::{ContextOwnerRef, LLMContextRequest},
-    state::LLMContextSnapshot,
+    state::{LLMContextSnapshot, LLMContextState},
 };
 
 use crate::agent_config::AgentConfig;
@@ -30,6 +30,7 @@ use crate::ai_runtime::{
     build_session_deps, AgentRuntime, OneLineStatusSink, SessionDepsInput,
 };
 use crate::behavior_cfg::{BehaviorCfg, SwitchMode};
+use crate::llm_context_helper::{apply_overrides_to_snapshot, RequestOverrides};
 use crate::session_event_pump::SessionEventPump;
 use crate::task_dispatch::TaskDispatch;
 
@@ -177,6 +178,19 @@ pub struct SessionMeta {
     /// `true` after the first turn returns from `run_one_turn`.
     #[serde(default)]
     pub bootstrap_done: bool,
+    /// Entry behavior name of the **currently active independent process**.
+    /// Default = `current_behavior` (top-level process whose entry is the
+    /// initial behavior). Diverges from `current_behavior` only when the
+    /// active process has done an intra-process normal switch. Drives the
+    /// `.meta/behavior_<process_entry>.snap` filename when the active
+    /// process is paused (parent gets pushed) or resumed (popped from stack).
+    #[serde(default)]
+    pub process_entry: String,
+    /// Independent-mode call stack (excludes the active top frame).
+    /// Pushed when this session switches into an `Independent` behavior;
+    /// popped when that child reaches `END` while parent frames are waiting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_stack: Vec<ProcessFrame>,
 }
 
 /// One async tool dispatch tracked at the session level. Bridges the LLM's
@@ -197,6 +211,17 @@ pub struct PendingTaskCall {
     /// kevent pattern we subscribed to for this task. Stored so we can
     /// unsubscribe once the completion arrives.
     pub event_pattern: String,
+}
+
+/// One frame on the **independent-mode process call stack**. Each frame
+/// records the parent process's entry behavior name (drives the
+/// `.meta/behavior_<entry>.snap` filename) plus the parent's
+/// `current_behavior` at push time — so an intra-process normal switch is
+/// faithfully restored when the child ends and we pop back.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessFrame {
+    pub entry: String,
+    pub current: String,
 }
 
 /// One persisted kevent subscription belonging to a session.
@@ -225,7 +250,7 @@ impl SessionMeta {
         Self {
             session_id,
             kind,
-            current_behavior,
+            current_behavior: current_behavior.clone(),
             status: SessionStatus::Idle,
             owner,
             one_line_status: String::new(),
@@ -238,6 +263,9 @@ impl SessionMeta {
             title: String::new(),
             objective: String::new(),
             bootstrap_done: false,
+            // Top-level process entry defaults to the initial behavior.
+            process_entry: current_behavior,
+            process_stack: Vec::new(),
         }
     }
 }
@@ -301,6 +329,14 @@ pub struct AgentSession {
     event_pump: Option<Arc<SessionEventPump>>,
 
     trace_seq: Arc<std::sync::atomic::AtomicU64>,
+
+    /// In-memory **fork call stack** for diagnostics. Each frame = the
+    /// parent's trace id at the moment of fork. Per design fork is a
+    /// non-resumable sync sub-task, so this stack is not persisted —
+    /// a crash mid-fork drops the sub-context, the parent recovers from
+    /// its on-disk snapshot, and the fork is simply lost (acceptable
+    /// per the design doc §Session-level 状态结构).
+    fork_stack: Arc<Mutex<Vec<String>>>,
 }
 
 pub struct AgentSessionBuild {
@@ -340,6 +376,13 @@ impl AgentSession {
             existing.owner = b.owner.clone();
             existing.status = SessionStatus::Idle;
             existing.one_line_status.clear();
+            // Backfill: older session.json files predate `process_entry`. An
+            // empty value here means "top-level process whose entry == the
+            // current behavior" — restore that interpretation so the
+            // independent-mode persistence path doesn't reject the session.
+            if existing.process_entry.is_empty() {
+                existing.process_entry = existing.current_behavior.clone();
+            }
             existing
         } else {
             SessionMeta::new(
@@ -366,6 +409,7 @@ impl AgentSession {
             status: Arc::new(InMemoryStatus::new()),
             event_pump: b.event_pump,
             trace_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            fork_stack: Arc::new(Mutex::new(Vec::new())),
         };
         (session, inbox_rx)
     }
@@ -923,6 +967,10 @@ impl AgentSession {
         );
         let mut ctx = LLMContext::resume(snapshot, fill, deps).map_err(|e| anyhow!("resume: {e}"))?;
         let outcome = ctx.run().await;
+        // Post-run snapshot — needed by Done+next_behavior switching to
+        // preserve full history (final assistant reply included). Outcome::Done
+        // itself carries no snapshot, but ctx is still alive here.
+        let final_snapshot = ctx.snapshot();
 
         // Clear pending_task_calls + unsubscribe from /task_mgr/* patterns.
         // Done before handling the outcome so a subsequent PendingTool emit
@@ -936,7 +984,7 @@ impl AgentSession {
             let _ = self.unsubscribe_event(&pattern).await;
         }
 
-        self.handle_outcome(outcome, &behavior).await
+        self.handle_outcome(outcome, &behavior, final_snapshot).await
     }
 
     /// Empty `meta.pending_task_calls` and flush. Called after a successful
@@ -979,6 +1027,14 @@ impl AgentSession {
     /// view — the TurnHook write happens *before* inference, which would
     /// miss the freshly-populated `pending_tool_calls`.
     async fn persist_snapshot(&self, snapshot: &LLMContextSnapshot) {
+        self.persist_snapshot_to(&self.state_snap_path, snapshot)
+            .await;
+    }
+
+    /// Lower-level: write a snapshot to a specific path (used by
+    /// independent-mode per-behavior snapshot files). Same crash-consistency
+    /// guarantees as `persist_snapshot` (tmp + rename).
+    async fn persist_snapshot_to(&self, path: &Path, snapshot: &LLMContextSnapshot) {
         let bytes = match serde_json::to_vec(snapshot) {
             Ok(v) => v,
             Err(err) => {
@@ -989,7 +1045,7 @@ impl AgentSession {
                 return;
             }
         };
-        if let Some(parent) = self.state_snap_path.parent() {
+        if let Some(parent) = path.parent() {
             if let Err(err) = tokio::fs::create_dir_all(parent).await {
                 warn!(
                     "opendan.session[{}]: snapshot mkdir failed: {err}",
@@ -998,7 +1054,7 @@ impl AgentSession {
                 return;
             }
         }
-        let tmp = self.state_snap_path.with_extension("snap.tmp");
+        let tmp = path.with_extension("snap.tmp");
         if let Err(err) = tokio::fs::write(&tmp, &bytes).await {
             warn!(
                 "opendan.session[{}]: snapshot write failed: {err}",
@@ -1006,7 +1062,7 @@ impl AgentSession {
             );
             return;
         }
-        if let Err(err) = tokio::fs::rename(&tmp, &self.state_snap_path).await {
+        if let Err(err) = tokio::fs::rename(&tmp, path).await {
             warn!(
                 "opendan.session[{}]: snapshot rename failed: {err}",
                 self.session_id
@@ -1024,7 +1080,8 @@ impl AgentSession {
             BuiltContext::Resumed(c) => c,
         };
         let outcome = ctx.run().await;
-        self.handle_outcome(outcome, &behavior).await
+        let final_snapshot = ctx.snapshot();
+        self.handle_outcome(outcome, &behavior, final_snapshot).await
     }
 
     fn next_trace_id(&self) -> String {
@@ -1106,17 +1163,57 @@ impl AgentSession {
     }
 
     fn try_load_snapshot(&self) -> Option<LLMContextSnapshot> {
-        let bytes = std::fs::read(&self.state_snap_path).ok()?;
+        self.try_load_snapshot_from(&self.state_snap_path)
+    }
+
+    /// Lower-level: load a snapshot from a specific path. Returns `None` on
+    /// missing-file (silent) or unreadable / malformed (warns).
+    fn try_load_snapshot_from(&self, path: &Path) -> Option<LLMContextSnapshot> {
+        let bytes = std::fs::read(path).ok()?;
         match serde_json::from_slice::<LLMContextSnapshot>(&bytes) {
             Ok(s) => Some(s),
             Err(err) => {
                 warn!(
                     "opendan.session[{}]: snapshot at {} unreadable: {err}",
                     self.session_id,
-                    self.state_snap_path.display()
+                    path.display()
                 );
                 None
             }
+        }
+    }
+
+    /// Resolve the per-process snapshot path for an independent-mode entry
+    /// behavior. Rejects names that could escape `.meta/` via path traversal.
+    fn behavior_snap_path(&self, entry: &str) -> Result<PathBuf> {
+        if entry.is_empty() || entry.contains('/') || entry.contains('\\') || entry.contains("..")
+        {
+            return Err(anyhow!(
+                "invalid process entry name `{entry}` for snapshot path"
+            ));
+        }
+        Ok(self
+            .session_dir
+            .join(".meta")
+            .join(format!("behavior_{entry}.snap")))
+    }
+
+    /// Build a fresh (no inherited state) [`LLMContextRequest`] for the given
+    /// behavior. Used by independent-mode first-time entry into a process.
+    fn fresh_request_for(&self, cfg: &BehaviorCfg) -> LLMContextRequest {
+        LLMContextRequest {
+            owner: ContextOwnerRef::Agent {
+                session_id: self.session_id.clone(),
+            },
+            trace: None,
+            objective: cfg.objective.clone(),
+            input: self.render_system_messages(cfg),
+            model_policy: cfg.to_model_policy(),
+            tool_policy: cfg.to_tool_policy(),
+            output: cfg.to_output_spec(),
+            budget: cfg.to_budget_spec(),
+            human_policy: cfg.to_human_policy(),
+            error_policy: cfg.to_error_policy(),
         }
     }
 
@@ -1185,6 +1282,7 @@ impl AgentSession {
         &self,
         outcome: LLMContextOutcome,
         behavior: &BehaviorCfg,
+        final_snapshot: LLMContextSnapshot,
     ) -> Result<NextAction> {
         match outcome {
             LLMContextOutcome::Done {
@@ -1203,14 +1301,31 @@ impl AgentSession {
                         .send(SessionReply::AssistantText { text })
                         .await;
                 }
-                self.discard_snapshot();
                 if let Some(next) = behavior_result.and_then(|r| r.next_behavior) {
                     let trimmed = next.trim();
                     if trimmed.eq_ignore_ascii_case("END") {
-                        return Ok(NextAction::End);
+                        // Independent-mode call-stack-aware End: pop a
+                        // parent frame if one is waiting; only an empty
+                        // stack means the session itself is done.
+                        return self.handle_process_end(final_snapshot).await;
                     }
-                    self.switch_behavior(trimmed, behavior).await?;
+                    // Switch — preserve history by handing the post-run
+                    // snapshot to switch_behavior (which applies the new
+                    // behavior's overrides and persists). Do **not** discard
+                    // here; next turn resumes from the rebuilt snapshot.
+                    self.switch_behavior(trimmed, behavior, final_snapshot).await?;
                     return Ok(NextAction::Idle);
+                }
+                // Natural Done (no next_behavior). Independent-mode
+                // sub-processes must keep their stream alive across this
+                // boundary so a future wake / re-entry resumes from where
+                // it left off; top-level processes keep the existing
+                // "discard, next turn rebuilds fresh" semantics.
+                let in_subprocess = !self.meta.lock().await.process_stack.is_empty();
+                if in_subprocess {
+                    self.persist_snapshot(&final_snapshot).await;
+                } else {
+                    self.discard_snapshot();
                 }
                 if matches!(self.kind, SessionKind::Ui) {
                     Ok(NextAction::WaitForMsg)
@@ -1350,18 +1465,37 @@ impl AgentSession {
         }
     }
 
-    async fn switch_behavior(&self, next: &str, _prev: &BehaviorCfg) -> Result<()> {
+    async fn switch_behavior(
+        &self,
+        next: &str,
+        _prev: &BehaviorCfg,
+        final_snapshot: LLMContextSnapshot,
+    ) -> Result<()> {
         let new_cfg = self
             .agent_config
             .load_behavior(next)
             .map_err(|err| anyhow!("load behavior `{next}`: {err}"))?;
-        if !matches!(new_cfg.switch_mode, SwitchMode::Normal) {
-            warn!(
-                "opendan.session[{}]: switch_mode={:?} not yet wired (treating as Normal)",
-                self.session_id, new_cfg.switch_mode
-            );
+        match new_cfg.switch_mode {
+            SwitchMode::Normal => {
+                self.apply_switch_normal(&new_cfg, final_snapshot).await;
+                self.meta.lock().await.current_behavior = new_cfg.name.clone();
+            }
+            SwitchMode::Independent => {
+                self.apply_switch_independent(&new_cfg, final_snapshot)
+                    .await?;
+                // process_entry / current_behavior already updated inside
+                // apply_switch_independent (push happens under the same lock).
+            }
+            SwitchMode::Fork => {
+                warn!(
+                    "opendan.session[{}]: switch_mode=Fork not yet wired \
+                     (Phase 4 — treating as Normal for now)",
+                    self.session_id
+                );
+                self.apply_switch_normal(&new_cfg, final_snapshot).await;
+                self.meta.lock().await.current_behavior = new_cfg.name.clone();
+            }
         }
-        self.meta.lock().await.current_behavior = new_cfg.name.clone();
         if let Err(err) = self.flush_meta().await {
             warn!(
                 "opendan.session[{}]: flush after behavior switch failed: {err:#}",
@@ -1369,6 +1503,315 @@ impl AgentSession {
             );
         }
         Ok(())
+    }
+
+    /// Switch mode = Normal: keep accumulated history + step records, swap
+    /// system messages and behavior policies via [`apply_overrides_to_snapshot`],
+    /// persist as the new `state.snap`. Next turn's `build_or_resume` picks it
+    /// up and resumes under the new behavior.
+    ///
+    /// Per the design doc (llm_context_helper.rs §旋钮):
+    /// - rounds_left: NOT reset (continue parent budget)
+    /// - consecutive_errors: NOT cleared (block LLM from bypassing the cap
+    ///   by switching behavior)
+    async fn apply_switch_normal(
+        &self,
+        new_cfg: &BehaviorCfg,
+        final_snapshot: LLMContextSnapshot,
+    ) {
+        let new_system = self.render_system_messages(new_cfg);
+        let overrides = RequestOverrides {
+            system_messages: Some(new_system),
+            tool_policy: Some(new_cfg.to_tool_policy()),
+            objective: Some(new_cfg.objective.clone()),
+            model_policy: Some(new_cfg.to_model_policy()),
+            budget: Some(new_cfg.to_budget_spec()),
+            human_policy: Some(new_cfg.to_human_policy()),
+            error_policy: Some(new_cfg.to_error_policy()),
+            output: Some(new_cfg.to_output_spec()),
+            trace: None,
+            reset_rounds: false,
+            reset_errors: false,
+            forbid_next_behavior: false,
+        };
+        let rebuilt = apply_overrides_to_snapshot(final_snapshot, overrides);
+        self.persist_snapshot(&rebuilt).await;
+    }
+
+    /// Switch mode = Independent: each behavior name is its own "process"
+    /// with its own step record stream. The parent's `final_snapshot` is
+    /// archived to `.meta/behavior_<parent_entry>.snap`; the child resumes
+    /// from `.meta/behavior_<child>.snap` (if it has been entered before) or
+    /// is built fresh. The active `state.snap` always mirrors the top-of-
+    /// stack process.
+    ///
+    /// Per design旋钮: rounds_left and consecutive_errors are reset on every
+    /// (re-)entry so each process has its own budget / error window.
+    async fn apply_switch_independent(
+        &self,
+        new_cfg: &BehaviorCfg,
+        final_snapshot: LLMContextSnapshot,
+    ) -> Result<()> {
+        // 1. Persist the parent process's terminal state to its per-process
+        //    snapshot file. Use the captured `process_entry` so an intra-
+        //    process normal switch on the parent still archives to the
+        //    right file.
+        let (parent_entry, parent_current) = {
+            let meta = self.meta.lock().await;
+            (meta.process_entry.clone(), meta.current_behavior.clone())
+        };
+        let parent_path = self.behavior_snap_path(&parent_entry)?;
+        self.persist_snapshot_to(&parent_path, &final_snapshot).await;
+
+        // 2. Resume (or build fresh) the child process's snapshot.
+        let child_path = self.behavior_snap_path(&new_cfg.name)?;
+        let child_snap = if let Some(loaded) = self.try_load_snapshot_from(&child_path) {
+            // Existing stream — keep its system / accumulated / steps, just
+            // reset the ephemeral counters so the new "turn under this
+            // process" starts with a clean budget.
+            let overrides = RequestOverrides {
+                reset_rounds: true,
+                reset_errors: true,
+                ..Default::default()
+            };
+            apply_overrides_to_snapshot(loaded, overrides)
+        } else {
+            // First-time entry — synthesize a fresh snapshot from this
+            // behavior's request template. Mirrors `build_fresh` at the
+            // snapshot level (we don't construct an LLMContext here because
+            // the next worker turn will do the resume).
+            let request = self.fresh_request_for(new_cfg);
+            let state = LLMContextState::from_request(&request, now_ms());
+            LLMContextSnapshot { request, state }
+        };
+        self.persist_snapshot(&child_snap).await;
+
+        // 3. Push parent frame, update active-process tracking.
+        {
+            let mut meta = self.meta.lock().await;
+            meta.process_stack.push(ProcessFrame {
+                entry: parent_entry,
+                current: parent_current,
+            });
+            meta.process_entry = new_cfg.name.clone();
+            meta.current_behavior = new_cfg.name.clone();
+        }
+        Ok(())
+    }
+
+    /// Drive the independent-mode call-stack pop on `END`. If a parent
+    /// frame is waiting, persist this process's terminal state (so a future
+    /// re-entry resumes its stream), restore the parent's snapshot to
+    /// `state.snap`, inject a marker `[independent process `<X>` ended]`
+    /// message into the parent's `pending_inputs` so the parent's next turn
+    /// has something to wake on, and return `NextAction::Idle`.
+    ///
+    /// Returns `NextAction::End` only when the call stack is empty — i.e.
+    /// the top-level process itself ended.
+    async fn handle_process_end(&self, final_snapshot: LLMContextSnapshot) -> Result<NextAction> {
+        // Pop under the lock; capture both the child entry name (for the
+        // marker payload + file persistence) and the parent frame.
+        let popped = {
+            let mut meta = self.meta.lock().await;
+            if let Some(parent) = meta.process_stack.pop() {
+                let child_entry =
+                    std::mem::replace(&mut meta.process_entry, parent.entry.clone());
+                meta.current_behavior = parent.current.clone();
+                Some((child_entry, parent))
+            } else {
+                None
+            }
+        };
+
+        let Some((child_entry, parent_frame)) = popped else {
+            // Top-level process ended — real session End.
+            self.discard_snapshot();
+            return Ok(NextAction::End);
+        };
+
+        // Persist child's terminal snapshot so a future re-entry sees its
+        // full step record stream.
+        if let Ok(child_path) = self.behavior_snap_path(&child_entry) {
+            self.persist_snapshot_to(&child_path, &final_snapshot).await;
+        }
+
+        // Restore parent's snapshot to state.snap. If the file vanished
+        // (manual deletion / disk corruption), warn and start the parent
+        // fresh on its next turn — the meta-level call stack is still
+        // correct, and `build_or_resume` falls back to render-fresh.
+        let parent_path = self
+            .behavior_snap_path(&parent_frame.entry)
+            .ok();
+        let mut parent_restored = false;
+        if let Some(path) = &parent_path {
+            if let Some(parent_snap) = self.try_load_snapshot_from(path) {
+                self.persist_snapshot(&parent_snap).await;
+                parent_restored = true;
+            }
+        }
+        if !parent_restored {
+            warn!(
+                "opendan.session[{}]: parent snapshot for `{}` missing on \
+                 pop — next turn will rebuild fresh",
+                self.session_id, parent_frame.entry
+            );
+            self.discard_snapshot();
+        }
+
+        // Inject a marker so the parent's next turn wakes up with something
+        // resembling a user-side hand-off. Going through enqueue_pending
+        // both persists it and fires the Wakeup signal.
+        let marker = PendingInput::Msg {
+            record_id: format!(
+                "process-end:{}:{}",
+                child_entry,
+                uuid::Uuid::new_v4().simple()
+            ),
+            from: "system".to_string(),
+            from_did: None,
+            from_name: Some("system".to_string()),
+            tunnel_did: None,
+            text: format!("[independent process `{}` ended]", child_entry),
+        };
+        if let Err(err) = self.enqueue_pending(marker).await {
+            warn!(
+                "opendan.session[{}]: enqueue end-marker after pop failed: {err:#}",
+                self.session_id
+            );
+        }
+        Ok(NextAction::Idle)
+    }
+
+    /// **Fork primitive** (Phase 4 of llm_context_helper.rs design).
+    ///
+    /// Fork a sub-`LLMContext` from the parent's most recent on-disk
+    /// snapshot (written by `TurnHook` before the current inference), apply
+    /// `overrides`, run the sub-context to a terminal outcome, and return
+    /// its `ContextOutput`. The parent session's `state.snap` and step
+    /// history are **not** touched — fork is a non-resumable sync sub-task
+    /// (per design doc §Fork).
+    ///
+    /// `sub_behavior_name` selects the behavior cfg used to build the
+    /// sub-context's `LLMContextDeps` (parser/renderer, approval list,
+    /// one_line_status sink). The sub-cfg's own system prompt is *not*
+    /// auto-rendered into the sub-ctx — callers must populate
+    /// `overrides.system_messages` themselves (otherwise the sub-ctx
+    /// inherits parent's system segment verbatim, which is rarely what you
+    /// want for an exploratory fork).
+    ///
+    /// Errors:
+    /// - No parent snapshot on disk (must be invoked mid-turn, after at
+    ///   least one TurnHook write)
+    /// - Snapshot in suspended state (`pending_tool_calls` non-empty) —
+    ///   `rebuild_with_inherit`'s pre-condition fails
+    /// - Sub-context produces a suspended outcome (WaitInput / PendingTool
+    ///   / ContextLimitReached) — fork has no resume path; this is mapped
+    ///   to an error so the caller knows to abort
+    ///
+    /// In-memory `fork_stack` tracks the parent trace id per frame for
+    /// diagnostics; not persisted (a mid-fork crash drops the sub-ctx and
+    /// the parent recovers from its on-disk snapshot).
+    pub async fn fork_and_run(
+        &self,
+        overrides: RequestOverrides,
+        sub_behavior_name: &str,
+    ) -> Result<ContextOutput> {
+        let parent_snap = self.try_load_snapshot().ok_or_else(|| {
+            anyhow!(
+                "fork_and_run: session[{}] has no parent snapshot — fork must be invoked mid-turn",
+                self.session_id
+            )
+        })?;
+        let sub_cfg = self
+            .agent_config
+            .load_behavior(sub_behavior_name)
+            .map_err(|err| {
+                anyhow!("fork_and_run: load behavior `{sub_behavior_name}`: {err}")
+            })?;
+
+        let parent_trace = parent_snap
+            .request
+            .trace
+            .clone()
+            .unwrap_or_else(|| self.session_id.clone());
+        let depth = {
+            let mut stack = self.fork_stack.lock().await;
+            stack.push(parent_trace.clone());
+            stack.len()
+        };
+        let trace_id = format!("{}::fork-{}", parent_trace, depth);
+
+        let run_result = self
+            .run_fork_sub(parent_snap, overrides, &sub_cfg, &trace_id)
+            .await;
+
+        // Pop regardless of success — fork frame lifetime ends here.
+        self.fork_stack.lock().await.pop();
+        run_result
+    }
+
+    /// Inner async helper for `fork_and_run`. Split out so the
+    /// fork_stack pop in the public method always runs (Rust async
+    /// destructors are best-effort; an explicit pop is clearer than
+    /// stashing a guard).
+    async fn run_fork_sub(
+        &self,
+        parent_snap: LLMContextSnapshot,
+        overrides: RequestOverrides,
+        sub_cfg: &BehaviorCfg,
+        trace_id: &str,
+    ) -> Result<ContextOutput> {
+        use crate::llm_context_helper::rebuild_with_inherit;
+
+        let ctx_runtime = SessionRuntimeContext {
+            trace_id: trace_id.to_string(),
+            agent_name: self.agent_name.clone(),
+            behavior: sub_cfg.name.clone(),
+            step_idx: parent_snap.state.steps.len() as u32,
+            wakeup_id: String::new(),
+            session_id: self.session_id.clone(),
+        };
+        let deps = build_session_deps(
+            &self.runtime,
+            SessionDepsInput {
+                tools: self.tools.clone(),
+                ctx: ctx_runtime,
+                // Sub-ctx shares the parent's snapshot path — TurnHook
+                // writes from the sub will overwrite the parent's
+                // `.meta/state.snap`. That's intentional: a mid-fork
+                // crash should leave the sub-ctx's most-recent state on
+                // disk for visibility; the parent can re-fork from
+                // there on recovery if needed.
+                snapshot_path: self.state_snap_path.clone(),
+                approval_required: sub_cfg.approval_required.clone(),
+                one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
+                parser_renderer: sub_cfg.build_parser_and_renderer(),
+            },
+        );
+        let mut ctx = rebuild_with_inherit(parent_snap, overrides, deps)
+            .map_err(|e| anyhow!("fork_and_run: rebuild_with_inherit: {e}"))?;
+        let outcome = ctx.run().await;
+        match outcome {
+            LLMContextOutcome::Done { output, .. } => Ok(output),
+            LLMContextOutcome::Error { error, .. } => {
+                Err(anyhow!("fork sub-ctx errored: {error}"))
+            }
+            LLMContextOutcome::BudgetExhausted { which, .. } => {
+                Err(anyhow!("fork sub-ctx budget exhausted: {:?}", which))
+            }
+            LLMContextOutcome::WaitInput { .. }
+            | LLMContextOutcome::PendingTool { .. }
+            | LLMContextOutcome::ContextLimitReached { .. } => Err(anyhow!(
+                "fork sub-ctx unexpectedly suspended — fork sub-contexts must reach a terminal outcome (Done / Error / BudgetExhausted)"
+            )),
+        }
+    }
+
+    /// Current fork-call-stack depth. `0` ⇒ not inside any active fork.
+    /// Async to share the same mutex as `fork_and_run`; intended for
+    /// diagnostics / tests.
+    pub async fn fork_depth(&self) -> usize {
+        self.fork_stack.lock().await.len()
     }
 
     async fn set_status(&self, status: SessionStatus) {
@@ -1829,6 +2272,11 @@ mod tests {
             title: "design review".to_string(),
             objective: "draft the rollout plan".to_string(),
             bootstrap_done: true,
+            process_entry: "planner".to_string(),
+            process_stack: vec![ProcessFrame {
+                entry: "ui_default".to_string(),
+                current: "ui_default".to_string(),
+            }],
         };
         let json = serde_json::to_string(&meta).unwrap();
         let restored: SessionMeta = serde_json::from_str(&json).unwrap();
@@ -1867,6 +2315,31 @@ mod tests {
         assert_eq!(restored.title, "design review");
         assert_eq!(restored.objective, "draft the rollout plan");
         assert!(restored.bootstrap_done);
+        assert_eq!(restored.process_entry, "planner");
+        assert_eq!(restored.process_stack.len(), 1);
+        assert_eq!(restored.process_stack[0].entry, "ui_default");
+        assert_eq!(restored.process_stack[0].current, "ui_default");
+    }
+
+    #[test]
+    fn session_meta_backfills_process_entry_for_legacy_json() {
+        // Older `.meta/session.json` files predate the
+        // `process_entry` / `process_stack` fields. They must still
+        // deserialize (serde defaults) and `AgentSession::new`'s restore
+        // path backfills `process_entry` from `current_behavior` so the
+        // independent-mode snapshot path is well-formed.
+        let legacy = serde_json::json!({
+            "session_id": "s2",
+            "kind": "ui",
+            "current_behavior": "ui_default",
+            "status": "idle",
+        });
+        let restored: SessionMeta = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.process_entry, "");
+        assert!(restored.process_stack.is_empty());
+        // (The backfill itself lives in AgentSession::new and is exercised
+        // by the restore-path integration tests; here we only assert that
+        // the legacy JSON does NOT fail to deserialize.)
     }
 
     #[test]

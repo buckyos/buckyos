@@ -180,6 +180,17 @@ impl AIAgent {
         self.inbox_tx.clone()
     }
 
+    /// Look up a live session by id. Returns `None` when no session with
+    /// that id is currently mounted (never existed, archived, or removed
+    /// after `NextAction::End`).
+    ///
+    /// Session-aware tools (`try_create_worksession`, `forward_msg`, ...)
+    /// use this to reach into the calling session for fork primitives /
+    /// pending-input injection.
+    pub async fn get_session(&self, session_id: &str) -> Option<Arc<AgentSession>> {
+        self.sessions.lock().await.get(session_id).cloned()
+    }
+
     /// Trigger a graceful shutdown. Returns immediately; `run()` exits its
     /// loop and joins outstanding sessions.
     pub async fn shutdown(&self) {

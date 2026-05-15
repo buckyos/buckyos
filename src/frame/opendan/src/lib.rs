@@ -17,6 +17,11 @@ pub mod behavior_cfg;
 //             switch_behavior (normal / fork / independent).
 pub mod agent_session;
 
+// §9 step 4 — LLMContext switching primitives (rebuild_with_inherit / build_fresh)
+//             that AgentSession uses to implement switch / fork / independent.
+//             Will be promoted to llm_context crate once stable.
+pub mod llm_context_helper;
+
 // §9 step 5 — UI-session default tool wiring; exec_bash + session /bin scripts.
 pub mod agent_bash;
 
