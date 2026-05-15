@@ -399,16 +399,24 @@ render plan 由两类输入合成：
 | Session Bin（声明） | session 目录 `./tools/` | rwx | tool.toml / 脚本源 / 工具包元数据 / 交付物（平台无关） | 持久化（跨 OS 可迁移） |
 | Session Bin（执行视图） | `/opt/buckyos/tools/$agentid/$sessionid/` | rwx | 启动器按 manifest 渲染的 symlink / wrapper script，指向 System / Runtime Bin 工具、授权的 ExtTool Volume 工具、或 session `./tools/` 下的脚本 | 容器临时，session 启动时重建 |
 
-**渲染规则**：
+**渲染规则**（2026-05-14 修订：改为 PATH 拼接 + Session 渲染的极简模型）：
 
-- 进 PATH 的 bin 一律是 **派生产物**，不进 session 数据；容器删除/迁移时丢弃，下次启动重建。
-- 启动器是**统一的工具视图渲染入口**，负责按授权 manifest 决定哪些 System / Runtime / ExtTool
-  工具暴露给该 session；Agent 自己**不能**直接 link 到镜像内部路径或宿主机路径。
+- **System / Runtime / Agent 三层**：每层就是一个普通的 bin 目录，**不做任何渲染**，
+  直接按顺序拼到 PATH 即可。系统工具（ffmpeg/pandoc/...）、卷工具（ExtTool Volume）、
+  Agent 自写脚本，都是"现成就摆在 bin 里"的文件。
+- **Session Exec Bin 是唯一需要"渲染"的层**，承担两件事：
+  1. **Agent tools 落地**：session 启动时把 Agent Root FS 的 `/tools/` 内容自动拷过去（一份
+     可写副本），session 内的修改不污染 Agent 持久层；session 结束时这份拷贝丢弃。
+  2. **墓碑效应（tombstone）**：session 启动时读 plan 文件（白名单 / 黑名单），在 Session Exec Bin
+     里放 stub wrapper 屏蔽下层的同名工具——例如要禁用 ffmpeg，就在 Session Exec Bin 里写一个
+     `ffmpeg` 脚本 `exit 127`（或返回友好错误），PATH 优先级保证它先被找到。
 - session 的 `./tools/` 只放工具的"声明 + 源文件 + 元数据"——属于 AgentRootFS（宿主机数据层），
   必须能在不同宿主机之间原样拷贝；执行视图由目标宿主机上启动的 Linux 容器在启动时重新渲染
   （执行视图本身始终是 Linux 形态，不需要跨 OS 兼容）。
+- 容器删除/迁移时 Session Exec Bin 整个丢弃，下次启动重建。
 
-PATH overlay 顺序：**Session > Agent > Runtime > System**（前者优先，同名覆盖）。
+PATH overlay 顺序：**Session > Agent > Runtime > System**（前者优先，同名覆盖；用 PATH 拼接而非
+统一渲染实现）。
 
 **UI Session 默认工具集**（写入 `behaviors/ui_default.toml` 的 whitelist）：
 - `exec_bash` / `read_file` / `glob` / `grep` / `edit_file` / `write_file`
@@ -1053,7 +1061,7 @@ forward_msg { target_worksession_id: String }
   - `handle_outcome` 覆盖 Done / WaitInput / PendingTool（warn）/ Budget / Error / ContextLimit；Done 路径会调 `post_outbound_text` 走 `msg_center.post_send` 把回复发回 peer
   - `switch_behavior`（Normal-only；Fork / Independent warn 后按 Normal 处理）
   - 新增 API：`subscribe_event` / `unsubscribe_event` / `subscription_patterns` / `set_workspace` / `workspace_id` / `update_peer`（私有）/ `post_outbound_text`（私有）
-- §9.5 `opendan::agent_bash`：`build_session_tools(workspace, session_dir)` 注册 `exec_bash` + read/write/edit/glob/grep；`SessionBinLayout` 持有 4 层 bin 路径（System / Runtime / Agent / Session），目前 overlay 仅落 Session 层（upstream `BinOverlayConfig` 是单 `bin_dir`，待 §9.5 后续扩展）
+- §9.5 `opendan::agent_bash`：`build_session_tools(workspace, session_dir)` 注册 `exec_bash` + read/write/edit/glob/grep；`SessionBinLayout` 持有 4 层 bin 路径（System / Runtime / Agent / Session），目前 overlay 仅落 Session 层（upstream `BinOverlayConfig` 是单 `bin_dir`，4 层合成见上面"工程顺序 #4"）。**2026-05-14 新增 `TmuxBashRunner`**：`exec_bash` 不再用一次性 `/bin/bash -c`，每个 AgentSession 独占一个 detached tmux session（`od_<sanitized_session_id>`），每条 LLM 命令通过 wrapper 脚本 + run-id marker 在该 pane 里执行；用 `tee` 同时写 stdout/stderr 到 log 文件 + pane scrollback，操作员可 `tmux attach -t od_<sid>` 实时审计 AI 工作记录（pane 里能看到人类可读的 `# exec_bash[<run_id>] <command>` banner，不是不透明的 wrapper 路径）；超时走 `send-keys C-c`；session 数 ≥16 时按 24h idle GC。`exit N` 安全：用户命令包在 `( ... )` 子 shell 里，不会杀掉 wrapper 自身
 - §9.6 `opendan::agent` + `opendan::msg_center_pump` + `opendan::session_event_pump`（**msg-center / kevent / outbound 全部接入**）：
   - `AIAgent::open(root, runtime)` 加载 `AgentConfig`、`AIAgent::run()` 驱动 dispatch loop（`tokio::select` { inbox, shutdown }）
   - **`Inbound { Msg { record_id, from, from_did, tunnel_did, session_id, text }, Event { event_id, target_session_id, data } }`** —— `from_did` / `tunnel_did` 用于 outbound 回送，`target_session_id` 由 session_event_pump 填充
@@ -1078,14 +1086,93 @@ forward_msg { target_worksession_id: String }
   - `AgentRuntime.task_mgr` 字段 + `main.rs` bootstrap（不可用时 warn 降级）；ContactLookup 当前由调用方按需 `new(msg_center, owner)` 构造，未塞进 AgentRuntime 是因为 owner 会随 agent_did 变化
 - 工程脚手架：`cargo test -p opendan --lib` **44/44 全绿**（新增覆盖 outbound 字段 round-trip、event_subscriptions / workspace_id 字段持久化、session_event_pump 路由 + dedup、local_workspace CRUD / 校验、contact TTL、task_dispatch tag 常量等）
 
+**§9.2 残项（4 层 bin overlay 真接）已落地（2026-05-14 第 4 轮，PATH 拼接 + Session 渲染模型）：**
+
+- **(a) upstream `agent_tool::BinOverlayConfig` 扩成多层**：`bin_dir: Option<PathBuf>` → `layers: Vec<PathBuf>`，新增 `BinOverlayConfig::layered([...])` 构造器；`prepare_overlay_env` 反向遍历 layers 用同一个 `prepend_path_entry` 拼，`layers[0]` 落在最前。`local(path)` 向后兼容（包成 1-layer），`bin_overlay_shadows_system_path` 现有测试无须改；新增 `overlay_env_stacks_multiple_layers_in_priority_order` 覆盖 4-layer 顺序。
+- **(b) opendan 路径切换 + agent_id 透传**：
+  - 新增 [paths.rs](src/frame/opendan/src/paths.rs)：`buckyos_root()` / `buckyos_tools_root()` / `system_bin_dir()` / `runtime_bin_dir()` / `session_exec_bin_dir(agent_id, session_id)` 单一来源；`BUCKYOS_ROOT` env override + per-OS dev fallback（Linux `/opt/buckyos` / macOS `$HOME/.buckyos` / 其它 `/tmp/buckyos`），`sanitize_path_segment` 把任意 id 收敛到 `[A-Za-z0-9_-]`。
+  - `SessionBinLayout` 重写：`compute(agent_id, session_id, agent_root)` 同时算 System / Runtime / Agent / Session 四层；`ensure_dirs()` 只 mkdir 后三层（System 由 BuckyOS 镜像预置）；`to_overlay()` 输出 `BinOverlayConfig::layered([session, agent, runtime, system])` 直接对应 §2 优先级。
+  - `AgentLayout` 加 `tool_plans_dir = <agent_root>/tool_plans/` + `tool_plan_path(name)`；`AIAgent::agent_id()` accessor（优先 `agent_did`，回落 `agent_name`，过 sanitize），`build_session_tools` 签名换成 `SessionToolsBuild { workspace_root, session_dir, agent_root, agent_id, session_id, bin_renderer }` 结构体。
+- **(c) Session Exec Bin 渲染器**：新增 [tool_plan.rs](src/frame/opendan/src/tool_plan.rs)
+  - `ToolPlanToml` + `PlanMode { Deny, Allow }` 解析；`ResolvedToolPlan::resolve(plan_name, plan, universe)` 把 plan + bin 宇宙翻成最终 tombstone 列表（deny 模式取列表与宇宙交集；allow 模式取宇宙差集）。`scan_bin_universe([dirs])` 扫 System / Runtime / Agent 三层（顶层 + 一层子目录，按 §1.5 hot-path 约定）。
+  - `SessionBinRenderer { session_bin, agent_tools, plan_name, resolved, last_sync_mtime_ns, linked }`：
+    - `render_initial(session_dir)`：mkdir session_bin → force `apply_snapshot`（hard-link agent_tools 顶层 + 一层子目录的可执行文件到 session_bin，跨 fs / 非 Unix 退 `fs::copy`） → 写 tombstone stub 文件（shebang，stderr 双行 JSON + 人类可读，`exit 127`） → 把 `ResolvedToolPlan` 序列化到 `<session_dir>/tool_plan.resolved.toml` 供操作员审计。
+    - `maybe_resync()`：`snapshot_agent_tools` 算 max_mtime_ns；不大于上次同步 + 入口非空就直接跳过；否则 `apply_snapshot` re-link（不在 snapshot 的旧 link 自动 rm）+ 重新落 tombstone。
+    - tombstone 永远 last-writer-wins：`apply_snapshot` 主动跳过和 tombstone 同名的 agent_tools 文件，再交给 `write_tombstones` 写脚本。
+  - `TmuxBashRunner::with_bin_renderer(renderer)` builder：`run()` 起手调 `renderer.maybe_resync()`，失败仅 warn（不阻 exec_bash）。
+  - `BehaviorCfg` 新增可选字段 `tool_plan: String`（默认空 = 无 tombstone）。
+  - `AIAgent::build_session_bin_renderer(agent_id, session_id, behavior_name)`：load 行为 cfg 取 `tool_plan` 名 → load `<agent_root>/tool_plans/<name>.toml` → 扫宇宙 → resolve → 包成 `Arc<SessionBinRenderer>`；行为 cfg / 计划文件缺失全部 warn + 空计划兜底（仍做 Agent tools 同步）。
+  - 集成测覆盖：`overlay_env_stacks_multiple_layers_in_priority_order`（agent_tool 75/75 全绿）、`session_bin_layout_overlay_has_four_layers`、`plan_deny_mode_picks_only_universe_intersect`、`plan_allow_mode_tombstones_everything_else`、`write_tombstone_creates_executable_script`、`render_initial_links_agent_tools_and_writes_resolved_plan`、`paths::buckyos_root_layout_honors_env_override`（opendan 69/69 全绿）。
+- **已知尾巴**：
+  - behavior 切换时（normal / independent / fork）目前不触发 tool plan 重算——`SessionBinRenderer` 是 session 创建时一次性绑定的；可在 `agent_session::switch_behavior` 里加一个回调让 `AIAgent` 重新算 `Arc<SessionBinRenderer>` 并 hot-swap 进 `TmuxBashRunner`。等真的有 behavior 间 tool plan 差异的用例再回看。
+  - System Bin 在 `ensure_dirs` 不 mkdir（生产容器里 `/opt/buckyos/tools/store/` 由镜像预置）；开发机 BUCKYOS_ROOT 指到任意目录时也照样 mkdir 不到，PATH 里挂个不存在的目录无害（shell 跳过）。
+
 **仍未完成：**
-- §9.2 残项：`OpendanToolAdapter` 真正的 4 层 bin 合成。路径契约已由 [paios 容器需求.md §9](paios容器需求.md) 锁定，按 paios 路径落地即可：
-  - **System Bin**：`/opt/buckyos/tools/store/` — 全局只读，所有 App 共享（rx）
-  - **Runtime Bin**：`/opt/buckyos/tools/bin/` — App-scoped symlink view，按本 App 授权从 `store/` + ExtTool Volume 渲染（rx）。第一版只需在 schema 上预留这一层，真正承载（ExtTool Volume）由后续 Crafter 镜像产出
-  - **Agent Bin**：Agent Root 内的 Agent 自写脚本卷，落在 Instance Volume（rwx 给 Agent）。升级合并按 paios §7.4 R-15：上游新文件追加 / 本地未改的可被覆盖 / 本地已改的保留
-  - **Session Bin**：`/opt/buckyos/tools/$agentid/$sessionid/` — rwx，session 启动时按权限创建。**当前 [agent_bash.rs](src/frame/opendan/src/agent_bash.rs) `SessionBinLayout` 把 session 层放在 `session/<sid>/.tool`，需要切到 paios 路径**（paios 文档显式标注"和现有实现对比，主要是修改了 sessions/<id>/.tool 的位置"）
-  - **PATH overlay 顺序**：Session > Agent > Runtime > System（前者优先，同名覆盖）；权限校验按 paios §9 权限矩阵
-  - 实施前置：upstream `BinOverlayConfig` 当前是单 `bin_dir`，需扩展成有序多层（或换成 path list + 每层权限属性）；同时 `SessionBinLayout` 需要拿到 `BUCKYOS_ROOT` + `agent_id` 才能算出 paios 路径
+- ~~§9.2 残项~~（已落地，见上）。设计要点保留如下供后续 behavior-switch tool plan 重算 / Runtime Bin 真接（ExtTool Volume）/ Crafter 镜像接入参考：
+  - **路径契约**（来自 [paios 容器需求.md §9](paios容器需求.md)）：
+    - System Bin：`<buckyos_root>/tools/store/` — rx，全 App 共享
+    - Runtime Bin：`<buckyos_root>/tools/bin/` — rx，App-scoped 渲染（第一版可空目录占位，等 ExtTool Volume 接入）
+    - Agent Bin：Agent Root 内的 `tools/`（Instance Volume，rwx）
+    - Session Exec Bin：`<buckyos_root>/tools/<agent_id>/<session_id>/` — rwx，session 启动时渲染
+  - **三件事要做**：
+    1. **upstream `BinOverlayConfig` 改成多层 PATH 列表**（最简实现：`Vec<PathBuf>` 按顺序前缀拼 PATH；`prepare_overlay_env` 顺序遍历）。无需引入每层权限属性——权限由 OS 文件系统层做。
+    2. **Session Exec Bin 渲染**（在 opendan，启动器视角，session 创建时跑一次）：
+       - 把 Agent Root FS `/tools/` 的内容拷贝（或硬链接 + COW）到 Session Exec Bin。
+       - 读 session 自带的 plan 文件，按规则在 Session Exec Bin 写 stub wrapper 屏蔽下层同名工具（墓碑效应）。
+    3. **`SessionBinLayout` 路径计算** 改成基于 `<buckyos_root>` + `agent_id` + `session_id`。
+  - **接口前提**：
+    - `agent_id` 是 `AIAgent` 的属性（类比 paios 里的 app_id），`AIAgent::ensure_session_inner` 调 `build_session_tools` 时直接传即可。
+    - `<buckyos_root>` 先写死一个 `fn buckyos_tools_root() -> PathBuf` helper（默认 `/opt/buckyos/tools`，可被 `BUCKYOS_ROOT` 环境变量覆盖给开发机用）；等 BuckyOS 那边整理出统一的路径文档后再回头切到正式 API。
+  - **已决设计要点**（2026-05-14 第 4 轮）：
+    1. **plan 文件格式 / 位置 / 引用方式**：
+       - 格式：TOML，与 behavior config / Cargo 一致，不引新格式。
+       - 位置：`<agent_root>/tool_plans/<plan_name>.toml`——Agent 层（不是 session），plan 是 owner/operator 的策略而非 session 临时决定；多个 plan 可共存。
+       - 引用：Behavior config 里新增可选字段 `tool_plan = "<plan_name>"`（缺省 = 全部可见）。不同 behavior 可挂不同策略（UI 模式宽松，code-exec worker 严格）。
+       - schema：
+         ```toml
+         mode = "deny"     # "deny" | "allow"，默认 "deny"
+         [[deny]]
+         name   = "rm"
+         reason = "use trash-cli instead"
+         # mode = "allow" 时改用 [[allow]]，未列的工具一律墓碑
+         ```
+       - 解析产物：session 启动时把"实际生效的合成策略"落到 `<session_dir>/tool_plan.resolved.toml`，跟 tmux pane scrollback 一起给操作员事后审计用。
+    2. **Agent tools 拷贝时机**：**每次 `exec_bash` 起手做一次 mtime 同步检查**（跟 §1.5.6 现有约定一致：`exec_bash` 调用 head 做 mtime walk，有改动才 re-render Session Exec Bin）。
+       - 动机：用户/operator 手工往 `<agent_root>/tools/` 拷新工具后，**不重启 session 也能在下一次 `exec_bash` 立即可用**。
+       - 成本理由：两次 `exec_bash` 之间至少隔一次 LLM 推理（秒级以上），多一次 mtime walk（毫秒级）成本可忽略；不需要 inotify watch / 后台同步线程。
+       - 不暴露显式 `reload_session_tools` 工具——同步是隐式的，LLM 不必感知。
+       - 拷贝形式：Linux 容器内用 hard link（零空间成本 + 写时自然 COW，session 改了文件不污染 Agent 持久层）；跨 fs / 非 Linux 退回 `copy_if_changed`。
+       - 拷贝范围：只拷可执行 + 顶层 + 一层子目录，与 §1.5 hot-path 约定一致。
+    3. **墓碑 stub 形态**：shebang 脚本，stderr 双行（JSON + 人类可读），exit 127。
+       ```sh
+       #!/bin/sh
+       # auto-generated by opendan tool plan renderer
+       echo '{"blocked_by":"tool_plan","tool":"rm","reason":"use trash-cli instead","plan":"minimal_safe"}' >&2
+       echo 'rm is blocked by tool plan: use trash-cli instead' >&2
+       exit 127
+       ```
+       - exit 127 是 shell "command not found" 标准码，做错误判断的脚本不用改。
+       - JSON 给 LLM 解析（它能从 `reason` 学到换什么工具），第二行给 tmux 审计的人。
+    4. **跨平台开发机**：`buckyos_root()` helper 集中所有路径，单一 `BUCKYOS_ROOT` 环境变量 + per-OS dev fallback。
+       ```rust
+       pub fn buckyos_root() -> PathBuf {
+           if let Ok(v) = std::env::var("BUCKYOS_ROOT") { return PathBuf::from(v); }
+           #[cfg(target_os = "linux")]   { PathBuf::from("/opt/buckyos") }
+           #[cfg(target_os = "macos")]   {
+               std::env::var_os("HOME")
+                   .map(|h| PathBuf::from(h).join(".buckyos"))
+                   .unwrap_or_else(|| PathBuf::from("/tmp/buckyos"))
+           }
+           #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+           { PathBuf::from("/tmp/buckyos") }
+       }
+       pub fn buckyos_tools_root() -> PathBuf { buckyos_root().join("tools") }
+       ```
+       生产容器里始终 `export BUCKYOS_ROOT=/opt/buckyos`；开发机什么都不设也能跑。等 BuckyOS 路径文档落地后只改这一处。
+    5. **Runtime Bin**：**空目录占位**——`<buckyos_root>/tools/bin/` 在 session 启动时 mkdir 一份，照样进 PATH。
+       - 第一版没人往里写东西也无害；ExtTool Volume / Crafter 接入时只需往这层塞 symlink，无需改 overlay PATH 拼接逻辑。
+       - 把"一处麻烦"留给未来的自己 = 反模式，避免。
+  - **当前实现状态**：[agent_bash.rs](src/frame/opendan/src/agent_bash.rs) 的 `SessionBinLayout` 还是单层 `<session_dir>/bin`，`BinOverlayConfig` 还是 upstream 单 `bin_dir`，三件事都没动。tmux runner 已落地不影响 overlay 工程项。
 - §9.4 残项（switch_mode 三模式 + fork 原语 2026-05-14 第 3 轮已落地，下面是更窄的尾巴）：
   - `try_create_worksession` 子上下文 prompt 渲染补全：注入"现有 worksession 列表"+ "parent recent history" + "可用 workspace 列表"——目前 sub-system 只放了 reason 一行，sub-LLM 还做不出"复用 vs 新建 workspace"的合理判断
   - **waist 真接 `forbid_next_behavior` flag**：fork 语义的硬约束，目前是 `RequestOverrides` 上的占位字段，下一轮在 `llm_context::behavior_loop` 看 flag 时硬忽略 LLM 给出的 `<next_behavior>`
@@ -1101,7 +1188,7 @@ forward_msg { target_worksession_id: String }
 1. **waist 接 `forbid_next_behavior` flag**（独立 PR，小）— `llm_context::behavior_loop` 在解析 `<next_behavior>` 之前看 flag；同时把 `RequestOverrides` + `apply_overrides_to_snapshot` 提案到 llm_context crate，opendan helper 退化为薄胶水。
 2. **`try_create_worksession` sub-prompt 补全**（独立 PR，中）— 在 `worksession_tools.rs::TryCreateWorksessionTool::execute` 里渲染 worksession list（来自 `agent.sessions` 扫描）+ parent recent chat history（从 parent_snap.state.accumulated 抽 user/assistant tail）+ 可用 workspace 列表（来自 `agent.workspaces.list()`）注入 sub-system；同时 `forward_msg` 把"本轮 origin user 消息"句柄塞进 ToolCtx 让 tool 自取。
 3. **§9.4 ContextLimitReached 重写 + 环境感知 message**（独立 PR，中）— 集中在 `agent_session::handle_outcome` / `build_or_resume` 周围；前者实现 `ResumeFill::RewrittenHistory` 续跑、后者补 "环境感知 message"（auto-recall memory / workspace 状态 / 事件 diff）。
-4. **4 层 bin overlay 实施**（§9.2 残项，大）— 按 [paios §9](paios容器需求.md) 路径契约扩展 upstream `BinOverlayConfig` 到多层有序列表，迁移 `SessionBinLayout` 到 `/opt/buckyos/tools/<agent>/<session>/`，预留 Runtime Bin 接口给 ExtTool Volume。
+4. ~~**4 层 bin overlay 实施**（§9.2 残项）~~ — 已落地（2026-05-14 第 4 轮）。(a) 多层 `BinOverlayConfig`、(b) `paths::buckyos_root()` + `SessionBinLayout::compute(agent_id, session_id, agent_root)` + `SessionToolsBuild`、(c) `SessionBinRenderer`（hard-link Agent tools + mtime resync + tool plan tombstones + `tool_plan.resolved.toml` 审计）全部就位，agent_tool 75/75 + opendan 69/69 全绿。下一步是 behavior 切换时让 `SessionBinRenderer` hot-swap（目前 session 启动绑定一次）+ Runtime Bin 真接（ExtTool Volume / Crafter）。
 
 每个阶段独立编译 + 跑 `cargo test`。当前 opendan 已可：
 - 从 msg-center 拉 msg → `Inbound::Msg` → UI session → `enqueue_pending` 落盘 → ack `Readed` → worker 在合适状态下走 `exec_bash` + 读文件 → outcome `Done` 时把回复 `post_send` 回原 peer DID（用 record 上的 `route.tunnel_did` 当 `preferred_tunnel`）

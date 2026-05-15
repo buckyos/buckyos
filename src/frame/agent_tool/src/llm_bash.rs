@@ -12,7 +12,7 @@
 //! node / container runners later.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -87,38 +87,53 @@ impl BashTarget {
     }
 }
 
-/// PATH overlay: prepends `bin_dir` to `PATH` when `enabled`.
+/// PATH overlay: an ordered list of bin directories prepended to `PATH`.
 ///
-/// One overlay slot is enough for the current scope. If a future need
-/// to split "agent-managed" vs "user-owned" symlink trees shows up, it
-/// can be added inside [`prepare_overlay_env`] without changing the
-/// outer config surface.
+/// `layers[0]` has the highest precedence (entries earlier in the vector
+/// win on PATH lookup). One slot is sufficient for the legacy single-bin
+/// callers (`BinOverlayConfig::local`); the multi-layer form is used by
+/// the §2 4-layer overlay (Session > Agent > Runtime > System).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BinOverlayConfig {
-    pub bin_dir: Option<PathBuf>,
+    pub layers: Vec<PathBuf>,
     pub enabled: bool,
 }
 
 impl BinOverlayConfig {
     pub fn disabled() -> Self {
         Self {
-            bin_dir: None,
+            layers: Vec::new(),
             enabled: false,
         }
     }
 
     pub fn local(bin_dir: impl Into<PathBuf>) -> Self {
         Self {
-            bin_dir: Some(bin_dir.into()),
+            layers: vec![bin_dir.into()],
             enabled: true,
         }
     }
 
-    fn active_dir(&self) -> Option<&Path> {
-        if !self.enabled {
-            return None;
+    /// Stacked overlay: layer at index 0 has the highest priority, layer at
+    /// the end has the lowest (callers pass `[session, agent, runtime, system]`
+    /// for the §2 four-layer model).
+    pub fn layered<I, P>(layers: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        let layers: Vec<PathBuf> = layers.into_iter().map(Into::into).collect();
+        Self {
+            enabled: !layers.is_empty(),
+            layers,
         }
-        self.bin_dir.as_deref()
+    }
+
+    fn active_layers(&self) -> &[PathBuf] {
+        if !self.enabled {
+            return &[];
+        }
+        &self.layers
     }
 }
 
@@ -215,10 +230,10 @@ pub trait BashRunner: Send + Sync {
     ) -> Result<BashRunOutput, AgentToolError>;
 }
 
-/// Build the env list applied to the spawned shell. Currently only
-/// prepends the overlay `bin_dir` to `PATH`; user-supplied env vars are
-/// merged on top. Split into its own helper so the day-2 "agent-managed
-/// vs user-owned" overlay refactor only touches this function.
+/// Build the env list applied to the spawned shell. Prepends each overlay
+/// layer to `PATH` in order so `layers[0]` ends up at the very front;
+/// user-supplied env vars are merged on top. Split into its own helper so
+/// the day-2 overlay refactor only touches this function.
 pub fn prepare_overlay_env(
     overlay: &BinOverlayConfig,
     user_env: &[(String, String)],
@@ -228,14 +243,22 @@ pub fn prepare_overlay_env(
         merged.insert(key.clone(), value.clone());
     }
 
-    if let Some(bin_dir) = overlay.active_dir() {
+    let active = overlay.active_layers();
+    if !active.is_empty() {
         let base_path = merged
             .get("PATH")
             .cloned()
             .or_else(|| std::env::var("PATH").ok())
             .unwrap_or_default();
-        let entry = bin_dir.to_string_lossy().to_string();
-        merged.insert("PATH".to_string(), prepend_path_entry(&entry, &base_path));
+        // Walk layers from lowest precedence (end) to highest (front) so each
+        // `prepend_path_entry` call leaves the higher-priority layer at the
+        // very front of the resulting PATH string.
+        let mut path = base_path;
+        for layer in active.iter().rev() {
+            let entry = layer.to_string_lossy().to_string();
+            path = prepend_path_entry(&entry, &path);
+        }
+        merged.insert("PATH".to_string(), path);
     }
 
     merged.into_iter().collect()
@@ -637,6 +660,7 @@ mod tests {
     use super::*;
 
     use std::fs;
+    use std::path::Path;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -879,5 +903,20 @@ mod tests {
             .map(|(_, v)| v.clone())
             .unwrap();
         assert_eq!(path2, "/p");
+    }
+
+    #[test]
+    fn overlay_env_stacks_multiple_layers_in_priority_order() {
+        let overlay = BinOverlayConfig::layered(["/a/session", "/a/agent", "/a/runtime", "/a/system"]);
+        let env = prepare_overlay_env(
+            &overlay,
+            &[("PATH".to_string(), "/usr/bin:/bin".to_string())],
+        );
+        let path = env
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert_eq!(path, "/a/session:/a/agent:/a/runtime:/a/system:/usr/bin:/bin");
     }
 }

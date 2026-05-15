@@ -27,7 +27,7 @@ use anyhow::{anyhow, Result};
 use log::{info, warn};
 use tokio::sync::{mpsc, Mutex, Notify};
 
-use crate::agent_bash::build_session_tools;
+use crate::agent_bash::{build_session_tools, SessionBinLayout, SessionToolsBuild};
 use crate::agent_config::AgentConfig;
 use crate::agent_session::{
     AgentSession, AgentSessionBuild, PendingInput, SessionKind, SessionMeta, SessionReply,
@@ -37,7 +37,9 @@ use crate::ai_runtime::AgentRuntime;
 use crate::contact::ContactLookup;
 use crate::local_workspace::LocalWorkspaceManager;
 use crate::msg_center_pump::{self, PumpConfig};
+use crate::paths;
 use crate::session_event_pump::SessionEventPump;
+use crate::tool_plan::{self, ResolvedToolPlan, SessionBinRenderer, ToolPlanToml};
 
 /// Reason string we tag msg-center ack updates with so audit logs can tell
 /// "the opendan agent picked this up" apart from other consumers.
@@ -173,6 +175,88 @@ impl AIAgent {
     /// hold this handle.
     pub fn workspaces(&self) -> &LocalWorkspaceManager {
         &self.workspaces
+    }
+
+    /// Filesystem-safe identifier used wherever we splice the agent into a
+    /// path (§9.2 4-layer overlay's `<agent_id>` segment). Derived from
+    /// `agent_did` when present (canonical, stable across renames) and
+    /// otherwise from the human-friendly `agent_name`.
+    pub fn agent_id(&self) -> String {
+        let raw = if !self.config.toml.agent_did.trim().is_empty() {
+            self.config.toml.agent_did.as_str()
+        } else {
+            self.agent_name.as_str()
+        };
+        paths::sanitize_path_segment(raw)
+    }
+
+    /// Build a Session Exec Bin renderer for `behavior_name`. Returns
+    /// `Some(renderer)` whenever we have *any* lower-layer state to manage
+    /// (Agent tools to sync or a tool plan to enforce). The renderer is
+    /// then consulted by `TmuxBashRunner` on every `exec_bash` call.
+    ///
+    /// Missing behavior config / missing tool plan files are downgraded
+    /// to warnings + an empty-plan renderer so a misconfigured behavior
+    /// still gets Agent tools sync and doesn't refuse to start.
+    fn build_session_bin_renderer(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        behavior_name: &str,
+    ) -> Option<Arc<SessionBinRenderer>> {
+        let layout =
+            SessionBinLayout::compute(agent_id, session_id, &self.config.layout.root);
+
+        // Look up the behavior's tool_plan; tolerate a missing behavior
+        // config because `builtin_ui_default()` is used as a fallback in
+        // the session worker.
+        let plan_name = match self.config.load_behavior(behavior_name) {
+            Ok(cfg) => cfg.tool_plan,
+            Err(err) => {
+                warn!(
+                    "opendan.agent[{}]: load behavior `{}` for tool plan failed (using empty plan): {err}",
+                    self.agent_name, behavior_name
+                );
+                String::new()
+            }
+        };
+
+        let (plan_name, plan_toml) = if plan_name.trim().is_empty() {
+            (String::new(), ToolPlanToml::default())
+        } else {
+            let path = self.config.layout.tool_plan_path(&plan_name);
+            match ToolPlanToml::load_from_file(&path) {
+                Ok(p) => (plan_name, p),
+                Err(err) => {
+                    warn!(
+                        "opendan.agent[{}]: load tool plan `{}` failed (using empty plan): {err}",
+                        self.agent_name, plan_name
+                    );
+                    (plan_name, ToolPlanToml::default())
+                }
+            }
+        };
+
+        let universe = tool_plan::scan_bin_universe([
+            &layout.system_bin,
+            &layout.runtime_bin,
+            &layout.agent_bin,
+        ]);
+        let resolved = ResolvedToolPlan::resolve(
+            if plan_name.is_empty() { "(none)" } else { &plan_name },
+            &plan_toml,
+            &universe,
+        );
+        Some(Arc::new(SessionBinRenderer::new(
+            layout.session_bin.clone(),
+            layout.agent_bin.clone(),
+            if plan_name.is_empty() {
+                "(none)".to_string()
+            } else {
+                plan_name
+            },
+            resolved,
+        )))
     }
 
     /// Producer-end clone of the inbox. Multiple callers may keep clones.
@@ -509,8 +593,26 @@ impl AIAgent {
         let workspace_root = self.workspaces.workspace_dir(&workspace_rec.workspace_id);
         let _ = std::fs::create_dir_all(&session_dir);
 
-        let tools = build_session_tools(&workspace_root, &session_dir)
-            .map_err(|err| anyhow!("build session tools: {err}"))?;
+        // Resolve the behavior name up-front so we can pull its tool plan
+        // before building the tool manager. (`behavior_hint` wins so a
+        // restoring session keeps the same behavior; otherwise fall to the
+        // kind-specific default.)
+        let behavior_name = behavior_hint.unwrap_or_else(|| match kind {
+            SessionKind::Ui => self.config.default_ui_behavior().to_string(),
+            SessionKind::Work => self.config.default_work_behavior().to_string(),
+        });
+        let agent_id = self.agent_id();
+        let bin_renderer = self.build_session_bin_renderer(&agent_id, &session_id, &behavior_name);
+
+        let tools = build_session_tools(SessionToolsBuild {
+            workspace_root: workspace_root.clone(),
+            session_dir: session_dir.clone(),
+            agent_root: self.config.layout.root.clone(),
+            agent_id: agent_id.clone(),
+            session_id: session_id.clone(),
+            bin_renderer,
+        })
+        .map_err(|err| anyhow!("build session tools: {err}"))?;
         // Worksession control tools (create_worksession / forward_msg) are
         // registered on every session — visibility is gated by the
         // behavior whitelist downstream.
@@ -519,10 +621,6 @@ impl AIAgent {
             Arc::downgrade(&self),
             &session_id,
         );
-        let behavior_name = behavior_hint.unwrap_or_else(|| match kind {
-            SessionKind::Ui => self.config.default_ui_behavior().to_string(),
-            SessionKind::Work => self.config.default_work_behavior().to_string(),
-        });
 
         let (reply_tx, mut reply_rx) = mpsc::channel(64);
         let (session, inbox_rx) = AgentSession::new(AgentSessionBuild {

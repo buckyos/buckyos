@@ -143,6 +143,13 @@ pub struct BehaviorCfg {
     pub system_prompt_template: String,
     pub tool_whitelist: Vec<String>,
     pub approval_required: Vec<String>,
+    /// Optional tool plan name (§9.2) — resolves to
+    /// `<agent_root>/tool_plans/<name>.toml`. Empty ⇒ no tombstones.
+    /// Behavior config and tool plan are decoupled on purpose: the
+    /// whitelist gates *visibility to the LLM*, the tool plan gates
+    /// *what gets executed when an LLM-issued bash command happens to
+    /// invoke a name from the lower bin layers*. Both are needed.
+    pub tool_plan: String,
     pub mode: BehaviorMode,
     pub parser: String,
     pub renderer: String,
@@ -164,6 +171,7 @@ impl Default for BehaviorCfg {
             system_prompt_template: String::new(),
             tool_whitelist: Vec::new(),
             approval_required: Vec::new(),
+            tool_plan: String::new(),
             mode: BehaviorMode::default(),
             parser: "xml".to_string(),
             renderer: "xml".to_string(),

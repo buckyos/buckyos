@@ -25,6 +25,14 @@ pub mod llm_context_helper;
 // §9 step 5 — UI-session default tool wiring; exec_bash + session /bin scripts.
 pub mod agent_bash;
 
+// §9.2 — single source of truth for the BuckyOS path layout (4 bin layers,
+//        agent_id / session_id splicing, BUCKYOS_ROOT env-driven dev fallback).
+pub mod paths;
+
+// §9.2 — tool-plan loader + Session Exec Bin renderer (Agent tools hard-link
+//        + tombstone stubs, mtime-driven resync, plan resolution dump).
+pub mod tool_plan;
+
 // §9 step 6 — AIAgent::run, msg/event dispatch, session restoration, subscriptions.
 pub mod agent;
 

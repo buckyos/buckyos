@@ -27,6 +27,7 @@ pub struct AgentLayout {
     pub memory_dir: PathBuf,
     pub notepads_dir: PathBuf,
     pub tools_dir: PathBuf,
+    pub tool_plans_dir: PathBuf,
     pub skills_dir: PathBuf,
     pub archive_dir: PathBuf,
 }
@@ -40,6 +41,7 @@ impl AgentLayout {
             memory_dir: root.join("memory"),
             notepads_dir: root.join("notepads"),
             tools_dir: root.join("tools"),
+            tool_plans_dir: root.join("tool_plans"),
             skills_dir: root.join("skills"),
             archive_dir: root.join("archive"),
             root,
@@ -48,6 +50,10 @@ impl AgentLayout {
 
     pub fn behavior_path(&self, name: &str) -> PathBuf {
         self.behaviors_dir.join(format!("{name}.toml"))
+    }
+
+    pub fn tool_plan_path(&self, name: &str) -> PathBuf {
+        self.tool_plans_dir.join(format!("{name}.toml"))
     }
 
     pub fn session_dir(&self, session_id: &str) -> PathBuf {

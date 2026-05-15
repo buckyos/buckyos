@@ -2,18 +2,20 @@
 //!
 //! Registers the built-in tool catalogue described in §2 / §3 of the notepad
 //! onto an `AgentToolManager`:
-//!   - `exec_bash` (with overlay PATH pointing at the session bin) — backed by
-//!     a per-session tmux runner so each AgentSession owns one long-lived
-//!     `od_<sid>` tmux session, and `exec_bash` calls land in that pane
+//!   - `exec_bash` (with overlay PATH stacked across the §2 4-layer model:
+//!     Session > Agent > Runtime > System) — backed by a per-session tmux
+//!     runner so each AgentSession owns one long-lived `od_<sid>` tmux
+//!     session, and `exec_bash` calls land in that pane
 //!   - `read_file` / `write_file` / `edit_file`
 //!   - `glob` / `grep`
 //!
-//! 4-layer overlay (System / Runtime / Agent / Session) is **stubbed** in MVP:
-//! the `BinOverlayConfig` in upstream `agent_tool` only carries a single
-//! `bin_dir`. We expose a single "session bin" directory which the agent layer
-//! is free to populate by symlinking + scripts from the other three layers at
-//! session start. Promoting this to a true 4-layer overlay only requires
-//! extending [`BinOverlayConfig`] upstream — no caller-side changes here.
+//! 4-layer overlay (§2 of NewOpenDANRuntime.md, "渲染规则 2026-05-14 修订"):
+//! System / Runtime / Agent are rendered-free — each is just a bin directory
+//! prepended to PATH in priority order. Session Exec Bin is the only
+//! rendered layer: at session boot we hard-link Agent tools into it and
+//! write tombstone stub scripts for tools blocked by the behavior's tool
+//! plan; every `exec_bash` call runs an opportunistic mtime resync so live
+//! edits to `<agent_root>/tools/` show up on the next LLM step.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,6 +33,9 @@ use agent_tool::{
     BinOverlayConfig, EditFileTool, ExecBashTool, FileToolConfig, GlobTool, GrepTool,
     LlmBashConfig, NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, WriteFileTool,
 };
+
+use crate::paths;
+use crate::tool_plan::SessionBinRenderer;
 
 /// Tmux session name prefix. Used both to namespace per-agent-session panes and
 /// to identify our sessions during GC sweeps (`tmux list-sessions`).
@@ -51,44 +56,58 @@ const TMUX_GC_IDLE_SECS: u64 = 24 * 60 * 60;
 
 static EXEC_RUN_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Layout for the 4 PATH layers as described in §2 of the notepad. MVP holds
-/// only the session bin path; the runtime is responsible for populating it
-/// (symlinks to system/runtime/agent binaries + on-the-fly session scripts).
+/// Layout for the 4 PATH layers as described in §2 of the notepad. All four
+/// paths are resolved up-front against `<buckyos_root>` + `agent_id` +
+/// `session_id`; the §2 PATH precedence is encoded by [`Self::to_overlay`]
+/// returning a 4-element [`BinOverlayConfig`] in Session > Agent > Runtime >
+/// System order.
 #[derive(Debug, Clone)]
 pub struct SessionBinLayout {
-    pub system_bin: Option<PathBuf>,
-    pub runtime_bin: Option<PathBuf>,
-    pub agent_bin: Option<PathBuf>,
-    /// Live session-bin directory. The runtime creates it at session boot and
-    /// symlinks lower layers into it. Becomes the single `BinOverlayConfig.bin_dir`.
+    /// `<buckyos_root>/tools/store/` — host-shared, read-only.
+    pub system_bin: PathBuf,
+    /// `<buckyos_root>/tools/bin/` — App-scoped, read-only. Empty-dir
+    /// placeholder until the ExtTool Volume / Crafter integration lands.
+    pub runtime_bin: PathBuf,
+    /// `<agent_root>/tools/` — Agent-owned, persistent.
+    pub agent_bin: PathBuf,
+    /// `<buckyos_root>/tools/<agent_id>/<session_id>/` — rendered fresh per
+    /// session. Holds hard-linked Agent tools + tool-plan tombstones.
     pub session_bin: PathBuf,
 }
 
 impl SessionBinLayout {
-    /// Create a session-scoped layout. Defaults all higher layers to `None` —
-    /// callers that have system/runtime/agent bin paths can `set_*` afterwards.
-    pub fn for_session(session_bin: impl Into<PathBuf>) -> Self {
+    /// Compute the 4-layer layout for `(agent_id, session_id)`. The agent
+    /// root is needed for the Agent Bin layer; the other three layers
+    /// resolve from [`paths::buckyos_root`].
+    pub fn compute(agent_id: &str, session_id: &str, agent_root: &Path) -> Self {
         Self {
-            system_bin: None,
-            runtime_bin: None,
-            agent_bin: None,
-            session_bin: session_bin.into(),
+            system_bin: paths::system_bin_dir(),
+            runtime_bin: paths::runtime_bin_dir(),
+            agent_bin: agent_root.join("tools"),
+            session_bin: paths::session_exec_bin_dir(agent_id, session_id),
         }
     }
 
-    /// Stub: populate `session_bin` by symlinking the lower layers into it
-    /// (later-wins ordering: session > agent > runtime > system). MVP only
-    /// creates the directory; full symlink synthesis lands when the 4-layer
-    /// `BinOverlayConfig` upstream extension is added.
-    pub fn ensure_session_bin(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.session_bin)
+    /// Create the bin directories the runtime is allowed to own. We skip
+    /// `system_bin` (pre-provisioned by the BuckyOS image; creating it
+    /// would need root in production) and idempotently mkdir the other
+    /// three so a missing Agent root / first-boot scenario still boots.
+    pub fn ensure_dirs(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.runtime_bin)?;
+        std::fs::create_dir_all(&self.agent_bin)?;
+        std::fs::create_dir_all(&self.session_bin)?;
+        Ok(())
     }
 
-    /// Convert into the upstream `BinOverlayConfig`. Single-layer for now —
-    /// once §2's 4-layer overlay extension lands upstream this will fold the
-    /// other three layers in alongside `session_bin`.
+    /// Convert into the upstream multi-layer [`BinOverlayConfig`]. Layer
+    /// order matches §2: Session > Agent > Runtime > System.
     pub fn to_overlay(&self) -> BinOverlayConfig {
-        BinOverlayConfig::local(&self.session_bin)
+        BinOverlayConfig::layered([
+            self.session_bin.clone(),
+            self.agent_bin.clone(),
+            self.runtime_bin.clone(),
+            self.system_bin.clone(),
+        ])
     }
 }
 
@@ -134,13 +153,24 @@ pub struct TmuxBashRunner {
     /// Per-session scratch directory for wrapper scripts + stdout/stderr/exit
     /// log files. Created lazily on the first call.
     runtime_dir: PathBuf,
+    /// Optional Session Exec Bin renderer. When present the runner triggers
+    /// a cheap mtime-driven resync at the head of every `run()` so Agent
+    /// tool edits + tool-plan tombstone refreshes propagate without a
+    /// session restart. `None` in unit tests that don't need the layer.
+    bin_renderer: Option<Arc<SessionBinRenderer>>,
 }
 
 impl TmuxBashRunner {
     pub fn new(runtime_dir: impl Into<PathBuf>) -> Self {
         Self {
             runtime_dir: runtime_dir.into(),
+            bin_renderer: None,
         }
+    }
+
+    pub fn with_bin_renderer(mut self, renderer: Arc<SessionBinRenderer>) -> Self {
+        self.bin_renderer = Some(renderer);
+        self
     }
 }
 
@@ -158,6 +188,17 @@ impl BashRunner for TmuxBashRunner {
             return Err(AgentToolError::InvalidArgs(format!(
                 "unsupported exec_bash target `{value}` (only local is supported)"
             )));
+        }
+
+        // Hot-path Agent tools resync per §9.2 design point #2: cheap
+        // mtime walk picks up any new/edited tools the operator dropped
+        // into `<agent_root>/tools/` since the last run. Failure is
+        // logged but doesn't block the command — stale tool surface is
+        // better than a refused exec_bash.
+        if let Some(renderer) = self.bin_renderer.as_ref() {
+            if let Err(err) = renderer.maybe_resync() {
+                warn!("opendan.agent_bash: Session Exec Bin resync failed: {err}");
+            }
         }
 
         let started = Instant::now();
@@ -255,21 +296,43 @@ impl BashRunner for TmuxBashRunner {
     }
 }
 
+/// Inputs for [`build_session_tools`]. Bundled into a struct because the
+/// 4-layer overlay model needs more context than the original
+/// `(workspace_root, session_dir)` MVP — `agent_id` + `session_id` drive
+/// the Session Exec Bin path, `agent_root` anchors the Agent Bin layer,
+/// and `bin_renderer` (when present) wires Agent tool sync + tombstones
+/// into `exec_bash`.
+pub struct SessionToolsBuild {
+    pub workspace_root: PathBuf,
+    pub session_dir: PathBuf,
+    pub agent_root: PathBuf,
+    pub agent_id: String,
+    pub session_id: String,
+    /// Pre-resolved Session Exec Bin renderer (per the behavior's tool
+    /// plan). `None` ⇒ no tombstones and no Agent tool sync — useful in
+    /// tests that just want the file tools wired.
+    pub bin_renderer: Option<Arc<SessionBinRenderer>>,
+}
+
 /// Build a tool manager pre-populated with the §3 UI-session defaults.
-/// `session_bin` is the overlay PATH entry — the runtime is expected to
-/// have created (and optionally symlinked-into) it before this call.
-/// `bash_runtime_dir` is the per-session scratch dir for tmux wrapper
-/// scripts + exit-code marker files.
+/// `layout` defines the 4-layer PATH overlay; `bash_runtime_dir` is the
+/// per-session scratch dir for tmux wrapper scripts + exit-code marker
+/// files.
 pub fn build_default_tool_manager(
     fs_roots: FsRoots,
-    session_bin: &Path,
+    layout: &SessionBinLayout,
     bash_runtime_dir: &Path,
+    bin_renderer: Option<Arc<SessionBinRenderer>>,
 ) -> Arc<AgentToolManager> {
     let manager = AgentToolManager::new();
 
     let bash_cfg = LlmBashConfig::local_workspace(&fs_roots.workspace_root)
-        .with_overlay(BinOverlayConfig::local(session_bin));
-    let runner: Arc<dyn BashRunner> = Arc::new(TmuxBashRunner::new(bash_runtime_dir));
+        .with_overlay(layout.to_overlay());
+    let mut runner = TmuxBashRunner::new(bash_runtime_dir);
+    if let Some(renderer) = bin_renderer {
+        runner = runner.with_bin_renderer(renderer);
+    }
+    let runner: Arc<dyn BashRunner> = Arc::new(runner);
     let _ = manager.register_tool(ExecBashTool::with_runner(bash_cfg, runner));
 
     let file_cfg = fs_roots.to_file_tool_config();
@@ -283,23 +346,30 @@ pub fn build_default_tool_manager(
     Arc::new(manager)
 }
 
-/// Higher-level convenience used by `AIAgent` on session create — bundles the
-/// session bin directory creation + tool manager bootstrap. The tmux scratch
-/// dir lives next to the session bin so it gets reaped together when the
-/// session dir is cleaned.
-pub fn build_session_tools(
-    workspace_root: impl Into<PathBuf>,
-    session_dir: impl AsRef<Path>,
-) -> std::io::Result<Arc<AgentToolManager>> {
-    let session_dir = session_dir.as_ref().to_path_buf();
-    let layout = SessionBinLayout::for_session(session_dir.join("bin"));
-    layout.ensure_session_bin()?;
-    let bash_runtime_dir = session_dir.join(".runtime").join("exec_bash");
+/// Higher-level convenience used by `AIAgent` on session create — bundles
+/// the 4-layer layout computation, directory mkdir, and tool manager
+/// bootstrap. The tmux scratch dir lives under the session dir so it gets
+/// reaped with it.
+pub fn build_session_tools(build: SessionToolsBuild) -> std::io::Result<Arc<AgentToolManager>> {
+    let layout =
+        SessionBinLayout::compute(&build.agent_id, &build.session_id, &build.agent_root);
+    layout.ensure_dirs()?;
+    let bash_runtime_dir = build.session_dir.join(".runtime").join("exec_bash");
     std::fs::create_dir_all(&bash_runtime_dir)?;
+
+    // If a renderer is supplied, do the initial Agent tools link + tombstone
+    // render now so the very first `exec_bash` finds the layer populated.
+    // We propagate render errors so the agent boots cleanly or fails loudly
+    // — a half-rendered Session Exec Bin would be hard to diagnose later.
+    if let Some(renderer) = build.bin_renderer.as_ref() {
+        renderer.render_initial(&build.session_dir)?;
+    }
+
     let manager = build_default_tool_manager(
-        FsRoots::workspace_only(workspace_root),
-        &layout.session_bin,
+        FsRoots::workspace_only(&build.workspace_root).with_extra_read(&build.agent_root),
+        &layout,
         &bash_runtime_dir,
+        build.bin_renderer.clone(),
     );
     Ok(manager)
 }
@@ -693,12 +763,18 @@ mod tests {
     #[test]
     fn registers_default_tools() {
         let dir = tempdir().unwrap();
-        let manager = build_session_tools(dir.path(), dir.path().join("session"))
-            .expect("build tools");
-        // The LLM-callable subset (`has_tool` resolves through the LLM
-        // namespace). write_file / edit_file are upstream-tagged ACTION-only
-        // and intentionally not surfaced to the LLM as tool-call specs; they
-        // still resolve via `call_tool` since dispatch is namespace-agnostic.
+        // BUCKYOS_ROOT is consulted at layout-compute time; pin it under the
+        // tempdir so multiple parallel tests don't fight over /opt/buckyos.
+        let _bg = ScopedBuckyosRoot::set(dir.path());
+        let manager = build_session_tools(SessionToolsBuild {
+            workspace_root: dir.path().to_path_buf(),
+            session_dir: dir.path().join("session"),
+            agent_root: dir.path().join("agent_root"),
+            agent_id: "test-agent".to_string(),
+            session_id: format!("s_{}", now_ms()),
+            bin_renderer: None,
+        })
+        .expect("build tools");
         for name in ["exec_bash", "read_file", "Glob", "Grep"] {
             assert!(manager.has_tool(name), "tool {name} not registered");
         }
@@ -711,13 +787,46 @@ mod tests {
     }
 
     #[test]
-    fn session_bin_dir_created() {
+    fn session_bin_layout_overlay_has_four_layers() {
         let dir = tempdir().unwrap();
-        let layout = SessionBinLayout::for_session(dir.path().join("bin"));
-        layout.ensure_session_bin().unwrap();
+        let _bg = ScopedBuckyosRoot::set(dir.path());
+        let layout =
+            SessionBinLayout::compute("agent-1", "ses-1", &dir.path().join("agent_root"));
+        layout.ensure_dirs().unwrap();
+        assert!(layout.runtime_bin.exists());
+        assert!(layout.agent_bin.exists());
         assert!(layout.session_bin.exists());
         let overlay = layout.to_overlay();
         assert!(overlay.enabled);
+        assert_eq!(overlay.layers.len(), 4);
+        assert_eq!(overlay.layers[0], layout.session_bin);
+        assert_eq!(overlay.layers[1], layout.agent_bin);
+        assert_eq!(overlay.layers[2], layout.runtime_bin);
+        assert_eq!(overlay.layers[3], layout.system_bin);
+    }
+
+    /// Test guard: pins `BUCKYOS_ROOT` for the lifetime of the scope so the
+    /// layout helpers point at a unique tempdir, and restores the previous
+    /// value on drop. Use as `let _g = ScopedBuckyosRoot::set(...)`.
+    struct ScopedBuckyosRoot {
+        prev: Option<String>,
+    }
+
+    impl ScopedBuckyosRoot {
+        fn set(path: &Path) -> Self {
+            let prev = std::env::var("BUCKYOS_ROOT").ok();
+            std::env::set_var("BUCKYOS_ROOT", path);
+            Self { prev }
+        }
+    }
+
+    impl Drop for ScopedBuckyosRoot {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(p) => std::env::set_var("BUCKYOS_ROOT", p),
+                None => std::env::remove_var("BUCKYOS_ROOT"),
+            }
+        }
     }
 
     #[test]
