@@ -21,6 +21,27 @@
    - 落盘成功 → 立刻 `update_record_state(Readed)` ack 给 msg-center
    - 这条 invariant 决定了 pump / dispatcher / session 三方的分工（见 §4 伪代码）。
 
+## 运行时部署模型（前置假设）
+
+整套设计建立在下面这条"数据 / 运行时"分离上：
+
+| 维度 | AgentRootFS（数据） | AgentRuntime（执行） |
+|------|--------------------|--------------------|
+| 形态 | 宿主机普通文件系统目录 | Linux Docker 容器 |
+| 位置 | `/opt/buckyos/data/home/$userid/.local/share/$agentid/`（Instance Volume，宿主机视角） | 容器 mount Instance Volume + 临时卷 |
+| OS 跨度 | Windows / macOS / Linux 宿主机均可承载，目录结构平台无关 | **始终 Linux**（bash + tmux + POSIX symlink 是刚性依赖） |
+| 生命周期 | 长期持久化，跨容器重建保留 | 可随时销毁重建，无状态 |
+
+**推论**（后面章节默认成立，不再重复）：
+
+- AgentRootFS 是 Agent 的核心状态——目录结构、配置、session 数据、工具声明全部以平台无关
+  的方式存在宿主机文件系统里，可在宿主机之间原样拷贝迁移。
+- AgentRuntime 跑在 Linux 容器内，所以容器内用 POSIX symlink、`/opt/buckyos/...` 绝对路径、
+  bash wrapper script 不需要做跨平台兼容，**只要保证执行视图在容器内可重建即可**。
+- 跨平台兼容性的要求只落在 **AgentRootFS 的数据**上（容器内生成的派生物可以是纯 Linux 形态）。
+- "session 不带 `./bin/` symlink"的根因不是"宿主机可能没有 symlink"——而是"绑死 Linux 镜像
+  内部路径会让数据脱离镜像后失去意义"。即使宿主是 Linux，symlink 指向容器内路径也是反模式。
+
 ## 0. 与新 llm_context 的接口契约
 
 opendan 通过两个对象与 waist 交互：
@@ -64,8 +85,9 @@ waist 的 deps 公共依赖 + 边界客户端：
 
 ### Agent（AgentRootFS，对齐 paios 容器需求 §9）
 
-Agent Root 位置按 paios 契约：`/opt/buckyos/data/home/$userid/.local/share/$agentid/`（Instance Volume）。
-目录内布局（Agent Bin 层落在这里）：
+AgentRootFS 是**宿主机普通目录**（见"运行时部署模型"），位置按 paios 契约：
+`/opt/buckyos/data/home/$userid/.local/share/$agentid/`（宿主机视角的 Instance Volume 源路径，
+会被 mount 进 Linux 容器供 AgentRuntime 读写）。目录内布局（Agent Bin 层落在这里）：
 
 ```
 /role.md + /self.md                      # 自我介绍，进 system prompt
@@ -84,10 +106,18 @@ Agent Root 位置按 paios 契约：`/opt/buckyos/data/home/$userid/.local/share
 /sessions/$session_id/                   # session 目录（含 .meta/session.json、.meta/state.snap）
 ```
 
-**Session Bin 层不在 Agent Root 内**——按 paios 契约落在 `/opt/buckyos/tools/$agentid/$sessionid/`
-（rwx 卷，session 启动时按权限渲染）。System / Runtime Bin 层也在 `/opt/buckyos/tools/` 下
-（`store/` + `bin/`），见 §2 与 §9.2 残项。这是相对旧版 opendan 把 session-bin 放在
-`session/<sid>/.tool` 的破坏性路径变化。
+**Session Bin 层不在 Agent Root 内、也不是 session 目录里的可持久化产物**——按 paios 契约
+在容器内落在 `/opt/buckyos/tools/$agentid/$sessionid/`（rwx 卷），由启动器在 **session 启动时**
+按 manifest 动态渲染：可以用 Linux symlink 或 wrapper script 指向 paios 镜像内置工具、
+授权的 ExtTool Volume 工具、或 session 自带的临时工具。它是**可删除、可重建的派生产物**，
+容器删除后即失效。System / Runtime Bin 层同样在 `/opt/buckyos/tools/` 下（`store/` + `bin/`），
+见 §2 与 §9.2 残项。
+
+**核心原则**：session 目录只保存"工具声明 + 素材"（平台无关，归 AgentRootFS / 宿主机），
+paios Linux 容器在启动时生成"临时执行视图"（PATH 里那个 bin，归 AgentRuntime）。
+这是相对旧版 opendan 把 session-bin 放在 `session/<sid>/.tool` 且含指向镜像内部路径 symlink
+的破坏性变化——后者会污染 session 数据、绑死镜像版本、阻碍宿主机间迁移。
+（数据 / 运行时分离的前提见"运行时部署模型"。）
 
 ### Workspace（local）
 
@@ -110,10 +140,20 @@ Agent Root 位置按 paios 契约：`/opt/buckyos/data/home/$userid/.local/share
 ./.meta/state.snap     # 最新 LLMContextSnapshot（由 turn_hook 写入）
 ./.meta/state.$N.snap  # 历史快照，按 behavior 切换时归档
 ./readme.md            # session 目录说明，进环境上下文
-./bin/                 # session 级别 binary，软链接 + 脚本
+./tools/               # session 级别工具的【声明 + 素材】，两种形态自由混用：
+                       #   - 扁平：query_weather.ts / parse.sh / dedup.py 直接丢进来
+                       #   - 结构化：summarize_pdf/{tool.toml, summarize.sh, prompts/...}
+                       #   只放文本（脚本 / TOML / Schema / Prompt），禁止二进制；
+                       #   平台无关、跨 OS 可迁移，不含可执行 symlink、不指向镜像路径
+                       #   —— 详细声明规则见 §1.5
 ./report.md            # worksession 完成后的工作报告
 ./archive/             # 完整 history（包括 worklog 子集），可翻看
 ```
+
+> **不要在 session 目录里放 `./bin/`**：`./bin/` 形态的 Linux 可执行目录 + 指向 paios 镜像
+> 内部路径的 symlink 是反模式——它会让 session 数据绑死特定镜像版本、阻碍跨平台迁移、
+> 让 Agent 有机会 link 到镜像或宿主机路径绕过授权。**所有"进 PATH 的 bin"都在容器临时目录里
+> 由启动器渲染**（见 §1 Agent Root 段 / §2 Session Bin 层物理路径契约）。
 
 `pending_inputs` 是「核心原则 #3」落在持久化层的字段，存的是 `enum PendingInput { Msg, Event }`
 （见 [agent_session.rs](src/frame/opendan/src/agent_session.rs) `PendingInput`）。
@@ -124,6 +164,214 @@ Agent Root 位置按 paios 契约：`/opt/buckyos/data/home/$userid/.local/share
 **Session 类型**：
 - **UI Session**：永远活跃，每个 UI tunnel 对应一个；天然带 `try_create_worksession` / `forward_msg` 等工具
 - **Work Session**：状态机，非 END 状态下都算活跃；由 UI session 用 `try_create_worksession` 派生
+
+---
+
+## 1.5 Session Tool 渲染契约
+
+本节定义"session 工具声明 → 容器内 PATH 上可执行 bin"的完整转换。术语收敛：
+
+- **render plan**：把 session 所有授权与声明合并展开后得到的工具列表，是渲染唯一输入。
+- **执行视图**：`/opt/buckyos/tools/$agentid/$sid/` 下的物理文件（symlink + wrapper script）。
+- **逻辑视图**：`AgentToolManager::list_tool_specs()` 喂给 LLM 的工具描述列表。
+- 两个视图**同源于 render plan**，由启动器先算 plan、AgentToolManager 反向读 plan 生成 spec。
+
+### 1.5.1 数据来源（source of truth）
+
+render plan 由两类输入合成：
+
+1. **`session.json.tool_grants[]`** — session 启动时由策略层（用户授权 + Agent 默认）写入，
+   LLM 不可改。每条形如：
+   ```json
+   {
+     "id": "g_ffmpeg_v1",
+     "target_layer": "runtime",    // system | runtime | exttool
+     "target_name": "ffmpeg",
+     "exec_alias": "ffmpeg",       // 可选；执行视图下用的命令名（默认 = target_name）
+     "granted_by": "user|agent_default",
+     "granted_at": "2026-05-14T..."
+   }
+   ```
+   - `target_layer = "system"` 的 grant 可省略，启动器默认把 System Bin 全量授予所有 session。
+     需要收窄时才显式写。
+   - Agent Bin 同理默认全量授予该 Agent 名下所有 session（同 Agent 内可信）。
+2. **session 自带工具声明**，支持两种形态（启动器都识别）：
+
+   **(a) 扁平脚本形态** — 直接把脚本文件丢进 `./tools/` 即可。这是日常 prototype / 单文件脚本
+   的默认入口，LLM 写一个 `query_weather.ts` 进去就算交付了。
+   ```
+   ./tools/query_weather.ts
+   ./tools/parse_invoice.sh
+   ./tools/dedup_csv.py
+   ```
+   元数据自动推断：
+   - `name` = 文件名去扩展名（`query_weather.ts` → `query_weather`，禁止重名）
+   - `interpreter` = 按扩展名映射（`.sh|.bash` → bash，`.py` → python3，`.ts` → tsx/bun，
+     `.js|.mjs` → node，`.rb` → ruby）；扩展名无映射时按 shebang；都没有则报 warn 跳过
+   - `description` / `input_schema` = 从文件头 docblock 提取（约定 `# @description: ...` /
+     `# @input_schema: { ... }` 或顶部 `/** ... */` 块）；缺省时给 LLM 一句兜底
+     `"user-defined script: <name>"`，schema 留空（LLM 自行决定 argv / stdin JSON）
+   - `version` = 文件 mtime 哈希（仅用于 plan 缓存判定，不喂给 LLM）
+
+   **(b) 结构化形态** — 需要显式 schema / 多文件 / `ref` 类引用上层工具时用：
+   ```
+   ./tools/summarize_pdf/tool.toml
+   ./tools/summarize_pdf/summarize.sh
+   ./tools/summarize_pdf/prompts/sys.md
+   ```
+   `tool.toml` schema：
+   ```toml
+   name = "summarize_pdf"        # 必须与目录名一致
+   version = "0.1.0"
+   description = "..."            # 给 LLM 看的说明
+   input_schema = '''{...}'''     # JSON Schema 字符串，喂给 LLM
+
+   [source]
+   kind = "script"                # script | ref
+   # kind = "script" 时：
+   entry = "summarize.sh"         # 相对当前 tool 目录
+   interpreter = "bash"           # 可选；默认按 shebang
+   # kind = "ref" 时：
+   # target_layer = "agent"       # system | runtime | agent | exttool
+   # target_name  = "actual_name"
+   # grant_ref    = "g_xxx"       # target_layer ∈ {runtime, exttool} 必填，指回 tool_grants
+   ```
+
+   两种形态的共同约束：
+   - 都没有 grant 概念——脚本就在 session 数据里，能写它的人已经能 `exec_bash`。
+   - 扁平形态发现规则：扫描 `./tools/` 顶层"文件"；扫描 `./tools/` 顶层"目录"则按结构化形态
+     处理（识别 `tool.toml`）。扁平脚本和同名子目录冲突时拒绝 render 并要求 LLM 改名。
+   - LLM 可以从扁平形态"升级"到结构化形态：把 `query_weather.ts` 移到 `query_weather/` 目录
+     并写一份 `tool.toml`——启动器把这视为同一个工具的演化（name 一致即可）。
+   - **`./tools/` 只放文本**：解释执行脚本（.sh/.py/.ts/.js/.rb/...）、tool.toml、prompts、
+     JSON Schema、README 等。**禁止任何二进制**（ELF / Mach-O / PE / .so / .dylib / .dll /
+     编译产物 / 打包的二进制 wheel-with-native 等）。理由：
+     - 二进制天然平台绑定，破坏 AgentRootFS 的跨宿主机可迁移性
+     - 二进制无法被 LLM / 审计者直接阅读，等于在 session 数据里夹带不透明产物
+     - 真正需要的本地工具走 `tool_grants` 引用 Runtime Bin / ExtTool Volume，那里有版本与
+       授权治理；session 不是分发二进制的渠道
+     启动器在 render 时按 magic bytes 探测：发现二进制文件 → 跳过该工具并 log warn，不阻断
+     其他工具渲染。
+   - **`./tools/` 必须保持小且文件数有限**：这是 hot path。`exec_bash`（以及任何能写文件的
+     session 工具）执行后，启动器都可能对 `./tools/` 做一次 sync 检查（默认实现是 mtime
+     walk，必要时升级到内容 hash 触发 re-render，见 §1.5.6）。所以：
+     - 单文件建议 ≤ 64 KB（脚本本身轻小，prompt/schema 长就拆 include）
+     - 整个 `./tools/` 文件数建议 ≤ 几百，**不要把数据集、日志、抓取结果、模型权重、缓存等
+       塞进来**——这些属于 session 根、workspace 或 `./archive/`
+     - 一次 walk 慢于 50ms 时启动器会 log warn，超过阈值时 sync 退化为"turn 边界一次"而不是
+       "每条 bash 后一次"，session 工具的热更新感会变差
+     LLM 在写新工具时如果发现 entry 脚本超过 64 KB，应该拆素材到 prompts/ 子目录走结构化形态
+     而不是塞进扁平脚本。
+
+### 1.5.2 render plan 合成
+
+启动器执行如下顺序，先到先得（同名后者忽略，并记 warn）：
+
+1. session 自带工具（同时扫描两种形态，最高优先级）：
+   - `./tools/<dir>/tool.toml` 结构化形态
+   - `./tools/<file>.{sh,bash,py,ts,js,mjs,rb,...}` 扁平形态
+   - 同 session 内 name 冲突 → 拒绝 render
+2. tool_grants 中 `target_layer = "exttool"`、`"runtime"` 的条目
+3. Agent Bin（遍历 Agent Root `/tools/`，同样支持扁平与结构化两种形态）
+4. tool_grants 中 `target_layer = "system"` 显式条目；若无，则枚举 System Bin 全量
+
+产出（不落 session，写到容器内临时区 `/opt/buckyos/tools/$aid/$sid/.render_plan.json`）：
+
+```json
+{
+  "session_id": "sid_xxx",
+  "rendered_at": "2026-05-14T...",
+  "exec_dir": "/opt/buckyos/tools/$aid/$sid",
+  "entries": [
+    {
+      "name": "summarize_pdf",
+      "exec_path": "/opt/buckyos/tools/$aid/$sid/summarize_pdf",
+      "kind": "wrapper",
+      "wrapper_body": "#!/bin/bash\nexec /opt/buckyos/data/.../sessions/$sid/tools/summarize_pdf/summarize.sh \"$@\"\n",
+      "spec_source": "session_script",
+      "description": "...",
+      "input_schema": "..."
+    },
+    {
+      "name": "ffmpeg",
+      "exec_path": "/opt/buckyos/tools/$aid/$sid/ffmpeg",
+      "kind": "symlink",
+      "target": "/opt/buckyos/tools/bin/ffmpeg",
+      "spec_source": "runtime_bin",
+      "grant_ref": "g_ffmpeg_v1"
+    }
+  ]
+}
+```
+
+### 1.5.3 物理渲染
+
+启动器拿 plan 在 `exec_dir` 下做这些操作（顺序敏感）：
+
+1. `rm -rf <exec_dir>/*`（执行视图无状态，整目录清掉重建）。
+2. 对每个 `entries[i]`：
+   - `kind = "symlink"`：`ln -s <target> <exec_path>`
+   - `kind = "wrapper"`：写出 `<exec_path>` 内容 = `wrapper_body`，`chmod +x`
+3. `.render_plan.json` 最后写——AgentToolManager 看到这个文件才认为视图就绪。
+
+### 1.5.4 容器挂载与路径
+
+| 卷 | 宿主机源 | 容器内路径 | 权限 |
+|----|---------|----------|------|
+| Instance Volume | `/opt/buckyos/data/home/$uid/.local/share/$aid/` | 同源路径（透传） | rwx（容器用户） |
+| Worker Image Tools | 镜像内置 | `/opt/buckyos/tools/store/` | rx |
+| Runtime Bin | 容器临时卷 | `/opt/buckyos/tools/bin/` | rx |
+| Session Exec View | 容器临时卷 | `/opt/buckyos/tools/$aid/$sid/` | rwx |
+| ExtTool Volumes | 用户挂载 | 由 grant 指定 | rx |
+
+约束：因为宿主源和容器路径同源，wrapper script 里 `exec` 后面可以直接写
+`/opt/buckyos/data/.../sessions/$sid/tools/<name>/<entry>`，启动器和容器内进程看到的是同一条
+绝对路径。
+
+### 1.5.5 AgentToolManager 与启动器的分工
+
+| 关注点 | 启动器（容器编排层） | AgentToolManager（waist 实现，容器内） |
+|--------|------------------|------------------------------------|
+| 输入 | `session.json.tool_grants` + `./tools/*/tool.toml` + Agent Root + 镜像 | `<exec_dir>/.render_plan.json` |
+| 产出 | render plan + 物理执行视图 | `Vec<ToolSpec>` + dispatch 闭包 |
+| 写入文件 | `exec_dir` 下所有文件 | 无（只读 plan） |
+| 调用工具 | 不调用 | `Command::new("<exec_path>")` 或直接 path 入 `$PATH` |
+
+硬约束：**AgentToolManager 不准枚举 `Agent Root /tools/`、`/opt/buckyos/tools/store/` 等真实
+来源**——唯一允许读的就是 `.render_plan.json`。这条约束保证 LLM 视角和 PATH 视角不可能 drift。
+
+### 1.5.6 渲染时机
+
+| 触发点 | 动作 | 是否打断推理 |
+|--------|------|----------|
+| session worker cold start / resume | 同步 render，未完成不进 run loop | 启动期，无推理可打断 |
+| `exec_bash` 返回后 | 对 `./tools/` 做 sync 检查（mtime walk）；有改动才标记 dirty | 否，是 bash 工具调用尾部的一步 |
+| 显式写工具的 session 工具（`write_file` / `edit_file` 等命中 `./tools/`）| 直接标记 dirty | 否 |
+| `tool_grants` 变化（用户授权 / 撤权）| 标记 dirty | 否 |
+| 任一 dirty 触发后，**下一个 turn 边界** | re-render | 否，turn 间空档 |
+| behavior 切换 | **不 re-render**，只调 `tool_policy.whitelist` gate | — |
+
+实现要点：
+
+- `AgentSession` 持有 `tools_dirty: AtomicBool` + `tools_mtime_snapshot: HashMap<PathBuf, SystemTime>`。
+- `exec_bash` 工具实现在返回前 walk `./tools/` 顶层 + 一层子目录的 mtime，diff 上一份快照；
+  有差异才 `tools_dirty.store(true)`，并刷新快照。
+- worker 在每个 turn 入口检查 dirty，若为 true 则调启动器暴露的
+  `re_render_session_tools(sid)` RPC（启动器进程外，AgentRuntime 进程内 client），完成后清 flag。
+- walk 慢于阈值（默认 50ms）→ log warn；session 工具数 / 总大小逼近上限（§1.5.1）时切换到
+  "turn 边界统一一次 walk"模式，牺牲热更新换性能。
+
+### 1.5.7 待决策（开发前确认）
+
+1. **是否允许 session script 反向引用 Agent Bin** — 当前设计允许（`kind = ref` +
+   `target_layer = agent`，无需 grant，因为同 Agent 内默认互信）。如果安全模型要求 worksession
+   与 UI session 互相隔离，需要为 Agent Bin 也加 grant。
+2. **render plan 是否需要签名 / hash** — 当前不签。如果担心容器内进程篡改 plan 后越权调用，
+   可让启动器在 plan 里加 HMAC，AgentToolManager 启动时校验。
+3. **session `./tools/` 命名冲突** — 当前 session 自带工具覆盖上层；可考虑反过来（拒绝
+   覆盖 + 强制 LLM 改名），更保守。
+4. **`tool_grants` 撤权时正在执行的工具调用** — 当前设计：撤权只影响下次 render，已经在执行
+   的子进程不杀；要不要硬切？
 
 ---
 
@@ -143,12 +391,22 @@ Agent Root 位置按 paios 契约：`/opt/buckyos/data/home/$userid/.local/share
 
 **4 层 bin 的物理路径契约**（来自 [paios 容器需求.md §9](paios容器需求.md)）：
 
-| 层 | 路径 | 权限 | 承载 |
-|----|------|------|------|
-| System Bin | `/opt/buckyos/tools/store/` | rx，所有 App 共享 | Worker Image 预置 CLI（ffmpeg/pandoc/...） |
-| Runtime Bin | `/opt/buckyos/tools/bin/` | rx，App-scoped symlink view | 从 `store/` + ExtTool Volume 渲染（Crafter 镜像产出工具包接入处） |
-| Agent Bin | Agent Root 下 `/tools/`（Instance Volume 内） | rwx 给 Agent | Agent 自演化脚本；升级走文件级合并（paios §7.4 R-15） |
-| Session Bin | `/opt/buckyos/tools/$agentid/$sessionid/` | rwx | session 启动时按权限创建 |
+| 层 | 路径 | 权限 | 承载 | 持久化 |
+|----|------|------|------|--------|
+| System Bin | `/opt/buckyos/tools/store/` | rx，所有 App 共享 | Worker Image 预置 CLI（ffmpeg/pandoc/...） | 随镜像 |
+| Runtime Bin | `/opt/buckyos/tools/bin/` | rx，App-scoped symlink view | 从 `store/` + ExtTool Volume 渲染（Crafter 镜像产出工具包接入处） | 容器临时，按 manifest 重建 |
+| Agent Bin | Agent Root 下 `/tools/`（Instance Volume 内） | rwx 给 Agent | Agent 自演化脚本；升级走文件级合并（paios §7.4 R-15） | 持久化（Instance Volume） |
+| Session Bin（声明） | session 目录 `./tools/` | rwx | tool.toml / 脚本源 / 工具包元数据 / 交付物（平台无关） | 持久化（跨 OS 可迁移） |
+| Session Bin（执行视图） | `/opt/buckyos/tools/$agentid/$sessionid/` | rwx | 启动器按 manifest 渲染的 symlink / wrapper script，指向 System / Runtime Bin 工具、授权的 ExtTool Volume 工具、或 session `./tools/` 下的脚本 | 容器临时，session 启动时重建 |
+
+**渲染规则**：
+
+- 进 PATH 的 bin 一律是 **派生产物**，不进 session 数据；容器删除/迁移时丢弃，下次启动重建。
+- 启动器是**统一的工具视图渲染入口**，负责按授权 manifest 决定哪些 System / Runtime / ExtTool
+  工具暴露给该 session；Agent 自己**不能**直接 link 到镜像内部路径或宿主机路径。
+- session 的 `./tools/` 只放工具的"声明 + 源文件 + 元数据"——属于 AgentRootFS（宿主机数据层），
+  必须能在不同宿主机之间原样拷贝；执行视图由目标宿主机上启动的 Linux 容器在启动时重新渲染
+  （执行视图本身始终是 Linux 形态，不需要跨 OS 兼容）。
 
 PATH overlay 顺序：**Session > Agent > Runtime > System**（前者优先，同名覆盖）。
 
@@ -242,11 +500,16 @@ opendan 的 `agent_config` 负责把这份 TOML 翻译成 `LLMContextRequest` + 
 **自定义实现**：worksession 想用别的协议（JSON 行、ReAct markdown、自定义 DSL……）时，
 实现 `LLMResultParser` + `StepRenderer` 两个 trait 装到 `deps` 即可，不需要改 waist。
 
-### Behavior 切换的三种模式（switch_mode）
+### Behavior 切换的两种模式（switch_mode）
 
-- `normal`：同一 `LLMContext` 实例，重新渲染 system prompt（替换 `request.input` 中的 system 段），保留全部 step 历史
-- `fork`：基于当前快照 `clone()` 出新 `LLMContext`，继承 step records，子上下文结束时丢弃其快照
-- `independent`：开一个全新的 `LLMContext`，不继承 step records；子上下文结束时丢弃其快照
+> 设计实施过程中（2026-05-14 第 3 轮，见 §9 当前进度）发现 fork 不适合做 `next_behavior` 触发的切换——fork 子 ctx 没法从父 ctx 的 `Done` 状态干净接管。最终落地：
+> - **`switch_mode` 只有 `normal` / `independent`** 两个值（cfg 里仍保留 `fork` 这个 enum 值但 fall-through 到 normal + warn，等迁移完毕清掉）
+> - **fork 是 session 内部原语**，触发口在 session-aware 工具的 `call()` 实现（典型：`try_create_worksession`），LLM 视角下是普通 tool 调用
+> 详见 [llm_context_helper.rs](src/frame/opendan/src/llm_context_helper.rs) 设计草案的"三种模式的核心语义"段。
+
+- `normal`：单一全局 step record stream，多个 behavior 在图上跳转。同一逻辑 session 内 system prompt 被替换、`request.input` 前导 System 段同步更新，全部历史保留。跨 behavior 跳转默认继承所有 step records；切到 B 再切回 A 仍能看到完整历史
+- `independent`：每个 behavior name = 一个独立"进程"，**自己持有 step record stream**（持久化到 `.meta/behavior_<name>.snap`）。父→子是栈式（`SessionMeta.process_stack` 入栈），子 `END` pop 栈、控制流回父；父看不到子内部，但子下次被同名再切回时能续上自己之前的 stream
+- ~~`fork`~~（不通过 `next_behavior` 触发；见上方说明）：父 ctx 在 fork 点挂起→子从父快照继承+可改 env→子 `END`→控制流回父，父只拿到子的 `ContextOutput`（类似函数 return value），看不到子的 step records；可嵌套
 
 ---
 
@@ -706,6 +969,47 @@ forward_msg { target_worksession_id: String }
 
 ## 9. 重构 checklist（给 CodeAgent）
 
+### 当前进度（2026-05-14，第 3 轮更新 — 4 种 LLMContext 切换模式落地）
+
+**本批次新增完成（[llm_context_helper.rs](src/frame/opendan/src/llm_context_helper.rs) 设计 + §9.4 switch_mode 真实化）：**
+
+- **Phase 1 — helper 原语层**：新建 [llm_context_helper.rs](src/frame/opendan/src/llm_context_helper.rs)
+  - `RequestOverrides`：纯数据覆盖结构（system_messages / tool_policy / objective / trace `Option<Option<String>>` / model_policy / budget / human_policy / error_policy / output / reset_rounds / reset_errors / forbid_next_behavior）
+  - `apply_overrides_to_snapshot(snap, ov)`：纯 data 函数，**关键 invariant**——同步修改 `request.input` 和 `state.accumulated` 的前导 System 段（剥头部连续 System → 塞新 system → 后面非 System 部分保留）
+  - `rebuild_with_inherit(base_snap, ov, deps)`：base_snap 的 `state.pending_tool_calls` 非空时返回 `SnapshotCorrupted`；否则 apply overrides → `LLMContext::resume(snap, ResumeFromMidRun, deps)`
+  - `build_fresh(req, deps)`：`LLMContext::new` 的薄封装
+  - 8 项单测覆盖 system 段同步 / reset_rounds 行为 / reset_errors 行为 / trace 三态（set/clear/keep）
+- **Phase 2 — Switch（normal）模式真接通**：
+  - `run_one_turn` / PendingTool resume 处的 `ctx.run()` 之后捕获 `ctx.snapshot()`——这是 **包含 final assistant message** 的完整后态（`Outcome::Done` 不携带 snapshot，但 ctx 仍活着）
+  - `handle_outcome` 签名加 `final_snapshot: LLMContextSnapshot`
+  - `Done + next_behavior(非 END)` 不再 discard，调 `switch_behavior(next, final_snapshot)`；后者按 `SwitchMode::Normal` 用 `apply_overrides_to_snapshot` 重建 → `persist_snapshot`；下一轮 `build_or_resume` 在新 system prompt + 完整历史下续跑
+  - `apply_switch_normal`：按设计旋钮 `reset_rounds = false`（继承父预算）、`reset_errors = false`（防 LLM 切 behavior 绕过错误上限）
+- **Phase 3 — Independent 模式真接通**：
+  - `ProcessFrame { entry, current }` 结构 + `SessionMeta` 加 `process_entry: String` / `process_stack: Vec<ProcessFrame>`，都 `#[serde(default)]`；restore 路径 backfill 老 JSON（`process_entry == ""` → 用 `current_behavior`）
+  - `behavior_snap_path(name)`——按 `local_workspace` 同款 `..` / `/` / `\\` / 空 id 防护
+  - `persist_snapshot_to(path, snap)` / `try_load_snapshot_from(path)`——参数化版本；原 `persist_snapshot` / `try_load_snapshot` 改 delegate
+  - `fresh_request_for(cfg)`——"用 behavior cfg 渲染全新 `LLMContextRequest`" 抽出共用
+  - `apply_switch_independent`：父 `final_snapshot` 写到 `.meta/behavior_<父entry>.snap`；子 process snapshot（存量 → load + `reset_rounds/reset_errors` overrides；首次 → `LLMContextState::from_request` 新建）写到 `state.snap`；push 父 `ProcessFrame { entry, current }`；更新 `process_entry` + `current_behavior`
+  - `handle_process_end(final_snapshot)`：栈空 → 顶层 process 真结束（`discard_snapshot + NextAction::End`）；栈非空 → 存子 final_snapshot 到 `.meta/behavior_<子entry>.snap`、装载父 snapshot 到 `state.snap`、注入 `[independent process \`X\` ended]` 系统消息到父 `pending_inputs`、`NextAction::Idle`
+  - `handle_outcome::Done` 自然 Done（无 next_behavior）路径：栈非空 → `persist_snapshot(final_snapshot)` 保留子 process stream；栈空 → 保持原 discard（不破坏 UI session 多轮行为）
+  - **关键不变量**：`state.snap` 始终镜像栈顶 process；`.meta/behavior_<entry>.snap` 仅在该 process 被挂起时存在；`current_behavior`（栈顶 process 内 normal switch 位置）与 `process_entry`（栈顶入口）只在 process 内做过 normal switch 时发散
+- **Phase 4 — Fork 模式落地（session 私有原语，不暴露给 agent tool）**：
+  - `AgentSession.fork_stack: Arc<Mutex<Vec<String>>>`——in-memory，每帧 = 父 trace id；不持久化（mid-fork 崩溃丢 sub-ctx，父从 on-disk snapshot 恢复，可接受）
+  - `AgentSession::fork_and_run(overrides, sub_behavior_name) -> Result<ContextOutput>`：
+    - 从 `try_load_snapshot()` 拿父 snapshot（TurnHook 在当前 inference 之前已写盘）
+    - `sub_behavior_name` 加载子 cfg 做 deps（共享 parser/renderer / approval list / one_line_status sink）
+    - `rebuild_with_inherit(parent_snap, overrides, deps)` 造子 ctx → `run()` → 提取 `ContextOutput`
+    - 子 ctx suspended outcome（WaitInput / PendingTool / ContextLimitReached）映射为错误（fork 无 resume 路径）
+    - inner helper `run_fork_sub` 保证 fork_stack push/pop 平衡
+  - `fork_depth()` 公开访问器（async，共享同 mutex）
+  - `AIAgent::get_session(id) -> Option<Arc<AgentSession>>` 公开访问器，session-aware 工具用它从 `Weak<AIAgent>` + `source_session_id` 拿到 `Arc<AgentSession>` 句柄
+  - `TryCreateWorksessionTool`（`try_create_worksession`）：UI session 工具，构造时持 `Weak<AIAgent>` + `source_session_id`；`execute()` 内 `agent.get_session(id) → session.fork_and_run(overrides, parent_behavior)`，子 ctx 的 `ContextOutput::Json` 透传 / `Text` 包成 `{decision_text}`；sub-prompt 当前是最小指令（含 reason），未来补全 worksession list / parent recent history 注入
+  - `register_worksession_tools` 加注册 `TryCreateWorksessionTool`
+- **设计文档** [llm_context_helper.rs](src/frame/opendan/src/llm_context_helper.rs) 完整描述 3 种模式（switch / fork / independent）的语义、helper 2 个函数原语、Session-level 状态结构、旋钮倾向值、需要 waist 配合的未决项（`forbid_next_behavior` flag）
+- 工程脚手架：`cargo test -p opendan --lib` **57/57 全绿**（+9：helper 8 个 + Session 旧 JSON backfill 1 个）
+
+**架构观察**：3 个 switch_mode 在 helper 视角只需 2 个原语函数。差异完全收口在 session 端的 `apply_switch_normal` / `apply_switch_independent` / `handle_process_end` / `fork_and_run` 调用层。`switch_mode=Fork` 不再从 `next_behavior` 走 ——fork 是 session 内部原语，触发口在 session-aware 工具的 `call()` 实现里（典型：`try_create_worksession`），LLM 视角下看到的是一次普通 tool 调用。
+
 ### 当前进度（2026-05-14，下半轮更新）
 
 **本批次新增完成：**
@@ -782,25 +1086,33 @@ forward_msg { target_worksession_id: String }
   - **Session Bin**：`/opt/buckyos/tools/$agentid/$sessionid/` — rwx，session 启动时按权限创建。**当前 [agent_bash.rs](src/frame/opendan/src/agent_bash.rs) `SessionBinLayout` 把 session 层放在 `session/<sid>/.tool`，需要切到 paios 路径**（paios 文档显式标注"和现有实现对比，主要是修改了 sessions/<id>/.tool 的位置"）
   - **PATH overlay 顺序**：Session > Agent > Runtime > System（前者优先，同名覆盖）；权限校验按 paios §9 权限矩阵
   - 实施前置：upstream `BinOverlayConfig` 当前是单 `bin_dir`，需扩展成有序多层（或换成 path list + 每层权限属性）；同时 `SessionBinLayout` 需要拿到 `BUCKYOS_ROOT` + `agent_id` 才能算出 paios 路径
-- §9.4 残项：
-  - `try_create_worksession` 工具（§8.2 fork sub-context 探索 + 由 sub-LLM 调 `create_worksession` 落地）；同步拉通 `Fork` switch_mode 真实快照 clone
-  - `Independent` switch_mode 真实实现（目前 fall-through 到 Normal）
+- §9.4 残项（switch_mode 三模式 + fork 原语 2026-05-14 第 3 轮已落地，下面是更窄的尾巴）：
+  - `try_create_worksession` 子上下文 prompt 渲染补全：注入"现有 worksession 列表"+ "parent recent history" + "可用 workspace 列表"——目前 sub-system 只放了 reason 一行，sub-LLM 还做不出"复用 vs 新建 workspace"的合理判断
+  - **waist 真接 `forbid_next_behavior` flag**：fork 语义的硬约束，目前是 `RequestOverrides` 上的占位字段，下一轮在 `llm_context::behavior_loop` 看 flag 时硬忽略 LLM 给出的 `<next_behavior>`
+  - `RequestOverrides` + `apply_overrides_to_snapshot` 下沉到 `llm_context` crate（成为 `LLMContextSnapshot` 的关联函数），opendan helper 退化为 "system messages 渲染 / deps 装配 / trace 命名" 的薄胶水
   - `ContextLimitReached` 的消息层压缩 + `ResumeFill::RewrittenHistory` 续跑
   - "环境感知 message"（auto-recall memory / workspace 状态 / 事件 diff）
   - `forward_msg` 自动抓取 "本轮 origin user 消息"（当前实现要求 LLM 显式传 `message` arg，未来 worker 应把句柄塞进 ToolCtx 让 tool 自取）
+  - **independent 跨 process normal switch 的恢复路径**：当前 `process_stack` 帧记 `(entry, current)`，pop 时恢复 current；但如果某个 process 内做过 normal switch，存量 `behavior_<entry>.snap` 的 system 段是 switch 后的、`process_stack.current` 也是 switch 后的——这两边要不要"对齐到 entry 自身的 system" 是个语义抉择，等真实用例出来再回看
 
 
 ### 工程顺序（剩余）
 
-1. **§8.2 `try_create_worksession` + §9.4 Fork switch_mode 真实化** — 同一个改动：先在 waist (`llm_context::LLMContext`) 上加一个 `try_clone_with_deps`-类的 API 让 fork 拿到独立快照；opendan 再实现 `try_create_worksession`（fork 子上下文 + reason / 现有 worksession 列表注入 + sub-LLM 决策后调 `create_worksession`）。这一步落地的同时也把 `forward_msg` 自动抓 "本轮 origin user 消息" 的句柄通路打通（worker 把 PendingInput::Msg 句柄塞进 `SessionRuntimeContext::origin_msg`）。
-2. **§9.4 Independent switch_mode + ContextLimitReached 重写 + 环境感知 message** — 三个独立子任务，集中在 `agent_session::handle_outcome` / `build_or_resume` 周围，适合一次性把外壳改到位。
-3. **4 层 bin overlay 实施**（§9.2 残项）— 按 [paios §9](paios容器需求.md) 路径契约扩展 upstream `BinOverlayConfig` 到多层有序列表，迁移 `SessionBinLayout` 到 `/opt/buckyos/tools/<agent>/<session>/`，预留 Runtime Bin 接口给 ExtTool Volume。
+1. **waist 接 `forbid_next_behavior` flag**（独立 PR，小）— `llm_context::behavior_loop` 在解析 `<next_behavior>` 之前看 flag；同时把 `RequestOverrides` + `apply_overrides_to_snapshot` 提案到 llm_context crate，opendan helper 退化为薄胶水。
+2. **`try_create_worksession` sub-prompt 补全**（独立 PR，中）— 在 `worksession_tools.rs::TryCreateWorksessionTool::execute` 里渲染 worksession list（来自 `agent.sessions` 扫描）+ parent recent chat history（从 parent_snap.state.accumulated 抽 user/assistant tail）+ 可用 workspace 列表（来自 `agent.workspaces.list()`）注入 sub-system；同时 `forward_msg` 把"本轮 origin user 消息"句柄塞进 ToolCtx 让 tool 自取。
+3. **§9.4 ContextLimitReached 重写 + 环境感知 message**（独立 PR，中）— 集中在 `agent_session::handle_outcome` / `build_or_resume` 周围；前者实现 `ResumeFill::RewrittenHistory` 续跑、后者补 "环境感知 message"（auto-recall memory / workspace 状态 / 事件 diff）。
+4. **4 层 bin overlay 实施**（§9.2 残项，大）— 按 [paios §9](paios容器需求.md) 路径契约扩展 upstream `BinOverlayConfig` 到多层有序列表，迁移 `SessionBinLayout` 到 `/opt/buckyos/tools/<agent>/<session>/`，预留 Runtime Bin 接口给 ExtTool Volume。
 
 每个阶段独立编译 + 跑 `cargo test`。当前 opendan 已可：
 - 从 msg-center 拉 msg → `Inbound::Msg` → UI session → `enqueue_pending` 落盘 → ack `Readed` → worker 在合适状态下走 `exec_bash` + 读文件 → outcome `Done` 时把回复 `post_send` 回原 peer DID（用 record 上的 `route.tunnel_did` 当 `preferred_tunnel`）
-- 进程崩 / 重启：未消费的 msg、peer 路由信息、kevent 订阅列表、workspace 绑定、`pending_task_calls` 全部从 `.meta/session.json` 的对应字段还原（at-least-once）
+- 进程崩 / 重启：未消费的 msg、peer 路由信息、kevent 订阅列表、workspace 绑定、`pending_task_calls`、process 调用栈（`process_entry` / `process_stack`）、各 process 的独立 snapshot 文件全部从 `.meta/` 还原（at-least-once）
 - 任何 session 通过 `subscribe_event(pattern)` 加订阅 → 直接走 `event_pump.set_session_subscriptions` 立即生效 → `session_event_pump` 重建 reader → kevent 命中自动派发回该 session 的 `pending_inputs`
 - LLM 触发 `PendingTool` outcome → 自动转 `task_mgr` 任务、订阅 `/task_mgr/<task_id>`、session 进入 `WaitingTool` → 完成事件回来后自动 `ResumeFill::ToolResults` 续跑
 - LLM 调 `create_worksession { title, objective, ... }` → 新建 workspace（按需）+ 新建 Work session 目录 + `readme.md` + 自动 bootstrap 首轮推理（objective 渲染进 system prompt）
 - LLM 调 `forward_msg { target_worksession_id, message }` → 进程内路由进 target 的 `pending_inputs`（合成 `record_id`，不走 msg-center）
+- **LLM 在 Done 时声明 `<next_behavior>X</next_behavior>` → 按 X 的 `switch_mode` 触发不同切换**：
+  - `Normal` → 同 process 内换 system prompt + tool whitelist，step record stream 全保留
+  - `Independent` → push 父 process 帧到 `process_stack`，子 process 从 `.meta/behavior_<X>.snap` 续跑（或首次 `from_request` 起步），父帧静默挂起
+  - `END` → 若栈空真结束 session；若栈非空 pop 父帧 + 注入 `[independent process \`X\` ended]` 系统消息唤醒父
+- **LLM 调 `try_create_worksession { reason }` → session 内部 fork sub-ctx 跑 fork-decision 推理**：sub-ctx 只能调 `create_worksession`，跑到 Done 后 `ContextOutput` 作为 tool result 回填给父 LLM；父 ctx 视角下看到的就是一次普通 tool 调用，PendingTool / ToolResults 路径天然适用
 - msg-center pump 自动用 `ContactLookup` 给缺 `from_name` 的 record 补显示名（hit 5min / miss 1min TTL），LLM 提示词看到的是人名而非裸 DID
