@@ -39,8 +39,8 @@
 //!    - 终态(`Done` / `Error` / `BudgetExhausted`)→ 退出,把结果返还 caller;
 //!    - `ContextLimitReached` → 调外部压缩 → `ResumeFill::RewrittenHistory`
 //!      喂回 → `LLMContext::resume` → 继续 loop;
-//!    - `WaitInput` / `PendingTool` → 把控制权交还 caller(OneShot 自己
-//!      没办法消化人 / 异步任务回调,见 §6.3 / §6.4)。
+//!    - `PendingTool` → 把控制权交还 caller(OneShot 自己没办法消化
+//!      异步任务回调,见 §6.3 / §6.4)。
 //!
 //! 它不解读输出、不切换行为状态机、不维护长期记忆——所有"业务"都靠
 //! 输入侧的 request 与输出侧的 outcome 表达。**任何想往 driver 里塞
@@ -134,7 +134,7 @@ use llm_context::deps::{
 use llm_context::observation::Observation;
 use llm_context::outcome::{LLMContextOutcome, ResumeFill};
 use llm_context::request::{
-    BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorMode, ErrorPolicy,
+    BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorPolicy,
     LLMContextRequest, ModelPolicy, OutputSpec, ToolPolicy,
 };
 use llm_context::state::LLMContextSnapshot;
@@ -154,12 +154,8 @@ use crate::{
 /// 默认 context 压缩阈值(token window 的 75%)。
 pub const DEFAULT_CONTEXT_YIELD_RATIO: f32 = 0.75;
 
-/// 默认错误 mode。OneShot 倾向 Suspend(设计文档 §3.11)——错就停下来
-/// 等用户决策,而不是闷头自我修复。
-pub const DEFAULT_ERROR_MODE: ErrorMode = ErrorMode::Suspend;
-
-/// 默认连续错误上限。配合 FeedAsObservation 才有意义;Suspend 模式下
-/// 第一次错误就挂起,这个值不会被触发,但仍保留作为切换 mode 时的默认。
+/// 默认连续错误上限。可恢复错误会被回灌成 system observation 让 LLM
+/// 自我修复,连续超过这个上限才升格成终态 Error 退出。
 pub const DEFAULT_MAX_CONSECUTIVE_ERRORS: u32 = 3;
 
 /// `drive_to_terminal_auto` 在调用方没显式给 token 预算时使用的兜底。
@@ -282,7 +278,6 @@ impl OneShotRequest {
             budget,
             human_policy: self.human_policy.clone().unwrap_or_default(),
             error_policy: self.error_policy.clone().unwrap_or(ErrorPolicy {
-                mode: DEFAULT_ERROR_MODE,
                 max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
             }),
             forbid_next_behavior: false,
@@ -324,7 +319,6 @@ pub enum RunStatus {
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SuspendKind {
-    WaitInput,
     PendingTool,
     /// 注意:`ContextLimitReached` 在 OneShot 内被 `drive_to_terminal`
     /// 透明消化(走 Compressor → resume),不会把 run 标记成 Suspended。
@@ -511,9 +505,9 @@ impl LocalLLMContext {
 
         // **关键决策**:崩溃后的 resume 形态分流:
         //
-        // 1. `WaitInput` / `PendingTool` 挂起期间崩溃 —— OneShot 自己没办法
-        //    提供 HumanInput / ToolResults,需要 caller 走更底层的 fill API
-        //    (本版不暴露,保守报错让 caller 介入)。
+        // 1. `PendingTool` 挂起期间崩溃 —— OneShot 自己没办法提供
+        //    ToolResults,需要 caller 走更底层的 fill API(本版不暴露,
+        //    保守报错让 caller 介入)。
         // 2. `ContextLimitReached` 挂起期间崩溃 —— `drive_to_terminal` 本应
         //    立刻调 compressor 消化掉,crash 时压缩 in-flight 的状态没法保证,
         //    同样保守要求 caller 介入。
@@ -555,7 +549,7 @@ impl LocalLLMContext {
     ///   把 status 改成 `Completed`,返回 outcome。
     /// - `ContextLimitReached` → 调 `compressor`(caller 注入),用
     ///   `ResumeFill::RewrittenHistory` 喂回,继续 loop。
-    /// - `WaitInput` / `PendingTool` → 写 `state.json`(status=Suspended +
+    /// - `PendingTool` → 写 `state.json`(status=Suspended +
     ///   last_suspend_kind),返回 outcome,把控制权交还 caller。
     ///
     /// 这是 §6.4 处理范式的标准落点,**不解读输出字段**,完全按 waist
@@ -579,7 +573,7 @@ impl LocalLLMContext {
                     continue;
                 }
                 terminal_or_suspend => {
-                    // 终态 + WaitInput / PendingTool 都直接交还 caller。
+                    // 终态 + PendingTool 都直接交还 caller。
                     // 终态写 final.json 由 step() 内部已经做了(see step's tail)。
                     return Ok(terminal_or_suspend);
                 }
@@ -664,12 +658,6 @@ impl LocalLLMContext {
                 write_run_state(&self.dir, &self.meta)?;
                 write_run_outcome(&self.dir, &self.run_id, &outcome)?;
                 // ctx 已经 take,且终态不可 resume → 保持 None。
-            }
-            LLMContextOutcome::WaitInput { .. } => {
-                self.meta.status = RunStatus::Suspended;
-                self.meta.last_suspend_kind = Some(SuspendKind::WaitInput);
-                write_run_state(&self.dir, &self.meta)?;
-                // ctx 保持 None;caller 后续用 resume_with_fill API。
             }
             LLMContextOutcome::PendingTool { .. } => {
                 self.meta.status = RunStatus::Suspended;

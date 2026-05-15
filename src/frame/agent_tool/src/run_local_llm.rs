@@ -209,7 +209,6 @@ async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
 fn outcome_tag(o: &LLMContextOutcome) -> &'static str {
     match o {
         LLMContextOutcome::Done { .. } => "done",
-        LLMContextOutcome::WaitInput { .. } => "wait_input",
         LLMContextOutcome::PendingTool { .. } => "pending_tool",
         LLMContextOutcome::BudgetExhausted { .. } => "budget_exhausted",
         LLMContextOutcome::Error { .. } => "error",

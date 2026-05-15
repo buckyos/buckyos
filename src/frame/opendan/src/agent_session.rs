@@ -97,6 +97,13 @@ impl PendingInput {
     }
 }
 
+/// Sentinel emitted by a behavior parser in
+/// `LLMBehaviorResult.next_behavior` to mean "current intent ran its course,
+/// no autonomous next step — park the session until the next inbound user
+/// message". Interpreted only at the session layer; the waist treats it as
+/// an opaque jump-target string.
+pub const NEXT_BEHAVIOR_WAIT_USER_MSG: &str = "WAIT_USER_MSG";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
@@ -298,7 +305,6 @@ impl SessionMeta {
 pub enum SessionReply {
     AssistantText { text: String },
     Error { message: String },
-    PromptToHuman { text: String },
     Ended,
 }
 
@@ -1505,6 +1511,21 @@ impl AgentSession {
                         // stack means the session itself is done.
                         return self.handle_process_end(final_snapshot).await;
                     }
+                    if trimmed.eq_ignore_ascii_case(NEXT_BEHAVIOR_WAIT_USER_MSG) {
+                        // Behavior state machine yields: current intent has
+                        // run its course, no autonomous next step — park
+                        // the session until the next user message arrives.
+                        // Persist the post-run snapshot so the resume path
+                        // (`build_or_resume` → `ResumeFill::HumanInput`)
+                        // continues from the final assistant turn rather
+                        // than the stale pre-inference TurnHook write.
+                        // The worker maps `WaitForMsg` to
+                        // `SessionStatus::WaitingInput`, which is what
+                        // forward_msg's inbox routing uses to find this
+                        // session.
+                        self.persist_snapshot(&final_snapshot).await;
+                        return Ok(NextAction::WaitForMsg);
+                    }
                     // Switch — preserve history by handing the post-run
                     // snapshot to switch_behavior (which applies the new
                     // behavior's overrides and persists). Do **not** discard
@@ -1528,17 +1549,6 @@ impl AgentSession {
                 } else {
                     Ok(NextAction::End)
                 }
-            }
-            LLMContextOutcome::WaitInput {
-                prompt_to_human, ..
-            } => {
-                if let Some(prompt) = prompt_to_human {
-                    let _ = self
-                        .reply_tx
-                        .send(SessionReply::PromptToHuman { text: prompt })
-                        .await;
-                }
-                Ok(NextAction::WaitForMsg)
             }
             LLMContextOutcome::PendingTool {
                 pending, snapshot, ..
@@ -1909,7 +1919,7 @@ impl AgentSession {
     ///   least one TurnHook write)
     /// - Snapshot in suspended state (`pending_tool_calls` non-empty) —
     ///   `rebuild_with_inherit`'s pre-condition fails
-    /// - Sub-context produces a suspended outcome (WaitInput / PendingTool
+    /// - Sub-context produces a suspended outcome (PendingTool
     ///   / ContextLimitReached) — fork has no resume path; this is mapped
     ///   to an error so the caller knows to abort
     ///
@@ -2004,8 +2014,7 @@ impl AgentSession {
             LLMContextOutcome::BudgetExhausted { which, .. } => {
                 Err(anyhow!("fork sub-ctx budget exhausted: {:?}", which))
             }
-            LLMContextOutcome::WaitInput { .. }
-            | LLMContextOutcome::PendingTool { .. }
+            LLMContextOutcome::PendingTool { .. }
             | LLMContextOutcome::ContextLimitReached { .. } => Err(anyhow!(
                 "fork sub-ctx unexpectedly suspended — fork sub-contexts must reach a terminal outcome (Done / Error / BudgetExhausted)"
             )),

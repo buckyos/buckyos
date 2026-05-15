@@ -2,8 +2,14 @@
 //!
 //! Outcomes split into two structural classes (see `LLM Context 设计.md` §3.10):
 //! - **Terminal**: `Done` / `Error` / `BudgetExhausted` — object is consumed.
-//! - **Suspended**: `WaitInput` / `PendingTool` / `ContextLimitReached` —
+//! - **Suspended**: `PendingTool` / `ContextLimitReached` —
 //!   a `LLMContextSnapshot` is produced and the run is resumable.
+//!
+//! "Waiting for the next human message" is **not** a waist concept — it is a
+//! session-layer state. The behavior loop signals it via
+//! `Done.behavior_result.next_behavior == "WAIT_USER_MSG"` (sentinel
+//! interpreted by opendan/session, not by the waist); the waist only sees a
+//! Done outcome and is done with it.
 
 use buckyos_api::{AiMessage, AiResponseSummary, AiUsage};
 use serde::{Deserialize, Serialize};
@@ -25,7 +31,18 @@ pub enum ResumeFill {
     /// Paired with `PendingTool`. `(call_id, observation)` must cover every
     /// pending call from the snapshot.
     ToolResults { results: Vec<(String, Observation)> },
-    /// Paired with `WaitInput`.
+    /// Resume an idle/non-suspended snapshot with a fresh user message.
+    /// Typical use: a session reached Done (or yielded "wait for next user
+    /// message" through `behavior_result.next_behavior`), persisted its
+    /// snapshot, and a later inbound user message rewakes it via the same
+    /// snapshot + this fill.
+    ///
+    /// TODO(beta2.2+): re-evaluate whether this belongs on the waist at all.
+    /// The semantics ("long task was idle when a new user message arrived")
+    /// arguably live in the session state machine; the waist could expose
+    /// only `ResumeFromMidRun` and let the session-layer wrapper append the
+    /// new user message before resuming. Deferred until we've validated the
+    /// `WAIT_USER_MSG` next_behavior path end-to-end.
     HumanInput { message: AiMessage },
     /// Paired with `ContextLimitReached`. The scheduler decides how to
     /// compress — waist just replaces accumulated history with this.
@@ -93,15 +110,6 @@ pub enum LLMContextOutcome {
         /// Behavior Loop payload. `None` for traditional Agent Loop runs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         behavior_result: Option<LLMBehaviorResult>,
-    },
-
-    WaitInput {
-        reason: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        prompt_to_human: Option<String>,
-        snapshot: LLMContextSnapshot,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        deadline_ms: Option<u64>,
     },
 
     PendingTool {

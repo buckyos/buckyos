@@ -85,7 +85,7 @@ pub use llm_compress::{compress, LlmSummarizeCompressor, DEFAULT_KEEP_RECENT_MES
 pub use local_llm_context::{
     Compressor, FileSnapshotStore, LocalLLMContext, OneShotRequest, RunMetaState,
     RunStatus, SnapshotStore, SuspendKind, DEFAULT_CONTEXT_YIELD_RATIO,
-    DEFAULT_ERROR_MODE, DEFAULT_MAX_CONSECUTIVE_ERRORS,
+    DEFAULT_MAX_CONSECUTIVE_ERRORS,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use llm_context::{
     behavior_loop::{LLMResultParser, StepRenderer},
     request::{
-        BudgetSpec, ErrorMode, ErrorPolicy, HumanPolicy, ModelPolicy, OutputSpec,
+        BudgetSpec, ErrorPolicy, HumanPolicy, ModelPolicy, OutputSpec,
         ToolMode, ToolPolicy,
     },
     step_record::XmlStepRenderer,
@@ -260,14 +260,11 @@ impl BehaviorCfg {
     pub fn to_human_policy(&self) -> HumanPolicy {
         HumanPolicy {
             approval_required: self.approval_required.clone(),
-            allow_request_input: true,
-            wait_timeout_ms: None,
         }
     }
 
     pub fn to_error_policy(&self) -> ErrorPolicy {
         ErrorPolicy {
-            mode: ErrorMode::FeedAsObservation,
             max_consecutive_errors: self.max_consecutive_errors,
         }
     }

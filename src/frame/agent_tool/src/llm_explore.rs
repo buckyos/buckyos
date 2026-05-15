@@ -349,38 +349,6 @@ fn build_outcome_result(
             };
             (result, CLI_EXIT_SUCCESS)
         }
-        LLMContextOutcome::WaitInput {
-            reason,
-            prompt_to_human,
-            ..
-        } => {
-            let details = json!({
-                "work_dir": work_dir_str,
-                "run_id": run_id,
-                "description": opts.description,
-                "outcome": "wait_input",
-                "reason": reason,
-                "prompt_to_human": prompt_to_human,
-            });
-            let result = AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_NAME.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Pending,
-                task_id: Some(run_id.to_string()),
-                pending_reason: Some(AgentToolPendingReason::UserApproval),
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_NAME} => wait_input"),
-                summary: format!("waiting for user input ({reason})"),
-                details,
-                cmd_args: None,
-                return_code: None,
-                partial_output: prompt_to_human,
-                output: None,
-            };
-            (result, CLI_EXIT_SUCCESS)
-        }
         LLMContextOutcome::PendingTool { pending, .. } => {
             let details = json!({
                 "work_dir": work_dir_str,

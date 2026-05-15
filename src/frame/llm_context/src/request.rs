@@ -165,34 +165,24 @@ impl Default for BudgetSpec {
 pub struct HumanPolicy {
     /// Tool/action names that require human approval before dispatch.
     pub approval_required: Vec<String>,
-    /// Whether the LLM may itself request human input.
-    pub allow_request_input: bool,
-    pub wait_timeout_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ErrorMode {
-    /// Recoverable errors immediately yield `Outcome::WaitInput`.
-    Suspend,
-    /// Recoverable errors are folded into the accumulated history as a
-    /// tool/system AiMessage so the LLM can self-correct.
-    FeedAsObservation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ErrorPolicy {
-    pub mode: ErrorMode,
-    /// Safety net against "feed error → see error → produce same error" loops.
-    /// 0 disables the cap (not recommended).
+    /// Recoverable errors are folded into the accumulated history as a
+    /// tool/system AiMessage so the LLM can self-correct. Once the count
+    /// of consecutive recoverable errors exceeds `max_consecutive_errors`,
+    /// the loop escalates to a terminal `Outcome::Error`.
+    ///
+    /// Safety net against "feed error → see error → produce same error"
+    /// loops. 0 disables the cap (not recommended).
     pub max_consecutive_errors: u32,
 }
 
 impl Default for ErrorPolicy {
     fn default() -> Self {
         Self {
-            mode: ErrorMode::FeedAsObservation,
             max_consecutive_errors: 3,
         }
     }

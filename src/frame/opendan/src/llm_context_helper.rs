@@ -3,7 +3,7 @@
 //! ## 触发点
 //!
 //! 一轮 LLMContext 跑完后，session 端需要根据信号（next_behavior / 工具内部
-//! 请求 / WaitInput 结束等）造下一个 LLMContext。三种模式描述的是 **session
+//! 请求 / 新一条用户消息到达等）造下一个 LLMContext。三种模式描述的是 **session
 //! 内部状态机** 给 helper 提供 base snapshot 和 overrides 时的语义差异，
 //! 不是暴露给 LLM/工具的并列选项。
 //!
@@ -210,7 +210,7 @@
 //!    （`try_create_worksession`，在 `worksession_tools.rs`）在 `execute()`
 //!    内调 `session.fork_and_run(...)`，子 ctx 跑到 Done 后把 `ContextOutput`
 //!    打成 JSON 返回——父 ctx 视角是一次普通 tool 调用，无需新机制。
-//!    子 ctx suspended outcome（WaitInput / PendingTool / ContextLimitReached）
+//!    子 ctx suspended outcome（PendingTool / ContextLimitReached）
 //!    映射为错误（fork 无 resume 路径）。
 //! 5. ⏳ **Phase 5（未来）**：把 `RequestOverrides` + `apply_overrides` +
 //!    `forbid_next_behavior` flag 提案到 llm_context crate；helper 退化为

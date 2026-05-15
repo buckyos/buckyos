@@ -710,12 +710,6 @@ impl AIAgent {
                             truncate(&text, 240)
                         );
                     }
-                    SessionReply::PromptToHuman { text } => {
-                        info!(
-                            "opendan.agent[{agent_name}]: session={log_sid} prompt-to-human: {}",
-                            truncate(&text, 240)
-                        );
-                    }
                     SessionReply::Error { message } => {
                         warn!(
                             "opendan.agent[{agent_name}]: session={log_sid} error: {message}"

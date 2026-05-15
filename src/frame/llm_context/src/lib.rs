@@ -49,7 +49,7 @@ pub use outcome::{
 };
 pub use request::{
     BudgetAction, BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorClass,
-    ErrorMode, ErrorPolicy, HumanPolicy, LLMContextRequest, ModelPolicy,
+    ErrorPolicy, HumanPolicy, LLMContextRequest, ModelPolicy,
     OutputSpec, ToolMode, ToolPolicy,
 };
 pub use snapshot_overrides::{

@@ -11,7 +11,7 @@
 //! - terminate with `Error` on Fatal errors; Recoverable errors are handled
 //!   per `ErrorPolicy`
 //!
-//! Suspension outcomes (`WaitInput`, `PendingTool`, `ContextLimitReached`)
+//! Suspension outcomes (`PendingTool`, `ContextLimitReached`)
 //! are *defined* but not actively produced in this first version — they
 //! require deferred tools and explicit human-input requests to be wired up.
 
@@ -34,7 +34,7 @@ use crate::outcome::{
     BudgetKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill,
 };
 use crate::request::{
-    ErrorClass, ErrorMode, LLMContextRequest, OutputSpec, ToolMode,
+    ErrorClass, LLMContextRequest, OutputSpec, ToolMode,
 };
 use crate::state::{LLMContextSnapshot, LLMContextState};
 
@@ -362,8 +362,9 @@ impl LLMContext {
                             .await;
                     }
                     Observation::Error { message, .. } => {
-                        // Feed the error back so the LLM can self-correct
-                        // (when ErrorMode == FeedAsObservation).
+                        // Feed the error back so the LLM can self-correct;
+                        // the consecutive-error cap in `handle_error` is the
+                        // escape valve when self-correction doesn't converge.
                         self.tool_trace.push(ToolExecRecord {
                             tool_name: call.name.clone(),
                             call_id: call.call_id.clone(),
@@ -532,37 +533,29 @@ impl LLMContext {
                 error: err,
                 usage: self.state.usage.clone(),
             }),
-            ErrorClass::Recoverable(err) => match self.request.error_policy.mode {
-                ErrorMode::Suspend => Some(LLMContextOutcome::WaitInput {
-                    reason: format!("recoverable error: {err}"),
-                    prompt_to_human: Some(err.to_string()),
-                    snapshot: self.snapshot(),
-                    deadline_ms: self.request.human_policy.wait_timeout_ms,
-                }),
-                ErrorMode::FeedAsObservation => {
-                    self.state.consecutive_errors =
-                        self.state.consecutive_errors.saturating_add(1);
-                    let cap = self.request.error_policy.max_consecutive_errors;
-                    if cap > 0 && self.state.consecutive_errors > cap {
-                        return Some(LLMContextOutcome::WaitInput {
-                            reason: "too many consecutive errors".to_string(),
-                            prompt_to_human: Some(err.to_string()),
-                            snapshot: self.snapshot(),
-                            deadline_ms: self.request.human_policy.wait_timeout_ms,
-                        });
-                    }
-                    // The observation message has already been appended to
-                    // accumulated by the caller (tool path); for non-tool
-                    // recoverable errors we push a system message describing
-                    // the error so the next inference can see it.
-                    if !matches!(&err, LLMComputeError::ToolFailed { .. }) {
-                        self.state
-                            .accumulated
-                            .push(AiMessage::text(AiRole::System, format!("error: {err}")));
-                    }
-                    None
+            ErrorClass::Recoverable(err) => {
+                self.state.consecutive_errors =
+                    self.state.consecutive_errors.saturating_add(1);
+                let cap = self.request.error_policy.max_consecutive_errors;
+                if cap > 0 && self.state.consecutive_errors > cap {
+                    // Recoverable but not actually recovering — escalate to
+                    // a terminal Error and let the caller decide what to do.
+                    return Some(LLMContextOutcome::Error {
+                        error: err,
+                        usage: self.state.usage.clone(),
+                    });
                 }
-            },
+                // The observation message has already been appended to
+                // accumulated by the caller (tool path); for non-tool
+                // recoverable errors we push a system message describing
+                // the error so the next inference can see it.
+                if !matches!(&err, LLMComputeError::ToolFailed { .. }) {
+                    self.state
+                        .accumulated
+                        .push(AiMessage::text(AiRole::System, format!("error: {err}")));
+                }
+                None
+            }
         }
     }
 
@@ -763,8 +756,7 @@ impl LLMContext {
                 Ok(response)
             }
             // D7 — inner yields are not supported in v1.
-            LLMContextOutcome::WaitInput { .. }
-            | LLMContextOutcome::PendingTool { .. }
+            LLMContextOutcome::PendingTool { .. }
             | LLMContextOutcome::ContextLimitReached { .. } => {
                 Err(LLMContextOutcome::Error {
                     error: LLMComputeError::Internal(
