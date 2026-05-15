@@ -26,6 +26,7 @@ use named_store::NamedDataMgr;
 use crate::aicc_client::*;
 use crate::app_mgr::*;
 use crate::control_panel::*;
+use crate::kevent_client::KEventClient;
 use crate::msg_center_client::*;
 use crate::msg_queue::*;
 use crate::opendan_client::*;
@@ -2023,6 +2024,15 @@ impl BuckyOSRuntime {
         let krpc_client = self.get_zone_service_krpc_client("task-manager").await?;
         let client = TaskManagerClient::new(krpc_client);
         Ok(client)
+    }
+
+    /// In-process KEvent client bound to this runtime's `app_id`. The Full
+    /// mode shares the cross-process ring buffer when available; if the ring
+    /// isn't reachable, subscriptions still work for events published in the
+    /// same process and `wait_*_kevent` helpers degrade to their sweep
+    /// fallback.
+    pub async fn get_kevent_client(&self) -> Result<KEventClient> {
+        Ok(KEventClient::new_full(self.app_id.as_str(), None))
     }
 
     pub async fn get_aicc_client(&self) -> Result<AiccClient> {

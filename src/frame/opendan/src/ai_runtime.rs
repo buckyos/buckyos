@@ -21,9 +21,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, features, value_to_object_map, AiMethodRequest, AiMethodStatus, AiPayload,
-    AiResponseSummary, AiToolCall, AiToolSpec, AiccClient, Capability, KEventClient,
-    MsgCenterClient, ModelSpec, Requirements, RespFormat, TaskManagerClient,
+    ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
+    AiMethodStatus, AiPayload, AiResponseSummary, AiToolCall, AiToolSpec, AiccClient, Capability,
+    KEventClient, MsgCenterClient, ModelSpec, Requirements, RespFormat, TaskFilter,
+    TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -166,17 +167,115 @@ impl LlmClient for AiccLlmClient {
                     "aicc returned status=succeeded without result".to_string(),
                 )
             }),
-            // TODO(step 6): poll via TaskManagerClient (see old/opendan
-            // behavior::do_inference_once for the production polling path).
-            AiMethodStatus::Running => Err(LLMComputeError::Provider(format!(
-                "aicc returned async task_id={} but polling is not wired in step 2 deps",
-                resp.task_id
-            ))),
+            AiMethodStatus::Running => resolve_async_aicc_result(resp.task_id.as_str()).await,
             AiMethodStatus::Failed => {
                 Err(LLMComputeError::Provider("aicc status=failed".to_string()))
             }
         }
     }
+}
+
+/// Block until an AICC-side async task reaches a terminal state and return
+/// its `AiResponseSummary`. Mirrors the polling path the legacy
+/// `behavior::do_inference_once` used, but reuses
+/// `TaskManagerClient::wait_for_task_end_kevent` so the wait is kevent-
+/// accelerated with a sweep fallback.
+async fn resolve_async_aicc_result(
+    external_task_id: &str,
+) -> Result<AiResponseSummary, LLMComputeError> {
+    let external_task_id = external_task_id.trim();
+    if external_task_id.is_empty() {
+        return Err(LLMComputeError::Provider(
+            "aicc response status=running but task_id is empty".to_string(),
+        ));
+    }
+
+    let runtime = get_buckyos_api_runtime().map_err(|err| {
+        LLMComputeError::Internal(format!("load buckyos runtime failed: {err}"))
+    })?;
+    let taskmgr = runtime
+        .get_task_mgr_client()
+        .await
+        .map_err(|err| LLMComputeError::Provider(format!("init task-manager client failed: {err}")))?;
+
+    let id = resolve_aicc_task_id(&taskmgr, external_task_id).await?;
+
+    let task = taskmgr
+        .wait_for_task_end_kevent(id)
+        .await
+        .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
+
+    if task.status != TaskStatus::Completed {
+        return Err(LLMComputeError::Provider(format!(
+            "aicc task {} ended with status {:?}",
+            id, task.status
+        )));
+    }
+
+    let output = task
+        .data
+        .pointer("/aicc/output")
+        .cloned()
+        .ok_or_else(|| {
+            LLMComputeError::Provider(format!(
+                "aicc task {} terminated without /aicc/output payload",
+                id
+            ))
+        })?;
+    // Envelope-tolerant: aicc.rs writes either `AiResponseSummary` directly
+    // or `{summary: AiResponseSummary, ...}` depending on the event payload
+    // shape. Strip the wrapper when present. (Drop once the task.data schema
+    // is unified — see follow-up task.)
+    let summary_value = output
+        .get("summary")
+        .cloned()
+        .unwrap_or(output);
+    serde_json::from_value::<AiResponseSummary>(summary_value).map_err(|err| {
+        LLMComputeError::Provider(format!(
+            "decode AiResponseSummary from aicc task {} output failed: {err}",
+            id
+        ))
+    })
+}
+
+/// AICC's `external_task_id` is always shaped like `aicc-{ts}-{seq}` and is
+/// not a task-manager id. Walk task-manager listings filtered by the AICC
+/// app to find the row whose `data.aicc.external_task_id` matches.
+async fn resolve_aicc_task_id(
+    taskmgr: &TaskManagerClient,
+    external_task_id: &str,
+) -> Result<i64, LLMComputeError> {
+    if let Ok(id) = external_task_id.parse::<i64>() {
+        return Ok(id);
+    }
+
+    let filter = TaskFilter {
+        app_id: Some(AICC_SERVICE_SERVICE_NAME.to_string()),
+        task_type: None,
+        status: None,
+        parent_id: None,
+        root_id: None,
+    };
+    let tasks = taskmgr
+        .list_tasks(Some(filter), None, None)
+        .await
+        .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
+
+    for task in tasks {
+        let matched = task
+            .data
+            .pointer("/aicc/external_task_id")
+            .and_then(|value| value.as_str())
+            .map(|value| value == external_task_id)
+            .unwrap_or(false);
+        if matched {
+            return Ok(task.id);
+        }
+    }
+    Err(LLMComputeError::Provider(format!(
+        "aicc task_id '{}' is not a numeric task id and no task-manager row references it",
+        external_task_id
+    )))
 }
 
 // =====================================================================

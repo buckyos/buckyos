@@ -1,5 +1,6 @@
 use ::kRPC::*;
 use async_trait::async_trait;
+use log::warn;
 use name_lib::DID;
 use ndn_lib::ObjId;
 
@@ -864,6 +865,84 @@ impl TaskManagerClient {
             }
 
             tokio::time::sleep(poll_interval).await;
+        }
+    }
+
+    /// KEvent-accelerated wait for a task to reach a terminal state.
+    ///
+    /// kevent is treated as an *acceleration* channel only, never as the
+    /// source of truth:
+    /// - subscribes `/task_mgr/{id}` then immediately calls `get_task` once
+    ///   to cover the window where the terminal event was published before
+    ///   the subscription was registered;
+    /// - on each kevent wake-up *or* poll timeout, re-reads `get_task` and
+    ///   only trusts that read (event payloads are not inspected);
+    /// - the first timeout is short (`FIRST_SWEEP_INTERVAL`) so we still
+    ///   make progress when kevent is wedged; once kevent has proven
+    ///   reachable (or the first sweep didn't find a terminal state), we
+    ///   relax to `STEADY_SWEEP_INTERVAL` and rely on kevent for liveness
+    ///   with the slow sweep as a backstop.
+    ///
+    /// If we can't subscribe at all (no runtime / kevent unavailable), we
+    /// fall back to the pure-polling variant — slower, but still correct.
+    pub async fn wait_for_task_end_kevent(&self, id: i64) -> Result<Task> {
+        const FIRST_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
+        const STEADY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+        // EventReader holds only a Weak ref to its KEventClient's inner — we
+        // must keep the client alive for the lifetime of the wait.
+        let kevent: Option<(crate::kevent_client::KEventClient, crate::kevent_client::EventReader)> =
+            match crate::get_buckyos_api_runtime() {
+                Ok(runtime) => match runtime.get_kevent_client().await {
+                    Ok(client) => match client
+                        .create_event_reader(vec![format!("/task_mgr/{}", id)])
+                        .await
+                    {
+                        Ok(reader) => Some((client, reader)),
+                        Err(err) => {
+                            warn!(
+                                "wait_for_task_end_kevent: subscribe failed (task_id={}): {}; \
+                                 falling back to polling sweep",
+                                id, err
+                            );
+                            None
+                        }
+                    },
+                    Err(err) => {
+                        warn!(
+                            "wait_for_task_end_kevent: get_kevent_client failed (task_id={}): {}; \
+                             falling back to polling sweep",
+                            id, err
+                        );
+                        None
+                    }
+                },
+                Err(_) => None,
+            };
+
+        // Authoritative first read — closes the subscribe race.
+        let task = self.get_task(id).await?;
+        if task.status.is_terminal() {
+            return Ok(task);
+        }
+
+        let Some((_client, reader)) = kevent else {
+            // No kevent channel; degrade to plain polling at the first-sweep cadence.
+            self.wait_for_task_end_with_interval(id, FIRST_SWEEP_INTERVAL)
+                .await?;
+            return self.get_task(id).await;
+        };
+
+        let mut interval = FIRST_SWEEP_INTERVAL;
+        loop {
+            // Both event-arrival and timeout lead to the same authoritative
+            // re-read; kevent payload is intentionally ignored.
+            let _ = reader.pull_event(Some(interval.as_millis() as u64)).await;
+            let task = self.get_task(id).await?;
+            if task.status.is_terminal() {
+                return Ok(task);
+            }
+            interval = STEADY_SWEEP_INTERVAL;
         }
     }
 
