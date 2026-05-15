@@ -825,8 +825,19 @@ impl AgentSession {
                             }
                             continue;
                         }
-                        // §9.6 event dispatch: surface the event into the
-                        // turn so the LLM can react.
+                        // Orphan task event — fired after we stopped tracking
+                        // this call_id (interrupt cancelled it, or the
+                        // upstream unsubscribe raced with an in-flight
+                        // emission). Dropping silently is correct: feeding
+                        // "task X completed" into the next turn after the
+                        // session was already told "X cancelled" produces
+                        // conflicting signals for the LLM.
+                        if event_id.starts_with("/task_mgr/") {
+                            consumed_keys.push(input.dedup_key());
+                            continue;
+                        }
+                        // §9.6 event dispatch: surface non-task events into
+                        // the turn so the LLM can react.
                         event_summaries.push(format_event_for_turn(event_id, data));
                         consumed_keys.push(input.dedup_key());
                     }
@@ -913,9 +924,12 @@ impl AgentSession {
                     }
                 } else {
                     // Some calls still outstanding — keep all pending tool
-                    // events on disk and wait for the rest.
+                    // events on disk and wait for the rest. Recv via the
+                    // sweeping wrapper so a lost kevent doesn't park us
+                    // forever (task_mgr is polled on a timed tick and any
+                    // terminal status is synthesized into the queue).
                     self.set_status(SessionStatus::WaitingTool).await;
-                    match inbox_rx.recv().await {
+                    match self.wait_with_tool_sweep(inbox_rx).await {
                         None => return,
                         Some(SessionInput::Cancel) => {
                             self.set_status(SessionStatus::Idle).await;
@@ -942,7 +956,7 @@ impl AgentSession {
             // attention should `interrupt()` first, then `enqueue_pending`.
             if !turn_inputs.is_empty() && self.snapshot_has_pending_tool_calls().await {
                 self.set_status(SessionStatus::WaitingTool).await;
-                match inbox_rx.recv().await {
+                match self.wait_with_tool_sweep(inbox_rx).await {
                     None => return,
                     Some(SessionInput::Cancel) => {
                         self.set_status(SessionStatus::Idle).await;
@@ -1373,6 +1387,96 @@ impl AgentSession {
         snapshot.state.pending_tool_calls.clear();
         self.persist_snapshot(&snapshot).await;
         Ok(())
+    }
+
+    /// Poll task_mgr for every entry in `meta.pending_task_calls`; for each
+    /// task that has already reached a terminal status, synthesize the
+    /// corresponding `/task_mgr/<id>` Event into `pending_inputs` so the
+    /// regular drain path reconciles it. Returns `true` when at least one
+    /// terminal event was synthesized.
+    ///
+    /// Rationale: kevent is an **acceleration channel**, not the source of
+    /// truth — broker restarts, missed deliveries, or unsubscribe races can
+    /// leave the session waiting forever for an event that already fired.
+    /// The worker's WaitingTool recv sites call this on a timed tick to
+    /// guarantee forward progress.
+    async fn sweep_pending_tool_calls(&self) -> bool {
+        let entries = self.meta.lock().await.pending_task_calls.clone();
+        if entries.is_empty() {
+            return false;
+        }
+        let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
+            return false;
+        };
+        let mut synthesized = 0u32;
+        for entry in entries {
+            match client.get_task(entry.task_id).await {
+                Ok(task) => {
+                    if !task.status.is_terminal() {
+                        continue;
+                    }
+                    let payload = serde_json::json!({
+                        "to_status": task.status.to_string(),
+                        "data": task.data,
+                        "message": task.message.clone().unwrap_or_default(),
+                    });
+                    let event = PendingInput::Event {
+                        event_id: entry.event_pattern.clone(),
+                        data: payload,
+                    };
+                    // dedup_key on Event uses event_id; if a kevent for the
+                    // same task is already queued (raced ahead), this is a
+                    // no-op via enqueue_pending's de-dup. Otherwise the
+                    // worker drains the synthetic next iteration.
+                    if let Err(err) = self.enqueue_pending(event).await {
+                        warn!(
+                            "opendan.session[{}]: sweep enqueue for task {} failed: {err:#}",
+                            self.session_id, entry.task_id
+                        );
+                    } else {
+                        synthesized = synthesized.saturating_add(1);
+                    }
+                }
+                Err(err) => {
+                    // get_task failure is non-fatal: leave the entry alone
+                    // so the next sweep retries.
+                    warn!(
+                        "opendan.session[{}]: sweep get_task({}) failed: {err:#}",
+                        self.session_id, entry.task_id
+                    );
+                }
+            }
+        }
+        if synthesized > 0 {
+            info!(
+                "opendan.session[{}]: sweep synthesized {synthesized} terminal task event(s)",
+                self.session_id
+            );
+        }
+        synthesized > 0
+    }
+
+    /// Wait for an inbox signal, but also fire `sweep_pending_tool_calls`
+    /// on a periodic tick. When the sweep enqueues at least one synthetic
+    /// event, return `Wakeup` immediately so the worker re-drains. Used
+    /// only at recv sites where the session is actively in WaitingTool
+    /// (idle session recvs don't need a sweep — there's nothing to
+    /// reconcile).
+    async fn wait_with_tool_sweep(
+        &self,
+        inbox_rx: &mut mpsc::Receiver<SessionInput>,
+    ) -> Option<SessionInput> {
+        const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+        loop {
+            tokio::select! {
+                sig = inbox_rx.recv() => return sig,
+                _ = tokio::time::sleep(SWEEP_INTERVAL) => {
+                    if self.sweep_pending_tool_calls().await {
+                        return Some(SessionInput::Wakeup);
+                    }
+                }
+            }
+        }
     }
 
     /// Empty `meta.pending_task_calls` and flush. Called after a successful
@@ -1976,7 +2080,21 @@ impl AgentSession {
                 }
                 Ok(NextAction::WaitForTool)
             }
-            LLMContextOutcome::BudgetExhausted { which, .. } => {
+            LLMContextOutcome::BudgetExhausted { which, partial, .. } => {
+                // The producer (`context_loop.rs`) preserves whatever
+                // assistant text the LLM had emitted before the budget
+                // gate fired (e.g. token cap mid-stream, or the explicit
+                // wind-down case where a tool attempt is rejected by
+                // `max_rounds=0` but the assistant ack is already there).
+                // Surface that text before discarding the snapshot so it
+                // isn't silently lost.
+                if let Some(text) = partial.as_ref().and_then(output_to_text) {
+                    self.post_outbound_text(&text).await;
+                    let _ = self
+                        .reply_tx
+                        .send(SessionReply::AssistantText { text })
+                        .await;
+                }
                 let _ = self
                     .reply_tx
                     .send(SessionReply::Error {
@@ -2306,7 +2424,7 @@ impl AgentSession {
         let trace_id = format!("{}::fork-{}", parent_trace, depth);
 
         let run_result = self
-            .run_fork_sub(parent_snap, overrides, &sub_cfg, &trace_id)
+            .run_fork_sub(parent_snap, overrides, &sub_cfg, &trace_id, depth)
             .await;
 
         // Pop regardless of success — fork frame lifetime ends here.
@@ -2324,8 +2442,18 @@ impl AgentSession {
         overrides: RequestOverrides,
         sub_cfg: &BehaviorCfg,
         trace_id: &str,
+        depth: usize,
     ) -> Result<ContextOutput> {
         use crate::llm_context_helper::rebuild_with_inherit;
+
+        // Sub-ctx gets its own snapshot file so its TurnHook writes don't
+        // clobber the parent's `state.snap`. The parent's on-disk state
+        // therefore stays consistent throughout the fork, and a mid-fork
+        // crash leaves the *sub-ctx's* most-recent state on disk under a
+        // distinct name — independent of the parent recovery path.
+        let fork_snap_path = self.state_snap_path.with_file_name(format!(
+            "state.snap.fork-{depth}"
+        ));
 
         let ctx_runtime = SessionRuntimeContext {
             trace_id: trace_id.to_string(),
@@ -2340,13 +2468,7 @@ impl AgentSession {
             SessionDepsInput {
                 tools: self.tools.clone(),
                 ctx: ctx_runtime,
-                // Sub-ctx shares the parent's snapshot path — TurnHook
-                // writes from the sub will overwrite the parent's
-                // `.meta/state.snap`. That's intentional: a mid-fork
-                // crash should leave the sub-ctx's most-recent state on
-                // disk for visibility; the parent can re-fork from
-                // there on recovery if needed.
-                snapshot_path: self.state_snap_path.clone(),
+                snapshot_path: fork_snap_path.clone(),
                 approval_required: sub_cfg.approval_required.clone(),
                 one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
                 parser_renderer: sub_cfg.build_parser_and_renderer(),
@@ -2355,6 +2477,22 @@ impl AgentSession {
         let mut ctx = rebuild_with_inherit(parent_snap, overrides, deps)
             .map_err(|e| anyhow!("fork_and_run: rebuild_with_inherit: {e}"))?;
         let outcome = ctx.run().await;
+
+        // Best-effort cleanup of the sub-ctx's snapshot file. Leftover
+        // files only matter if a future fork at the same depth races a
+        // load against the stale content — and even then `rebuild_with_inherit`
+        // takes the parent_snap parameter (not the disk), so the worst
+        // case is harmless wasted bytes. We still tidy up on success.
+        if fork_snap_path.exists() {
+            if let Err(err) = std::fs::remove_file(&fork_snap_path) {
+                warn!(
+                    "opendan.session[{}]: fork snapshot cleanup at {} failed: {err}",
+                    self.session_id,
+                    fork_snap_path.display()
+                );
+            }
+        }
+
         match outcome {
             LLMContextOutcome::Done { output, .. } => Ok(output),
             LLMContextOutcome::Error { error, .. } => {
