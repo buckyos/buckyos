@@ -719,17 +719,32 @@ impl AgentSession {
             // logical turn and is processed first; the Interrupt itself
             // fires on the next loop iteration; anything *after* it runs
             // as a fresh post-interrupt turn.
-            if let Some(pos) = pending
+            //
+            // The one exception (`pending_tools_active` below) is that a
+            // later-queued Interrupt is fast-forwarded ahead of FIFO order
+            // when the prefix cannot make progress on its own — without
+            // that, `[Msg, Interrupt, ...]` while a tool round is still
+            // in flight would deadlock (Msg can't run because tools are
+            // pending; Interrupt can't run because Msg is ahead).
+            let interrupt_pos = pending
                 .iter()
-                .position(|p| matches!(p, PendingInput::Interrupt { .. }))
-            {
-                if pos == 0 {
-                    let (mode, key) = match &pending[0] {
+                .position(|p| matches!(p, PendingInput::Interrupt { .. }));
+            let pending_tools_active = self.snapshot_has_pending_tool_calls().await;
+            if let Some(pos) = interrupt_pos {
+                let head = pos == 0 || pending_tools_active;
+                if head {
+                    let (mode, key) = match &pending[pos] {
                         PendingInput::Interrupt { mode, .. } => {
-                            (*mode, pending[0].dedup_key())
+                            (*mode, pending[pos].dedup_key())
                         }
                         _ => unreachable!("position matched Interrupt"),
                     };
+                    if pos != 0 {
+                        info!(
+                            "opendan.session[{}]: fast-forwarding interrupt({mode:?}) ahead of {pos} pre-queued item(s) — pending tools blocked the prefix",
+                            self.session_id
+                        );
+                    }
                     self.set_status(SessionStatus::Running).await;
                     if let Err(err) = self.execute_interrupt(mode).await {
                         warn!(
@@ -750,10 +765,11 @@ impl AgentSession {
                     self.discard_consumed(&[key]).await;
                     continue;
                 }
-                // Interrupt later in the queue — only process the prefix
-                // this iteration. Truncating drops the Interrupt and
-                // anything after it from this drain pass; they remain in
-                // `meta.pending_inputs` and surface on the next loop.
+                // Interrupt later in the queue AND prefix can still make
+                // progress (no pending tools blocking it). Process the
+                // prefix only this iteration; the Interrupt and anything
+                // after it remain in `meta.pending_inputs` and surface on
+                // the next loop.
                 pending.truncate(pos);
             }
 
@@ -843,8 +859,16 @@ impl AgentSession {
                         .await;
                     match resume_result {
                         Ok(action) => {
+                            // Only consume the task-completion events here.
+                            // Any Msg / non-task Event also queued in this
+                            // drain pass stays in `meta.pending_inputs`:
+                            // resume_with_tool_results only feeds the tool
+                            // results to the LLM, not those messages —
+                            // dropping them would silently lose the input.
+                            // They'll be picked up by the next worker loop,
+                            // by which point `pending_tool_calls` is clear
+                            // and `run_one_turn` handles them normally.
                             self.discard_consumed(&consumed_event_keys).await;
-                            self.discard_consumed(&consumed_keys).await;
                             match action {
                                 NextAction::Idle => self.set_status(SessionStatus::Idle).await,
                                 NextAction::WaitForMsg => {
