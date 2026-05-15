@@ -31,7 +31,7 @@ use crate::agent_bash::{build_session_tools, SessionBinLayout, SessionToolsBuild
 use crate::agent_config::AgentConfig;
 use crate::agent_session::{
     AgentSession, AgentSessionBuild, PendingInput, SessionKind, SessionMeta, SessionReply,
-    SessionStatus,
+    SessionStatus, SessionSummary,
 };
 use crate::ai_runtime::AgentRuntime;
 use crate::contact::ContactLookup;
@@ -273,6 +273,35 @@ impl AIAgent {
     /// pending-input injection.
     pub async fn get_session(&self, session_id: &str) -> Option<Arc<AgentSession>> {
         self.sessions.lock().await.get(session_id).cloned()
+    }
+
+    /// Snapshot every live session as a [`SessionSummary`]. Used by the
+    /// `try_create_worksession` fork sub-context to give its LLM enough
+    /// inventory to decide "reuse an existing worksession vs create a new
+    /// one" — see §8.2 of `notepads/NewOpenDANRuntime.md`.
+    ///
+    /// Ordering is alphabetical by `session_id` for determinism. Excludes
+    /// the calling session (when `exclude_id` matches), since "reuse the
+    /// session that just called this tool" is never the right answer.
+    pub async fn list_session_summaries(
+        &self,
+        exclude_id: Option<&str>,
+    ) -> Vec<SessionSummary> {
+        let sessions: Vec<Arc<AgentSession>> = {
+            let map = self.sessions.lock().await;
+            let mut entries: Vec<_> = map
+                .iter()
+                .filter(|(id, _)| exclude_id != Some(id.as_str()))
+                .map(|(_, s)| s.clone())
+                .collect();
+            entries.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+            entries
+        };
+        let mut out = Vec::with_capacity(sessions.len());
+        for s in sessions {
+            out.push(s.summary().await);
+        }
+        out
     }
 
     /// Trigger a graceful shutdown. Returns immediately; `run()` exits its

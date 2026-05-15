@@ -623,6 +623,22 @@ impl LLMContext {
             //    actually dispatch.
             let mut new_step = StepRecord::from_result(result);
 
+            // 3a. Honor `forbid_next_behavior`: a fork sub-ctx must terminate
+            //     into its own caller, not jump to a sibling behavior. We
+            //     scrub the slot before any "terminal: next_behavior pinned"
+            //     short-circuit so the run continues toward natural Done.
+            //     The original payload is preserved in `assistant_text`, so
+            //     the LLM's reasoning isn't lost — only the control-flow
+            //     directive is suppressed.
+            if self.request.forbid_next_behavior {
+                if let Some(violating) = new_step.next_behavior.take() {
+                    log::warn!(
+                        "behavior_loop: ignoring `<next_behavior>{}</next_behavior>` — forbid_next_behavior flag is set (likely a fork sub-context)",
+                        violating
+                    );
+                }
+            }
+
             // 4. Terminal: next_behavior pinned ⇒ finish immediately, action
             //    (if any) is **not** dispatched.
             if new_step.next_behavior.is_some() {

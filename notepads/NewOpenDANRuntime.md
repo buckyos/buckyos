@@ -1173,22 +1173,52 @@ forward_msg { target_worksession_id: String }
        - 第一版没人往里写东西也无害；ExtTool Volume / Crafter 接入时只需往这层塞 symlink，无需改 overlay PATH 拼接逻辑。
        - 把"一处麻烦"留给未来的自己 = 反模式，避免。
   - **当前实现状态**：[agent_bash.rs](src/frame/opendan/src/agent_bash.rs) 的 `SessionBinLayout` 还是单层 `<session_dir>/bin`，`BinOverlayConfig` 还是 upstream 单 `bin_dir`，三件事都没动。tmux runner 已落地不影响 overlay 工程项。
-- §9.4 残项（switch_mode 三模式 + fork 原语 2026-05-14 第 3 轮已落地，下面是更窄的尾巴）：
-  - `try_create_worksession` 子上下文 prompt 渲染补全：注入"现有 worksession 列表"+ "parent recent history" + "可用 workspace 列表"——目前 sub-system 只放了 reason 一行，sub-LLM 还做不出"复用 vs 新建 workspace"的合理判断
-  - **waist 真接 `forbid_next_behavior` flag**：fork 语义的硬约束，目前是 `RequestOverrides` 上的占位字段，下一轮在 `llm_context::behavior_loop` 看 flag 时硬忽略 LLM 给出的 `<next_behavior>`
-  - `RequestOverrides` + `apply_overrides_to_snapshot` 下沉到 `llm_context` crate（成为 `LLMContextSnapshot` 的关联函数），opendan helper 退化为 "system messages 渲染 / deps 装配 / trace 命名" 的薄胶水
-  - `ContextLimitReached` 的消息层压缩 + `ResumeFill::RewrittenHistory` 续跑
-  - "环境感知 message"（auto-recall memory / workspace 状态 / 事件 diff）
-  - `forward_msg` 自动抓取 "本轮 origin user 消息"（当前实现要求 LLM 显式传 `message` arg，未来 worker 应把句柄塞进 ToolCtx 让 tool 自取）
+- §9.4 残项（switch_mode 三模式 + fork 原语 2026-05-14 第 3 轮已落地；剩余尾巴 2026-05-14 第 5 轮三项全部落地）：
+  - ~~`try_create_worksession` 子上下文 prompt 渲染补全~~ — 已落地（worksession list / 可用 workspace 列表 / parent recent history 三段都注入 sub-system；`forward_msg` 自动从 session 取 origin user 消息）
+  - ~~**waist 真接 `forbid_next_behavior` flag**~~ — 已落地（[request.rs](src/frame/llm_context/src/request.rs) 加 `forbid_next_behavior: bool`，[behavior_loop run_behavior](src/frame/llm_context/src/context_loop.rs:624) 解析后 scrub `next_behavior`；`TryCreateWorksessionTool` 现在 `forbid_next_behavior: true`）
+  - ~~`RequestOverrides` + `apply_overrides_to_snapshot` 下沉到 `llm_context` crate~~ — 已落地（[snapshot_overrides.rs](src/frame/llm_context/src/snapshot_overrides.rs)，opendan helper 退化为薄 `pub use` shim）
+  - ~~`ContextLimitReached` 的消息层压缩 + `ResumeFill::RewrittenHistory` 续跑~~ — 已落地（`run_one_turn` 内置 MAX_COMPRESS_ROUNDS=3 的 re-entry loop；`compress_messages_for_context_limit` 保留前导 System + 末尾 12 条 + 单条 `[context compressed]` 合成 User 消息；持久化 rewritten snapshot 后 resume）
+  - ~~"环境感知 message"~~ — 已落地（`compose_environment_message`：behavior name / session_id+title / workspace_id / one_line_status / unix_ms 五项，仅在 turn 有真实 human/event 输入时拼到 user message 前缀；auto-recall memory / event diff 仍是后续扩展点）
+  - ~~`forward_msg` 自动抓取 "本轮 origin user 消息"~~ — 已落地（`AgentSession.current_origin_msg` 在 worker turn 入口由 worker 写入；`ForwardMsgArgs.message` 改为 `Option`，缺省走 `current_origin_user_message()`）
   - **independent 跨 process normal switch 的恢复路径**：当前 `process_stack` 帧记 `(entry, current)`，pop 时恢复 current；但如果某个 process 内做过 normal switch，存量 `behavior_<entry>.snap` 的 system 段是 switch 后的、`process_stack.current` 也是 switch 后的——这两边要不要"对齐到 entry 自身的 system" 是个语义抉择，等真实用例出来再回看
+
+### 当前进度（2026-05-14，第 5 轮更新 — 剩余 3 项工程项全部落地）
+
+**本批次新增完成（[snapshot_overrides.rs](src/frame/llm_context/src/snapshot_overrides.rs) / [agent_session.rs](src/frame/opendan/src/agent_session.rs) / [worksession_tools.rs](src/frame/opendan/src/worksession_tools.rs)）：**
+
+- **Task 1 — waist `forbid_next_behavior` flag + `RequestOverrides` 下沉**：
+  - [request.rs](src/frame/llm_context/src/request.rs) `LLMContextRequest` 加 `forbid_next_behavior: bool`（`#[serde(default)]` 老 JSON 兼容），所有 caller（opendan / agent_tool::local_llm_context / llm_context tests）回填字段
+  - [behavior_loop run_behavior](src/frame/llm_context/src/context_loop.rs:624) 解析完 `StepRecord` 后看 flag，命中则 `new_step.next_behavior.take()` + `log::warn`，让 sub-ctx 走到自然 End；`assistant_text` 不动（LLM 思考过程保留）
+  - 新文件 [snapshot_overrides.rs](src/frame/llm_context/src/snapshot_overrides.rs)：`RequestOverrides` / `apply_overrides_to_snapshot` / `rebuild_with_inherit` / `build_fresh` 从 opendan helper 整体搬过来，`apply_overrides_to_snapshot` 现在真把 `RequestOverrides.forbid_next_behavior` 写到 `snap.request.forbid_next_behavior`（sticky flag — 子 fork 嵌套自动继承）
+  - opendan helper 退化为薄 `pub use` shim（保留设计文档），全 9 项单测（含新 `apply_overrides_forbid_next_behavior_sets_request_flag`）跟随类型搬到 llm_context
+  - [worksession_tools.rs](src/frame/opendan/src/worksession_tools.rs) `TryCreateWorksessionTool` 现在 `forbid_next_behavior: true`
+- **Task 2 — `try_create_worksession` sub-prompt 补全 + `forward_msg` origin msg 自动抓取**：
+  - [agent_session.rs](src/frame/opendan/src/agent_session.rs) 新增 `SessionSummary` 结构（session_id / kind / title / objective / status / one_line_status / workspace_id / current_behavior）+ `AgentSession::summary()`；`AIAgent::list_session_summaries(exclude_id)` 公开聚合
+  - `AgentSession.current_origin_msg: Arc<std::sync::Mutex<Option<String>>>` 字段；worker 在 turn 入口（具体是 turn_inputs 非空那一刻）从 `human_texts` 末尾抽最新非 `[environment event]` 项写进去；`AgentSession::current_origin_user_message()` 公开读
+  - `AgentSession::try_load_snapshot_for_prompt()` 公开读 parent snapshot（resume 路径仍走私有 `try_load_snapshot`）
+  - [worksession_tools.rs](src/frame/opendan/src/worksession_tools.rs) `render_sub_system_prompt` / `render_worksession_inventory`（过滤 Ended + Work 优先 + 64 条上限）/ `render_workspace_inventory`（按 updated_at_ms desc 排，32 条上限，空时给"留空 mint 新 ws"提示）/ `render_parent_recent_history`（过滤 system/tool，user/assistant 末尾 32 条，单条截 480 字符）四段拼起来，加 `parent_workspace_id` 偏好提示
+  - `ForwardMsgArgs.message` 改 `Option<String>`：缺省自动走 `session.current_origin_user_message()`，缺也缺时返回明确错误（"the current turn appears to have been driven by an event / tool result"）
+- **Task 3 — `ContextLimitReached` 重写续跑 + "环境感知 message"**：
+  - `AgentSession::run_one_turn` 内置 ContextLimitReached re-entry loop（`MAX_COMPRESS_ROUNDS = 3`）：拦截 outcome → `compress_messages_for_context_limit(accumulated)` → 写盘新 snapshot → `LLMContext::resume(ResumeFill::RewrittenHistory)` → 继续 `ctx.run()`；3 轮还命中就翻译成 `Outcome::Error` 走标准 handler
+  - `compress_messages_for_context_limit`：保留前导 System 段；丢中间，保末尾 `COMPRESS_KEEP_TAIL = 12` 条；插一条合成 User 消息描述 `dropped` 数；realign tail 跳过开头 Assistant 防 Assistant→Assistant 连发；alternation 测试通过
+  - `handle_outcome::ContextLimitReached` 退化为"不应该到这"的 warn 兜底（re-entry loop 拦截掉了）
+  - `AgentSession::compose_environment_message(behavior) -> Option<String>` 拼 behavior / session_id+title / workspace_id / recent activity / unix_ms 五段，前缀 `[environment]`；`meta.try_lock` 失败安全降级 None
+  - `build_or_resume` 改为：先 `compose_human_text(human_texts)`，**有人类输入时**才拼 env body 进 user_message_text（mid-run resume / bootstrap 不污染 history）；`merge_env_and_human` 处理 Some/None 各组合
+  - 单测覆盖 `compress_messages_preserves_short_history_verbatim` / `compress_messages_drops_middle_and_keeps_tail`（含 no-back-to-back-assistant 不变量）/ `merge_env_and_human_combines_both_with_env_first` / `merge_env_and_human_handles_missing_pieces`，加上 worksession_tools 的 8 项 prompt 渲染单测
+- 工程脚手架：`cargo test -p llm_context --lib` **74/74 全绿**（+1 forbid flag 测试），`cargo test -p opendan --lib` **73/73 全绿**（+12：compressor / merge_env / 8 worksession_tools prompt 渲染 / origin msg auto-capture 间接覆盖）
+
+**架构观察**：3 项尾巴各自封闭、互不交错。`forbid_next_behavior` 通过 sticky request flag 让嵌套 fork 自动继承，无需调用方逐层透传；`RequestOverrides` 下沉后 opendan 不再持有 waist-internal 类型的"私版"，等价于把 [llm_context_helper.rs](src/frame/opendan/src/llm_context_helper.rs) 提示的 Phase 5 全部交付。`ContextLimitReached` 用 re-entry loop 而不是新 NextAction，控制流不外泄；`compose_environment_message` 只在 turn 有真实输入时才注入也防止了"每次 wakeup 都写一条 env 进 history"的污染。下一步 follow-up 是把 env body 的 auto-recall memory / event diff 真接上（目前是占位骨架）。
 
 
 ### 工程顺序（剩余）
 
-1. **waist 接 `forbid_next_behavior` flag**（独立 PR，小）— `llm_context::behavior_loop` 在解析 `<next_behavior>` 之前看 flag；同时把 `RequestOverrides` + `apply_overrides_to_snapshot` 提案到 llm_context crate，opendan helper 退化为薄胶水。
-2. **`try_create_worksession` sub-prompt 补全**（独立 PR，中）— 在 `worksession_tools.rs::TryCreateWorksessionTool::execute` 里渲染 worksession list（来自 `agent.sessions` 扫描）+ parent recent chat history（从 parent_snap.state.accumulated 抽 user/assistant tail）+ 可用 workspace 列表（来自 `agent.workspaces.list()`）注入 sub-system；同时 `forward_msg` 把"本轮 origin user 消息"句柄塞进 ToolCtx 让 tool 自取。
-3. **§9.4 ContextLimitReached 重写 + 环境感知 message**（独立 PR，中）— 集中在 `agent_session::handle_outcome` / `build_or_resume` 周围；前者实现 `ResumeFill::RewrittenHistory` 续跑、后者补 "环境感知 message"（auto-recall memory / workspace 状态 / 事件 diff）。
-4. ~~**4 层 bin overlay 实施**（§9.2 残项）~~ — 已落地（2026-05-14 第 4 轮）。(a) 多层 `BinOverlayConfig`、(b) `paths::buckyos_root()` + `SessionBinLayout::compute(agent_id, session_id, agent_root)` + `SessionToolsBuild`、(c) `SessionBinRenderer`（hard-link Agent tools + mtime resync + tool plan tombstones + `tool_plan.resolved.toml` 审计）全部就位，agent_tool 75/75 + opendan 69/69 全绿。下一步是 behavior 切换时让 `SessionBinRenderer` hot-swap（目前 session 启动绑定一次）+ Runtime Bin 真接（ExtTool Volume / Crafter）。
+- 本轮完成（2026-05-14 第 5 轮）：上面三项历史排序号 #1 / #2 / #3 全部交付，工程顺序清单清空。
+- 后续可选 follow-up：
+  - 把 env body 的 auto-recall memory + event diff 真接上（目前 `compose_environment_message` 只有 behavior / session / workspace / one_line_status / clock 五段骨架）
+  - independent 跨 process normal switch 的恢复路径语义抉择（见上面"残项"段最后一条）
+  - behavior 切换时 `SessionBinRenderer` hot-swap（目前 session 启动绑定一次）
+  - Runtime Bin 真接（ExtTool Volume / Crafter 接入）
+  - 4 层 bin overlay 实施 — 已落地（2026-05-14 第 4 轮）。(a) 多层 `BinOverlayConfig`、(b) `paths::buckyos_root()` + `SessionBinLayout::compute(agent_id, session_id, agent_root)` + `SessionToolsBuild`、(c) `SessionBinRenderer`（hard-link Agent tools + mtime resync + tool plan tombstones + `tool_plan.resolved.toml` 审计）全部就位，agent_tool 75/75 + opendan 69/69 全绿。
 
 每个阶段独立编译 + 跑 `cargo test`。当前 opendan 已可：
 - 从 msg-center 拉 msg → `Inbound::Msg` → UI session → `enqueue_pending` 落盘 → ack `Readed` → worker 在合适状态下走 `exec_bash` + 读文件 → outcome `Done` 时把回复 `post_send` 回原 peer DID（用 record 上的 `route.tunnel_did` 当 `preferred_tunnel`）

@@ -87,6 +87,7 @@ fn base_request() -> LLMContextRequest {
         budget: Default::default(),
         human_policy: Default::default(),
         error_policy: Default::default(),
+        forbid_next_behavior: false,
     }
 }
 

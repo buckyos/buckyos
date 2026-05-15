@@ -285,6 +285,7 @@ impl OneShotRequest {
                 mode: DEFAULT_ERROR_MODE,
                 max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
             }),
+            forbid_next_behavior: false,
         }
     }
 }

@@ -213,6 +213,30 @@ pub struct PendingTaskCall {
     pub event_pattern: String,
 }
 
+/// Snapshot view of one session's externally-relevant fields. Returned by
+/// [`AgentSession::summary`] and aggregated by [`crate::agent::AIAgent::list_session_summaries`]
+/// for prompts that need to surface the agent's session inventory (the fork
+/// sub-context inside `try_create_worksession` is the canonical consumer).
+///
+/// All fields are owned strings / copies — the struct is safe to pass through
+/// JSON or hand to a long-running prompt rendering pipeline.
+#[derive(Debug, Clone)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub kind: SessionKind,
+    /// Short label; empty for legacy auto-created UI sessions.
+    pub title: String,
+    /// Task statement; empty for UI sessions.
+    pub objective: String,
+    pub status: SessionStatus,
+    /// Last-activity one-liner that the worker writes through the
+    /// `OneLineStatusSink`. Empty when the session has been idle since
+    /// boot.
+    pub one_line_status: String,
+    pub workspace_id: Option<String>,
+    pub current_behavior: String,
+}
+
 /// One frame on the **independent-mode process call stack**. Each frame
 /// records the parent process's entry behavior name (drives the
 /// `.meta/behavior_<entry>.snap` filename) plus the parent's
@@ -337,6 +361,15 @@ pub struct AgentSession {
     /// its on-disk snapshot, and the fork is simply lost (acceptable
     /// per the design doc §Session-level 状态结构).
     fork_stack: Arc<Mutex<Vec<String>>>,
+
+    /// Last user-text that triggered the current (or most recent) inference
+    /// turn. Stashed by the worker right before `run_one_turn` so
+    /// session-aware tools can pick it up without having to be told —
+    /// `forward_msg` reads this to default its body to "the message that
+    /// caused the parent LLM to think a forward was needed". §8.4 of the
+    /// design doc calls this the "本轮 origin user 消息". Per-turn ephemeral
+    /// state — not persisted, simply overwritten each turn.
+    current_origin_msg: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 pub struct AgentSessionBuild {
@@ -410,6 +443,7 @@ impl AgentSession {
             event_pump: b.event_pump,
             trace_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             fork_stack: Arc::new(Mutex::new(Vec::new())),
+            current_origin_msg: Arc::new(std::sync::Mutex::new(None)),
         };
         (session, inbox_rx)
     }
@@ -774,6 +808,21 @@ impl AgentSession {
                 continue;
             }
 
+            // Stash the most recent human-text as the turn's "origin user
+            // message" so session-aware tools (forward_msg) can pick it up
+            // without the LLM having to pass it through tool args (§8.4).
+            // Events have no origin-user semantics — they only update the
+            // stash when they happen to come bundled with chat text.
+            let origin_msg = turn_inputs
+                .iter()
+                .rev()
+                .find(|s| {
+                    let t = s.trim();
+                    !t.is_empty() && !t.starts_with("[environment event]")
+                })
+                .cloned();
+            self.set_current_origin_msg(origin_msg);
+
             self.set_status(SessionStatus::Running).await;
             let turn_result = self.run_one_turn(turn_inputs).await;
             match turn_result {
@@ -1073,15 +1122,79 @@ impl AgentSession {
     async fn run_one_turn(&self, human_texts: Vec<String>) -> Result<NextAction> {
         let behavior = self.load_current_behavior().await?;
         let trace_id = self.next_trace_id();
-        let (ctx_owner, _request, _deps) =
+        let (ctx_owner, _request, deps) =
             self.build_or_resume(&behavior, &human_texts, &trace_id)?;
         let mut ctx = match ctx_owner {
             BuiltContext::Fresh(c) => c,
             BuiltContext::Resumed(c) => c,
         };
-        let outcome = ctx.run().await;
-        let final_snapshot = ctx.snapshot();
-        self.handle_outcome(outcome, &behavior, final_snapshot).await
+        // ContextLimitReached re-entry loop: compress the accumulated
+        // history (opendan-side, message-level) and resume the same
+        // snapshot via `RewrittenHistory`. Bounded so a pathological
+        // history that keeps tripping the limit can't pin the worker.
+        const MAX_COMPRESS_ROUNDS: u32 = 3;
+        let mut compress_rounds = 0u32;
+        loop {
+            let outcome = ctx.run().await;
+            match outcome {
+                LLMContextOutcome::ContextLimitReached {
+                    which,
+                    accumulated,
+                    snapshot,
+                    ..
+                } => {
+                    if compress_rounds >= MAX_COMPRESS_ROUNDS {
+                        warn!(
+                            "opendan.session[{}]: ContextLimitReached after {compress_rounds} compress rounds ({:?}); aborting turn",
+                            self.session_id, which
+                        );
+                        // Out of budget for compressions — surface to the
+                        // standard outcome handler as a non-resumable error.
+                        let final_snapshot = snapshot.clone();
+                        return self
+                            .handle_outcome(
+                                LLMContextOutcome::Error {
+                                    error: llm_context::error::LLMComputeError::Internal(
+                                        format!(
+                                            "context limit reached {:?} and {compress_rounds} \
+                                             compress rounds exhausted",
+                                            which
+                                        ),
+                                    ),
+                                    usage: snapshot.state.usage.clone(),
+                                },
+                                &behavior,
+                                final_snapshot,
+                            )
+                            .await;
+                    }
+                    compress_rounds += 1;
+                    let before_len = accumulated.len();
+                    let rewritten = compress_messages_for_context_limit(accumulated);
+                    let after_len = rewritten.len();
+                    info!(
+                        "opendan.session[{}]: ContextLimitReached ({:?}); compressed history {before_len} → {after_len} messages (round {compress_rounds}/{MAX_COMPRESS_ROUNDS})",
+                        self.session_id, which
+                    );
+                    // Persist the post-compression snapshot before re-running
+                    // so a crash mid-compress doesn't lose the rewrite.
+                    let mut prepared = snapshot;
+                    prepared.state.accumulated = rewritten.clone();
+                    self.persist_snapshot(&prepared).await;
+                    ctx = LLMContext::resume(
+                        prepared,
+                        ResumeFill::RewrittenHistory { history: rewritten },
+                        deps.clone(),
+                    )
+                    .map_err(|e| anyhow!("resume after compression: {e}"))?;
+                    continue;
+                }
+                other => {
+                    let final_snapshot = ctx.snapshot();
+                    return self.handle_outcome(other, &behavior, final_snapshot).await;
+                }
+            }
+        }
     }
 
     fn next_trace_id(&self) -> String {
@@ -1120,9 +1233,30 @@ impl AgentSession {
             },
         );
 
+        // Compose the per-turn "environment-aware message" once so both the
+        // resume and fresh-build branches see it. The message is the
+        // opendan-side surface for §5 "环境感知 message" — bundles current
+        // workspace / behavior / activity hints so the LLM doesn't have to
+        // re-discover them every turn.
+        //
+        // Emit env **only when there is real human/event input driving this
+        // turn**. Mid-run resumes (no human text, snapshot present) must
+        // not inject a synthetic User message or they'd promote an idle
+        // wakeup into a fake conversational turn. Bootstrap turns (work
+        // session first run, no input, no snapshot) get the objective via
+        // System and don't need env either.
+        let human_body = compose_human_text(human_texts);
+        let user_message_text = match human_body {
+            Some(h) => {
+                let env_body = self.compose_environment_message(behavior);
+                merge_env_and_human(env_body, Some(h))
+            }
+            None => None,
+        };
+
         if let Some(snapshot) = self.try_load_snapshot() {
             if snapshot.state.pending_tool_calls.is_empty() {
-                let fill = if let Some(text) = compose_human_text(human_texts) {
+                let fill = if let Some(text) = user_message_text.clone() {
                     ResumeFill::HumanInput {
                         message: AiMessage::text(AiRole::User, text),
                     }
@@ -1141,7 +1275,7 @@ impl AgentSession {
         }
 
         let mut input = self.render_system_messages(behavior);
-        if let Some(text) = compose_human_text(human_texts) {
+        if let Some(text) = user_message_text {
             input.push(AiMessage::text(AiRole::User, text));
         }
         let request = LLMContextRequest {
@@ -1157,6 +1291,7 @@ impl AgentSession {
             budget: behavior.to_budget_spec(),
             human_policy: behavior.to_human_policy(),
             error_policy: behavior.to_error_policy(),
+            forbid_next_behavior: false,
         };
         let fresh = LLMContext::new(request.clone(), deps.clone());
         Ok((BuiltContext::Fresh(fresh), request, deps))
@@ -1164,6 +1299,15 @@ impl AgentSession {
 
     fn try_load_snapshot(&self) -> Option<LLMContextSnapshot> {
         self.try_load_snapshot_from(&self.state_snap_path)
+    }
+
+    /// Read-only access to the session's most-recently-persisted snapshot.
+    /// Returns `None` when no snapshot exists yet (fresh session, or one
+    /// that has been `discard_snapshot`-ed). Intended for prompt-rendering
+    /// consumers (e.g. fork sub-context history injection) — do **not** use
+    /// this for resumption; that goes through `build_or_resume`.
+    pub fn try_load_snapshot_for_prompt(&self) -> Option<LLMContextSnapshot> {
+        self.try_load_snapshot()
     }
 
     /// Lower-level: load a snapshot from a specific path. Returns `None` on
@@ -1214,7 +1358,59 @@ impl AgentSession {
             budget: cfg.to_budget_spec(),
             human_policy: cfg.to_human_policy(),
             error_policy: cfg.to_error_policy(),
+            forbid_next_behavior: false,
         }
+    }
+
+    /// Compose the "environment-aware message" — a short, structured
+    /// summary of the session's current environment that we prefix onto
+    /// each turn's user input. Per §5 of `notepads/NewOpenDANRuntime.md`
+    /// the message should eventually include auto-recalled memory and an
+    /// event/message diff; the MVP version assembles the bits we can read
+    /// synchronously without grabbing the async meta lock:
+    ///
+    /// - Current behavior name (so the LLM knows which prompt context it's
+    ///   operating under after a `Normal`-mode switch).
+    /// - Workspace binding id (when present).
+    /// - One-line activity status (filled by tools through the
+    ///   `OneLineStatusSink`).
+    /// - Wall-clock timestamp so the LLM can reason about "now".
+    ///
+    /// Returns `None` when nothing useful can be rendered — caller then
+    /// falls back to just the raw human-text input (or `ResumeFromMidRun`).
+    /// `meta.try_lock` failures degrade silently (returns `None`); the
+    /// fact that a turn is currently driving an inference is rare to
+    /// happen concurrently with build_or_resume anyway.
+    fn compose_environment_message(&self, behavior: &BehaviorCfg) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        let workspace_id;
+        let one_line;
+        let title;
+        match self.meta.try_lock() {
+            Ok(g) => {
+                workspace_id = g.workspace_id.clone();
+                one_line = g.one_line_status.clone();
+                title = g.title.clone();
+            }
+            Err(_) => return None,
+        }
+        // Always include behavior — the LLM can otherwise lose track after
+        // a Normal-mode switch with no explicit hand-off.
+        parts.push(format!("behavior: `{}`", behavior.name));
+        if !title.trim().is_empty() {
+            parts.push(format!("session: `{}` (\"{}\")", self.session_id, title.trim()));
+        } else {
+            parts.push(format!("session: `{}`", self.session_id));
+        }
+        if let Some(ws) = workspace_id.as_deref().filter(|s| !s.is_empty()) {
+            parts.push(format!("workspace: `{}`", ws));
+        }
+        let trimmed_status = one_line.trim();
+        if !trimmed_status.is_empty() {
+            parts.push(format!("recent activity: {}", trimmed_status));
+        }
+        parts.push(format!("clock: unix_ms={}", now_ms()));
+        Some(format!("[environment]\n{}", parts.join("\n")))
     }
 
     fn render_system_messages(&self, behavior: &BehaviorCfg) -> Vec<AiMessage> {
@@ -1442,6 +1638,15 @@ impl AgentSession {
                 Ok(NextAction::WaitForMsg)
             }
             LLMContextOutcome::ContextLimitReached { which, .. } => {
+                // Should not happen — `run_one_turn` intercepts
+                // ContextLimitReached and either resumes via
+                // `ResumeFill::RewrittenHistory` or maps to an Error after
+                // exhausting the compress budget. If we land here, the
+                // re-entry loop is broken; surface it so the bug is loud.
+                warn!(
+                    "opendan.session[{}]: ContextLimitReached reached handle_outcome (compress loop bypassed?); kind={:?}",
+                    self.session_id, which
+                );
                 let _ = self
                     .reply_tx
                     .send(SessionReply::Error {
@@ -1814,6 +2019,46 @@ impl AgentSession {
         self.fork_stack.lock().await.len()
     }
 
+    /// Read the "origin user message" stashed for the current turn — the
+    /// most recent user-side `PendingInput::Msg` text the worker drained
+    /// before running inference. Used by session-aware tools (`forward_msg`)
+    /// so the LLM doesn't have to echo the message back as a tool argument.
+    pub fn current_origin_user_message(&self) -> Option<String> {
+        self.current_origin_msg
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .filter(|s| !s.trim().is_empty())
+    }
+
+    /// Worker-internal: stash / clear the per-turn origin message. Pass
+    /// `Some(text)` right before running a turn; `None` to clear (e.g. on
+    /// session exit).
+    fn set_current_origin_msg(&self, value: Option<String>) {
+        if let Ok(mut g) = self.current_origin_msg.lock() {
+            *g = value;
+        }
+    }
+
+    /// Lightweight snapshot of the session's externally-relevant fields,
+    /// suitable for embedding into another LLM's prompt (e.g. a
+    /// `try_create_worksession` sub-context choosing "reuse vs new"). Reads
+    /// the in-memory `SessionMeta`, so it reflects the most recent
+    /// status / one_line_status without touching disk.
+    pub async fn summary(&self) -> SessionSummary {
+        let meta = self.meta.lock().await;
+        SessionSummary {
+            session_id: meta.session_id.clone(),
+            kind: meta.kind,
+            title: meta.title.clone(),
+            objective: meta.objective.clone(),
+            status: meta.status,
+            one_line_status: meta.one_line_status.clone(),
+            workspace_id: meta.workspace_id.clone(),
+            current_behavior: meta.current_behavior.clone(),
+        }
+    }
+
     async fn set_status(&self, status: SessionStatus) {
         {
             let mut g = self.meta.lock().await;
@@ -2135,6 +2380,65 @@ fn format_event_for_turn(event_id: &str, data: &serde_json::Value) -> String {
     }
 }
 
+/// Cap on the size of the tail preserved when compressing `accumulated` on
+/// `ContextLimitReached`. Picked empirically — small enough to slash the
+/// window dramatically (so a near-limit history reliably fits afterward)
+/// while keeping enough recent exchange that the LLM doesn't lose the
+/// thread.
+const COMPRESS_KEEP_TAIL: usize = 12;
+
+/// Heuristic message-level compressor used by `run_one_turn` when the waist
+/// emits `Outcome::ContextLimitReached`. Strategy:
+///   1. Keep the leading run of `System` messages verbatim (identity /
+///      role / objective text — never drop these).
+///   2. Drop the middle of the conversation, keeping the last
+///      [`COMPRESS_KEEP_TAIL`] non-system messages.
+///   3. Insert a single synthetic `User` message between the System block
+///      and the tail describing what was dropped, so the LLM sees an
+///      explicit gap rather than wondering why history seems to skip.
+///
+/// Best-effort on role alternation: if the tail starts with an
+/// `Assistant` message, we drop it so the synthetic `User` slots in
+/// cleanly. Providers vary in their strictness; this keeps the common
+/// case (tail starts with `User`) clean and the edge case from emitting
+/// two `Assistant` messages in a row.
+///
+/// Note: this is an opendan-level compressor (message dimension), distinct
+/// from the optional `HistoryCompressor` inside the Behavior Loop (step
+/// dimension). They can coexist.
+pub fn compress_messages_for_context_limit(accumulated: Vec<AiMessage>) -> Vec<AiMessage> {
+    let leading_system = accumulated
+        .iter()
+        .position(|m| m.role != AiRole::System)
+        .unwrap_or(accumulated.len());
+    let total = accumulated.len();
+    let rest_len = total - leading_system;
+    if rest_len <= COMPRESS_KEEP_TAIL {
+        // Nothing to drop — the body already fits the budget. Returning
+        // the input verbatim is still useful: the `ResumeFill::RewrittenHistory`
+        // path re-establishes `state.accumulated` from this vec.
+        return accumulated;
+    }
+    let dropped = rest_len - COMPRESS_KEEP_TAIL;
+    let mut out: Vec<AiMessage> = accumulated.iter().take(leading_system).cloned().collect();
+    out.push(AiMessage::text(
+        AiRole::User,
+        format!(
+            "[context compressed: {} earlier message{} dropped to fit the model context window; resume from the recent tail below]",
+            dropped,
+            if dropped == 1 { "" } else { "s" }
+        ),
+    ));
+    // Realign tail so it doesn't open with an Assistant message right after
+    // our synthetic User (would make the LLM see User→Assistant→Assistant→...).
+    let mut tail_start = leading_system + dropped;
+    while tail_start < total && matches!(accumulated[tail_start].role, AiRole::Assistant) {
+        tail_start += 1;
+    }
+    out.extend(accumulated.into_iter().skip(tail_start));
+    out
+}
+
 fn compose_human_text(texts: &[String]) -> Option<String> {
     let joined: Vec<&str> = texts
         .iter()
@@ -2145,6 +2449,24 @@ fn compose_human_text(texts: &[String]) -> Option<String> {
         None
     } else {
         Some(joined.join("\n\n"))
+    }
+}
+
+/// Build the user-message body fed into the next inference from the
+/// environment-aware preamble and the actual human/event text.
+///
+/// Rules:
+/// - Both present → `{env}\n\n{human}` (env first so the LLM reads it before
+///   the user input that drives the turn).
+/// - Only one present → return it verbatim.
+/// - Both empty → `None` (caller will fall through to `ResumeFromMidRun` or
+///   omit the user message entirely on fresh build).
+fn merge_env_and_human(env: Option<String>, human: Option<String>) -> Option<String> {
+    match (env, human) {
+        (Some(e), Some(h)) => Some(format!("{e}\n\n{h}")),
+        (Some(e), None) => Some(e),
+        (None, Some(h)) => Some(h),
+        (None, None) => None,
     }
 }
 
@@ -2382,6 +2704,74 @@ mod tests {
         // frequently and the session must wait for the terminal one.
         let payload = serde_json::json!({"to_status": "Running"});
         assert!(observation_from_task_event("c", &payload).is_none());
+    }
+
+    #[test]
+    fn compress_messages_preserves_short_history_verbatim() {
+        // Under the keep-tail threshold ⇒ no compression, output == input.
+        let msgs = vec![
+            AiMessage::text(AiRole::System, "sys"),
+            AiMessage::text(AiRole::User, "u1"),
+            AiMessage::text(AiRole::Assistant, "a1"),
+        ];
+        let out = compress_messages_for_context_limit(msgs.clone());
+        assert_eq!(out.len(), msgs.len());
+        assert_eq!(out[0].role, AiRole::System);
+    }
+
+    #[test]
+    fn compress_messages_drops_middle_and_keeps_tail() {
+        let mut msgs = vec![AiMessage::text(AiRole::System, "sys")];
+        // Generate alternating user/assistant pairs well beyond the tail cap.
+        for i in 0..(COMPRESS_KEEP_TAIL + 20) {
+            let role = if i % 2 == 0 { AiRole::User } else { AiRole::Assistant };
+            msgs.push(AiMessage::text(role, format!("m-{i}")));
+        }
+        let out = compress_messages_for_context_limit(msgs);
+        assert_eq!(out[0].role, AiRole::System);
+        // Second message is the synthetic compression note.
+        assert_eq!(out[1].role, AiRole::User);
+        let note = out[1]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                AiContent::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        assert!(note.contains("context compressed"));
+        assert!(note.contains("earlier"));
+        // Tail length is at most the keep cap (may be one less when we
+        // realign past a leading Assistant).
+        let tail_len = out.len() - 2;
+        assert!(tail_len <= COMPRESS_KEEP_TAIL);
+        assert!(tail_len >= COMPRESS_KEEP_TAIL - 1);
+        // No two assistant messages in a row (our realignment guarantee).
+        for w in out.windows(2) {
+            assert!(
+                !(w[0].role == AiRole::Assistant && w[1].role == AiRole::Assistant),
+                "compress must not produce back-to-back assistant messages"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_env_and_human_combines_both_with_env_first() {
+        let m = merge_env_and_human(Some("E".into()), Some("H".into()));
+        assert_eq!(m.as_deref(), Some("E\n\nH"));
+    }
+
+    #[test]
+    fn merge_env_and_human_handles_missing_pieces() {
+        assert_eq!(
+            merge_env_and_human(None, Some("h".into())).as_deref(),
+            Some("h")
+        );
+        assert_eq!(
+            merge_env_and_human(Some("e".into()), None).as_deref(),
+            Some("e")
+        );
+        assert!(merge_env_and_human(None, None).is_none());
     }
 
     #[test]

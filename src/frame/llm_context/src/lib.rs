@@ -16,6 +16,7 @@ pub mod prompt_budget;
 pub mod prompt_compose;
 pub mod prompt_engine;
 pub mod request;
+pub mod snapshot_overrides;
 pub mod state;
 pub mod step_record;
 pub mod xml_behavior;
@@ -50,6 +51,9 @@ pub use request::{
     BudgetAction, BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorClass,
     ErrorMode, ErrorPolicy, HumanPolicy, LLMContextRequest, ModelPolicy,
     OutputSpec, ToolMode, ToolPolicy,
+};
+pub use snapshot_overrides::{
+    apply_overrides_to_snapshot, build_fresh, rebuild_with_inherit, RequestOverrides,
 };
 pub use state::{LLMContextSnapshot, LLMContextState};
 pub use step_record::XmlStepRenderer;

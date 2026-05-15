@@ -233,4 +233,15 @@ pub struct LLMContextRequest {
     pub human_policy: HumanPolicy,
     #[serde(default)]
     pub error_policy: ErrorPolicy,
+
+    /// Hard constraint for Behavior Loop: when `true`, any `<next_behavior>`
+    /// produced by the parser is discarded (logged) and the step is treated
+    /// as if `next_behavior == None`. Used by fork sub-contexts whose
+    /// control flow must end with the run, never jump to another behavior.
+    ///
+    /// Default `false` — set via `RequestOverrides.forbid_next_behavior` on
+    /// the snapshot-rebuild path, or directly in the request when building
+    /// a fresh fork context.
+    #[serde(default)]
+    pub forbid_next_behavior: bool,
 }
