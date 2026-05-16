@@ -2024,7 +2024,7 @@ impl AgentSession {
 
         let trace_id = self.next_trace_id();
         let (ctx_owner, _request, deps) =
-            self.build_or_resume(&behavior, &human_texts, &trace_id)?;
+            self.build_or_resume(&behavior, &human_texts, &trace_id).await?;
         let mut ctx = match ctx_owner {
             BuiltContext::Fresh(c) => c,
             BuiltContext::Resumed(c) => c,
@@ -2175,7 +2175,33 @@ impl AgentSession {
         format!("{}-{}", self.session_id, n)
     }
 
-    fn build_or_resume(
+    /// Build the [`RequestOverrides`] that refreshes a resumed snapshot's
+    /// request side with the **current** behavior config. Mirrors
+    /// `apply_switch_normal` but with `reset_rounds = reset_errors = false`
+    /// — this is a soft refresh on every resume, not a behavior switch.
+    ///
+    /// Without this, edits to the behavior config (system prompt, model,
+    /// tool policy, budget, …) made between turns silently fail to land:
+    /// resume re-uses the snapshot's stored `request` and only a `switch` /
+    /// `discard` path would otherwise pick up the new config.
+    fn current_behavior_overrides(&self, behavior: &BehaviorCfg) -> RequestOverrides {
+        RequestOverrides {
+            system_messages: Some(self.render_system_messages(behavior)),
+            tool_policy: Some(behavior.to_tool_policy()),
+            objective: Some(behavior.objective.clone()),
+            model_policy: Some(behavior.to_model_policy()),
+            budget: Some(behavior.to_budget_spec()),
+            human_policy: Some(behavior.to_human_policy()),
+            error_policy: Some(behavior.to_error_policy()),
+            output: Some(behavior.to_output_spec()),
+            trace: None,
+            reset_rounds: false,
+            reset_errors: false,
+            forbid_next_behavior: false,
+        }
+    }
+
+    async fn build_or_resume(
         &self,
         behavior: &BehaviorCfg,
         human_texts: &[String],
@@ -2227,6 +2253,18 @@ impl AgentSession {
 
         if let Some(snapshot) = self.try_load_snapshot() {
             if snapshot.state.pending_tool_calls.is_empty() {
+                // Refresh the snapshot's request side with the current
+                // behavior config before resuming. The cost (one
+                // leading-system swap + a handful of policy field copies)
+                // is negligible next to history tokens + inference, and it
+                // guarantees mid-session config edits actually land — without
+                // this, only a `switch` or a `discard` round would pick up
+                // the new system prompt / model / tool policy.
+                let snapshot = apply_overrides_to_snapshot(
+                    snapshot,
+                    self.current_behavior_overrides(behavior),
+                );
+
                 if let Some(text) = user_message_text.clone() {
                     // Idle session + new user message: build a fresh
                     // LLMContext whose conversation history *is* the
@@ -2254,10 +2292,30 @@ impl AgentSession {
                 .map_err(|e| anyhow!("resume: {e}"))?;
                 return Ok((BuiltContext::Resumed(resumed), request, deps));
             }
+
+            // Snapshot is in a suspended state (pending_tool_calls non-empty)
+            // but the worker reached `build_or_resume` instead of
+            // `resume_with_tool_results` — meta-level `pending_task_calls` is
+            // empty, i.e. there are no in-flight task_mgr handles to wait on.
+            // Typical cause: crash between `PendingTool`'s snapshot persist
+            // and task dispatch, leaving an orphan suspended snapshot. We
+            // cannot synthesize observations to feed `ResumeFill::ToolResults`,
+            // so drop the snapshot and start fresh on the current user input.
+            // Emit a SystemInput marker so the gap is visible in round history.
+            let pending_count = snapshot.state.pending_tool_calls.len();
             warn!(
-                "opendan.session[{}]: snapshot has pending tool calls but resume path is not wired; starting fresh",
+                "opendan.session[{}]: discarding snapshot with {pending_count} pending tool calls — no resume fill available",
                 self.session_id
             );
+            self.discard_snapshot();
+            self.history_append_event(HistoryEvent::SystemInput {
+                source: "session.snapshot_dropped".to_string(),
+                payload: serde_json::json!({
+                    "reason": "pending_tool_calls present but no in-flight task handles to resume against (likely crash between PendingTool persist and task dispatch)",
+                    "pending_count": pending_count,
+                }),
+            })
+            .await;
         }
 
         let mut input = self.render_system_messages(behavior);
