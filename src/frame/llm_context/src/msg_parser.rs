@@ -80,6 +80,7 @@ pub struct AttachmentTag {
     pub kind: String,
     pub obj_id: Option<String>,
     pub url: Option<String>,
+    pub path: Option<String>,
     pub mime: Option<String>,
     pub title: Option<String>,
     pub label: Option<String>,
@@ -90,6 +91,32 @@ pub enum MsgParserError {
     #[error("invalid attachment obj_id `{value}`: {message}")]
     InvalidObjId { value: String, message: String },
 }
+
+/// Result of validating a single LLM-emitted `<attachment>` reference.
+/// `Ok(())` lowers it to a `MsgContent.refs` entry; `Err(reason)` keeps it
+/// as inert text so the message isn't silently corrupted.
+pub type AttachmentValidation = std::result::Result<(), String>;
+
+/// Out-of-band ACL / path policy injected at the egress conversion site.
+/// `msg_parser` itself is policy-free — opendan supplies a real
+/// implementation (workspace whitelist, ACL lookups, …); tests use the
+/// permissive default.
+pub trait AttachmentValidator: Send + Sync {
+    fn validate_obj_id(&self, _obj_id: &ObjId) -> AttachmentValidation {
+        Ok(())
+    }
+    fn validate_path(&self, _path: &str) -> AttachmentValidation {
+        Ok(())
+    }
+    fn validate_url(&self, _url: &str) -> AttachmentValidation {
+        Ok(())
+    }
+}
+
+/// Default validator that approves every attachment. Used by the
+/// non-validated wrappers and in tests where no security boundary exists.
+pub struct PermissiveAttachmentValidator;
+impl AttachmentValidator for PermissiveAttachmentValidator {}
 
 /// Parse a `MsgObject` into either a reserved system-control command or a
 /// normal `AiMessage`. Use this at MessageHub ingress points where `/...`
@@ -153,10 +180,26 @@ pub fn ai_message_to_msg_object(
 }
 
 /// Convert an `AiMessage` into a `MsgObject`, preserving the caller-provided
-/// envelope fields in `base` and replacing only `base.content`.
+/// envelope fields in `base` and replacing only `base.content`. Uses the
+/// permissive validator — call `ai_message_to_msg_object_with_base_validated`
+/// from policy-bearing surfaces (e.g. opendan egress) to enforce the §2.2.2
+/// path / ACL whitelist.
 pub fn ai_message_to_msg_object_with_base(
     message: &AiMessage,
+    base: MsgObject,
+) -> Result<MsgObject, MsgParserError> {
+    ai_message_to_msg_object_with_base_validated(message, base, &PermissiveAttachmentValidator)
+}
+
+/// Same as [`ai_message_to_msg_object_with_base`], but every `<attachment>`
+/// reference produced by the LLM (obj_id / path / url) is filtered through
+/// `validator`. Rejected attachments are left inline as text so the model's
+/// intent is preserved verbatim and the failure surfaces in audit logs,
+/// rather than silently dropping a half-converted ref.
+pub fn ai_message_to_msg_object_with_base_validated(
+    message: &AiMessage,
     mut base: MsgObject,
+    validator: &dyn AttachmentValidator,
 ) -> Result<MsgObject, MsgParserError> {
     let mut text_parts: Vec<String> = Vec::new();
     let mut refs: Vec<RefItem> = Vec::new();
@@ -165,10 +208,17 @@ pub fn ai_message_to_msg_object_with_base(
     for block in &message.content {
         match block {
             AiContent::Text { text } => {
-                collect_text_and_attachment_tags(text, &mut text_parts, &mut refs)?;
+                collect_text_and_attachment_tags(text, &mut text_parts, &mut refs, validator)?;
             }
             AiContent::Image { source } => {
-                collect_resource_ref("image", source, None, &mut text_parts, &mut refs);
+                collect_resource_ref(
+                    "image",
+                    source,
+                    None,
+                    &mut text_parts,
+                    &mut refs,
+                    validator,
+                );
             }
             AiContent::Document { source, title } => {
                 collect_resource_ref(
@@ -177,6 +227,7 @@ pub fn ai_message_to_msg_object_with_base(
                     title.as_deref(),
                     &mut text_parts,
                     &mut refs,
+                    validator,
                 );
             }
             AiContent::ProviderState { provider, value } if provider == PROVIDER_MSG_MACHINE => {
@@ -271,9 +322,25 @@ fn collect_resource_ref(
     title: Option<&str>,
     text_parts: &mut Vec<String>,
     refs: &mut Vec<RefItem>,
+    validator: &dyn AttachmentValidator,
 ) {
     match source {
         ResourceRef::NamedObject { obj_id } => {
+            if let Err(reason) = validator.validate_obj_id(obj_id) {
+                text_parts.push(render_attachment_rejection(
+                    &AttachmentTag {
+                        kind: kind.to_string(),
+                        obj_id: Some(obj_id.to_string()),
+                        url: None,
+                        path: None,
+                        mime: None,
+                        title: title.map(|s| s.to_string()),
+                        label: None,
+                    },
+                    &reason,
+                ));
+                return;
+            }
             refs.push(RefItem {
                 role: RefRole::Input,
                 target: RefTarget::DataObj {
@@ -284,10 +351,26 @@ fn collect_resource_ref(
             });
         }
         ResourceRef::Url { url, mime_hint } => {
+            if let Err(reason) = validator.validate_url(url) {
+                text_parts.push(render_attachment_rejection(
+                    &AttachmentTag {
+                        kind: kind.to_string(),
+                        obj_id: None,
+                        url: Some(url.clone()),
+                        path: None,
+                        mime: mime_hint.clone(),
+                        title: title.map(|s| s.to_string()),
+                        label: None,
+                    },
+                    &reason,
+                ));
+                return;
+            }
             text_parts.push(render_attachment_tag(&AttachmentTag {
                 kind: kind.to_string(),
                 obj_id: None,
                 url: Some(url.clone()),
+                path: None,
                 mime: mime_hint.clone(),
                 title: title.map(|s| s.to_string()),
                 label: None,
@@ -311,14 +394,17 @@ fn collect_text_and_attachment_tags(
     text: &str,
     text_parts: &mut Vec<String>,
     refs: &mut Vec<RefItem>,
+    validator: &dyn AttachmentValidator,
 ) -> Result<(), MsgParserError> {
     let mut ordinary = Vec::new();
     for line in text.lines() {
         if let Some(tag) = parse_attachment_tag(line.trim()) {
-            if let Some(item) = attachment_tag_to_ref_item(&tag)? {
-                refs.push(item);
-            } else {
-                ordinary.push(render_attachment_tag(&tag));
+            match attachment_tag_to_ref_item(&tag, validator)? {
+                AttachmentLowering::Ref(item) => refs.push(item),
+                AttachmentLowering::Keep => ordinary.push(render_attachment_tag(&tag)),
+                AttachmentLowering::Rejected(reason) => {
+                    ordinary.push(render_attachment_rejection(&tag, &reason));
+                }
             }
         } else {
             ordinary.push(line.to_string());
@@ -331,15 +417,41 @@ fn collect_text_and_attachment_tags(
     Ok(())
 }
 
-fn attachment_tag_to_ref_item(tag: &AttachmentTag) -> Result<Option<RefItem>, MsgParserError> {
+enum AttachmentLowering {
+    /// Lowered to a `MsgContent.refs` entry.
+    Ref(RefItem),
+    /// Nothing structured to lower — keep the tag as text.
+    Keep,
+    /// Validator rejected the reference; keep an annotated rejection text.
+    Rejected(String),
+}
+
+fn attachment_tag_to_ref_item(
+    tag: &AttachmentTag,
+    validator: &dyn AttachmentValidator,
+) -> Result<AttachmentLowering, MsgParserError> {
+    if let Some(raw_path) = tag.path.as_ref().filter(|s| !s.trim().is_empty()) {
+        // Local paths are advisory only — they cannot be carried across
+        // tunnels as a stable ref, so even when allowed they stay as text
+        // (the receiver has no way to read the sender's filesystem). The
+        // validation gate is still here so any "..", workspace-escape, or
+        // symlink-bypass attempt is caught and audit-logged.
+        if let Err(reason) = validator.validate_path(raw_path) {
+            return Ok(AttachmentLowering::Rejected(reason));
+        }
+        return Ok(AttachmentLowering::Keep);
+    }
     let Some(raw_obj_id) = tag.obj_id.as_ref().filter(|s| !s.trim().is_empty()) else {
-        return Ok(None);
+        return Ok(AttachmentLowering::Keep);
     };
     let obj_id = ObjId::new(raw_obj_id).map_err(|err| MsgParserError::InvalidObjId {
         value: raw_obj_id.clone(),
         message: err.to_string(),
     })?;
-    Ok(Some(RefItem {
+    if let Err(reason) = validator.validate_obj_id(&obj_id) {
+        return Ok(AttachmentLowering::Rejected(reason));
+    }
+    Ok(AttachmentLowering::Ref(RefItem {
         role: RefRole::Input,
         target: RefTarget::DataObj {
             obj_id,
@@ -373,6 +485,7 @@ fn parse_attachment_tag(raw: &str) -> Option<AttachmentTag> {
             .unwrap_or_else(|| "document".to_string()),
         obj_id: attrs.get("obj_id").cloned(),
         url: attrs.get("url").cloned(),
+        path: attrs.get("path").cloned(),
         mime: attrs.get("mime").cloned(),
         title: attrs.get("title").cloned(),
         label: attrs.get("label").cloned(),
@@ -437,6 +550,9 @@ fn render_attachment_tag(tag: &AttachmentTag) -> String {
         attrs.push(format!("source=\"url\""));
         attrs.push(format!("url=\"{}\"", escape_attr(url)));
     }
+    if let Some(path) = &tag.path {
+        attrs.push(format!("path=\"{}\"", escape_attr(path)));
+    }
     if let Some(mime) = &tag.mime {
         attrs.push(format!("mime=\"{}\"", escape_attr(mime)));
     }
@@ -447,6 +563,18 @@ fn render_attachment_tag(tag: &AttachmentTag) -> String {
         attrs.push(format!("label=\"{}\"", escape_attr(label)));
     }
     format!("<attachment {} />", attrs.join(" "))
+}
+
+/// Render a rejected attachment as text so the recipient still sees the
+/// LLM's intent and the reason it was filtered. The original tag is kept
+/// for debugging; the leading `<!-- … -->` line makes the rejection obvious
+/// in MsgObject.content without breaking surrounding markdown.
+fn render_attachment_rejection(tag: &AttachmentTag, reason: &str) -> String {
+    format!(
+        "<!-- attachment rejected: {} -->\n{}",
+        reason,
+        render_attachment_tag(tag)
+    )
 }
 
 fn escape_attr(value: &str) -> String {

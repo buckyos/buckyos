@@ -1071,6 +1071,7 @@ impl AgentSession {
             wakeup_id: String::new(),
             session_id: self.session_id.clone(),
         };
+        let from_user_did = self.current_from_user_did().await;
         let deps = build_session_deps(
             &self.runtime,
             SessionDepsInput {
@@ -1080,6 +1081,7 @@ impl AgentSession {
                 approval_required: behavior.approval_required.clone(),
                 one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
                 parser_renderer: behavior.build_parser_and_renderer(),
+                from_user_did,
             },
         );
         let mut ctx =
@@ -1282,6 +1284,7 @@ impl AgentSession {
             wakeup_id: String::new(),
             session_id: self.session_id.clone(),
         };
+        let from_user_did = self.current_from_user_did().await;
         let deps = build_session_deps(
             &self.runtime,
             SessionDepsInput {
@@ -1291,6 +1294,7 @@ impl AgentSession {
                 approval_required: behavior.approval_required.clone(),
                 one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
                 parser_renderer: behavior.build_parser_and_renderer(),
+                from_user_did,
             },
         );
 
@@ -1758,6 +1762,7 @@ impl AgentSession {
         };
         let parser_renderer = behavior.build_parser_and_renderer();
         let approval_required = behavior.approval_required.clone();
+        let from_user_did = self.current_from_user_did().await;
 
         let deps = build_session_deps(
             &self.runtime,
@@ -1768,6 +1773,7 @@ impl AgentSession {
                 approval_required,
                 one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
                 parser_renderer,
+                from_user_did,
             },
         );
 
@@ -2139,13 +2145,28 @@ impl AgentSession {
                     self.agent_name.clone()
                 };
                 let dispatcher = TaskDispatch::new(client, owner_for_task);
+                // §4.7.2 — same runtime-injected `from_user_did` rule
+                // applies to async tools as to sync ones: the tool worker
+                // must see the real user DID, not whatever the LLM stuffed
+                // into args.
+                let from_user_did = self.current_from_user_did().await;
 
                 let mut dispatched_any = false;
                 for pcall in pending {
                     let call_id = pcall.call.call_id.clone();
                     let tool_name = pcall.call.name.clone();
-                    let args_json =
+                    let mut args_json =
                         serde_json::to_value(&pcall.call.args).unwrap_or(serde_json::Value::Null);
+                    if let serde_json::Value::Object(map) = &mut args_json {
+                        if let Some(did) = from_user_did.as_ref() {
+                            map.insert(
+                                "from_user_did".to_string(),
+                                serde_json::Value::String(did.clone()),
+                            );
+                        } else {
+                            map.remove("from_user_did");
+                        }
+                    }
                     match dispatcher
                         .dispatch_async_tool(&self.session_id, &tool_name, args_json)
                         .await
@@ -2258,6 +2279,24 @@ impl AgentSession {
                 Ok(NextAction::WaitForMsg)
             }
         }
+    }
+
+    /// `/clear` command — drop the LLM accumulated state plus every
+    /// pending input. After this returns the session looks brand-new from
+    /// the LLM's perspective but the on-disk meta (session id, behavior,
+    /// workspace binding, owner, peer routing) survives so the next user
+    /// message lands on the same session id.
+    pub async fn clear_history(&self) -> Result<()> {
+        self.discard_snapshot();
+        {
+            let mut meta = self.meta.lock().await;
+            meta.pending_inputs.clear();
+            meta.pending_task_calls.clear();
+            meta.status = SessionStatus::Idle;
+            meta.bootstrap_done = false;
+        }
+        self.flush_meta().await?;
+        Ok(())
     }
 
     fn discard_snapshot(&self) {
@@ -2550,6 +2589,7 @@ impl AgentSession {
         };
         let trace_id = format!("{}::fork-{}", parent_trace, depth);
 
+        let from_user_did = self.current_from_user_did().await;
         let run_result = run_fork_sub_context(ForkSubContextInput {
             session_id: &self.session_id,
             agent_name: &self.agent_name,
@@ -2562,6 +2602,7 @@ impl AgentSession {
             sub_cfg: &sub_cfg,
             trace_id: &trace_id,
             depth,
+            from_user_did,
         })
         .await;
         run_result
@@ -2626,6 +2667,20 @@ impl AgentSession {
                 self.session_id
             );
         }
+    }
+
+    /// §4.7.2 — DID the current turn is acting on behalf of. In 1-on-1
+    /// chat this is the peer DID stored on `meta.peer_did`; in autonomous
+    /// or work sessions there is no upstream human and this is `None`.
+    /// The result feeds straight into [`OpendanToolAdapter`] so every
+    /// dispatched tool gets the runtime-injected `from_user_did` arg.
+    async fn current_from_user_did(&self) -> Option<String> {
+        self.meta
+            .lock()
+            .await
+            .peer_did
+            .clone()
+            .filter(|s| !s.trim().is_empty())
     }
 
     /// Stash the latest peer routing info (DID + tunnel) extracted from a
@@ -2869,16 +2924,29 @@ impl AgentSession {
             serde_json::Value::String(self.session_id.clone()),
         );
 
-        let msg = match llm_context::ai_message_to_msg_object_with_base(message, msg) {
-            Ok(msg) => msg,
-            Err(err) => {
-                warn!(
-                    "opendan.session[{}]: outbound message conversion failed: {err}",
-                    self.session_id
-                );
-                return;
-            }
+        let workspace_id = {
+            let meta = self.meta.lock().await;
+            meta.workspace_id.clone()
         };
+        let workspace_dir = workspace_id
+            .as_deref()
+            .map(|ws| self.agent_config.layout.workspaces_dir.join(ws));
+        let validator = crate::attachment_policy::WorkspaceAttachmentValidator::new(
+            workspace_dir,
+            self.agent_name.clone(),
+        );
+        let msg =
+            match llm_context::ai_message_to_msg_object_with_base_validated(message, msg, &validator)
+            {
+                Ok(msg) => msg,
+                Err(err) => {
+                    warn!(
+                        "opendan.session[{}]: outbound message conversion failed: {err}",
+                        self.session_id
+                    );
+                    return;
+                }
+            };
         if msg.content.content.trim().is_empty()
             && msg.content.refs.is_empty()
             && msg.content.machine.is_none()

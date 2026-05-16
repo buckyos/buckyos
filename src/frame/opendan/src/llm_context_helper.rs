@@ -249,6 +249,9 @@ pub struct ForkSubContextInput<'a> {
     pub sub_cfg: &'a BehaviorCfg,
     pub trace_id: &'a str,
     pub depth: usize,
+    /// §4.7.2 — propagated from the parent session so tool dispatches in
+    /// the fork sub-context still carry the runtime-injected user DID.
+    pub from_user_did: Option<String>,
 }
 
 pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<ContextOutput> {
@@ -264,6 +267,7 @@ pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<Cont
         sub_cfg,
         trace_id,
         depth,
+        from_user_did,
     } = input;
 
     let fork_snap_path = state_snap_path.with_file_name(format!("state.snap.fork-{depth}"));
@@ -285,6 +289,7 @@ pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<Cont
             approval_required: sub_cfg.approval_required.clone(),
             one_line_status: status,
             parser_renderer: sub_cfg.build_parser_and_renderer(),
+            from_user_did,
         },
     );
     let mut ctx = rebuild_with_inherit(parent_snap, overrides, deps)

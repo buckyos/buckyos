@@ -67,3 +67,14 @@ pub mod worklog;
 // 4-layer AgentToolManager). Currently empty; will be populated alongside
 // agent_bash / ai_runtime.
 pub mod buildin_tool;
+
+// §2.2.2 — egress-time attachment validation policy. Sits between
+// agent_session and llm_context::msg_parser; enforces the workspace
+// whitelist on outbound `<attachment path=…>` and the (placeholder)
+// ACL hook on `<attachment obj_id=…>` references.
+pub mod attachment_policy;
+
+// §3 — slash-command dispatcher. Maps the strict `/<name>` whitelist
+// (parsed by llm_context::msg_parser) to opendan-side handlers
+// (`/clear`, `/list`, `/switch`, `/help`).
+pub mod command_dispatcher;

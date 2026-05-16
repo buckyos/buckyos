@@ -279,25 +279,51 @@ pub struct OpendanToolAdapter {
     manager: Arc<AgentToolManager>,
     ctx: SessionRuntimeContext,
     step_idx: AtomicU32,
+    /// §4.7.2 — DID of the user this turn is executing on behalf of.
+    /// Runtime-injected into every `call.args` as `from_user_did` so tool
+    /// implementations can enforce permission checks / billing audit
+    /// regardless of what the LLM tries to claim in its arguments.
+    /// `None` for tool-only contexts that have no upstream human (boot
+    /// turns, autonomous work sessions).
+    from_user_did: Option<String>,
 }
 
 impl OpendanToolAdapter {
     pub fn new(manager: Arc<AgentToolManager>, ctx: SessionRuntimeContext) -> Self {
+        Self::with_from_user_did(manager, ctx, None)
+    }
+
+    pub fn with_from_user_did(
+        manager: Arc<AgentToolManager>,
+        ctx: SessionRuntimeContext,
+        from_user_did: Option<String>,
+    ) -> Self {
         let step_idx = AtomicU32::new(ctx.step_idx);
         Self {
             manager,
             ctx,
             step_idx,
+            from_user_did,
         }
     }
 }
 
 #[async_trait]
 impl ToolManager for OpendanToolAdapter {
-    async fn call_tool(&self, call: AiToolCall) -> Observation {
+    async fn call_tool(&self, mut call: AiToolCall) -> Observation {
         let mut ctx = self.ctx.clone();
         ctx.step_idx = self.step_idx.fetch_add(1, Ordering::Relaxed);
         let call_id = call.call_id.clone();
+        // §4.7.2 — overwrite any pre-existing `from_user_did` in args.
+        // The LLM has no business setting this field; only the runtime
+        // does. An LLM-supplied value is treated as a prompt-injection
+        // attempt and discarded.
+        if let Some(did) = self.from_user_did.as_ref() {
+            call.args
+                .insert("from_user_did".to_string(), Value::String(did.clone()));
+        } else {
+            call.args.remove("from_user_did");
+        }
         match self.manager.call_tool(&ctx, call).await {
             Ok(result) => result_to_observation(call_id, result),
             Err(err) => Observation::Error {
@@ -686,6 +712,12 @@ pub struct SessionDepsInput {
     /// Behavior Loop: structured parser + matched renderer. `None` ⇒
     /// traditional Agent Loop. Filled by [`behavior_cfg`](crate::behavior_cfg).
     pub parser_renderer: Option<(Arc<dyn LLMResultParser>, Arc<dyn StepRenderer>)>,
+    /// §4.7.2 — DID of the user the current turn is acting on behalf of.
+    /// Forwarded into every dispatched tool call as a runtime-injected
+    /// `from_user_did` arg. In 1-on-1 chat this is the peer's DID
+    /// (== the agent owner); in group chat it's the @-mentioner. `None`
+    /// for autonomous turns (boot, scheduled work).
+    pub from_user_did: Option<String>,
 }
 
 /// Assemble per-session `LLMContextDeps`. Step 3 will compose the optional
@@ -699,6 +731,7 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
         approval_required,
         one_line_status,
         parser_renderer,
+        from_user_did,
     } = input;
 
     let worklog_ctx = WorklogAppendCtx {
@@ -709,7 +742,11 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
     };
 
     let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new(runtime.aicc.clone()));
-    let tools_adapter: Arc<dyn ToolManager> = Arc::new(OpendanToolAdapter::new(tools, ctx));
+    let tools_adapter: Arc<dyn ToolManager> = Arc::new(OpendanToolAdapter::with_from_user_did(
+        tools,
+        ctx,
+        from_user_did,
+    ));
     let policy: Arc<dyn PolicyEngine> = Arc::new(AgentPolicy::new(approval_required));
     let worklog: Arc<dyn WorklogSink> = Arc::new(OpenDanWorklogSink::new(
         runtime.worklog.clone(),

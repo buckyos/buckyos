@@ -28,7 +28,9 @@ use buckyos_api::{
     BoxKind, Event, EventReader, KEventClient, KEventError, MsgCenterClient, MsgRecordWithObject,
     MsgState,
 };
-use llm_context::msg_object_to_ai_message;
+use llm_context::{parse_msg_object, MsgParseOutput};
+
+use crate::command_dispatcher::is_known_command;
 use log::{debug, info, warn};
 use name_lib::DID;
 use tokio::sync::{mpsc, Notify};
@@ -266,8 +268,6 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
         );
         return false;
     }
-    let ai_message = msg_object_to_ai_message(msg);
-
     let from = record.record.from.to_raw_host_name();
     let from_did_str = record.record.from.to_string();
     let from_did = Some(from_did_str.clone()).filter(|s| !s.is_empty());
@@ -297,15 +297,44 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
         }
     }
 
-    let inbound = Inbound::Msg {
-        record_id,
-        from,
-        from_did,
-        from_name,
-        tunnel_did,
-        session_id,
-        text,
-        ai_message,
+    // §3 — slash-command interception. `parse_msg_object` recognizes any
+    // `/<name>[ args]` shape; we then gate on a strict whitelist so user
+    // text like `/etc/nginx ...` flows back into LLM inference unchanged.
+    let inbound = match parse_msg_object(msg) {
+        MsgParseOutput::ControlCommand(cmd) if is_known_command(&cmd.command) => Inbound::Command {
+            record_id,
+            from,
+            from_did,
+            tunnel_did,
+            command: cmd.command,
+            args: cmd.args,
+        },
+        MsgParseOutput::ControlCommand(cmd) => {
+            // Not in the whitelist — fall back to message dispatch with
+            // the original text preserved so the LLM sees what the user
+            // actually wrote.
+            let ai_message = llm_context::msg_object_to_ai_message(msg);
+            Inbound::Msg {
+                record_id,
+                from,
+                from_did,
+                from_name,
+                tunnel_did,
+                session_id,
+                text: cmd.raw,
+                ai_message,
+            }
+        }
+        MsgParseOutput::Message(ai_message) => Inbound::Msg {
+            record_id,
+            from,
+            from_did,
+            from_name,
+            tunnel_did,
+            session_id,
+            text,
+            ai_message,
+        },
     };
     if let Err(err) = cfg.inbox_tx.send(inbound).await {
         warn!(

@@ -97,6 +97,18 @@ pub enum Inbound {
         target_session_id: Option<String>,
         data: serde_json::Value,
     },
+    /// §3 — slash-command intercepted before LLM dispatch. Carries the
+    /// parsed `command`/`args` plus the same routing fields as `Msg` so
+    /// the agent can ack the msg-center record and post the command's
+    /// system reply through the same outbound path as a normal turn.
+    Command {
+        record_id: String,
+        from: String,
+        from_did: Option<String>,
+        tunnel_did: Option<String>,
+        command: String,
+        args: String,
+    },
 }
 
 /// Shutdown signal. Owners drop the sender or `send(())` to start a graceful
@@ -495,6 +507,45 @@ impl AIAgent {
                 self.ack_msg_record(record_id).await;
                 Ok(())
             }
+            Inbound::Command {
+                record_id,
+                from,
+                from_did,
+                tunnel_did,
+                command,
+                args,
+            } => {
+                let invocation = crate::command_dispatcher::CommandInvocation {
+                    record_id: record_id.clone(),
+                    from: from.clone(),
+                    from_did: from_did.clone(),
+                    tunnel_did: tunnel_did.clone(),
+                    command: command.clone(),
+                    args,
+                };
+                let outcome = match crate::command_dispatcher::run_command(&self, &invocation).await
+                {
+                    Ok(outcome) => outcome,
+                    Err(err) => crate::command_dispatcher::CommandOutcome {
+                        reply: format!("/{command} failed: {err:#}"),
+                    },
+                };
+                // Send the reply back through the tunnel that originated
+                // the command. If there's no live session yet (e.g. brand
+                // new tunnel that immediately typed `/help`), fall through
+                // to the dispatch_command_reply helper which constructs a
+                // standalone outbound message rather than parking it on a
+                // session.
+                self.dispatch_command_reply(
+                    &from,
+                    from_did.as_deref(),
+                    tunnel_did.as_deref(),
+                    &outcome.reply,
+                )
+                .await;
+                self.ack_msg_record(record_id).await;
+                Ok(())
+            }
             Inbound::Event {
                 event_id,
                 target_session_id,
@@ -530,6 +581,72 @@ impl AIAgent {
         }
     }
 
+    /// §3.3 — send a system-style reply to a slash command. Used by the
+    /// command dispatcher so `/help`, `/list`, etc. ride the same tunnel
+    /// the user sent the command on without parking anything on a
+    /// session. Quietly skips when prerequisites (msg-center, peer DID,
+    /// agent DID) are missing — the same conservative pattern
+    /// `AgentSession::post_outbound_message` uses.
+    async fn dispatch_command_reply(
+        &self,
+        _from: &str,
+        from_did: Option<&str>,
+        tunnel_did: Option<&str>,
+        reply: &str,
+    ) {
+        let Some(msg_center) = self.runtime.msg_center.as_ref().cloned() else {
+            return;
+        };
+        let Some(peer_did_str) = from_did else { return };
+        let Ok(peer_did) = name_lib::DID::from_str(peer_did_str) else {
+            return;
+        };
+        let agent_did_raw = self.config.toml.agent_did.trim();
+        if agent_did_raw.is_empty() {
+            return;
+        }
+        let Ok(agent_did) = name_lib::DID::from_str(agent_did_raw) else {
+            return;
+        };
+        if agent_did == peer_did {
+            return;
+        }
+        let tunnel = tunnel_did.and_then(|raw| name_lib::DID::from_str(raw).ok());
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let mut msg = ndn_lib::MsgObject {
+            from: agent_did.clone(),
+            to: vec![peer_did.clone()],
+            kind: ndn_lib::MsgObjKind::Chat,
+            created_at_ms: now_ms,
+            content: ndn_lib::MsgContent {
+                format: Some(ndn_lib::MsgContentFormat::TextPlain),
+                content: reply.trim().to_string(),
+                ..ndn_lib::MsgContent::default()
+            },
+            ..Default::default()
+        };
+        msg.meta.insert(
+            "llm_role".to_string(),
+            serde_json::Value::String("system".to_string()),
+        );
+
+        let send_ctx = buckyos_api::SendContext {
+            contact_mgr_owner: Some(agent_did),
+            preferred_tunnel: tunnel,
+            ..Default::default()
+        };
+        if let Err(err) = msg_center.post_send(msg, Some(send_ctx), None).await {
+            warn!(
+                "opendan.agent[{}]: command reply post_send failed: {err}",
+                self.agent_name
+            );
+        }
+    }
+
     /// Best-effort ack to msg-center after the record is durably parked on
     /// a session. Failure is logged but not returned — the session already
     /// owns the input, so even a stuck `Reading` record is recoverable
@@ -556,6 +673,30 @@ impl AIAgent {
                 self.agent_name, record_id
             );
         }
+    }
+
+    /// Resolve the UI session associated with a tunnel `from` for a
+    /// slash-command invocation. Unlike `resolve_ui_session` this does
+    /// **not** mint a new session id — commands operate on an existing
+    /// session or fail clean. Returns the bound session id or an Err the
+    /// command handler can turn into a user-visible reply.
+    pub async fn resolve_session_for_command(&self, from: &str) -> Result<String> {
+        if let Some(sid) = self.tunnel_to_ui_session.lock().await.get(from) {
+            return Ok(sid.clone());
+        }
+        Err(anyhow!(
+            "no session is bound to tunnel `{from}` yet — send a message first to mint one"
+        ))
+    }
+
+    /// Replace the tunnel→session binding so a `/switch <id>` command
+    /// reroutes subsequent inbound messages to a different session.
+    /// Does not modify the target session's state.
+    pub async fn bind_tunnel_to_session(&self, from: &str, session_id: &str) {
+        self.tunnel_to_ui_session
+            .lock()
+            .await
+            .insert(from.to_string(), session_id.to_string());
     }
 
     async fn resolve_ui_session(self: Arc<Self>, from: &str) -> Result<String> {
