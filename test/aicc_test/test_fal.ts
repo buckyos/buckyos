@@ -24,7 +24,7 @@ type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 type AiccMethodResponse = {
   task_id: string;
   status: "succeeded" | "running" | "failed";
-  result?: AiResponseSummary | null;
+  result?: AiResponse | null;
   event_ref?: string | null;
 };
 
@@ -35,9 +35,24 @@ type AiArtifact = {
   metadata?: JsonValue | null;
 };
 
-type AiResponseSummary = {
-  text?: string | null;
-  artifacts?: AiArtifact[];
+type AiContent =
+  | { type: "text"; text: string }
+  | { type: "image"; source: AiArtifact["resource"] }
+  | { type: "document"; source: AiArtifact["resource"]; title?: string | null }
+  | {
+    type: "tool_use";
+    call_id: string;
+    name: string;
+    args?: Record<string, JsonValue>;
+  };
+
+type AiMessage = {
+  role: "assistant";
+  content: AiContent[];
+};
+
+type AiResponse = {
+  message: AiMessage;
   finish_reason?: string | null;
   provider_task_ref?: string | null;
   extra?: JsonValue | null;
@@ -63,7 +78,7 @@ type RpcClient = {
 };
 
 type CaseResult =
-  | { status: "passed"; method: string; summary: AiResponseSummary }
+  | { status: "passed"; method: string; response: AiResponse }
   | { status: "skipped"; method: string; reason: string }
   | { status: "failed"; method: string; error: string };
 
@@ -182,12 +197,50 @@ async function waitForFinalTaskResult(
   throw new Error(`Timed out while waiting for AICC task ${task.id} to finish`);
 }
 
-function pickSummaryFromTask(task: TaskRecord): AiResponseSummary | null {
-  const output = task.data?.aicc?.output;
-  if (output && typeof output === "object" && !Array.isArray(output)) {
-    return output as unknown as AiResponseSummary;
+function asAiResponse(value: unknown): AiResponse | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
   }
-  return null;
+  const record = value as Record<string, unknown>;
+  if ("text" in record || "tool_calls" in record || "artifacts" in record) {
+    throw new Error(
+      `deprecated response fields found: ${JSON.stringify(value)}`,
+    );
+  }
+  const message = record.message as AiMessage | undefined;
+  if (
+    !message || message.role !== "assistant" ||
+    !Array.isArray(message.content)
+  ) {
+    return null;
+  }
+  return value as AiResponse;
+}
+
+function aiResponseArtifacts(response: AiResponse): AiArtifact[] {
+  const artifacts: AiArtifact[] = [];
+  response.message.content.forEach((block, index) => {
+    if (block.type === "image") {
+      artifacts.push({
+        name: `image_${index + 1}`,
+        resource: block.source,
+        mime: block.source.mime_hint ?? null,
+      });
+    }
+    if (block.type === "document") {
+      artifacts.push({
+        name: block.title ?? `document_${index + 1}`,
+        resource: block.source,
+        mime: block.source.mime_hint ?? null,
+      });
+    }
+  });
+  return artifacts;
+}
+
+function pickAiResponseFromTask(task: TaskRecord): AiResponse | null {
+  const output = task.data?.aicc?.output;
+  return asAiResponse(output ?? null);
 }
 
 function pickErrorFromTask(task: TaskRecord): string {
@@ -231,16 +284,16 @@ function buildPayload(args: {
 
 function assertArtifacts(
   method: string,
-  summary: AiResponseSummary | null,
-): AiResponseSummary {
-  if (!summary) {
-    throw new Error(`${method}: no summary returned`);
+  response: AiResponse | null,
+): AiResponse {
+  if (!response) {
+    throw new Error(`${method}: no AiResponse returned`);
   }
-  const artifacts = summary.artifacts ?? [];
+  const artifacts = aiResponseArtifacts(response);
   if (artifacts.length === 0) {
     throw new Error(
-      `${method}: response contained no artifacts; summary=${
-        JSON.stringify(summary)
+      `${method}: response contained no artifacts; response=${
+        JSON.stringify(response)
       }`,
     );
   }
@@ -266,7 +319,7 @@ function assertArtifacts(
       );
     }
   }
-  return summary;
+  return response;
 }
 
 async function runCase(args: {
@@ -298,17 +351,23 @@ async function runCase(args: {
   }
 
   if (response.status === "failed") {
-    const summary = response.result ?? null;
-    const errorText = JSON.stringify(summary ?? response);
+    const aiResponse = response.result ?? null;
+    const errorText = JSON.stringify(aiResponse ?? response);
     if (isSkippableError(errorText)) {
       return { status: "skipped", method, reason: errorText };
     }
     return { status: "failed", method, error: errorText };
   }
 
-  let summary: AiResponseSummary | null = response.result ?? null;
+  let aiResponse: AiResponse | null;
+  try {
+    aiResponse = asAiResponse(response.result ?? null);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { status: "failed", method, error: message };
+  }
 
-  if (response.status === "running" && !summary) {
+  if (response.status === "running" && !aiResponse) {
     let finalTask: TaskRecord;
     try {
       finalTask = await waitForFinalTaskResult(
@@ -329,15 +388,21 @@ async function runCase(args: {
       return {
         status: "failed",
         method,
-        error: `task ${finalTask.id} ended with ${finalTask.status}: ${errText}`,
+        error:
+          `task ${finalTask.id} ended with ${finalTask.status}: ${errText}`,
       };
     }
-    summary = pickSummaryFromTask(finalTask);
+    try {
+      aiResponse = pickAiResponseFromTask(finalTask);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { status: "failed", method, error: message };
+    }
   }
 
   try {
-    const verified = assertArtifacts(method, summary);
-    return { status: "passed", method, summary: verified };
+    const verified = assertArtifacts(method, aiResponse);
+    return { status: "passed", method, response: verified };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { status: "failed", method, error: message };
@@ -415,7 +480,8 @@ async function main(): Promise<void> {
   for (const result of results) {
     if (result.status === "passed") {
       passed += 1;
-      const url = result.summary.artifacts?.[0]?.resource?.url ?? "<no url>";
+      const url = aiResponseArtifacts(result.response)[0]?.resource?.url ??
+        "<no url>";
       console.log(`[PASS] ${result.method} -> ${url}`);
     } else if (result.status === "skipped") {
       skipped += 1;

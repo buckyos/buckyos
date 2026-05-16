@@ -619,8 +619,11 @@ fn parse_fal_artifacts(method: &str, body: &Value) -> Vec<AiArtifact> {
 
     for (key, name) in &[
         ("image", "image"),
+        ("image_file", "image"),
         ("audio", "audio"),
+        ("audio_file", "audio"),
         ("video", "video"),
+        ("video_file", "video"),
         ("output", "output"),
     ] {
         if let Some(obj) = body.get(*key).and_then(|value| value.as_object()) {

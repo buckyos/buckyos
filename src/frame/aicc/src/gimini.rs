@@ -66,6 +66,14 @@ const GIMINI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
     "top_p",
     "user",
 ];
+const GIMINI_VIDEO_PARAMETER_ALLOWLIST: &[&str] = &[
+    "aspect_ratio",
+    "duration_seconds",
+    "negative_prompt",
+    "person_generation",
+    "sample_count",
+    "seed",
+];
 
 #[derive(Debug, Clone)]
 pub struct GoogleGiminiInstanceConfig {
@@ -326,7 +334,7 @@ impl GoogleGiminiProvider {
             ));
         }
         for model in buckets.video.iter() {
-            let mut metadata = provider_model_metadata(
+            let metadata = provider_model_metadata(
                 provider_instance_name,
                 provider_type.clone(),
                 model.as_str(),
@@ -336,17 +344,6 @@ impl GoogleGiminiProvider {
                 Some(0.50),
                 Some(120_000),
             );
-            for api_type in [
-                ApiType::VideoImageToVideo,
-                ApiType::VideoToVideo,
-                ApiType::VideoExtend,
-            ] {
-                metadata.api_types.push(api_type.clone());
-                metadata
-                    .logical_mounts
-                    .extend(gimini_method_mounts(api_type, model.as_str()));
-            }
-            metadata.logical_mounts = dedupe_strings(metadata.logical_mounts);
             models.push(metadata);
         }
         ProviderInventory {
@@ -1387,6 +1384,38 @@ impl GoogleGiminiProvider {
         Ok(ignored)
     }
 
+    fn normalize_video_parameter_key(key: &str) -> Option<&'static str> {
+        match key {
+            "aspect_ratio" | "aspectRatio" => Some("aspectRatio"),
+            "duration_seconds" | "durationSeconds" => Some("durationSeconds"),
+            "negative_prompt" | "negativePrompt" => Some("negativePrompt"),
+            "person_generation" | "personGeneration" => Some("personGeneration"),
+            "sample_count" | "sampleCount" => Some("sampleCount"),
+            "seed" => Some("seed"),
+            _ => None,
+        }
+    }
+
+    fn merge_video_parameters(target: &mut Map<String, Value>, value: &Value) -> Vec<String> {
+        let Some(map) = value.as_object() else {
+            return vec![];
+        };
+
+        let mut ignored = vec![];
+        for (key, item) in map.iter() {
+            if !GIMINI_VIDEO_PARAMETER_ALLOWLIST.contains(&key.as_str())
+                && Self::normalize_video_parameter_key(key.as_str()).is_none()
+            {
+                ignored.push(key.clone());
+                continue;
+            }
+            if let Some(normalized) = Self::normalize_video_parameter_key(key.as_str()) {
+                target.insert(normalized.to_string(), item.clone());
+            }
+        }
+        ignored
+    }
+
     fn parse_text2image_result(
         body: &Value,
     ) -> Result<(Vec<AiArtifact>, Option<String>), ProviderError> {
@@ -2245,13 +2274,22 @@ impl GoogleGiminiProvider {
             "instances".to_string(),
             Value::Array(vec![Value::Object(instance)]),
         );
-        if let Some(options) = req
-            .payload
-            .options
-            .clone()
-            .or_else(|| req.payload.input_json.clone())
-        {
-            request_obj.insert("parameters".to_string(), options);
+        let mut parameters = Map::new();
+        let mut ignored_parameters = vec![];
+        if let Some(input_json) = req.payload.input_json.as_ref() {
+            ignored_parameters.extend(Self::merge_video_parameters(&mut parameters, input_json));
+        }
+        if let Some(options) = req.payload.options.as_ref() {
+            ignored_parameters.extend(Self::merge_video_parameters(&mut parameters, options));
+        }
+        if !parameters.is_empty() {
+            request_obj.insert("parameters".to_string(), Value::Object(parameters));
+        }
+        if !ignored_parameters.is_empty() {
+            warn!(
+                "aicc.gimini ignored unsupported video parameters: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name, provider_model, ctx.trace_id, ignored_parameters
+            );
         }
         let (status, body, latency_ms) = self
             .post_model_action(provider_model, "predictLongRunning", &request_obj)

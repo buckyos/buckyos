@@ -76,6 +76,15 @@ const OPENAI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
     "style",
     "user",
 ];
+const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
+    "background",
+    "n",
+    "output_compression",
+    "output_format",
+    "quality",
+    "size",
+    "user",
+];
 
 #[derive(Debug, Clone)]
 pub struct OpenAIInstanceConfig {
@@ -2807,10 +2816,22 @@ impl OpenAIProvider {
                             "schema": {
                                 "type": "object",
                                 "properties": {
-                                    "results": { "type": "array" }
+                                    "results": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "index": { "type": "integer" },
+                                                "id": { "type": "string" },
+                                                "score": { "type": "number" }
+                                            },
+                                            "required": ["index", "id", "score"],
+                                            "additionalProperties": false
+                                        }
+                                    }
                                 },
                                 "required": ["results"],
-                                "additionalProperties": true
+                                "additionalProperties": false
                             }
                         }
                     }
@@ -3025,7 +3046,7 @@ impl OpenAIProvider {
                     if key == "prompt" || key == "model" {
                         continue;
                     }
-                    if OPENAI_IMAGE_OPTION_ALLOWLIST.contains(&key.as_str()) {
+                    if OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST.contains(&key.as_str()) {
                         fields.push((key.clone(), value_to_form_field(value)));
                     }
                 }

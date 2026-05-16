@@ -8,7 +8,7 @@ type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 type AiccMethodResponse = {
   task_id: string;
   status: "succeeded" | "running" | "failed";
-  result?: AiResponseSummary | null;
+  result?: AiResponse | null;
   event_ref?: string | null;
 };
 
@@ -26,10 +26,31 @@ type AiArtifact = {
   metadata?: JsonValue | null;
 };
 
-type AiResponseSummary = {
-  text?: string | null;
-  tool_calls?: JsonValue[];
-  artifacts?: AiArtifact[];
+type AiContent =
+  | { type: "text"; text: string }
+  | { type: "image"; source: AiArtifact["resource"] }
+  | { type: "document"; source: AiArtifact["resource"]; title?: string | null }
+  | {
+    type: "tool_use";
+    call_id: string;
+    name: string;
+    args?: Record<string, JsonValue>;
+  }
+  | {
+    type: "thinking";
+    summary?: string | null;
+    text?: string | null;
+    provider_metadata?: JsonValue | null;
+  }
+  | { type: "provider_state"; provider: string; value: JsonValue };
+
+type AiMessage = {
+  role: "assistant";
+  content: AiContent[];
+};
+
+type AiResponse = {
+  message: AiMessage;
   usage?: JsonValue | null;
   cost?: JsonValue | null;
   finish_reason?: string | null;
@@ -82,7 +103,13 @@ type SmokePayload = {
 };
 
 type SmokeContext = {
-  generatedImage?: ResourceRef & { kind: "named_object" };
+  generatedImage?: ResourceRef;
+  generatedImageDimensions?: ImageDimensions;
+};
+
+type ImageDimensions = {
+  width: number;
+  height: number;
 };
 
 type Capability =
@@ -107,7 +134,10 @@ type SmokeCase = {
   method: string;
   capability: Capability;
   defaultAlias?: string;
-  buildPayload: (runId: string, context: SmokeContext) => SmokePayload;
+  buildPayload: (
+    runId: string,
+    context: SmokeContext,
+  ) => SmokePayload | Promise<SmokePayload>;
   check: SummaryCheck;
   requirements?: Record<string, unknown>;
   capturesGeneratedImage?: boolean;
@@ -128,7 +158,9 @@ type SavedArtifact = {
 };
 
 type FinalOpenedResource = {
-  obj_id: string;
+  source_kind: string;
+  obj_id?: string;
+  source_url?: string;
   path: string;
   bytes: number;
   mime?: string;
@@ -153,7 +185,7 @@ type CaseResult =
     method: string;
     modelAlias: string;
     taskId: string;
-    summary: AiResponseSummary | null;
+    response: AiResponse;
     artifactFiles: SavedArtifact[];
     reportDir: string;
   }
@@ -202,13 +234,6 @@ const audioResource: ResourceRef = AICC_TEST_AUDIO_BASE64
     url: AICC_TEST_AUDIO_URL,
     mime_hint: "audio/wav",
   };
-const imageMaskResource: ResourceRef = {
-  kind: "base64",
-  mime: "image/png",
-  data_base64:
-    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAs0lEQVR4nO3QwQkDQAwDweu/6aQIC4aQNczXLHrvvc+f4wEaD9B4gMYDNB6g8QCNB2g8QOMBGg/QeIDGAzQeoPEAjQdoPEDbPIHXAEcN0ACLJ/Aa4KgBGmDxBF4DHDVAAyyewGuAowZogMUTeA1w1AANsHgCrwGOGqABFk/gNcBRAzTA4gm8BjhqgMUAv4wHaDxA4wEaD9B4gMYDNB6g8QCNB2g8QOMBGg/QeIDGAzQeQH0Bd8Ezdi+QXIQAAAAASUVORK5CYII=",
-};
-
 const allCases: SmokeCase[] = [
   {
     method: "image.txt2img",
@@ -314,13 +339,16 @@ const allCases: SmokeCase[] = [
     check: "artifact",
     returnsUnstructuredData: true,
     requiresGeneratedImage: true,
-    buildPayload: (_runId, context) => ({
-      input_json: { prompt: "Fill the transparent area naturally" },
-      resources: [
-        requireGeneratedImage(context, "image.inpaint"),
-        imageMaskResource,
-      ],
-    }),
+    buildPayload: async (_runId, context) => {
+      const generatedImage = requireGeneratedImage(context, "image.inpaint");
+      return {
+        input_json: { prompt: "Fill the transparent area naturally" },
+        resources: [
+          generatedImage,
+          await maskResourceForGeneratedImage(context),
+        ],
+      };
+    },
   },
   {
     method: "image.upscale",
@@ -408,10 +436,14 @@ const allCases: SmokeCase[] = [
   {
     method: "audio.music",
     capability: "audio",
+    defaultAlias: "audio.music.lyria-002",
     check: "artifact",
     returnsUnstructuredData: true,
     buildPayload: () => ({
-      input_json: { prompt: "A short calm four-second synth tone." },
+      input_json: {
+        prompt:
+          "Generate an original four-second single-note electronic sine tone with no melody, lyrics, artist style, or copyrighted reference.",
+      },
     }),
   },
   {
@@ -500,7 +532,7 @@ function getEnv(name: string): string | null {
 
 class MissingGeneratedImageError extends Error {
   constructor(method: string) {
-    super(`${method} requires image.txt2img to return a named_object obj_id`);
+    super(`${method} requires image.txt2img to return an image artifact`);
     this.name = "MissingGeneratedImageError";
   }
 }
@@ -508,7 +540,7 @@ class MissingGeneratedImageError extends Error {
 function requireGeneratedImage(
   context: SmokeContext,
   method: string,
-): ResourceRef & { kind: "named_object" } {
+): ResourceRef {
   if (!context.generatedImage) {
     throw new MissingGeneratedImageError(method);
   }
@@ -535,11 +567,24 @@ function normalizeTask(result: unknown): TaskRecord {
   return result as TaskRecord;
 }
 
-function asSummary(value: unknown): AiResponseSummary | null {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as AiResponseSummary;
+function asAiResponse(value: unknown): AiResponse | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
   }
-  return null;
+  const record = value as Record<string, unknown>;
+  if ("text" in record || "tool_calls" in record || "artifacts" in record) {
+    throw new Error(
+      `deprecated response fields found: ${JSON.stringify(value)}`,
+    );
+  }
+  const message = record.message as AiMessage | undefined;
+  if (
+    !message || message.role !== "assistant" ||
+    !Array.isArray(message.content)
+  ) {
+    return null;
+  }
+  return value as AiResponse;
 }
 
 function safeFileSegment(value: string): string {
@@ -601,19 +646,69 @@ function artifactMime(artifact: AiArtifact): string | undefined {
     undefined;
 }
 
-function firstNamedObjectArtifact(
-  summary: AiResponseSummary | null,
-): (ResourceRef & { kind: "named_object" }) | null {
-  for (const artifact of summary?.artifacts ?? []) {
-    if (
-      artifact.resource?.kind === "named_object" &&
-      typeof artifact.resource.obj_id === "string" &&
-      artifact.resource.obj_id.trim()
-    ) {
-      return {
-        kind: "named_object",
-        obj_id: artifact.resource.obj_id.trim(),
-      };
+function aiResponseTextContent(response: AiResponse): string {
+  return response.message.content
+    .filter((block): block is Extract<AiContent, { type: "text" }> =>
+      block.type === "text"
+    )
+    .map((block) => block.text)
+    .join("\n");
+}
+
+function aiResponseArtifacts(response: AiResponse): AiArtifact[] {
+  const artifacts: AiArtifact[] = [];
+  response.message.content.forEach((block, index) => {
+    if (block.type === "image") {
+      artifacts.push({
+        name: `image_${index + 1}`,
+        resource: block.source,
+        mime: block.source.mime_hint ?? block.source.mime ?? null,
+      });
+    }
+    if (block.type === "document") {
+      artifacts.push({
+        name: block.title ?? `document_${index + 1}`,
+        resource: block.source,
+        mime: block.source.mime_hint ?? block.source.mime ?? null,
+      });
+    }
+  });
+  return artifacts;
+}
+
+function firstImageArtifact(
+  response: AiResponse | null,
+): ResourceRef | null {
+  const artifacts = response ? aiResponseArtifacts(response) : [];
+  for (const artifact of artifacts) {
+    if (!artifact.resource) {
+      continue;
+    }
+    const mime = artifactMime(artifact);
+    if (mime?.startsWith("image/")) {
+      if (
+        artifact.resource.kind === "named_object" && artifact.resource.obj_id
+      ) {
+        return { kind: "named_object", obj_id: artifact.resource.obj_id };
+      }
+      if (artifact.resource.kind === "url" && artifact.resource.url) {
+        return {
+          kind: "url",
+          url: artifact.resource.url,
+          mime_hint: artifact.resource.mime_hint ?? mime,
+        };
+      }
+      if (
+        artifact.resource.kind === "base64" &&
+        artifact.resource.mime &&
+        artifact.resource.data_base64
+      ) {
+        return {
+          kind: "base64",
+          mime: artifact.resource.mime,
+          data_base64: artifact.resource.data_base64,
+        };
+      }
     }
   }
   return null;
@@ -628,11 +723,270 @@ function decodeBase64(dataBase64: string): Uint8Array {
   return bytes;
 }
 
+function encodeBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(index, index + chunkSize),
+    );
+  }
+  return btoa(binary);
+}
+
+function readUint32BE(bytes: Uint8Array, offset: number): number {
+  return (
+    ((bytes[offset] ?? 0) << 24) |
+    ((bytes[offset + 1] ?? 0) << 16) |
+    ((bytes[offset + 2] ?? 0) << 8) |
+    (bytes[offset + 3] ?? 0)
+  ) >>> 0;
+}
+
+function parsePngDimensions(bytes: Uint8Array): ImageDimensions | null {
+  if (
+    bytes.length >= 24 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return {
+      width: readUint32BE(bytes, 16),
+      height: readUint32BE(bytes, 20),
+    };
+  }
+  return null;
+}
+
+function parseJpegDimensions(bytes: Uint8Array): ImageDimensions | null {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    return null;
+  }
+  let offset = 2;
+  while (offset + 9 < bytes.length) {
+    while (bytes[offset] === 0xff) {
+      offset += 1;
+    }
+    const marker = bytes[offset];
+    offset += 1;
+    if (marker === 0xd9 || marker === 0xda) {
+      break;
+    }
+    const length = ((bytes[offset] ?? 0) << 8) | (bytes[offset + 1] ?? 0);
+    if (length < 2 || offset + length > bytes.length) {
+      break;
+    }
+    const isSof = (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf);
+    if (isSof) {
+      return {
+        height: ((bytes[offset + 3] ?? 0) << 8) | (bytes[offset + 4] ?? 0),
+        width: ((bytes[offset + 5] ?? 0) << 8) | (bytes[offset + 6] ?? 0),
+      };
+    }
+    offset += length;
+  }
+  return null;
+}
+
+async function resourceToBytes(
+  resource: ResourceRef,
+): Promise<{ bytes: Uint8Array; mime?: string }> {
+  if (resource.kind === "base64") {
+    return { bytes: decodeBase64(resource.data_base64), mime: resource.mime };
+  }
+  if (resource.kind === "url") {
+    const response = await fetch(resource.url);
+    if (!response.ok) {
+      throw new Error(
+        `failed to download image resource: ${response.status} ${response.statusText}`,
+      );
+    }
+    return {
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      mime: response.headers.get("content-type") ?? resource.mime_hint,
+    };
+  }
+  throw new Error(
+    `cannot inspect named_object image resource ${resource.obj_id}`,
+  );
+}
+
+async function imageDimensionsFromResource(
+  resource: ResourceRef,
+): Promise<ImageDimensions> {
+  const { bytes, mime } = await resourceToBytes(resource);
+  const dimensions = parsePngDimensions(bytes) ?? parseJpegDimensions(bytes);
+  if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0) {
+    throw new Error(
+      `unsupported generated image dimensions: ${mime ?? "unknown"}`,
+    );
+  }
+  return dimensions;
+}
+
+function makeCrc32Table(): Uint32Array {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+}
+
+const crc32Table = makeCrc32Table();
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = crc32Table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function adler32(bytes: Uint8Array): number {
+  let a = 1;
+  let b = 0;
+  for (const byte of bytes) {
+    a = (a + byte) % 65521;
+    b = (b + a) % 65521;
+  }
+  return ((b << 16) | a) >>> 0;
+}
+
+function concatBytes(chunks: Uint8Array<ArrayBufferLike>[]): Uint8Array {
+  const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const result = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
+function uint32BE(value: number): Uint8Array {
+  return new Uint8Array([
+    (value >>> 24) & 0xff,
+    (value >>> 16) & 0xff,
+    (value >>> 8) & 0xff,
+    value & 0xff,
+  ]);
+}
+
+function pngChunk(type: string, data: Uint8Array): Uint8Array {
+  const typeBytes = new TextEncoder().encode(type);
+  return concatBytes([
+    uint32BE(data.length),
+    typeBytes,
+    data,
+    uint32BE(crc32(concatBytes([typeBytes, data]))),
+  ]);
+}
+
+function zlibStored(bytes: Uint8Array): Uint8Array {
+  const chunks: Uint8Array<ArrayBufferLike>[] = [new Uint8Array([0x78, 0x01])];
+  for (let offset = 0; offset < bytes.length; offset += 65535) {
+    const block = bytes.subarray(offset, offset + 65535);
+    const finalBlock = offset + block.length >= bytes.length ? 1 : 0;
+    const header = new Uint8Array(5);
+    header[0] = finalBlock;
+    header[1] = block.length & 0xff;
+    header[2] = (block.length >>> 8) & 0xff;
+    const nlen = (~block.length) & 0xffff;
+    header[3] = nlen & 0xff;
+    header[4] = (nlen >>> 8) & 0xff;
+    chunks.push(header, block);
+  }
+  chunks.push(uint32BE(adler32(bytes)));
+  return concatBytes(chunks);
+}
+
+async function deflateBytes(bytes: Uint8Array): Promise<Uint8Array> {
+  try {
+    const copy = new Uint8Array(bytes.length);
+    copy.set(bytes);
+    const stream = new Blob([copy.buffer]).stream().pipeThrough(
+      new CompressionStream("deflate"),
+    );
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return zlibStored(bytes);
+  }
+}
+
+async function makeInpaintMaskPngBase64(
+  dimensions: ImageDimensions,
+): Promise<string> {
+  const { width, height } = dimensions;
+  const stride = width * 4 + 1;
+  const raw = new Uint8Array(stride * height);
+  const clearLeft = Math.floor(width * 0.35);
+  const clearRight = Math.ceil(width * 0.65);
+  const clearTop = Math.floor(height * 0.35);
+  const clearBottom = Math.ceil(height * 0.65);
+
+  for (let y = 0; y < height; y += 1) {
+    const row = y * stride;
+    raw[row] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const offset = row + 1 + x * 4;
+      const transparent = x >= clearLeft && x < clearRight &&
+        y >= clearTop && y < clearBottom;
+      raw[offset] = 255;
+      raw[offset + 1] = 255;
+      raw[offset + 2] = 255;
+      raw[offset + 3] = transparent ? 0 : 255;
+    }
+  }
+
+  const ihdr = new Uint8Array(13);
+  ihdr.set(uint32BE(width), 0);
+  ihdr.set(uint32BE(height), 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+
+  const png = concatBytes([
+    new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", await deflateBytes(raw)),
+    pngChunk("IEND", new Uint8Array()),
+  ]);
+  return encodeBase64(png);
+}
+
+async function maskResourceForGeneratedImage(
+  context: SmokeContext,
+): Promise<ResourceRef> {
+  let dimensions = context.generatedImageDimensions;
+  if (!dimensions && context.generatedImage) {
+    dimensions = await imageDimensionsFromResource(context.generatedImage);
+    context.generatedImageDimensions = dimensions;
+  }
+  if (!dimensions) {
+    throw new MissingGeneratedImageError("image.inpaint");
+  }
+  return {
+    kind: "base64",
+    mime: "image/png",
+    data_base64: await makeInpaintMaskPngBase64(dimensions),
+  };
+}
+
 async function saveArtifacts(
-  summary: AiResponseSummary | null,
+  response: AiResponse | null,
   reportDir: string,
 ): Promise<SavedArtifact[]> {
-  const artifacts = summary?.artifacts ?? [];
+  const artifacts = response ? aiResponseArtifacts(response) : [];
   if (artifacts.length === 0) {
     return [];
   }
@@ -706,8 +1060,8 @@ async function saveArtifacts(
   return saved;
 }
 
-function extractTaskSummary(task: TaskRecord): AiResponseSummary | null {
-  return asSummary(task.data?.aicc?.output ?? null);
+function extractTaskResponse(task: TaskRecord): AiResponse | null {
+  return asAiResponse(task.data?.aicc?.output ?? null);
 }
 
 function extractTaskError(task: TaskRecord): unknown {
@@ -893,13 +1247,13 @@ function requestNamedObjectOutput(payload: SmokePayload): SmokePayload {
   };
 }
 
-function buildMethodPayload(
+async function buildMethodPayload(
   testCase: SmokeCase,
   runId: string,
   modelAlias: string,
   context: SmokeContext,
-): Record<string, unknown> {
-  const basePayload = testCase.buildPayload(runId, context);
+): Promise<Record<string, unknown>> {
+  const basePayload = await testCase.buildPayload(runId, context);
   const payload = testCase.returnsUnstructuredData
     ? requestNamedObjectOutput(basePayload)
     : basePayload;
@@ -920,37 +1274,39 @@ function buildMethodPayload(
   };
 }
 
-function assertSummary(
+function assertAiResponse(
   testCase: SmokeCase,
-  summary: AiResponseSummary | null,
-): void {
-  if (!summary) {
-    throw new Error(`${testCase.method}: no summary returned`);
+  response: AiResponse | null,
+): asserts response is AiResponse {
+  if (!response) {
+    throw new Error(`${testCase.method}: no AiResponse returned`);
   }
+  const text = aiResponseTextContent(response);
+  const artifacts = aiResponseArtifacts(response);
   if (testCase.check === "text") {
-    if (typeof summary.text !== "string" || !summary.text.trim()) {
-      throw new Error(`${testCase.method}: expected non-empty text summary`);
+    if (!text.trim()) {
+      throw new Error(`${testCase.method}: expected non-empty response text`);
     }
     return;
   }
   if (testCase.check === "embedding") {
-    const extra = summary.extra;
+    const extra = response.extra;
     if (!extra || typeof extra !== "object" || !("embedding" in extra)) {
       throw new Error(`${testCase.method}: expected extra.embedding`);
     }
     return;
   }
   if (testCase.check === "artifact") {
-    if (!Array.isArray(summary.artifacts) || summary.artifacts.length === 0) {
+    if (artifacts.length === 0) {
       throw new Error(`${testCase.method}: expected at least one artifact`);
     }
     return;
   }
   if (testCase.check === "vision") {
-    if (typeof summary.text === "string" && summary.text.trim()) {
+    if (text.trim()) {
       return;
     }
-    if (summary.extra && typeof summary.extra === "object") {
+    if (response.extra && typeof response.extra === "object") {
       return;
     }
     throw new Error(
@@ -958,10 +1314,10 @@ function assertSummary(
     );
   }
   if (testCase.check === "video") {
-    if (summary.provider_task_ref || (summary.artifacts?.length ?? 0) > 0) {
+    if (response.provider_task_ref || artifacts.length > 0) {
       return;
     }
-    if (summary.extra && typeof summary.extra === "object") {
+    if (response.extra && typeof response.extra === "object") {
       return;
     }
     throw new Error(
@@ -1007,7 +1363,7 @@ async function runCase(args: {
 
   let requestPayload: Record<string, unknown>;
   try {
-    requestPayload = buildMethodPayload(
+    requestPayload = await buildMethodPayload(
       testCase,
       caseRunId,
       modelAlias,
@@ -1112,7 +1468,7 @@ async function runCase(args: {
         status: "skipped",
         task_id: response.task_id,
         reason: errorText,
-        summary: response.result ?? null,
+        response: response.result ?? null,
       });
       return {
         status: "skipped",
@@ -1126,7 +1482,7 @@ async function runCase(args: {
       status: "failed",
       task_id: response.task_id,
       error: errorText,
-      summary: response.result ?? null,
+      response: response.result ?? null,
     });
     return {
       status: "failed",
@@ -1137,9 +1493,27 @@ async function runCase(args: {
     };
   }
 
-  let summary = asSummary(response.result ?? null);
+  let aiResponse: AiResponse | null;
+  try {
+    aiResponse = asAiResponse(response.result ?? null);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await writeJsonFile(joinPath(reportDir, "output.json"), {
+      status: "failed",
+      task_id: response.task_id,
+      error: message,
+      response: response.result ?? null,
+    });
+    return {
+      status: "failed",
+      method: testCase.method,
+      modelAlias,
+      error: message,
+      reportDir,
+    };
+  }
 
-  if (response.status === "running" && !summary) {
+  if (response.status === "running" && !aiResponse) {
     let finalTask: TaskRecord;
     try {
       finalTask = await waitForFinalTaskResult(
@@ -1201,18 +1575,35 @@ async function runCase(args: {
       };
     }
 
-    summary = extractTaskSummary(finalTask);
+    try {
+      aiResponse = extractTaskResponse(finalTask);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await writeJsonFile(joinPath(reportDir, "output.json"), {
+        status: "failed",
+        task_id: response.task_id,
+        error: message,
+        task_output: finalTask.data?.aicc?.output ?? null,
+      });
+      return {
+        status: "failed",
+        method: testCase.method,
+        modelAlias,
+        error: message,
+        reportDir,
+      };
+    }
   }
 
   try {
-    assertSummary(testCase, summary);
+    assertAiResponse(testCase, aiResponse);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await writeJsonFile(joinPath(reportDir, "output.json"), {
       status: "failed",
       task_id: response.task_id,
       error: message,
-      summary,
+      response: aiResponse,
     });
     return {
       status: "failed",
@@ -1224,15 +1615,14 @@ async function runCase(args: {
   }
 
   if (testCase.capturesGeneratedImage) {
-    const generatedImage = firstNamedObjectArtifact(summary);
+    const generatedImage = firstImageArtifact(aiResponse);
     if (!generatedImage) {
-      const error =
-        `${testCase.method}: expected generated image artifact as named_object obj_id`;
+      const error = `${testCase.method}: expected generated image artifact`;
       await writeJsonFile(joinPath(reportDir, "output.json"), {
         status: "failed",
         task_id: response.task_id,
         error,
-        summary,
+        response: aiResponse,
       });
       return {
         status: "failed",
@@ -1243,18 +1633,29 @@ async function runCase(args: {
       };
     }
     context.generatedImage = generatedImage;
+    try {
+      context.generatedImageDimensions = await imageDimensionsFromResource(
+        generatedImage,
+      );
+    } catch (err) {
+      console.warn(
+        `[warn] failed to inspect generated image dimensions: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   let artifactFiles: SavedArtifact[];
   try {
-    artifactFiles = await saveArtifacts(summary, reportDir);
+    artifactFiles = await saveArtifacts(aiResponse, reportDir);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await writeJsonFile(joinPath(reportDir, "output.json"), {
       status: "failed",
       task_id: response.task_id,
       error: message,
-      summary,
+      response: aiResponse,
     });
     return {
       status: "failed",
@@ -1268,7 +1669,7 @@ async function runCase(args: {
   await writeJsonFile(joinPath(reportDir, "output.json"), {
     status: "passed",
     task_id: response.task_id,
-    summary,
+    response: aiResponse,
     artifact_files: artifactFiles,
   });
   return {
@@ -1276,7 +1677,7 @@ async function runCase(args: {
     method: testCase.method,
     modelAlias,
     taskId: response.task_id,
-    summary,
+    response: aiResponse,
     artifactFiles,
     reportDir,
   };
@@ -1315,9 +1716,35 @@ async function openGeneratedImageAtEnd(
     return null;
   }
 
-  const opened = await ndmProxy.openReader({ obj_id: generatedImage.obj_id });
-  const bytes = new Uint8Array(await opened.response.arrayBuffer());
-  const mime = opened.response.headers.get("content-type") ?? undefined;
+  let bytes: Uint8Array;
+  let mime: string | undefined;
+  let objId: string | undefined;
+  let sourceUrl: string | undefined;
+  let resolvedObjectId: string | undefined;
+  let readerKind: string | undefined;
+
+  if (generatedImage.kind === "named_object") {
+    objId = generatedImage.obj_id;
+    const opened = await ndmProxy.openReader({ obj_id: generatedImage.obj_id });
+    bytes = new Uint8Array(await opened.response.arrayBuffer());
+    mime = opened.response.headers.get("content-type") ?? undefined;
+    resolvedObjectId = opened.resolvedObjectId;
+    readerKind = opened.readerKind;
+  } else if (generatedImage.kind === "url") {
+    sourceUrl = generatedImage.url;
+    const response = await fetch(generatedImage.url);
+    if (!response.ok) {
+      throw new Error(
+        `failed to download generated image: ${response.status} ${response.statusText}`,
+      );
+    }
+    bytes = new Uint8Array(await response.arrayBuffer());
+    mime = response.headers.get("content-type") ?? generatedImage.mime_hint;
+  } else {
+    bytes = decodeBase64(generatedImage.data_base64);
+    mime = generatedImage.mime;
+  }
+
   const ext = mimeExtension(mime) ?? "bin";
   const artifactDir = joinPath(reportRoot, "generated-image");
   await Deno.mkdir(artifactDir, { recursive: true });
@@ -1325,12 +1752,14 @@ async function openGeneratedImageAtEnd(
   await Deno.writeFile(path, bytes);
 
   const result: FinalOpenedResource = {
-    obj_id: generatedImage.obj_id,
+    source_kind: generatedImage.kind,
+    obj_id: objId,
+    source_url: sourceUrl,
     path,
     bytes: bytes.byteLength,
     mime,
-    resolved_obj_id: opened.resolvedObjectId,
-    reader_kind: opened.readerKind,
+    resolved_obj_id: resolvedObjectId,
+    reader_kind: readerKind,
   };
   await writeJsonFile(joinPath(artifactDir, "opened.json"), result);
   return result;
