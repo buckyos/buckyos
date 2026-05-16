@@ -19,6 +19,7 @@ use tokio::task::JoinHandle;
 use agent_tool::{AgentToolManager, SessionRuntimeContext};
 use llm_context::{
     context_loop::LLMContext,
+    interrupt::LLMContextInterruptHandle,
     observation::Observation,
     outcome::{ContextOutput, LLMContextOutcome, ResumeFill},
     request::{ContextOwnerRef, LLMContextRequest},
@@ -406,6 +407,30 @@ pub struct AgentSession {
     /// design doc calls this the "本轮 origin user 消息". Per-turn ephemeral
     /// state — not persisted, simply overwritten each turn.
     current_origin_msg: Arc<std::sync::Mutex<Option<String>>>,
+
+    /// Interrupt handle of the LLMContext currently inside a `run()` call.
+    /// `Some` while an inference is in flight; `None` between turns or when
+    /// the session is parked. `AgentSession::interrupt(Discard)` reads this
+    /// to preempt the inference via the waist's §3.13 control plane —
+    /// without it, the worker can only act on interrupts after the LLM has
+    /// already finished generating, defeating the point of "force" mode.
+    current_interrupt_handle: Arc<std::sync::Mutex<Option<LLMContextInterruptHandle>>>,
+}
+
+/// RAII handle slot — installs `LLMContextInterruptHandle` into a session's
+/// `current_interrupt_handle` for the lifetime of the guard. Dropping it
+/// (normal return, early return, panic during run) clears the slot so a
+/// later `interrupt(Discard)` doesn't fire on a stale handle.
+struct InterruptHandleGuard {
+    slot: Arc<std::sync::Mutex<Option<LLMContextInterruptHandle>>>,
+}
+
+impl Drop for InterruptHandleGuard {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.slot.lock() {
+            *g = None;
+        }
+    }
 }
 
 pub struct AgentSessionBuild {
@@ -480,8 +505,34 @@ impl AgentSession {
             trace_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             fork_stack: Arc::new(Mutex::new(Vec::new())),
             current_origin_msg: Arc::new(std::sync::Mutex::new(None)),
+            current_interrupt_handle: Arc::new(std::sync::Mutex::new(None)),
         };
         (session, inbox_rx)
+    }
+
+    /// Install `handle` as the session's "currently in-flight" interrupt
+    /// handle. The returned guard clears the slot on drop. Callers must hold
+    /// the guard for the entire scope of the `ctx.run().await` it pairs with.
+    fn register_interrupt_handle(
+        &self,
+        handle: LLMContextInterruptHandle,
+    ) -> InterruptHandleGuard {
+        if let Ok(mut g) = self.current_interrupt_handle.lock() {
+            *g = Some(handle);
+        }
+        InterruptHandleGuard {
+            slot: Arc::clone(&self.current_interrupt_handle),
+        }
+    }
+
+    /// Snapshot the currently-installed handle (if any). Returns `None` when
+    /// no inference is in flight (between turns, parked on PendingTool,
+    /// session idle).
+    fn snapshot_interrupt_handle(&self) -> Option<LLMContextInterruptHandle> {
+        self.current_interrupt_handle
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     /// Persist the current `SessionMeta` to `.meta/session.json`. Returns
@@ -563,12 +614,38 @@ impl AgentSession {
     /// flows that want "stop, then send this message" should call
     /// `interrupt` and then `enqueue_pending(Msg)` in that order.
     ///
-    /// The interrupt is a no-op when the session has no outstanding
-    /// pending tool calls at the moment the worker processes it (the
-    /// session is already at an outcome boundary; there is nothing to
-    /// wind down). It is safe to call regardless of session state — the
-    /// worker enforces the precondition.
+    /// `Graceful` is a no-op when the session has no outstanding pending
+    /// tool calls at the moment the worker processes it (the session is
+    /// already at an outcome boundary; there is nothing to wind down).
+    ///
+    /// `Discard` is the **force** mode: if a `LLMContext::run()` is currently
+    /// in flight, this call additionally fires the waist's §3.13 interrupt
+    /// handle so the provider inference is preempted right now rather than
+    /// allowed to run to completion. The queued `PendingInput::Interrupt`
+    /// barrier still rides through the worker so any post-run cleanup
+    /// (trim the trailing assistant turn that owned unresolved tool_use
+    /// blocks, drop pending tool calls) runs uniformly with the
+    /// "interrupt while parked on PendingTool" case.
     pub async fn interrupt(&self, mode: InterruptMode) -> Result<()> {
+        // Force mode: preempt the in-flight inference immediately. When no
+        // run is in flight, `snapshot_interrupt_handle` returns None and we
+        // just fall through to the existing enqueue path.
+        if matches!(mode, InterruptMode::Discard) {
+            if let Some(handle) = self.snapshot_interrupt_handle() {
+                let reason = format!(
+                    "agent_session[{}].interrupt(Discard)",
+                    self.session_id
+                );
+                let first = handle.interrupt(reason);
+                if first {
+                    info!(
+                        "opendan.session[{}]: interrupt(Discard) preempted in-flight inference",
+                        self.session_id
+                    );
+                }
+            }
+        }
+
         let id = format!(
             "{}-{}",
             now_ms(),
@@ -1181,7 +1258,11 @@ impl AgentSession {
             },
         );
         let mut ctx = LLMContext::resume(snapshot, fill, deps).map_err(|e| anyhow!("resume: {e}"))?;
+        // The post-tool-results inference is a regular ReAct step — keep it
+        // preemptable by `AgentSession::interrupt(Discard)` (§3.13).
+        let _interrupt_guard = self.register_interrupt_handle(ctx.interrupt_handle());
         let outcome = ctx.run().await;
+        drop(_interrupt_guard);
         // Post-run snapshot — needed by Done+next_behavior switching to
         // preserve full history (final assistant reply included). Outcome::Done
         // itself carries no snapshot, but ctx is still alive here.
@@ -1578,7 +1659,15 @@ impl AgentSession {
         const MAX_COMPRESS_ROUNDS: u32 = 3;
         let mut compress_rounds = 0u32;
         loop {
+            // Register the *current* ctx's interrupt handle for this run.
+            // The compress-resume branch below replaces `ctx` with a freshly
+            // resumed instance (and therefore a fresh abort state), so the
+            // registration MUST happen inside the loop body — re-registering
+            // each iteration is the cheapest way to keep the slot pointed
+            // at the live ctx.
+            let _interrupt_guard = self.register_interrupt_handle(ctx.interrupt_handle());
             let outcome = ctx.run().await;
+            drop(_interrupt_guard);
             match outcome {
                 LLMContextOutcome::ContextLimitReached {
                     which,
@@ -2132,6 +2221,23 @@ impl AgentSession {
                     .await;
                 Ok(NextAction::WaitForMsg)
             }
+            LLMContextOutcome::Interrupted {
+                reason, snapshot, ..
+            } => {
+                // §3.13 inference interrupt — scheduler preempted the
+                // in-flight inference. `snapshot` is s0 (pre-inference state),
+                // so persisting it lets the next turn pick up via
+                // `ResumeFromMidRun`. We park the session waiting for either
+                // a new user message or an explicit resume.
+                self.persist_snapshot(&snapshot).await;
+                let _ = self
+                    .reply_tx
+                    .send(SessionReply::Error {
+                        message: format!("inference interrupted: {reason}"),
+                    })
+                    .await;
+                Ok(NextAction::WaitForMsg)
+            }
         }
     }
 
@@ -2502,7 +2608,8 @@ impl AgentSession {
                 Err(anyhow!("fork sub-ctx budget exhausted: {:?}", which))
             }
             LLMContextOutcome::PendingTool { .. }
-            | LLMContextOutcome::ContextLimitReached { .. } => Err(anyhow!(
+            | LLMContextOutcome::ContextLimitReached { .. }
+            | LLMContextOutcome::Interrupted { .. } => Err(anyhow!(
                 "fork sub-ctx unexpectedly suspended — fork sub-contexts must reach a terminal outcome (Done / Error / BudgetExhausted)"
             )),
         }

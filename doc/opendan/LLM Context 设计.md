@@ -2,25 +2,11 @@
 
 > Status: 1.4
 >
-> 1.4 → 1.3 增量：恢复 inference interrupt 设计面，同时保留 1.3 对当前实现的收敛：
+> 1.3 → 1.4 增量： inference interrupt 设计面
 >   - 新增 run 过程中抢占 provider inference 的控制面，用于尽快停止继续生成，减少无效 output token。
 >   - 新增 `LLMContext::interrupt_handle()` / `LlmInferenceRequest.abort: InferenceAbortToken`。
 >   - 新增 `LLMContextOutcome::Interrupted` 与 `InferenceAbortTrace`，把"run 中被外部中断"建模为可恢复挂起态。
 >   - 不恢复 `WaitInput` / `ResumeFill::HumanInput`；等待用户输入仍然是 session / L4 语义，不进 waist。
->
-> 1.3 → 1.2 增量：按当前 `src/frame/llm_context` 实现收敛 waist 公共面：
->   - 删除 `WaitInput` outcome；"等待下一条用户消息"不是 waist 概念，由 session 层解释 `Done.behavior_result.next_behavior == "WAIT_USER_MSG"`。
->   - `ResumeFill` 收敛为 `ToolResults` / `RewrittenHistory` / `ResumeFromMidRun` 三个变体，删除 `HumanInput`。
->   - `HumanPolicy` 只保留 `approval_required`；错误处理按当前实现固定为 recoverable error 喂回 observation，超过连续错误上限后返回 `Error`。
->
-> 1.2 → 1.1 增量：根据 L4 OneShot 生产参考实现（`src/frame/llm_context/src/local_llm_context.rs`）
-> 把若干 waist 缺口正式纳入设计：
->   - `ResumeFill` 新增 `ResumeFromMidRun` 变体，覆盖"运行中崩溃 → 中途 snapshot 恢复"路径（§3.1 / §6.6）。
->   - `LLMContext::resume(...) -> Result<Self, LLMComputeError>`，签名落实（§3.1 / §6.2）。
->   - `LLMContextDeps` 新增可选 `TurnHook` 扩展点，用于"每轮 LLM 推理前"snapshot hook（§3.12 / §6.6）。
->   - `ResumeFill` / `ContextThreshold` / `ContextOutput` 统一为 struct variant，匹配 serde `#[serde(tag = "kind")]` 形态。
->   - §9 姊妹文档表 + Appendix B 增补 `LocalLLMContext` 作为 L4 OneShot 的参考实现。
-
 
 ## Preamble — Design Stance: Narrow Waist
 

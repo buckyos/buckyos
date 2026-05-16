@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::behavior_loop::{HistoryCompressor, LLMResultParser, StepRenderer};
 use crate::error::LLMComputeError;
+use crate::interrupt::InferenceAbortToken;
 use crate::observation::Observation;
 use crate::request::{LLMContextRequest, ToolPolicy};
 use crate::state::LLMContextSnapshot;
@@ -32,6 +33,12 @@ pub struct LlmInferenceRequest {
     /// `tool_policy.mode == None` or no tools are available.
     pub tool_specs: Vec<ToolSpecLite>,
     pub allow_tool_calls: bool,
+    /// Abort signal for this inference. Adapters that support native
+    /// cancellation should wire it to the underlying HTTP / SDK cancel;
+    /// adapters that don't may ignore it — the waist also races the
+    /// inference future against `abort.cancelled()` so the scheduler thread
+    /// is released regardless. See §3.13 of the design doc.
+    pub abort: InferenceAbortToken,
 }
 
 /// Provider-agnostic tool descriptor passed in inference requests. Trimmed

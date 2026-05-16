@@ -211,6 +211,112 @@ async fn resume_from_mid_run_continues_loop() {
     }
 }
 
+/// A LLM client that parks on the abort token forever (or until aborted).
+/// Lets us race the interrupt handle against an in-flight inference.
+struct BlockingLlm;
+
+#[async_trait]
+impl LlmClient for BlockingLlm {
+    async fn infer(
+        &self,
+        req: LlmInferenceRequest,
+    ) -> Result<AiResponseSummary, LLMComputeError> {
+        // Wait until aborted, then surface as `Cancelled`. Mirrors what a
+        // well-behaved provider adapter would do when it observes the token.
+        req.abort.cancelled().await;
+        Err(LLMComputeError::Cancelled)
+    }
+}
+
+#[tokio::test]
+async fn interrupt_yields_interrupted_outcome_with_pre_inference_snapshot() {
+    let deps = LLMContextDeps::new(Arc::new(BlockingLlm), Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(base_request(), deps);
+    let handle = ctx.interrupt_handle();
+
+    // Capture the snapshot we *expect* to be returned in `Interrupted.snapshot`
+    // (the accumulated history before the first inference fires).
+    let snap_before = ctx.snapshot();
+
+    let runner = tokio::spawn(async move {
+        let outcome = ctx.run().await;
+        outcome
+    });
+
+    // Give the runner a chance to enter `infer()` so we exercise the
+    // mid-inference preempt path rather than the early short-circuit.
+    tokio::task::yield_now().await;
+    assert!(handle.interrupt("user_cancel"));
+    // Second interrupt is a no-op.
+    assert!(!handle.interrupt("ignored"));
+
+    let outcome = runner.await.expect("runner join");
+    // `Interrupted` is a suspended outcome — must not be classified terminal.
+    assert!(!outcome.is_terminal());
+    let LLMContextOutcome::Interrupted {
+        reason,
+        snapshot,
+        abort,
+        ..
+    } = outcome
+    else {
+        panic!("expected Interrupted");
+    };
+    assert_eq!(reason, "user_cancel");
+    assert_eq!(abort.reason, "user_cancel");
+    // Snapshot must match pre-inference state — no half assistant messages.
+    assert_eq!(
+        snapshot.state.accumulated.len(),
+        snap_before.state.accumulated.len()
+    );
+    assert!(snapshot.state.pending_tool_calls.is_empty());
+}
+
+#[tokio::test]
+async fn interrupt_before_run_short_circuits_without_inference() {
+    let deps = LLMContextDeps::new(Arc::new(BlockingLlm), Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(base_request(), deps);
+    let handle = ctx.interrupt_handle();
+    handle.interrupt("preempted_before_start");
+
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::Interrupted { reason, .. } = outcome else {
+        panic!("expected Interrupted, got {outcome:?}");
+    };
+    assert_eq!(reason, "preempted_before_start");
+}
+
+#[tokio::test]
+async fn resume_from_mid_run_after_interrupt_replays_inference() {
+    let blocking = Arc::new(BlockingLlm);
+    let deps = LLMContextDeps::new(blocking.clone(), Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(base_request(), deps);
+    let handle = ctx.interrupt_handle();
+    handle.interrupt("scheduler_preempt");
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::Interrupted { snapshot, .. } = outcome else {
+        panic!("expected Interrupted");
+    };
+
+    // Resume with a real LLM that returns a regular response — the run
+    // should make forward progress because `Interrupted.snapshot` carries
+    // pre-inference state (empty pending_tool_calls / no half output).
+    let llm = Arc::new(ScriptedLlm::new(vec![AiResponseSummary {
+        text: Some("post-resume reply".into()),
+        ..Default::default()
+    }]));
+    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools));
+    let mut ctx = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps)
+        .expect("ResumeFromMidRun after Interrupted is the documented path");
+    match ctx.run().await {
+        LLMContextOutcome::Done { output, .. } => match output {
+            ContextOutput::Text { content } => assert_eq!(content, "post-resume reply"),
+            _ => panic!("expected text"),
+        },
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn tool_rounds_budget_exhausted() {
     let mut args: HashMap<String, serde_json::Value> = HashMap::new();

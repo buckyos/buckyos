@@ -15,6 +15,7 @@
 //! are *defined* but not actively produced in this first version — they
 //! require deferred tools and explicit human-input requests to be wired up.
 
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::{
@@ -29,6 +30,9 @@ use crate::deps::{
     resolve_tool_specs, LLMContextDeps, LlmInferenceRequest, WorkEvent,
 };
 use crate::error::LLMComputeError;
+use crate::interrupt::{
+    InferenceAbortState, InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle,
+};
 use crate::observation::{Observation, ToolExecRecord};
 use crate::outcome::{
     BudgetKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill,
@@ -47,6 +51,9 @@ pub struct LLMContext {
     /// Last raw provider response. Carried so we can populate
     /// `Outcome::Done.response`.
     last_response: AiResponseSummary,
+    /// Shared abort state (§3.13). `interrupt_handle()` clones it for the
+    /// scheduler side; the waist clones a token into every `LlmInferenceRequest`.
+    abort: Arc<InferenceAbortState>,
 }
 
 impl LLMContext {
@@ -67,11 +74,26 @@ impl LLMContext {
             deps,
             tool_trace: Vec::new(),
             last_response: AiResponseSummary::default(),
+            abort: InferenceAbortState::new(),
         }
+    }
+
+    /// Hand the scheduler a clonable interrupt handle for this run. Safe to
+    /// call before `run()` starts, while it's executing on another task, or
+    /// after it returns (the handle just becomes a no-op once the run is
+    /// gone). Each `LLMContext` instance has its own abort state — resuming
+    /// from a snapshot yields a fresh instance with a fresh handle.
+    pub fn interrupt_handle(&self) -> LLMContextInterruptHandle {
+        LLMContextInterruptHandle::from_state(self.abort.clone())
     }
 
     fn is_behavior_mode(&self) -> bool {
         self.deps.result_parser.is_some()
+    }
+
+    /// Token to embed in `LlmInferenceRequest`. Cheap to clone.
+    fn abort_token(&self) -> InferenceAbortToken {
+        InferenceAbortToken::from_state(self.abort.clone())
     }
 
     /// Resume a previously-yielded context with the data the scheduler
@@ -136,6 +158,11 @@ impl LLMContext {
             deps,
             tool_trace: Vec::new(),
             last_response: AiResponseSummary::default(),
+            // Fresh abort state on resume: the previous handle is no longer
+            // associated with this instance; the scheduler is expected to
+            // request a new `interrupt_handle()` from the resumed context if
+            // it wants to preempt the next inference.
+            abort: InferenceAbortState::new(),
         })
     }
 
@@ -188,21 +215,74 @@ impl LLMContext {
                 let snap = self.snapshot();
                 hook.before_inference(&snap);
             }
+            // Capture the pre-inference snapshot (s0): if the inference is
+            // preempted by the interrupt handle (§3.13), this is the snapshot
+            // we hand back via Outcome::Interrupted. Cheap to construct (it's
+            // a clone of request + state, both Cloneable).
+            let snapshot_before_inference = self.snapshot();
+            let abort_requested_at_ms = if self.abort.is_aborted() {
+                Some(now_ms())
+            } else {
+                None
+            };
+
+            // If the scheduler has already requested interrupt before we even
+            // entered this round, short-circuit without burning an inference.
+            if let Some(requested_at) = abort_requested_at_ms {
+                return self.finish_interrupted(
+                    snapshot_before_inference,
+                    requested_at,
+                    /*provider_cancel_supported=*/ true,
+                    /*provider_task_ref=*/ None,
+                );
+            }
+
             let infer_req = self.build_inference_request();
-            let response = match self.deps.llm.infer(infer_req).await {
-                Ok(resp) => resp,
-                Err(err) => {
-                    self.deps
-                        .worklog
-                        .emit(WorkEvent::LLMInferenceFailed {
-                            trace_id: self.request.trace.clone(),
-                            error: err.to_string(),
-                        })
-                        .await;
-                    if let Some(outcome) = self.handle_error(classify(err)).await {
-                        return outcome;
-                    } else {
-                        continue;
+            let abort_token = infer_req.abort.clone();
+
+            // Race the inference future against the abort signal. Even if the
+            // provider adapter ignores `req.abort` and blocks, the
+            // `cancelled().await` branch lets the waist drop the inference
+            // future and release the scheduler thread immediately.
+            let infer_future = self.deps.llm.infer(infer_req);
+            let response = tokio::select! {
+                biased;
+                _ = abort_token.cancelled() => {
+                    let requested_at = now_ms();
+                    return self.finish_interrupted(
+                        snapshot_before_inference,
+                        requested_at,
+                        /*provider_cancel_supported=*/ true,
+                        /*provider_task_ref=*/ None,
+                    );
+                }
+                result = infer_future => match result {
+                    Ok(resp) => resp,
+                    Err(err) => {
+                        // Provider may have observed the abort and surfaced
+                        // it as `Cancelled` — that path also funnels into
+                        // Interrupted, *not* through ErrorPolicy.
+                        if self.abort.is_aborted() {
+                            let requested_at = now_ms();
+                            return self.finish_interrupted(
+                                snapshot_before_inference,
+                                requested_at,
+                                /*provider_cancel_supported=*/ true,
+                                /*provider_task_ref=*/ None,
+                            );
+                        }
+                        self.deps
+                            .worklog
+                            .emit(WorkEvent::LLMInferenceFailed {
+                                trace_id: self.request.trace.clone(),
+                                error: err.to_string(),
+                            })
+                            .await;
+                        if let Some(outcome) = self.handle_error(classify(err)).await {
+                            return outcome;
+                        } else {
+                            continue;
+                        }
                     }
                 }
             };
@@ -449,6 +529,7 @@ impl LLMContext {
             provider_options: self.request.model_policy.provider_options.clone(),
             tool_specs,
             allow_tool_calls,
+            abort: self.abort_token(),
         }
     }
 
@@ -485,6 +566,39 @@ impl LLMContext {
             });
         }
         None
+    }
+
+    /// Build an `Outcome::Interrupted` from the pre-inference snapshot. The
+    /// snapshot is `s0` (state *before* the aborted inference), so resume via
+    /// `ResumeFill::ResumeFromMidRun` will retry that inference instead of
+    /// continuing from half-generated content. `usage` is taken from the
+    /// snapshot too — anything spent within this run already shows up there.
+    fn finish_interrupted(
+        &self,
+        snapshot: LLMContextSnapshot,
+        requested_at_ms: u64,
+        provider_cancel_supported: bool,
+        provider_task_ref: Option<String>,
+    ) -> LLMContextOutcome {
+        let observed_at_ms = now_ms();
+        let reason = self
+            .abort
+            .reason()
+            .unwrap_or_else(|| "interrupted".to_string());
+        let usage = snapshot.state.usage.clone();
+        let trace = InferenceAbortTrace {
+            reason: reason.clone(),
+            requested_at_ms,
+            observed_at_ms,
+            provider_cancel_supported,
+            provider_task_ref,
+        };
+        LLMContextOutcome::Interrupted {
+            reason,
+            usage,
+            snapshot,
+            abort: trace,
+        }
     }
 
     async fn finish_done(&mut self, response: AiResponseSummary) -> LLMContextOutcome {
@@ -767,6 +881,11 @@ impl LLMContext {
         let inner_deps = self.deps.clone().into_traditional();
 
         let mut inner = LLMContext::new(inner_request, inner_deps);
+        // Share the outer abort state so a single `interrupt_handle()` on
+        // the outer Behavior LLMContext fires through to the in-flight inner
+        // inference. Without this, the inner runs would be unreachable by
+        // the scheduler's preemption control plane.
+        inner.abort = self.abort.clone();
         let outcome = inner.run_inner().await;
 
         // Always merge whatever the inner managed to spend, even on error —
@@ -781,7 +900,7 @@ impl LLMContext {
                 self.state.usage = merge_usage(&self.state.usage, &usage);
                 Ok(response)
             }
-            // D7 — inner yields are not supported in v1.
+            // D7 — inner cooperative yields are not supported in v1.
             LLMContextOutcome::PendingTool { .. }
             | LLMContextOutcome::ContextLimitReached { .. } => {
                 Err(LLMContextOutcome::Error {
@@ -790,6 +909,26 @@ impl LLMContext {
                             .to_string(),
                     ),
                     usage: self.state.usage.clone(),
+                })
+            }
+            // Inference interrupt propagates straight through — it is a
+            // preemptive control-plane event, not an error. The inner
+            // snapshot's s0 represents the inner LLMContext's pre-inference
+            // state; the outer Behavior Loop returns it verbatim so the
+            // scheduler can resume the same way it would for any other
+            // Interrupted outcome.
+            LLMContextOutcome::Interrupted {
+                reason,
+                usage,
+                snapshot,
+                abort,
+            } => {
+                self.state.usage = merge_usage(&self.state.usage, &usage);
+                Err(LLMContextOutcome::Interrupted {
+                    reason,
+                    usage: self.state.usage.clone(),
+                    snapshot,
+                    abort,
                 })
             }
             LLMContextOutcome::Error { error, usage } => {

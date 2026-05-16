@@ -155,6 +155,10 @@ pub async fn compress(
         provider_options: None,
         tool_specs: Vec::new(),
         allow_tool_calls: false,
+        // Internal summariser call — no scheduler-side interrupt handle is
+        // exposed for it. A noop token satisfies the field contract without
+        // ever firing.
+        abort: llm_context::InferenceAbortToken::noop(),
     };
 
     let resp = deps.llm.infer(req).await?;

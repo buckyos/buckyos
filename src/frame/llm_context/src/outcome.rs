@@ -17,6 +17,7 @@ use serde_json::Value;
 
 use crate::behavior_loop::LLMBehaviorResult;
 use crate::error::LLMComputeError;
+use crate::interrupt::InferenceAbortTrace;
 use crate::observation::{Observation, PendingToolCall, ToolExecRecord};
 use crate::state::LLMContextSnapshot;
 
@@ -125,6 +126,19 @@ pub enum LLMContextOutcome {
         snapshot: LLMContextSnapshot,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         deadline_ms: Option<u64>,
+    },
+
+    /// Suspended: `run()` was preempted by an external interrupt handle while
+    /// an inference was in flight. The snapshot is the state captured **before**
+    /// the aborted inference started — no partial assistant tokens / tool calls
+    /// enter `accumulated`. Resume by feeding this snapshot back with
+    /// `ResumeFill::ResumeFromMidRun`; the next `run()` will retry the inference
+    /// from that point.
+    Interrupted {
+        reason: String,
+        usage: AiUsage,
+        snapshot: LLMContextSnapshot,
+        abort: InferenceAbortTrace,
     },
 }
 

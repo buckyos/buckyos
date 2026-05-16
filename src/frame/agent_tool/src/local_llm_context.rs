@@ -324,6 +324,9 @@ pub enum SuspendKind {
     /// 透明消化(走 Compressor → resume),不会把 run 标记成 Suspended。
     /// 如果 caller 用更底层的 `step()` 接口手动驱动,才会看到这个值。
     ContextLimitReached,
+    /// §3.13 inference interrupt。snapshot 是本轮 inference 发起前的状态;
+    /// resume 走 `ResumeFromMidRun`,与"运行中崩溃恢复"共享语义。
+    Interrupted,
 }
 
 // =========================================================================
@@ -671,6 +674,16 @@ impl LocalLLMContext {
                 // "等外部输入"的真正挂起,只是 waist 让 scheduler 决定压缩策略
                 // 的让出点。
                 self.meta.last_suspend_kind = Some(SuspendKind::ContextLimitReached);
+                write_run_state(&self.dir, &self.meta)?;
+            }
+            LLMContextOutcome::Interrupted { .. } => {
+                // §3.13:scheduler 从 run 外部抢占了本轮 inference。
+                // snapshot 是 s0(本轮 inference 前的状态),恢复路径与"运行
+                // 中崩溃"共享 `ResumeFromMidRun` 语义。把 status 标成 Suspended
+                // 并记下 SuspendKind::Interrupted,让 resume_or_new 看到时能区
+                // 分"挂起态崩溃"与"正常运行中崩溃"。
+                self.meta.status = RunStatus::Suspended;
+                self.meta.last_suspend_kind = Some(SuspendKind::Interrupted);
                 write_run_state(&self.dir, &self.meta)?;
             }
         }

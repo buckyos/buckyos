@@ -10,6 +10,7 @@ pub mod behavior_loop;
 pub mod context_loop;
 pub mod deps;
 pub mod error;
+pub mod interrupt;
 pub mod observation;
 pub mod outcome;
 pub mod prompt_budget;
@@ -32,6 +33,7 @@ pub use deps::{
     ToolSpecLite, Tokenizer, TurnHook, WorkEvent, WorklogSink,
 };
 pub use error::LLMComputeError;
+pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle};
 pub use observation::{Observation, PendingToolCall, ToolExecRecord};
 pub use prompt_budget::{
     BudgetedSection, FitOutcome, FittedSection, PromptBudgeter, TruncFrom,

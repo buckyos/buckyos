@@ -467,6 +467,43 @@ fn build_outcome_result(
             };
             (result, CLI_EXIT_ERROR)
         }
+        LLMContextOutcome::Interrupted {
+            reason,
+            usage,
+            abort,
+            ..
+        } => {
+            // §3.13:run 被外部 interrupt handle 抢占。run id 仍有效 —— caller
+            // 可以重新打开 LocalLLMContext 走 ResumeFromMidRun 继续推进。
+            // CLI 层把它表达成 pending,任务可由外部重启。
+            let details = json!({
+                "work_dir": work_dir_str,
+                "run_id": run_id,
+                "description": opts.description,
+                "outcome": "interrupted",
+                "reason": reason,
+                "usage": usage,
+                "abort": abort,
+            });
+            let result = AgentToolResult {
+                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                tool: Some(TOOL_NAME.to_string()),
+                cmd_name: None,
+                status: AgentToolStatus::Pending,
+                task_id: Some(run_id.to_string()),
+                pending_reason: Some(AgentToolPendingReason::LongRunning),
+                check_after: None,
+                estimated_wait: None,
+                title: format!("{TOOL_NAME} => interrupted"),
+                summary: format!("inference interrupted: {reason}"),
+                details,
+                cmd_args: None,
+                return_code: None,
+                partial_output: None,
+                output: None,
+            };
+            (result, CLI_EXIT_SUCCESS)
+        }
     }
 }
 

@@ -79,6 +79,12 @@ impl LlmClient for AiccLlmClient {
             provider_options,
             tool_specs,
             allow_tool_calls,
+            // AICC's `call_method` does not currently support cancel
+            // wire-through; the waist's `select!` already drops this future
+            // on interrupt, so dropping the abort token here is safe — the
+            // remote may keep generating tokens but the scheduler thread is
+            // freed immediately.
+            abort: _,
         } = req;
 
         // Tool catalogue (only advertised when the policy lets the LLM call tools)

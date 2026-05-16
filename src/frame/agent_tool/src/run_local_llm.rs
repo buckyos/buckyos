@@ -213,6 +213,7 @@ fn outcome_tag(o: &LLMContextOutcome) -> &'static str {
         LLMContextOutcome::BudgetExhausted { .. } => "budget_exhausted",
         LLMContextOutcome::Error { .. } => "error",
         LLMContextOutcome::ContextLimitReached { .. } => "context_limit_reached",
+        LLMContextOutcome::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -473,6 +474,12 @@ impl LlmClient for AiccLlmClient {
             provider_options,
             tool_specs,
             allow_tool_calls,
+            // The dev tool talks to AICC via a synchronous `call_method`
+            // without a native cancel hook; the waist still drops the
+            // returned future on abort, so the scheduler is unblocked even
+            // if the remote keeps generating tokens. See §3.13 for the
+            // contract that lets a provider opt-in to real remote cancel.
+            abort: _,
         } = req;
 
         // tool specs：waist ToolSpecLite → AICC AiToolSpec
