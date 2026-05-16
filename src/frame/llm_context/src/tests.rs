@@ -217,8 +217,23 @@ fn ai_response_preserves_multimodal_block_order() {
         response.message.content[3],
         AiContent::ToolUse { .. }
     ));
-    assert_eq!(response.text_content(), "first\nsecond");
-    assert_eq!(response.tool_calls().len(), 1);
+    assert_eq!(response.message.text_content(), "first\nsecond");
+    assert_eq!(response.message.tool_calls().len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_response_role_is_rejected_before_accumulation() {
+    let response = AiResponse::new(AiMessage::text(AiRole::User, "not an assistant response"));
+    let llm = Arc::new(ScriptedLlm::new(vec![response]));
+    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(base_request(), deps);
+
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::Error { error, .. } = outcome else {
+        panic!("expected Error");
+    };
+    assert!(matches!(error, LLMComputeError::Internal(_)));
+    assert_eq!(ctx.snapshot().state.accumulated, base_request().input);
 }
 
 struct CountingHook {

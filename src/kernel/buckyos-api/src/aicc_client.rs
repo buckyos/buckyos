@@ -474,6 +474,26 @@ impl AiMessage {
         out
     }
 
+    /// Extract assistant tool-use blocks as normalized tool calls, preserving
+    /// their order within the message.
+    pub fn tool_calls(&self) -> Vec<AiToolCall> {
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                AiContent::ToolUse {
+                    call_id,
+                    name,
+                    args,
+                } => Some(AiToolCall {
+                    name: name.clone(),
+                    args: args.clone(),
+                    call_id: call_id.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// First `Text` block's content, if any. Use this for "I used to read
     /// `&msg.content`" replacement sites.
     pub fn first_text(&self) -> Option<&str> {
@@ -923,22 +943,7 @@ impl AiResponse {
     }
 
     pub fn tool_calls(&self) -> Vec<AiToolCall> {
-        self.message
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                AiContent::ToolUse {
-                    call_id,
-                    name,
-                    args,
-                } => Some(AiToolCall {
-                    name: name.clone(),
-                    args: args.clone(),
-                    call_id: call_id.clone(),
-                }),
-                _ => None,
-            })
-            .collect()
+        self.message.tool_calls()
     }
 
     pub fn artifacts(&self) -> Vec<AiArtifact> {
@@ -1423,6 +1428,30 @@ mod tests {
             value.pointer("/payload/input_json/messages/0/role"),
             Some(&json!("user"))
         );
+    }
+
+    #[test]
+    fn ai_message_tool_calls_preserve_block_order() {
+        let mut first_args = HashMap::new();
+        first_args.insert("q".to_string(), json!("first"));
+        let mut second_args = HashMap::new();
+        second_args.insert("q".to_string(), json!("second"));
+        let msg = AiMessage::new(
+            AiRole::Assistant,
+            vec![
+                AiContent::text("before"),
+                AiContent::tool_use("call-1", "lookup", first_args),
+                AiContent::text("middle"),
+                AiContent::tool_use("call-2", "search", second_args),
+            ],
+        );
+
+        let calls = msg.tool_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].call_id, "call-1");
+        assert_eq!(calls[0].name, "lookup");
+        assert_eq!(calls[1].call_id, "call-2");
+        assert_eq!(calls[1].name, "search");
     }
 
     #[tokio::test]

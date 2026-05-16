@@ -277,6 +277,14 @@ impl LLMContext {
                 }
             };
 
+            if let Err(err) = response.validate() {
+                let err = LLMComputeError::Internal(format!("invalid LLM response: {err}"));
+                if let Some(outcome) = self.handle_error(ErrorClass::Fatal(err)).await {
+                    return outcome;
+                }
+                continue;
+            }
+
             self.account_response(&response);
             self.last_response = response.clone();
 
@@ -290,8 +298,8 @@ impl LLMContext {
                 return budget_outcome;
             }
 
-            let tool_calls = response.tool_calls();
-            let assistant_text = response.text_content();
+            let tool_calls = response.message.tool_calls();
+            let assistant_text = response.message.text_content();
 
             // 2. No tool calls ⇒ finish
             if tool_calls.is_empty() || self.request.tool_policy.mode == ToolMode::None {
@@ -576,7 +584,7 @@ impl LLMContext {
     }
 
     async fn finish_done(&mut self, response: AiResponse) -> LLMContextOutcome {
-        let text = response.text_content();
+        let text = response.message.text_content();
         let output = match &self.request.output {
             OutputSpec::Text => ContextOutput::Text {
                 content: text.clone(),
@@ -1012,7 +1020,7 @@ impl LLMContext {
         self.sediment(last_step);
 
         let output = ContextOutput::Text {
-            content: response.text_content(),
+            content: response.message.text_content(),
         };
         let trace = ContextRunTrace {
             trace_id: self.request.trace.clone().unwrap_or_default(),

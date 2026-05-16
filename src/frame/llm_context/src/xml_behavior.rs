@@ -66,8 +66,8 @@ impl XmlBehaviorParser {
 
 impl LLMResultParser for XmlBehaviorParser {
     fn parse(&self, response: &AiResponse) -> Result<LLMBehaviorResult, String> {
-        let raw_text = response.text_content();
-        let provider_calls = response.tool_calls();
+        let raw_text = response.message.text_content();
+        let provider_calls = response.message.tool_calls();
 
         if raw_text.trim().is_empty() && provider_calls.is_empty() {
             return Err("empty response: no text and no tool_calls".to_string());
