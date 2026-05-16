@@ -178,4 +178,6 @@ pub struct EventSubscription {
     pub pattern: String,
     #[serde(default)]
     pub subscribed_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_template: Option<String>,
 }

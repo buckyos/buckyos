@@ -176,6 +176,8 @@ impl AgentConfig {
                 "grep".to_string(),
                 "edit_file".to_string(),
                 "write_file".to_string(),
+                "subscribe_event".to_string(),
+                "unsubscribe_event".to_string(),
             ],
             ..Default::default()
         }

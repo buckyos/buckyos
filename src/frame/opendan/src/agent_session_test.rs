@@ -58,6 +58,56 @@ fn format_event_for_turn_handles_null_payload() {
 }
 
 #[test]
+fn format_event_for_turn_uses_subscription_template() {
+    let subscriptions = vec![EventSubscription {
+        pattern: "/approval/**".to_string(),
+        subscribed_at_ms: 0,
+        message_template: Some("Approval changed to {status}: {message}".to_string()),
+    }];
+    let s = format_event_for_turn_with_subscriptions(
+        "/approval/doc-1",
+        &serde_json::json!({"status": "approved", "message": "ready"}),
+        &subscriptions,
+    );
+    assert_eq!(s, "Approval changed to approved: ready");
+}
+
+#[test]
+fn event_batch_formats_single_user_wakeup() {
+    let batch = format_event_batch_for_turn(&[
+        EventForTurn {
+            event_id: "/approval/doc-1".to_string(),
+            data: serde_json::json!({"status": "approved"}),
+            message: "Approval changed to approved".to_string(),
+        },
+        EventForTurn {
+            event_id: "/task/7".to_string(),
+            data: serde_json::Value::Null,
+            message: "Task 7 completed".to_string(),
+        },
+    ])
+    .expect("batch");
+    assert!(batch.starts_with("[event batch]"));
+    assert!(batch.contains("handled together as one wakeup"));
+    assert!(batch.contains("Approval changed"));
+    assert!(batch.contains("Task 7 completed"));
+}
+
+#[test]
+fn pending_event_replacement_keeps_terminal_over_progress() {
+    let existing = PendingInput::Event {
+        event_id: "/task/7".to_string(),
+        data: serde_json::json!({"to_status": "Completed"}),
+    };
+    let incoming = PendingInput::Event {
+        event_id: "/task/7".to_string(),
+        data: serde_json::json!({"to_status": "Running"}),
+    };
+    assert!(!should_replace_pending_event(&existing, &incoming));
+    assert!(should_replace_pending_event(&incoming, &existing));
+}
+
+#[test]
 fn session_meta_round_trips_pending_inputs() {
     // SessionMeta + PendingInput must round-trip through JSON so
     // `.meta/session.json` correctly preserves unconsumed inputs across
@@ -88,6 +138,7 @@ fn session_meta_round_trips_pending_inputs() {
         event_subscriptions: vec![EventSubscription {
             pattern: "/timer/**".to_string(),
             subscribed_at_ms: 0,
+            message_template: None,
         }],
         workspace_id: Some("ws-1".to_string()),
         pending_task_calls: vec![PendingTaskCall {

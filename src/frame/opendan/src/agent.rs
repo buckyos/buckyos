@@ -645,6 +645,11 @@ impl AIAgent {
             Arc::downgrade(&self),
             &session_id,
         );
+        crate::buildin_tool::register_event_subscription_tools(
+            &tools,
+            Arc::downgrade(&self),
+            &session_id,
+        );
 
         let (reply_tx, mut reply_rx) = mpsc::channel(64);
         let (session, inbox_rx) = AgentSession::new(AgentSessionBuild {

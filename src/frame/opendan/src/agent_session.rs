@@ -1,9 +1,8 @@
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use buckyos_api::{AiContent, AiMessage, AiRole};
+use buckyos_api::{match_event_patterns, AiContent, AiMessage, AiRole};
 use log::{info, warn};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -146,6 +145,13 @@ struct RoundSeed {
     /// `(source, payload)` pairs for non-task events that landed in this
     /// drain. Each becomes a `HistoryEvent::SystemInput` entry.
     system_events: Vec<(String, serde_json::Value)>,
+}
+
+#[derive(Debug, Clone)]
+struct EventForTurn {
+    event_id: String,
+    data: serde_json::Value,
+    message: String,
 }
 
 /// RAII handle slot — installs `LLMContextInterruptHandle` into a session's
@@ -322,20 +328,36 @@ impl AgentSession {
     /// item is now durably owned by the session and will be replayed across
     /// restarts.
     ///
-    /// Duplicates (same `dedup_key`) are silently dropped — the upstream
-    /// system may legitimately replay an entry (msg-center lease timeout,
-    /// kevent retry), and we don't want to feed the LLM the same input
-    /// twice. Callers should treat `Ok(())` as "you may now ack regardless
-    /// of whether the item was newly accepted or deduplicated".
+    /// Duplicates (same `dedup_key`) are collapsed — replayed messages and
+    /// interrupts are dropped, while events replace the older snapshot when
+    /// they are equally or more final. Callers should treat `Ok(())` as
+    /// "you may now ack regardless of whether the item was newly accepted,
+    /// deduplicated, or coalesced".
     pub async fn enqueue_pending(&self, input: PendingInput) -> Result<()> {
         let key = input.dedup_key();
         let mut changed = false;
         {
             let mut meta = self.meta.lock().await;
-            let already = meta.pending_inputs.iter().any(|i| i.dedup_key() == key);
-            if !already {
-                meta.pending_inputs.push(input);
-                changed = true;
+            if let PendingInput::Event { .. } = &input {
+                if let Some(existing) = meta
+                    .pending_inputs
+                    .iter_mut()
+                    .find(|i| i.dedup_key() == key)
+                {
+                    if should_replace_pending_event(existing, &input) {
+                        *existing = input;
+                        changed = true;
+                    }
+                } else {
+                    meta.pending_inputs.push(input);
+                    changed = true;
+                }
+            } else {
+                let already = meta.pending_inputs.iter().any(|i| i.dedup_key() == key);
+                if !already {
+                    meta.pending_inputs.push(input);
+                    changed = true;
+                }
             }
         }
         if changed {
@@ -605,7 +627,7 @@ impl AgentSession {
             // Latest peer info wins — the most recent Msg in this batch
             // dictates where outbound replies will be routed.
             let mut human_texts = Vec::new();
-            let mut event_summaries = Vec::new();
+            let mut turn_events = Vec::new();
             let mut consumed_keys = Vec::new();
             let mut task_completions: Vec<(String, Observation, String, String)> = Vec::new();
             let mut latest_peer_did: Option<String> = None;
@@ -676,8 +698,14 @@ impl AgentSession {
                             continue;
                         }
                         // §9.6 event dispatch: surface non-task events into
-                        // the turn so the LLM can react.
-                        event_summaries.push(format_event_for_turn(event_id, data));
+                        // the turn so the LLM can react. Rendering happens
+                        // through the matching subscription when it supplied
+                        // a natural-language template.
+                        turn_events.push(EventForTurn {
+                            event_id: event_id.clone(),
+                            data: data.clone(),
+                            message: self.format_event_for_turn(event_id, data).await,
+                        });
                         hist_system_events.push((event_id.clone(), data.clone()));
                         if first_event_meta.is_none() {
                             first_event_meta =
@@ -786,11 +814,10 @@ impl AgentSession {
                 }
             }
 
-            // Events are folded into the same turn as message text — they
-            // arrive interleaved chronologically and represent the same
-            // "what's new since last inference" surface to the LLM.
             let mut round_inputs = human_texts;
-            round_inputs.extend(event_summaries);
+            if let Some(batch) = format_event_batch_for_turn(&turn_events) {
+                round_inputs.push(batch);
+            }
 
             // If the snapshot is currently mid-PendingTool and the upper
             // layer queued bare Msg/Event entries without an Interrupt
@@ -824,11 +851,13 @@ impl AgentSession {
             // stash when they happen to come bundled with chat text.
             let origin_msg = round_inputs
                 .iter()
+                .take(
+                    round_inputs
+                        .len()
+                        .saturating_sub(if turn_events.is_empty() { 0 } else { 1 }),
+                )
                 .rev()
-                .find(|s| {
-                    let t = s.trim();
-                    !t.is_empty() && !t.starts_with("[environment event]")
-                })
+                .find(|s| !s.trim().is_empty())
                 .cloned();
             self.set_current_origin_msg(origin_msg);
 
@@ -2643,23 +2672,51 @@ impl AgentSession {
     /// subscription set actually changed so the caller can refresh the
     /// agent-wide event pump.
     pub async fn subscribe_event(&self, pattern: impl Into<String>) -> Result<bool> {
+        self.subscribe_event_with_template(pattern, None).await
+    }
+
+    /// Add or update a persistent kevent subscription. `message_template`
+    /// lets the Agent author render events as natural-language messages
+    /// instead of leaking raw event JSON into the prompt. Supported
+    /// placeholders: `{event_id}`, `{data}`, and top-level JSON fields such
+    /// as `{status}` or `{message}`.
+    pub async fn subscribe_event_with_template(
+        &self,
+        pattern: impl Into<String>,
+        message_template: Option<String>,
+    ) -> Result<bool> {
         let pattern = pattern.into();
         let trimmed = pattern.trim();
         if trimmed.is_empty() {
             return Ok(false);
         }
+        let template = message_template.and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
         let now = now_ms();
         let mut changed = false;
         {
             let mut meta = self.meta.lock().await;
-            if !meta
+            if let Some(pos) = meta
                 .event_subscriptions
                 .iter()
-                .any(|s| s.pattern == trimmed)
+                .position(|s| s.pattern == trimmed)
             {
+                let existing = &mut meta.event_subscriptions[pos];
+                if existing.message_template != template {
+                    existing.message_template = template;
+                    changed = true;
+                }
+            } else {
                 meta.event_subscriptions.push(EventSubscription {
                     pattern: trimmed.to_string(),
                     subscribed_at_ms: now,
+                    message_template: template,
                 });
                 changed = true;
             }
@@ -2734,6 +2791,11 @@ impl AgentSession {
             .iter()
             .map(|s| s.pattern.clone())
             .collect()
+    }
+
+    async fn format_event_for_turn(&self, event_id: &str, data: &serde_json::Value) -> String {
+        let subscriptions = self.meta.lock().await.event_subscriptions.clone();
+        format_event_for_turn_with_subscriptions(event_id, data, &subscriptions)
     }
 
     /// Compose + post an assistant reply through msg-center back to the
@@ -2912,10 +2974,58 @@ fn observation_from_task_event(call_id: &str, data: &serde_json::Value) -> Optio
     }
 }
 
+fn should_replace_pending_event(existing: &PendingInput, incoming: &PendingInput) -> bool {
+    let (
+        PendingInput::Event {
+            data: existing_data,
+            ..
+        },
+        PendingInput::Event {
+            data: incoming_data,
+            ..
+        },
+    ) = (existing, incoming)
+    else {
+        return false;
+    };
+    event_status_rank(incoming_data) >= event_status_rank(existing_data)
+}
+
+fn event_status_rank(data: &serde_json::Value) -> u8 {
+    let status = data
+        .get("to_status")
+        .or_else(|| data.get("status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match status.as_str() {
+        "completed" | "failed" | "canceled" | "cancelled" | "done" | "error" => 2,
+        "running" | "pending" | "progress" | "in_progress" => 1,
+        _ => 0,
+    }
+}
+
 /// Translate a subscribed kevent into a short note the LLM can react to as
 /// part of the next turn. Keeps the JSON payload but tags it so the model
 /// knows this came from the environment, not from a human.
+#[cfg(test)]
 fn format_event_for_turn(event_id: &str, data: &serde_json::Value) -> String {
+    format_event_for_turn_with_subscriptions(event_id, data, &[])
+}
+
+fn format_event_for_turn_with_subscriptions(
+    event_id: &str,
+    data: &serde_json::Value,
+    subscriptions: &[EventSubscription],
+) -> String {
+    if let Some(template) = subscriptions
+        .iter()
+        .filter(|s| match_event_patterns(&[s.pattern.clone()], event_id))
+        .filter_map(|s| s.message_template.as_deref())
+        .find(|s| !s.trim().is_empty())
+    {
+        return render_event_template(template, event_id, data);
+    }
     let body = if data.is_null() {
         String::new()
     } else if let Ok(rendered) = serde_json::to_string(data) {
@@ -2924,10 +3034,66 @@ fn format_event_for_turn(event_id: &str, data: &serde_json::Value) -> String {
         data.to_string()
     };
     if body.is_empty() {
-        format!("[environment event] {event_id}")
+        format!("An event occurred at `{event_id}`.")
     } else {
-        format!("[environment event] {event_id} {body}")
+        format!("An event occurred at `{event_id}`. Payload: {body}")
     }
+}
+
+fn render_event_template(template: &str, event_id: &str, data: &serde_json::Value) -> String {
+    let mut rendered = template
+        .replace("{event_id}", event_id)
+        .replace("{data}", &json_compact(data));
+    if let Some(obj) = data.as_object() {
+        for (key, value) in obj {
+            let placeholder = format!("{{{key}}}");
+            if rendered.contains(&placeholder) {
+                rendered = rendered.replace(&placeholder, &json_scalar_to_text(value));
+            }
+        }
+    }
+    rendered
+}
+
+fn json_compact(value: &serde_json::Value) -> String {
+    if value.is_null() {
+        String::new()
+    } else {
+        serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+    }
+}
+
+fn json_scalar_to_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        _ => json_compact(value),
+    }
+}
+
+fn format_event_batch_for_turn(events: &[EventForTurn]) -> Option<String> {
+    if events.is_empty() {
+        return None;
+    }
+    let mut out = String::from("[event batch]\nThe following subscribed event");
+    if events.len() == 1 {
+        out.push_str(" arrived and should be handled as a user-visible wakeup:\n");
+    } else {
+        out.push_str("s arrived and should be handled together as one wakeup:\n");
+    }
+    for (idx, event) in events.iter().enumerate() {
+        out.push_str(&format!(
+            "{}. {} (path: `{}`",
+            idx + 1,
+            event.message.trim(),
+            event.event_id
+        ));
+        if !event.data.is_null() {
+            out.push_str(&format!(", data: {}", json_compact(&event.data)));
+        }
+        out.push_str(")\n");
+    }
+    Some(out.trim_end().to_string())
 }
 
 /// First 100 chars (char-aware) of `text`, used as the `RoundTrigger::UserMsg`
