@@ -18,6 +18,7 @@ use tokio::task::JoinHandle;
 
 use agent_tool::{AgentToolManager, SessionRuntimeContext};
 use llm_context::{
+    behavior_loop::StepRecord,
     context_loop::LLMContext,
     interrupt::LLMContextInterruptHandle,
     observation::Observation,
@@ -32,6 +33,10 @@ use crate::ai_runtime::{
 };
 use crate::behavior_cfg::{BehaviorCfg, SwitchMode};
 use crate::llm_context_helper::{apply_overrides_to_snapshot, RequestOverrides};
+use crate::round_history::{
+    CompactionTarget, ContextMode, HistoryEvent, InterruptMode as HistoryInterruptMode,
+    RoundStatus, RoundTrigger, SessionHistoryWriter,
+};
 use crate::session_event_pump::SessionEventPump;
 use crate::task_dispatch::TaskDispatch;
 
@@ -213,7 +218,7 @@ pub struct SessionMeta {
     /// created Work session auto-kicks (objective drives the first turn,
     /// no external message needed) while subsequent restarts wait on
     /// real inputs. Always `false` on the first persist; flipped to
-    /// `true` after the first turn returns from `run_one_turn`.
+    /// `true` after the first round returns from `run_one_round`.
     #[serde(default)]
     pub bootstrap_done: bool,
     /// Entry behavior name of the **currently active independent process**.
@@ -400,7 +405,7 @@ pub struct AgentSession {
     fork_stack: Arc<Mutex<Vec<String>>>,
 
     /// Last user-text that triggered the current (or most recent) inference
-    /// turn. Stashed by the worker right before `run_one_turn` so
+    /// round. Stashed by the worker right before `run_one_round` so
     /// session-aware tools can pick it up without having to be told —
     /// `forward_msg` reads this to default its body to "the message that
     /// caused the parent LLM to think a forward was needed". §8.4 of the
@@ -415,6 +420,27 @@ pub struct AgentSession {
     /// without it, the worker can only act on interrupts after the LLM has
     /// already finished generating, defeating the point of "force" mode.
     current_interrupt_handle: Arc<std::sync::Mutex<Option<LLMContextInterruptHandle>>>,
+
+    /// Append-only round-history writer. Lazy-initialised on first use so the
+    /// synchronous `new()` doesn't have to touch disk. Failures to open or
+    /// write are warn-logged but never propagate — history is best-effort
+    /// auxiliary state; an I/O issue here must not block the worker.
+    history: Arc<Mutex<Option<SessionHistoryWriter>>>,
+}
+
+/// Per-round history seed handed from the worker drain step into
+/// [`AgentSession::run_one_round`]. Carries the metadata the writer needs to
+/// open a fresh round plus the raw user / system-event payloads to seed as
+/// the first entries of that round. `None` means "do not open a new round
+/// — append against whichever round is already open" (used by the
+/// PendingTool resume path).
+struct RoundSeed {
+    trigger: RoundTrigger,
+    input_keys: Vec<String>,
+    user_messages: Vec<AiMessage>,
+    /// `(source, payload)` pairs for non-task events that landed in this
+    /// drain. Each becomes a `HistoryEvent::SystemInput` entry.
+    system_events: Vec<(String, serde_json::Value)>,
 }
 
 /// RAII handle slot — installs `LLMContextInterruptHandle` into a session's
@@ -506,6 +532,7 @@ impl AgentSession {
             fork_stack: Arc::new(Mutex::new(Vec::new())),
             current_origin_msg: Arc::new(std::sync::Mutex::new(None)),
             current_interrupt_handle: Arc::new(std::sync::Mutex::new(None)),
+            history: Arc::new(Mutex::new(None)),
         };
         (session, inbox_rx)
     }
@@ -726,7 +753,7 @@ impl AgentSession {
 
             // Snapshot current pending queue. We DON'T remove items from
             // `meta.pending_inputs` here — that happens only after the turn
-            // succeeds (handle_turn_result), so a crash mid-turn leaves the
+            // succeeds, so a crash mid-round leaves the
             // inputs durable and they'll be replayed next boot.
             let mut pending = self.meta.lock().await.pending_inputs.clone();
             if pending.is_empty() {
@@ -739,9 +766,18 @@ impl AgentSession {
                     && self.needs_bootstrap_turn().await;
                 if needs_bootstrap {
                     self.set_status(SessionStatus::Running).await;
-                    let turn_result = self.run_one_turn(Vec::new()).await;
+                    let seed = RoundSeed {
+                        trigger: RoundTrigger::SystemEvent {
+                            source: "bootstrap".to_string(),
+                            event_kind: "objective".to_string(),
+                        },
+                        input_keys: Vec::new(),
+                        user_messages: Vec::new(),
+                        system_events: Vec::new(),
+                    };
+                    let round_result = self.run_one_round(Vec::new(), Some(seed)).await;
                     self.mark_bootstrap_done().await;
-                    match turn_result {
+                    match round_result {
                         Ok(action) => match action {
                             NextAction::Idle => self.set_status(SessionStatus::Idle).await,
                             NextAction::WaitForMsg => {
@@ -851,7 +887,7 @@ impl AgentSession {
             }
 
             // Three buckets:
-            //   - Msg / generic Event → fold into the next turn as `turn_inputs`
+            //   - Msg / generic Event → fold into the next round as `round_inputs`
             //   - Event whose id matches a `pending_task_calls` pattern →
             //     translates into an `Observation`, used to build a
             //     `ResumeFill::ToolResults` once every pending call has a
@@ -864,6 +900,16 @@ impl AgentSession {
             let mut task_completions: Vec<(String, Observation, String, String)> = Vec::new();
             let mut latest_peer_did: Option<String> = None;
             let mut latest_peer_tunnel: Option<String> = None;
+            // Parallel collections destined for the round-history seed. We
+            // mirror the per-input visit so user-msg ordering & system-event
+            // payloads are captured intact rather than the post-formatted
+            // string the LLM sees.
+            let mut hist_user_messages: Vec<AiMessage> = Vec::new();
+            let mut hist_system_events: Vec<(String, serde_json::Value)> = Vec::new();
+            let mut msg_count: u32 = 0;
+            let mut event_count: u32 = 0;
+            let mut first_msg_preview: Option<String> = None;
+            let mut first_event_meta: Option<(String, String)> = None;
             let pending_task_index = self.pending_task_index().await;
             for input in &pending {
                 match input {
@@ -876,6 +922,15 @@ impl AgentSession {
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
                             human_texts.push(trimmed.to_string());
+                            if first_msg_preview.is_none() {
+                                first_msg_preview =
+                                    Some(trigger_preview(trimmed));
+                            }
+                            hist_user_messages.push(AiMessage::text(
+                                AiRole::User,
+                                trimmed.to_string(),
+                            ));
+                            msg_count += 1;
                         }
                         if let Some(did) = from_did.as_ref().filter(|s| !s.trim().is_empty()) {
                             latest_peer_did = Some(did.clone());
@@ -916,6 +971,15 @@ impl AgentSession {
                         // §9.6 event dispatch: surface non-task events into
                         // the turn so the LLM can react.
                         event_summaries.push(format_event_for_turn(event_id, data));
+                        hist_system_events
+                            .push((event_id.clone(), data.clone()));
+                        if first_event_meta.is_none() {
+                            first_event_meta = Some((
+                                event_id.clone(),
+                                trigger_event_kind(event_id),
+                            ));
+                        }
+                        event_count += 1;
                         consumed_keys.push(input.dedup_key());
                     }
                     PendingInput::Interrupt { .. } => {
@@ -955,7 +1019,7 @@ impl AgentSession {
                             // dropping them would silently lose the input.
                             // They'll be picked up by the next worker loop,
                             // by which point `pending_tool_calls` is clear
-                            // and `run_one_turn` handles them normally.
+                            // and `run_one_round` handles them normally.
                             self.discard_consumed(&consumed_event_keys).await;
                             match action {
                                 NextAction::Idle => self.set_status(SessionStatus::Idle).await,
@@ -1023,15 +1087,15 @@ impl AgentSession {
             // Events are folded into the same turn as message text — they
             // arrive interleaved chronologically and represent the same
             // "what's new since last inference" surface to the LLM.
-            let mut turn_inputs = human_texts;
-            turn_inputs.extend(event_summaries);
+            let mut round_inputs = human_texts;
+            round_inputs.extend(event_summaries);
 
             // If the snapshot is currently mid-PendingTool and the upper
             // layer queued bare Msg/Event entries without an Interrupt
             // barrier, defer: starting a fresh turn here would discard
             // the in-flight tool round. Upper layers that want immediate
             // attention should `interrupt()` first, then `enqueue_pending`.
-            if !turn_inputs.is_empty() && self.snapshot_has_pending_tool_calls().await {
+            if !round_inputs.is_empty() && self.snapshot_has_pending_tool_calls().await {
                 self.set_status(SessionStatus::WaitingTool).await;
                 match self.wait_with_tool_sweep(inbox_rx).await {
                     None => return,
@@ -1046,7 +1110,7 @@ impl AgentSession {
                 continue;
             }
 
-            if turn_inputs.is_empty() {
+            if round_inputs.is_empty() {
                 self.discard_consumed(&consumed_keys).await;
                 continue;
             }
@@ -1056,7 +1120,7 @@ impl AgentSession {
             // without the LLM having to pass it through tool args (§8.4).
             // Events have no origin-user semantics — they only update the
             // stash when they happen to come bundled with chat text.
-            let origin_msg = turn_inputs
+            let origin_msg = round_inputs
                 .iter()
                 .rev()
                 .find(|s| {
@@ -1067,8 +1131,27 @@ impl AgentSession {
             self.set_current_origin_msg(origin_msg);
 
             self.set_status(SessionStatus::Running).await;
-            let turn_result = self.run_one_turn(turn_inputs).await;
-            match turn_result {
+            let trigger = match (msg_count, event_count) {
+                (0, 0) => RoundTrigger::Resume,
+                (n, 0) if n > 0 => RoundTrigger::UserMsg {
+                    preview: first_msg_preview.clone().unwrap_or_default(),
+                },
+                (0, _) => {
+                    let (source, kind) = first_event_meta
+                        .clone()
+                        .unwrap_or_else(|| ("event".to_string(), "unknown".to_string()));
+                    RoundTrigger::SystemEvent { source, event_kind: kind }
+                }
+                _ => RoundTrigger::Mixed,
+            };
+            let seed = RoundSeed {
+                trigger,
+                input_keys: consumed_keys.clone(),
+                user_messages: hist_user_messages,
+                system_events: hist_system_events,
+            };
+            let round_result = self.run_one_round(round_inputs, Some(seed)).await;
+            match round_result {
                 Ok(action) => {
                     // Successful turn ⇒ remove the items we just fed to the
                     // LLM from the persistent queue.
@@ -1237,6 +1320,22 @@ impl AgentSession {
         }
         let fill = ResumeFill::ToolResults { results: ordered };
         let behavior = self.load_current_behavior().await?;
+        let mode = Self::history_mode_for(&behavior);
+        // Ensure a round is open — the writer auto-reopens a `WaitingTool`
+        // round on startup; this is a safety net for the rare case where the
+        // round was finalised on the prior process (e.g. crash + restart with
+        // a stale `state.snap`).
+        if self.history_current_round().await.is_none() {
+            self.history_begin_round(
+                RoundTrigger::Resume,
+                completions
+                    .iter()
+                    .map(|(_, _, _, k)| k.clone())
+                    .collect(),
+                mode,
+            )
+            .await;
+        }
         let trace_id = self.next_trace_id();
         let ctx_runtime = SessionRuntimeContext {
             trace_id: trace_id.clone(),
@@ -1258,6 +1357,22 @@ impl AgentSession {
             },
         );
         let mut ctx = LLMContext::resume(snapshot, fill, deps).map_err(|e| anyhow!("resume: {e}"))?;
+        // Capture the post-resume baseline before the next inference so the
+        // diff records exactly what the post-tool-result run produces. The
+        // `ResumeFill::ToolResults` injection has already extended
+        // `accumulated`/`steps` at this point — those tool-result rows are
+        // therefore part of the baseline and will not be double-written.
+        let pre = ctx.snapshot();
+        let baseline_accumulated_len = pre.state.accumulated.len();
+        let baseline_steps_len = pre.state.steps.len();
+        let baseline_last_step_text = pre
+            .state
+            .last_step
+            .as_ref()
+            .map(|s| s.assistant_text.clone());
+        let llm_call = self
+            .trace_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // The post-tool-results inference is a regular ReAct step — keep it
         // preemptable by `AgentSession::interrupt(Discard)` (§3.13).
         let _interrupt_guard = self.register_interrupt_handle(ctx.interrupt_handle());
@@ -1267,6 +1382,21 @@ impl AgentSession {
         // preserve full history (final assistant reply included). Outcome::Done
         // itself carries no snapshot, but ctx is still alive here.
         let final_snapshot = ctx.snapshot();
+
+        self.history_record_run_diff(
+            mode,
+            baseline_accumulated_len,
+            baseline_steps_len,
+            baseline_last_step_text,
+            &final_snapshot,
+            &outcome,
+            llm_call,
+        )
+        .await;
+        self.history_append_outcome(&outcome).await;
+        if let Some(status) = Self::round_status_for(&outcome) {
+            self.history_finalize_round(status).await;
+        }
 
         // Clear pending_task_calls + unsubscribe from /task_mgr/* patterns.
         // Done before handling the outcome so a subsequent PendingTool emit
@@ -1317,6 +1447,19 @@ impl AgentSession {
             return Ok(());
         }
 
+        // Record the user-visible interrupt against the open round (if any)
+        // before we start the wind-down work. `finalize_round(Interrupted)`
+        // lands at the end of either branch below.
+        let history_mode = match mode {
+            InterruptMode::Graceful => HistoryInterruptMode::Graceful,
+            InterruptMode::Discard => HistoryInterruptMode::Discard,
+        };
+        self.history_append_event(HistoryEvent::Interrupt {
+            mode: history_mode,
+            reason: None,
+        })
+        .await;
+
         // Best-effort upstream cancel. The session-layer cancellation
         // (Cancelled observations injected below) is what matters for the
         // LLM's view; this just lets task_mgr release the slot for tools
@@ -1359,6 +1502,9 @@ impl AgentSession {
         }
 
         self.clear_pending_task_calls().await;
+        // Finalise the round — the interrupt path is terminal for whatever
+        // turn was in flight; the next inbound input opens a fresh round.
+        self.history_finalize_round(RoundStatus::Interrupted).await;
         Ok(())
     }
 
@@ -1643,8 +1789,239 @@ impl AgentSession {
         }
     }
 
-    async fn run_one_turn(&self, human_texts: Vec<String>) -> Result<NextAction> {
+    /// Map a `BehaviorCfg` to the round-history mode tag (parser-presence is
+    /// the canonical signal for Behavior vs Chat per `notepads/session-history.md`
+    /// §3).
+    fn history_mode_for(behavior: &BehaviorCfg) -> ContextMode {
+        if behavior.build_parser_and_renderer().is_some() {
+            ContextMode::Behavior
+        } else {
+            ContextMode::Chat
+        }
+    }
+
+    /// Lazily open the writer. Returns a locked guard already populated with
+    /// the writer, or `None` if the open failed (warn-logged). Operations
+    /// should chain on the returned guard so the writer is held for the
+    /// minimum window — every history op is best-effort and must not block
+    /// the worker on a disk hiccup.
+    async fn ensure_history(
+        &self,
+    ) -> Option<tokio::sync::MutexGuard<'_, Option<SessionHistoryWriter>>> {
+        let mut guard = self.history.lock().await;
+        if guard.is_none() {
+            match SessionHistoryWriter::open(&self.session_dir).await {
+                Ok(w) => *guard = Some(w),
+                Err(err) => {
+                    warn!(
+                        "opendan.session[{}]: open round-history writer failed: {err}",
+                        self.session_id
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(guard)
+    }
+
+    async fn history_begin_round(
+        &self,
+        trigger: RoundTrigger,
+        input_keys: Vec<String>,
+        mode: ContextMode,
+    ) -> Option<u64> {
+        let mut guard = self.ensure_history().await?;
+        let writer = guard.as_mut().expect("history writer initialised");
+        match writer.begin_round(trigger, input_keys, mode).await {
+            Ok(idx) => Some(idx),
+            Err(err) => {
+                warn!(
+                    "opendan.session[{}]: history begin_round failed: {err}",
+                    self.session_id
+                );
+                None
+            }
+        }
+    }
+
+    async fn history_append_message(&self, message: AiMessage, llm_call: Option<u64>) {
+        let Some(mut guard) = self.ensure_history().await else {
+            return;
+        };
+        let writer = guard.as_mut().expect("history writer initialised");
+        if let Err(err) = writer.append_message(message, llm_call).await {
+            warn!(
+                "opendan.session[{}]: history append_message failed: {err}",
+                self.session_id
+            );
+        }
+    }
+
+    async fn history_append_step(&self, step: StepRecord, llm_call: u64) {
+        let Some(mut guard) = self.ensure_history().await else {
+            return;
+        };
+        let writer = guard.as_mut().expect("history writer initialised");
+        if let Err(err) = writer.append_step(step, llm_call).await {
+            warn!(
+                "opendan.session[{}]: history append_step failed: {err}",
+                self.session_id
+            );
+        }
+    }
+
+    async fn history_append_event(&self, event: HistoryEvent) {
+        let Some(mut guard) = self.ensure_history().await else {
+            return;
+        };
+        let writer = guard.as_mut().expect("history writer initialised");
+        if let Err(err) = writer.append_event(event).await {
+            warn!(
+                "opendan.session[{}]: history append_event failed: {err}",
+                self.session_id
+            );
+        }
+    }
+
+    async fn history_finalize_round(&self, status: RoundStatus) {
+        let Some(mut guard) = self.ensure_history().await else {
+            return;
+        };
+        let writer = guard.as_mut().expect("history writer initialised");
+        if let Err(err) = writer.finalize_round(status).await {
+            warn!(
+                "opendan.session[{}]: history finalize_round failed: {err}",
+                self.session_id
+            );
+        }
+    }
+
+    async fn history_current_round(&self) -> Option<u64> {
+        let guard = self.ensure_history().await?;
+        guard.as_ref().and_then(|w| w.current_round())
+    }
+
+    /// Append a `HistoryEvent::Outcome` derived from `outcome` to the open round.
+    /// No-op when no round is open.
+    async fn history_append_outcome(&self, outcome: &LLMContextOutcome) {
+        self.history_append_event(HistoryEvent::outcome_from_llm(outcome))
+            .await;
+    }
+
+    /// Map an `LLMContextOutcome` to the round-status terminal state used by
+    /// `finalize_round`. Returns `None` when the outcome means the round
+    /// should stay open (currently only `PendingTool`).
+    fn round_status_for(outcome: &LLMContextOutcome) -> Option<RoundStatus> {
+        match outcome {
+            LLMContextOutcome::Done { .. } => Some(RoundStatus::Completed),
+            LLMContextOutcome::PendingTool { .. } => Some(RoundStatus::WaitingTool),
+            LLMContextOutcome::BudgetExhausted { .. }
+            | LLMContextOutcome::Error { .. } => Some(RoundStatus::Errored),
+            LLMContextOutcome::Interrupted { .. } => Some(RoundStatus::Interrupted),
+            // ContextLimitReached is intercepted by `run_one_round`'s compress
+            // loop — the round is kept open while we re-run with compressed
+            // history. Callers must NOT finalize on this variant.
+            LLMContextOutcome::ContextLimitReached { .. } => None,
+        }
+    }
+
+    /// Append the messages / steps that materialised in `final_snapshot` after
+    /// the baseline length captured before the run. For chat mode falls back
+    /// on the explicit `Done.output` when the final assistant turn never
+    /// reached `accumulated`. For behavior mode also flushes `last_step` so
+    /// the terminal still-hot step is captured. `llm_call` is the run's
+    /// monotonic id used to group entries that originated in one LLMContext
+    /// run.
+    async fn history_record_run_diff(
+        &self,
+        mode: ContextMode,
+        baseline_accumulated_len: usize,
+        baseline_steps_len: usize,
+        baseline_last_step_text: Option<String>,
+        final_snapshot: &LLMContextSnapshot,
+        outcome: &LLMContextOutcome,
+        llm_call: u64,
+    ) {
+        match mode {
+            ContextMode::Chat => {
+                let accumulated = &final_snapshot.state.accumulated;
+                let mut already_emitted: Option<String> = None;
+                if accumulated.len() > baseline_accumulated_len {
+                    for msg in &accumulated[baseline_accumulated_len..] {
+                        already_emitted = msg.content.iter().rev().find_map(|c| match c {
+                            AiContent::Text { text } => Some(text.clone()),
+                            _ => None,
+                        });
+                        self.history_append_message(msg.clone(), Some(llm_call))
+                            .await;
+                    }
+                }
+                if let LLMContextOutcome::Done { output, .. } = outcome {
+                    if let Some(text) = output_to_text(output) {
+                        // `Done.output` is the authoritative final assistant
+                        // text; only emit when it isn't already the trailing
+                        // assistant message we just wrote.
+                        let dup = already_emitted
+                            .as_deref()
+                            .map(|t| t == text.as_str())
+                            .unwrap_or(false);
+                        if !dup {
+                            self.history_append_message(
+                                AiMessage::text(AiRole::Assistant, text),
+                                Some(llm_call),
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+            ContextMode::Behavior => {
+                let steps = &final_snapshot.state.steps;
+                if steps.len() > baseline_steps_len {
+                    for step in &steps[baseline_steps_len..] {
+                        self.history_append_step(step.clone(), llm_call).await;
+                    }
+                }
+                if let Some(last) = final_snapshot.state.last_step.as_ref() {
+                    let is_new = baseline_last_step_text
+                        .as_deref()
+                        .map(|prev| prev != last.assistant_text.as_str())
+                        .unwrap_or(true);
+                    if is_new {
+                        self.history_append_step(last.clone(), llm_call).await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn run_one_round(
+        &self,
+        human_texts: Vec<String>,
+        seed: Option<RoundSeed>,
+    ) -> Result<NextAction> {
         let behavior = self.load_current_behavior().await?;
+        let mode = Self::history_mode_for(&behavior);
+
+        // Open a round (or attach to one already open). For the PendingTool
+        // resume path the worker passes `seed = None`; the caller is
+        // responsible for ensuring an open round exists (auto-reopened by
+        // the writer on startup when the prior round ended `WaitingTool`).
+        if let Some(seed) = seed {
+            let opened = self.history_current_round().await.is_some();
+            if !opened {
+                self.history_begin_round(seed.trigger, seed.input_keys, mode)
+                    .await;
+            }
+            for msg in seed.user_messages {
+                self.history_append_message(msg, None).await;
+            }
+            for (source, payload) in seed.system_events {
+                self.history_append_event(HistoryEvent::SystemInput { source, payload })
+                    .await;
+            }
+        }
+
         let trace_id = self.next_trace_id();
         let (ctx_owner, _request, deps) =
             self.build_or_resume(&behavior, &human_texts, &trace_id)?;
@@ -1652,6 +2029,23 @@ impl AgentSession {
             BuiltContext::Fresh(c) => c,
             BuiltContext::Resumed(c) => c,
         };
+        // Capture the baseline view of the snapshot so the post-run diff
+        // can identify exactly which messages / steps this turn produced.
+        // `last_step` is compared by `assistant_text` (StepRecord lacks Eq)
+        // — sufficient because behavior_loop never overwrites a step's
+        // assistant text in place; a different text means a new step.
+        let pre = ctx.snapshot();
+        let baseline_accumulated_len = pre.state.accumulated.len();
+        let baseline_steps_len = pre.state.steps.len();
+        let baseline_last_step_text = pre
+            .state
+            .last_step
+            .as_ref()
+            .map(|s| s.assistant_text.clone());
+        let llm_call = self
+            .trace_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         // ContextLimitReached re-entry loop: compress the accumulated
         // history (opendan-side, message-level) and resume the same
         // snapshot via `RewrittenHistory`. Bounded so a pathological
@@ -1683,21 +2077,32 @@ impl AgentSession {
                         // Out of budget for compressions — surface to the
                         // standard outcome handler as a non-resumable error.
                         let final_snapshot = snapshot.clone();
+                        let synth_outcome = LLMContextOutcome::Error {
+                            error: llm_context::error::LLMComputeError::Internal(
+                                format!(
+                                    "context limit reached {:?} and {compress_rounds} \
+                                     compress rounds exhausted",
+                                    which
+                                ),
+                            ),
+                            usage: snapshot.state.usage.clone(),
+                        };
+                        self.history_record_run_diff(
+                            mode,
+                            baseline_accumulated_len,
+                            baseline_steps_len,
+                            baseline_last_step_text.clone(),
+                            &final_snapshot,
+                            &synth_outcome,
+                            llm_call,
+                        )
+                        .await;
+                        self.history_append_outcome(&synth_outcome).await;
+                        if let Some(status) = Self::round_status_for(&synth_outcome) {
+                            self.history_finalize_round(status).await;
+                        }
                         return self
-                            .handle_outcome(
-                                LLMContextOutcome::Error {
-                                    error: llm_context::error::LLMComputeError::Internal(
-                                        format!(
-                                            "context limit reached {:?} and {compress_rounds} \
-                                             compress rounds exhausted",
-                                            which
-                                        ),
-                                    ),
-                                    usage: snapshot.state.usage.clone(),
-                                },
-                                &behavior,
-                                final_snapshot,
-                            )
+                            .handle_outcome(synth_outcome, &behavior, final_snapshot)
                             .await;
                     }
                     compress_rounds += 1;
@@ -1708,6 +2113,26 @@ impl AgentSession {
                         "opendan.session[{}]: ContextLimitReached ({:?}); compressed history {before_len} → {after_len} messages (round {compress_rounds}/{MAX_COMPRESS_ROUNDS})",
                         self.session_id, which
                     );
+                    // Record an audit-only Compaction event — history's main
+                    // body stays intact; this entry lets reviewers see when
+                    // the message-dimension compressor fired.
+                    let dropped = before_len.saturating_sub(after_len) as u32;
+                    let leading_system = rewritten
+                        .iter()
+                        .take_while(|m| matches!(m.role, AiRole::System))
+                        .count() as u32;
+                    let kept_tail = (after_len as u32).saturating_sub(leading_system);
+                    self.history_append_event(HistoryEvent::Compaction {
+                        target: CompactionTarget::Accumulated,
+                        dropped,
+                        kept_head: leading_system,
+                        kept_tail,
+                        summary_preview: format!(
+                            "context limit ({:?}): compressed {before_len} → {after_len} messages",
+                            which
+                        ),
+                    })
+                    .await;
                     // Persist the post-compression snapshot before re-running
                     // so a crash mid-compress doesn't lose the rewrite.
                     let mut prepared = snapshot;
@@ -1723,6 +2148,20 @@ impl AgentSession {
                 }
                 other => {
                     let final_snapshot = ctx.snapshot();
+                    self.history_record_run_diff(
+                        mode,
+                        baseline_accumulated_len,
+                        baseline_steps_len,
+                        baseline_last_step_text,
+                        &final_snapshot,
+                        &other,
+                        llm_call,
+                    )
+                    .await;
+                    self.history_append_outcome(&other).await;
+                    if let Some(status) = Self::round_status_for(&other) {
+                        self.history_finalize_round(status).await;
+                    }
                     return self.handle_outcome(other, &behavior, final_snapshot).await;
                 }
             }
@@ -2075,17 +2514,10 @@ impl AgentSession {
                     self.switch_behavior(trimmed, behavior, final_snapshot).await?;
                     return Ok(NextAction::Idle);
                 }
-                // Natural Done (no next_behavior). Independent-mode
-                // sub-processes must keep their stream alive across this
-                // boundary so a future wake / re-entry resumes from where
-                // it left off; top-level processes keep the existing
-                // "discard, next turn rebuilds fresh" semantics.
-                let in_subprocess = !self.meta.lock().await.process_stack.is_empty();
-                if in_subprocess {
-                    self.persist_snapshot(&final_snapshot).await;
-                } else {
-                    self.discard_snapshot();
-                }
+                // Natural Done (no next_behavior). Persist the completed
+                // snapshot so the next round starts from the previous round's
+                // accumulated state instead of rebuilding from round-history.
+                self.persist_snapshot(&final_snapshot).await;
                 if matches!(self.kind, SessionKind::Ui) {
                     Ok(NextAction::WaitForMsg)
                 } else {
@@ -2204,7 +2636,7 @@ impl AgentSession {
                 Ok(NextAction::WaitForMsg)
             }
             LLMContextOutcome::ContextLimitReached { which, .. } => {
-                // Should not happen — `run_one_turn` intercepts
+                // Should not happen — `run_one_round` intercepts
                 // ContextLimitReached and either resumes via
                 // `ResumeFill::RewrittenHistory` or maps to an Error after
                 // exhausting the compress budget. If we land here, the
@@ -3000,6 +3432,35 @@ fn format_event_for_turn(event_id: &str, data: &serde_json::Value) -> String {
     }
 }
 
+/// First 100 chars (char-aware) of `text`, used as the `RoundTrigger::UserMsg`
+/// preview. Stays well under the design's ~100-char hint and never splits a
+/// multi-byte codepoint mid-way.
+fn trigger_preview(text: &str) -> String {
+    const MAX_CHARS: usize = 100;
+    let mut out = String::new();
+    for (i, c) in text.chars().enumerate() {
+        if i >= MAX_CHARS {
+            out.push('…');
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Derive a coarse `event_kind` label from a kevent id. Today's pump produces
+/// hierarchical paths like `/task_mgr/123` — the first segment is the most
+/// useful classifier (`task_mgr`); fall back to the whole id otherwise.
+fn trigger_event_kind(event_id: &str) -> String {
+    let trimmed = event_id.trim_start_matches('/');
+    trimmed
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| event_id.to_string())
+}
+
 /// Cap on the size of the tail preserved when compressing `accumulated` on
 /// `ContextLimitReached`. Picked empirically — small enough to slash the
 /// window dramatically (so a near-limit history reliably fits afterward)
@@ -3007,7 +3468,7 @@ fn format_event_for_turn(event_id: &str, data: &serde_json::Value) -> String {
 /// thread.
 const COMPRESS_KEEP_TAIL: usize = 12;
 
-/// Heuristic message-level compressor used by `run_one_turn` when the waist
+/// Heuristic message-level compressor used by `run_one_round` when the waist
 /// emits `Outcome::ContextLimitReached`. Strategy:
 ///   1. Keep the leading run of `System` messages verbatim (identity /
 ///      role / objective text — never drop these).
