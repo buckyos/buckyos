@@ -40,6 +40,9 @@ const EWMA_ALPHA: f64 = 0.2;
 const AICC_TASK_TYPE: &str = "aicc.compute";
 const AICC_TASK_EVENT_RETENTION: usize = 64;
 const REDACTED_BASE64_PLACEHOLDER: &str = "[redacted_base64]";
+const REDACTED_DATA_URL_BASE64_PREFIX: &str = "[redacted_data_url_base64";
+const REDACTED_LONG_BASE64_LIKE_PLACEHOLDER: &str = "[redacted_base64_like_string]";
+const LOG_BASE64_LIKE_MIN_CHARS: usize = 512;
 const SN_AI_PROVIDER_FREE_CREDIT_USD: f64 = 15.0;
 
 #[derive(Clone, Debug, Default)]
@@ -80,6 +83,46 @@ impl InvokeCtx {
     }
 }
 
+fn redact_data_url_base64(value: &mut String) {
+    let Some((metadata, data)) = value.split_once(";base64,") else {
+        return;
+    };
+    if !metadata.starts_with("data:") {
+        return;
+    }
+    *value = format!(
+        "{} mime={} len={}]",
+        REDACTED_DATA_URL_BASE64_PREFIX,
+        metadata.trim_start_matches("data:"),
+        data.len()
+    );
+}
+
+fn looks_like_base64_payload(value: &str) -> bool {
+    if value.len() < LOG_BASE64_LIKE_MIN_CHARS {
+        return false;
+    }
+
+    let base64ish = value
+        .bytes()
+        .filter(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(*byte, b'+' | b'/' | b'=' | b'-' | b'_' | b'\n' | b'\r')
+        })
+        .count();
+    base64ish * 100 / value.len() >= 95
+}
+
+fn redact_base64_like_string(value: &mut String) {
+    if looks_like_base64_payload(value.as_str()) {
+        *value = format!(
+            "{} len={}",
+            REDACTED_LONG_BASE64_LIKE_PLACEHOLDER,
+            value.len()
+        );
+    }
+}
+
 fn redact_base64_fields(value: &mut Value) {
     match value {
         Value::Array(items) => {
@@ -89,19 +132,56 @@ fn redact_base64_fields(value: &mut Value) {
         }
         Value::Object(map) => {
             if let Some(data_base64) = map.get_mut("data_base64") {
-                *data_base64 = json!(REDACTED_BASE64_PLACEHOLDER);
+                if let Some(text) = data_base64.as_str() {
+                    *data_base64 = json!(format!(
+                        "{} len={}",
+                        REDACTED_BASE64_PLACEHOLDER,
+                        text.len()
+                    ));
+                }
             }
             if let Some(b64_json) = map.get_mut("b64_json") {
-                *b64_json = json!(REDACTED_BASE64_PLACEHOLDER);
+                if let Some(text) = b64_json.as_str() {
+                    *b64_json = json!(format!(
+                        "{} len={}",
+                        REDACTED_BASE64_PLACEHOLDER,
+                        text.len()
+                    ));
+                }
             }
             if (map.contains_key("mimeType") || map.contains_key("mime_type"))
                 && map.get("data").and_then(|value| value.as_str()).is_some()
             {
-                map.insert("data".to_string(), json!(REDACTED_BASE64_PLACEHOLDER));
+                let len = map
+                    .get("data")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.len())
+                    .unwrap_or_default();
+                map.insert(
+                    "data".to_string(),
+                    json!(format!("{} len={}", REDACTED_BASE64_PLACEHOLDER, len)),
+                );
+            }
+            for key in ["thoughtSignature", "thought_signature", "signature"] {
+                if let Some(field) = map.get_mut(key) {
+                    if let Some(text) = field.as_str() {
+                        if looks_like_base64_payload(text) {
+                            *field = json!(format!(
+                                "{} len={}",
+                                REDACTED_LONG_BASE64_LIKE_PLACEHOLDER,
+                                text.len()
+                            ));
+                        }
+                    }
+                }
             }
             for nested in map.values_mut() {
                 redact_base64_fields(nested);
             }
+        }
+        Value::String(text) => {
+            redact_data_url_base64(text);
+            redact_base64_like_string(text);
         }
         _ => {}
     }
@@ -111,6 +191,12 @@ fn redacted_summary_value(summary: &AiResponse) -> Value {
     let mut value = serde_json::to_value(summary).unwrap_or_else(|_| json!({}));
     redact_base64_fields(&mut value);
     value
+}
+
+pub(crate) fn redacted_json_log(value: &Value) -> String {
+    let mut value = value.clone();
+    redact_base64_fields(&mut value);
+    value.to_string()
 }
 
 #[derive(Clone, Debug)]
@@ -4402,6 +4488,36 @@ mod tests {
             requested_artifact_output_storage(&request),
             ArtifactOutputStorage::InlineBase64
         );
+    }
+
+    #[test]
+    fn redacted_json_log_trims_inline_base64_payloads() {
+        let long_signature = "a".repeat(LOG_BASE64_LIKE_MIN_CHARS);
+        let logged = redacted_json_log(&json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "inlineData": {
+                            "mimeType": "image/jpeg",
+                            "data": "abc123"
+                        },
+                        "thoughtSignature": long_signature
+                    }]
+                }
+            }],
+            "data": [{
+                "b64_json": "def456"
+            }],
+            "image_url": "data:image/png;base64,ghi789"
+        }));
+
+        assert!(logged.contains("[redacted_base64] len=6"));
+        assert!(logged.contains("[redacted_data_url_base64 mime=image/png len=6]"));
+        assert!(logged.contains("[redacted_base64_like_string] len=512"));
+        assert!(!logged.contains("abc123"));
+        assert!(!logged.contains("def456"));
+        assert!(!logged.contains("ghi789"));
+        assert!(!logged.contains(&"a".repeat(LOG_BASE64_LIKE_MIN_CHARS)));
     }
 
     fn mock_instance(instance_id: &str, provider_type: &str) -> ProviderInstance {

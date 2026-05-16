@@ -1,6 +1,6 @@
 use crate::aicc::{
-    exact_model_name, provider_type_from_settings, AIComputeCenter, Provider, ProviderError,
-    ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
+    exact_model_name, provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider,
+    ProviderError, ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::model_types::{
     ApiType, CostClass, CostEstimateInput, CostEstimateOutput, HealthStatus, LatencyClass,
@@ -330,7 +330,7 @@ impl FalProvider {
             provider_model.trim_start_matches('/')
         );
 
-        let body_log = Value::Object(body.clone()).to_string();
+        let body_log = redacted_json_log(&Value::Object(body.clone()));
         info!(
             "aicc.fal.request provider_instance_name={} method={} model={} url={} trace_id={:?} body={}",
             self.instance.provider_instance_name,
@@ -355,7 +355,7 @@ impl FalProvider {
                 method,
                 provider_model,
                 status.as_u16(),
-                response_body
+                redacted_json_log(&response_body)
             );
             return Err(Self::classify_api_error(
                 status,
@@ -372,7 +372,7 @@ impl FalProvider {
             return Err(ProviderError::fatal(format!(
                 "fal response did not contain any artifacts; method={} body_head={}",
                 method,
-                truncate_message(response_body.to_string().as_str(), 320)
+                truncate_message(redacted_json_log(&response_body).as_str(), 320)
             )));
         }
 

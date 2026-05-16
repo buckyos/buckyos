@@ -1,7 +1,7 @@
 use crate::aicc::{
     image_logical_mounts, llm_logical_mounts, logical_mount_segment, provider_model_metadata,
-    provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
-    ProviderStartResult, ResolvedRequest, TaskEventSink,
+    provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
+    ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
@@ -1733,7 +1733,7 @@ impl GoogleGiminiProvider {
             );
         }
 
-        let request_log = Value::Object(request_obj.clone()).to_string();
+        let request_log = redacted_json_log(&Value::Object(request_obj.clone()));
         info!(
             "aicc.gimini.llm.input provider_instance_name={} model={} trace_id={:?} request={}",
             self.instance.provider_instance_name, provider_model, ctx.trace_id, request_log
@@ -1742,7 +1742,7 @@ impl GoogleGiminiProvider {
         let (status, body, latency_ms) = self
             .post_generate_content(provider_model, &request_obj)
             .await?;
-        let response_log = body.to_string();
+        let response_log = redacted_json_log(&body);
 
         if !status.is_success() {
             warn!(
@@ -1881,7 +1881,7 @@ impl GoogleGiminiProvider {
         request_obj.insert("contents".to_string(), contents);
         request_obj.remove("prompt");
 
-        let request_log = Value::Object(request_obj.clone()).to_string();
+        let request_log = redacted_json_log(&Value::Object(request_obj.clone()));
         info!(
             "aicc.gimini.text2image.input provider_instance_name={} model={} trace_id={:?} request={}",
             self.instance.provider_instance_name, provider_model, ctx.trace_id, request_log
@@ -1890,7 +1890,7 @@ impl GoogleGiminiProvider {
         let (status, body, latency_ms) = self
             .post_generate_content(provider_model, &request_obj)
             .await?;
-        let response_log = body.to_string();
+        let response_log = redacted_json_log(&body);
 
         if !status.is_success() {
             warn!(

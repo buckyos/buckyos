@@ -1,7 +1,7 @@
 use crate::aicc::{
     exact_model_name, image_logical_mounts, logical_mount_segment, provider_model_metadata,
-    provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
-    ProviderStartResult, ResolvedRequest, TaskEventSink,
+    provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
+    ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, ModelMetadata, PricingMode, PrivacyClass,
@@ -2418,7 +2418,7 @@ impl OpenAIProvider {
             );
         }
 
-        let request_log = Value::Object(request_obj.clone()).to_string();
+        let request_log = redacted_json_log(&Value::Object(request_obj.clone()));
         info!(
             "aicc.openai.llm.input provider_instance_name={} model={} trace_id={:?} request={}",
             self.instance.provider_instance_name, provider_model, ctx.trace_id, request_log
@@ -2442,7 +2442,7 @@ impl OpenAIProvider {
                             provider_model,
                             ctx.trace_id,
                             param,
-                            body
+                            redacted_json_log(&body)
                         );
                         retried_without_option = true;
                         continue;
@@ -2451,7 +2451,7 @@ impl OpenAIProvider {
             }
             break (status, body, latency_ms);
         };
-        let response_log = body.to_string();
+        let response_log = redacted_json_log(&body);
 
         if !status.is_success() {
             warn!(
@@ -2606,7 +2606,7 @@ impl OpenAIProvider {
             );
         }
 
-        let request_log = Value::Object(request_obj.clone()).to_string();
+        let request_log = redacted_json_log(&Value::Object(request_obj.clone()));
         info!(
             "aicc.openai.text2image.input provider_instance_name={} model={} trace_id={:?} request={}",
             self.instance.provider_instance_name, provider_model, ctx.trace_id, request_log
@@ -2614,7 +2614,7 @@ impl OpenAIProvider {
 
         let url = format!("{}/images/generations", self.base_url);
         let (status, body, latency_ms) = self.post_json(ctx, url.as_str(), &request_obj).await?;
-        let response_log = body.to_string();
+        let response_log = redacted_json_log(&body);
 
         if !status.is_success() {
             warn!(
