@@ -1,6 +1,6 @@
 # OpenDAN Worklog 组件需求与 Prompt 加载规范
 
-> ⚠️ **设计调整说明（beta2.2）**：当前实现已按 `notepads/worklog简化.md` 简化为
+> ⚠️ **设计调整说明（beta2.2）**：当前实现已简化为
 > 纯 append-only 审计日志，本文档中关于 Prompt 加载、StepSummary 聚合、prompt_view、
 > token budget、commit_state、build_prompt_worklog 等内容均已废弃。新版要点：
 >
