@@ -219,16 +219,100 @@
 //!    parent recent history），让 sub-LLM 真正能做"复用还是新建 workspace"
 //!    的判断。
 
-// The data shape (`RequestOverrides`) and pure helpers (`apply_overrides_to_snapshot`,
-// `rebuild_with_inherit`, `build_fresh`) live in `llm_context::snapshot_overrides`
-// as of the Phase 5 down-sink. This module remains as the opendan-side design
-// doc + the well-known import path (re-exports below).
-//
-// The `forbid_next_behavior` flag is now honored by `llm_context::behavior_loop`:
-// when the rebuilt request carries `forbid_next_behavior = true`, any
-// `<next_behavior>` the LLM emits is scrubbed (logged) before the step is
-// finalised, so a fork sub-context cannot jump out to a sibling behavior.
+use std::path::Path;
+use std::sync::Arc;
+
+use agent_tool::{AgentToolManager, SessionRuntimeContext};
+use anyhow::{anyhow, Result};
+use llm_context::{
+    outcome::{ContextOutput, LLMContextOutcome},
+    state::LLMContextSnapshot,
+};
+use log::warn;
+
+use crate::ai_runtime::{build_session_deps, AgentRuntime, OneLineStatusSink, SessionDepsInput};
+use crate::behavior_cfg::BehaviorCfg;
+
 pub use llm_context::snapshot_overrides::{
     apply_overrides_to_snapshot, build_fresh, rebuild_with_inherit, RequestOverrides,
 };
 
+pub struct ForkSubContextInput<'a> {
+    pub session_id: &'a str,
+    pub agent_name: &'a str,
+    pub runtime: &'a AgentRuntime,
+    pub tools: Arc<AgentToolManager>,
+    pub status: Option<Arc<dyn OneLineStatusSink>>,
+    pub state_snap_path: &'a Path,
+    pub parent_snap: LLMContextSnapshot,
+    pub overrides: RequestOverrides,
+    pub sub_cfg: &'a BehaviorCfg,
+    pub trace_id: &'a str,
+    pub depth: usize,
+}
+
+pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<ContextOutput> {
+    let ForkSubContextInput {
+        session_id,
+        agent_name,
+        runtime,
+        tools,
+        status,
+        state_snap_path,
+        parent_snap,
+        overrides,
+        sub_cfg,
+        trace_id,
+        depth,
+    } = input;
+
+    let fork_snap_path = state_snap_path.with_file_name(format!("state.snap.fork-{depth}"));
+
+    let ctx_runtime = SessionRuntimeContext {
+        trace_id: trace_id.to_string(),
+        agent_name: agent_name.to_string(),
+        behavior: sub_cfg.name.clone(),
+        step_idx: parent_snap.state.steps.len() as u32,
+        wakeup_id: String::new(),
+        session_id: session_id.to_string(),
+    };
+    let deps = build_session_deps(
+        runtime,
+        SessionDepsInput {
+            tools,
+            ctx: ctx_runtime,
+            snapshot_path: fork_snap_path.clone(),
+            approval_required: sub_cfg.approval_required.clone(),
+            one_line_status: status,
+            parser_renderer: sub_cfg.build_parser_and_renderer(),
+        },
+    );
+    let mut ctx = rebuild_with_inherit(parent_snap, overrides, deps)
+        .map_err(|e| anyhow!("fork_and_run: rebuild_with_inherit: {e}"))?;
+    let outcome = ctx.run().await;
+
+    if fork_snap_path.exists() {
+        if let Err(err) = std::fs::remove_file(&fork_snap_path) {
+            warn!(
+                "opendan.session[{}]: fork snapshot cleanup at {} failed: {err}",
+                session_id,
+                fork_snap_path.display()
+            );
+        }
+    }
+
+    match outcome {
+        LLMContextOutcome::Done { output, .. } => Ok(output),
+        LLMContextOutcome::Error { error, .. } => {
+            Err(anyhow!("fork sub-ctx errored: {error}"))
+        }
+        LLMContextOutcome::BudgetExhausted { which, .. } => {
+            Err(anyhow!("fork sub-ctx budget exhausted: {:?}", which))
+        }
+        LLMContextOutcome::PendingTool { .. }
+        | LLMContextOutcome::ContextLimitReached { .. }
+        | LLMContextOutcome::Interrupted { .. } => Err(anyhow!(
+            "fork sub-ctx unexpectedly suspended — fork sub-contexts must reach a terminal outcome (Done / Error / BudgetExhausted)"
+        )),
+    }
+}

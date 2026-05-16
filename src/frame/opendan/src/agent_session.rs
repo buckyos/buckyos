@@ -32,7 +32,10 @@ use crate::ai_runtime::{
     build_session_deps, AgentRuntime, OneLineStatusSink, SessionDepsInput,
 };
 use crate::behavior_cfg::{BehaviorCfg, SwitchMode};
-use crate::llm_context_helper::{apply_overrides_to_snapshot, RequestOverrides};
+use crate::llm_context_helper::{
+    apply_overrides_to_snapshot, run_fork_sub_context, ForkSubContextInput,
+    RequestOverrides,
+};
 use crate::round_history::{
     CompactionTarget, ContextMode, HistoryEvent, InterruptMode as HistoryInterruptMode,
     RoundStatus, RoundTrigger, SessionHistoryWriter,
@@ -3019,90 +3022,24 @@ impl AgentSession {
         };
         let trace_id = format!("{}::fork-{}", parent_trace, depth);
 
-        let run_result = self
-            .run_fork_sub(parent_snap, overrides, &sub_cfg, &trace_id, depth)
-            .await;
+        let run_result = run_fork_sub_context(ForkSubContextInput {
+            session_id: &self.session_id,
+            agent_name: &self.agent_name,
+            runtime: &self.runtime,
+            tools: self.tools.clone(),
+            status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
+            state_snap_path: &self.state_snap_path,
+            parent_snap,
+            overrides,
+            sub_cfg: &sub_cfg,
+            trace_id: &trace_id,
+            depth,
+        })
+        .await;
 
         // Pop regardless of success — fork frame lifetime ends here.
         self.fork_stack.lock().await.pop();
         run_result
-    }
-
-    /// Inner async helper for `fork_and_run`. Split out so the
-    /// fork_stack pop in the public method always runs (Rust async
-    /// destructors are best-effort; an explicit pop is clearer than
-    /// stashing a guard).
-    async fn run_fork_sub(
-        &self,
-        parent_snap: LLMContextSnapshot,
-        overrides: RequestOverrides,
-        sub_cfg: &BehaviorCfg,
-        trace_id: &str,
-        depth: usize,
-    ) -> Result<ContextOutput> {
-        use crate::llm_context_helper::rebuild_with_inherit;
-
-        // Sub-ctx gets its own snapshot file so its TurnHook writes don't
-        // clobber the parent's `state.snap`. The parent's on-disk state
-        // therefore stays consistent throughout the fork, and a mid-fork
-        // crash leaves the *sub-ctx's* most-recent state on disk under a
-        // distinct name — independent of the parent recovery path.
-        let fork_snap_path = self.state_snap_path.with_file_name(format!(
-            "state.snap.fork-{depth}"
-        ));
-
-        let ctx_runtime = SessionRuntimeContext {
-            trace_id: trace_id.to_string(),
-            agent_name: self.agent_name.clone(),
-            behavior: sub_cfg.name.clone(),
-            step_idx: parent_snap.state.steps.len() as u32,
-            wakeup_id: String::new(),
-            session_id: self.session_id.clone(),
-        };
-        let deps = build_session_deps(
-            &self.runtime,
-            SessionDepsInput {
-                tools: self.tools.clone(),
-                ctx: ctx_runtime,
-                snapshot_path: fork_snap_path.clone(),
-                approval_required: sub_cfg.approval_required.clone(),
-                one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
-                parser_renderer: sub_cfg.build_parser_and_renderer(),
-            },
-        );
-        let mut ctx = rebuild_with_inherit(parent_snap, overrides, deps)
-            .map_err(|e| anyhow!("fork_and_run: rebuild_with_inherit: {e}"))?;
-        let outcome = ctx.run().await;
-
-        // Best-effort cleanup of the sub-ctx's snapshot file. Leftover
-        // files only matter if a future fork at the same depth races a
-        // load against the stale content — and even then `rebuild_with_inherit`
-        // takes the parent_snap parameter (not the disk), so the worst
-        // case is harmless wasted bytes. We still tidy up on success.
-        if fork_snap_path.exists() {
-            if let Err(err) = std::fs::remove_file(&fork_snap_path) {
-                warn!(
-                    "opendan.session[{}]: fork snapshot cleanup at {} failed: {err}",
-                    self.session_id,
-                    fork_snap_path.display()
-                );
-            }
-        }
-
-        match outcome {
-            LLMContextOutcome::Done { output, .. } => Ok(output),
-            LLMContextOutcome::Error { error, .. } => {
-                Err(anyhow!("fork sub-ctx errored: {error}"))
-            }
-            LLMContextOutcome::BudgetExhausted { which, .. } => {
-                Err(anyhow!("fork sub-ctx budget exhausted: {:?}", which))
-            }
-            LLMContextOutcome::PendingTool { .. }
-            | LLMContextOutcome::ContextLimitReached { .. }
-            | LLMContextOutcome::Interrupted { .. } => Err(anyhow!(
-                "fork sub-ctx unexpectedly suspended — fork sub-contexts must reach a terminal outcome (Done / Error / BudgetExhausted)"
-            )),
-        }
     }
 
     /// Current fork-call-stack depth. `0` ⇒ not inside any active fork.
