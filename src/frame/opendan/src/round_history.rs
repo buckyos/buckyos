@@ -4,14 +4,19 @@ use std::io::{BufRead, BufReader};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use buckyos_api::{AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage};
+use buckyos_api::{AiContent, AiMessage, AiRole, AiUsage};
 use chrono::{DateTime, Utc};
-use llm_context::{LLMBehaviorResult, LLMContextOutcome, Observation, StepRecord};
+use llm_context::{
+    outcome::ContextOutput, state::LLMContextSnapshot, LLMBehaviorResult, LLMContextOutcome,
+    Observation, StepRecord,
+};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const ROUND_HISTORY_DIR: &str = "round_history";
@@ -479,6 +484,201 @@ impl SessionHistoryWriter {
     }
 }
 
+pub struct SessionHistoryRecorder {
+    session_id: String,
+    session_dir: PathBuf,
+    writer: Mutex<Option<SessionHistoryWriter>>,
+}
+
+impl SessionHistoryRecorder {
+    pub fn new(session_id: String, session_dir: PathBuf) -> Self {
+        Self {
+            session_id,
+            session_dir,
+            writer: Mutex::new(None),
+        }
+    }
+
+    async fn ensure_writer(
+        &self,
+    ) -> Option<tokio::sync::MutexGuard<'_, Option<SessionHistoryWriter>>> {
+        let mut guard = self.writer.lock().await;
+        if guard.is_none() {
+            match SessionHistoryWriter::open(&self.session_dir).await {
+                Ok(w) => *guard = Some(w),
+                Err(err) => {
+                    warn!(
+                        "opendan.session[{}]: open round-history writer failed: {err}",
+                        self.session_id
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(guard)
+    }
+
+    pub async fn begin_round(
+        &self,
+        trigger: RoundTrigger,
+        input_keys: Vec<String>,
+        mode: ContextMode,
+    ) -> Option<u64> {
+        let mut guard = self.ensure_writer().await?;
+        let writer = guard.as_mut().expect("history writer initialised");
+        match writer.begin_round(trigger, input_keys, mode).await {
+            Ok(idx) => Some(idx),
+            Err(err) => {
+                warn!(
+                    "opendan.session[{}]: history begin_round failed: {err}",
+                    self.session_id
+                );
+                None
+            }
+        }
+    }
+
+    pub async fn append_message(&self, message: AiMessage, llm_call: Option<u64>) {
+        let Some(mut guard) = self.ensure_writer().await else {
+            return;
+        };
+        let writer = guard.as_mut().expect("history writer initialised");
+        if let Err(err) = writer.append_message(message, llm_call).await {
+            warn!(
+                "opendan.session[{}]: history append_message failed: {err}",
+                self.session_id
+            );
+        }
+    }
+
+    pub async fn append_step(&self, step: StepRecord, llm_call: u64) {
+        let Some(mut guard) = self.ensure_writer().await else {
+            return;
+        };
+        let writer = guard.as_mut().expect("history writer initialised");
+        if let Err(err) = writer.append_step(step, llm_call).await {
+            warn!(
+                "opendan.session[{}]: history append_step failed: {err}",
+                self.session_id
+            );
+        }
+    }
+
+    pub async fn append_event(&self, event: HistoryEvent) {
+        let Some(mut guard) = self.ensure_writer().await else {
+            return;
+        };
+        let writer = guard.as_mut().expect("history writer initialised");
+        if let Err(err) = writer.append_event(event).await {
+            warn!(
+                "opendan.session[{}]: history append_event failed: {err}",
+                self.session_id
+            );
+        }
+    }
+
+    pub async fn finalize_round(&self, status: RoundStatus) {
+        let Some(mut guard) = self.ensure_writer().await else {
+            return;
+        };
+        let writer = guard.as_mut().expect("history writer initialised");
+        if let Err(err) = writer.finalize_round(status).await {
+            warn!(
+                "opendan.session[{}]: history finalize_round failed: {err}",
+                self.session_id
+            );
+        }
+    }
+
+    pub async fn current_round(&self) -> Option<u64> {
+        let guard = self.ensure_writer().await?;
+        guard.as_ref().and_then(|w| w.current_round())
+    }
+
+    pub async fn append_outcome(&self, outcome: &LLMContextOutcome) {
+        self.append_event(HistoryEvent::outcome_from_llm(outcome))
+            .await;
+    }
+
+    pub fn round_status_for(outcome: &LLMContextOutcome) -> Option<RoundStatus> {
+        match outcome {
+            LLMContextOutcome::Done { .. } => Some(RoundStatus::Completed),
+            LLMContextOutcome::PendingTool { .. } => Some(RoundStatus::WaitingTool),
+            LLMContextOutcome::BudgetExhausted { .. } | LLMContextOutcome::Error { .. } => {
+                Some(RoundStatus::Errored)
+            }
+            LLMContextOutcome::Interrupted { .. } => Some(RoundStatus::Interrupted),
+            LLMContextOutcome::ContextLimitReached { .. } => None,
+        }
+    }
+
+    pub async fn record_run_diff(
+        &self,
+        mode: ContextMode,
+        baseline_accumulated_len: usize,
+        baseline_steps_len: usize,
+        baseline_last_step_text: Option<String>,
+        final_snapshot: &LLMContextSnapshot,
+        outcome: &LLMContextOutcome,
+        llm_call: u64,
+    ) {
+        match mode {
+            ContextMode::Chat => {
+                let accumulated = &final_snapshot.state.accumulated;
+                let mut already_emitted: Option<String> = None;
+                if accumulated.len() > baseline_accumulated_len {
+                    for msg in &accumulated[baseline_accumulated_len..] {
+                        already_emitted = msg.content.iter().rev().find_map(|c| match c {
+                            AiContent::Text { text } => Some(text.clone()),
+                            _ => None,
+                        });
+                        self.append_message(msg.clone(), Some(llm_call)).await;
+                    }
+                }
+                if let LLMContextOutcome::Done { output, .. } = outcome {
+                    if let Some(text) = output_to_text(output) {
+                        let dup = already_emitted
+                            .as_deref()
+                            .map(|t| t == text.as_str())
+                            .unwrap_or(false);
+                        if !dup {
+                            self.append_message(
+                                AiMessage::text(AiRole::Assistant, text),
+                                Some(llm_call),
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+            ContextMode::Behavior => {
+                let steps = &final_snapshot.state.steps;
+                if steps.len() > baseline_steps_len {
+                    for step in &steps[baseline_steps_len..] {
+                        self.append_step(step.clone(), llm_call).await;
+                    }
+                }
+                if let Some(last) = final_snapshot.state.last_step.as_ref() {
+                    let is_new = baseline_last_step_text
+                        .as_deref()
+                        .map(|prev| prev != last.assistant_text.as_str())
+                        .unwrap_or(true);
+                    if is_new {
+                        self.append_step(last.clone(), llm_call).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn output_to_text(output: &ContextOutput) -> Option<String> {
+    match output {
+        ContextOutput::Text { content } => Some(content.clone()),
+        ContextOutput::Json { content } => Some(content.to_string()),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionHistoryReader {
     session_dir: PathBuf,
@@ -842,6 +1042,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    use buckyos_api::AiToolResultContent;
     use serde_json::json;
     use tempfile::tempdir;
 

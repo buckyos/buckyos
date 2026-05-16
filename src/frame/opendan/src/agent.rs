@@ -29,16 +29,14 @@ use tokio::sync::{mpsc, Mutex, Notify};
 
 use crate::agent_bash::{build_session_tools, SessionBinLayout, SessionToolsBuild};
 use crate::agent_config::AgentConfig;
-use crate::agent_session::{
-    AgentSession, AgentSessionBuild, PendingInput, SessionKind, SessionMeta, SessionReply,
-    SessionStatus, SessionSummary,
-};
+use crate::agent_session::{AgentSession, AgentSessionBuild, SessionReply};
 use crate::ai_runtime::AgentRuntime;
 use crate::contact::ContactLookup;
 use crate::local_workspace::LocalWorkspaceManager;
 use crate::msg_center_pump::{self, PumpConfig};
 use crate::paths;
 use crate::session_event_pump::SessionEventPump;
+use crate::session_model::{PendingInput, SessionKind, SessionMeta, SessionStatus, SessionSummary};
 use crate::tool_plan::{self, ResolvedToolPlan, SessionBinRenderer, ToolPlanToml};
 
 /// Reason string we tag msg-center ack updates with so audit logs can tell
@@ -129,8 +127,7 @@ pub struct AIAgent {
 
 impl AIAgent {
     pub fn open(root: PathBuf, runtime: Arc<AgentRuntime>) -> Result<Arc<Self>> {
-        let config = AgentConfig::open(root)
-            .map_err(|err| anyhow!("open agent config: {err}"))?;
+        let config = AgentConfig::open(root).map_err(|err| anyhow!("open agent config: {err}"))?;
         let agent_name = if !config.toml.display_name.trim().is_empty() {
             config.toml.display_name.clone()
         } else {
@@ -204,8 +201,7 @@ impl AIAgent {
         session_id: &str,
         behavior_name: &str,
     ) -> Option<Arc<SessionBinRenderer>> {
-        let layout =
-            SessionBinLayout::compute(agent_id, session_id, &self.config.layout.root);
+        let layout = SessionBinLayout::compute(agent_id, session_id, &self.config.layout.root);
 
         // Look up the behavior's tool_plan; tolerate a missing behavior
         // config because `builtin_ui_default()` is used as a fallback in
@@ -243,7 +239,11 @@ impl AIAgent {
             &layout.agent_bin,
         ]);
         let resolved = ResolvedToolPlan::resolve(
-            if plan_name.is_empty() { "(none)" } else { &plan_name },
+            if plan_name.is_empty() {
+                "(none)"
+            } else {
+                &plan_name
+            },
             &plan_toml,
             &universe,
         );
@@ -283,10 +283,7 @@ impl AIAgent {
     /// Ordering is alphabetical by `session_id` for determinism. Excludes
     /// the calling session (when `exclude_id` matches), since "reuse the
     /// session that just called this tool" is never the right answer.
-    pub async fn list_session_summaries(
-        &self,
-        exclude_id: Option<&str>,
-    ) -> Vec<SessionSummary> {
+    pub async fn list_session_summaries(&self, exclude_id: Option<&str>) -> Vec<SessionSummary> {
         let sessions: Vec<Arc<AgentSession>> = {
             let map = self.sessions.lock().await;
             let mut entries: Vec<_> = map
@@ -370,9 +367,7 @@ impl AIAgent {
     /// dependencies and the agent has a parseable owner DID. Returns `None`
     /// when any of those is missing — the agent then runs in
     /// inbox()-only mode, which is the right behavior for tests and CLI.
-    fn spawn_msg_center_pump(
-        self: Arc<Self>,
-    ) -> Option<tokio::task::JoinHandle<()>> {
+    fn spawn_msg_center_pump(self: Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
         let msg_center = self.runtime.msg_center.clone()?;
         let kevent_client = self.runtime.kevent_client.clone()?;
         let owner_did = msg_center_pump::parse_owner_did(&self.config.toml.agent_did)?;
@@ -711,14 +706,10 @@ impl AIAgent {
                         );
                     }
                     SessionReply::Error { message } => {
-                        warn!(
-                            "opendan.agent[{agent_name}]: session={log_sid} error: {message}"
-                        );
+                        warn!("opendan.agent[{agent_name}]: session={log_sid} error: {message}");
                     }
                     SessionReply::Ended => {
-                        info!(
-                            "opendan.agent[{agent_name}]: session={log_sid} ended"
-                        );
+                        info!("opendan.agent[{agent_name}]: session={log_sid} ended");
                         break;
                     }
                 }
@@ -772,9 +763,7 @@ impl AIAgent {
             reason_messages,
         } = params;
         if objective.trim().is_empty() {
-            return Err(anyhow!(
-                "create_work_session: objective must not be empty"
-            ));
+            return Err(anyhow!("create_work_session: objective must not be empty"));
         }
         let new_session_id = mint_session_id("ws");
         // Workspace resolution: explicit id reuses; absence mints a new
@@ -895,10 +884,7 @@ impl AIAgent {
                 "forward_message: target session `{target_session_id}` has ended"
             ));
         }
-        let record_id = format!(
-            "forward:{source_session_id}:{}",
-            mint_session_id("fwd")
-        );
+        let record_id = format!("forward:{source_session_id}:{}", mint_session_id("fwd"));
         target
             .enqueue_pending(PendingInput::Msg {
                 record_id: record_id.clone(),
@@ -989,10 +975,7 @@ fn write_worksession_readme(
     }
     let path = session_dir.join("readme.md");
     if let Err(err) = std::fs::write(&path, buf) {
-        warn!(
-            "opendan.agent: write {} failed: {err}",
-            path.display()
-        );
+        warn!("opendan.agent: write {} failed: {err}", path.display());
     }
 }
 

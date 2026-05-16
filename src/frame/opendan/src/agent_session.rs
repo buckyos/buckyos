@@ -12,13 +12,11 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use buckyos_api::{AiContent, AiMessage, AiRole};
 use log::{info, warn};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 use agent_tool::{AgentToolManager, SessionRuntimeContext};
 use llm_context::{
-    behavior_loop::StepRecord,
     context_loop::LLMContext,
     interrupt::LLMContextInterruptHandle,
     observation::Observation,
@@ -28,113 +26,21 @@ use llm_context::{
 };
 
 use crate::agent_config::AgentConfig;
-use crate::ai_runtime::{
-    build_session_deps, AgentRuntime, OneLineStatusSink, SessionDepsInput,
-};
+use crate::ai_runtime::{build_session_deps, AgentRuntime, OneLineStatusSink, SessionDepsInput};
 use crate::behavior_cfg::{BehaviorCfg, SwitchMode};
 use crate::llm_context_helper::{
-    apply_overrides_to_snapshot, run_fork_sub_context, ForkSubContextInput,
-    RequestOverrides,
+    apply_overrides_to_snapshot, run_fork_sub_context, ForkSubContextInput, RequestOverrides,
 };
 use crate::round_history::{
     CompactionTarget, ContextMode, HistoryEvent, InterruptMode as HistoryInterruptMode,
-    RoundStatus, RoundTrigger, SessionHistoryWriter,
+    RoundStatus, RoundTrigger, SessionHistoryRecorder,
 };
 use crate::session_event_pump::SessionEventPump;
+pub use crate::session_model::{
+    EventSubscription, InterruptMode, PendingInput, PendingTaskCall, ProcessFrame, SessionInput,
+    SessionKind, SessionMeta, SessionStatus, SessionSummary,
+};
 use crate::task_dispatch::TaskDispatch;
-
-/// Internal wake-up signal for the session worker. The worker consumes the
-/// actual payload from `SessionMeta::pending_inputs` (which is persisted) —
-/// this channel only nudges the worker to check.
-#[derive(Debug, Clone)]
-pub enum SessionInput {
-    /// New item enqueued to `meta.pending_inputs` — worker should re-check.
-    Wakeup,
-    /// Cooperative cancel (used by `stop()`).
-    Cancel,
-}
-
-/// How an interrupt should wind down outstanding tool calls. Chosen
-/// per-call by the caller of [`AgentSession::interrupt`] — different
-/// upper-layer control flows targeting the same session may legitimately
-/// want different strategies, so this is not a per-behavior or per-agent
-/// default.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InterruptMode {
-    /// Inject `Observation::Cancelled` for every pending tool call and
-    /// drive the existing LLMContext to a terminal outcome (with the
-    /// resumed snapshot's `tool_policy.max_rounds` overridden to 0 so any
-    /// further tool attempt is rejected as `BudgetExhausted(ToolRounds)`).
-    /// Side effects already dispatched externally stay recorded in
-    /// accumulated history — the next turn can reason about them.
-    Graceful,
-    /// Discard the trailing assistant turn that owns the unresolved
-    /// `tool_use` blocks (and everything after it in accumulated), then
-    /// continue from the truncated history. The interrupted side effects
-    /// vanish from the LLM's view; externally-dispatched task_mgr tasks
-    /// may still complete but their results never reach the LLM.
-    Discard,
-}
-
-/// One inbound item parked on the session until the worker is ready to
-/// consume it. Persisted as part of [`SessionMeta`] so that a crash between
-/// `enqueue_pending` (which acks the system inbox) and the LLM actually
-/// reading the input never loses a message.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PendingInput {
-    /// A user-facing chat message routed in from msg-center / a UI tunnel /
-    /// the local CLI. `record_id` is the msg-center record id when the
-    /// source was msg-center; locally-injected messages use a generated id.
-    ///
-    /// `from` is the raw host-name form used for keying the per-tunnel UI
-    /// session. `from_did` (when present) carries the *full* DID string so
-    /// the session can address replies back to the original peer through
-    /// `msg_center.post_send`. `tunnel_did` is the tunnel route hint pulled
-    /// from `MsgRecord.route.tunnel_did` — used as `preferred_tunnel` on the
-    /// outbound side so the reply rides the same wire whenever possible.
-    Msg {
-        record_id: String,
-        from: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from_did: Option<String>,
-        /// Human-readable display name for the sender, when known. Filled
-        /// either by msg-center (existing `record.from_name`) or by the
-        /// inbound pump via the contact-mgr lookup. Empty / unknown when
-        /// the contact isn't registered.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from_name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tunnel_did: Option<String>,
-        text: String,
-    },
-    /// A kevent / system event the session has subscribed to. `event_id` is
-    /// the kevent eventid; `data` is the opaque payload.
-    Event {
-        event_id: String,
-        data: serde_json::Value,
-    },
-    /// A session-layer interrupt request. Enqueued by upper-layer control
-    /// flows that want to cut into the worker's stream — e.g. "stop the
-    /// long tool, the user just said something more important". `id` is
-    /// the enqueue-time tag that makes the dedup key unique (so a re-fired
-    /// interrupt does not silently coalesce with a stale one).
-    Interrupt { mode: InterruptMode, id: String },
-}
-
-impl PendingInput {
-    /// Stable dedup key. Two `PendingInput`s with the same key are treated
-    /// as the same logical item — the second `enqueue_pending` becomes a
-    /// no-op so a msg-center lease replay can't double-feed the LLM.
-    pub fn dedup_key(&self) -> String {
-        match self {
-            PendingInput::Msg { record_id, .. } => format!("msg:{record_id}"),
-            PendingInput::Event { event_id, .. } => format!("event:{event_id}"),
-            PendingInput::Interrupt { id, .. } => format!("interrupt:{id}"),
-        }
-    }
-}
 
 /// Sentinel emitted by a behavior parser in
 /// `LLMBehaviorResult.next_behavior` to mean "current intent ran its course,
@@ -142,203 +48,6 @@ impl PendingInput {
 /// message". Interpreted only at the session layer; the waist treats it as
 /// an opaque jump-target string.
 pub const NEXT_BEHAVIOR_WAIT_USER_MSG: &str = "WAIT_USER_MSG";
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionKind {
-    Ui,
-    Work,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    Idle,
-    Running,
-    WaitingInput,
-    WaitingTool,
-    Ended,
-    Error,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionMeta {
-    pub session_id: String,
-    pub kind: SessionKind,
-    pub current_behavior: String,
-    pub status: SessionStatus,
-    #[serde(default)]
-    pub owner: String,
-    #[serde(default)]
-    pub one_line_status: String,
-    /// Inputs that have been received from the system but not yet handed to
-    /// the LLM. Persisted so a process crash doesn't lose buffered inputs.
-    /// See [`AgentSession::enqueue_pending`] / the worker loop in
-    /// `run_worker`.
-    #[serde(default)]
-    pub pending_inputs: Vec<PendingInput>,
-    /// Full DID of the most-recently-seen human peer for this session.
-    /// Captured from `PendingInput::Msg.from_did` when present. Used as the
-    /// reply target when an outcome produces assistant text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peer_did: Option<String>,
-    /// Preferred tunnel DID for outbound replies, captured from
-    /// `PendingInput::Msg.tunnel_did`. Optional — `None` lets msg-center
-    /// pick a route via the contact manager.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peer_tunnel_did: Option<String>,
-    /// Persisted kevent subscriptions for this session. The agent's event
-    /// pump aggregates these into its reader and routes matched events back
-    /// as `Inbound::Event { target_session_id: Some(<this id>), ... }`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub event_subscriptions: Vec<EventSubscription>,
-    /// Workspace this session is bound to. The session is the source of
-    /// truth — the workspace record's `current_session` is just a hint /
-    /// conflict-detection field. `None` ⇒ session not yet bound to any
-    /// workspace (legacy MVP flow auto-binds on session create).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    /// Async-tool dispatches the LLM is waiting on. Populated by
-    /// `handle_outcome::PendingTool` after each entry is registered with
-    /// `task_mgr` and a `/task_mgr/<task_id>` subscription is in place.
-    /// Persisted so a restart can pick up where it left off — the new
-    /// worker re-subscribes via `event_subscriptions` and resumes when the
-    /// completion events arrive.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_task_calls: Vec<PendingTaskCall>,
-    /// Short human-friendly label for this session. Empty for the
-    /// legacy auto-created UI sessions; populated by
-    /// `create_worksession` so worksession-list UIs can show meaningful
-    /// names.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub title: String,
-    /// Goal / task statement. Empty for UI sessions (their job is to
-    /// chat with the human); set by `create_worksession` so the work
-    /// session's first inference has something to drive it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub objective: String,
-    /// Has this session run at least one inference? Used so a freshly
-    /// created Work session auto-kicks (objective drives the first turn,
-    /// no external message needed) while subsequent restarts wait on
-    /// real inputs. Always `false` on the first persist; flipped to
-    /// `true` after the first round returns from `run_one_round`.
-    #[serde(default)]
-    pub bootstrap_done: bool,
-    /// Entry behavior name of the **currently active independent process**.
-    /// Default = `current_behavior` (top-level process whose entry is the
-    /// initial behavior). Diverges from `current_behavior` only when the
-    /// active process has done an intra-process normal switch. Drives the
-    /// `.meta/behavior_<process_entry>.snap` filename when the active
-    /// process is paused (parent gets pushed) or resumed (popped from stack).
-    #[serde(default)]
-    pub process_entry: String,
-    /// Independent-mode call stack (excludes the active top frame).
-    /// Pushed when this session switches into an `Independent` behavior;
-    /// popped when that child reaches `END` while parent frames are waiting.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub process_stack: Vec<ProcessFrame>,
-}
-
-/// One async tool dispatch tracked at the session level. Bridges the LLM's
-/// `call_id` to the `task_mgr` task that carries the real work, plus the
-/// kevent pattern we listen on for completion. The session uses this map
-/// to recognize incoming completion events and assemble a
-/// `ResumeFill::ToolResults` once every pending call has a result.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PendingTaskCall {
-    /// LLM-side identifier from the `AiToolCall`. Must match what the
-    /// snapshot's `pending_tool_calls` carries — resume validates this.
-    pub call_id: String,
-    /// Tool name (e.g. `download`) — informational, used for logging /
-    /// fallback observation building.
-    pub tool_name: String,
-    /// task_mgr task id returned by `dispatch_async_tool`.
-    pub task_id: i64,
-    /// kevent pattern we subscribed to for this task. Stored so we can
-    /// unsubscribe once the completion arrives.
-    pub event_pattern: String,
-}
-
-/// Snapshot view of one session's externally-relevant fields. Returned by
-/// [`AgentSession::summary`] and aggregated by [`crate::agent::AIAgent::list_session_summaries`]
-/// for prompts that need to surface the agent's session inventory (the fork
-/// sub-context inside `try_create_worksession` is the canonical consumer).
-///
-/// All fields are owned strings / copies — the struct is safe to pass through
-/// JSON or hand to a long-running prompt rendering pipeline.
-#[derive(Debug, Clone)]
-pub struct SessionSummary {
-    pub session_id: String,
-    pub kind: SessionKind,
-    /// Short label; empty for legacy auto-created UI sessions.
-    pub title: String,
-    /// Task statement; empty for UI sessions.
-    pub objective: String,
-    pub status: SessionStatus,
-    /// Last-activity one-liner that the worker writes through the
-    /// `OneLineStatusSink`. Empty when the session has been idle since
-    /// boot.
-    pub one_line_status: String,
-    pub workspace_id: Option<String>,
-    pub current_behavior: String,
-}
-
-/// One frame on the **independent-mode process call stack**. Each frame
-/// records the parent process's entry behavior name (drives the
-/// `.meta/behavior_<entry>.snap` filename) plus the parent's
-/// `current_behavior` at push time — so an intra-process normal switch is
-/// faithfully restored when the child ends and we pop back.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProcessFrame {
-    pub entry: String,
-    pub current: String,
-}
-
-/// One persisted kevent subscription belonging to a session.
-///
-/// Subscriptions live in `SessionMeta` so that a restart re-establishes the
-/// session's view of the event bus before the worker starts. The pump
-/// aggregates subscriptions across all live sessions and rebuilds its
-/// `EventReader` whenever the union changes.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EventSubscription {
-    /// kevent pattern — passed through to `KEventClient::create_event_reader`.
-    pub pattern: String,
-    /// Wall-clock timestamp the subscription was added; informational only,
-    /// not used for ordering or matching.
-    #[serde(default)]
-    pub subscribed_at_ms: u64,
-}
-
-impl SessionMeta {
-    pub fn new(
-        session_id: String,
-        kind: SessionKind,
-        current_behavior: String,
-        owner: String,
-    ) -> Self {
-        Self {
-            session_id,
-            kind,
-            current_behavior: current_behavior.clone(),
-            status: SessionStatus::Idle,
-            owner,
-            one_line_status: String::new(),
-            pending_inputs: Vec::new(),
-            peer_did: None,
-            peer_tunnel_did: None,
-            event_subscriptions: Vec::new(),
-            workspace_id: None,
-            pending_task_calls: Vec::new(),
-            title: String::new(),
-            objective: String::new(),
-            bootstrap_done: false,
-            // Top-level process entry defaults to the initial behavior.
-            process_entry: current_behavior,
-            process_stack: Vec::new(),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub enum SessionReply {
@@ -405,7 +114,7 @@ pub struct AgentSession {
     /// a crash mid-fork drops the sub-context, the parent recovers from
     /// its on-disk snapshot, and the fork is simply lost (acceptable
     /// per the design doc §Session-level 状态结构).
-    fork_stack: Arc<Mutex<Vec<String>>>,
+    fork_stack: Arc<std::sync::Mutex<Vec<String>>>,
 
     /// Last user-text that triggered the current (or most recent) inference
     /// round. Stashed by the worker right before `run_one_round` so
@@ -428,7 +137,7 @@ pub struct AgentSession {
     /// synchronous `new()` doesn't have to touch disk. Failures to open or
     /// write are warn-logged but never propagate — history is best-effort
     /// auxiliary state; an I/O issue here must not block the worker.
-    history: Arc<Mutex<Option<SessionHistoryWriter>>>,
+    history: Arc<SessionHistoryRecorder>,
 }
 
 /// Per-round history seed handed from the worker drain step into
@@ -458,6 +167,18 @@ impl Drop for InterruptHandleGuard {
     fn drop(&mut self) {
         if let Ok(mut g) = self.slot.lock() {
             *g = None;
+        }
+    }
+}
+
+struct ForkStackGuard {
+    stack: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Drop for ForkStackGuard {
+    fn drop(&mut self) {
+        if let Ok(mut stack) = self.stack.lock() {
+            stack.pop();
         }
     }
 }
@@ -515,6 +236,10 @@ impl AgentSession {
                 b.owner.clone(),
             )
         };
+        let history = Arc::new(SessionHistoryRecorder::new(
+            b.session_id.clone(),
+            session_dir.clone(),
+        ));
         let session = Self {
             session_id: b.session_id,
             agent_name: b.agent_name,
@@ -532,10 +257,10 @@ impl AgentSession {
             status: Arc::new(InMemoryStatus::new()),
             event_pump: b.event_pump,
             trace_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            fork_stack: Arc::new(Mutex::new(Vec::new())),
+            fork_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
             current_origin_msg: Arc::new(std::sync::Mutex::new(None)),
             current_interrupt_handle: Arc::new(std::sync::Mutex::new(None)),
-            history: Arc::new(Mutex::new(None)),
+            history,
         };
         (session, inbox_rx)
     }
@@ -543,10 +268,7 @@ impl AgentSession {
     /// Install `handle` as the session's "currently in-flight" interrupt
     /// handle. The returned guard clears the slot on drop. Callers must hold
     /// the guard for the entire scope of the `ctx.run().await` it pairs with.
-    fn register_interrupt_handle(
-        &self,
-        handle: LLMContextInterruptHandle,
-    ) -> InterruptHandleGuard {
+    fn register_interrupt_handle(&self, handle: LLMContextInterruptHandle) -> InterruptHandleGuard {
         if let Ok(mut g) = self.current_interrupt_handle.lock() {
             *g = Some(handle);
         }
@@ -578,9 +300,8 @@ impl AgentSession {
             )
         })?;
         let meta = self.meta.lock().await.clone();
-        let bytes = serde_json::to_vec_pretty(&meta).map_err(|err| {
-            anyhow!("session[{}]: serialize meta failed: {err}", self.session_id)
-        })?;
+        let bytes = serde_json::to_vec_pretty(&meta)
+            .map_err(|err| anyhow!("session[{}]: serialize meta failed: {err}", self.session_id))?;
         let path = dir.join("session.json");
         let tmp = path.with_extension("json.tmp");
         // tmp + rename for crash-consistency: a half-written session.json
@@ -618,10 +339,7 @@ impl AgentSession {
         let mut changed = false;
         {
             let mut meta = self.meta.lock().await;
-            let already = meta
-                .pending_inputs
-                .iter()
-                .any(|i| i.dedup_key() == key);
+            let already = meta.pending_inputs.iter().any(|i| i.dedup_key() == key);
             if !already {
                 meta.pending_inputs.push(input);
                 changed = true;
@@ -662,10 +380,7 @@ impl AgentSession {
         // just fall through to the existing enqueue path.
         if matches!(mode, InterruptMode::Discard) {
             if let Some(handle) = self.snapshot_interrupt_handle() {
-                let reason = format!(
-                    "agent_session[{}].interrupt(Discard)",
-                    self.session_id
-                );
+                let reason = format!("agent_session[{}].interrupt(Discard)", self.session_id);
                 let first = handle.interrupt(reason);
                 if first {
                     info!(
@@ -682,7 +397,8 @@ impl AgentSession {
             self.trace_seq
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
-        self.enqueue_pending(PendingInput::Interrupt { mode, id }).await
+        self.enqueue_pending(PendingInput::Interrupt { mode, id })
+            .await
     }
 
     pub async fn start(self: Arc<Self>, mut inbox_rx: mpsc::Receiver<SessionInput>) {
@@ -765,8 +481,8 @@ impl AgentSession {
                 // turn from its `objective` (per §8.1 step 4 of the design).
                 // After the first successful turn this branch falls through
                 // to the normal recv()-blocking path.
-                let needs_bootstrap = matches!(self.kind, SessionKind::Work)
-                    && self.needs_bootstrap_turn().await;
+                let needs_bootstrap =
+                    matches!(self.kind, SessionKind::Work) && self.needs_bootstrap_turn().await;
                 if needs_bootstrap {
                     self.set_status(SessionStatus::Running).await;
                     let seed = RoundSeed {
@@ -850,9 +566,7 @@ impl AgentSession {
                 let head = pos == 0 || pending_tools_active;
                 if head {
                     let (mode, key) = match &pending[pos] {
-                        PendingInput::Interrupt { mode, .. } => {
-                            (*mode, pending[pos].dedup_key())
-                        }
+                        PendingInput::Interrupt { mode, .. } => (*mode, pending[pos].dedup_key()),
                         _ => unreachable!("position matched Interrupt"),
                     };
                     if pos != 0 {
@@ -926,13 +640,10 @@ impl AgentSession {
                         if !trimmed.is_empty() {
                             human_texts.push(trimmed.to_string());
                             if first_msg_preview.is_none() {
-                                first_msg_preview =
-                                    Some(trigger_preview(trimmed));
+                                first_msg_preview = Some(trigger_preview(trimmed));
                             }
-                            hist_user_messages.push(AiMessage::text(
-                                AiRole::User,
-                                trimmed.to_string(),
-                            ));
+                            hist_user_messages
+                                .push(AiMessage::text(AiRole::User, trimmed.to_string()));
                             msg_count += 1;
                         }
                         if let Some(did) = from_did.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -974,13 +685,10 @@ impl AgentSession {
                         // §9.6 event dispatch: surface non-task events into
                         // the turn so the LLM can react.
                         event_summaries.push(format_event_for_turn(event_id, data));
-                        hist_system_events
-                            .push((event_id.clone(), data.clone()));
+                        hist_system_events.push((event_id.clone(), data.clone()));
                         if first_event_meta.is_none() {
-                            first_event_meta = Some((
-                                event_id.clone(),
-                                trigger_event_kind(event_id),
-                            ));
+                            first_event_meta =
+                                Some((event_id.clone(), trigger_event_kind(event_id)));
                         }
                         event_count += 1;
                         consumed_keys.push(input.dedup_key());
@@ -1009,9 +717,7 @@ impl AgentSession {
                     .collect();
                 if self.all_pending_tasks_collected(&task_completions).await {
                     self.set_status(SessionStatus::Running).await;
-                    let resume_result = self
-                        .resume_with_tool_results(&task_completions)
-                        .await;
+                    let resume_result = self.resume_with_tool_results(&task_completions).await;
                     match resume_result {
                         Ok(action) => {
                             // Only consume the task-completion events here.
@@ -1143,7 +849,10 @@ impl AgentSession {
                     let (source, kind) = first_event_meta
                         .clone()
                         .unwrap_or_else(|| ("event".to_string(), "unknown".to_string()));
-                    RoundTrigger::SystemEvent { source, event_kind: kind }
+                    RoundTrigger::SystemEvent {
+                        source,
+                        event_kind: kind,
+                    }
                 }
                 _ => RoundTrigger::Mixed,
             };
@@ -1315,9 +1024,7 @@ impl AgentSession {
             match by_id.remove(call_id) {
                 Some(obs) => ordered.push((call_id.clone(), obs)),
                 None => {
-                    return Err(anyhow!(
-                        "missing observation for call_id `{call_id}`"
-                    ));
+                    return Err(anyhow!("missing observation for call_id `{call_id}`"));
                 }
             }
         }
@@ -1328,16 +1035,14 @@ impl AgentSession {
         // round on startup; this is a safety net for the rare case where the
         // round was finalised on the prior process (e.g. crash + restart with
         // a stale `state.snap`).
-        if self.history_current_round().await.is_none() {
-            self.history_begin_round(
-                RoundTrigger::Resume,
-                completions
-                    .iter()
-                    .map(|(_, _, _, k)| k.clone())
-                    .collect(),
-                mode,
-            )
-            .await;
+        if self.history.current_round().await.is_none() {
+            self.history
+                .begin_round(
+                    RoundTrigger::Resume,
+                    completions.iter().map(|(_, _, _, k)| k.clone()).collect(),
+                    mode,
+                )
+                .await;
         }
         let trace_id = self.next_trace_id();
         let ctx_runtime = SessionRuntimeContext {
@@ -1359,7 +1064,8 @@ impl AgentSession {
                 parser_renderer: behavior.build_parser_and_renderer(),
             },
         );
-        let mut ctx = LLMContext::resume(snapshot, fill, deps).map_err(|e| anyhow!("resume: {e}"))?;
+        let mut ctx =
+            LLMContext::resume(snapshot, fill, deps).map_err(|e| anyhow!("resume: {e}"))?;
         // Capture the post-resume baseline before the next inference so the
         // diff records exactly what the post-tool-result run produces. The
         // `ResumeFill::ToolResults` injection has already extended
@@ -1386,34 +1092,33 @@ impl AgentSession {
         // itself carries no snapshot, but ctx is still alive here.
         let final_snapshot = ctx.snapshot();
 
-        self.history_record_run_diff(
-            mode,
-            baseline_accumulated_len,
-            baseline_steps_len,
-            baseline_last_step_text,
-            &final_snapshot,
-            &outcome,
-            llm_call,
-        )
-        .await;
-        self.history_append_outcome(&outcome).await;
-        if let Some(status) = Self::round_status_for(&outcome) {
-            self.history_finalize_round(status).await;
+        self.history
+            .record_run_diff(
+                mode,
+                baseline_accumulated_len,
+                baseline_steps_len,
+                baseline_last_step_text,
+                &final_snapshot,
+                &outcome,
+                llm_call,
+            )
+            .await;
+        self.history.append_outcome(&outcome).await;
+        if let Some(status) = SessionHistoryRecorder::round_status_for(&outcome) {
+            self.history.finalize_round(status).await;
         }
 
         // Clear pending_task_calls + unsubscribe from /task_mgr/* patterns.
         // Done before handling the outcome so a subsequent PendingTool emit
         // (chained tool calls) starts from a clean slate.
-        let patterns: Vec<String> = completions
-            .iter()
-            .map(|(_, _, p, _)| p.clone())
-            .collect();
+        let patterns: Vec<String> = completions.iter().map(|(_, _, p, _)| p.clone()).collect();
         self.clear_pending_task_calls().await;
         for pattern in patterns {
             let _ = self.unsubscribe_event(&pattern).await;
         }
 
-        self.handle_outcome(outcome, &behavior, final_snapshot).await
+        self.handle_outcome(outcome, &behavior, final_snapshot)
+            .await
     }
 
     /// True iff the worker should not start a fresh turn yet because a
@@ -1457,11 +1162,12 @@ impl AgentSession {
             InterruptMode::Graceful => HistoryInterruptMode::Graceful,
             InterruptMode::Discard => HistoryInterruptMode::Discard,
         };
-        self.history_append_event(HistoryEvent::Interrupt {
-            mode: history_mode,
-            reason: None,
-        })
-        .await;
+        self.history
+            .append_event(HistoryEvent::Interrupt {
+                mode: history_mode,
+                reason: None,
+            })
+            .await;
 
         // Best-effort upstream cancel. The session-layer cancellation
         // (Cancelled observations injected below) is what matters for the
@@ -1500,14 +1206,15 @@ impl AgentSession {
                     .await?
             }
             InterruptMode::Discard => {
-                self.execute_interrupt_discard(snapshot, &pending_calls).await?
+                self.execute_interrupt_discard(snapshot, &pending_calls)
+                    .await?
             }
         }
 
         self.clear_pending_task_calls().await;
         // Finalise the round — the interrupt path is terminal for whatever
         // turn was in flight; the next inbound input opens a fresh round.
-        self.history_finalize_round(RoundStatus::Interrupted).await;
+        self.history.finalize_round(RoundStatus::Interrupted).await;
         Ok(())
     }
 
@@ -1569,12 +1276,8 @@ impl AgentSession {
             },
         );
 
-        let mut ctx = LLMContext::resume(
-            snap_winddown,
-            ResumeFill::ToolResults { results },
-            deps,
-        )
-        .map_err(|e| anyhow!("interrupt graceful resume: {e}"))?;
+        let mut ctx = LLMContext::resume(snap_winddown, ResumeFill::ToolResults { results }, deps)
+            .map_err(|e| anyhow!("interrupt graceful resume: {e}"))?;
         // Whether the outcome is Done (LLM produced a clean acknowledgement)
         // or BudgetExhausted(ToolRounds) (LLM tried to launch a new tool and
         // got rejected), the post-run snapshot captures everything we want
@@ -1602,9 +1305,11 @@ impl AgentSession {
 
         let cutoff = snapshot.state.accumulated.iter().rposition(|msg| {
             matches!(msg.role, AiRole::Assistant)
-                && msg.content.iter().any(|c| matches!(c,
-                    AiContent::ToolUse { call_id, .. } if pending_ids.contains(call_id.as_str())
-                ))
+                && msg.content.iter().any(|c| {
+                    matches!(c,
+                        AiContent::ToolUse { call_id, .. } if pending_ids.contains(call_id.as_str())
+                    )
+                })
         });
         if let Some(idx) = cutoff {
             snapshot.state.accumulated.truncate(idx);
@@ -1803,201 +1508,6 @@ impl AgentSession {
         }
     }
 
-    /// Lazily open the writer. Returns a locked guard already populated with
-    /// the writer, or `None` if the open failed (warn-logged). Operations
-    /// should chain on the returned guard so the writer is held for the
-    /// minimum window — every history op is best-effort and must not block
-    /// the worker on a disk hiccup.
-    async fn ensure_history(
-        &self,
-    ) -> Option<tokio::sync::MutexGuard<'_, Option<SessionHistoryWriter>>> {
-        let mut guard = self.history.lock().await;
-        if guard.is_none() {
-            match SessionHistoryWriter::open(&self.session_dir).await {
-                Ok(w) => *guard = Some(w),
-                Err(err) => {
-                    warn!(
-                        "opendan.session[{}]: open round-history writer failed: {err}",
-                        self.session_id
-                    );
-                    return None;
-                }
-            }
-        }
-        Some(guard)
-    }
-
-    async fn history_begin_round(
-        &self,
-        trigger: RoundTrigger,
-        input_keys: Vec<String>,
-        mode: ContextMode,
-    ) -> Option<u64> {
-        let mut guard = self.ensure_history().await?;
-        let writer = guard.as_mut().expect("history writer initialised");
-        match writer.begin_round(trigger, input_keys, mode).await {
-            Ok(idx) => Some(idx),
-            Err(err) => {
-                warn!(
-                    "opendan.session[{}]: history begin_round failed: {err}",
-                    self.session_id
-                );
-                None
-            }
-        }
-    }
-
-    async fn history_append_message(&self, message: AiMessage, llm_call: Option<u64>) {
-        let Some(mut guard) = self.ensure_history().await else {
-            return;
-        };
-        let writer = guard.as_mut().expect("history writer initialised");
-        if let Err(err) = writer.append_message(message, llm_call).await {
-            warn!(
-                "opendan.session[{}]: history append_message failed: {err}",
-                self.session_id
-            );
-        }
-    }
-
-    async fn history_append_step(&self, step: StepRecord, llm_call: u64) {
-        let Some(mut guard) = self.ensure_history().await else {
-            return;
-        };
-        let writer = guard.as_mut().expect("history writer initialised");
-        if let Err(err) = writer.append_step(step, llm_call).await {
-            warn!(
-                "opendan.session[{}]: history append_step failed: {err}",
-                self.session_id
-            );
-        }
-    }
-
-    async fn history_append_event(&self, event: HistoryEvent) {
-        let Some(mut guard) = self.ensure_history().await else {
-            return;
-        };
-        let writer = guard.as_mut().expect("history writer initialised");
-        if let Err(err) = writer.append_event(event).await {
-            warn!(
-                "opendan.session[{}]: history append_event failed: {err}",
-                self.session_id
-            );
-        }
-    }
-
-    async fn history_finalize_round(&self, status: RoundStatus) {
-        let Some(mut guard) = self.ensure_history().await else {
-            return;
-        };
-        let writer = guard.as_mut().expect("history writer initialised");
-        if let Err(err) = writer.finalize_round(status).await {
-            warn!(
-                "opendan.session[{}]: history finalize_round failed: {err}",
-                self.session_id
-            );
-        }
-    }
-
-    async fn history_current_round(&self) -> Option<u64> {
-        let guard = self.ensure_history().await?;
-        guard.as_ref().and_then(|w| w.current_round())
-    }
-
-    /// Append a `HistoryEvent::Outcome` derived from `outcome` to the open round.
-    /// No-op when no round is open.
-    async fn history_append_outcome(&self, outcome: &LLMContextOutcome) {
-        self.history_append_event(HistoryEvent::outcome_from_llm(outcome))
-            .await;
-    }
-
-    /// Map an `LLMContextOutcome` to the round-status terminal state used by
-    /// `finalize_round`. Returns `None` when the outcome means the round
-    /// should stay open (currently only `PendingTool`).
-    fn round_status_for(outcome: &LLMContextOutcome) -> Option<RoundStatus> {
-        match outcome {
-            LLMContextOutcome::Done { .. } => Some(RoundStatus::Completed),
-            LLMContextOutcome::PendingTool { .. } => Some(RoundStatus::WaitingTool),
-            LLMContextOutcome::BudgetExhausted { .. }
-            | LLMContextOutcome::Error { .. } => Some(RoundStatus::Errored),
-            LLMContextOutcome::Interrupted { .. } => Some(RoundStatus::Interrupted),
-            // ContextLimitReached is intercepted by `run_one_round`'s compress
-            // loop — the round is kept open while we re-run with compressed
-            // history. Callers must NOT finalize on this variant.
-            LLMContextOutcome::ContextLimitReached { .. } => None,
-        }
-    }
-
-    /// Append the messages / steps that materialised in `final_snapshot` after
-    /// the baseline length captured before the run. For chat mode falls back
-    /// on the explicit `Done.output` when the final assistant turn never
-    /// reached `accumulated`. For behavior mode also flushes `last_step` so
-    /// the terminal still-hot step is captured. `llm_call` is the run's
-    /// monotonic id used to group entries that originated in one LLMContext
-    /// run.
-    async fn history_record_run_diff(
-        &self,
-        mode: ContextMode,
-        baseline_accumulated_len: usize,
-        baseline_steps_len: usize,
-        baseline_last_step_text: Option<String>,
-        final_snapshot: &LLMContextSnapshot,
-        outcome: &LLMContextOutcome,
-        llm_call: u64,
-    ) {
-        match mode {
-            ContextMode::Chat => {
-                let accumulated = &final_snapshot.state.accumulated;
-                let mut already_emitted: Option<String> = None;
-                if accumulated.len() > baseline_accumulated_len {
-                    for msg in &accumulated[baseline_accumulated_len..] {
-                        already_emitted = msg.content.iter().rev().find_map(|c| match c {
-                            AiContent::Text { text } => Some(text.clone()),
-                            _ => None,
-                        });
-                        self.history_append_message(msg.clone(), Some(llm_call))
-                            .await;
-                    }
-                }
-                if let LLMContextOutcome::Done { output, .. } = outcome {
-                    if let Some(text) = output_to_text(output) {
-                        // `Done.output` is the authoritative final assistant
-                        // text; only emit when it isn't already the trailing
-                        // assistant message we just wrote.
-                        let dup = already_emitted
-                            .as_deref()
-                            .map(|t| t == text.as_str())
-                            .unwrap_or(false);
-                        if !dup {
-                            self.history_append_message(
-                                AiMessage::text(AiRole::Assistant, text),
-                                Some(llm_call),
-                            )
-                            .await;
-                        }
-                    }
-                }
-            }
-            ContextMode::Behavior => {
-                let steps = &final_snapshot.state.steps;
-                if steps.len() > baseline_steps_len {
-                    for step in &steps[baseline_steps_len..] {
-                        self.history_append_step(step.clone(), llm_call).await;
-                    }
-                }
-                if let Some(last) = final_snapshot.state.last_step.as_ref() {
-                    let is_new = baseline_last_step_text
-                        .as_deref()
-                        .map(|prev| prev != last.assistant_text.as_str())
-                        .unwrap_or(true);
-                    if is_new {
-                        self.history_append_step(last.clone(), llm_call).await;
-                    }
-                }
-            }
-        }
-    }
-
     async fn run_one_round(
         &self,
         human_texts: Vec<String>,
@@ -2011,23 +1521,26 @@ impl AgentSession {
         // responsible for ensuring an open round exists (auto-reopened by
         // the writer on startup when the prior round ended `WaitingTool`).
         if let Some(seed) = seed {
-            let opened = self.history_current_round().await.is_some();
+            let opened = self.history.current_round().await.is_some();
             if !opened {
-                self.history_begin_round(seed.trigger, seed.input_keys, mode)
+                self.history
+                    .begin_round(seed.trigger, seed.input_keys, mode)
                     .await;
             }
             for msg in seed.user_messages {
-                self.history_append_message(msg, None).await;
+                self.history.append_message(msg, None).await;
             }
             for (source, payload) in seed.system_events {
-                self.history_append_event(HistoryEvent::SystemInput { source, payload })
+                self.history
+                    .append_event(HistoryEvent::SystemInput { source, payload })
                     .await;
             }
         }
 
         let trace_id = self.next_trace_id();
-        let (ctx_owner, _request, deps) =
-            self.build_or_resume(&behavior, &human_texts, &trace_id).await?;
+        let (ctx_owner, _request, deps) = self
+            .build_or_resume(&behavior, &human_texts, &trace_id)
+            .await?;
         let mut ctx = match ctx_owner {
             BuiltContext::Fresh(c) => c,
             BuiltContext::Resumed(c) => c,
@@ -2081,28 +1594,29 @@ impl AgentSession {
                         // standard outcome handler as a non-resumable error.
                         let final_snapshot = snapshot.clone();
                         let synth_outcome = LLMContextOutcome::Error {
-                            error: llm_context::error::LLMComputeError::Internal(
-                                format!(
-                                    "context limit reached {:?} and {compress_rounds} \
+                            error: llm_context::error::LLMComputeError::Internal(format!(
+                                "context limit reached {:?} and {compress_rounds} \
                                      compress rounds exhausted",
-                                    which
-                                ),
-                            ),
+                                which
+                            )),
                             usage: snapshot.state.usage.clone(),
                         };
-                        self.history_record_run_diff(
-                            mode,
-                            baseline_accumulated_len,
-                            baseline_steps_len,
-                            baseline_last_step_text.clone(),
-                            &final_snapshot,
-                            &synth_outcome,
-                            llm_call,
-                        )
-                        .await;
-                        self.history_append_outcome(&synth_outcome).await;
-                        if let Some(status) = Self::round_status_for(&synth_outcome) {
-                            self.history_finalize_round(status).await;
+                        self.history
+                            .record_run_diff(
+                                mode,
+                                baseline_accumulated_len,
+                                baseline_steps_len,
+                                baseline_last_step_text.clone(),
+                                &final_snapshot,
+                                &synth_outcome,
+                                llm_call,
+                            )
+                            .await;
+                        self.history.append_outcome(&synth_outcome).await;
+                        if let Some(status) =
+                            SessionHistoryRecorder::round_status_for(&synth_outcome)
+                        {
+                            self.history.finalize_round(status).await;
                         }
                         return self
                             .handle_outcome(synth_outcome, &behavior, final_snapshot)
@@ -2125,17 +1639,18 @@ impl AgentSession {
                         .take_while(|m| matches!(m.role, AiRole::System))
                         .count() as u32;
                     let kept_tail = (after_len as u32).saturating_sub(leading_system);
-                    self.history_append_event(HistoryEvent::Compaction {
-                        target: CompactionTarget::Accumulated,
-                        dropped,
-                        kept_head: leading_system,
-                        kept_tail,
-                        summary_preview: format!(
+                    self.history
+                        .append_event(HistoryEvent::Compaction {
+                            target: CompactionTarget::Accumulated,
+                            dropped,
+                            kept_head: leading_system,
+                            kept_tail,
+                            summary_preview: format!(
                             "context limit ({:?}): compressed {before_len} → {after_len} messages",
                             which
                         ),
-                    })
-                    .await;
+                        })
+                        .await;
                     // Persist the post-compression snapshot before re-running
                     // so a crash mid-compress doesn't lose the rewrite.
                     let mut prepared = snapshot;
@@ -2151,19 +1666,20 @@ impl AgentSession {
                 }
                 other => {
                     let final_snapshot = ctx.snapshot();
-                    self.history_record_run_diff(
-                        mode,
-                        baseline_accumulated_len,
-                        baseline_steps_len,
-                        baseline_last_step_text,
-                        &final_snapshot,
-                        &other,
-                        llm_call,
-                    )
-                    .await;
-                    self.history_append_outcome(&other).await;
-                    if let Some(status) = Self::round_status_for(&other) {
-                        self.history_finalize_round(status).await;
+                    self.history
+                        .record_run_diff(
+                            mode,
+                            baseline_accumulated_len,
+                            baseline_steps_len,
+                            baseline_last_step_text,
+                            &final_snapshot,
+                            &other,
+                            llm_call,
+                        )
+                        .await;
+                    self.history.append_outcome(&other).await;
+                    if let Some(status) = SessionHistoryRecorder::round_status_for(&other) {
+                        self.history.finalize_round(status).await;
                     }
                     return self.handle_outcome(other, &behavior, final_snapshot).await;
                 }
@@ -2209,7 +1725,11 @@ impl AgentSession {
         behavior: &BehaviorCfg,
         human_texts: &[String],
         trace_id: &str,
-    ) -> Result<(BuiltContext, LLMContextRequest, llm_context::deps::LLMContextDeps)> {
+    ) -> Result<(
+        BuiltContext,
+        LLMContextRequest,
+        llm_context::deps::LLMContextDeps,
+    )> {
         let ctx = SessionRuntimeContext {
             trace_id: trace_id.to_string(),
             agent_name: self.agent_name.clone(),
@@ -2287,12 +1807,9 @@ impl AgentSession {
                 // No new user input — resume the snapshot in place
                 // (crash-recovery / idle re-entry without driver).
                 let request = snapshot.request.clone();
-                let resumed = LLMContext::resume(
-                    snapshot,
-                    ResumeFill::ResumeFromMidRun,
-                    deps.clone(),
-                )
-                .map_err(|e| anyhow!("resume: {e}"))?;
+                let resumed =
+                    LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps.clone())
+                        .map_err(|e| anyhow!("resume: {e}"))?;
                 return Ok((BuiltContext::Resumed(resumed), request, deps));
             }
 
@@ -2311,7 +1828,7 @@ impl AgentSession {
                 self.session_id
             );
             self.discard_snapshot();
-            self.history_append_event(HistoryEvent::SystemInput {
+            self.history.append_event(HistoryEvent::SystemInput {
                 source: "session.snapshot_dropped".to_string(),
                 payload: serde_json::json!({
                     "reason": "pending_tool_calls present but no in-flight task handles to resume against (likely crash between PendingTool persist and task dispatch)",
@@ -2377,8 +1894,7 @@ impl AgentSession {
     /// Resolve the per-process snapshot path for an independent-mode entry
     /// behavior. Rejects names that could escape `.meta/` via path traversal.
     fn behavior_snap_path(&self, entry: &str) -> Result<PathBuf> {
-        if entry.is_empty() || entry.contains('/') || entry.contains('\\') || entry.contains("..")
-        {
+        if entry.is_empty() || entry.contains('/') || entry.contains('\\') || entry.contains("..") {
             return Err(anyhow!(
                 "invalid process entry name `{entry}` for snapshot path"
             ));
@@ -2445,7 +1961,11 @@ impl AgentSession {
         // a Normal-mode switch with no explicit hand-off.
         parts.push(format!("behavior: `{}`", behavior.name));
         if !title.trim().is_empty() {
-            parts.push(format!("session: `{}` (\"{}\")", self.session_id, title.trim()));
+            parts.push(format!(
+                "session: `{}` (\"{}\")",
+                self.session_id,
+                title.trim()
+            ));
         } else {
             parts.push(format!("session: `{}`", self.session_id));
         }
@@ -2572,7 +2092,8 @@ impl AgentSession {
                     // snapshot to switch_behavior (which applies the new
                     // behavior's overrides and persists). Do **not** discard
                     // here; next turn resumes from the rebuilt snapshot.
-                    self.switch_behavior(trimmed, behavior, final_snapshot).await?;
+                    self.switch_behavior(trimmed, behavior, final_snapshot)
+                        .await?;
                     return Ok(NextAction::Idle);
                 }
                 // Natural Done (no next_behavior). Persist the completed
@@ -2614,14 +2135,10 @@ impl AgentSession {
                 for pcall in pending {
                     let call_id = pcall.call.call_id.clone();
                     let tool_name = pcall.call.name.clone();
-                    let args_json = serde_json::to_value(&pcall.call.args)
-                        .unwrap_or(serde_json::Value::Null);
+                    let args_json =
+                        serde_json::to_value(&pcall.call.args).unwrap_or(serde_json::Value::Null);
                     match dispatcher
-                        .dispatch_async_tool(
-                            &self.session_id,
-                            &tool_name,
-                            args_json,
-                        )
+                        .dispatch_async_tool(&self.session_id, &tool_name, args_json)
                         .await
                     {
                         Ok(handle) => {
@@ -2795,11 +2312,7 @@ impl AgentSession {
     /// - rounds_left: NOT reset (continue parent budget)
     /// - consecutive_errors: NOT cleared (block LLM from bypassing the cap
     ///   by switching behavior)
-    async fn apply_switch_normal(
-        &self,
-        new_cfg: &BehaviorCfg,
-        final_snapshot: LLMContextSnapshot,
-    ) {
+    async fn apply_switch_normal(&self, new_cfg: &BehaviorCfg, final_snapshot: LLMContextSnapshot) {
         let new_system = self.render_system_messages(new_cfg);
         let overrides = RequestOverrides {
             system_messages: Some(new_system),
@@ -2842,7 +2355,8 @@ impl AgentSession {
             (meta.process_entry.clone(), meta.current_behavior.clone())
         };
         let parent_path = self.behavior_snap_path(&parent_entry)?;
-        self.persist_snapshot_to(&parent_path, &final_snapshot).await;
+        self.persist_snapshot_to(&parent_path, &final_snapshot)
+            .await;
 
         // 2. Resume (or build fresh) the child process's snapshot.
         let child_path = self.behavior_snap_path(&new_cfg.name)?;
@@ -2895,8 +2409,7 @@ impl AgentSession {
         let popped = {
             let mut meta = self.meta.lock().await;
             if let Some(parent) = meta.process_stack.pop() {
-                let child_entry =
-                    std::mem::replace(&mut meta.process_entry, parent.entry.clone());
+                let child_entry = std::mem::replace(&mut meta.process_entry, parent.entry.clone());
                 meta.current_behavior = parent.current.clone();
                 Some((child_entry, parent))
             } else {
@@ -2920,9 +2433,7 @@ impl AgentSession {
         // (manual deletion / disk corruption), warn and start the parent
         // fresh on its next turn — the meta-level call stack is still
         // correct, and `build_or_resume` falls back to render-fresh.
-        let parent_path = self
-            .behavior_snap_path(&parent_frame.entry)
-            .ok();
+        let parent_path = self.behavior_snap_path(&parent_frame.entry).ok();
         let mut parent_restored = false;
         if let Some(path) = &parent_path {
             if let Some(parent_snap) = self.try_load_snapshot_from(path) {
@@ -3006,9 +2517,7 @@ impl AgentSession {
         let sub_cfg = self
             .agent_config
             .load_behavior(sub_behavior_name)
-            .map_err(|err| {
-                anyhow!("fork_and_run: load behavior `{sub_behavior_name}`: {err}")
-            })?;
+            .map_err(|err| anyhow!("fork_and_run: load behavior `{sub_behavior_name}`: {err}"))?;
 
         let parent_trace = parent_snap
             .request
@@ -3016,9 +2525,15 @@ impl AgentSession {
             .clone()
             .unwrap_or_else(|| self.session_id.clone());
         let depth = {
-            let mut stack = self.fork_stack.lock().await;
+            let mut stack = self
+                .fork_stack
+                .lock()
+                .map_err(|_| anyhow!("fork_and_run: fork stack lock poisoned"))?;
             stack.push(parent_trace.clone());
             stack.len()
+        };
+        let _fork_stack_guard = ForkStackGuard {
+            stack: Arc::clone(&self.fork_stack),
         };
         let trace_id = format!("{}::fork-{}", parent_trace, depth);
 
@@ -3036,9 +2551,6 @@ impl AgentSession {
             depth,
         })
         .await;
-
-        // Pop regardless of success — fork frame lifetime ends here.
-        self.fork_stack.lock().await.pop();
         run_result
     }
 
@@ -3046,7 +2558,7 @@ impl AgentSession {
     /// Async to share the same mutex as `fork_and_run`; intended for
     /// diagnostics / tests.
     pub async fn fork_depth(&self) -> usize {
-        self.fork_stack.lock().await.len()
+        self.fork_stack.lock().map(|stack| stack.len()).unwrap_or(0)
     }
 
     /// Read the "origin user message" stashed for the current turn — the
@@ -3191,7 +2703,8 @@ impl AgentSession {
     async fn refresh_event_pump(&self) {
         if let Some(pump) = self.event_pump.as_ref() {
             let patterns = self.subscription_patterns().await;
-            pump.set_session_subscriptions(&self.session_id, patterns).await;
+            pump.set_session_subscriptions(&self.session_id, patterns)
+                .await;
         }
     }
 
@@ -3361,10 +2874,7 @@ fn observation_from_task_event(call_id: &str, data: &serde_json::Value) -> Optio
     let to_status = data.get("to_status").and_then(|v| v.as_str()).unwrap_or("");
     match to_status {
         "Completed" => {
-            let content = data
-                .get("data")
-                .cloned()
-                .unwrap_or_else(|| data.clone());
+            let content = data.get("data").cloned().unwrap_or_else(|| data.clone());
             let bytes = serde_json::to_vec(&content).map(|v| v.len()).unwrap_or(0);
             Some(Observation::Success {
                 call_id: call_id.to_string(),
@@ -3800,7 +3310,11 @@ mod tests {
         let mut msgs = vec![AiMessage::text(AiRole::System, "sys")];
         // Generate alternating user/assistant pairs well beyond the tail cap.
         for i in 0..(COMPRESS_KEEP_TAIL + 20) {
-            let role = if i % 2 == 0 { AiRole::User } else { AiRole::Assistant };
+            let role = if i % 2 == 0 {
+                AiRole::User
+            } else {
+                AiRole::Assistant
+            };
             msgs.push(AiMessage::text(role, format!("m-{i}")));
         }
         let out = compress_messages_for_context_limit(msgs);

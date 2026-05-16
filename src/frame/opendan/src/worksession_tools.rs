@@ -19,24 +19,21 @@
 
 use std::sync::Weak;
 
-use agent_tool::{
-    AgentToolError, AgentToolManager, CallingConventions, ToolCtx, TypedTool,
-};
+use agent_tool::{AgentToolError, AgentToolManager, CallingConventions, ToolCtx, TypedTool};
 use async_trait::async_trait;
 use buckyos_api::{AiContent, AiMessage, AiRole};
 use llm_context::{
     outcome::ContextOutput,
     request::{ToolMode, ToolPolicy},
-    state::LLMContextSnapshot,
 };
 use log::warn;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{AIAgent, CreateWorkSessionParams};
-use crate::agent_session::{SessionKind, SessionStatus, SessionSummary};
 use crate::llm_context_helper::RequestOverrides;
 use crate::local_workspace::WorkspaceRecord;
+use crate::session_model::{SessionKind, SessionStatus, SessionSummary};
 
 /// Cap on the number of existing worksessions surfaced in the sub-prompt.
 /// Per §8.2 of NewOpenDANRuntime.md; keeps the sub-LLM context small.
@@ -237,12 +234,15 @@ impl TypedTool for ForwardMsgTool {
         {
             Some(s) => s.to_string(),
             None => {
-                let session = agent.get_session(&self.source_session_id).await.ok_or_else(|| {
-                    AgentToolError::ExecFailed(format!(
-                        "session `{}` not mounted; cannot auto-capture origin message",
-                        self.source_session_id
-                    ))
-                })?;
+                let session = agent
+                    .get_session(&self.source_session_id)
+                    .await
+                    .ok_or_else(|| {
+                        AgentToolError::ExecFailed(format!(
+                            "session `{}` not mounted; cannot auto-capture origin message",
+                            self.source_session_id
+                        ))
+                    })?;
                 session.current_origin_user_message().ok_or_else(|| {
                     AgentToolError::ExecFailed(
                         "forward_msg: no `message` arg and no origin user message to forward — \
@@ -254,11 +254,7 @@ impl TypedTool for ForwardMsgTool {
             }
         };
         let record_id = agent
-            .forward_message(
-                &args.target_worksession_id,
-                &self.source_session_id,
-                &body,
-            )
+            .forward_message(&args.target_worksession_id, &self.source_session_id, &body)
             .await
             .map_err(|err| AgentToolError::ExecFailed(format!("{err:#}")))?;
         Ok(ForwardMsgOutput {
@@ -428,29 +424,20 @@ pub fn register_worksession_tools(
     agent: Weak<AIAgent>,
     source_session_id: &str,
 ) {
-    if let Err(err) = manager.register_typed_tool(CreateWorksessionTool::new(
-        agent.clone(),
-        source_session_id,
-    )) {
-        warn!(
-            "opendan.worksession_tools: register `{TOOL_CREATE_WORKSESSION}` failed: {err}"
-        );
+    if let Err(err) =
+        manager.register_typed_tool(CreateWorksessionTool::new(agent.clone(), source_session_id))
+    {
+        warn!("opendan.worksession_tools: register `{TOOL_CREATE_WORKSESSION}` failed: {err}");
     }
-    if let Err(err) = manager.register_typed_tool(ForwardMsgTool::new(
-        agent.clone(),
-        source_session_id,
-    )) {
-        warn!(
-            "opendan.worksession_tools: register `{TOOL_FORWARD_MSG}` failed: {err}"
-        );
+    if let Err(err) =
+        manager.register_typed_tool(ForwardMsgTool::new(agent.clone(), source_session_id))
+    {
+        warn!("opendan.worksession_tools: register `{TOOL_FORWARD_MSG}` failed: {err}");
     }
-    if let Err(err) = manager.register_typed_tool(TryCreateWorksessionTool::new(
-        agent,
-        source_session_id,
-    )) {
-        warn!(
-            "opendan.worksession_tools: register `{TOOL_TRY_CREATE_WORKSESSION}` failed: {err}"
-        );
+    if let Err(err) =
+        manager.register_typed_tool(TryCreateWorksessionTool::new(agent, source_session_id))
+    {
+        warn!("opendan.worksession_tools: register `{TOOL_TRY_CREATE_WORKSESSION}` failed: {err}");
     }
 }
 
@@ -635,7 +622,10 @@ fn render_parent_recent_history(accumulated: &[AiMessage]) -> String {
         if trimmed.is_empty() {
             continue;
         }
-        entries.push((m.role, truncate_for_prompt(trimmed, HISTORY_CHARS_PER_MESSAGE)));
+        entries.push((
+            m.role,
+            truncate_for_prompt(trimmed, HISTORY_CHARS_PER_MESSAGE),
+        ));
     }
     if entries.is_empty() {
         return String::new();

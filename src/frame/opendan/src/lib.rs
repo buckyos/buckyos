@@ -17,6 +17,7 @@ pub mod behavior_cfg;
 //             switch_behavior (normal / fork / independent).
 pub mod agent_session;
 pub mod round_history;
+pub mod session_model;
 
 // §9 step 4 — LLMContext switching primitives (rebuild_with_inherit / build_fresh)
 //             that AgentSession uses to implement switch / fork / independent.
