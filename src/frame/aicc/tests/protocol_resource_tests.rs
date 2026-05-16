@@ -4,9 +4,7 @@ use aicc::{
     AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
     Router, TaskEventKind, TenantRouteConfig,
 };
-use buckyos_api::{
-    AiMethodStatus, AiResponseSummary, Capability, ResourceRef, TaskFilter, TaskStatus,
-};
+use buckyos_api::{AiMethodStatus, AiResponse, Capability, ResourceRef, TaskFilter, TaskStatus};
 use common::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -415,23 +413,22 @@ async fn proto_sec_01_no_base64_in_logs() {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
-        vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("ok".into()),
-            tool_calls: vec![],
-            artifacts: vec![buckyos_api::AiArtifact {
-                name: "artifact".into(),
-                resource: ResourceRef::Base64 {
-                    mime: "image/png".into(),
-                    data_base64: secret.clone(),
-                },
-                mime: Some("image/png".into()),
-                metadata: None,
-            }],
-            usage: None,
-            cost: None,
-            finish_reason: Some("stop".into()),
-            provider_task_ref: None,
-            extra: None,
+        vec![Ok(ProviderStartResult::Immediate({
+            let mut response = AiResponse::from_parts(
+                Some("ok".into()),
+                vec![],
+                vec![buckyos_api::AiArtifact {
+                    name: "artifact".into(),
+                    resource: ResourceRef::Base64 {
+                        mime: "image/png".into(),
+                        data_base64: secret.clone(),
+                    },
+                    mime: Some("image/png".into()),
+                    metadata: None,
+                }],
+            );
+            response.finish_reason = Some("stop".into());
+            response
         }))],
     )));
     let sink = Arc::new(CollectingSinkFactory::new());
@@ -772,23 +769,24 @@ async fn proto_res_10_no_sensitive_resource_literal_in_provider_logs() {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
-        vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("ok".into()),
-            tool_calls: vec![],
-            artifacts: vec![buckyos_api::AiArtifact {
-                name: "redact".into(),
-                resource: ResourceRef::Base64 {
-                    mime: "image/png".into(),
-                    data_base64: secret.clone(),
-                },
-                mime: Some("image/png".into()),
-                metadata: Some(serde_json::json!({"signed_url":"https://example.com?p=secret"})),
-            }],
-            usage: None,
-            cost: None,
-            finish_reason: Some("stop".into()),
-            provider_task_ref: None,
-            extra: None,
+        vec![Ok(ProviderStartResult::Immediate({
+            let mut response = AiResponse::from_parts(
+                Some("ok".into()),
+                vec![],
+                vec![buckyos_api::AiArtifact {
+                    name: "redact".into(),
+                    resource: ResourceRef::Base64 {
+                        mime: "image/png".into(),
+                        data_base64: secret.clone(),
+                    },
+                    mime: Some("image/png".into()),
+                    metadata: Some(
+                        serde_json::json!({"signed_url":"https://example.com?p=secret"}),
+                    ),
+                }],
+            );
+            response.finish_reason = Some("stop".into());
+            response
         }))],
     )));
     let sink = Arc::new(CollectingSinkFactory::new());

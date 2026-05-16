@@ -19,7 +19,7 @@
 //! - 输入：把请求 envelope（`model` / `requirements` / `policy`）和
 //!   `payload` 字段平铺到一层 JSON object，方便 DSL 的 `${...}` 引用。
 //! - 输出：把 `AiMethodResponse` 顶层字段（`task_id` / `status` / `event_ref`）
-//!   和 `result: AiResponseSummary` 里的字段平铺到一层（`text` / `tool_calls`
+//!   和 `result: AiResponse` 里的字段平铺到一层（`text` / `tool_calls`
 //!   / `artifacts` / `usage` / `cost` / `finish_reason` / `extra`）。
 //!
 //! 复杂的协议字段（task_options、provider 内部 extra）一期不暴露，需要的时候
@@ -37,8 +37,8 @@ use crate::types::ExecutorRef;
 use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, AiCost, AiMessage, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiPayload,
-    AiResponseSummary, AiToolCall, AiToolSpec, AiUsage, AiccClient, Capability, ModelSpec,
-    RespFormat, Requirements, ResourceRef, RoutePolicy,
+    AiResponse, AiToolCall, AiToolSpec, AiUsage, AiccClient, Capability, ModelSpec, Requirements,
+    ResourceRef, RespFormat, RoutePolicy,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -464,15 +464,14 @@ fn build_ai_request(schema: &AiccMethodSchema, input: &Value) -> WorkflowResult<
     };
 
     let policy = match input.get("policy") {
-        Some(value) if !value.is_null() => Some(serde_json::from_value::<RoutePolicy>(
-            value.clone(),
-        )
-        .map_err(|err| {
-            WorkflowError::Dispatcher(format!(
-                "aicc {}: invalid `policy`: {}",
-                schema.method, err
-            ))
-        })?),
+        Some(value) if !value.is_null() => Some(
+            serde_json::from_value::<RoutePolicy>(value.clone()).map_err(|err| {
+                WorkflowError::Dispatcher(format!(
+                    "aicc {}: invalid `policy`: {}",
+                    schema.method, err
+                ))
+            })?,
+        ),
         _ => None,
     };
 
@@ -495,47 +494,45 @@ fn build_ai_request(schema: &AiccMethodSchema, input: &Value) -> WorkflowResult<
 }
 
 fn build_ai_payload(schema: &AiccMethodSchema, input: &Value) -> WorkflowResult<AiPayload> {
-    let text = input
-        .get("text")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let text = input.get("text").and_then(Value::as_str).map(str::to_owned);
     let messages: Vec<AiMessage> = match input.get("messages") {
-        Some(value) if !value.is_null() => serde_json::from_value(value.clone()).map_err(|err| {
-            WorkflowError::Dispatcher(format!(
-                "aicc {}: invalid `messages`: {}",
-                schema.method, err
-            ))
-        })?,
+        Some(value) if !value.is_null() => {
+            serde_json::from_value(value.clone()).map_err(|err| {
+                WorkflowError::Dispatcher(format!(
+                    "aicc {}: invalid `messages`: {}",
+                    schema.method, err
+                ))
+            })?
+        }
         _ => Vec::new(),
     };
     let tool_specs: Vec<AiToolSpec> = match input.get("tool_specs") {
-        Some(value) if !value.is_null() => serde_json::from_value(value.clone()).map_err(|err| {
-            WorkflowError::Dispatcher(format!(
-                "aicc {}: invalid `tool_specs`: {}",
-                schema.method, err
-            ))
-        })?,
+        Some(value) if !value.is_null() => {
+            serde_json::from_value(value.clone()).map_err(|err| {
+                WorkflowError::Dispatcher(format!(
+                    "aicc {}: invalid `tool_specs`: {}",
+                    schema.method, err
+                ))
+            })?
+        }
         _ => Vec::new(),
     };
     let resources: Vec<ResourceRef> = match input.get("resources") {
-        Some(value) if !value.is_null() => serde_json::from_value(value.clone()).map_err(|err| {
-            WorkflowError::Dispatcher(format!(
-                "aicc {}: invalid `resources`: {}",
-                schema.method, err
-            ))
-        })?,
+        Some(value) if !value.is_null() => {
+            serde_json::from_value(value.clone()).map_err(|err| {
+                WorkflowError::Dispatcher(format!(
+                    "aicc {}: invalid `resources`: {}",
+                    schema.method, err
+                ))
+            })?
+        }
         _ => Vec::new(),
     };
     let options = input.get("options").cloned();
     let input_json = input.get("input_json").cloned();
 
     Ok(AiPayload::new(
-        text,
-        messages,
-        tool_specs,
-        resources,
-        input_json,
-        options,
+        text, messages, tool_specs, resources, input_json, options,
     ))
 }
 
@@ -561,49 +558,43 @@ fn flatten_ai_response(response: AiMethodResponse) -> Value {
     Value::Object(out)
 }
 
-fn merge_summary_fields(out: &mut serde_json::Map<String, Value>, summary: AiResponseSummary) {
-    let AiResponseSummary {
-        text,
-        tool_calls,
-        artifacts,
-        usage,
-        cost,
-        finish_reason,
-        provider_task_ref,
-        extra,
-    } = summary;
+fn merge_summary_fields(out: &mut serde_json::Map<String, Value>, summary: AiResponse) {
+    out.insert(
+        "message".to_string(),
+        serde_json::to_value(&summary.message).unwrap_or(Value::Null),
+    );
 
-    if let Some(text) = text {
+    let text = summary.text_content();
+    if !text.is_empty() {
         out.insert("text".to_string(), Value::String(text));
     }
+    let tool_calls = summary.tool_calls();
     if !tool_calls.is_empty() {
-        out.insert(
-            "tool_calls".to_string(),
-            tool_calls_to_value(tool_calls),
-        );
+        out.insert("tool_calls".to_string(), tool_calls_to_value(tool_calls));
     }
+    let artifacts = summary.artifacts();
     if !artifacts.is_empty() {
         out.insert(
             "artifacts".to_string(),
             serde_json::to_value(&artifacts).unwrap_or(Value::Null),
         );
     }
-    if let Some(usage) = usage {
+    if let Some(usage) = summary.usage {
         out.insert("usage".to_string(), usage_to_value(usage));
     }
-    if let Some(cost) = cost {
+    if let Some(cost) = summary.cost {
         out.insert("cost".to_string(), cost_to_value(cost));
     }
-    if let Some(finish_reason) = finish_reason {
+    if let Some(finish_reason) = summary.finish_reason {
         out.insert("finish_reason".to_string(), Value::String(finish_reason));
     }
-    if let Some(provider_task_ref) = provider_task_ref {
+    if let Some(provider_task_ref) = summary.provider_task_ref {
         out.insert(
             "provider_task_ref".to_string(),
             Value::String(provider_task_ref),
         );
     }
-    if let Some(extra) = extra {
+    if let Some(extra) = summary.extra {
         out.insert("extra".to_string(), extra);
     }
 }
@@ -657,11 +648,20 @@ fn cost_to_value(cost: AiCost) -> Value {
 fn ai_response_output_schema() -> Value {
     json!({
         "type": "object",
-        "description": "Flattened AiMethodResponse + AiResponseSummary.",
+        "description": "Flattened AiMethodResponse + AiResponse.",
         "properties": {
             "task_id": { "type": "string" },
             "status": { "type": "string", "enum": ["succeeded", "running", "failed"] },
             "event_ref": { "type": "string" },
+            "message": {
+                "type": "object",
+                "description": "Primary AiMessage response IR; text/tool_calls/artifacts are derived views.",
+                "properties": {
+                    "role": { "type": "string", "enum": ["assistant"] },
+                    "content": { "type": "array", "items": { "type": "object" } }
+                },
+                "required": ["role", "content"]
+            },
             "text": { "type": "string" },
             "tool_calls": {
                 "type": "array",
@@ -1164,10 +1164,8 @@ mod tests {
             Ok(AiMethodResponse::new(
                 "task-1".to_string(),
                 AiMethodStatus::Succeeded,
-                Some(AiResponseSummary {
-                    text: Some("hello".to_string()),
-                    tool_calls: vec![],
-                    artifacts: vec![],
+                Some(AiResponse {
+                    message: AiMessage::text(buckyos_api::AiRole::Assistant, "hello"),
                     usage: Some(AiUsage {
                         input_tokens: Some(3),
                         output_tokens: Some(5),
@@ -1197,9 +1195,9 @@ mod tests {
     #[tokio::test]
     async fn llm_chat_round_trip() {
         let handler = Arc::new(EchoHandler::default());
-        let client = Arc::new(AiccClient::new_in_process(
-            Box::new(SharedHandler(handler.clone())),
-        ));
+        let client = Arc::new(AiccClient::new_in_process(Box::new(SharedHandler(
+            handler.clone(),
+        ))));
         let adapter = AiccAdapter::new(client);
         let executor = ExecutorRef::parse("service::aicc.llm.chat").unwrap();
         let input = json!({

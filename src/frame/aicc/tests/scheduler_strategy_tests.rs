@@ -4,7 +4,7 @@ use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, RouteConfig,
     RouteWeights, Router, TenantRouteConfig,
 };
-use buckyos_api::{AiMethodStatus, AiResponseSummary, AiccServerHandler, Capability};
+use buckyos_api::{AiMethodStatus, AiResponse, AiccServerHandler, Capability};
 use common::*;
 use kRPC::{RPCContext, RPCHandler, RPCRequest, RPCResult};
 use serde_json::json;

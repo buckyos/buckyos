@@ -34,7 +34,7 @@
 //!
 //! 1. **LlmClient 适配**：通过 `AiccLlmClient` 把 waist 侧的
 //!    `LlmInferenceRequest` 翻译成 AICC 的 `AiMethodRequest`（capability =
-//!    Llm，method = `llm.chat`），返回的 `AiResponseSummary` 直接 forward
+//!    Llm，method = `llm.chat`），返回的 `AiResponse` 直接 forward
 //!    给 waist。Running 状态本工具不做轮询（DV test 用的是同步模型），
 //!    遇到时直接报错让 caller 排查。
 //!
@@ -51,9 +51,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
-    value_to_object_map, AiMessage, AiMethodRequest, AiMethodStatus, AiPayload, AiResponseSummary,
-    AiRole, AiToolSpec, AiccClient, BuckyOSRuntimeType, Capability, ModelSpec, Requirements,
-    RespFormat,
+    value_to_object_map, AiMessage, AiMethodRequest, AiMethodStatus, AiPayload, AiResponse, AiRole,
+    AiToolSpec, AiccClient, BuckyOSRuntimeType, Capability, ModelSpec, Requirements, RespFormat,
 };
 use llm_context::{
     LLMComputeError, LLMContextOutcome, LlmClient, LlmInferenceRequest, ToolMode, ToolPolicy,
@@ -103,11 +102,9 @@ async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
             || opts.input_stdin
             || opts.force_new
         {
-            return Err(
-                "--append is mutually exclusive with --system / --user / \
+            return Err("--append is mutually exclusive with --system / --user / \
                         --input-file / --input-stdin / --new"
-                    .into(),
-            );
+                .into());
         }
         // 从上一轮 Completed run 继承 objective / policies / 累积历史，再 push
         // 这一条新 user 消息。CLI 后面的 tuning override 还会覆盖一遍。
@@ -434,8 +431,7 @@ pub(crate) async fn ensure_buckyos_runtime() -> Result<(), Box<dyn std::error::E
         return Ok(());
     }
 
-    let runtime =
-        init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await?;
+    let runtime = init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await?;
     set_buckyos_api_runtime(runtime)?;
     Ok(())
 }
@@ -462,7 +458,7 @@ impl AiccLlmClient {
 
 #[async_trait]
 impl LlmClient for AiccLlmClient {
-    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponseSummary, LLMComputeError> {
+    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         let LlmInferenceRequest {
             messages,
             model_alias,
@@ -593,8 +589,9 @@ impl Compressor for KeepTailCompressor {
         accumulated: Vec<AiMessage>,
         _dir: &std::path::Path,
     ) -> Result<Vec<AiMessage>, LocalLLMContextError> {
-        let (sys, rest): (Vec<_>, Vec<_>) =
-            accumulated.into_iter().partition(|m| m.role == AiRole::System);
+        let (sys, rest): (Vec<_>, Vec<_>) = accumulated
+            .into_iter()
+            .partition(|m| m.role == AiRole::System);
         let kept_tail = if rest.len() > self.tail {
             rest[rest.len() - self.tail..].to_vec()
         } else {

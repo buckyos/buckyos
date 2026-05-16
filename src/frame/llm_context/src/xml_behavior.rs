@@ -39,7 +39,7 @@
 
 use std::collections::HashMap;
 
-use buckyos_api::{AiResponseSummary, AiToolCall};
+use buckyos_api::{AiResponse, AiToolCall};
 use serde_json::Value;
 
 use crate::behavior_loop::{LLMBehaviorResult, LLMResultParser};
@@ -65,9 +65,9 @@ impl XmlBehaviorParser {
 }
 
 impl LLMResultParser for XmlBehaviorParser {
-    fn parse(&self, response: &AiResponseSummary) -> Result<LLMBehaviorResult, String> {
-        let raw_text = response.text.clone().unwrap_or_default();
-        let provider_calls = response.tool_calls.clone();
+    fn parse(&self, response: &AiResponse) -> Result<LLMBehaviorResult, String> {
+        let raw_text = response.text_content();
+        let provider_calls = response.tool_calls();
 
         if raw_text.trim().is_empty() && provider_calls.is_empty() {
             return Err("empty response: no text and no tool_calls".to_string());
@@ -402,20 +402,17 @@ pub(crate) fn xml_escape(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::AiResponseSummary;
+    use buckyos_api::AiResponse;
     use serde_json::json;
 
-    fn resp(text: &str) -> AiResponseSummary {
-        AiResponseSummary {
-            text: Some(text.to_string()),
-            ..Default::default()
-        }
+    fn resp(text: &str) -> AiResponse {
+        AiResponse::text(text)
     }
 
     #[test]
     fn empty_response_is_error() {
         let parser = XmlBehaviorParser::new();
-        assert!(parser.parse(&AiResponseSummary::default()).is_err());
+        assert!(parser.parse(&AiResponse::default()).is_err());
     }
 
     #[test]
@@ -508,7 +505,10 @@ hello world
             .parse(&resp(r#"<action tool="ping" host="localhost"/>"#))
             .unwrap();
         assert_eq!(out.do_actions.len(), 1);
-        assert_eq!(out.do_actions[0].args.get("host"), Some(&json!("localhost")));
+        assert_eq!(
+            out.do_actions[0].args.get("host"),
+            Some(&json!("localhost"))
+        );
     }
 
     #[test]
@@ -519,9 +519,12 @@ hello world
             args: HashMap::from([("k".to_string(), json!("v"))]),
             call_id: "native-1".to_string(),
         };
-        let response = AiResponseSummary {
-            text: Some(r#"<action tool="ignored">{"foo":"bar"}</action>"#.to_string()),
-            tool_calls: vec![provider_call],
+        let response = AiResponse {
+            message: AiResponse::message_from_parts(
+                Some(r#"<action tool="ignored">{"foo":"bar"}</action>"#.to_string()),
+                vec![provider_call],
+                vec![],
+            ),
             ..Default::default()
         };
         let out = parser.parse(&response).unwrap();
@@ -567,10 +570,7 @@ hello world
         let out = parser
             .parse(&resp(r#"<action tool="grep" pattern="a &amp; b"/>"#))
             .unwrap();
-        assert_eq!(
-            out.do_actions[0].args.get("pattern"),
-            Some(&json!("a & b"))
-        );
+        assert_eq!(out.do_actions[0].args.get("pattern"), Some(&json!("a & b")));
     }
 
     #[test]

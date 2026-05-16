@@ -4,7 +4,7 @@ use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, RouteConfig,
     RouteWeights, Router, TenantRouteConfig,
 };
-use buckyos_api::{AiMethodStatus, AiResponseSummary, AiccServerHandler, Capability};
+use buckyos_api::{AiMethodStatus, AiResponse, AiccServerHandler, Capability};
 use common::*;
 use kRPC::{RPCContext, RPCHandler, RPCRequest, RPCResult};
 use serde_json::json;
@@ -53,7 +53,10 @@ async fn proto_llm_01_messages_format_valid() {
     );
     let mut req = base_request();
     req.payload.text = None;
-    req.payload.messages = vec![buckyos_api::AiMessage::text(buckyos_api::AiRole::User, "hello")];
+    req.payload.messages = vec![buckyos_api::AiMessage::text(
+        buckyos_api::AiRole::User,
+        "hello",
+    )];
     let center = center_with_taskmgr(r, c);
     assert_eq!(
         center
@@ -328,23 +331,22 @@ async fn proto_t2v_02_output_artifact_url_format() {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
-        vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: None,
-            tool_calls: vec![],
-            artifacts: vec![buckyos_api::AiArtifact {
-                name: "audio".into(),
-                resource: buckyos_api::ResourceRef::Url {
-                    url: "https://example.com/a.wav".into(),
-                    mime_hint: Some("audio/wav".into()),
-                },
-                mime: Some("audio/wav".into()),
-                metadata: None,
-            }],
-            usage: None,
-            cost: None,
-            finish_reason: Some("stop".into()),
-            provider_task_ref: None,
-            extra: None,
+        vec![Ok(ProviderStartResult::Immediate({
+            let mut response = AiResponse::from_parts(
+                None,
+                vec![],
+                vec![buckyos_api::AiArtifact {
+                    name: "audio".into(),
+                    resource: buckyos_api::ResourceRef::Url {
+                        url: "https://example.com/a.wav".into(),
+                        mime_hint: Some("audio/wav".into()),
+                    },
+                    mime: Some("audio/wav".into()),
+                    metadata: None,
+                }],
+            );
+            response.finish_reason = Some("stop".into());
+            response
         }))],
     )));
     let req = base_request_for(Capability::Audio, "t2v.default");
@@ -354,7 +356,7 @@ async fn proto_t2v_02_output_artifact_url_format() {
     let artifact = resp
         .result
         .as_ref()
-        .and_then(|x| x.artifacts.first())
+        .and_then(|x| x.artifacts().into_iter().next())
         .expect("expected t2v artifact");
     match &artifact.resource {
         buckyos_api::ResourceRef::Url { url, .. } => assert!(url.starts_with("http")),
@@ -394,7 +396,10 @@ async fn proto_mix_01_text_plus_resource_valid() {
 async fn proto_mix_02_messages_plus_resource_valid() {
     let mut req = base_request();
     req.payload.text = None;
-    req.payload.messages = vec![buckyos_api::AiMessage::text(buckyos_api::AiRole::User, "hi")];
+    req.payload.messages = vec![buckyos_api::AiMessage::text(
+        buckyos_api::AiRole::User,
+        "hi",
+    )];
     req.payload.resources = vec![buckyos_api::ResourceRef::Url {
         url: "https://example.com/a.png".into(),
         mime_hint: Some("image/png".into()),
@@ -612,23 +617,22 @@ async fn proto_sec_03_no_artifact_bytes_in_events() {
         "a",
         0.01,
         10,
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("ok".into()),
-            tool_calls: vec![],
-            artifacts: vec![buckyos_api::AiArtifact {
-                name: "artifact-1".into(),
-                resource: buckyos_api::ResourceRef::Base64 {
-                    mime: "image/png".into(),
-                    data_base64: secret.clone(),
-                },
-                mime: Some("image/png".into()),
-                metadata: None,
-            }],
-            usage: None,
-            cost: None,
-            finish_reason: Some("stop".into()),
-            provider_task_ref: None,
-            extra: None,
+        Ok(ProviderStartResult::Immediate({
+            let mut response = AiResponse::from_parts(
+                Some("ok".into()),
+                vec![],
+                vec![buckyos_api::AiArtifact {
+                    name: "artifact-1".into(),
+                    resource: buckyos_api::ResourceRef::Base64 {
+                        mime: "image/png".into(),
+                        data_base64: secret.clone(),
+                    },
+                    mime: Some("image/png".into()),
+                    metadata: None,
+                }],
+            );
+            response.finish_reason = Some("stop".into());
+            response
         })),
     );
     let sink = Arc::new(CollectingSinkFactory::new());

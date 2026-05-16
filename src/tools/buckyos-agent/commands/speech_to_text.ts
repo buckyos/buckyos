@@ -6,6 +6,7 @@ import { ArgError, bailArgError, COMMON_OPTIONS_HELP, flagBool, parseArgvOrExit,
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
 import { resolveInputResource, writeTextFile } from "../lib/io.ts";
+import { aiResponseText } from "../lib/types.ts";
 import {
   bailAiccError, bailAiccFailed, bailIoError, bailRuntimeError,
   emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
@@ -49,7 +50,7 @@ export async function run(argv: string[]): Promise<never> {
     if (fmt !== undefined) {
       if (!FORMAT.has(fmt)) throw new ArgError(`--format invalid: ${fmt}`);
       // "txt" 是默认行为，不需要额外的 output_formats；其它格式让 AICC 把
-      // 结构化产物挂到 summary.artifacts 里返回。
+      // 结构化产物会进入 AiResponse.message，并通过 artifact 派生视图读取。
       if (fmt !== "txt") input.output_formats = [fmt];
     }
     inputResource = await resolveInputResource(srcAudio, "audio/*");
@@ -75,7 +76,7 @@ export async function run(argv: string[]): Promise<never> {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
 
-  const text = typeof call.summary.text === "string" ? call.summary.text : "";
+  const text = aiResponseText(call.summary);
   const files: Array<{ path: string; bytes: number; mime: string; source_kind: string }> = [];
   if (outText) {
     try {

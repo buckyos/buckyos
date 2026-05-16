@@ -22,16 +22,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
-    AiMethodStatus, AiPayload, AiResponseSummary, AiToolCall, AiToolSpec, AiccClient, Capability,
-    KEventClient, MsgCenterClient, ModelSpec, Requirements, RespFormat, TaskFilter,
+    AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiccClient, Capability,
+    KEventClient, ModelSpec, MsgCenterClient, Requirements, RespFormat, TaskFilter,
     TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
 use log::warn;
 use serde_json::{json, Value};
 
-use ::agent_tool::{
-    AgentToolManager, AgentToolResult, AgentToolStatus, SessionRuntimeContext,
-};
+use ::agent_tool::{AgentToolManager, AgentToolResult, AgentToolStatus, SessionRuntimeContext};
 use llm_context::{
     behavior_loop::{LLMResultParser, StepRenderer},
     deps::{
@@ -64,10 +62,7 @@ impl AiccLlmClient {
 
 #[async_trait]
 impl LlmClient for AiccLlmClient {
-    async fn infer(
-        &self,
-        req: LlmInferenceRequest,
-    ) -> Result<AiResponseSummary, LLMComputeError> {
+    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         let LlmInferenceRequest {
             messages,
             model_alias,
@@ -182,13 +177,11 @@ impl LlmClient for AiccLlmClient {
 }
 
 /// Block until an AICC-side async task reaches a terminal state and return
-/// its `AiResponseSummary`. Mirrors the polling path the legacy
+/// its `AiResponse`. Mirrors the polling path the legacy
 /// `behavior::do_inference_once` used, but reuses
 /// `TaskManagerClient::wait_for_task_end_kevent` so the wait is kevent-
 /// accelerated with a sweep fallback.
-async fn resolve_async_aicc_result(
-    external_task_id: &str,
-) -> Result<AiResponseSummary, LLMComputeError> {
+async fn resolve_async_aicc_result(external_task_id: &str) -> Result<AiResponse, LLMComputeError> {
     let external_task_id = external_task_id.trim();
     if external_task_id.is_empty() {
         return Err(LLMComputeError::Provider(
@@ -196,13 +189,11 @@ async fn resolve_async_aicc_result(
         ));
     }
 
-    let runtime = get_buckyos_api_runtime().map_err(|err| {
-        LLMComputeError::Internal(format!("load buckyos runtime failed: {err}"))
+    let runtime = get_buckyos_api_runtime()
+        .map_err(|err| LLMComputeError::Internal(format!("load buckyos runtime failed: {err}")))?;
+    let taskmgr = runtime.get_task_mgr_client().await.map_err(|err| {
+        LLMComputeError::Provider(format!("init task-manager client failed: {err}"))
     })?;
-    let taskmgr = runtime
-        .get_task_mgr_client()
-        .await
-        .map_err(|err| LLMComputeError::Provider(format!("init task-manager client failed: {err}")))?;
 
     let id = resolve_aicc_task_id(&taskmgr, external_task_id).await?;
 
@@ -218,27 +209,20 @@ async fn resolve_async_aicc_result(
         )));
     }
 
-    let output = task
-        .data
-        .pointer("/aicc/output")
-        .cloned()
-        .ok_or_else(|| {
-            LLMComputeError::Provider(format!(
-                "aicc task {} terminated without /aicc/output payload",
-                id
-            ))
-        })?;
-    // Envelope-tolerant: aicc.rs writes either `AiResponseSummary` directly
-    // or `{summary: AiResponseSummary, ...}` depending on the event payload
+    let output = task.data.pointer("/aicc/output").cloned().ok_or_else(|| {
+        LLMComputeError::Provider(format!(
+            "aicc task {} terminated without /aicc/output payload",
+            id
+        ))
+    })?;
+    // Envelope-tolerant: aicc.rs writes either `AiResponse` directly
+    // or `{summary: AiResponse, ...}` depending on the event payload
     // shape. Strip the wrapper when present. (Drop once the task.data schema
     // is unified — see follow-up task.)
-    let summary_value = output
-        .get("summary")
-        .cloned()
-        .unwrap_or(output);
-    serde_json::from_value::<AiResponseSummary>(summary_value).map_err(|err| {
+    let summary_value = output.get("summary").cloned().unwrap_or(output);
+    serde_json::from_value::<AiResponse>(summary_value).map_err(|err| {
         LLMComputeError::Provider(format!(
-            "decode AiResponseSummary from aicc task {} output failed: {err}",
+            "decode AiResponse from aicc task {} output failed: {err}",
             id
         ))
     })
@@ -413,10 +397,7 @@ impl PolicyEngine for AgentPolicy {
                 .iter()
                 .find(|c| self.approval_required.iter().any(|n| n == &c.name))
             {
-                return Err(format!(
-                    "tool `{}` requires human approval",
-                    blocked.name
-                ));
+                return Err(format!("tool `{}` requires human approval", blocked.name));
             }
         }
         if self.enforce_whitelist {
@@ -619,10 +600,7 @@ impl TurnHook for SessionSnapshotHook {
         };
         if let Some(parent) = self.path.parent() {
             if let Err(err) = std::fs::create_dir_all(parent) {
-                warn!(
-                    "opendan.snapshot: mkdir {} failed: {err}",
-                    parent.display()
-                );
+                warn!("opendan.snapshot: mkdir {} failed: {err}", parent.display());
                 return;
             }
         }
@@ -630,10 +608,7 @@ impl TurnHook for SessionSnapshotHook {
         // would prevent the session from recovering on next boot.
         let tmp = self.path.with_extension("snap.tmp");
         if let Err(err) = std::fs::write(&tmp, &bytes) {
-            warn!(
-                "opendan.snapshot: write {} failed: {err}",
-                tmp.display()
-            );
+            warn!("opendan.snapshot: write {} failed: {err}", tmp.display());
             return;
         }
         if let Err(err) = std::fs::rename(&tmp, &self.path) {

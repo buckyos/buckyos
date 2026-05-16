@@ -293,8 +293,12 @@ impl AiRole {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AiToolResultContent {
-    Text { text: String },
-    Image { source: ResourceRef },
+    Text {
+        text: String,
+    },
+    Image {
+        source: ResourceRef,
+    },
     Document {
         source: ResourceRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -369,16 +373,16 @@ pub enum AiContent {
     ///
     /// Lowering: only blocks whose `provider` matches the target lowering
     /// destination are restored to their native item; the rest are dropped.
-    ProviderState {
-        provider: String,
-        value: Value,
-    },
+    ProviderState { provider: String, value: Value },
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
 pub enum AiMessageError {
     #[error("block type `{block_type}` is not allowed for role `{role:?}`")]
-    InvalidBlockForRole { role: AiRole, block_type: &'static str },
+    InvalidBlockForRole {
+        role: AiRole,
+        block_type: &'static str,
+    },
     #[error("tool_use / tool_result missing call_id")]
     MissingCallId,
     #[error("tool_result content must not be empty")]
@@ -408,7 +412,11 @@ impl AiContent {
         }
     }
 
-    pub fn tool_result_text(call_id: impl Into<String>, text: impl Into<String>, is_error: bool) -> Self {
+    pub fn tool_result_text(
+        call_id: impl Into<String>,
+        text: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
         Self::ToolResult {
             call_id: call_id.into(),
             content: vec![AiToolResultContent::text(text)],
@@ -497,7 +505,11 @@ impl AiMessage {
                 AiContent::ToolUse { call_id, name, .. } => {
                     out.push_str(&format!("[tool_use name={name} call_id={call_id}]"));
                 }
-                AiContent::ToolResult { call_id, content, is_error } => {
+                AiContent::ToolResult {
+                    call_id,
+                    content,
+                    is_error,
+                } => {
                     out.push_str(&format!(
                         "[tool_result call_id={call_id}{}]",
                         if *is_error { " error" } else { "" }
@@ -538,13 +550,19 @@ impl AiMessage {
             match block {
                 AiContent::Text { text } => total += text.len(),
                 AiContent::Image { .. } | AiContent::Document { .. } => total += 256,
-                AiContent::ToolUse { name, call_id, args } => {
+                AiContent::ToolUse {
+                    name,
+                    call_id,
+                    args,
+                } => {
                     total += name.len() + call_id.len();
                     if let Ok(s) = serde_json::to_string(args) {
                         total += s.len();
                     }
                 }
-                AiContent::ToolResult { content, call_id, .. } => {
+                AiContent::ToolResult {
+                    content, call_id, ..
+                } => {
                     total += call_id.len();
                     for c in content {
                         match c {
@@ -606,6 +624,8 @@ impl AiMessage {
                 for block in &self.content {
                     match block {
                         AiContent::Text { .. }
+                        | AiContent::Image { .. }
+                        | AiContent::Document { .. }
                         | AiContent::ToolUse { .. }
                         | AiContent::Thinking { .. }
                         | AiContent::ProviderState { .. } => {}
@@ -627,7 +647,10 @@ impl AiMessage {
                 if self.content.len() != 1 {
                     return Err(AiMessageError::ToolRoleShape);
                 }
-                let AiContent::ToolResult { call_id, content, .. } = &self.content[0] else {
+                let AiContent::ToolResult {
+                    call_id, content, ..
+                } = &self.content[0]
+                else {
                     return Err(AiMessageError::InvalidBlockForRole {
                         role: self.role,
                         block_type: self.content[0].type_tag(),
@@ -820,14 +843,9 @@ pub struct AiToolCall {
     pub call_id: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct AiResponseSummary {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_calls: Vec<AiToolCall>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<AiArtifact>,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AiResponse {
+    pub message: AiMessage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<AiUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -838,6 +856,153 @@ pub struct AiResponseSummary {
     pub provider_task_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
+}
+
+impl Default for AiResponse {
+    fn default() -> Self {
+        Self {
+            message: AiMessage::text(AiRole::Assistant, String::new()),
+            usage: None,
+            cost: None,
+            finish_reason: None,
+            provider_task_ref: None,
+            extra: None,
+        }
+    }
+}
+
+impl AiResponse {
+    pub fn new(message: AiMessage) -> Self {
+        Self {
+            message,
+            ..Self::default()
+        }
+    }
+
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::new(AiMessage::text(AiRole::Assistant, text))
+    }
+
+    pub fn from_parts(
+        text: Option<String>,
+        tool_calls: Vec<AiToolCall>,
+        artifacts: Vec<AiArtifact>,
+    ) -> Self {
+        Self::new(Self::message_from_parts(text, tool_calls, artifacts))
+    }
+
+    pub fn message_from_parts(
+        text: Option<String>,
+        tool_calls: Vec<AiToolCall>,
+        artifacts: Vec<AiArtifact>,
+    ) -> AiMessage {
+        let mut content = Vec::new();
+        if let Some(text) = text {
+            content.push(AiContent::Text { text });
+        }
+        for call in tool_calls {
+            content.push(AiContent::ToolUse {
+                call_id: call.call_id,
+                name: call.name,
+                args: call.args,
+            });
+        }
+        for artifact in artifacts {
+            content.push(artifact.into_content());
+        }
+        if content.is_empty() {
+            content.push(AiContent::Text {
+                text: String::new(),
+            });
+        }
+        AiMessage::new(AiRole::Assistant, content)
+    }
+
+    pub fn text_content(&self) -> String {
+        self.message.text_content()
+    }
+
+    pub fn tool_calls(&self) -> Vec<AiToolCall> {
+        self.message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                AiContent::ToolUse {
+                    call_id,
+                    name,
+                    args,
+                } => Some(AiToolCall {
+                    name: name.clone(),
+                    args: args.clone(),
+                    call_id: call_id.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn artifacts(&self) -> Vec<AiArtifact> {
+        self.message
+            .content
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, block)| match block {
+                AiContent::Image { source } => Some(AiArtifact {
+                    name: format!("image_{}", idx + 1),
+                    resource: source.clone(),
+                    mime: resource_ref_mime(source),
+                    metadata: None,
+                }),
+                AiContent::Document { source, title } => Some(AiArtifact {
+                    name: title
+                        .clone()
+                        .unwrap_or_else(|| format!("document_{}", idx + 1)),
+                    resource: source.clone(),
+                    mime: resource_ref_mime(source),
+                    metadata: None,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn validate(&self) -> std::result::Result<(), AiMessageError> {
+        if self.message.role != AiRole::Assistant {
+            return Err(AiMessageError::InvalidBlockForRole {
+                role: self.message.role,
+                block_type: "response_message",
+            });
+        }
+        self.message.validate()
+    }
+}
+
+impl AiArtifact {
+    pub fn into_content(self) -> AiContent {
+        let is_image = self
+            .mime
+            .as_deref()
+            .map(|mime| mime.starts_with("image/"))
+            .unwrap_or(false);
+        if is_image {
+            AiContent::Image {
+                source: self.resource,
+            }
+        } else {
+            AiContent::Document {
+                source: self.resource,
+                title: Some(self.name),
+            }
+        }
+    }
+}
+
+fn resource_ref_mime(source: &ResourceRef) -> Option<String> {
+    match source {
+        ResourceRef::Url { mime_hint, .. } => mime_hint.clone(),
+        ResourceRef::Base64 { mime, .. } => Some(mime.clone()),
+        ResourceRef::NamedObject { .. } => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -909,7 +1074,7 @@ pub struct AiMethodResponse {
     pub task_id: String,
     pub status: AiMethodStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<AiResponseSummary>,
+    pub result: Option<AiResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_ref: Option<String>,
 }
@@ -918,7 +1083,7 @@ impl AiMethodResponse {
     pub fn new(
         task_id: String,
         status: AiMethodStatus,
-        result: Option<AiResponseSummary>,
+        result: Option<AiResponse>,
         event_ref: Option<String>,
     ) -> Self {
         Self {
@@ -1160,10 +1325,8 @@ mod tests {
             Ok(AiMethodResponse::new(
                 "task-001".to_string(),
                 AiMethodStatus::Succeeded,
-                Some(AiResponseSummary {
-                    text: Some("mock result".to_string()),
-                    tool_calls: vec![],
-                    artifacts: vec![],
+                Some(AiResponse {
+                    message: AiMessage::text(AiRole::Assistant, "mock result"),
                     usage: Some(AiUsage {
                         input_tokens: Some(4),
                         output_tokens: Some(8),
@@ -1279,9 +1442,8 @@ mod tests {
             method_result
                 .result
                 .as_ref()
-                .and_then(|summary| summary.text.as_ref())
-                .map(|text| text.as_str()),
-            Some("mock result")
+                .map(|summary| summary.text_content()),
+            Some("mock result".to_string())
         );
 
         let cancel_result = client.cancel("task-001").await.unwrap();

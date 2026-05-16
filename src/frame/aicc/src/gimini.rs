@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, features, AiArtifact, AiContent, AiCost, AiMessage, AiMethodRequest, AiResponseSummary,
+    ai_methods, features, AiArtifact, AiContent, AiCost, AiMessage, AiMethodRequest, AiResponse,
     AiRole, AiToolResultContent, AiUsage, Capability, Feature, ResourceRef,
 };
 use log::{info, warn};
@@ -813,8 +813,7 @@ impl GoogleGiminiProvider {
             .filter_map(|msg| {
                 let content = msg.text_content();
                 let trimmed = content.trim();
-                (!trimmed.is_empty())
-                    .then(|| (msg.role.as_str().to_string(), trimmed.to_string()))
+                (!trimmed.is_empty()).then(|| (msg.role.as_str().to_string(), trimmed.to_string()))
             })
             .collect())
     }
@@ -962,7 +961,11 @@ impl GoogleGiminiProvider {
                         false,
                     )?);
                 }
-                AiContent::ToolUse { call_id, name, args } => {
+                AiContent::ToolUse {
+                    call_id,
+                    name,
+                    args,
+                } => {
                     let args_value = serde_json::to_value(args).unwrap_or_else(|_| json!({}));
                     parts.push(json!({
                         "functionCall": {
@@ -1006,15 +1009,13 @@ impl GoogleGiminiProvider {
     ) -> Result<Value, ProviderError> {
         match source {
             ResourceRef::Url { url, mime_hint } => {
-                let mime = mime_hint
-                    .clone()
-                    .unwrap_or_else(|| {
-                        if is_image {
-                            "image/*".to_string()
-                        } else {
-                            "application/octet-stream".to_string()
-                        }
-                    });
+                let mime = mime_hint.clone().unwrap_or_else(|| {
+                    if is_image {
+                        "image/*".to_string()
+                    } else {
+                        "application/octet-stream".to_string()
+                    }
+                });
                 Ok(json!({
                     "fileData": {
                         "fileUri": url,
@@ -1782,10 +1783,8 @@ impl GoogleGiminiProvider {
             }),
         );
 
-        let summary = AiResponseSummary {
-            text: content,
-            tool_calls: vec![],
-            artifacts: vec![],
+        let summary = AiResponse {
+            message: AiResponse::message_from_parts(content, vec![], vec![]),
             usage,
             cost,
             finish_reason: body
@@ -1922,10 +1921,8 @@ impl GoogleGiminiProvider {
             }),
         );
 
-        let summary = AiResponseSummary {
-            text,
-            tool_calls: vec![],
-            artifacts,
+        let summary = AiResponse {
+            message: AiResponse::message_from_parts(text, vec![], artifacts),
             usage: None,
             cost: estimated_cost,
             finish_reason: body
@@ -1993,9 +1990,8 @@ impl GoogleGiminiProvider {
             "provider_io".to_string(),
             json!({ "input": request_obj, "output": body }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text,
-            artifacts,
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(text, vec![], artifacts),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -2079,7 +2075,7 @@ impl GoogleGiminiProvider {
                 "latency_ms": latency_ms
             }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
+        Ok(ProviderStartResult::Immediate(AiResponse {
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -2161,8 +2157,8 @@ impl GoogleGiminiProvider {
             "provider_io".to_string(),
             json!({ "input": request_obj, "output": body }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text,
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(text, vec![], vec![]),
             usage,
             cost,
             finish_reason: Some("stop".to_string()),
@@ -2206,8 +2202,8 @@ impl GoogleGiminiProvider {
             "provider_io".to_string(),
             json!({ "input": request_obj, "output": body }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            artifacts,
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], artifacts),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -2288,7 +2284,7 @@ impl GoogleGiminiProvider {
             "provider_io".to_string(),
             json!({ "input": request_obj, "output": body }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
+        Ok(ProviderStartResult::Immediate(AiResponse {
             provider_task_ref: extra
                 .get("operation_name")
                 .and_then(|value| value.as_str())

@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 use buckyos_api::{AiContent, AiMessage, AiRole, AiUsage};
 use chrono::{DateTime, Utc};
 use llm_context::{
-    outcome::ContextOutput, state::LLMContextSnapshot, LLMBehaviorResult, LLMContextOutcome,
-    Observation, StepRecord,
+    state::LLMContextSnapshot, LLMBehaviorResult, LLMContextOutcome, Observation, StepRecord,
 };
 use log::warn;
 use serde::{Deserialize, Serialize};
@@ -635,19 +634,15 @@ impl SessionHistoryRecorder {
                         self.append_message(msg.clone(), Some(llm_call)).await;
                     }
                 }
-                if let LLMContextOutcome::Done { output, .. } = outcome {
-                    if let Some(text) = output_to_text(output) {
-                        let dup = already_emitted
-                            .as_deref()
-                            .map(|t| t == text.as_str())
-                            .unwrap_or(false);
-                        if !dup {
-                            self.append_message(
-                                AiMessage::text(AiRole::Assistant, text),
-                                Some(llm_call),
-                            )
+                if let LLMContextOutcome::Done { response, .. } = outcome {
+                    let text = response.message.text_content();
+                    let dup = already_emitted
+                        .as_deref()
+                        .map(|t| t == text.as_str())
+                        .unwrap_or(false);
+                    if !dup {
+                        self.append_message(response.message.clone(), Some(llm_call))
                             .await;
-                        }
                     }
                 }
             }
@@ -669,13 +664,6 @@ impl SessionHistoryRecorder {
                 }
             }
         }
-    }
-}
-
-fn output_to_text(output: &ContextOutput) -> Option<String> {
-    match output {
-        ContextOutput::Text { content } => Some(content.clone()),
-        ContextOutput::Json { content } => Some(content.to_string()),
     }
 }
 

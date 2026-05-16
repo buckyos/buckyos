@@ -11,6 +11,7 @@ pub mod context_loop;
 pub mod deps;
 pub mod error;
 pub mod interrupt;
+pub mod msg_parser;
 pub mod observation;
 pub mod outcome;
 pub mod prompt_budget;
@@ -23,21 +24,27 @@ pub mod step_record;
 pub mod xml_behavior;
 
 pub use behavior_loop::{
-    CompressBudget, CompressError, HistoryCompressor, LLMBehaviorResult,
-    LLMResultParser, StepRecord, StepRenderer,
+    CompressBudget, CompressError, HistoryCompressor, LLMBehaviorResult, LLMResultParser,
+    StepRecord, StepRenderer,
 };
 pub use context_loop::LLMContext;
 pub use deps::{
-    AllowAllPolicy, ByteHeuristicTokenizer, LLMContextDeps, LlmClient,
-    LlmInferenceRequest, NoopWorklogSink, PolicyEngine, ToolManager,
-    ToolSpecLite, Tokenizer, TurnHook, WorkEvent, WorklogSink,
+    AllowAllPolicy, ByteHeuristicTokenizer, LLMContextDeps, LlmClient, LlmInferenceRequest,
+    NoopWorklogSink, PolicyEngine, Tokenizer, ToolManager, ToolSpecLite, TurnHook, WorkEvent,
+    WorklogSink,
 };
 pub use error::LLMComputeError;
 pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle};
-pub use observation::{Observation, PendingToolCall, ToolExecRecord};
-pub use prompt_budget::{
-    BudgetedSection, FitOutcome, FittedSection, PromptBudgeter, TruncFrom,
+pub use msg_parser::{
+    ai_message_to_msg_object, ai_message_to_msg_object_with_base, msg_object_control_command,
+    msg_object_to_ai_message, msg_object_to_ai_message_with_role, parse_msg_object, AttachmentTag,
+    MsgParseOutput, MsgParserError, SystemControlCommand,
 };
+pub use observation::{Observation, PendingToolCall, ToolExecRecord};
+pub use outcome::{
+    BudgetKind, ContextLimitKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill,
+};
+pub use prompt_budget::{BudgetedSection, FitOutcome, FittedSection, PromptBudgeter, TruncFrom};
 pub use prompt_compose::{
     compose, CompositionError, CompositionOutcome, CompositionRequest, SectionSpec,
 };
@@ -45,14 +52,9 @@ pub use prompt_engine::{
     EngineConfig, NullValueLoader, PromptRenderEngine, RenderError, RenderResult, RenderStats,
     RenderVars, ValueLoader,
 };
-pub use outcome::{
-    BudgetKind, ContextLimitKind, ContextOutput, ContextRunTrace,
-    LLMContextOutcome, ResumeFill,
-};
 pub use request::{
-    BudgetAction, BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorClass,
-    ErrorPolicy, HumanPolicy, LLMContextRequest, ModelPolicy,
-    OutputSpec, ToolMode, ToolPolicy,
+    BudgetAction, BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorClass, ErrorPolicy,
+    HumanPolicy, LLMContextRequest, ModelPolicy, OutputSpec, ToolMode, ToolPolicy,
 };
 pub use snapshot_overrides::{
     apply_overrides_to_snapshot, build_fresh, rebuild_with_inherit, RequestOverrides,

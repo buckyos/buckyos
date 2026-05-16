@@ -3,7 +3,7 @@ mod common;
 use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, TaskEventKind,
 };
-use buckyos_api::{AiMethodStatus, AiResponseSummary, Capability};
+use buckyos_api::{AiMethodStatus, AiResponse, Capability};
 use common::*;
 use kRPC::RPCContext;
 use std::sync::Arc;
@@ -46,10 +46,8 @@ async fn workflow_01_plan_generation_dag() {
         "a",
         0.01,
         10,
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("{\"steps\":[]}".into()),
-            tool_calls: vec![],
-            artifacts: vec![],
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::text("{\"steps\":[]}").message,
             usage: None,
             cost: None,
             finish_reason: Some("stop".into()),
@@ -332,10 +330,8 @@ async fn workflow_01_plan_generates_valid_dag() {
         "a",
         0.01,
         10,
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("{\"steps\":[]}".into()),
-            tool_calls: vec![],
-            artifacts: vec![],
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::text("{\"steps\":[]}").message,
             usage: None,
             cost: None,
             finish_reason: Some("stop".into()),

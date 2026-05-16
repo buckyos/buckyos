@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use buckyos_api::{AiMessage, AiResponseSummary, AiRole, AiToolCall, AiUsage};
+use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolCall, AiUsage, ResourceRef};
 use serde_json::json;
 
 use crate::deps::{
@@ -19,11 +19,11 @@ use crate::LLMContext;
 
 /// Scripted LLM responses popped off in order.
 struct ScriptedLlm {
-    script: Mutex<Vec<AiResponseSummary>>,
+    script: Mutex<Vec<AiResponse>>,
 }
 
 impl ScriptedLlm {
-    fn new(script: Vec<AiResponseSummary>) -> Self {
+    fn new(script: Vec<AiResponse>) -> Self {
         Self {
             script: Mutex::new(script),
         }
@@ -32,10 +32,7 @@ impl ScriptedLlm {
 
 #[async_trait]
 impl LlmClient for ScriptedLlm {
-    async fn infer(
-        &self,
-        _req: LlmInferenceRequest,
-    ) -> Result<AiResponseSummary, LLMComputeError> {
+    async fn infer(&self, _req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         let mut guard = self.script.lock().unwrap();
         if guard.is_empty() {
             return Err(LLMComputeError::Internal("script empty".into()));
@@ -91,10 +88,18 @@ fn base_request() -> LLMContextRequest {
     }
 }
 
+fn text_response(text: &str) -> AiResponse {
+    AiResponse::text(text)
+}
+
+fn tool_response(text: Option<&str>, calls: Vec<AiToolCall>) -> AiResponse {
+    AiResponse::from_parts(text.map(str::to_string), calls, vec![])
+}
+
 #[tokio::test]
 async fn done_without_tool_calls() {
-    let llm = Arc::new(ScriptedLlm::new(vec![AiResponseSummary {
-        text: Some("hi there".into()),
+    let llm = Arc::new(ScriptedLlm::new(vec![AiResponse {
+        message: AiMessage::text(AiRole::Assistant, "hi there"),
         usage: Some(AiUsage {
             input_tokens: Some(5),
             output_tokens: Some(3),
@@ -127,15 +132,8 @@ async fn one_tool_round_then_done() {
         call_id: "c-1".into(),
     };
     let llm = Arc::new(ScriptedLlm::new(vec![
-        AiResponseSummary {
-            text: Some("calling echo".into()),
-            tool_calls: vec![call],
-            ..Default::default()
-        },
-        AiResponseSummary {
-            text: Some("done after echo".into()),
-            ..Default::default()
-        },
+        tool_response(Some("calling echo"), vec![call]),
+        text_response("done after echo"),
     ]));
     let deps = LLMContextDeps::new(llm, Arc::new(EchoTools));
     let mut ctx = LLMContext::new(base_request(), deps);
@@ -153,6 +151,76 @@ async fn one_tool_round_then_done() {
     assert!(trace.tool_trace[0].ok);
 }
 
+#[tokio::test]
+async fn done_accumulates_full_assistant_message_with_non_text_blocks() {
+    let image = ResourceRef::base64("image/png".to_string(), "AA==".to_string());
+    let response = AiResponse::new(AiMessage::new(
+        AiRole::Assistant,
+        vec![
+            AiContent::text("before"),
+            AiContent::Image {
+                source: image.clone(),
+            },
+            AiContent::text("after"),
+        ],
+    ));
+    let llm = Arc::new(ScriptedLlm::new(vec![response.clone()]));
+    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(base_request(), deps);
+
+    let LLMContextOutcome::Done { output, .. } = ctx.run().await else {
+        panic!("expected Done");
+    };
+    assert_eq!(
+        output,
+        ContextOutput::Text {
+            content: "before\nafter".to_string()
+        }
+    );
+    let snapshot = ctx.snapshot();
+    assert_eq!(snapshot.state.accumulated.last(), Some(&response.message));
+}
+
+#[test]
+fn ai_response_preserves_multimodal_block_order() {
+    let mut args = HashMap::new();
+    args.insert("q".to_string(), json!("value"));
+    let message = AiMessage::new(
+        AiRole::Assistant,
+        vec![
+            AiContent::text("first"),
+            AiContent::Image {
+                source: ResourceRef::url("https://example.test/image.png".to_string(), None),
+            },
+            AiContent::text("second"),
+            AiContent::ToolUse {
+                call_id: "call-1".to_string(),
+                name: "lookup".to_string(),
+                args,
+            },
+        ],
+    );
+    let response = AiResponse::new(message);
+    assert!(matches!(
+        response.message.content[0],
+        AiContent::Text { .. }
+    ));
+    assert!(matches!(
+        response.message.content[1],
+        AiContent::Image { .. }
+    ));
+    assert!(matches!(
+        response.message.content[2],
+        AiContent::Text { .. }
+    ));
+    assert!(matches!(
+        response.message.content[3],
+        AiContent::ToolUse { .. }
+    ));
+    assert_eq!(response.text_content(), "first\nsecond");
+    assert_eq!(response.tool_calls().len(), 1);
+}
+
 struct CountingHook {
     count: Arc<Mutex<u32>>,
 }
@@ -165,10 +233,7 @@ impl TurnHook for CountingHook {
 
 #[tokio::test]
 async fn turn_hook_fires_before_each_inference() {
-    let llm = Arc::new(ScriptedLlm::new(vec![AiResponseSummary {
-        text: Some("hello back".into()),
-        ..Default::default()
-    }]));
+    let llm = Arc::new(ScriptedLlm::new(vec![text_response("hello back")]));
     let count = Arc::new(Mutex::new(0));
     let hook: Arc<dyn TurnHook> = Arc::new(CountingHook {
         count: count.clone(),
@@ -184,10 +249,7 @@ async fn turn_hook_fires_before_each_inference() {
 #[tokio::test]
 async fn resume_from_mid_run_continues_loop() {
     // Run once to get a snapshot at the outcome boundary.
-    let llm = Arc::new(ScriptedLlm::new(vec![AiResponseSummary {
-        text: Some("first reply".into()),
-        ..Default::default()
-    }]));
+    let llm = Arc::new(ScriptedLlm::new(vec![text_response("first reply")]));
     let deps = LLMContextDeps::new(llm, Arc::new(EchoTools));
     let mut ctx = LLMContext::new(base_request(), deps);
     let _ = ctx.run().await;
@@ -195,10 +257,7 @@ async fn resume_from_mid_run_continues_loop() {
 
     // Resume the mid-run snapshot. A second LLM call must succeed because
     // the snapshot is *not* in a suspended state.
-    let llm2 = Arc::new(ScriptedLlm::new(vec![AiResponseSummary {
-        text: Some("after resume".into()),
-        ..Default::default()
-    }]));
+    let llm2 = Arc::new(ScriptedLlm::new(vec![text_response("after resume")]));
     let deps2 = LLMContextDeps::new(llm2, Arc::new(EchoTools));
     let mut ctx2 = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps2)
         .expect("resume should succeed for non-suspended snapshot");
@@ -217,10 +276,7 @@ struct BlockingLlm;
 
 #[async_trait]
 impl LlmClient for BlockingLlm {
-    async fn infer(
-        &self,
-        req: LlmInferenceRequest,
-    ) -> Result<AiResponseSummary, LLMComputeError> {
+    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         // Wait until aborted, then surface as `Cancelled`. Mirrors what a
         // well-behaved provider adapter would do when it observes the token.
         req.abort.cancelled().await;
@@ -301,10 +357,7 @@ async fn resume_from_mid_run_after_interrupt_replays_inference() {
     // Resume with a real LLM that returns a regular response — the run
     // should make forward progress because `Interrupted.snapshot` carries
     // pre-inference state (empty pending_tool_calls / no half output).
-    let llm = Arc::new(ScriptedLlm::new(vec![AiResponseSummary {
-        text: Some("post-resume reply".into()),
-        ..Default::default()
-    }]));
+    let llm = Arc::new(ScriptedLlm::new(vec![text_response("post-resume reply")]));
     let deps = LLMContextDeps::new(llm, Arc::new(EchoTools));
     let mut ctx = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps)
         .expect("ResumeFromMidRun after Interrupted is the documented path");
@@ -330,18 +383,9 @@ async fn tool_rounds_budget_exhausted() {
     // 3 inferences, each demands another tool call. max_rounds = 2 ⇒
     // after 2 rounds the loop bails out with BudgetExhausted.
     let llm = Arc::new(ScriptedLlm::new(vec![
-        AiResponseSummary {
-            tool_calls: vec![make_call("c-1")],
-            ..Default::default()
-        },
-        AiResponseSummary {
-            tool_calls: vec![make_call("c-2")],
-            ..Default::default()
-        },
-        AiResponseSummary {
-            tool_calls: vec![make_call("c-3")],
-            ..Default::default()
-        },
+        tool_response(None, vec![make_call("c-1")]),
+        tool_response(None, vec![make_call("c-2")]),
+        tool_response(None, vec![make_call("c-3")]),
     ]));
     let mut req = base_request();
     req.tool_policy.max_rounds = 2;

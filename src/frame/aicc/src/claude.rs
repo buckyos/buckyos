@@ -11,8 +11,8 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, features, AiCost, AiMethodRequest, AiResponseSummary, AiToolCall, AiUsage,
-    Capability, Feature, ResourceRef,
+    ai_methods, features, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage, Capability,
+    Feature, ResourceRef,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
@@ -472,10 +472,8 @@ impl ClaudeProvider {
             }),
         );
 
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: content,
-            tool_calls,
-            artifacts: vec![],
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(content, tool_calls, vec![]),
             usage,
             cost,
             finish_reason: body
@@ -608,8 +606,8 @@ impl ClaudeProvider {
             "provider_io".to_string(),
             json!({ "input": request_value, "output": body }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text,
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(text, vec![], vec![]),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()

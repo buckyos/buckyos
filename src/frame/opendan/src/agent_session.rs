@@ -2072,15 +2072,12 @@ impl AgentSession {
         match outcome {
             LLMContextOutcome::Done {
                 output,
+                response,
                 behavior_result,
                 ..
             } => {
+                self.post_outbound_message(&response.message).await;
                 if let Some(text) = output_to_text(&output) {
-                    // Outbound first: send the reply through msg-center so
-                    // the original peer receives it. Failure is logged but
-                    // not fatal — local SessionReply::AssistantText still
-                    // fires so CLI / log consumers see the answer.
-                    self.post_outbound_text(&text).await;
                     let _ = self
                         .reply_tx
                         .send(SessionReply::AssistantText { text })
@@ -2808,6 +2805,11 @@ impl AgentSession {
         if trimmed.is_empty() {
             return;
         }
+        self.post_outbound_message(&AiMessage::text(AiRole::Assistant, trimmed.to_string()))
+            .await;
+    }
+
+    async fn post_outbound_message(&self, message: &AiMessage) {
         // UI sessions are the only ones that reply through msg-center
         // today — work sessions surface their result via report.md instead.
         if !matches!(self.kind, SessionKind::Ui) {
@@ -2859,11 +2861,7 @@ impl AgentSession {
             to: vec![peer_did.clone()],
             kind: ndn_lib::MsgObjKind::Chat,
             created_at_ms: now_ms(),
-            content: ndn_lib::MsgContent {
-                format: Some(ndn_lib::MsgContentFormat::TextPlain),
-                content: trimmed.to_string(),
-                ..Default::default()
-            },
+            content: ndn_lib::MsgContent::default(),
             ..Default::default()
         };
         msg.thread.topic = Some(self.session_id.clone());
@@ -2876,6 +2874,23 @@ impl AgentSession {
             "owner_session_id".to_string(),
             serde_json::Value::String(self.session_id.clone()),
         );
+
+        let msg = match llm_context::ai_message_to_msg_object_with_base(message, msg) {
+            Ok(msg) => msg,
+            Err(err) => {
+                warn!(
+                    "opendan.session[{}]: outbound message conversion failed: {err}",
+                    self.session_id
+                );
+                return;
+            }
+        };
+        if msg.content.content.trim().is_empty()
+            && msg.content.refs.is_empty()
+            && msg.content.machine.is_none()
+        {
+            return;
+        }
 
         let send_ctx = buckyos_api::SendContext {
             contact_mgr_owner: Some(agent_did),

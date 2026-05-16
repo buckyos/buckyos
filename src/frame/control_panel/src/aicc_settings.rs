@@ -966,7 +966,8 @@ impl ControlPanelServer {
                     "taskId": result.task_id,
                     "detail": result
                         .result
-                        .and_then(|summary| summary.text)
+                        .map(|summary| summary.text_content())
+                        .filter(|text| !text.trim().is_empty())
                         .unwrap_or_else(|| "Provider test completed successfully.".to_string())
                 })),
                 req.seq,
@@ -1100,7 +1101,7 @@ impl ControlPanelServer {
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         let summary = result
             .result
-            .and_then(|summary| summary.text)
+            .map(|summary| summary.text_content())
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_else(|| "No summary text returned by the model.".to_string());
 

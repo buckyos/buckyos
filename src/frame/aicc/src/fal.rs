@@ -10,7 +10,7 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, AiArtifact, AiCost, AiMethodRequest, AiResponseSummary, Capability, ResourceRef,
+    ai_methods, AiArtifact, AiCost, AiMethodRequest, AiResponse, Capability, ResourceRef,
 };
 use log::{error, info, warn};
 use reqwest::header::CONTENT_TYPE;
@@ -408,10 +408,8 @@ impl FalProvider {
             }),
         );
 
-        let summary = AiResponseSummary {
-            text: None,
-            tool_calls: vec![],
-            artifacts,
+        let summary = AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], artifacts),
             usage: None,
             cost,
             finish_reason: Some("stop".to_string()),

@@ -162,7 +162,7 @@ pub async fn compress(
     };
 
     let resp = deps.llm.infer(req).await?;
-    let summary_text = resp.text.unwrap_or_default();
+    let summary_text = resp.text_content();
     let summary_text = summary_text.trim();
     if summary_text.is_empty() {
         return Err(LLMComputeError::OutputParse(
@@ -211,7 +211,11 @@ pub struct LlmSummarizeCompressor {
 }
 
 impl LlmSummarizeCompressor {
-    pub fn new(deps: LLMContextDeps, model_alias: impl Into<String>, target_token_budget: u32) -> Self {
+    pub fn new(
+        deps: LLMContextDeps,
+        model_alias: impl Into<String>,
+        target_token_budget: u32,
+    ) -> Self {
         Self {
             deps,
             model_alias: model_alias.into(),
@@ -243,7 +247,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use buckyos_api::{AiMessage, AiResponseSummary, AiRole};
+    use buckyos_api::{AiMessage, AiResponse, AiRole};
 
     use super::*;
     use llm_context::deps::{LLMContextDeps, LlmClient, LlmInferenceRequest};
@@ -254,14 +258,8 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for StaticSummarizer {
-        async fn infer(
-            &self,
-            _req: LlmInferenceRequest,
-        ) -> Result<AiResponseSummary, LLMComputeError> {
-            Ok(AiResponseSummary {
-                text: Some(self.reply.clone()),
-                ..Default::default()
-            })
+        async fn infer(&self, _req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+            Ok(AiResponse::text(self.reply.clone()))
         }
     }
 
@@ -326,7 +324,9 @@ mod tests {
             msg("user", "hi"),
             msg("assistant", "hello"),
         ];
-        let out = compress(&history, &deps, 10_000, "test-model").await.unwrap();
+        let out = compress(&history, &deps, 10_000, "test-model")
+            .await
+            .unwrap();
         assert_eq!(out, history);
     }
 
@@ -359,7 +359,9 @@ mod tests {
             history.push(msg("user", &format!("q{}: {}", i, big_blob)));
             history.push(msg("assistant", &format!("a{}: {}", i, big_blob)));
         }
-        let err = compress(&history, &deps, 1024, "test-model").await.unwrap_err();
+        let err = compress(&history, &deps, 1024, "test-model")
+            .await
+            .unwrap_err();
         matches!(err, LLMComputeError::OutputParse(_));
     }
 

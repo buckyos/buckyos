@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiResponseSummary, AiccHandler,
+    ai_methods, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiResponse, AiccHandler,
     AiccUsageEvent, CancelResponse, Capability, CreateTaskOptions, Feature, ResourceRef,
     TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
 };
@@ -97,7 +97,7 @@ fn redact_base64_fields(value: &mut Value) {
     }
 }
 
-fn redacted_summary_value(summary: &AiResponseSummary) -> Value {
+fn redacted_summary_value(summary: &AiResponse) -> Value {
     let mut value = serde_json::to_value(summary).unwrap_or_else(|_| json!({}));
     redact_base64_fields(&mut value);
     value
@@ -270,7 +270,7 @@ impl std::error::Error for ProviderError {}
 
 #[derive(Debug, Clone)]
 pub enum ProviderStartResult {
-    Immediate(AiResponseSummary),
+    Immediate(AiResponse),
     Started,
     Queued { position: usize },
 }
@@ -2454,7 +2454,7 @@ impl AIComputeCenter {
         &self,
         ctx: &InvokeCtx,
         provider_driver: &str,
-        summary: &mut AiResponseSummary,
+        summary: &mut AiResponse,
     ) {
         let Some(cost) = summary.cost.clone() else {
             return;
@@ -3152,7 +3152,7 @@ impl AIComputeCenter {
         &self,
         sink: Arc<dyn TaskEventSink>,
         task_id: &str,
-        summary: &AiResponseSummary,
+        summary: &AiResponse,
     ) {
         let summary_value = redacted_summary_value(summary);
         let event = TaskEvent {
@@ -3162,8 +3162,8 @@ impl AIComputeCenter {
             data: Some(json!({
                 "summary": summary_value,
                 "finish_reason": summary.finish_reason.clone(),
-                "has_text": summary.text.as_ref().map(|text| !text.is_empty()).unwrap_or(false),
-                "artifact_count": summary.artifacts.len(),
+                "has_text": !summary.text_content().is_empty(),
+                "artifact_count": summary.artifacts().len(),
             })),
         };
         let _ = sink.emit(event).await;
@@ -3941,15 +3941,10 @@ mod tests {
         let provider = Arc::new(MockProvider::new(
             mock_instance("provider-a-1", "provider-a"),
             cost(0.001, 200),
-            vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-                text: Some("ok".to_string()),
-                tool_calls: vec![],
-                artifacts: vec![],
-                usage: None,
-                cost: None,
-                finish_reason: Some("stop".to_string()),
-                provider_task_ref: None,
-                extra: None,
+            vec![Ok(ProviderStartResult::Immediate({
+                let mut response = AiResponse::text("ok");
+                response.finish_reason = Some("stop".to_string());
+                response
             }))],
         ));
         registry.add_provider(provider);
@@ -3974,11 +3969,8 @@ mod tests {
 
         assert_eq!(response.status, AiMethodStatus::Succeeded);
         assert_eq!(
-            response
-                .result
-                .as_ref()
-                .and_then(|result| result.text.as_ref()),
-            Some(&"ok".to_string())
+            response.result.as_ref().map(|result| result.text_content()),
+            Some("ok".to_string())
         );
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
@@ -4307,31 +4299,23 @@ mod tests {
             mock_instance("sn-ai-provider-1", "sn-ai-provider"),
             cost(2.0, 100),
             vec![
-                Ok(ProviderStartResult::Immediate(AiResponseSummary {
-                    text: Some("first".to_string()),
-                    tool_calls: vec![],
-                    artifacts: vec![],
-                    usage: None,
-                    cost: Some(buckyos_api::AiCost {
+                Ok(ProviderStartResult::Immediate({
+                    let mut response = AiResponse::text("first");
+                    response.cost = Some(buckyos_api::AiCost {
                         amount: 2.0,
                         currency: "USD".to_string(),
-                    }),
-                    finish_reason: Some("stop".to_string()),
-                    provider_task_ref: None,
-                    extra: None,
+                    });
+                    response.finish_reason = Some("stop".to_string());
+                    response
                 })),
-                Ok(ProviderStartResult::Immediate(AiResponseSummary {
-                    text: Some("second".to_string()),
-                    tool_calls: vec![],
-                    artifacts: vec![],
-                    usage: None,
-                    cost: Some(buckyos_api::AiCost {
+                Ok(ProviderStartResult::Immediate({
+                    let mut response = AiResponse::text("second");
+                    response.cost = Some(buckyos_api::AiCost {
                         amount: 14.0,
                         currency: "USD".to_string(),
-                    }),
-                    finish_reason: Some("stop".to_string()),
-                    provider_task_ref: None,
-                    extra: None,
+                    });
+                    response.finish_reason = Some("stop".to_string());
+                    response
                 })),
             ],
         ));

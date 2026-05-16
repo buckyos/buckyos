@@ -1,6 +1,7 @@
 // ocr_image — vision.ocr
 // Doc: aicc_agent_cli_tools.md §4.1
-// 这是 "text out" 类型的配方：不下载二进制 artifact，从 summary.text 直接拿
+// 这是 "text out" 类型的配方：不下载二进制 artifact，从 AiResponse.message
+// 的 text 派生视图直接拿
 // 文本。详细 6 步注释见 gen_image.ts。
 
 import {
@@ -9,6 +10,7 @@ import {
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
 import { resolveInputResource, writeJsonFile, writeTextFile } from "../lib/io.ts";
+import { aiResponseArtifacts, aiResponseText } from "../lib/types.ts";
 import {
   bailAiccError, bailAiccFailed, bailIoError, bailRuntimeError,
   emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
@@ -77,9 +79,10 @@ export async function run(argv: string[]): Promise<never> {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
 
-  // 文本类 method 主要从 summary.text 拿结果；如果有结构化 layout，会出现
-  // 在 summary.extra 里。
-  const text = typeof call.summary.text === "string" ? call.summary.text : "";
+  // 文本类 method 主要从 message 的 text 派生视图拿结果；如果有结构化 layout，
+  // 会出现在 response.extra 里。
+  const text = aiResponseText(call.summary);
+  const artifacts = aiResponseArtifacts(call.summary);
   const files: Array<{ path: string; bytes: number; mime: string; source_kind: string }> = [];
   try {
     if (outText) {
@@ -92,7 +95,7 @@ export async function run(argv: string[]): Promise<never> {
       });
     }
     if (jsonOut) {
-      const body = { text, extra: call.summary.extra ?? null, artifacts: call.summary.artifacts ?? [] };
+      const body = { text, extra: call.summary.extra ?? null, artifacts };
       await writeJsonFile(jsonOut, body);
       files.push({
         path: jsonOut,

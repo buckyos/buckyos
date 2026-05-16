@@ -18,28 +18,18 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use buckyos_api::{
-    AiContent, AiMessage, AiResponseSummary, AiRole, AiToolCall, AiToolResultContent, AiUsage,
-};
+use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolResultContent, AiUsage};
 use serde_json::Value;
 
-use crate::behavior_loop::{
-    CompressBudget, LLMBehaviorResult, StepRecord,
-};
-use crate::deps::{
-    resolve_tool_specs, LLMContextDeps, LlmInferenceRequest, WorkEvent,
-};
+use crate::behavior_loop::{CompressBudget, LLMBehaviorResult, StepRecord};
+use crate::deps::{resolve_tool_specs, LLMContextDeps, LlmInferenceRequest, WorkEvent};
 use crate::error::LLMComputeError;
 use crate::interrupt::{
     InferenceAbortState, InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle,
 };
 use crate::observation::{Observation, ToolExecRecord};
-use crate::outcome::{
-    BudgetKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill,
-};
-use crate::request::{
-    ErrorClass, LLMContextRequest, OutputSpec, ToolMode,
-};
+use crate::outcome::{BudgetKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill};
+use crate::request::{ErrorClass, LLMContextRequest, OutputSpec, ToolMode};
 use crate::state::{LLMContextSnapshot, LLMContextState};
 
 pub struct LLMContext {
@@ -50,7 +40,7 @@ pub struct LLMContext {
     tool_trace: Vec<ToolExecRecord>,
     /// Last raw provider response. Carried so we can populate
     /// `Outcome::Done.response`.
-    last_response: AiResponseSummary,
+    last_response: AiResponse,
     /// Shared abort state (§3.13). `interrupt_handle()` clones it for the
     /// scheduler side; the waist clones a token into every `LlmInferenceRequest`.
     abort: Arc<InferenceAbortState>,
@@ -73,7 +63,7 @@ impl LLMContext {
             state,
             deps,
             tool_trace: Vec::new(),
-            last_response: AiResponseSummary::default(),
+            last_response: AiResponse::default(),
             abort: InferenceAbortState::new(),
         }
     }
@@ -157,7 +147,7 @@ impl LLMContext {
             state,
             deps,
             tool_trace: Vec::new(),
-            last_response: AiResponseSummary::default(),
+            last_response: AiResponse::default(),
             // Fresh abort state on resume: the previous handle is no longer
             // associated with this instance; the scheduler is expected to
             // request a new `interrupt_handle()` from the resumed context if
@@ -300,8 +290,8 @@ impl LLMContext {
                 return budget_outcome;
             }
 
-            let tool_calls = response.tool_calls.clone();
-            let assistant_text = response.text.clone().unwrap_or_default();
+            let tool_calls = response.tool_calls();
+            let assistant_text = response.text_content();
 
             // 2. No tool calls ⇒ finish
             if tool_calls.is_empty() || self.request.tool_policy.mode == ToolMode::None {
@@ -349,13 +339,9 @@ impl LLMContext {
                 }
             };
 
-            // 5. Push assistant message describing the tool_calls into history.
-            // We persist the raw text (if any) plus a JSON envelope describing
-            // the calls so the LLM stays self-consistent on the next round.
-            self.state.accumulated.push(assistant_tool_call_message(
-                &assistant_text,
-                &gated,
-            ));
+            // 5. Push the provider's assistant message into history exactly
+            // as returned so content block order and non-text blocks survive.
+            self.state.accumulated.push(response.message.clone());
 
             // 6. Execute calls (serial in v1).
             let mut had_error = false;
@@ -386,10 +372,7 @@ impl LLMContext {
                                 duration_ms,
                                 error: Some(err.to_string()),
                             });
-                            if let Some(outcome) = self
-                                .handle_error(ErrorClass::Fatal(err))
-                                .await
-                            {
+                            if let Some(outcome) = self.handle_error(ErrorClass::Fatal(err)).await {
                                 return outcome;
                             }
                             had_error = true;
@@ -408,9 +391,7 @@ impl LLMContext {
                         let err = LLMComputeError::Internal(
                             "deferred tool path not yet implemented".to_string(),
                         );
-                        if let Some(outcome) =
-                            self.handle_error(ErrorClass::Fatal(err)).await
-                        {
+                        if let Some(outcome) = self.handle_error(ErrorClass::Fatal(err)).await {
                             return outcome;
                         }
                         had_error = true;
@@ -471,8 +452,7 @@ impl LLMContext {
                             call_id: call.call_id.clone(),
                             message: message.clone(),
                         };
-                        if let Some(outcome) =
-                            self.handle_error(ErrorClass::Recoverable(err)).await
+                        if let Some(outcome) = self.handle_error(ErrorClass::Recoverable(err)).await
                         {
                             return outcome;
                         }
@@ -487,9 +467,7 @@ impl LLMContext {
                             "tool returned Cancelled inline; only valid via ResumeFill::ToolResults"
                                 .to_string(),
                         );
-                        if let Some(outcome) =
-                            self.handle_error(ErrorClass::Fatal(err)).await
-                        {
+                        if let Some(outcome) = self.handle_error(ErrorClass::Fatal(err)).await {
                             return outcome;
                         }
                         had_error = true;
@@ -508,10 +486,9 @@ impl LLMContext {
     }
 
     fn build_inference_request(&self) -> LlmInferenceRequest {
-        let tool_specs =
-            resolve_tool_specs(&self.request.tool_policy, self.deps.tools.as_ref());
-        let allow_tool_calls = self.request.tool_policy.mode != ToolMode::None
-            && self.state.rounds_left > 0;
+        let tool_specs = resolve_tool_specs(&self.request.tool_policy, self.deps.tools.as_ref());
+        let allow_tool_calls =
+            self.request.tool_policy.mode != ToolMode::None && self.state.rounds_left > 0;
 
         let (force_json, json_schema) = match &self.request.output {
             OutputSpec::Text => (false, None),
@@ -533,7 +510,7 @@ impl LLMContext {
         }
     }
 
-    fn account_response(&mut self, response: &AiResponseSummary) {
+    fn account_response(&mut self, response: &AiResponse) {
         if let Some(usage) = &response.usage {
             self.state.usage = merge_usage(&self.state.usage, usage);
         }
@@ -552,10 +529,7 @@ impl LLMContext {
         None
     }
 
-    fn check_token_budget(
-        &self,
-        _response: &AiResponseSummary,
-    ) -> Option<LLMContextOutcome> {
+    fn check_token_budget(&self, _response: &AiResponse) -> Option<LLMContextOutcome> {
         let max = self.request.budget.max_total_tokens?;
         let total = self.state.usage.total_tokens.unwrap_or(0);
         if total > max as u64 {
@@ -601,8 +575,8 @@ impl LLMContext {
         }
     }
 
-    async fn finish_done(&mut self, response: AiResponseSummary) -> LLMContextOutcome {
-        let text = response.text.clone().unwrap_or_default();
+    async fn finish_done(&mut self, response: AiResponse) -> LLMContextOutcome {
+        let text = response.text_content();
         let output = match &self.request.output {
             OutputSpec::Text => ContextOutput::Text {
                 content: text.clone(),
@@ -632,15 +606,13 @@ impl LLMContext {
         };
 
         let trace = ContextRunTrace {
-            trace_id: self
-                .request
-                .trace
-                .clone()
-                .unwrap_or_default(),
+            trace_id: self.request.trace.clone().unwrap_or_default(),
             latency_ms: now_ms().saturating_sub(self.state.started_at_ms),
             tool_trace: std::mem::take(&mut self.tool_trace),
             llm_task_ids: std::mem::take(&mut self.state.llm_task_ids),
         };
+
+        self.state.accumulated.push(response.message.clone());
 
         LLMContextOutcome::Done {
             reason: None,
@@ -662,8 +634,7 @@ impl LLMContext {
                 usage: self.state.usage.clone(),
             }),
             ErrorClass::Recoverable(err) => {
-                self.state.consecutive_errors =
-                    self.state.consecutive_errors.saturating_add(1);
+                self.state.consecutive_errors = self.state.consecutive_errors.saturating_add(1);
                 let cap = self.request.error_policy.max_consecutive_errors;
                 if cap > 0 && self.state.consecutive_errors > cap {
                     // Recoverable but not actually recovering — escalate to
@@ -703,7 +674,7 @@ impl LLMContext {
                 return outcome;
             }
 
-            // 1. Inner run — get one AiResponseSummary, or bubble up an error
+            // 1. Inner run — get one AiResponse, or bubble up an error
             //    / budget / yield translation as the outer outcome.
             let response = match self.run_inner_for_step().await {
                 Ok(resp) => resp,
@@ -845,8 +816,7 @@ impl LLMContext {
                     // (would require inner yield). Surface as fatal.
                     return LLMContextOutcome::Error {
                         error: LLMComputeError::Internal(
-                            "behavior loop: Pending action not supported in v1"
-                                .to_string(),
+                            "behavior loop: Pending action not supported in v1".to_string(),
                         ),
                         usage: self.state.usage.clone(),
                     };
@@ -872,11 +842,9 @@ impl LLMContext {
     }
 
     /// Run one inner traditional LLMContext for the current behavior step.
-    /// Returns the inner `AiResponseSummary` on success, or the outer outcome
+    /// Returns the inner `AiResponse` on success, or the outer outcome
     /// to propagate when the inner ended in a non-Done state.
-    async fn run_inner_for_step(
-        &mut self,
-    ) -> Result<AiResponseSummary, LLMContextOutcome> {
+    async fn run_inner_for_step(&mut self) -> Result<AiResponse, LLMContextOutcome> {
         let inner_request = self.build_inner_request();
         let inner_deps = self.deps.clone().into_traditional();
 
@@ -896,21 +864,20 @@ impl LLMContext {
         self.state.llm_task_ids.extend(inner_task_ids);
 
         match outcome {
-            LLMContextOutcome::Done { response, usage, .. } => {
+            LLMContextOutcome::Done {
+                response, usage, ..
+            } => {
                 self.state.usage = merge_usage(&self.state.usage, &usage);
                 Ok(response)
             }
             // D7 — inner cooperative yields are not supported in v1.
             LLMContextOutcome::PendingTool { .. }
-            | LLMContextOutcome::ContextLimitReached { .. } => {
-                Err(LLMContextOutcome::Error {
-                    error: LLMComputeError::Internal(
-                        "behavior loop: inner LLMContext yielded; not supported in v1"
-                            .to_string(),
-                    ),
-                    usage: self.state.usage.clone(),
-                })
-            }
+            | LLMContextOutcome::ContextLimitReached { .. } => Err(LLMContextOutcome::Error {
+                error: LLMComputeError::Internal(
+                    "behavior loop: inner LLMContext yielded; not supported in v1".to_string(),
+                ),
+                usage: self.state.usage.clone(),
+            }),
             // Inference interrupt propagates straight through — it is a
             // preemptive control-plane event, not an error. The inner
             // snapshot's s0 represents the inner LLMContext's pre-inference
@@ -1022,12 +989,8 @@ impl LLMContext {
 
     /// Outer-loop counterpart to `handle_error`'s FeedAsObservation cap.
     /// Returns `Some(outcome)` when we should terminate (cap exceeded).
-    async fn bump_consecutive_errors(
-        &mut self,
-        err: LLMComputeError,
-    ) -> Option<LLMContextOutcome> {
-        self.state.consecutive_errors =
-            self.state.consecutive_errors.saturating_add(1);
+    async fn bump_consecutive_errors(&mut self, err: LLMComputeError) -> Option<LLMContextOutcome> {
+        self.state.consecutive_errors = self.state.consecutive_errors.saturating_add(1);
         let cap = self.request.error_policy.max_consecutive_errors;
         if cap > 0 && self.state.consecutive_errors > cap {
             return Some(LLMContextOutcome::Error {
@@ -1043,13 +1006,13 @@ impl LLMContext {
     async fn finish_done_behavior(
         &mut self,
         last_step: StepRecord,
-        response: AiResponseSummary,
+        response: AiResponse,
     ) -> LLMContextOutcome {
         let behavior_result = LLMBehaviorResult::from_step(&last_step);
         self.sediment(last_step);
 
         let output = ContextOutput::Text {
-            content: response.text.clone().unwrap_or_default(),
+            content: response.text_content(),
         };
         let trace = ContextRunTrace {
             trace_id: self.request.trace.clone().unwrap_or_default(),
@@ -1095,26 +1058,6 @@ fn merge_usage(left: &AiUsage, right: &AiUsage) -> AiUsage {
         output_tokens: add(left.output_tokens, right.output_tokens),
         total_tokens: add(left.total_tokens, right.total_tokens),
     }
-}
-
-/// Build the assistant message that records the tool_calls about to be
-/// dispatched. Carries the LLM's reply text (if non-empty) plus one
-/// `ToolUse` block per call. Provider lowering rewrites these blocks into
-/// each vendor's native form.
-fn assistant_tool_call_message(text: &str, calls: &[AiToolCall]) -> AiMessage {
-    let mut blocks: Vec<AiContent> = Vec::with_capacity(calls.len() + 1);
-    let trimmed = text.trim();
-    if !trimmed.is_empty() {
-        blocks.push(AiContent::text(text.to_string()));
-    }
-    for call in calls {
-        blocks.push(AiContent::tool_use(
-            call.call_id.clone(),
-            call.name.clone(),
-            call.args.clone(),
-        ));
-    }
-    AiMessage::new(AiRole::Assistant, blocks)
 }
 
 /// Build the tool-role message that carries one observation back to the LLM.

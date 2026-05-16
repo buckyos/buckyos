@@ -1,7 +1,7 @@
 mod common;
 
 use aicc::{CostEstimate, ModelCatalog, ProviderStartResult, Registry, Router};
-use buckyos_api::{AiResponseSummary, Capability};
+use buckyos_api::{AiResponse, Capability};
 use common::*;
 use std::sync::Arc;
 
@@ -27,8 +27,8 @@ async fn conc_01_task_id_uniqueness_under_concurrency() {
             estimated_latency_ms: Some(100),
         },
         vec![
-            Ok(ProviderStartResult::Immediate(AiResponseSummary {
-                text: Some("ok".to_string()),
+            Ok(ProviderStartResult::Immediate(AiResponse {
+                message: AiResponse::text("ok").message,
                 ..Default::default()
             }));
             128

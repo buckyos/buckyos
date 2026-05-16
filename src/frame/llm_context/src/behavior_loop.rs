@@ -6,7 +6,7 @@
 //! into the loop driver lives in `context_loop.rs::run_behavior`.
 
 use async_trait::async_trait;
-use buckyos_api::{AiMessage, AiResponseSummary, AiToolCall};
+use buckyos_api::{AiMessage, AiResponse, AiToolCall};
 use serde::{Deserialize, Serialize};
 
 use crate::observation::Observation;
@@ -125,7 +125,7 @@ impl LLMBehaviorResult {
 /// concrete protocol (JSON schema, ReAct-style markdown, ...) lives in the
 /// worksession-injected implementation; the waist only sees the trait.
 pub trait LLMResultParser: Send + Sync {
-    fn parse(&self, response: &AiResponseSummary) -> Result<LLMBehaviorResult, String>;
+    fn parse(&self, response: &AiResponse) -> Result<LLMBehaviorResult, String>;
 }
 
 /// Renders sedimented history + the hot `last_step` back into AiMessages for

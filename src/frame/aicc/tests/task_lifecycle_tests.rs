@@ -3,7 +3,7 @@ mod common;
 use aicc::{
     AIComputeCenter, CostEstimate, ModelCatalog, ProviderStartResult, Registry, TaskEventKind,
 };
-use buckyos_api::{AiMethodStatus, AiResponseSummary, Capability, TaskFilter, TaskStatus};
+use buckyos_api::{AiMethodStatus, AiResponse, Capability, TaskFilter, TaskStatus};
 use common::*;
 use std::sync::Arc;
 
@@ -28,8 +28,8 @@ async fn task_01_immediate_persists_completed() {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
         },
-        vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("ok".to_string()),
+        vec![Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::text("ok").message,
             ..Default::default()
         }))],
     )));

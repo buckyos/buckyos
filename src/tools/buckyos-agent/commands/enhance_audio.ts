@@ -9,6 +9,7 @@ import { ArgError, bailArgError, COMMON_OPTIONS_HELP, flagBool, flagFloat, parse
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure, requestNamedObjectOutput } from "../lib/aicc.ts";
 import { pickArtifact, resolveInputResource, saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
+import { aiResponseArtifacts } from "../lib/types.ts";
 import {
   bailAiccError, bailAiccFailed, bailIoError, bailNoArtifact, bailRuntimeError,
   emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
@@ -73,7 +74,7 @@ export async function run(argv: string[]): Promise<never> {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
 
-  const arts = call.summary.artifacts ?? [];
+  const arts = aiResponseArtifacts(call.summary);
   const primary = pickArtifact(call.summary, "audio");
   if (!primary) bailNoArtifact(TOOL, METHOD, call.taskId);
   // deno-lint-ignore no-explicit-any

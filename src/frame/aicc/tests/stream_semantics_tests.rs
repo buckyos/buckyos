@@ -4,7 +4,7 @@ use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, RouteConfig,
     RouteWeights, Router, TaskEventKind, TenantRouteConfig,
 };
-use buckyos_api::{AiMethodStatus, AiResponseSummary, AiccServerHandler, Capability};
+use buckyos_api::{AiMethodStatus, AiResponse, AiccServerHandler, Capability};
 use common::*;
 use kRPC::{RPCContext, RPCHandler, RPCRequest, RPCResult};
 use serde_json::json;
@@ -291,10 +291,8 @@ async fn stream_08_stream_final_snapshot_consistent_with_chunks() {
         "a",
         0.01,
         10,
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("abc".into()),
-            tool_calls: vec![],
-            artifacts: vec![],
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::text("abc").message,
             usage: None,
             cost: None,
             finish_reason: Some("stop".into()),
@@ -314,7 +312,7 @@ async fn stream_08_stream_final_snapshot_consistent_with_chunks() {
         .result
         .as_ref()
         .expect("immediate result should include final summary");
-    assert_eq!(summary.text.as_deref(), Some("abc"));
+    assert_eq!(summary.text_content(), "abc");
     let chunks = summary
         .extra
         .as_ref()

@@ -6,6 +6,7 @@ import { ArgError, bailArgError, COMMON_OPTIONS_HELP, flagInt, parseArgvOrExit, 
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
 import { resolveInputResource, writeTextFile } from "../lib/io.ts";
+import { aiResponseText } from "../lib/types.ts";
 import {
   bailAiccError, bailAiccFailed, bailIoError, bailRuntimeError,
   emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
@@ -66,7 +67,7 @@ export async function run(argv: string[]): Promise<never> {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
 
-  const text = typeof call.summary.text === "string" ? call.summary.text : "";
+  const text = aiResponseText(call.summary);
   const files: Array<{ path: string; bytes: number; mime: string; source_kind: string }> = [];
   if (outText) {
     try {

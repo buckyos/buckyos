@@ -6,6 +6,7 @@ import { ArgError, bailArgError, COMMON_OPTIONS_HELP, parseArgvOrExit, requireSt
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
 import { resolveInputResource, writeJsonFile } from "../lib/io.ts";
+import { aiResponseArtifacts, aiResponseText } from "../lib/types.ts";
 import {
   bailAiccError, bailAiccFailed, bailIoError, bailRuntimeError,
   emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
@@ -85,9 +86,9 @@ export async function run(argv: string[]): Promise<never> {
   }
 
   const body = {
-    text: call.summary.text ?? null,
+    text: aiResponseText(call.summary) || null,
     extra: call.summary.extra ?? null,
-    artifacts: call.summary.artifacts ?? [],
+    artifacts: aiResponseArtifacts(call.summary),
   };
   try { await writeJsonFile(outputJson, body); } catch (err) { bailIoError(TOOL, call.taskId, err); }
 

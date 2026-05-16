@@ -3,7 +3,7 @@
 
 import {
   AiccMethodResponse,
-  AiResponseSummary,
+  AiResponse,
   Capability,
   JsonValue,
   Profile,
@@ -38,7 +38,7 @@ export interface CallOptions {
 export interface CallResult {
   taskId: string;
   status: "succeeded" | "failed";
-  summary: AiResponseSummary | null;
+  summary: AiResponse | null;
   rawResponse: AiccMethodResponse;
   finalTask?: TaskRecord;
 }
@@ -119,9 +119,12 @@ function normalizeTask(result: unknown): TaskRecord {
   return result as TaskRecord;
 }
 
-function asSummary(value: unknown): AiResponseSummary | null {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as AiResponseSummary;
+function asAiResponse(value: unknown): AiResponse | null {
+  if (
+    value && typeof value === "object" && !Array.isArray(value) &&
+    "message" in value
+  ) {
+    return value as AiResponse;
   }
   return null;
 }
@@ -181,7 +184,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
     return {
       taskId: response.task_id,
       status: "succeeded",
-      summary: asSummary(response.result ?? null),
+      summary: asAiResponse(response.result ?? null),
       rawResponse: response,
     };
   }
@@ -189,7 +192,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
     return {
       taskId: response.task_id,
       status: "failed",
-      summary: asSummary(response.result ?? null),
+      summary: asAiResponse(response.result ?? null),
       rawResponse: response,
     };
   }
@@ -207,7 +210,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
     return {
       taskId: response.task_id,
       status: "succeeded",
-      summary: asSummary(finalTask.data?.aicc?.output ?? null),
+      summary: asAiResponse(finalTask.data?.aicc?.output ?? null),
       rawResponse: response,
       finalTask,
     };
@@ -215,7 +218,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
   return {
     taskId: response.task_id,
     status: "failed",
-    summary: asSummary(finalTask.data?.aicc?.output ?? null),
+    summary: asAiResponse(finalTask.data?.aicc?.output ?? null),
     rawResponse: response,
     finalTask,
   };

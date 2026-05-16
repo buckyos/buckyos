@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use buckyos_api::{AiMessage, AiResponseSummary, AiToolCall};
+use buckyos_api::{AiMessage, AiResponse, AiToolCall};
 use serde_json::Value;
 
 use crate::behavior_loop::{HistoryCompressor, LLMResultParser, StepRenderer};
@@ -55,10 +55,7 @@ pub struct ToolSpecLite {
 /// retry / fallback happens *inside* the adapter, not in the waist loop.
 #[async_trait]
 pub trait LlmClient: Send + Sync {
-    async fn infer(
-        &self,
-        req: LlmInferenceRequest,
-    ) -> Result<AiResponseSummary, LLMComputeError>;
+    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError>;
 }
 
 /// Effect-side dispatcher. Implementations bridge to whatever tool
@@ -266,10 +263,7 @@ impl LLMContextDeps {
         self
     }
 
-    pub fn with_history_compressor(
-        mut self,
-        compressor: Arc<dyn HistoryCompressor>,
-    ) -> Self {
+    pub fn with_history_compressor(mut self, compressor: Arc<dyn HistoryCompressor>) -> Self {
         self.history_compressor = Some(compressor);
         self
     }

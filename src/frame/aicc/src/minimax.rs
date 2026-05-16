@@ -10,8 +10,8 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, features, AiCost, AiMethodRequest, AiResponseSummary, AiToolCall, AiUsage,
-    Capability, Feature,
+    ai_methods, features, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage, Capability,
+    Feature,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
@@ -298,10 +298,8 @@ impl MiniMaxProvider {
             }),
         );
 
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: content,
-            tool_calls,
-            artifacts: vec![],
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(content, tool_calls, vec![]),
             usage,
             cost,
             finish_reason: body

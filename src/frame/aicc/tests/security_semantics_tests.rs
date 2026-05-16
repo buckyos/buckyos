@@ -4,9 +4,7 @@ use aicc::{
     AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
     Router, TaskEventKind, TenantRouteConfig,
 };
-use buckyos_api::{
-    AiMethodStatus, AiResponseSummary, Capability, ResourceRef, TaskFilter, TaskStatus,
-};
+use buckyos_api::{AiMethodStatus, AiResponse, Capability, ResourceRef, TaskFilter, TaskStatus};
 use common::*;
 use std::collections::HashMap;
 use std::sync::Arc;

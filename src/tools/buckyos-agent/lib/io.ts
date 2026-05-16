@@ -12,7 +12,7 @@
 //   - artifact.resource.url            → fetch
 //   - artifact.resource.base64         → decode
 
-import { AiArtifact, AiResponseSummary, ResourceRef } from "./types.ts";
+import { AiArtifact, AiResponse, ResourceRef, aiResponseArtifacts } from "./types.ts";
 
 const MIME_BY_EXT: Record<string, string> = {
   png: "image/png",
@@ -172,10 +172,10 @@ export async function saveArtifactToPath(
 // Pick the first artifact whose mime matches the desired top-level family
 // ("image" / "audio" / "video"). Falls back to first artifact when no match.
 export function pickArtifact(
-  summary: AiResponseSummary,
+  response: AiResponse,
   family?: "image" | "audio" | "video",
 ): AiArtifact | null {
-  const arts = summary.artifacts ?? [];
+  const arts = aiResponseArtifacts(response);
   if (arts.length === 0) return null;
   if (!family) return arts[0];
   for (const a of arts) {

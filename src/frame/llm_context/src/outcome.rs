@@ -11,7 +11,7 @@
 //! interpreted by opendan/session, not by the waist); the waist only sees a
 //! Done outcome and is done with it.
 
-use buckyos_api::{AiMessage, AiResponseSummary, AiUsage};
+use buckyos_api::{AiMessage, AiResponse, AiUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -93,7 +93,7 @@ pub enum LLMContextOutcome {
         reason: Option<String>,
         output: ContextOutput,
         usage: AiUsage,
-        response: AiResponseSummary,
+        response: AiResponse,
         trace: ContextRunTrace,
         /// Behavior Loop payload. `None` for traditional Agent Loop runs.
         #[serde(default, skip_serializing_if = "Option::is_none")]

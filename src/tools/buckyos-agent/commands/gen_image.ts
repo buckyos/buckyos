@@ -7,7 +7,7 @@
 //   2) 构造 input_json（AICC payload.input_json 里要送的字段）
 //   3) initRuntime() 拿到登录后的 BuckyOS 会话
 //   4) callAicc() 同步调用 + 等待 task 完成
-//   5) 从 summary.artifacts 把产物拉回本地
+//   5) 从 AiResponse.message 的 artifact 派生视图把产物拉回本地
 //   6) emit() 一行 AgentToolResult JSON 给上游
 //
 // 改用途时，主要变化点只有 (1) (2) (5)；(3)(4)(6) 是机械的。

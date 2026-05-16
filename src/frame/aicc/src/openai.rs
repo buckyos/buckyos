@@ -18,8 +18,8 @@ use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
     ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
-    AiMethodRequest, AiResponseSummary, AiRole, AiToolCall, AiToolResultContent, AiUsage,
-    Capability, ResourceRef,
+    AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage, Capability,
+    ResourceRef,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use log::{error, info, warn};
@@ -980,7 +980,11 @@ impl OpenAIProvider {
                             "text": text,
                         }));
                     }
-                    AiContent::ToolUse { call_id, name, args } => {
+                    AiContent::ToolUse {
+                        call_id,
+                        name,
+                        args,
+                    } => {
                         // 先把累积的 text 落成 message item,保持顺序。
                         if !pending_text_parts.is_empty() {
                             items.push(json!({
@@ -988,8 +992,8 @@ impl OpenAIProvider {
                                 "content": std::mem::take(&mut pending_text_parts),
                             }));
                         }
-                        let arguments_str = serde_json::to_string(args)
-                            .unwrap_or_else(|_| "{}".to_string());
+                        let arguments_str =
+                            serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string());
                         items.push(json!({
                             "type": "function_call",
                             "call_id": call_id,
@@ -997,7 +1001,11 @@ impl OpenAIProvider {
                             "arguments": arguments_str,
                         }));
                     }
-                    AiContent::ToolResult { call_id, content, is_error: _ } => {
+                    AiContent::ToolResult {
+                        call_id,
+                        content,
+                        is_error: _,
+                    } => {
                         // 同上,先 flush 累积的 text。
                         if !pending_text_parts.is_empty() {
                             items.push(json!({
@@ -1170,9 +1178,9 @@ impl OpenAIProvider {
                 }
                 // If only plain text, emit `content: <string>` for legacy
                 // proxies; else use the parts array.
-                let only_text_simple = parts.iter().all(|p| {
-                    p.get("type").and_then(|v| v.as_str()) == Some("text")
-                });
+                let only_text_simple = parts
+                    .iter()
+                    .all(|p| p.get("type").and_then(|v| v.as_str()) == Some("text"));
                 if only_text_simple {
                     let joined = parts
                         .iter()
@@ -1200,9 +1208,13 @@ impl OpenAIProvider {
                                 text_chunks.push(text.clone());
                             }
                         }
-                        AiContent::ToolUse { call_id, name, args } => {
-                            let arguments_str = serde_json::to_string(args)
-                                .unwrap_or_else(|_| "{}".to_string());
+                        AiContent::ToolUse {
+                            call_id,
+                            name,
+                            args,
+                        } => {
+                            let arguments_str =
+                                serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string());
                             tool_calls.push(json!({
                                 "id": call_id,
                                 "type": "function",
@@ -2511,10 +2523,8 @@ impl OpenAIProvider {
             }),
         );
 
-        let summary = AiResponseSummary {
-            text: content,
-            tool_calls: tool_choices,
-            artifacts: vec![],
+        let summary = AiResponse {
+            message: AiResponse::message_from_parts(content, tool_choices, vec![]),
             usage,
             cost,
             finish_reason: body
@@ -2655,10 +2665,8 @@ impl OpenAIProvider {
             }),
         );
 
-        let summary = AiResponseSummary {
-            text: revised_prompt,
-            tool_calls: vec![],
-            artifacts,
+        let summary = AiResponse {
+            message: AiResponse::message_from_parts(revised_prompt, vec![], artifacts),
             usage: None,
             cost: estimated_cost,
             finish_reason: Some("stop".to_string()),
@@ -2767,7 +2775,7 @@ impl OpenAIProvider {
                 "latency_ms": latency_ms
             }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
+        Ok(ProviderStartResult::Immediate(AiResponse {
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -2813,11 +2821,9 @@ impl OpenAIProvider {
         };
         let mut result = self.start_llm(ctx, provider_model, &rerank_req).await?;
         if let ProviderStartResult::Immediate(summary) = &mut result {
-            let rerank_value = summary
-                .text
-                .as_ref()
-                .and_then(|text| serde_json::from_str::<Value>(text).ok())
-                .unwrap_or_else(|| json!({ "raw_text": summary.text }));
+            let summary_text = summary.text_content();
+            let rerank_value = serde_json::from_str::<Value>(&summary_text)
+                .unwrap_or_else(|_| json!({ "raw_text": summary_text }));
             let mut extra = summary
                 .extra
                 .take()
@@ -2907,8 +2913,8 @@ impl OpenAIProvider {
             Value::String(provider_model.to_string()),
         );
         extra.insert("latency_ms".to_string(), Value::from(latency_ms));
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            artifacts: vec![artifact],
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiMessage::new(AiRole::Assistant, vec![artifact.into_content()]),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -2968,8 +2974,8 @@ impl OpenAIProvider {
                 "latency_ms": latency_ms
             }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text,
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(text, vec![], vec![]),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -3045,8 +3051,8 @@ impl OpenAIProvider {
         );
         extra.insert("latency_ms".to_string(), Value::from(latency_ms));
         extra.insert("provider_io".to_string(), json!({ "output": body }));
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            artifacts,
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], artifacts),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
