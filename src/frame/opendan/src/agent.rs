@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use buckyos_api::{AiMessage, AiRole};
 use log::{info, warn};
 use tokio::sync::{mpsc, Mutex, Notify};
 
@@ -83,6 +84,7 @@ pub enum Inbound {
         /// Optional explicit target. `None` ⇒ resolve via `from`.
         session_id: Option<String>,
         text: String,
+        ai_message: AiMessage,
     },
     /// A subscribed kevent. MVP forwards these to the per-tunnel UI session
     /// as a placeholder — proper per-session kevent subscriptions land
@@ -464,6 +466,7 @@ impl AIAgent {
                 tunnel_did,
                 session_id,
                 text,
+                ai_message,
             } => {
                 let resolved_id = if let Some(sid) = session_id {
                     sid
@@ -486,6 +489,7 @@ impl AIAgent {
                         from_name,
                         tunnel_did,
                         text,
+                        ai_message,
                     })
                     .await?;
                 self.ack_msg_record(record_id).await;
@@ -898,6 +902,7 @@ impl AIAgent {
                 from_name: None,
                 tunnel_did: None,
                 text: trimmed.to_string(),
+                ai_message: AiMessage::text(AiRole::User, trimmed.to_string()),
             })
             .await?;
         Ok(record_id)

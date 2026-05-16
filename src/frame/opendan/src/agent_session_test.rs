@@ -13,6 +13,27 @@ fn compose_human_text_joins() {
 }
 
 #[test]
+fn compose_turn_message_preserves_structured_blocks() {
+    let msg = AiMessage::new(
+        AiRole::User,
+        vec![
+            AiContent::text("see this"),
+            AiContent::Image {
+                source: buckyos_api::ResourceRef::url(
+                    "https://example.test/a.png".to_string(),
+                    Some("image/png".to_string()),
+                ),
+            },
+        ],
+    );
+    let out = compose_turn_message(&[msg], Some("[environment]".to_string())).unwrap();
+    assert_eq!(out.role, AiRole::User);
+    assert_eq!(out.content.len(), 2);
+    assert_eq!(out.text_content(), "[environment]\n\nsee this");
+    assert!(matches!(out.content[1], AiContent::Image { .. }));
+}
+
+#[test]
 fn output_text_extraction() {
     let out = ContextOutput::Text {
         content: "hi".to_string(),
@@ -33,6 +54,7 @@ fn pending_input_dedup_key_distinguishes_variants() {
         from_name: None,
         tunnel_did: None,
         text: "hi".to_string(),
+        ai_message: AiMessage::text(AiRole::User, "hi"),
     };
     let event = PendingInput::Event {
         event_id: "abc".to_string(),
@@ -127,6 +149,7 @@ fn session_meta_round_trips_pending_inputs() {
                 from_name: Some("Alice".to_string()),
                 tunnel_did: Some("did:dev:tunnel".to_string()),
                 text: "hi".to_string(),
+                ai_message: AiMessage::text(AiRole::User, "hi"),
             },
             PendingInput::Event {
                 event_id: "/timer/wake".to_string(),

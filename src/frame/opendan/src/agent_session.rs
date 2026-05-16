@@ -456,7 +456,8 @@ impl AgentSession {
             from_did: None,
             from_name: None,
             tunnel_did: None,
-            text,
+            text: text.clone(),
+            ai_message: AiMessage::text(AiRole::User, text.trim().to_string()),
         })
         .await
     }
@@ -626,12 +627,13 @@ impl AgentSession {
             //     result.
             // Latest peer info wins — the most recent Msg in this batch
             // dictates where outbound replies will be routed.
-            let mut human_texts = Vec::new();
+            let mut turn_messages: Vec<AiMessage> = Vec::new();
             let mut turn_events = Vec::new();
             let mut consumed_keys = Vec::new();
             let mut task_completions: Vec<(String, Observation, String, String)> = Vec::new();
             let mut latest_peer_did: Option<String> = None;
             let mut latest_peer_tunnel: Option<String> = None;
+            let mut latest_origin_msg: Option<String> = None;
             // Parallel collections destined for the round-history seed. We
             // mirror the per-input visit so user-msg ordering & system-event
             // payloads are captured intact rather than the post-formatted
@@ -649,16 +651,20 @@ impl AgentSession {
                         text,
                         from_did,
                         tunnel_did,
+                        ai_message,
                         ..
                     } => {
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            human_texts.push(trimmed.to_string());
+                        let message = pending_msg_ai_message(ai_message);
+                        if ai_message_has_payload(&message) {
+                            let preview_text = pending_msg_preview(text, &message);
                             if first_msg_preview.is_none() {
-                                first_msg_preview = Some(trigger_preview(trimmed));
+                                first_msg_preview = Some(trigger_preview(&preview_text));
                             }
-                            hist_user_messages
-                                .push(AiMessage::text(AiRole::User, trimmed.to_string()));
+                            if !preview_text.trim().is_empty() {
+                                latest_origin_msg = Some(preview_text);
+                            }
+                            turn_messages.push(message.clone());
+                            hist_user_messages.push(message);
                             msg_count += 1;
                         }
                         if let Some(did) = from_did.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -814,9 +820,9 @@ impl AgentSession {
                 }
             }
 
-            let mut round_inputs = human_texts;
+            let mut round_inputs = turn_messages;
             if let Some(batch) = format_event_batch_for_turn(&turn_events) {
-                round_inputs.push(batch);
+                round_inputs.push(AiMessage::text(AiRole::User, batch));
             }
 
             // If the snapshot is currently mid-PendingTool and the upper
@@ -849,17 +855,7 @@ impl AgentSession {
             // without the LLM having to pass it through tool args (§8.4).
             // Events have no origin-user semantics — they only update the
             // stash when they happen to come bundled with chat text.
-            let origin_msg = round_inputs
-                .iter()
-                .take(
-                    round_inputs
-                        .len()
-                        .saturating_sub(if turn_events.is_empty() { 0 } else { 1 }),
-                )
-                .rev()
-                .find(|s| !s.trim().is_empty())
-                .cloned();
-            self.set_current_origin_msg(origin_msg);
+            self.set_current_origin_msg(latest_origin_msg);
 
             self.set_status(SessionStatus::Running).await;
             let trigger = match (msg_count, event_count) {
@@ -1532,7 +1528,7 @@ impl AgentSession {
 
     async fn run_one_round(
         &self,
-        human_texts: Vec<String>,
+        turn_messages: Vec<AiMessage>,
         seed: Option<RoundSeed>,
     ) -> Result<NextAction> {
         let behavior = self.load_current_behavior().await?;
@@ -1561,7 +1557,7 @@ impl AgentSession {
 
         let trace_id = self.next_trace_id();
         let (ctx_owner, _request, deps) = self
-            .build_or_resume(&behavior, &human_texts, &trace_id)
+            .build_or_resume(&behavior, &turn_messages, &trace_id)
             .await?;
         let mut ctx = match ctx_owner {
             BuiltContext::Fresh(c) => c,
@@ -1745,7 +1741,7 @@ impl AgentSession {
     async fn build_or_resume(
         &self,
         behavior: &BehaviorCfg,
-        human_texts: &[String],
+        turn_messages: &[AiMessage],
         trace_id: &str,
     ) -> Result<(
         BuiltContext,
@@ -1787,14 +1783,8 @@ impl AgentSession {
         // wakeup into a fake conversational turn. Bootstrap turns (work
         // session first run, no input, no snapshot) get the objective via
         // System and don't need env either.
-        let human_body = compose_human_text(human_texts);
-        let user_message_text = match human_body {
-            Some(h) => {
-                let env_body = self.compose_environment_message(behavior);
-                merge_env_and_human(env_body, Some(h))
-            }
-            None => None,
-        };
+        let turn_message =
+            compose_turn_message(turn_messages, self.compose_environment_message(behavior));
 
         if let Some(snapshot) = self.try_load_snapshot() {
             if snapshot.state.pending_tool_calls.is_empty() {
@@ -1810,7 +1800,7 @@ impl AgentSession {
                     self.current_behavior_overrides(behavior),
                 );
 
-                if let Some(text) = user_message_text.clone() {
+                if let Some(message) = turn_message.clone() {
                     // Idle session + new user message: build a fresh
                     // LLMContext whose conversation history *is* the
                     // snapshot's accumulated (already includes the system
@@ -1820,7 +1810,7 @@ impl AgentSession {
                     // cross-turn accumulation lives on SessionMeta.
                     let LLMContextSnapshot { mut request, state } = snapshot;
                     let mut input = state.accumulated;
-                    input.push(AiMessage::text(AiRole::User, text));
+                    input.push(message);
                     request.input = input;
                     request.trace = Some(trace_id.to_string());
                     let fresh = LLMContext::new(request.clone(), deps.clone());
@@ -1861,8 +1851,8 @@ impl AgentSession {
         }
 
         let mut input = self.render_system_messages(behavior);
-        if let Some(text) = user_message_text {
-            input.push(AiMessage::text(AiRole::User, text));
+        if let Some(message) = turn_message {
+            input.push(message);
         }
         let request = LLMContextRequest {
             owner: ContextOwnerRef::Agent {
@@ -2483,6 +2473,10 @@ impl AgentSession {
             from_name: Some("system".to_string()),
             tunnel_did: None,
             text: format!("[independent process `{}` ended]", child_entry),
+            ai_message: AiMessage::text(
+                AiRole::User,
+                format!("[independent process `{}` ended]", child_entry),
+            ),
         };
         if let Err(err) = self.enqueue_pending(marker).await {
             warn!(
@@ -3199,6 +3193,7 @@ pub fn compress_messages_for_context_limit(accumulated: Vec<AiMessage>) -> Vec<A
     out
 }
 
+#[cfg(test)]
 fn compose_human_text(texts: &[String]) -> Option<String> {
     let joined: Vec<&str> = texts
         .iter()
@@ -3212,6 +3207,84 @@ fn compose_human_text(texts: &[String]) -> Option<String> {
     }
 }
 
+fn pending_msg_ai_message(message: &AiMessage) -> AiMessage {
+    let mut message = message.clone();
+    message.role = AiRole::User;
+    message
+}
+
+fn ai_message_has_payload(message: &AiMessage) -> bool {
+    message.content.iter().any(|block| match block {
+        AiContent::Text { text } => !text.trim().is_empty(),
+        AiContent::Image { .. }
+        | AiContent::Document { .. }
+        | AiContent::ToolUse { .. }
+        | AiContent::ToolResult { .. }
+        | AiContent::Thinking { .. }
+        | AiContent::ProviderState { .. } => true,
+    })
+}
+
+fn pending_msg_preview(text: &str, message: &AiMessage) -> String {
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    let text_content = message.text_content();
+    let trimmed = text_content.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    if message
+        .content
+        .iter()
+        .any(|block| matches!(block, AiContent::Image { .. }))
+    {
+        return "[image]".to_string();
+    }
+    if message
+        .content
+        .iter()
+        .any(|block| matches!(block, AiContent::Document { .. }))
+    {
+        return "[document]".to_string();
+    }
+    "[attachment]".to_string()
+}
+
+fn compose_turn_message(messages: &[AiMessage], env: Option<String>) -> Option<AiMessage> {
+    if messages.is_empty() {
+        return None;
+    }
+    let mut blocks = Vec::new();
+    if let Some(env) = env.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        append_turn_content(&mut blocks, AiContent::text(env));
+    }
+    for message in messages {
+        for block in &message.content {
+            append_turn_content(&mut blocks, block.clone());
+        }
+    }
+    if blocks.is_empty() {
+        None
+    } else {
+        Some(AiMessage::new(AiRole::User, blocks))
+    }
+}
+
+fn append_turn_content(blocks: &mut Vec<AiContent>, block: AiContent) {
+    if let Some(AiContent::Text { text: previous }) = blocks.last_mut() {
+        if let AiContent::Text { text } = block {
+            if !previous.trim().is_empty() && !text.trim().is_empty() {
+                previous.push_str("\n\n");
+            }
+            previous.push_str(&text);
+            return;
+        }
+    }
+    blocks.push(block);
+}
+
 /// Build the user-message body fed into the next inference from the
 /// environment-aware preamble and the actual human/event text.
 ///
@@ -3221,6 +3294,7 @@ fn compose_human_text(texts: &[String]) -> Option<String> {
 /// - Only one present → return it verbatim.
 /// - Both empty → `None` (caller will fall through to `ResumeFromMidRun` or
 ///   omit the user message entirely on fresh build).
+#[cfg(test)]
 fn merge_env_and_human(env: Option<String>, human: Option<String>) -> Option<String> {
     match (env, human) {
         (Some(e), Some(h)) => Some(format!("{e}\n\n{h}")),

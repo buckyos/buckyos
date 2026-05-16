@@ -1,3 +1,4 @@
+use buckyos_api::AiMessage;
 use serde::{Deserialize, Serialize};
 
 /// Internal wake-up signal for the session worker. The worker consumes the
@@ -30,7 +31,7 @@ pub enum InterruptMode {
 /// One inbound item parked on the session until the worker is ready to
 /// consume it. Persisted as part of [`SessionMeta`] so that a crash between
 /// enqueue and LLM processing never loses a message.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PendingInput {
     Msg {
@@ -43,6 +44,7 @@ pub enum PendingInput {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tunnel_did: Option<String>,
         text: String,
+        ai_message: AiMessage,
     },
     Event {
         event_id: String,

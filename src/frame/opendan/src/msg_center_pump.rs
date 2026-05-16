@@ -25,9 +25,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use buckyos_api::{
-    BoxKind, Event, EventReader, KEventClient, KEventError, MsgCenterClient,
-    MsgRecordWithObject, MsgState,
+    BoxKind, Event, EventReader, KEventClient, KEventError, MsgCenterClient, MsgRecordWithObject,
+    MsgState,
 };
+use llm_context::msg_object_to_ai_message;
 use log::{debug, info, warn};
 use name_lib::DID;
 use tokio::sync::{mpsc, Notify};
@@ -99,7 +100,11 @@ pub async fn run(cfg: PumpConfig) {
         // we still fall through to a periodic sweep so that an unhealthy
         // kevent daemon doesn't make msg-center unreachable.
         if reader.is_none() {
-            match cfg.kevent_client.create_event_reader(patterns.clone()).await {
+            match cfg
+                .kevent_client
+                .create_event_reader(patterns.clone())
+                .await
+            {
                 Ok(r) => {
                     info!(
                         "opendan.msg_pump[{}]: event_reader created reader_id={} patterns={:?}",
@@ -196,8 +201,8 @@ async fn drain_box(cfg: &PumpConfig, box_kind: BoxKind) {
                 cfg.owner_did.clone(),
                 box_kind.clone(),
                 state_filter.clone(),
-                Some(true),  // lock_on_take — moves record from Unread → Reading
-                Some(true),  // with_object — inline the MsgObject so we can extract text
+                Some(true), // lock_on_take — moves record from Unread → Reading
+                Some(true), // with_object — inline the MsgObject so we can lower it
             )
             .await
         {
@@ -237,8 +242,8 @@ async fn drain_box(cfg: &PumpConfig, box_kind: BoxKind) {
 }
 
 /// Push one pulled record into the agent inbox channel. Returns `false`
-/// when the record has no usable text (logged + dropped — the dispatcher
-/// would have nothing to act on) or the inbox receiver is gone.
+/// when the record has no usable message payload (logged + dropped — the
+/// dispatcher would have nothing to act on) or the inbox receiver is gone.
 ///
 /// Note: this function does NOT ack the record back to msg-center. The
 /// dispatcher does that after the session has durably parked the input,
@@ -246,18 +251,22 @@ async fn drain_box(cfg: &PumpConfig, box_kind: BoxKind) {
 /// recovery will replay it on next boot.
 async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
     let record_id = record.record.record_id.clone();
-    let text = record
-        .msg
-        .as_ref()
-        .map(|m| m.content.content.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let Some(text) = text else {
+    let Some(msg) = record.msg.as_ref() else {
         debug!(
-            "opendan.msg_pump[{}]: drop record_id={} (no text content)",
+            "opendan.msg_pump[{}]: drop record_id={} (missing MsgObject)",
             cfg.agent_name, record_id
         );
         return false;
     };
+    let text = msg.content.content.trim().to_string();
+    if text.is_empty() && msg.content.refs.is_empty() && msg.content.machine.is_none() {
+        debug!(
+            "opendan.msg_pump[{}]: drop record_id={} (empty message content)",
+            cfg.agent_name, record_id
+        );
+        return false;
+    }
+    let ai_message = msg_object_to_ai_message(msg);
 
     let from = record.record.from.to_raw_host_name();
     let from_did_str = record.record.from.to_string();
@@ -296,6 +305,7 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
         tunnel_did,
         session_id,
         text,
+        ai_message,
     };
     if let Err(err) = cfg.inbox_tx.send(inbound).await {
         warn!(
@@ -363,11 +373,7 @@ fn collect_event_pull_targets(event: &Event, msg_pull_boxes: &mut Vec<BoxKind>) 
 }
 
 fn msg_center_event_box_kind(event: &Event) -> Option<BoxKind> {
-    let parts: Vec<&str> = event
-        .eventid
-        .split('/')
-        .filter(|p| !p.is_empty())
-        .collect();
+    let parts: Vec<&str> = event.eventid.split('/').filter(|p| !p.is_empty()).collect();
     if parts.len() < 3 || parts[0] != "msg_center" {
         return None;
     }
