@@ -18,11 +18,13 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiResponse, AiccHandler,
-    AiccUsageEvent, CancelResponse, Capability, CreateTaskOptions, Feature, ResourceRef,
-    TaskManagerClient, TaskStatus, AICC_SERVICE_SERVICE_NAME,
+    ai_methods, get_buckyos_api_runtime, AiContent, AiMethodRequest, AiMethodResponse,
+    AiMethodStatus, AiResponse, AiccHandler, AiccUsageEvent, CancelResponse, Capability,
+    CreateTaskOptions, Feature, ResourceRef, TaskManagerClient, TaskStatus,
+    AICC_SERVICE_SERVICE_NAME,
 };
 use log::{debug, error, info, warn};
+use ndn_lib::{ChunkHasher, ChunkId, FileObject, NamedObject, ObjId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::cmp::Ordering;
@@ -88,6 +90,14 @@ fn redact_base64_fields(value: &mut Value) {
         Value::Object(map) => {
             if let Some(data_base64) = map.get_mut("data_base64") {
                 *data_base64 = json!(REDACTED_BASE64_PLACEHOLDER);
+            }
+            if let Some(b64_json) = map.get_mut("b64_json") {
+                *b64_json = json!(REDACTED_BASE64_PLACEHOLDER);
+            }
+            if (map.contains_key("mimeType") || map.contains_key("mime_type"))
+                && map.get("data").and_then(|value| value.as_str()).is_some()
+            {
+                map.insert("data".to_string(), json!(REDACTED_BASE64_PLACEHOLDER));
             }
             for nested in map.values_mut() {
                 redact_base64_fields(nested);
@@ -846,6 +856,66 @@ pub trait ResourceResolver: Send + Sync {
 #[derive(Default)]
 pub struct PassthroughResourceResolver;
 
+async fn resolve_named_object_resource(
+    resource: &mut ResourceRef,
+) -> std::result::Result<(), RPCErrors> {
+    let obj_id = match resource {
+        ResourceRef::NamedObject { obj_id } => obj_id.clone(),
+        _ => return Ok(()),
+    };
+
+    let runtime = get_buckyos_api_runtime().map_err(|error| {
+        reason_error(
+            "resource_resolve_failed",
+            format!("get buckyos runtime failed: {}", error),
+        )
+    })?;
+    let named_store = runtime.get_named_store().await.map_err(|error| {
+        reason_error(
+            "resource_resolve_failed",
+            format!("get named_store failed: {}", error),
+        )
+    })?;
+    let object_json = named_store.get_object(&obj_id).await.map_err(|error| {
+        reason_error(
+            "resource_resolve_failed",
+            format!("load named_object {} failed: {}", obj_id, error),
+        )
+    })?;
+    let file_obj: FileObject = serde_json::from_str(object_json.as_str()).map_err(|error| {
+        reason_error(
+            "resource_resolve_failed",
+            format!("parse named_object {} as file failed: {}", obj_id, error),
+        )
+    })?;
+    let chunk_id = ChunkId::new(file_obj.content.as_str()).map_err(|error| {
+        reason_error(
+            "resource_resolve_failed",
+            format!("parse named_object {} chunk id failed: {}", obj_id, error),
+        )
+    })?;
+    let bytes = named_store
+        .get_chunk_data(&chunk_id)
+        .await
+        .map_err(|error| {
+            reason_error(
+                "resource_resolve_failed",
+                format!("read named_object {} chunk failed: {}", obj_id, error),
+            )
+        })?;
+    let mime = file_obj
+        .meta
+        .get("mime_type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    *resource = ResourceRef::Base64 {
+        mime,
+        data_base64: general_purpose::STANDARD.encode(bytes),
+    };
+    Ok(())
+}
+
 #[async_trait]
 impl ResourceResolver for PassthroughResourceResolver {
     async fn resolve(
@@ -853,7 +923,32 @@ impl ResourceResolver for PassthroughResourceResolver {
         _ctx: &InvokeCtx,
         req: &AiMethodRequest,
     ) -> std::result::Result<ResolvedRequest, RPCErrors> {
-        Ok(ResolvedRequest::new(req.clone()))
+        let mut resolved = req.clone();
+        for resource in &mut resolved.payload.resources {
+            resolve_named_object_resource(resource).await?;
+        }
+        for message in &mut resolved.payload.messages {
+            for block in &mut message.content {
+                match block {
+                    AiContent::Image { source } | AiContent::Document { source, .. } => {
+                        resolve_named_object_resource(source).await?;
+                    }
+                    AiContent::ToolResult { content, .. } => {
+                        for item in content {
+                            match item {
+                                buckyos_api::AiToolResultContent::Image { source }
+                                | buckyos_api::AiToolResultContent::Document { source, .. } => {
+                                    resolve_named_object_resource(source).await?;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(ResolvedRequest::new(resolved))
     }
 }
 
@@ -2664,7 +2759,7 @@ impl AIComputeCenter {
             )
             .await;
         match start_result {
-            Ok((ProviderStartResult::Immediate(summary), instance_id)) => {
+            Ok((ProviderStartResult::Immediate(mut summary), instance_id)) => {
                 let prepared_task = self
                     .create_provider_task(
                         external_task_id.as_str(),
@@ -2686,6 +2781,45 @@ impl AIComputeCenter {
                     instance_id.as_str(),
                 )
                 .await;
+                match materialize_response_artifacts_if_needed(
+                    external_task_id.as_str(),
+                    &request,
+                    &mut summary,
+                )
+                .await
+                {
+                    Ok(count) => {
+                        if count > 0 {
+                            info!(
+                                "aicc.output materialized base64 artifacts: task_id={} count={}",
+                                external_task_id, count
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let code = extract_error_code(&error);
+                        warn!(
+                            "aicc.output materialize_failed: task_id={} tenant={} code={} err={}",
+                            external_task_id, invoke_ctx.tenant_id, code, error
+                        );
+                        self.emit_task_error(
+                            event_sink,
+                            external_task_id.as_str(),
+                            code.as_str(),
+                            error.to_string(),
+                        )
+                        .await;
+                        return Ok(AiMethodResponse::new(
+                            external_task_id,
+                            AiMethodStatus::Failed,
+                            None,
+                            event_ref,
+                        ));
+                    }
+                }
+                if let Some(extra) = summary.extra.as_mut() {
+                    redact_base64_fields(extra);
+                }
                 self.emit_task_final(event_sink, external_task_id.as_str(), &summary)
                     .await;
                 Ok(AiMethodResponse::new(
@@ -3550,6 +3684,374 @@ fn normalize(value: f64, min: f64, max: f64) -> f64 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ArtifactOutputStorage {
+    NamedObject,
+    InlineBase64,
+}
+
+fn requested_artifact_output_storage(req: &AiMethodRequest) -> ArtifactOutputStorage {
+    if artifact_output_storage_from_value(req.payload.input_json.as_ref())
+        == Some(ArtifactOutputStorage::InlineBase64)
+        || artifact_output_storage_from_value(req.payload.options.as_ref())
+            == Some(ArtifactOutputStorage::InlineBase64)
+    {
+        return ArtifactOutputStorage::InlineBase64;
+    }
+    ArtifactOutputStorage::NamedObject
+}
+
+fn artifact_output_storage_from_value(value: Option<&Value>) -> Option<ArtifactOutputStorage> {
+    let object = value?.as_object()?;
+    for key in ["resource_format", "response_format"] {
+        if let Some(storage) = artifact_output_storage_from_format_value(object.get(key)) {
+            return Some(storage);
+        }
+    }
+    if let Some(output) = object.get("output").and_then(|value| value.as_object()) {
+        for key in ["resource_format", "response_format"] {
+            if let Some(storage) = artifact_output_storage_from_format_value(output.get(key)) {
+                return Some(storage);
+            }
+        }
+    }
+    None
+}
+
+fn artifact_output_storage_from_format_value(
+    value: Option<&Value>,
+) -> Option<ArtifactOutputStorage> {
+    let format = value?.as_str()?.trim().to_ascii_lowercase();
+    match format.as_str() {
+        "base64" | "b64_json" | "inline_base64" | "data_url" => {
+            Some(ArtifactOutputStorage::InlineBase64)
+        }
+        "named_object" | "object_id" | "obj_id" | "url" => Some(ArtifactOutputStorage::NamedObject),
+        _ => None,
+    }
+}
+
+fn response_has_base64_artifacts(summary: &AiResponse) -> bool {
+    summary.message.content.iter().any(|block| match block {
+        AiContent::Image {
+            source: ResourceRef::Base64 { .. },
+        }
+        | AiContent::Document {
+            source: ResourceRef::Base64 { .. },
+            ..
+        } => true,
+        _ => false,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct StoredNamedArtifact {
+    obj_id: ObjId,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+async fn materialize_response_artifacts_if_needed(
+    task_id: &str,
+    req: &AiMethodRequest,
+    summary: &mut AiResponse,
+) -> std::result::Result<usize, RPCErrors> {
+    if requested_artifact_output_storage(req) == ArtifactOutputStorage::InlineBase64 {
+        return Ok(0);
+    }
+    if !response_has_base64_artifacts(summary) {
+        return Ok(0);
+    }
+
+    let runtime = get_buckyos_api_runtime().map_err(|error| {
+        reason_error(
+            "artifact_materialize_failed",
+            format!("get buckyos runtime failed: {}", error),
+        )
+    })?;
+    let named_store = runtime.get_named_store().await.map_err(|error| {
+        reason_error(
+            "artifact_materialize_failed",
+            format!("get named_store failed: {}", error),
+        )
+    })?;
+
+    let mut count = 0usize;
+    let mut materialized = Vec::new();
+    for (idx, block) in summary.message.content.iter_mut().enumerate() {
+        match block {
+            AiContent::Image { source } => {
+                if let ResourceRef::Base64 { mime, data_base64 } = source {
+                    let mime = mime.clone();
+                    let data_base64 = data_base64.clone();
+                    let stored = store_base64_artifact(
+                        &named_store,
+                        task_id,
+                        idx,
+                        None,
+                        mime.as_str(),
+                        data_base64.as_str(),
+                    )
+                    .await?;
+                    materialized.push(materialized_artifact_value(idx, &mime, &stored));
+                    *source = ResourceRef::NamedObject {
+                        obj_id: stored.obj_id,
+                    };
+                    count += 1;
+                }
+            }
+            AiContent::Document { source, title } => {
+                if let ResourceRef::Base64 { mime, data_base64 } = source {
+                    let mime = mime.clone();
+                    let data_base64 = data_base64.clone();
+                    let title = title.clone();
+                    let stored = store_base64_artifact(
+                        &named_store,
+                        task_id,
+                        idx,
+                        title.as_deref(),
+                        mime.as_str(),
+                        data_base64.as_str(),
+                    )
+                    .await?;
+                    materialized.push(materialized_artifact_value(idx, &mime, &stored));
+                    *source = ResourceRef::NamedObject {
+                        obj_id: stored.obj_id,
+                    };
+                    count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    if !materialized.is_empty() {
+        append_materialized_artifact_extra(summary, materialized);
+    }
+    Ok(count)
+}
+
+async fn store_base64_artifact(
+    named_store: &named_store::NamedDataMgr,
+    task_id: &str,
+    idx: usize,
+    title: Option<&str>,
+    mime: &str,
+    data_base64: &str,
+) -> std::result::Result<StoredNamedArtifact, RPCErrors> {
+    let encoded = data_base64
+        .split_once(',')
+        .filter(|(prefix, _)| prefix.trim_start().starts_with("data:"))
+        .map(|(_, data)| data)
+        .unwrap_or(data_base64);
+    let bytes = general_purpose::STANDARD.decode(encoded).map_err(|error| {
+        reason_error(
+            "artifact_materialize_failed",
+            format!("decode base64 artifact {} failed: {}", idx + 1, error),
+        )
+    })?;
+    let dimensions = image_dimensions_from_bytes(mime, &bytes);
+    let chunk_id = ChunkHasher::new(None)
+        .map_err(|error| {
+            reason_error(
+                "artifact_materialize_failed",
+                format!("create chunk hasher failed: {}", error),
+            )
+        })?
+        .calc_mix_chunk_id_from_bytes(&bytes)
+        .map_err(|error| {
+            reason_error(
+                "artifact_materialize_failed",
+                format!("calculate artifact chunk id failed: {}", error),
+            )
+        })?;
+    named_store
+        .put_chunk(&chunk_id, &bytes)
+        .await
+        .map_err(|error| {
+            reason_error(
+                "artifact_materialize_failed",
+                format!(
+                    "store artifact chunk {} failed: {}",
+                    chunk_id.to_string(),
+                    error
+                ),
+            )
+        })?;
+
+    let file_name = artifact_file_name(task_id, idx, title, mime);
+    let mut file_obj = FileObject::new(file_name, bytes.len() as u64, chunk_id.to_string());
+    file_obj
+        .meta
+        .insert("mime_type".to_string(), json!(mime.to_string()));
+    file_obj
+        .meta
+        .insert("aicc_task_id".to_string(), json!(task_id.to_string()));
+
+    let (file_obj_id, file_obj_json) = file_obj.gen_obj_id();
+    named_store
+        .put_object(&file_obj_id, file_obj_json.as_str())
+        .await
+        .map_err(|error| {
+            reason_error(
+                "artifact_materialize_failed",
+                format!(
+                    "store artifact file object {} failed: {}",
+                    file_obj_id.to_string(),
+                    error
+                ),
+            )
+        })?;
+    Ok(StoredNamedArtifact {
+        obj_id: file_obj_id,
+        width: dimensions.map(|item| item.0),
+        height: dimensions.map(|item| item.1),
+    })
+}
+
+fn materialized_artifact_value(idx: usize, mime: &str, stored: &StoredNamedArtifact) -> Value {
+    let mut value = json!({
+        "content_index": idx,
+        "resource_kind": "named_object",
+        "obj_id": stored.obj_id.to_string(),
+        "mime": mime,
+    });
+    if let Some(object) = value.as_object_mut() {
+        if let (Some(width), Some(height)) = (stored.width, stored.height) {
+            object.insert("width".to_string(), json!(width));
+            object.insert("height".to_string(), json!(height));
+        }
+    }
+    value
+}
+
+fn append_materialized_artifact_extra(summary: &mut AiResponse, materialized: Vec<Value>) {
+    let mut extra = summary.extra.take().unwrap_or_else(|| json!({}));
+    if !extra.is_object() {
+        extra = json!({ "provider_extra": extra });
+    }
+    if let Some(object) = extra.as_object_mut() {
+        object.insert(
+            "materialized_artifacts".to_string(),
+            Value::Array(materialized),
+        );
+    }
+    summary.extra = Some(extra);
+}
+
+fn image_dimensions_from_bytes(mime: &str, bytes: &[u8]) -> Option<(u32, u32)> {
+    let normalized = mime.split(';').next().unwrap_or("").trim();
+    match normalized {
+        "image/png" => parse_png_dimensions(bytes),
+        "image/jpeg" | "image/jpg" => parse_jpeg_dimensions(bytes),
+        _ => parse_png_dimensions(bytes).or_else(|| parse_jpeg_dimensions(bytes)),
+    }
+}
+
+fn parse_png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    Some((width, height))
+}
+
+fn parse_jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 4 || bytes[0] != 0xff || bytes[1] != 0xd8 {
+        return None;
+    }
+    let mut offset = 2usize;
+    while offset + 9 < bytes.len() {
+        while offset < bytes.len() && bytes[offset] == 0xff {
+            offset += 1;
+        }
+        if offset >= bytes.len() {
+            return None;
+        }
+        let marker = bytes[offset];
+        offset += 1;
+        if marker == 0xd9 || marker == 0xda {
+            return None;
+        }
+        if offset + 2 > bytes.len() {
+            return None;
+        }
+        let length = u16::from_be_bytes(bytes[offset..offset + 2].try_into().ok()?) as usize;
+        if length < 2 || offset + length > bytes.len() {
+            return None;
+        }
+        let is_sof = matches!(
+            marker,
+            0xc0 | 0xc1
+                | 0xc2
+                | 0xc3
+                | 0xc5
+                | 0xc6
+                | 0xc7
+                | 0xc9
+                | 0xca
+                | 0xcb
+                | 0xcd
+                | 0xce
+                | 0xcf
+        );
+        if is_sof && offset + 7 < bytes.len() {
+            let height = u16::from_be_bytes(bytes[offset + 3..offset + 5].try_into().ok()?) as u32;
+            let width = u16::from_be_bytes(bytes[offset + 5..offset + 7].try_into().ok()?) as u32;
+            return Some((width, height));
+        }
+        offset += length;
+    }
+    None
+}
+
+fn artifact_file_name(task_id: &str, idx: usize, title: Option<&str>, mime: &str) -> String {
+    let base = title
+        .map(sanitize_file_name)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("aicc-{}-artifact-{}", sanitize_file_name(task_id), idx + 1));
+    let ext = extension_for_mime(mime);
+    if ext.is_empty() || base.ends_with(ext) {
+        base
+    } else {
+        format!("{}{}", base, ext)
+    }
+}
+
+fn sanitize_file_name(value: &str) -> String {
+    let mut out = String::with_capacity(value.len().min(96));
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            out.push(ch);
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+        if out.len() >= 96 {
+            break;
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+fn extension_for_mime(mime: &str) -> &'static str {
+    match mime.split(';').next().unwrap_or("").trim() {
+        "image/png" => ".png",
+        "image/jpeg" => ".jpg",
+        "image/webp" => ".webp",
+        "image/gif" => ".gif",
+        "audio/mpeg" | "audio/mp3" => ".mp3",
+        "audio/wav" | "audio/x-wav" => ".wav",
+        "audio/ogg" => ".ogg",
+        "audio/aac" => ".aac",
+        "video/mp4" => ".mp4",
+        "video/webm" => ".webm",
+        "application/pdf" => ".pdf",
+        "application/json" => ".json",
+        "text/plain" => ".txt",
+        _ => "",
+    }
+}
+
 fn reason_error(code: &str, detail: impl Into<String>) -> RPCErrors {
     RPCErrors::ReasonError(format!("{}: {}", code, detail.into()))
 }
@@ -3859,6 +4361,47 @@ mod tests {
             ),
             Some("idem-1".to_string()),
         )
+    }
+
+    #[test]
+    fn artifact_output_storage_defaults_to_named_object() {
+        let request = base_request();
+
+        assert_eq!(
+            requested_artifact_output_storage(&request),
+            ArtifactOutputStorage::NamedObject
+        );
+    }
+
+    #[test]
+    fn artifact_output_storage_uses_named_object_for_object_id_request() {
+        let mut request = base_request();
+        request.payload.input_json = Some(json!({
+            "response_format": "object_id",
+            "output": {
+                "resource_format": "named_object"
+            }
+        }));
+
+        assert_eq!(
+            requested_artifact_output_storage(&request),
+            ArtifactOutputStorage::NamedObject
+        );
+    }
+
+    #[test]
+    fn artifact_output_storage_preserves_explicit_base64_request() {
+        let mut request = base_request();
+        request.payload.input_json = Some(json!({
+            "output": {
+                "resource_format": "base64"
+            }
+        }));
+
+        assert_eq!(
+            requested_artifact_output_storage(&request),
+            ArtifactOutputStorage::InlineBase64
+        );
     }
 
     fn mock_instance(instance_id: &str, provider_type: &str) -> ProviderInstance {
