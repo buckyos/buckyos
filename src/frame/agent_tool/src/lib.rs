@@ -30,6 +30,7 @@ pub mod local_llm_context;
 pub mod path_utils;
 pub mod read_tool;
 pub mod run_local_llm;
+pub mod todo_tools;
 pub mod tool;
 pub mod workspace;
 
@@ -46,6 +47,11 @@ pub use file_tools::{
 pub use glob_tool::{GlobTool, TOOL_GLOB};
 pub use grep_tool::{GrepTool, TOOL_GREP};
 pub use read_tool::{ReadTool, TOOL_READ};
+pub use todo_tools::{
+    DelegateTaskArgs, DelegateTaskOutput, DelegateTaskTool, StubTaskDelegator, TaskDelegator,
+    TaskEntry, TodoArgs, TodoListItem, TodoOutput, TodoRecord, TodoStatus, TodoTool,
+    TodoToolConfig, TodoView, TaskListItem, TOOL_DELEGATE_TASK, TOOL_TODO,
+};
 pub use llm_bash::{
     BashRunOutput, BashRunRequest, BashRunner, BashTarget, BashTargetSpec, BinOverlayConfig,
     ExecBashTool, LlmBashConfig, LocalProcessBashRunner, TOOL_EXEC_BASH,
