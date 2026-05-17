@@ -247,6 +247,10 @@ pub struct ForkSubContextInput<'a> {
     pub parent_snap: LLMContextSnapshot,
     pub overrides: RequestOverrides,
     pub sub_cfg: &'a BehaviorCfg,
+    /// Session-class loop mode (drives behavior parser/renderer plug-in
+    /// via [`BehaviorCfg::build_parser_and_renderer`]). Forwarded from
+    /// the parent session.
+    pub loop_mode: crate::agent_config::LoopMode,
     pub trace_id: &'a str,
     pub depth: usize,
     /// §4.7.2 — propagated from the parent session so tool dispatches in
@@ -265,6 +269,7 @@ pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<Cont
         parent_snap,
         overrides,
         sub_cfg,
+        loop_mode,
         trace_id,
         depth,
         from_user_did,
@@ -275,7 +280,7 @@ pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<Cont
     let ctx_runtime = SessionRuntimeContext {
         trace_id: trace_id.to_string(),
         agent_name: agent_name.to_string(),
-        behavior: sub_cfg.name.clone(),
+        behavior: sub_cfg.meta.name.clone(),
         step_idx: parent_snap.state.steps.len() as u32,
         wakeup_id: String::new(),
         session_id: session_id.to_string(),
@@ -286,9 +291,9 @@ pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<Cont
             tools,
             ctx: ctx_runtime,
             snapshot_path: fork_snap_path.clone(),
-            approval_required: sub_cfg.approval_required.clone(),
+            approval_required: sub_cfg.capabilities.approval_required.clone(),
             one_line_status: status,
-            parser_renderer: sub_cfg.build_parser_and_renderer(),
+            parser_renderer: sub_cfg.build_parser_and_renderer(loop_mode),
             from_user_did,
         },
     );

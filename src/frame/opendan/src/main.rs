@@ -467,9 +467,9 @@ async fn write_agent_did_to_toml(agent_root: &PathBuf, appid: &str, agent_did: &
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => AgentTomlFile::default(),
         Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
     };
-    toml.agent_did = agent_did.to_string();
-    if toml.display_name.trim().is_empty() {
-        toml.display_name = appid.to_string();
+    toml.identity.agent_did = agent_did.to_string();
+    if toml.identity.display_name.trim().is_empty() {
+        toml.identity.display_name = appid.to_string();
     }
     let raw = toml::to_string_pretty(&toml).context("serialize agent.toml")?;
     fs::write(&path, raw)

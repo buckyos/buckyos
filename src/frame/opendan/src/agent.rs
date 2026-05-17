@@ -33,6 +33,10 @@ use crate::agent_config::AgentConfig;
 use crate::agent_session::{AgentSession, AgentSessionBuild, SessionReply};
 use crate::ai_runtime::AgentRuntime;
 use crate::contact::ContactLookup;
+use crate::dispatch::{
+    DispatchEvaluator, EnumSessionIdStrategy, FixedRulesDispatch, SessionIdEvaluator,
+    SessionIdInput,
+};
 use crate::local_workspace::LocalWorkspaceManager;
 use crate::msg_center_pump::{self, PumpConfig};
 use crate::paths;
@@ -137,13 +141,18 @@ pub struct AIAgent {
     /// Owns the on-disk workspace records under `<agent_root>/workspace/`.
     /// Stateless — cloning is just a `PathBuf`.
     workspaces: LocalWorkspaceManager,
+    /// v0 dispatcher (fixed rule table). Trait-object so a future
+    /// script-engine impl can drop-in.
+    dispatcher: Arc<dyn DispatchEvaluator>,
+    /// v0 session-id evaluator (4-strategy enum). Same trait-object seam.
+    session_id_eval: Arc<dyn SessionIdEvaluator>,
 }
 
 impl AIAgent {
     pub fn open(root: PathBuf, runtime: Arc<AgentRuntime>) -> Result<Arc<Self>> {
         let config = AgentConfig::open(root).map_err(|err| anyhow!("open agent config: {err}"))?;
-        let agent_name = if !config.toml.display_name.trim().is_empty() {
-            config.toml.display_name.clone()
+        let agent_name = if !config.toml.identity.display_name.trim().is_empty() {
+            config.toml.identity.display_name.clone()
         } else {
             config
                 .layout
@@ -165,6 +174,9 @@ impl AIAgent {
             )
         });
         let workspaces = LocalWorkspaceManager::new(config.layout.workspaces_dir.clone());
+        let dispatcher: Arc<dyn DispatchEvaluator> =
+            Arc::new(FixedRulesDispatch::new(&config.toml.dispatch));
+        let session_id_eval: Arc<dyn SessionIdEvaluator> = Arc::new(EnumSessionIdStrategy);
         Ok(Arc::new(Self {
             config: Arc::new(config),
             runtime,
@@ -178,6 +190,8 @@ impl AIAgent {
             pump_shutdown,
             event_pump,
             workspaces,
+            dispatcher,
+            session_id_eval,
         }))
     }
 
@@ -193,8 +207,8 @@ impl AIAgent {
     /// `agent_did` when present (canonical, stable across renames) and
     /// otherwise from the human-friendly `agent_name`.
     pub fn agent_id(&self) -> String {
-        let raw = if !self.config.toml.agent_did.trim().is_empty() {
-            self.config.toml.agent_did.as_str()
+        let raw = if !self.config.toml.identity.agent_did.trim().is_empty() {
+            self.config.toml.identity.agent_did.as_str()
         } else {
             self.agent_name.as_str()
         };
@@ -221,7 +235,7 @@ impl AIAgent {
         // config because `builtin_ui_default()` is used as a fallback in
         // the session worker.
         let plan_name = match self.config.load_behavior(behavior_name) {
-            Ok(cfg) => cfg.tool_plan,
+            Ok(cfg) => cfg.capabilities.tool_plan,
             Err(err) => {
                 warn!(
                     "opendan.agent[{}]: load behavior `{}` for tool plan failed (using empty plan): {err}",
@@ -384,7 +398,7 @@ impl AIAgent {
     fn spawn_msg_center_pump(self: Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
         let msg_center = self.runtime.msg_center.clone()?;
         let kevent_client = self.runtime.kevent_client.clone()?;
-        let owner_did = msg_center_pump::parse_owner_did(&self.config.toml.agent_did)?;
+        let owner_did = msg_center_pump::parse_owner_did(&self.config.toml.identity.agent_did)?;
         let contact_lookup = Some(Arc::new(ContactLookup::new(
             msg_center.clone(),
             Some(owner_did.clone()),
@@ -468,6 +482,24 @@ impl AIAgent {
         Ok(())
     }
 
+    /// Decide which session class an inbound item lands in. Walks the
+    /// `[dispatch]` rule table for the matching event-type string and
+    /// falls back to `default_class` when nothing fires.
+    fn route_to_class(&self, event_type: &str) -> String {
+        self.dispatcher
+            .route(event_type)
+            .unwrap_or_else(|| self.config.toml.dispatch.default_class.clone())
+    }
+
+    /// Mint or look up the session id this inbound goes to, given its
+    /// resolved session class. Returns `None` when the strategy's required
+    /// fields aren't present in the inbound (e.g. PerPeer with no `from`).
+    fn evaluate_session_id(&self, class: &str, inbound: &Inbound) -> Option<String> {
+        let cfg = self.config.session_class(class)?;
+        let input = SessionIdInput::from_inbound(class, inbound)?;
+        self.session_id_eval.compute(cfg.session_id_strategy, &input)
+    }
+
     async fn dispatch_inbound(self: Arc<Self>, item: Inbound) -> Result<()> {
         match item {
             Inbound::Msg {
@@ -480,14 +512,46 @@ impl AIAgent {
                 text,
                 ai_message,
             } => {
+                let class = self.route_to_class("msg.chat");
+                let kind = self
+                    .config
+                    .session_class(&class)
+                    .map(|c| c.kind)
+                    .unwrap_or(SessionKind::Ui);
                 let resolved_id = if let Some(sid) = session_id {
                     sid
                 } else {
-                    self.clone().resolve_ui_session(&from).await?
+                    // Build a tiny shim Inbound so the evaluator can read
+                    // from/from_did without re-borrowing the moved fields.
+                    let probe = Inbound::Msg {
+                        record_id: record_id.clone(),
+                        from: from.clone(),
+                        from_did: from_did.clone(),
+                        from_name: from_name.clone(),
+                        tunnel_did: tunnel_did.clone(),
+                        session_id: None,
+                        text: String::new(),
+                        ai_message: ai_message.clone(),
+                    };
+                    match self.evaluate_session_id(&class, &probe) {
+                        Some(id) => {
+                            // For UI-style classes we keep the tunnel binding
+                            // so /switch and follow-up messages route to the
+                            // same session.
+                            if matches!(kind, SessionKind::Ui) {
+                                self.tunnel_to_ui_session
+                                    .lock()
+                                    .await
+                                    .insert(from.clone(), id.clone());
+                            }
+                            id
+                        }
+                        None => self.clone().resolve_ui_session(&from).await?,
+                    }
                 };
                 let session = self
                     .clone()
-                    .get_or_create_session(resolved_id, from.clone())
+                    .get_or_create_session(resolved_id, from.clone(), kind, &class)
                     .await?;
                 // enqueue_pending durably parks the input on the session
                 // and only returns once `.meta/session.json` is on disk.
@@ -601,7 +665,7 @@ impl AIAgent {
         let Ok(peer_did) = name_lib::DID::from_str(peer_did_str) else {
             return;
         };
-        let agent_did_raw = self.config.toml.agent_did.trim();
+        let agent_did_raw = self.config.toml.identity.agent_did.trim();
         if agent_did_raw.is_empty() {
             return;
         }
@@ -717,6 +781,8 @@ impl AIAgent {
         self: Arc<Self>,
         session_id: String,
         owner: String,
+        kind: SessionKind,
+        class: &str,
     ) -> Result<Arc<AgentSession>> {
         // Note: existing session lookup is in a separate scope so we can drop
         // the lock before doing the (potentially expensive) tool manager
@@ -724,7 +790,8 @@ impl AIAgent {
         if let Some(s) = self.sessions.lock().await.get(&session_id).cloned() {
             return Ok(s);
         }
-        self.ensure_session_inner(session_id, SessionKind::Ui, owner, None, None)
+        let behavior_hint = Some(self.config.default_behavior_for_class(class));
+        self.ensure_session_inner(session_id, kind, owner, behavior_hint, None)
             .await
     }
 
@@ -764,11 +831,12 @@ impl AIAgent {
 
         // Resolve the behavior name up-front so we can pull its tool plan
         // before building the tool manager. (`behavior_hint` wins so a
-        // restoring session keeps the same behavior; otherwise fall to the
-        // kind-specific default.)
-        let behavior_name = behavior_hint.unwrap_or_else(|| match kind {
-            SessionKind::Ui => self.config.default_ui_behavior().to_string(),
-            SessionKind::Work => self.config.default_work_behavior().to_string(),
+        // restoring session keeps the same behavior; otherwise look up
+        // the session class default via the on-disk `[session.<class>]`
+        // table — falling back to the canonical `<class>_default` name.)
+        let behavior_name = behavior_hint.unwrap_or_else(|| {
+            let class = self.config.class_name_for_kind(kind);
+            self.config.default_behavior_for_class(&class)
         });
         let agent_id = self.agent_id();
         let bin_renderer = self.build_session_bin_renderer(&agent_id, &session_id, &behavior_name);
@@ -953,9 +1021,10 @@ impl AIAgent {
         let mut seed = SessionMeta::new(
             new_session_id.clone(),
             SessionKind::Work,
-            behavior
-                .clone()
-                .unwrap_or_else(|| self.config.default_work_behavior().to_string()),
+            behavior.clone().unwrap_or_else(|| {
+                let class = self.config.class_name_for_kind(SessionKind::Work);
+                self.config.default_behavior_for_class(&class)
+            }),
             created_by_session_id.clone(),
         );
         seed.title = title.trim().to_string();

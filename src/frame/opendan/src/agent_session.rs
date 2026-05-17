@@ -17,9 +17,12 @@ use llm_context::{
     state::{LLMContextSnapshot, LLMContextState},
 };
 
-use crate::agent_config::AgentConfig;
+use crate::agent_config::{AgentConfig, LoopMode, SwitchMode};
 use crate::ai_runtime::{build_session_deps, AgentRuntime, OneLineStatusSink, SessionDepsInput};
-use crate::behavior_cfg::{BehaviorCfg, SwitchMode};
+use crate::behavior_cfg::BehaviorCfg;
+use crate::behavior_hooks::{
+    self, CtxLimitOutcome, InterruptOutcome, ProviderFailedOutcome,
+};
 use crate::llm_context_helper::{
     apply_overrides_to_snapshot, run_fork_sub_context, ForkSubContextInput, RequestOverrides,
 };
@@ -1062,7 +1065,7 @@ impl AgentSession {
         }
         let fill = ResumeFill::ToolResults { results: ordered };
         let behavior = self.load_current_behavior().await?;
-        let mode = Self::history_mode_for(&behavior);
+        let mode = self.history_mode_for(&behavior);
         // Ensure a round is open — the writer auto-reopens a `WaitingTool`
         // round on startup; this is a safety net for the rare case where the
         // round was finalised on the prior process (e.g. crash + restart with
@@ -1080,7 +1083,7 @@ impl AgentSession {
         let ctx_runtime = SessionRuntimeContext {
             trace_id: trace_id.clone(),
             agent_name: self.agent_name.clone(),
-            behavior: behavior.name.clone(),
+            behavior: behavior.meta.name.clone(),
             step_idx: snapshot.state.steps.len() as u32,
             wakeup_id: String::new(),
             session_id: self.session_id.clone(),
@@ -1092,9 +1095,9 @@ impl AgentSession {
                 tools: self.tools.clone(),
                 ctx: ctx_runtime,
                 snapshot_path: self.state_snap_path.clone(),
-                approval_required: behavior.approval_required.clone(),
+                approval_required: behavior.capabilities.approval_required.clone(),
                 one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
-                parser_renderer: behavior.build_parser_and_renderer(),
+                parser_renderer: behavior.build_parser_and_renderer(self.session_class_loop_mode()),
                 from_user_did,
             },
         );
@@ -1234,12 +1237,42 @@ impl AgentSession {
         let pending_calls = snapshot.state.pending_tool_calls.clone();
         let reason = self.agent_config.cancel_reason().to_string();
 
+        // Behavior `[on_interrupt_graceful]` / `[on_interrupt_discard]`
+        // hooks: peek at the current behavior to decide whether to honor
+        // the wind-down (the default) or short-circuit to a different
+        // policy. v0 modes intentionally mirror the historical behavior
+        // — see [`behavior_hooks::resolve_interrupt_graceful`] /
+        // [`behavior_hooks::resolve_interrupt_discard`].
+        let behavior_for_hook = self.load_current_behavior().await.ok();
         match mode {
             InterruptMode::Graceful => {
+                let outcome = behavior_for_hook
+                    .as_ref()
+                    .and_then(|b| {
+                        behavior_hooks::resolve_interrupt_graceful(
+                            b.on_interrupt_graceful.as_ref(),
+                        )
+                        .ok()
+                    })
+                    .unwrap_or(InterruptOutcome::Default);
+                // v0 has only one mode here; both Default and the explicit
+                // opt-in walk the same wind-down path. Future modes can
+                // branch off without restructuring the surrounding code.
+                let _ = outcome;
                 self.execute_interrupt_graceful(snapshot, &pending_calls, reason)
                     .await?
             }
             InterruptMode::Discard => {
+                let outcome = behavior_for_hook
+                    .as_ref()
+                    .and_then(|b| {
+                        behavior_hooks::resolve_interrupt_discard(
+                            b.on_interrupt_discard.as_ref(),
+                        )
+                        .ok()
+                    })
+                    .unwrap_or(InterruptOutcome::Default);
+                let _ = outcome;
                 self.execute_interrupt_discard(snapshot, &pending_calls)
                     .await?
             }
@@ -1293,7 +1326,7 @@ impl AgentSession {
         let ctx_runtime = SessionRuntimeContext {
             trace_id,
             agent_name: self.agent_name.clone(),
-            behavior: behavior.name.clone(),
+            behavior: behavior.meta.name.clone(),
             step_idx: snap_winddown.state.steps.len() as u32,
             wakeup_id: String::new(),
             session_id: self.session_id.clone(),
@@ -1305,9 +1338,9 @@ impl AgentSession {
                 tools: self.tools.clone(),
                 ctx: ctx_runtime,
                 snapshot_path: self.state_snap_path.clone(),
-                approval_required: behavior.approval_required.clone(),
+                approval_required: behavior.capabilities.approval_required.clone(),
                 one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
-                parser_renderer: behavior.build_parser_and_renderer(),
+                parser_renderer: behavior.build_parser_and_renderer(self.session_class_loop_mode()),
                 from_user_did,
             },
         );
@@ -1533,11 +1566,41 @@ impl AgentSession {
         }
     }
 
+    /// Look up the session class config for this session, falling back to
+    /// the canonical name (`"ui"` / `"work"`) when no `[session.<class>]`
+    /// is configured. Returns owned values to keep the borrow off
+    /// `agent_config` short.
+    fn session_class_loop_mode(&self) -> LoopMode {
+        let class = self.agent_config.class_name_for_kind(self.kind);
+        self.agent_config
+            .session_class(&class)
+            .map(|c| c.loop_mode)
+            // Built-in defaults: UI ⇒ Agent loop, Work ⇒ Behavior loop.
+            // Matches the pre-config-rewrite hardcoded behavior so an
+            // `agent.toml` without `[session.<class>]` entries still
+            // boots into the expected loop shape.
+            .unwrap_or(match self.kind {
+                SessionKind::Ui => LoopMode::Agent,
+                SessionKind::Work => LoopMode::Behavior,
+            })
+    }
+
+    fn session_class_switch_mode(&self) -> SwitchMode {
+        let class = self.agent_config.class_name_for_kind(self.kind);
+        self.agent_config
+            .session_class(&class)
+            .map(|c| c.switch_mode)
+            .unwrap_or(SwitchMode::Normal)
+    }
+
     /// Map a `BehaviorCfg` to the round-history mode tag (parser-presence is
     /// the canonical signal for Behavior vs Chat per `notepads/session-history.md`
     /// §3).
-    fn history_mode_for(behavior: &BehaviorCfg) -> ContextMode {
-        if behavior.build_parser_and_renderer().is_some() {
+    fn history_mode_for(&self, behavior: &BehaviorCfg) -> ContextMode {
+        if behavior
+            .build_parser_and_renderer(self.session_class_loop_mode())
+            .is_some()
+        {
             ContextMode::Behavior
         } else {
             ContextMode::Chat
@@ -1550,7 +1613,7 @@ impl AgentSession {
         seed: Option<RoundSeed>,
     ) -> Result<NextAction> {
         let behavior = self.load_current_behavior().await?;
-        let mode = Self::history_mode_for(&behavior);
+        let mode = self.history_mode_for(&behavior);
 
         // Open a round (or attach to one already open). For the PendingTool
         // resume path the worker passes `seed = None`; the caller is
@@ -1602,6 +1665,33 @@ impl AgentSession {
         // history (opendan-side, message-level) and resume the same
         // snapshot via `RewrittenHistory`. Bounded so a pathological
         // history that keeps tripping the limit can't pin the worker.
+        //
+        // Strategy is gated by the behavior's `[on_context_limit_reached]`
+        // hook (see [`behavior_hooks::resolve_ctx_limit`]). v0 modes:
+        //   * unset / `Default` ⇒ run the compress loop below (historical
+        //     safety net — keeps today's behavior when the hook is omitted).
+        //   * `compress_then_continue` ⇒ same compress loop, but signalling
+        //     explicit opt-in so future revisions can hang a different
+        //     compress strategy on the same on-disk slot.
+        // Future "skip compress / fail fast" modes will read this and
+        // jump straight to the synthesized-error branch.
+        let ctx_limit_outcome = behavior_hooks::resolve_ctx_limit(
+            behavior.on_context_limit_reached.as_ref(),
+        )
+        .unwrap_or_else(|err| {
+            warn!(
+                "opendan.session[{}]: invalid on_context_limit_reached hook: {err} \
+                 — falling back to runtime default",
+                self.session_id
+            );
+            CtxLimitOutcome::Default
+        });
+        // Both v0 modes currently route into the compress loop; the variant
+        // is captured here so future modes don't have to refactor the loop.
+        let _ = matches!(
+            ctx_limit_outcome,
+            CtxLimitOutcome::Default | CtxLimitOutcome::CompressThenContinue
+        );
         const MAX_COMPRESS_ROUNDS: u32 = 3;
         let mut compress_rounds = 0u32;
         loop {
@@ -1743,7 +1833,7 @@ impl AgentSession {
         RequestOverrides {
             system_messages: Some(self.render_system_messages(behavior)),
             tool_policy: Some(behavior.to_tool_policy()),
-            objective: Some(behavior.objective.clone()),
+            objective: Some(behavior.meta.objective.clone()),
             model_policy: Some(behavior.to_model_policy()),
             budget: Some(behavior.to_budget_spec()),
             human_policy: Some(behavior.to_human_policy()),
@@ -1769,13 +1859,13 @@ impl AgentSession {
         let ctx = SessionRuntimeContext {
             trace_id: trace_id.to_string(),
             agent_name: self.agent_name.clone(),
-            behavior: behavior.name.clone(),
+            behavior: behavior.meta.name.clone(),
             step_idx: 0,
             wakeup_id: String::new(),
             session_id: self.session_id.clone(),
         };
-        let parser_renderer = behavior.build_parser_and_renderer();
-        let approval_required = behavior.approval_required.clone();
+        let parser_renderer = behavior.build_parser_and_renderer(self.session_class_loop_mode());
+        let approval_required = behavior.capabilities.approval_required.clone();
         let from_user_did = self.current_from_user_did().await;
 
         let deps = build_session_deps(
@@ -1879,7 +1969,7 @@ impl AgentSession {
                 session_id: self.session_id.clone(),
             },
             trace: Some(trace_id.to_string()),
-            objective: behavior.objective.clone(),
+            objective: behavior.meta.objective.clone(),
             input,
             model_policy: behavior.to_model_policy(),
             tool_policy: behavior.to_tool_policy(),
@@ -1945,7 +2035,7 @@ impl AgentSession {
                 session_id: self.session_id.clone(),
             },
             trace: None,
-            objective: cfg.objective.clone(),
+            objective: cfg.meta.objective.clone(),
             input: self.render_system_messages(cfg),
             model_policy: cfg.to_model_policy(),
             tool_policy: cfg.to_tool_policy(),
@@ -1991,7 +2081,7 @@ impl AgentSession {
         }
         // Always include behavior — the LLM can otherwise lose track after
         // a Normal-mode switch with no explicit hand-off.
-        parts.push(format!("behavior: `{}`", behavior.name));
+        parts.push(format!("behavior: `{}`", behavior.meta.name));
         if !title.trim().is_empty() {
             parts.push(format!(
                 "session: `{}` (\"{}\")",
@@ -2013,26 +2103,67 @@ impl AgentSession {
     }
 
     fn render_system_messages(&self, behavior: &BehaviorCfg) -> Vec<AiMessage> {
-        let mut messages = Vec::new();
-        let template = behavior.system_prompt_template.trim();
-        if !template.is_empty() {
-            messages.push(AiMessage::text(AiRole::System, template.to_string()));
-            return messages;
-        }
-        let mut chunks = Vec::new();
-        for fname in ["role.md", "self.md"] {
-            if let Ok(text) = std::fs::read_to_string(self.agent_config.layout.root.join(fname)) {
-                if !text.trim().is_empty() {
-                    chunks.push(text);
-                }
-            }
-        }
-        // Work-session objective: surface as a dedicated block ahead of the
-        // session readme so the LLM sees its task statement first.
+        // Read once: file-system anchors `role.md` / `self.md`, session
+        // workspace id, current title/objective. Used as both the
+        // template variables for `on_init` and the chunks of the implicit
+        // composition when no template is configured.
+        let role_md = std::fs::read_to_string(self.agent_config.layout.root.join("role.md"))
+            .unwrap_or_default();
+        let self_md = std::fs::read_to_string(self.agent_config.layout.root.join("self.md"))
+            .unwrap_or_default();
         let (objective, title) = match self.meta.try_lock() {
             Ok(g) => (g.objective.clone(), g.title.clone()),
             Err(_) => (String::new(), String::new()),
         };
+        let workspace_id = match self.meta.try_lock() {
+            Ok(g) => g.workspace_id.clone().unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+
+        // `[prompt].on_init` template — when set, render it with the
+        // simple `{var}` substitution engine (same syntax as the existing
+        // per-subscription event template) and emit one System message.
+        let template = behavior.prompt.on_init.trim();
+        if !template.is_empty() {
+            let mut vars: Vec<(&str, String)> = vec![
+                ("agent_name", self.agent_name.clone()),
+                ("behavior_name", behavior.meta.name.clone()),
+                ("session_id", self.session_id.clone()),
+                ("objective", objective.clone()),
+                ("title", title.clone()),
+                ("workspace_id", workspace_id.clone()),
+                ("role_md", role_md.clone()),
+                ("self_md", self_md.clone()),
+            ];
+            // Behavior-level objective fallback: when the per-session meta
+            // hasn't been seeded with one yet (UI sessions), surface the
+            // behavior's own objective string so `{objective}` is rarely
+            // blank for behavior authors.
+            if vars
+                .iter()
+                .find(|(k, _)| *k == "objective")
+                .map(|(_, v)| v.trim().is_empty())
+                .unwrap_or(true)
+                && !behavior.meta.objective.trim().is_empty()
+            {
+                vars.retain(|(k, _)| *k != "objective");
+                vars.push(("objective", behavior.meta.objective.clone()));
+            }
+            let rendered = render_prompt_template(template, &vars);
+            return vec![AiMessage::text(AiRole::System, rendered)];
+        }
+
+        // No template ⇒ runtime built-in composition (matches pre-config-
+        // rewrite behavior). Worksession objective surfaces as a dedicated
+        // block ahead of the session readme so the LLM sees its task
+        // statement first.
+        let mut chunks = Vec::new();
+        if !role_md.trim().is_empty() {
+            chunks.push(role_md);
+        }
+        if !self_md.trim().is_empty() {
+            chunks.push(self_md);
+        }
         if !objective.trim().is_empty() {
             let header = if title.trim().is_empty() {
                 "## Objective".to_string()
@@ -2052,8 +2183,7 @@ impl AgentSession {
                 self.agent_name, self.session_id
             ));
         }
-        messages.push(AiMessage::text(AiRole::System, chunks.join("\n\n")));
-        messages
+        vec![AiMessage::text(AiRole::System, chunks.join("\n\n"))]
     }
 
     async fn load_current_behavior(&self) -> Result<BehaviorCfg> {
@@ -2251,14 +2381,39 @@ impl AgentSession {
                 Ok(NextAction::WaitForMsg)
             }
             LLMContextOutcome::Error { error, .. } => {
-                let _ = self
-                    .reply_tx
-                    .send(SessionReply::Error {
-                        message: error.to_string(),
-                    })
-                    .await;
-                self.discard_snapshot();
-                Ok(NextAction::WaitForMsg)
+                // `[on_provider_failed]` hook: when configured, swap behavior
+                // to the named fallback (e.g. a smaller-model safe-mode) and
+                // continue the next turn there. Unset / Default ⇒ surface
+                // the error and park the session (historical behavior).
+                match behavior_hooks::resolve_provider_failed(
+                    behavior.on_provider_failed.as_ref(),
+                ) {
+                    Ok(ProviderFailedOutcome::FallbackBehavior { target }) => {
+                        warn!(
+                            "opendan.session[{}]: provider failed ({}); on_provider_failed → fallback_behavior `{target}`",
+                            self.session_id, error
+                        );
+                        self.discard_snapshot();
+                        self.meta.lock().await.current_behavior = target.clone();
+                        if let Err(err) = self.flush_meta().await {
+                            warn!(
+                                "opendan.session[{}]: flush after provider-fail fallback failed: {err:#}",
+                                self.session_id
+                            );
+                        }
+                        Ok(NextAction::WaitForMsg)
+                    }
+                    Ok(ProviderFailedOutcome::Default) | Err(_) => {
+                        let _ = self
+                            .reply_tx
+                            .send(SessionReply::Error {
+                                message: error.to_string(),
+                            })
+                            .await;
+                        self.discard_snapshot();
+                        Ok(NextAction::WaitForMsg)
+                    }
+                }
             }
             LLMContextOutcome::ContextLimitReached { which, .. } => {
                 // Should not happen — `run_one_round` intercepts
@@ -2338,10 +2493,13 @@ impl AgentSession {
             .agent_config
             .load_behavior(next)
             .map_err(|err| anyhow!("load behavior `{next}`: {err}"))?;
-        match new_cfg.switch_mode {
+        // §4.2 of the config-rewrite doc: switch_mode is a session-class
+        // property — the LLM picks `<next_behavior>`, the runtime decides
+        // whether to go Normal / Fork / Independent.
+        match self.session_class_switch_mode() {
             SwitchMode::Normal => {
                 self.apply_switch_normal(&new_cfg, final_snapshot).await;
-                self.meta.lock().await.current_behavior = new_cfg.name.clone();
+                self.meta.lock().await.current_behavior = new_cfg.meta.name.clone();
             }
             SwitchMode::Independent => {
                 self.apply_switch_independent(&new_cfg, final_snapshot)
@@ -2356,7 +2514,7 @@ impl AgentSession {
                     self.session_id
                 );
                 self.apply_switch_normal(&new_cfg, final_snapshot).await;
-                self.meta.lock().await.current_behavior = new_cfg.name.clone();
+                self.meta.lock().await.current_behavior = new_cfg.meta.name.clone();
             }
         }
         if let Err(err) = self.flush_meta().await {
@@ -2382,7 +2540,7 @@ impl AgentSession {
         let overrides = RequestOverrides {
             system_messages: Some(new_system),
             tool_policy: Some(new_cfg.to_tool_policy()),
-            objective: Some(new_cfg.objective.clone()),
+            objective: Some(new_cfg.meta.objective.clone()),
             model_policy: Some(new_cfg.to_model_policy()),
             budget: Some(new_cfg.to_budget_spec()),
             human_policy: Some(new_cfg.to_human_policy()),
@@ -2424,7 +2582,7 @@ impl AgentSession {
             .await;
 
         // 2. Resume (or build fresh) the child process's snapshot.
-        let child_path = self.behavior_snap_path(&new_cfg.name)?;
+        let child_path = self.behavior_snap_path(&new_cfg.meta.name)?;
         let child_snap = if let Some(loaded) = self.try_load_snapshot_from(&child_path) {
             // Existing stream — keep its system / accumulated / steps, just
             // reset the ephemeral counters so the new "turn under this
@@ -2453,8 +2611,8 @@ impl AgentSession {
                 entry: parent_entry,
                 current: parent_current,
             });
-            meta.process_entry = new_cfg.name.clone();
-            meta.current_behavior = new_cfg.name.clone();
+            meta.process_entry = new_cfg.meta.name.clone();
+            meta.current_behavior = new_cfg.meta.name.clone();
         }
         Ok(())
     }
@@ -2617,6 +2775,7 @@ impl AgentSession {
             parent_snap,
             overrides,
             sub_cfg: &sub_cfg,
+            loop_mode: self.session_class_loop_mode(),
             trace_id: &trace_id,
             depth,
             from_user_did,
@@ -2858,7 +3017,19 @@ impl AgentSession {
 
     async fn format_event_for_turn(&self, event_id: &str, data: &serde_json::Value) -> String {
         let subscriptions = self.meta.lock().await.event_subscriptions.clone();
-        format_event_for_turn_with_subscriptions(event_id, data, &subscriptions)
+        // Behavior-level fallback template (`[prompt].on_input_event`): used
+        // only when no per-subscription template matched. Tolerate a missing
+        // behavior file (first-boot / restoring with deleted behavior).
+        let behavior_template = match self.load_current_behavior().await {
+            Ok(b) => b.prompt.on_input_event.clone(),
+            Err(_) => None,
+        };
+        format_event_for_turn_with_subscriptions(
+            event_id,
+            data,
+            &subscriptions,
+            behavior_template.as_deref(),
+        )
     }
 
     async fn post_outbound_message(&self, message: &AiMessage) {
@@ -2884,7 +3055,7 @@ impl AgentSession {
             );
             return;
         };
-        let agent_did_raw = self.agent_config.toml.agent_did.trim();
+        let agent_did_raw = self.agent_config.toml.identity.agent_did.trim();
         if agent_did_raw.is_empty() {
             warn!(
                 "opendan.session[{}]: outbound skipped — agent.toml has no agent_did",
@@ -2942,6 +3113,7 @@ impl AgentSession {
             preserve_attachment_tag_in_egress: self
                 .agent_config
                 .toml
+                .runtime
                 .preserve_attachment_tag_in_egress,
         };
         let msg = match llm_context::ai_message_to_msg_object_with_base_validated_with_options(
@@ -3099,20 +3271,27 @@ fn event_status_rank(data: &serde_json::Value) -> u8 {
 /// knows this came from the environment, not from a human.
 #[cfg(test)]
 fn format_event_for_turn(event_id: &str, data: &serde_json::Value) -> String {
-    format_event_for_turn_with_subscriptions(event_id, data, &[])
+    format_event_for_turn_with_subscriptions(event_id, data, &[], None)
 }
 
 fn format_event_for_turn_with_subscriptions(
     event_id: &str,
     data: &serde_json::Value,
     subscriptions: &[EventSubscription],
+    behavior_template: Option<&str>,
 ) -> String {
+    // Per-subscription template wins (most specific). Behavior-level
+    // `[prompt].on_input_event` is the next fallback, then the built-in
+    // "An event occurred at ..." string.
     if let Some(template) = subscriptions
         .iter()
         .filter(|s| match_event_patterns(&[s.pattern.clone()], event_id))
         .filter_map(|s| s.message_template.as_deref())
         .find(|s| !s.trim().is_empty())
     {
+        return render_event_template(template, event_id, data);
+    }
+    if let Some(template) = behavior_template.filter(|s| !s.trim().is_empty()) {
         return render_event_template(template, event_id, data);
     }
     let body = if data.is_null() {
@@ -3142,6 +3321,22 @@ fn render_event_template(template: &str, event_id: &str, data: &serde_json::Valu
         }
     }
     rendered
+}
+
+/// `{var}` substitution engine used by behavior `[prompt].on_*` templates.
+/// Mirrors `render_event_template` so behavior authors and subscription
+/// authors learn one syntax — empty value substitutes to empty string,
+/// unknown placeholder is left as-is so it shows up obviously when
+/// behavior authors mistype a variable name.
+fn render_prompt_template(template: &str, vars: &[(&str, String)]) -> String {
+    let mut out = template.to_string();
+    for (key, value) in vars {
+        let placeholder = format!("{{{key}}}");
+        if out.contains(&placeholder) {
+            out = out.replace(&placeholder, value);
+        }
+    }
+    out
 }
 
 fn json_compact(value: &serde_json::Value) -> String {

@@ -73,7 +73,7 @@ pub struct CreateWorksessionArgs {
     #[serde(default)]
     pub workspace_id: Option<String>,
     /// Override the behavior the worksession starts on. Empty / absent
-    /// uses the agent's `default_work_behavior`.
+    /// uses the work session class's `default_behavior` from `agent.toml`.
     #[serde(default)]
     pub behavior: Option<String>,
     /// Verbatim user messages that prompted creation. Recorded into the

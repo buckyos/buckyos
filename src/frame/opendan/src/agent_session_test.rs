@@ -93,6 +93,7 @@ fn format_event_for_turn_uses_subscription_template() {
         "/approval/doc-1",
         &serde_json::json!({"status": "approved", "message": "ready"}),
         &subscriptions,
+        None,
     );
     assert_eq!(s, "Approval changed to approved: ready");
 }

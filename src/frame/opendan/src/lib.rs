@@ -13,6 +13,16 @@ pub mod ai_runtime;
 pub mod agent_config;
 pub mod behavior_cfg;
 
+// HookPoint = `{ mode, ...params }` config shape reused by behavior
+// `[on_xxx]` bypass switches, dispatcher rule strategies, and session-id
+// strategies. The seam future revisions plug a script engine into without
+// touching consumer call sites.
+pub mod hook_point;
+pub mod behavior_hooks;
+// v0 dispatcher + session-id evaluators (FixedRulesDispatch /
+// EnumSessionIdStrategy). Consumed by `agent.rs::dispatch_inbound`.
+pub mod dispatch;
+
 // §9 step 4 — AgentSession worker loop, build_or_resume_context, handle_outcome,
 //             switch_behavior (normal / fork / independent).
 pub mod agent_session;
