@@ -1,13 +1,10 @@
 # Render Prompt 模板变量说明
 
-本文档按当前代码实现更新。当前通用模板引擎位于 `src/frame/llm_context/src/prompt_engine.rs`，类型为 `PromptRenderEngine`。它是 `llm_context` 的通用能力，不认识 OpenDAN 的 session、workspace、owner、todo 等业务概念。
+本文档是 `llm_context::PromptRenderEngine` 的实现参考，写给修改 / 扩展模板引擎自身的人。引擎位于 [`src/frame/llm_context/src/prompt_engine.rs`](../../src/frame/llm_context/src/prompt_engine.rs)，类型 `PromptRenderEngine`，是 `llm_context` 的通用能力 —— 不认识 OpenDAN 的 session、workspace、owner、todo 等业务概念。
 
-重要现状：
+> OpenDAN 这一侧实际暴露的变量契约、`AgentSessionValueLoader` 的字段映射、`include_roots` 当前设置、behavior 模板可以写什么，全部在 [Agent Enviroment.md](Agent%20Enviroment.md)。本文不重复那一层。
 
-- 实际指令名是 `__ENV`、`__INCLUDE`、`__EXEC`、`__VAR`，不是历史文档里的 `__OPENDAN_ENV`、`__OPENDAN_CONTENT`、`__OPENDAN_EXEC`、`__OPENDAN_VAR`。
-- `AgentSession::render_system_messages` 当前仍把 `behavior.system_prompt_template` 原样作为 System message 使用，尚未调用 `PromptRenderEngine` 渲染。
-- 当前仓库没有 OpenDAN 专用的 `ValueLoader` 主路径实现，因此 `$session.*`、`$workspace.*`、`$owner.*`、`$new_msg`、`$workspace_todolist` 等变量不是已接入的运行时变量。
-- OpenDAN 当前每轮会手工构造一个 `[environment]` user block，包含 behavior、session、workspace、recent activity、clock；这不是本文模板变量系统的一部分。
+实际指令名是 `__ENV`、`__INCLUDE`、`__EXEC`、`__VAR`，不是更早设计稿里的 `__OPENDAN_ENV` 等前缀名。
 
 ## 1. 渲染流程
 
@@ -31,7 +28,7 @@
 2. 在 `RenderVars.vars` 中查找，支持点路径和数组下标，例如 `$items.0`。
 3. 调用调用方传入的 `ValueLoader::load(expr)`。
 
-`ValueLoader::load` 返回 `Ok(None)` 表示“不认识这个变量”，引擎把它当作软缺失处理，不会直接报错。
+`ValueLoader::load` 返回 `Ok(None)` 表示"不认识这个变量"，引擎把它当作软缺失处理，不会直接报错。
 
 值转成文本时的规则：
 
@@ -127,7 +124,7 @@ __VAR(user, $user)__
 __VAR(owner, $owner)__
 ```
 
-这意味着“所有 upon 变量都必须显式写 `__VAR`”已经不是当前实现事实。建议行为：
+这意味着"所有 upon 变量都必须显式写 `__VAR`"已经不是当前实现事实。建议行为：
 
 - 静态、调用方已知的值放进 `RenderVars.vars`。
 - 昂贵或异步加载的值显式写 `__VAR`，让模板依赖更清楚。
@@ -173,56 +170,11 @@ __VAR(owner, $owner)__
 | `var_registered` | `__VAR` 成功注册数量 |
 | `var_failed` | `__VAR` 未解析到值的数量 |
 
-## 7. 当前 OpenDAN 主路径变量状态
+## 7. 修改 / 扩展引擎时的注意事项
 
-以下变量是历史文档或设计文档中提到过的 OpenDAN 业务变量，但当前主路径没有接入 `PromptRenderEngine`，因此不能视为已实现模板变量。
-
-| 历史变量 | 当前状态 |
-| --- | --- |
-| `$session_title` | 未作为模板变量接入；session title 当前只在手工 `[environment]` block 和默认 system prompt 拼装里使用 |
-| `$current_behavior` | 未作为模板变量接入；当前 behavior name 只在 `[environment]` block 里手工输出 |
-| `$params` | 未接入 |
-| `$new_msg` / `$new_msg.$n` | 未接入 |
-| `$owner` / `$owner.did` / `$owner.show_name` | 未接入模板渲染；相关 owner 信息存在于 session/meta/contact 逻辑中 |
-| `$session_list` / `$session_list.$n` | 未接入 |
-| `$workspace_list` / `$workspace_list.$n` | 未接入模板渲染；worksession 工具有自己的 workspace list 拼装逻辑 |
-| `$workspace_todolist` | 未接入 |
-| `$workspace_current_todo_id` | 未接入 |
-| `$workspace_current_todo` | 未接入 |
-| `$workspace_next_ready_todo` | 未接入 |
-| `$workspace_todolist.$todo_id` | 未接入 |
-| `$workspace/<rel_path>` | 未接入；通用引擎只支持最终为绝对路径且位于 `include_roots` 内的 `__INCLUDE(path)__` |
-| `$last_step` / `$last_steps.$num` | 未接入模板变量；snapshot/step record 数据存在，但没有 `ValueLoader` 映射 |
-| `$step_index` / `$step_num` / `$step_limit` | 未接入 |
-| `$llm_result` / `$trace` | 未接入，也不建议作为普通 prompt 变量依赖 |
-
-如果要让 OpenDAN behavior prompt 使用这些变量，需要先实现 OpenDAN 专用 `ValueLoader`，并在 `AgentSession::render_system_messages` 或新的 prompt compose 路径中调用 `PromptRenderEngine`。
-
-## 8. 当前 OpenDAN system prompt 规则
-
-当前 `AgentSession::render_system_messages` 的行为是：
-
-1. 如果 `behavior.system_prompt_template` 非空，直接把它作为一条 System message 返回，不做模板渲染。
-2. 如果 `system_prompt_template` 为空，则尝试读取 agent root 下的 `role.md` 和 `self.md`。
-3. 如果 work session 有 objective，则追加 `## Objective` block。
-4. 如果 session 目录下有 `readme.md`，追加其内容。
-5. 如果以上都为空，生成一条兜底 System prompt。
-
-因此，今天在 behavior TOML 里写：
-
-```text
-system_prompt_template = "当前会话：{{ session.id }}"
-```
-
-LLM 实际看到的仍是字面量 `当前会话：{{ session.id }}`。
-
-## 9. 接入建议
-
-后续如果要把 OpenDAN 接入当前通用渲染引擎，建议按以下边界实现：
-
-1. 新建 OpenDAN 私有 `AgentSessionValueLoader`，把 session、behavior、workspace、paths、input、runtime、memory 等命名空间映射为 JSON。
-2. 在调用 `PromptRenderEngine` 时设置 `EngineConfig.include_roots`，至少限制在 agent root、session dir、绑定 workspace root 等明确目录内。
-3. 保持 `__EXEC` 默认关闭；behavior prompt 不应依赖 shell 动态生成内容。
-4. 将 `render_system_messages` 的 `system_prompt_template` 分支改为渲染后再作为 System message。
-5. 迁移旧变量名时优先使用点路径命名，例如 `$session.title`、`$behavior.name`、`$paths.agent_root`，避免继续扩散 `$workspace_todolist` 这类扁平历史变量。
-6. 如果模板需要 include 固定文件，优先让 `ValueLoader` 暴露完整文件路径变量，例如 `$paths.role_prompt`、`$paths.session_readme`，不要假设通用引擎会拼接路径片段。
+- 新指令名要与现有 `__XXX__` 前缀风格一致，并在 §1 的预处理"未消化指令"检测里加新前缀，否则会被当成语法错误。
+- 任何新指令默认要"失败可恢复"：失败时打 stats + 输出 `<!-- ... failed: ... -->` 标记，不要让整个 render 终止。
+- `ValueLoader::load` 的成功 / 软缺失 / 硬错误三态语义不要破坏：调用方依赖 `Ok(None)` 来表达 loader 不持有这个名字。
+- 新增 `EngineConfig` 字段必须给 `Default` 实现，并在本文 §5 表格里补充。
+- 触发 IO / 进程的新指令要带超时 + 字节上限；不要假设调用方已经做了沙箱。
+- 业务变量映射（`$session.*`、`$workspace.*` 等）一律不进引擎，由调用方的 `ValueLoader` 提供 —— OpenDAN 的实现见 [Agent Enviroment.md](Agent%20Enviroment.md)。

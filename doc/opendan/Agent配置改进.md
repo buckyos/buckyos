@@ -134,7 +134,8 @@ preserve_attachment_tag_in_egress = false
 agent_did    = ""                       # 空 ⇒ 启动期从 system_config 拉的 AgentDocument 回填
 display_name = ""                       # 空 ⇒ 从目录名推断
 # role.md / self.md 不在这里声明——它们是约定俗成的文件名。当前实现中,
-# 由 runtime 读取后作为 `[prompt].on_init` 的 `{role_md}` / `{self_md}` 变量注入。
+# 由 runtime 读取后作为 `[prompt].on_init` 的 `{{ role_md }}` / `{{ self_md }}` 变量注入
+# (upon 语法,通过 `PromptRenderEngine` 渲染)。
 # agent.toml 不掺合"哪个 behavior 用哪段身份描述"。
 
 # ─── Runtime ─────────────────────────────────────────────────
@@ -287,21 +288,27 @@ name      = "explorer"
 objective = "explore unknown territory"
 
 # ─── prompt 渲染:当前实现是简单 `{var}` 替换 ───────────────
-# 注意:OpenDAN behavior 主路径当前没有接入 llm_context::PromptRenderEngine,
-# 不支持 `{{ include "role.md" }}` / `{{ behavior.name }}` / filter/function 调用。
-# 提示词内联在 toml 多行字符串里——一个 behavior 的提示词是一个整体,不拆文件。
+# `on_init` 通过 `llm_context::PromptRenderEngine` 渲染(upon `{{ var }}`
+# + OpenDAN `__VAR__` / `__ENV__` / `__INCLUDE__`)。完整变量契约见
+# `doc/opendan/Agent Enviroment.md` §15.1。提示词内联在 toml 多行字符串里
+# ——一个 behavior 的提示词是一个整体,不拆文件;长内容需要外置时用
+# `__INCLUDE($paths.agent_root/<file>)__`。
 [prompt]
 parser = "xml"                          # LLM 输出 parse 方式;renderer 等细节全部走默认值
 
 # 进入这个 behavior 的瞬间,渲染 system 段
-# 可用变量:
-#   {agent_name} {behavior_name} {session_id}
-#   {objective} {title} {workspace_id} {role_md} {self_md}
+# 常用变量(详见 Agent Enviroment.md §15.1):
+#   {{ session.id }} {{ session.title }} {{ session.objective }}
+#   {{ behavior.name }} {{ behavior.objective }}
+#   {{ workspace.id }} {{ paths.agent_root }} {{ paths.session_root }}
+#   {{ runtime.clock_unix_ms }}
+# render-time extras (由 render_system_messages 注入):
+#   {{ role_md }} {{ self_md }}
 on_init = """
-{role_md}
-{self_md}
+{{ role_md }}
+{{ self_md }}
 
-You are now in behavior `{behavior_name}`. Your objective: {objective}.
+You are now in behavior `{{ behavior.name }}`. Your objective: {{ behavior.objective }}.
 
 ## Available actions
 Use only the tools allowed by this behavior's capabilities.

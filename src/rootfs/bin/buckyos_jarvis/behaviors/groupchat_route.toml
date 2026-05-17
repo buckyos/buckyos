@@ -5,9 +5,9 @@ objective = "Handle group chat messages conservatively, respond only when useful
 [prompt]
 parser = "xml"
 on_init = """
-{role_md}
+{{ role_md }}
 
-{self_md}
+{{ self_md }}
 
 ## Behavior: groupchat_route
 You are in a group UI session.

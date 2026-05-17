@@ -2121,7 +2121,7 @@ impl AgentSession {
 
     async fn compose_environment_message(&self, behavior: &BehaviorCfg) -> Option<String> {
         let env = self.build_prompt_env(behavior).await;
-        match prompt_env::render_template(ENVIRONMENT_BLOCK_TEMPLATE, &env).await {
+        match prompt_env::render_template(ENVIRONMENT_BLOCK_TEMPLATE, &env, &[]).await {
             Ok(text) => Some(text),
             Err(err) => {
                 warn!(
@@ -2135,36 +2135,27 @@ impl AgentSession {
 
     async fn render_system_messages(&self, behavior: &BehaviorCfg) -> Vec<AiMessage> {
         // Read once: file-system anchors `role.md` / `self.md`, current
-        // session env. role.md / self.md are still pre-read here in Phase 1
-        // because the existing 4 behaviors reference them as legacy
-        // `{role_md}` / `{self_md}` placeholders. A future phase migrates
-        // those to `__INCLUDE($paths.agent_root/role.md)__` and lets the
-        // engine load them on demand.
+        // session env. role.md / self.md are pre-read and injected as
+        // `{{ role_md }}` / `{{ self_md }}` template extras for the four
+        // shipped behaviors that reference them by name. A future phase
+        // migrates the templates to `__INCLUDE($paths.agent_root/role.md)__`
+        // and drops these pre-reads entirely.
         let role_md = std::fs::read_to_string(self.agent_config.layout.root.join("role.md"))
             .unwrap_or_default();
         let self_md = std::fs::read_to_string(self.agent_config.layout.root.join("self.md"))
             .unwrap_or_default();
         let env = self.build_prompt_env(behavior).await;
 
-        // `[prompt].on_init` template — run it through `PromptRenderEngine`
-        // (Phase-1 vars + include_roots) and then through the OpenDAN-private
-        // single-brace `{name}` fallback so existing behaviors that still
-        // write `{role_md}` / `{self_md}` keep rendering verbatim.
+        // `[prompt].on_init` template — render through `PromptRenderEngine`
+        // (Phase-1 vars + include_roots) with `role_md` / `self_md` overlaid
+        // as render-time extras.
         let template = behavior.prompt.on_init.trim();
         if !template.is_empty() {
-            let session_objective_for_legacy = env.session_objective.clone();
-            let workspace_id_for_legacy = env.workspace_id.clone().unwrap_or_default();
-            let legacy_vars: Vec<(&str, String)> = vec![
-                ("agent_name", self.agent_name.clone()),
-                ("behavior_name", behavior.meta.name.clone()),
-                ("session_id", self.session_id.clone()),
-                ("objective", session_objective_for_legacy),
-                ("title", env.session_title.clone()),
-                ("workspace_id", workspace_id_for_legacy),
-                ("role_md", role_md.clone()),
-                ("self_md", self_md.clone()),
+            let extras: Vec<(&str, serde_json::Value)> = vec![
+                ("role_md", serde_json::Value::String(role_md.clone())),
+                ("self_md", serde_json::Value::String(self_md.clone())),
             ];
-            match prompt_env::render_with_legacy_fallback(template, &env, &legacy_vars).await {
+            match prompt_env::render_template(template, &env, &extras).await {
                 Ok(rendered) => return vec![AiMessage::text(AiRole::System, rendered)],
                 Err(err) => {
                     warn!(

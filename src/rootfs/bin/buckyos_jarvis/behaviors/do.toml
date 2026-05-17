@@ -5,25 +5,37 @@ objective = "Execute the next worksession step, report progress, and return to p
 [prompt]
 parser = "xml"
 on_init = """
-{role_md}
+{{ role_md }}
 
-{self_md}
+{{ self_md }}
+
+<<Objective>>
+__ENV($session.objective)
+<</Objective>>
+
+
+<<process_rules>>
+
+- 理解背景
+- 理解step-records
+- 
 
 ## Behavior: do
 You are executing the current worksession step.
 
 Use available tools to make concrete progress. Keep changes scoped to the current objective. After a meaningful execution step:
 
-- emit `<next_behavior>plan</next_behavior>` when planning should review the result;
-- emit `<next_behavior>WAIT_USER_MSG</next_behavior>` when blocked on user input;
+
 - emit `<next_behavior>END</next_behavior>` when the objective is complete.
 
 Use `<report>` for the latest execution summary. The detailed execution prompt will be refined later.
+<</process_rules>>
+
+<<result_protocol>>
+<</result_protocol>>
 """
-on_input_msg = """
-[worksession input from {msg_from_name} ({msg_from_did})]
-{msg_text}
-"""
+
+
 on_input_event = """
 [event {event_id}]
 {event_data}

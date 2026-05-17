@@ -9,10 +9,8 @@
 //! objects carry sibling `has_*` booleans so templates can branch on
 //! presence without relying on engine-specific string-truthy semantics.
 //!
-//! Legacy behavior templates that still use the single-brace `{name}`
-//! substitution keep working — `render_with_legacy_fallback` runs the
-//! engine first and then falls through to the OpenDAN-private `{name}`
-//! pass.
+//! All OpenDAN behavior templates use the engine's upon syntax — the
+//! single-brace `{name}` form is no longer supported.
 
 use std::path::PathBuf;
 
@@ -87,28 +85,6 @@ impl AgentSessionEnv {
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default()
-    }
-}
-
-/// Build the loader / engine config / static vars triple expected by every
-/// Phase-1 render call. Returned by-value so each turn gets its own snapshot
-/// and there is no shared mutable state between concurrent renders.
-pub struct EnvRenderInputs {
-    pub vars: RenderVars,
-    pub config: EngineConfig,
-    pub loader: AgentSessionValueLoader,
-}
-
-impl EnvRenderInputs {
-    pub fn from_env(env: AgentSessionEnv) -> Self {
-        let vars = build_render_vars(&env);
-        let config = build_engine_config(&env);
-        let loader = AgentSessionValueLoader::new(env);
-        Self {
-            vars,
-            config,
-            loader,
-        }
     }
 }
 
@@ -256,46 +232,27 @@ fn runtime_object(env: &AgentSessionEnv) -> Json {
     })
 }
 
-/// Render `template` through `PromptRenderEngine`, then fall through to a
-/// final pass over the OpenDAN-private single-brace `{name}` substitution so
-/// existing `behavior.prompt.on_init` templates (which predate the engine)
-/// keep working without behavior-side edits.
+/// Render `template` through `PromptRenderEngine` with the Phase-1 variable
+/// contract.
 ///
-/// `legacy_vars` is the same `&[(name, value)]` shape `render_system_messages`
-/// used to feed `render_prompt_template`. Each pair is matched as `{name}` in
-/// the post-engine string and substituted with `value`.
-pub async fn render_with_legacy_fallback(
-    template: &str,
-    env: &AgentSessionEnv,
-    legacy_vars: &[(&str, String)],
-) -> Result<String, RenderError> {
-    let inputs = EnvRenderInputs::from_env(env.clone());
-    let engine = PromptRenderEngine::new(inputs.config);
-    let result = engine.render(template, &inputs.vars, &inputs.loader).await?;
-    Ok(apply_legacy_brace_vars(&result.rendered, legacy_vars))
-}
-
-fn apply_legacy_brace_vars(input: &str, vars: &[(&str, String)]) -> String {
-    let mut out = input.to_string();
-    for (key, value) in vars {
-        let placeholder = format!("{{{key}}}");
-        if out.contains(&placeholder) {
-            out = out.replace(&placeholder, value);
-        }
-    }
-    out
-}
-
-/// Render `template` through `PromptRenderEngine` only (no legacy fallback).
-/// Used by the new environment-block path which is fully expressed in upon
-/// syntax.
+/// `extra_vars` are seeded into `RenderVars.vars` on top of the Phase-1 set,
+/// overriding any name collision. Use for call-site-specific values that
+/// don't belong in the stable variable contract — e.g. the `render_system_
+/// messages` injection of pre-read `role_md` / `self_md` markdown content
+/// (which will move to `__INCLUDE__` directives once behavior templates
+/// migrate). Pass an empty slice when no overlay is needed.
 pub async fn render_template(
     template: &str,
     env: &AgentSessionEnv,
+    extra_vars: &[(&str, Json)],
 ) -> Result<String, RenderError> {
-    let inputs = EnvRenderInputs::from_env(env.clone());
-    let engine = PromptRenderEngine::new(inputs.config);
-    let result = engine.render(template, &inputs.vars, &inputs.loader).await?;
+    let mut vars = build_render_vars(env);
+    for (key, value) in extra_vars {
+        vars = vars.with_var(*key, value.clone());
+    }
+    let engine = PromptRenderEngine::new(build_engine_config(env));
+    let loader = AgentSessionValueLoader::new(env.clone());
+    let result = engine.render(template, &vars, &loader).await?;
     Ok(result.rendered)
 }
 
@@ -401,14 +358,16 @@ mod tests {
     #[tokio::test]
     async fn engine_substitutes_aggregate_dotted_path() {
         let env = sample_env();
-        let out = render_template("id={{ session.id }}", &env).await.unwrap();
+        let out = render_template("id={{ session.id }}", &env, &[])
+            .await
+            .unwrap();
         assert_eq!(out, "id=s-1");
     }
 
     #[tokio::test]
     async fn environment_block_matches_full_layout() {
         let env = sample_env();
-        let out = render_template(ENVIRONMENT_BLOCK_TEMPLATE, &env)
+        let out = render_template(ENVIRONMENT_BLOCK_TEMPLATE, &env, &[])
             .await
             .unwrap();
         let expected = "\
@@ -423,7 +382,7 @@ clock: unix_ms=123";
     #[tokio::test]
     async fn environment_block_minimal_layout() {
         let env = minimal_env();
-        let out = render_template(ENVIRONMENT_BLOCK_TEMPLATE, &env)
+        let out = render_template(ENVIRONMENT_BLOCK_TEMPLATE, &env, &[])
             .await
             .unwrap();
         let expected = "\
@@ -439,7 +398,7 @@ clock: unix_ms=999";
         env.workspace_id = None;
         env.workspace_root = None;
         env.recent_activity = String::new();
-        let out = render_template(ENVIRONMENT_BLOCK_TEMPLATE, &env)
+        let out = render_template(ENVIRONMENT_BLOCK_TEMPLATE, &env, &[])
             .await
             .unwrap();
         let expected = "\
@@ -450,28 +409,24 @@ clock: unix_ms=123";
     }
 
     #[tokio::test]
-    async fn legacy_single_brace_passes_through() {
+    async fn extra_vars_seed_overlay() {
         let env = sample_env();
-        let legacy = vec![
-            ("role_md", "ROLE".to_string()),
-            ("self_md", "SELF".to_string()),
+        let extras = vec![
+            ("role_md", Json::String("ROLE".into())),
+            ("self_md", Json::String("SELF".into())),
         ];
-        let template = "{role_md}\n\n{self_md}";
-        let out = render_with_legacy_fallback(template, &env, &legacy)
-            .await
-            .unwrap();
+        let template = "{{ role_md }}\n\n{{ self_md }}";
+        let out = render_template(template, &env, &extras).await.unwrap();
         assert_eq!(out, "ROLE\n\nSELF");
     }
 
     #[tokio::test]
-    async fn legacy_and_engine_syntax_compose() {
+    async fn extras_and_phase1_vars_compose() {
         let env = sample_env();
-        let legacy = vec![("role_md", "ROLE".to_string())];
+        let extras = vec![("role_md", Json::String("ROLE".into()))];
         let template =
-            "agent={{ behavior.name }}\nsession={{ session.id }}\n---\n{role_md}";
-        let out = render_with_legacy_fallback(template, &env, &legacy)
-            .await
-            .unwrap();
+            "agent={{ behavior.name }}\nsession={{ session.id }}\n---\n{{ role_md }}";
+        let out = render_template(template, &env, &extras).await.unwrap();
         assert_eq!(out, "agent=chat_route\nsession=s-1\n---\nROLE");
     }
 

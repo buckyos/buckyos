@@ -87,6 +87,110 @@ Step:
 
 ---
 
+## 四、History、Attention 和 KV Cache 的取舍
+
+Behavior Loop 不是 Chat Message Loop。它更接近一个 Work Session:围绕明确 Objective 持续推进,完成后结束。因此它的历史策略不追求无限累积对话,而是优先保证每轮推理时关键信息落在 LLM attention 的"U 型区域"两端:
+
+- 头部:稳定的 system prompt,包含 objective、process rules、result protocol、当前 Behavior 暴露的 Action 视图和 skills
+- 尾部:最近若干个完整 StepRound,也就是 LLM 上一步输出的 Intent 和系统执行后的 Action Results
+
+这和 KV Cache 的最优命中天然存在张力。为了让旧历史逐渐从中部让位给新的完整 StepRound,历史会发生压缩;一旦压缩发生,严格的长前缀 cache 命中会被破坏。这个代价是有意接受的:对 Work Session 来说,让当前推理看到正确的任务头部和最近执行尾部,比维持一条永远 append-only 的 Chat transcript 更重要。
+
+Behavior Loop 的压缩分两层。
+
+第一层是常规的 StepRecord 分级压缩。StepRecord 仍然保留结构化语义,但历史 step 的 detail 会随着它滑入 context 中部而逐渐消失。旧 step 可以从完整的:
+
+```
+assistant: Step Intent
+user:      Step Action Results
+```
+
+降级为更短的 compact record。这样做的效果是:某个中部 StepRecord 被压缩后,它后面一段历史的 detail 可能都会被重新布局,但系统因此又为未来几个 StepRound 腾出尾部空间,让新的 Intent + Action Results 可以完整进入模型输入。
+
+第二层是触顶后的强制有损压缩。它不是普通的 compact render,而是把一批旧 StepRecord 折叠成固定大小的 History Summary 块:
+
+- 不再保留原始 Step 结构
+- 记录被压缩的 step 数量
+- 记录起止 step index、起止时间戳、所属 behavior 范围
+- 摘要这批 step 大致完成了什么、留下了什么约束或结论
+
+这层压缩是最后手段。它的目的不是让模型完整复盘每个动作,而是在 context window 快触顶时重新制造一个稳定的历史前缀,让后续 N 个 StepRound 可以继续以尽量少破坏 KV Cache 的方式运行。
+
+因此,Behavior Loop 的历史不是"越完整越好",而是按位置和阶段承担不同职责:
+
+- 当前 Behavior 的最近 StepRound:完整、强可见、位于尾部
+- 当前 Behavior 的较旧 StepRecord:结构化但分级压缩
+- 跨 Behavior 继承的旧历史:必须降级为系统可解释的 history record 或 summary,不能继续占用当前 Behavior 的 hot tail
+- 触顶后的长期历史:固定大小的 summary block
+
+## 五、Behavior 切换和 fork 语义
+
+`next_behavior` 不是普通的下一轮提示词变化,而是状态机边界。切换 Behavior 时,等价于同时更换 Work Session 的"头"和"尾":
+
+- 头部更换:新的 system prompt、生效的 process rules、Action 视图和 skills
+- 尾部重置:新的 Behavior 开始自己的最近 StepRound hot area
+
+这意味着 Step history 必须是 session 级别的,但每个 StepRecord 需要能被系统解释清楚它属于哪个 Behavior。设计要求是:StepRecord 或其外层 envelope 至少携带:
+
+```
+behavior_name
+step_index
+started_at / ended_at
+compression_level
+```
+
+其中 `behavior_name` 是跨 Behavior 继承历史的关键。一个 step 在自己的 Behavior 中可以作为完整 StepRound 出现在尾部;一旦切换到另一个 Behavior,它就不应再以"当前轮 assistant Intent + user Action Results"的热区形式出现。新 Behavior 只能通过系统解释过的 history record 理解它:
+
+```
+history step record:
+  behavior: plan
+  index: 12
+  summary/detail: ...
+  result: ...
+```
+
+换句话说,完整的:
+
+```
+assistant: Step Intent
+user:      Step Action Results
+```
+
+只属于当前 Behavior 的最近执行上下文。跨 Behavior 继承的历史必须变成单条 StepRecord message 或 summary block,由当前 Behavior 的 system prompt 解释其含义。这一点很重要:切换 Behavior 必然导致 system prompt 和 skills 重新匹配,也必然造成 KV Cache miss;这个 miss 是可接受的。但切换后不能把旧 Behavior 的 hot tail 原样带到新 Behavior 尾部,否则新 Behavior 会在错误的语义框架下读取旧 Intent。
+
+fork 模型也是同一个原则。fork 出来的子上下文可以继承 parent 的 session history,但继承的是已经解释过的 StepRecord / History Summary,不是 parent 当前 Behavior 的完整热区。子上下文有自己的 system prompt、Action 视图和 hot tail;它运行结束后,结果再以 report、summary 或 join record 的形式回到 parent。
+
+## 六、推理输入形态
+
+从一次 Behavior step 的 LLM 输入看,理想结构是:
+
+```
+- system: current behavior objective + process_rules + action view + skills + result_protocol
+- optional user: real user/event input with background environment
+- optional user/assistant: history summary blocks produced by hard compression
+- user: inherited StepRecord history from previous behaviors, already interpreted/compressed
+- assistant/user pairs: current behavior recent full StepRounds
+  - assistant Step -2 Intent
+  - user      Step -2 Action Results
+  - assistant Step -1 Intent
+  - user      Step -1 Action Results
+```
+
+推理后得到:
+
+```
+assistant Step 0 Intent
+```
+
+系统执行 Step 0 actions 后得到:
+
+```
+user Step 0 Action Results
+```
+
+随后 Step 0 进入当前 Behavior 的 hot tail。再往后,它会逐渐进入当前 Behavior 的 StepRecord history;如果发生 Behavior 切换,它必须以带 `behavior_name` 和 `step_index` 的 history record 形式被继承,而不是继续作为新 Behavior 的完整 assistant/user hot round。
+
+
 ## 收束
 
 这三条改动有一个共同的方法论:**好的抽象不是强制选择,而是提供可选维度**。
