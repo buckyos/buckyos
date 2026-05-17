@@ -383,13 +383,16 @@ fn result_to_observation(call_id: String, result: AgentToolResult) -> Observatio
 // =====================================================================
 
 /// `PolicyEngine` for opendan. Two gates:
-///   - `approval_required`: tool calls in this list become recoverable errors
-///     the LLM can self-correct against (or that the L4 worksession can
-///     escalate to a human).
-///   - `enforce_whitelist`: when set, the policy also re-validates each call
-///     against the request's `tool_policy.whitelist`. Defence-in-depth on top
-///     of the waist's spec advertisement, since adversarial LLMs sometimes
-///     emit calls to tools that were never advertised.
+///   - `approval_required`: invocations (tools *or* actions) in this list
+///     become recoverable errors the LLM can self-correct against (or that
+///     the L4 worksession can escalate to a human). Matched on the
+///     normalized invocation name.
+///   - `enforce_whitelist`: when set, the policy also re-validates each
+///     invocation against the request's policy. Per beta2.2's split,
+///     XML-action names are checked against `action_whitelist`/`action_mode`
+///     and everything else against `whitelist`/`mode`. Defence-in-depth on
+///     top of the waist's spec advertisement, since adversarial LLMs
+///     sometimes emit calls to invocations that were never advertised.
 ///
 /// Populated by §9.3 `behavior_cfg` translation in `agent_session::build_deps`.
 pub struct AgentPolicy {
@@ -423,20 +426,46 @@ impl PolicyEngine for AgentPolicy {
                 .iter()
                 .find(|c| self.approval_required.iter().any(|n| n == &c.name))
             {
-                return Err(format!("tool `{}` requires human approval", blocked.name));
+                return Err(format!(
+                    "invocation `{}` requires human approval",
+                    blocked.name
+                ));
             }
         }
         if self.enforce_whitelist {
             use llm_context::request::ToolMode;
-            if matches!(request.tool_policy.mode, ToolMode::Whitelist) {
-                if let Some(off) = calls
-                    .iter()
-                    .find(|c| !request.tool_policy.whitelist.iter().any(|n| n == &c.name))
-                {
-                    return Err(format!(
-                        "tool `{}` is not in this behavior's whitelist",
-                        off.name
-                    ));
+            use llm_context::xml_behavior::is_v2_action_tag;
+            for call in &calls {
+                let is_action = is_v2_action_tag(&call.name);
+                let (mode, whitelist, kind) = if is_action {
+                    (
+                        request.tool_policy.action_mode,
+                        &request.tool_policy.action_whitelist,
+                        "action",
+                    )
+                } else {
+                    (
+                        request.tool_policy.mode,
+                        &request.tool_policy.whitelist,
+                        "tool",
+                    )
+                };
+                match mode {
+                    ToolMode::None => {
+                        return Err(format!(
+                            "{kind} `{}` is rejected: this behavior disables the {kind} surface",
+                            call.name
+                        ));
+                    }
+                    ToolMode::Whitelist => {
+                        if !whitelist.iter().any(|n| n == &call.name) {
+                            return Err(format!(
+                                "{kind} `{}` is not in this behavior's {kind}_whitelist",
+                                call.name
+                            ));
+                        }
+                    }
+                    ToolMode::All => {}
                 }
             }
         }

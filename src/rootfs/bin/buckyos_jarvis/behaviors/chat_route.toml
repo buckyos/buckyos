@@ -49,6 +49,8 @@ tool_whitelist = [
   "forward_msg",
   "update_session_topic",
   "set_notepad",
+]
+action_whitelist = [
   "read",
   "exec_bash",
 ]

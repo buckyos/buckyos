@@ -43,11 +43,13 @@ on_input_event = """
 
 [capabilities]
 tool_whitelist = [
+  "forward_msg",
+]
+action_whitelist = [
   "read",
   "exec_bash",
   "write_file",
   "edit_file",
-  "forward_msg",
   "subscribe_event",
   "unsubscribe_event",
 ]

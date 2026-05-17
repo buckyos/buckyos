@@ -767,12 +767,39 @@ impl LLMContext {
                     .await;
             }
 
-            // 5. Dispatch all actions in document order. v2 allows multiple
+            // 5. Gate parsed actions through the policy. Mirrors the
+            //    traditional loop's `policy.gate_tool_calls` (run_inner step 4)
+            //    so that `action_whitelist` / `tool_whitelist` decisions land
+            //    on every invocation regardless of which loop dispatched it.
+            //    A rejection is folded back as a recoverable error step.
+            let actions = match self
+                .deps
+                .policy
+                .gate_tool_calls(&self.request, new_step.actions.clone())
+                .await
+            {
+                Ok(gated) => {
+                    new_step.actions = gated.clone();
+                    gated
+                }
+                Err(msg) => {
+                    let err_step = StepRecord::from_policy_rejection(&msg);
+                    self.sediment(err_step);
+                    if let Some(outcome) = self
+                        .bump_consecutive_errors(LLMComputeError::PolicyRejected(msg))
+                        .await
+                    {
+                        return outcome;
+                    }
+                    continue;
+                }
+            };
+
+            // 6. Dispatch all actions in document order. v2 allows multiple
             //    actions per step via the `<actions>` container. On the first
             //    error we stop dispatching remaining actions (later actions
             //    are often conditional on earlier ones succeeding) and feed
             //    the partial result list back to the LLM via observation.
-            let actions = new_step.actions.clone();
             let mut action_results: Vec<Observation> = Vec::with_capacity(actions.len());
             let mut error_outcome: Option<LLMContextOutcome> = None;
             let mut error_to_bump: Option<LLMComputeError> = None;
@@ -874,7 +901,7 @@ impl LLMContext {
                 self.state.consecutive_errors = 0;
             }
 
-            // 6. Terminal cases:
+            // 7. Terminal cases:
             //    a) `<next_behavior>` was set — finish (after dispatching the
             //       actions above; v2 allows actions + next_behavior in one
             //       step, see doc §2.2).
@@ -890,7 +917,7 @@ impl LLMContext {
                 return self.finish_done_behavior(new_step, response).await;
             }
 
-            // 7. Action error path: sediment the step (so the LLM sees the
+            // 8. Action error path: sediment the step (so the LLM sees the
             //    failed action_result on the next inference) and bump the
             //    consecutive-error counter.
             if let Some(err) = error_to_bump {

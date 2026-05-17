@@ -141,10 +141,32 @@ impl Default for PromptCfg {
 
 // ─── `[capabilities]` (v0 placeholder — see doc §5.3) ──────────────────────
 
+/// Two invocation surfaces, two whitelists (beta2.2 split):
+///
+/// * `tool_whitelist` — provider-native function calls exposed by
+///   `ToolManager`. The waist only advertises listed names to the model
+///   and rejects any call back outside the list. **Empty ⇒ no tools at
+///   all.** This is the breaking-change semantic introduced in beta2.2;
+///   previous behavior (empty ⇒ "all tools") is gone, since the common
+///   behavior-loop case wants to disable provider tools entirely.
+///
+/// * `action_whitelist` — XML behavior-loop actions (`exec_bash`,
+///   `write_file`, `edit_file`, `read`, `subscribe_event`,
+///   `unsubscribe_event`). The parser will still extract any of the
+///   hardcoded tag set, but the policy gate drops anything not listed
+///   here. **Empty ⇒ XML actions disabled.** Prompt authors should keep
+///   the whitelist in sync with the action surface they expose in the
+///   prompt — listing an action here without prompting for it is harmless,
+///   but the reverse leaves the LLM emitting calls that get rejected.
+///
+/// * `approval_required` — applies to the post-parse invocation name on
+///   both surfaces (tools and actions). A name is matched after the
+///   waist/parser normalize it to the dispatch identifier.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct CapabilitiesCfg {
     pub tool_whitelist: Vec<String>,
+    pub action_whitelist: Vec<String>,
     pub approval_required: Vec<String>,
     /// Optional tool plan name (§9.2) — resolves to
     /// `<agent_root>/tool_plans/<name>.toml`. Empty ⇒ no tombstones.
@@ -294,14 +316,21 @@ impl BehaviorCfg {
     }
 
     pub fn to_tool_policy(&self) -> ToolPolicy {
-        let mode = if self.capabilities.tool_whitelist.is_empty() {
-            ToolMode::All
+        let tool_mode = if self.capabilities.tool_whitelist.is_empty() {
+            ToolMode::None
+        } else {
+            ToolMode::Whitelist
+        };
+        let action_mode = if self.capabilities.action_whitelist.is_empty() {
+            ToolMode::None
         } else {
             ToolMode::Whitelist
         };
         ToolPolicy {
-            mode,
+            mode: tool_mode,
             whitelist: self.capabilities.tool_whitelist.clone(),
+            action_mode,
+            action_whitelist: self.capabilities.action_whitelist.clone(),
             max_rounds: self.budget.max_rounds,
             ..Default::default()
         }
@@ -365,7 +394,10 @@ mod tests {
         let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
         assert_eq!(cfg.name(), "ui_default");
         assert_eq!(cfg.prompt.parser, "xml");
-        assert!(matches!(cfg.to_tool_policy().mode, ToolMode::All));
+        // beta2.2: empty whitelists ⇒ both surfaces disabled.
+        let pol = cfg.to_tool_policy();
+        assert!(matches!(pol.mode, ToolMode::None));
+        assert!(matches!(pol.action_mode, ToolMode::None));
         assert_eq!(cfg.budget.max_rounds, 16);
     }
 
@@ -376,12 +408,50 @@ mod tests {
             name = "x"
 
             [capabilities]
-            tool_whitelist = ["exec_bash", "read_file"]
+            tool_whitelist = ["try_create_worksession", "forward_msg"]
         "#;
         let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
         let pol = cfg.to_tool_policy();
         assert!(matches!(pol.mode, ToolMode::Whitelist));
-        assert_eq!(pol.whitelist, vec!["exec_bash", "read_file"]);
+        assert_eq!(pol.whitelist, vec!["try_create_worksession", "forward_msg"]);
+        // action surface independently disabled when its list is empty.
+        assert!(matches!(pol.action_mode, ToolMode::None));
+        assert!(pol.action_whitelist.is_empty());
+    }
+
+    #[test]
+    fn action_whitelist_drives_action_mode() {
+        let toml_src = r#"
+            [meta]
+            name = "x"
+
+            [capabilities]
+            action_whitelist = ["read", "exec_bash"]
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        let pol = cfg.to_tool_policy();
+        // Tool surface untouched ⇒ disabled.
+        assert!(matches!(pol.mode, ToolMode::None));
+        assert!(matches!(pol.action_mode, ToolMode::Whitelist));
+        assert_eq!(pol.action_whitelist, vec!["read", "exec_bash"]);
+    }
+
+    #[test]
+    fn both_surfaces_can_coexist() {
+        let toml_src = r#"
+            [meta]
+            name = "x"
+
+            [capabilities]
+            tool_whitelist = ["try_create_worksession"]
+            action_whitelist = ["read"]
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        let pol = cfg.to_tool_policy();
+        assert!(matches!(pol.mode, ToolMode::Whitelist));
+        assert!(matches!(pol.action_mode, ToolMode::Whitelist));
+        assert_eq!(pol.whitelist, vec!["try_create_worksession"]);
+        assert_eq!(pol.action_whitelist, vec!["read"]);
     }
 
     #[test]

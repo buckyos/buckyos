@@ -68,7 +68,11 @@ use crate::behavior_loop::{LLMBehaviorResult, LLMResultParser, SendMessageRecord
 
 /// Hardcoded allowlist of v2 first-class Action tag names. Everything in
 /// `<actions>` that isn't one of these is silently skipped.
-const V2_ACTION_TAGS: &[&str] = &[
+///
+/// `report` lives in this set because it shares the same XML scanning path,
+/// but it's never dispatched as an action — see the `<report>` handling
+/// note above.
+pub const V2_ACTION_TAGS: &[&str] = &[
     "exec_bash",
     "write_file",
     "edit_file",
@@ -77,6 +81,25 @@ const V2_ACTION_TAGS: &[&str] = &[
     "unsubscribe_event",
     "report",
 ];
+
+/// True if `name` is a v2 first-class Action tag (i.e. handled by the XML
+/// behavior parser rather than by `ToolManager`'s provider-native tool
+/// surface). Used by policy gates to decide which whitelist to consult.
+///
+/// `report` is intentionally excluded — it's a v2 tag for the parser but
+/// never becomes a dispatchable invocation, so policy gating for it is a
+/// non-event.
+pub fn is_v2_action_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "exec_bash"
+            | "write_file"
+            | "edit_file"
+            | "read"
+            | "subscribe_event"
+            | "unsubscribe_event"
+    )
+}
 
 /// Per-tag body→arg mapping. Tags not in the table either expect no body
 /// (e.g. `<read uri="..."/>`) or are special-cased (`report`).

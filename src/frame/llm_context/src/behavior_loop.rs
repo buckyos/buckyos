@@ -98,6 +98,18 @@ impl StepRecord {
     /// to the LLM as a synthetic error observation so the next inference can
     /// self-correct (FeedAsObservation style).
     pub fn from_parse_error(error: &str) -> Self {
+        Self::synthetic_error(format!("parse failed: {error}"))
+    }
+
+    /// Synthetic step describing a policy rejection (e.g. an invocation
+    /// outside the behavior's whitelist). Same FeedAsObservation shape as
+    /// [`Self::from_parse_error`] but tagged so the LLM can tell why the
+    /// step was discarded.
+    pub fn from_policy_rejection(error: &str) -> Self {
+        Self::synthetic_error(format!("policy rejected: {error}"))
+    }
+
+    fn synthetic_error(message: String) -> Self {
         Self {
             assistant_text: String::new(),
             observation: None,
@@ -108,7 +120,7 @@ impl StepRecord {
             messages_sent: Vec::new(),
             action_results: vec![Observation::Error {
                 call_id: String::new(),
-                message: format!("parse failed: {error}"),
+                message,
             }],
         }
     }

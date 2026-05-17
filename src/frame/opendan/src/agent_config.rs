@@ -386,7 +386,10 @@ impl AgentConfig {
                 objective: "interactive UI session".to_string(),
             },
             capabilities: CapabilitiesCfg {
-                tool_whitelist: vec![
+                // No provider-native tools by default — the builtin UI gives
+                // the LLM the full XML action surface and nothing else.
+                tool_whitelist: Vec::new(),
+                action_whitelist: vec![
                     "exec_bash".to_string(),
                     "write_file".to_string(),
                     "edit_file".to_string(),
@@ -574,10 +577,13 @@ mod tests {
     fn builtin_ui_default_has_tools() {
         let b = AgentConfig::builtin_ui_default();
         assert_eq!(b.meta.name, "ui_default");
+        // exec_bash is an XML action, not a provider-native tool — it lives
+        // on the action surface post-beta2.2 split.
         assert!(b
             .capabilities
-            .tool_whitelist
+            .action_whitelist
             .contains(&"exec_bash".to_string()));
+        assert!(b.capabilities.tool_whitelist.is_empty());
     }
 
     /// Pins the on-disk minimal demo (`doc/opendan/mini_agent_demo/`) into
@@ -598,7 +604,10 @@ mod tests {
 
         let beh = cfg.load_behavior("ui_default").expect("load demo behavior");
         assert_eq!(beh.name(), "ui_default");
-        assert_eq!(beh.capabilities.tool_whitelist, vec!["report"]);
+        // Echo-bot demo only emits <report> / <next_behavior>, neither of
+        // which is a dispatchable invocation — so both whitelists are empty.
+        assert!(beh.capabilities.tool_whitelist.is_empty());
+        assert!(beh.capabilities.action_whitelist.is_empty());
         assert!(beh.prompt.on_init.contains("{agent_name}"));
     }
 }

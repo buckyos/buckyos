@@ -58,19 +58,33 @@ impl Default for ModelPolicy {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolMode {
-    /// No tool calls allowed; single inference, return immediately.
+    /// No calls of this kind are allowed.
     None,
-    /// Only tools in `whitelist` are dispatched.
+    /// Only entries in the matching `whitelist` field are dispatched.
     Whitelist,
-    /// All tools known to `ToolManager` are dispatched.
+    /// All known entries are dispatched (for tools: every spec exposed by
+    /// `ToolManager`; for actions: every tag the parser recognizes).
     All,
 }
 
+/// Dispatch policy for one invocation surface.
+///
+/// Two surfaces are tracked separately, both as fields on [`ToolPolicy`]:
+///
+/// * **tools** — provider-native function calls exposed by `ToolManager`.
+///   Controlled by `mode` + `whitelist`. Filters spec advertisement
+///   (see [`crate::deps::resolve_tool_specs`]) and gates dispatch.
+/// * **actions** — XML behavior-loop tags (`exec_bash`, `write_file`, …)
+///   parsed out of the LLM response. Controlled by `action_mode` +
+///   `action_whitelist`. Filters dispatch only — the recognized tag set
+///   itself is hardcoded by the XML parser.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ToolPolicy {
     pub mode: ToolMode,
     pub whitelist: Vec<String>,
+    pub action_mode: ToolMode,
+    pub action_whitelist: Vec<String>,
     /// 0 disables the tool loop (one inference only).
     pub max_rounds: u32,
     pub max_calls_per_round: u32,
@@ -87,6 +101,8 @@ impl Default for ToolPolicy {
         Self {
             mode: ToolMode::All,
             whitelist: Vec::new(),
+            action_mode: ToolMode::All,
+            action_whitelist: Vec::new(),
             max_rounds: 8,
             max_calls_per_round: 8,
             max_observation_bytes: 32 * 1024,

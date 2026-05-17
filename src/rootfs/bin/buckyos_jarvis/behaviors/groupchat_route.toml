@@ -23,6 +23,8 @@ on_input_msg = """
 tool_whitelist = [
   "try_create_worksession",
   "forward_msg",
+]
+action_whitelist = [
   "read",
 ]
 

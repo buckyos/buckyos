@@ -26,7 +26,13 @@ sent, then `<next_behavior>END</next_behavior>` to wrap up the turn.
 """
 
 [capabilities]
-tool_whitelist = ["report"]   # 不需要 exec_bash / read / 等等,只发回声
+# beta2.2: tool_whitelist 与 action_whitelist 已拆分。
+#   tool_whitelist:   provider-native function tool 的允许集 (ToolManager 注册的)
+#   action_whitelist: XML behavior-loop action 的允许集 (exec_bash / write_file / 等等)
+# 空列表 = 该面板禁用。<report> 不是 dispatch 出去的 action (由 parser 独立捕获),
+# 因此 echo-bot 两边都留空也能正常发回声。
+tool_whitelist   = []
+action_whitelist = []
 
 [budget]
 max_rounds              = 2
