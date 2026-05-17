@@ -34,6 +34,11 @@ pub mod session_model;
 //             Will be promoted to llm_context crate once stable.
 pub mod llm_context_helper;
 
+// Phase-1 PromptRenderEngine integration (variable contract +
+// AgentSessionValueLoader + environment-block template). See
+// `doc/opendan/Agent Enviroment.md` §15.1.
+pub mod prompt_env;
+
 // §9 step 5 — UI-session default tool wiring; exec_bash + session /bin scripts.
 pub mod agent_bash;
 

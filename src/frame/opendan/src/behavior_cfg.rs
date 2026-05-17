@@ -79,10 +79,16 @@ impl BehaviorOutput {
     }
 }
 
-/// Prompt templates per "renders the prompt" event. Each `on_*` field is
-/// rendered with the simple `{var}` substitution engine — same one
-/// `format_event_for_turn` uses for per-subscription event templates,
-/// so behavior authors and subscription authors learn one syntax.
+/// Prompt templates per "renders the prompt" event.
+///
+/// `on_init` is rendered through `llm_context::PromptRenderEngine` (upon
+/// `{{ var }}` placeholders, `__VAR__` / `__ENV__` / `__INCLUDE__`
+/// directives) with the Phase-1 variable contract from
+/// `doc/opendan/Agent Enviroment.md` §15.1, then a final fallback pass
+/// substitutes the legacy single-brace `{name}` placeholders the four
+/// shipped behaviors still use. `on_input_msg` / `on_input_event` keep the
+/// older `{var}` per-field substitution (same syntax as
+/// `format_event_for_turn`).
 ///
 /// **Per-event hook names map onto the actual prompt-construction sites
 /// the runtime has today**:
@@ -94,8 +100,11 @@ impl BehaviorOutput {
 /// | `on_input_event`  | behavior-wide event-format fallback   | falls through to subscription template, then to `format_event_for_turn_with_subscriptions` default |
 ///
 /// Available variables (passed in by the consuming callsite):
-///   * `{agent_name}`, `{behavior_name}`, `{session_id}`
-///   * `on_init`: `{objective}`, `{role_md}`, `{self_md}`, `{workspace_id}`
+///   * `{agent_name}`, `{behavior_name}`, `{session_id}` (legacy single-brace)
+///   * `on_init` legacy: `{objective}`, `{role_md}`, `{self_md}`, `{workspace_id}`
+///   * `on_init` engine: `{{ session.id }}`, `{{ behavior.name }}`,
+///     `{{ workspace.id }}`, `{{ paths.agent_root }}`, … (full Phase-1
+///     contract — see `doc/opendan/Agent Enviroment.md` §15.1)
 ///   * `on_input_msg`: `{msg_text}`, `{msg_from_did}`, `{msg_from_name}`
 ///   * `on_input_event`: `{event_id}`, `{event_data}` plus any top-level
 ///     scalar field of the JSON payload as `{<key>}`

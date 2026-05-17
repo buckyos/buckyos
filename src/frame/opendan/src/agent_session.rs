@@ -26,6 +26,9 @@ use crate::behavior_hooks::{
 use crate::llm_context_helper::{
     apply_overrides_to_snapshot, run_fork_sub_context, ForkSubContextInput, RequestOverrides,
 };
+use crate::prompt_env::{
+    self, AgentSessionEnv, ENVIRONMENT_BLOCK_TEMPLATE,
+};
 use crate::round_history::{
     CompactionTarget, ContextMode, HistoryEvent, InterruptMode as HistoryInterruptMode,
     RoundStatus, RoundTrigger, SessionHistoryRecorder,
@@ -1829,9 +1832,9 @@ impl AgentSession {
     /// tool policy, budget, …) made between turns silently fail to land:
     /// resume re-uses the snapshot's stored `request` and only a `switch` /
     /// `discard` path would otherwise pick up the new config.
-    fn current_behavior_overrides(&self, behavior: &BehaviorCfg) -> RequestOverrides {
+    async fn current_behavior_overrides(&self, behavior: &BehaviorCfg) -> RequestOverrides {
         RequestOverrides {
-            system_messages: Some(self.render_system_messages(behavior)),
+            system_messages: Some(self.render_system_messages(behavior).await),
             tool_policy: Some(behavior.to_tool_policy()),
             objective: Some(behavior.meta.objective.clone()),
             model_policy: Some(behavior.to_model_policy()),
@@ -1893,8 +1896,10 @@ impl AgentSession {
         // wakeup into a fake conversational turn. Bootstrap turns (work
         // session first run, no input, no snapshot) get the objective via
         // System and don't need env either.
-        let turn_message =
-            compose_turn_message(turn_messages, self.compose_environment_message(behavior));
+        let turn_message = compose_turn_message(
+            turn_messages,
+            self.compose_environment_message(behavior).await,
+        );
 
         if let Some(snapshot) = self.try_load_snapshot() {
             if snapshot.state.pending_tool_calls.is_empty() {
@@ -1907,7 +1912,7 @@ impl AgentSession {
                 // the new system prompt / model / tool policy.
                 let snapshot = apply_overrides_to_snapshot(
                     snapshot,
-                    self.current_behavior_overrides(behavior),
+                    self.current_behavior_overrides(behavior).await,
                 );
 
                 if let Some(message) = turn_message.clone() {
@@ -1960,7 +1965,7 @@ impl AgentSession {
             .await;
         }
 
-        let mut input = self.render_system_messages(behavior);
+        let mut input = self.render_system_messages(behavior).await;
         if let Some(message) = turn_message {
             input.push(message);
         }
@@ -2029,14 +2034,14 @@ impl AgentSession {
 
     /// Build a fresh (no inherited state) [`LLMContextRequest`] for the given
     /// behavior. Used by independent-mode first-time entry into a process.
-    fn fresh_request_for(&self, cfg: &BehaviorCfg) -> LLMContextRequest {
+    async fn fresh_request_for(&self, cfg: &BehaviorCfg) -> LLMContextRequest {
         LLMContextRequest {
             owner: ContextOwnerRef::Agent {
                 session_id: self.session_id.clone(),
             },
             trace: None,
             objective: cfg.meta.objective.clone(),
-            input: self.render_system_messages(cfg),
+            input: self.render_system_messages(cfg).await,
             model_policy: cfg.to_model_policy(),
             tool_policy: cfg.to_tool_policy(),
             output: cfg.to_output_spec(),
@@ -2066,97 +2071,115 @@ impl AgentSession {
     /// `meta.try_lock` failures degrade silently (returns `None`); the
     /// fact that a turn is currently driving an inference is rare to
     /// happen concurrently with build_or_resume anyway.
-    fn compose_environment_message(&self, behavior: &BehaviorCfg) -> Option<String> {
-        let mut parts: Vec<String> = Vec::new();
-        let workspace_id;
-        let one_line;
-        let title;
-        match self.meta.try_lock() {
-            Ok(g) => {
-                workspace_id = g.workspace_id.clone();
-                one_line = g.one_line_status.clone();
-                title = g.title.clone();
-            }
-            Err(_) => return None,
-        }
-        // Always include behavior — the LLM can otherwise lose track after
-        // a Normal-mode switch with no explicit hand-off.
-        parts.push(format!("behavior: `{}`", behavior.meta.name));
-        if !title.trim().is_empty() {
-            parts.push(format!(
-                "session: `{}` (\"{}\")",
-                self.session_id,
-                title.trim()
-            ));
+    /// Build the Phase-1 [`AgentSessionEnv`] snapshot used by both the
+    /// behavior-template render path and the environment-block template. See
+    /// `doc/opendan/Agent Enviroment.md` §15.1 for the variable contract.
+    /// `input_text` is left empty in Phase 1 — `$input.*` is not consumed by
+    /// the two currently-templated sections, and the user-input section is
+    /// still composed by the legacy `compose_turn_message` path.
+    async fn build_prompt_env(&self, behavior: &BehaviorCfg) -> AgentSessionEnv {
+        let (kind, title, objective, owner, workspace_id, one_line) = {
+            let meta = self.meta.lock().await;
+            (
+                meta.kind,
+                meta.title.clone(),
+                meta.objective.clone(),
+                meta.owner.clone(),
+                meta.workspace_id.clone(),
+                meta.one_line_status.clone(),
+            )
+        };
+        let session_objective = if objective.trim().is_empty() {
+            behavior.meta.objective.clone()
         } else {
-            parts.push(format!("session: `{}`", self.session_id));
+            objective
+        };
+        let workspace_id = workspace_id.filter(|s| !s.is_empty());
+        let workspace_root = workspace_id
+            .as_deref()
+            .map(|ws| self.agent_config.layout.workspaces_dir.join(ws));
+        AgentSessionEnv {
+            session_id: self.session_id.clone(),
+            session_kind: AgentSessionEnv::kind_str(kind),
+            session_title: title.trim().to_string(),
+            session_objective,
+            session_owner: owner,
+            behavior_name: behavior.meta.name.clone(),
+            behavior_objective: behavior.meta.objective.clone(),
+            behavior_mode: "behavior",
+            workspace_id,
+            workspace_root,
+            agent_root: self.agent_config.layout.root.clone(),
+            session_root: self.session_dir.clone(),
+            input_text: String::new(),
+            input_has_user_text: false,
+            input_has_events: false,
+            recent_activity: one_line.trim().to_string(),
+            clock_unix_ms: now_ms(),
         }
-        if let Some(ws) = workspace_id.as_deref().filter(|s| !s.is_empty()) {
-            parts.push(format!("workspace: `{}`", ws));
-        }
-        let trimmed_status = one_line.trim();
-        if !trimmed_status.is_empty() {
-            parts.push(format!("recent activity: {}", trimmed_status));
-        }
-        parts.push(format!("clock: unix_ms={}", now_ms()));
-        Some(parts.join("\n"))
     }
 
-    fn render_system_messages(&self, behavior: &BehaviorCfg) -> Vec<AiMessage> {
-        // Read once: file-system anchors `role.md` / `self.md`, session
-        // workspace id, current title/objective. Used as both the
-        // template variables for `on_init` and the chunks of the implicit
-        // composition when no template is configured.
+    async fn compose_environment_message(&self, behavior: &BehaviorCfg) -> Option<String> {
+        let env = self.build_prompt_env(behavior).await;
+        match prompt_env::render_template(ENVIRONMENT_BLOCK_TEMPLATE, &env).await {
+            Ok(text) => Some(text),
+            Err(err) => {
+                warn!(
+                    "opendan.session[{}]: render environment block failed: {err}; falling back to empty",
+                    self.session_id
+                );
+                None
+            }
+        }
+    }
+
+    async fn render_system_messages(&self, behavior: &BehaviorCfg) -> Vec<AiMessage> {
+        // Read once: file-system anchors `role.md` / `self.md`, current
+        // session env. role.md / self.md are still pre-read here in Phase 1
+        // because the existing 4 behaviors reference them as legacy
+        // `{role_md}` / `{self_md}` placeholders. A future phase migrates
+        // those to `__INCLUDE($paths.agent_root/role.md)__` and lets the
+        // engine load them on demand.
         let role_md = std::fs::read_to_string(self.agent_config.layout.root.join("role.md"))
             .unwrap_or_default();
         let self_md = std::fs::read_to_string(self.agent_config.layout.root.join("self.md"))
             .unwrap_or_default();
-        let (objective, title) = match self.meta.try_lock() {
-            Ok(g) => (g.objective.clone(), g.title.clone()),
-            Err(_) => (String::new(), String::new()),
-        };
-        let workspace_id = match self.meta.try_lock() {
-            Ok(g) => g.workspace_id.clone().unwrap_or_default(),
-            Err(_) => String::new(),
-        };
+        let env = self.build_prompt_env(behavior).await;
 
-        // `[prompt].on_init` template — when set, render it with the
-        // simple `{var}` substitution engine (same syntax as the existing
-        // per-subscription event template) and emit one System message.
+        // `[prompt].on_init` template — run it through `PromptRenderEngine`
+        // (Phase-1 vars + include_roots) and then through the OpenDAN-private
+        // single-brace `{name}` fallback so existing behaviors that still
+        // write `{role_md}` / `{self_md}` keep rendering verbatim.
         let template = behavior.prompt.on_init.trim();
         if !template.is_empty() {
-            let mut vars: Vec<(&str, String)> = vec![
+            let session_objective_for_legacy = env.session_objective.clone();
+            let workspace_id_for_legacy = env.workspace_id.clone().unwrap_or_default();
+            let legacy_vars: Vec<(&str, String)> = vec![
                 ("agent_name", self.agent_name.clone()),
                 ("behavior_name", behavior.meta.name.clone()),
                 ("session_id", self.session_id.clone()),
-                ("objective", objective.clone()),
-                ("title", title.clone()),
-                ("workspace_id", workspace_id.clone()),
+                ("objective", session_objective_for_legacy),
+                ("title", env.session_title.clone()),
+                ("workspace_id", workspace_id_for_legacy),
                 ("role_md", role_md.clone()),
                 ("self_md", self_md.clone()),
             ];
-            // Behavior-level objective fallback: when the per-session meta
-            // hasn't been seeded with one yet (UI sessions), surface the
-            // behavior's own objective string so `{objective}` is rarely
-            // blank for behavior authors.
-            if vars
-                .iter()
-                .find(|(k, _)| *k == "objective")
-                .map(|(_, v)| v.trim().is_empty())
-                .unwrap_or(true)
-                && !behavior.meta.objective.trim().is_empty()
-            {
-                vars.retain(|(k, _)| *k != "objective");
-                vars.push(("objective", behavior.meta.objective.clone()));
+            match prompt_env::render_with_legacy_fallback(template, &env, &legacy_vars).await {
+                Ok(rendered) => return vec![AiMessage::text(AiRole::System, rendered)],
+                Err(err) => {
+                    warn!(
+                        "opendan.session[{}]: render system prompt template failed: {err}; falling back to built-in composition",
+                        self.session_id
+                    );
+                    // fall through to the built-in composition path below
+                }
             }
-            let rendered = render_prompt_template(template, &vars);
-            return vec![AiMessage::text(AiRole::System, rendered)];
         }
 
-        // No template ⇒ runtime built-in composition (matches pre-config-
-        // rewrite behavior). Worksession objective surfaces as a dedicated
-        // block ahead of the session readme so the LLM sees its task
-        // statement first.
+        // No template (or render error) ⇒ runtime built-in composition
+        // (matches pre-config-rewrite behavior). Worksession objective
+        // surfaces as a dedicated block ahead of the session readme so the
+        // LLM sees its task statement first.
         let mut chunks = Vec::new();
         if !role_md.trim().is_empty() {
             chunks.push(role_md);
@@ -2164,6 +2187,8 @@ impl AgentSession {
         if !self_md.trim().is_empty() {
             chunks.push(self_md);
         }
+        let objective = env.session_objective.clone();
+        let title = env.session_title.clone();
         if !objective.trim().is_empty() {
             let header = if title.trim().is_empty() {
                 "## Objective".to_string()
@@ -2536,7 +2561,7 @@ impl AgentSession {
     /// - consecutive_errors: NOT cleared (block LLM from bypassing the cap
     ///   by switching behavior)
     async fn apply_switch_normal(&self, new_cfg: &BehaviorCfg, final_snapshot: LLMContextSnapshot) {
-        let new_system = self.render_system_messages(new_cfg);
+        let new_system = self.render_system_messages(new_cfg).await;
         let overrides = RequestOverrides {
             system_messages: Some(new_system),
             tool_policy: Some(new_cfg.to_tool_policy()),
@@ -2598,7 +2623,7 @@ impl AgentSession {
             // behavior's request template. Mirrors `build_fresh` at the
             // snapshot level (we don't construct an LLMContext here because
             // the next worker turn will do the resume).
-            let request = self.fresh_request_for(new_cfg);
+            let request = self.fresh_request_for(new_cfg).await;
             let state = LLMContextState::from_request(&request, now_ms());
             LLMContextSnapshot { request, state }
         };
@@ -3321,22 +3346,6 @@ fn render_event_template(template: &str, event_id: &str, data: &serde_json::Valu
         }
     }
     rendered
-}
-
-/// `{var}` substitution engine used by behavior `[prompt].on_*` templates.
-/// Mirrors `render_event_template` so behavior authors and subscription
-/// authors learn one syntax — empty value substitutes to empty string,
-/// unknown placeholder is left as-is so it shows up obviously when
-/// behavior authors mistype a variable name.
-fn render_prompt_template(template: &str, vars: &[(&str, String)]) -> String {
-    let mut out = template.to_string();
-    for (key, value) in vars {
-        let placeholder = format!("{{{key}}}");
-        if out.contains(&placeholder) {
-            out = out.replace(&placeholder, value);
-        }
-    }
-    out
 }
 
 fn json_compact(value: &serde_json::Value) -> String {

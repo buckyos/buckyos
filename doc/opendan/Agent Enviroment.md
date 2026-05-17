@@ -434,15 +434,98 @@ __VAR(input, $input)__
 
 也就是说，“零 LLM 空转”应由 `AgentSession::build_or_resume` 的输入驱动逻辑保证，而不是由模板渲染结果的 Null 语义保证。
 
-## 15. 建议实现顺序
+## 15. 实现路线图
 
-1. 新建 `AgentSessionValueLoader`，先支持 `$session`、`$behavior`、`$workspace`、`$paths`、`$runtime`、`$input`。
-2. 将 `render_system_messages` 中的 `system_prompt_template` 改为通过 `PromptRenderEngine` 渲染。
-3. 用 `SectionSpec` 表达 `system.identity`、`system.behavior`、`environment`、`user.input`。
-4. 将当前手写 `compose_environment_message` 迁移为 environment section 模板。
-5. 增加 workspace summary / session readme / memory recall 变量。
-6. 视 token 压力决定是否把 `$history.*`、`$steps.*` 接入主路径。
-7. 为 loader 增加单元测试：缺失 workspace、无 title、无 input、恢复 snapshot、work session objective、include roots 限制。
+### 15.1 第一期接入范围（MVP，目标：系统能跑通且行为等价）
+
+**原则**
+
+- 不改变现行 prompt 的可观察内容，只把"字面字符串拼接"换成"模板渲染"。
+- 渲染时机统一在 turn 真正打包送 `llm_context` 之前（`agent_session` 的 egress 边界），不在 behavior 加载时预渲染。
+- 只暴露**同步可得、零 IO**的变量。任何需要异步查询、文件读、外部服务调用的变量留到后续阶段。
+- 行为模板仍可保持纯字面文本不写任何 `{{ }}` / `__VAR__`，渲染对它们应是 no-op。
+
+**第一期 Loader 必须支持的变量**
+
+| 表达式 | 来源 | 备注 |
+| --- | --- | --- |
+| `$session.id` | `SessionMeta.session_id` | |
+| `$session.kind` | `SessionMeta.kind` | `ui` / `work` |
+| `$session.title` | `SessionMeta.title` | 缺失 → 空串 |
+| `$session.objective` | `SessionMeta.objective` | 缺失 → 空串 |
+| `$session.owner` | `SessionMeta.owner` | 缺失 → 空串 |
+| `$behavior.name` | 当前 behavior | |
+| `$behavior.objective` | behavior cfg | 缺失 → 空串 |
+| `$behavior.mode` | behavior cfg | `agent` / `behavior` |
+| `$workspace.id` | session 绑定 workspace | 未绑定 → `None` |
+| `$workspace.root` | 同上 | 仅供 include path resolution |
+| `$paths.agent_root` | `agent_config.layout.root` | |
+| `$paths.session_root` | `session_dir` | |
+| `$paths.workspace_root` | 当前 workspace root | 未绑定 → `None` |
+| `$input.text` | 本轮 `human_texts` 合并 | 与现有 `compose_human_text` 等价 |
+| `$input.has_user_text` | 同上 | |
+| `$input.has_events` | `PendingInput` | |
+| `$runtime.clock_unix_ms` | `SystemTime::now` | |
+| `$runtime.recent_activity` | `OneLineStatusSink` | 缺失 → 空串 |
+
+第一期**不实现**的变量（明确推后）：
+
+- `$session.peer_did` / `$session.peer_tunnel_did` / `$session.status` / `$session.bootstrap_done`
+- `$behavior.parser` / `$behavior.renderer` / `$behavior.switch_mode` / `$behavior.max_rounds` / `$behavior.tool_plan`
+- `$process.*`（fork/independent 栈）
+- `$input.messages` / `$input.events` / `$input.interrupts` / `$input.keys`（结构化批次，第一期模板只需 `$input.text`）
+- `$workspace.summary` / `$workspace.readme`（需要文件 IO）
+- `$agent.*` / `$owner.*`（需要 contact manager 异步查询）
+- `$history.*` / `$steps.*`（snapshot 历史视图，需要裁剪策略）
+- `$memory.*`（贵的召回路径）
+- `$runtime.pending_tool_calls` / `$runtime.llm_task_ids`
+
+**第一期接入的 section**
+
+只接两个：
+
+1. `system.identity`：把 `behavior.system_prompt_template` 经 `PromptRenderEngine` 渲染后作为 System message，替换 `render_system_messages` 中的字面输出。
+2. `environment`：把现行 `compose_environment_message` 手写拼装迁到模板，输出与现版本字节级或仅 whitespace 等价的 `[environment]` block。
+
+`user.input` 第一期**不动**，继续走现有 `compose_human_text` 路径，避免一次改动牵动 message ordering / dedup 逻辑。
+
+**第一期 EngineConfig**
+
+- `include_roots`：`[agent_config.layout.root, session_dir]` + 当前 workspace root（若绑定）
+- `__EXEC` 全程关闭
+- memory / notepads / skills / tools 目录**不进** include_roots
+- `max_include_bytes` / `max_total_bytes` 采用 `EngineConfig::default()`，等真有 behavior 触发限制再调
+
+**第一期不做**
+
+- 不接 `prompt_compose::SectionSpec` 的 budget 装配（两个 section 都是小段，第一期直接 render-then-concat，第二期再上 budget）
+- 不动 round_history / snapshot 持久化格式
+- 不引入新的 behavior cfg 字段
+- 不写 `__INCLUDE($paths.agent_root/role.md)__` 这类新模板；现有 behavior 模板保持原样
+
+**验收条件**
+
+- 现有 `chat_route` / `do` / `plan` / `groupchat_route` 四个 behavior 不修改任何配置文件即可跑通。
+- diff 渲染前后的 System message + environment block：字节级等价，或差异仅来自 whitespace / 模板引擎对空值的处理。
+- Loader 单元测试覆盖：缺 workspace、缺 title、空 input、有 input、`workspace.root` 未绑定时的 include_roots。
+
+**当前实现状态**
+
+- [x] `AgentSessionValueLoader` 新建（`src/frame/opendan/src/prompt_env.rs`）
+- [x] `render_system_messages` 改走 `PromptRenderEngine`，保留单花括号 `{name}` 兜底以不破坏现有 behavior
+- [x] `compose_environment_message` 改走 `PromptRenderEngine`（`ENVIRONMENT_BLOCK_TEMPLATE` 常量，输出与历史版本字节级等价）
+- [x] include_roots 注入（agent_root + session_root + workspace_root，若绑定）
+- [x] Loader 单元测试（10 项，覆盖 key 解析 / 聚合对象 / 完整 env block / 最小 env block / 部分 env block / legacy 单花括号 / engine+legacy 组合 / include_roots 边界）
+- [x] 四个现有 behavior 的等价性回归（`cargo test -p opendan --lib` 通过 121 项，未修改任何 `behaviors/*.toml`）
+
+### 15.2 后续阶段
+
+1. 引入 `prompt_compose::SectionSpec` 与 token budget 装配；`user.input` 迁入模板。
+2. 扩展 loader：`$workspace.summary` / `$workspace.readme` / `$agent.*` / `$owner.*`（带异步 IO）。
+3. `$history.*` / `$steps.*`：先实现 `last_user_message` / `last_assistant_message` / `round_summary` 三件套并设字符上限。
+4. `$memory.*`：与 memory 召回路径联动，按 section budget 决定是否进 prompt。
+5. `$process.*`、`$input.messages` 等结构化字段按 behavior 实际需求逐项放开。
+6. 评估是否把 `memory_root` / `notepads_root` / `skills_root` 按 behavior policy 加入 include_roots。
 
 ## 16. 当前必须避免的旧设计
 
