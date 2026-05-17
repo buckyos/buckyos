@@ -40,6 +40,7 @@ use crate::task_dispatch::TaskDispatch;
 /// message". Interpreted only at the session layer; the waist treats it as
 /// an opaque jump-target string.
 pub const NEXT_BEHAVIOR_WAIT_USER_MSG: &str = "WAIT_USER_MSG";
+const MAX_PENDING_INPUTS: usize = 256;
 
 #[derive(Debug, Clone)]
 pub enum SessionReply {
@@ -357,6 +358,19 @@ impl AgentSession {
                 if !already {
                     meta.pending_inputs.push(input);
                     changed = true;
+                }
+            }
+            if changed {
+                let dropped = enforce_pending_queue_limit(
+                    &mut meta.pending_inputs,
+                    MAX_PENDING_INPUTS,
+                    &self.agent_name,
+                );
+                if dropped > 0 {
+                    warn!(
+                        "opendan.session[{}]: pending queue exceeded {}; dropped {dropped} older unprotected item(s)",
+                        self.session_id, MAX_PENDING_INPUTS
+                    );
                 }
             }
         }
@@ -1995,7 +2009,7 @@ impl AgentSession {
             parts.push(format!("recent activity: {}", trimmed_status));
         }
         parts.push(format!("clock: unix_ms={}", now_ms()));
-        Some(format!("[environment]\n{}", parts.join("\n")))
+        Some(parts.join("\n"))
     }
 
     fn render_system_messages(&self, behavior: &BehaviorCfg) -> Vec<AiMessage> {
@@ -2217,12 +2231,15 @@ impl AgentSession {
                 // `max_rounds=0` but the assistant ack is already there).
                 // Surface that text before discarding the snapshot so it
                 // isn't silently lost.
-                if let Some(text) = partial.as_ref().and_then(output_to_text) {
-                    self.post_outbound_text(&text).await;
-                    let _ = self
-                        .reply_tx
-                        .send(SessionReply::AssistantText { text })
-                        .await;
+                if let Some(message) = partial.as_ref().and_then(output_to_ai_message) {
+                    self.post_outbound_message(&message).await;
+                    let text = message.text_content();
+                    if !text.trim().is_empty() {
+                        let _ = self
+                            .reply_tx
+                            .send(SessionReply::AssistantText { text })
+                            .await;
+                    }
                 }
                 let _ = self
                     .reply_tx
@@ -2844,20 +2861,6 @@ impl AgentSession {
         format_event_for_turn_with_subscriptions(event_id, data, &subscriptions)
     }
 
-    /// Compose + post an assistant reply through msg-center back to the
-    /// session's last-known peer. Quietly skips when any prerequisite is
-    /// missing (no msg-center bound, no peer DID, locally-injected session,
-    /// unparseable agent DID). Errors are warn-logged; the local reply path
-    /// is unaffected.
-    async fn post_outbound_text(&self, text: &str) {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        self.post_outbound_message(&AiMessage::text(AiRole::Assistant, trimmed.to_string()))
-            .await;
-    }
-
     async fn post_outbound_message(&self, message: &AiMessage) {
         // UI sessions are the only ones that reply through msg-center
         // today — work sessions surface their result via report.md instead.
@@ -2935,18 +2938,27 @@ impl AgentSession {
             workspace_dir,
             self.agent_name.clone(),
         );
-        let msg =
-            match llm_context::ai_message_to_msg_object_with_base_validated(message, msg, &validator)
-            {
-                Ok(msg) => msg,
-                Err(err) => {
-                    warn!(
-                        "opendan.session[{}]: outbound message conversion failed: {err}",
-                        self.session_id
-                    );
-                    return;
-                }
-            };
+        let egress_options = llm_context::MsgEgressOptions {
+            preserve_attachment_tag_in_egress: self
+                .agent_config
+                .toml
+                .preserve_attachment_tag_in_egress,
+        };
+        let msg = match llm_context::ai_message_to_msg_object_with_base_validated_with_options(
+            message,
+            msg,
+            &validator,
+            egress_options,
+        ) {
+            Ok(msg) => msg,
+            Err(err) => {
+                warn!(
+                    "opendan.session[{}]: outbound message conversion failed: {err}",
+                    self.session_id
+                );
+                return;
+            }
+        };
         if msg.content.content.trim().is_empty()
             && msg.content.refs.is_empty()
             && msg.content.machine.is_none()
@@ -3320,13 +3332,96 @@ fn pending_msg_preview(text: &str, message: &AiMessage) -> String {
     "[attachment]".to_string()
 }
 
+fn enforce_pending_queue_limit(
+    pending: &mut Vec<PendingInput>,
+    max: usize,
+    agent_name: &str,
+) -> usize {
+    if max == 0 {
+        let dropped = pending.len();
+        pending.clear();
+        return dropped;
+    }
+    let mut dropped = 0usize;
+    while pending.len() > max {
+        if remove_first_pending(pending, |input| matches!(input, PendingInput::Event { .. })) {
+            dropped += 1;
+            continue;
+        }
+        if remove_first_pending(pending, |input| {
+            matches!(input, PendingInput::Msg { .. })
+                && !pending_input_mentions_agent(input, agent_name)
+        }) {
+            dropped += 1;
+            continue;
+        }
+        if remove_first_pending(pending, |input| {
+            !matches!(input, PendingInput::Interrupt { .. })
+        }) {
+            dropped += 1;
+            continue;
+        }
+        break;
+    }
+    dropped
+}
+
+fn remove_first_pending<F>(pending: &mut Vec<PendingInput>, mut f: F) -> bool
+where
+    F: FnMut(&PendingInput) -> bool,
+{
+    if let Some(pos) = pending.iter().position(|input| f(input)) {
+        pending.remove(pos);
+        true
+    } else {
+        false
+    }
+}
+
+fn pending_input_mentions_agent(input: &PendingInput, agent_name: &str) -> bool {
+    let needle = agent_mention_token(agent_name);
+    if needle.is_empty() {
+        return false;
+    }
+    match input {
+        PendingInput::Msg {
+            text, ai_message, ..
+        } => {
+            text.to_ascii_lowercase().contains(&needle)
+                || ai_message
+                    .text_content()
+                    .to_ascii_lowercase()
+                    .contains(&needle)
+        }
+        PendingInput::Event { .. } | PendingInput::Interrupt { .. } => false,
+    }
+}
+
+fn agent_mention_token(agent_name: &str) -> String {
+    let normalized = agent_name
+        .trim()
+        .trim_start_matches('@')
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        String::new()
+    } else {
+        format!("@{normalized}")
+    }
+}
+
 fn compose_turn_message(messages: &[AiMessage], env: Option<String>) -> Option<AiMessage> {
     if messages.is_empty() {
         return None;
     }
     let mut blocks = Vec::new();
     if let Some(env) = env.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        append_turn_content(&mut blocks, AiContent::text(env));
+        append_turn_content(
+            &mut blocks,
+            AiContent::text(background_environment_block(&env)),
+        );
     }
     for message in messages {
         for block in &message.content {
@@ -3338,6 +3433,13 @@ fn compose_turn_message(messages: &[AiMessage], env: Option<String>) -> Option<A
     } else {
         Some(AiMessage::new(AiRole::User, blocks))
     }
+}
+
+fn background_environment_block(env: &str) -> String {
+    format!(
+        "<background_environment>\n{}\n</background_environment>",
+        env.trim()
+    )
 }
 
 fn append_turn_content(blocks: &mut Vec<AiContent>, block: AiContent) {
@@ -3370,6 +3472,10 @@ fn merge_env_and_human(env: Option<String>, human: Option<String>) -> Option<Str
         (None, Some(h)) => Some(h),
         (None, None) => None,
     }
+}
+
+fn output_to_ai_message(output: &ContextOutput) -> Option<AiMessage> {
+    output_to_text(output).map(|text| AiMessage::text(AiRole::Assistant, text))
 }
 
 fn output_to_text(output: &ContextOutput) -> Option<String> {

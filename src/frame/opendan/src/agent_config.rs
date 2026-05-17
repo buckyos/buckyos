@@ -85,6 +85,7 @@ pub struct AgentTomlFile {
     /// Empty ⇒ the runtime falls back to a built-in default
     /// (`"user requested cancel"`). See `AgentSession::interrupt`.
     pub cancel_reason: String,
+    pub preserve_attachment_tag_in_egress: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

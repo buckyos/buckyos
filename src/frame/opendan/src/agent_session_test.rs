@@ -26,10 +26,13 @@ fn compose_turn_message_preserves_structured_blocks() {
             },
         ],
     );
-    let out = compose_turn_message(&[msg], Some("[environment]".to_string())).unwrap();
+    let out = compose_turn_message(&[msg], Some("environment".to_string())).unwrap();
     assert_eq!(out.role, AiRole::User);
     assert_eq!(out.content.len(), 2);
-    assert_eq!(out.text_content(), "[environment]\n\nsee this");
+    assert_eq!(
+        out.text_content(),
+        "<background_environment>\nenvironment\n</background_environment>\n\nsee this"
+    );
     assert!(matches!(out.content[1], AiContent::Image { .. }));
 }
 
@@ -127,6 +130,38 @@ fn pending_event_replacement_keeps_terminal_over_progress() {
     };
     assert!(!should_replace_pending_event(&existing, &incoming));
     assert!(should_replace_pending_event(&incoming, &existing));
+}
+
+#[test]
+fn pending_queue_limit_drops_events_then_non_mentions() {
+    let mut pending = vec![
+        PendingInput::Msg {
+            record_id: "m1".to_string(),
+            from: "alice".to_string(),
+            from_did: None,
+            from_name: None,
+            tunnel_did: None,
+            text: "hello".to_string(),
+            ai_message: AiMessage::text(AiRole::User, "hello"),
+        },
+        PendingInput::Event {
+            event_id: "e1".to_string(),
+            data: serde_json::Value::Null,
+        },
+        PendingInput::Msg {
+            record_id: "m2".to_string(),
+            from: "bob".to_string(),
+            from_did: None,
+            from_name: None,
+            tunnel_did: None,
+            text: "@jarvis please check".to_string(),
+            ai_message: AiMessage::text(AiRole::User, "@jarvis please check"),
+        },
+    ];
+
+    assert_eq!(enforce_pending_queue_limit(&mut pending, 1, "jarvis"), 2);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].dedup_key(), "msg:m2");
 }
 
 #[test]

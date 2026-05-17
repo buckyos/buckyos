@@ -30,7 +30,7 @@ use buckyos_api::{
 };
 use llm_context::{parse_msg_object, MsgParseOutput};
 
-use crate::command_dispatcher::is_known_command;
+use crate::command_dispatcher::BUILTIN_COMMANDS;
 use log::{debug, info, warn};
 use name_lib::DID;
 use tokio::sync::{mpsc, Notify};
@@ -297,11 +297,11 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
         }
     }
 
-    // §3 — slash-command interception. `parse_msg_object` recognizes any
-    // `/<name>[ args]` shape; we then gate on a strict whitelist so user
-    // text like `/etc/nginx ...` flows back into LLM inference unchanged.
-    let inbound = match parse_msg_object(msg) {
-        MsgParseOutput::ControlCommand(cmd) if is_known_command(&cmd.command) => Inbound::Command {
+    // §3 — slash-command interception. `parse_msg_object` applies the
+    // registered command whitelist at the protocol boundary, so user text
+    // like `/etc/nginx ...` flows back into LLM inference unchanged.
+    let inbound = match parse_msg_object(msg, BUILTIN_COMMANDS) {
+        MsgParseOutput::ControlCommand(cmd) => Inbound::Command {
             record_id,
             from,
             from_did,
@@ -309,22 +309,6 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
             command: cmd.command,
             args: cmd.args,
         },
-        MsgParseOutput::ControlCommand(cmd) => {
-            // Not in the whitelist — fall back to message dispatch with
-            // the original text preserved so the LLM sees what the user
-            // actually wrote.
-            let ai_message = llm_context::msg_object_to_ai_message(msg);
-            Inbound::Msg {
-                record_id,
-                from,
-                from_did,
-                from_name,
-                tunnel_did,
-                session_id,
-                text: cmd.raw,
-                ai_message,
-            }
-        }
         MsgParseOutput::Message(ai_message) => Inbound::Msg {
             record_id,
             from,

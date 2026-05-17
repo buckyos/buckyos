@@ -38,11 +38,12 @@
 //!    `<attachment kind="document" obj_id="file:0123abcd" title="report.pdf"/>`
 //!
 //! 4. System-control commands are recognized before normal lowering through
-//!    `parse_msg_object`. The reserved MVP rule is intentionally strict:
-//!    a pure text message whose first byte is `/`, with no refs and no
-//!    machine payload, is returned as `MsgParseOutput::ControlCommand`.
-//!    Callers that do not want control semantics can use
-//!    `msg_object_to_ai_message` directly.
+//!    `parse_msg_object`. The rule is intentionally strict: a pure text
+//!    message matching `^/(<registered-command>)(\s+<args>)?$`, with no refs
+//!    and no machine payload, is returned as `MsgParseOutput::ControlCommand`.
+//!    Slash-prefixed text whose command name is not in the caller-supplied
+//!    registry falls through as a normal `AiMessage`. Callers that do not want
+//!    control semantics can use `msg_object_to_ai_message` directly.
 //!
 //! This file should remain free of OpenDAN session policy. It only translates
 //! protocol shapes; routing, authorization, command execution and reply policy
@@ -97,6 +98,11 @@ pub enum MsgParserError {
 /// as inert text so the message isn't silently corrupted.
 pub type AttachmentValidation = std::result::Result<(), String>;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MsgEgressOptions {
+    pub preserve_attachment_tag_in_egress: bool,
+}
+
 /// Out-of-band ACL / path policy injected at the egress conversion site.
 /// `msg_parser` itself is policy-free — opendan supplies a real
 /// implementation (workspace whitelist, ACL lookups, …); tests use the
@@ -118,11 +124,11 @@ pub trait AttachmentValidator: Send + Sync {
 pub struct PermissiveAttachmentValidator;
 impl AttachmentValidator for PermissiveAttachmentValidator {}
 
-/// Parse a `MsgObject` into either a reserved system-control command or a
-/// normal `AiMessage`. Use this at MessageHub ingress points where `/...`
-/// control commands should be intercepted before they reach the LLM.
-pub fn parse_msg_object(msg: &MsgObject) -> MsgParseOutput {
-    if let Some(command) = msg_object_control_command(msg) {
+/// Parse a `MsgObject` into either a registered system-control command or a
+/// normal `AiMessage`. Use this at MessageHub ingress points where
+/// slash-commands should be intercepted before they reach the LLM.
+pub fn parse_msg_object(msg: &MsgObject, registered_commands: &[&str]) -> MsgParseOutput {
+    if let Some(command) = msg_object_control_command(msg, registered_commands) {
         MsgParseOutput::ControlCommand(command)
     } else {
         MsgParseOutput::Message(msg_object_to_ai_message(msg))
@@ -198,8 +204,22 @@ pub fn ai_message_to_msg_object_with_base(
 /// rather than silently dropping a half-converted ref.
 pub fn ai_message_to_msg_object_with_base_validated(
     message: &AiMessage,
+    base: MsgObject,
+    validator: &dyn AttachmentValidator,
+) -> Result<MsgObject, MsgParserError> {
+    ai_message_to_msg_object_with_base_validated_with_options(
+        message,
+        base,
+        validator,
+        MsgEgressOptions::default(),
+    )
+}
+
+pub fn ai_message_to_msg_object_with_base_validated_with_options(
+    message: &AiMessage,
     mut base: MsgObject,
     validator: &dyn AttachmentValidator,
+    options: MsgEgressOptions,
 ) -> Result<MsgObject, MsgParserError> {
     let mut text_parts: Vec<String> = Vec::new();
     let mut refs: Vec<RefItem> = Vec::new();
@@ -208,17 +228,16 @@ pub fn ai_message_to_msg_object_with_base_validated(
     for block in &message.content {
         match block {
             AiContent::Text { text } => {
-                collect_text_and_attachment_tags(text, &mut text_parts, &mut refs, validator)?;
-            }
-            AiContent::Image { source } => {
-                collect_resource_ref(
-                    "image",
-                    source,
-                    None,
+                collect_text_and_attachment_tags(
+                    text,
                     &mut text_parts,
                     &mut refs,
                     validator,
-                );
+                    options,
+                )?;
+            }
+            AiContent::Image { source } => {
+                collect_resource_ref("image", source, None, &mut text_parts, &mut refs, validator);
             }
             AiContent::Document { source, title } => {
                 collect_resource_ref(
@@ -265,7 +284,13 @@ pub fn ai_message_to_msg_object_with_base_validated(
     Ok(base)
 }
 
-pub fn msg_object_control_command(msg: &MsgObject) -> Option<SystemControlCommand> {
+pub fn msg_object_control_command(
+    msg: &MsgObject,
+    registered_commands: &[&str],
+) -> Option<SystemControlCommand> {
+    if registered_commands.is_empty() {
+        return None;
+    }
     if !is_plain_text_format(msg.content.format.as_ref()) {
         return None;
     }
@@ -281,10 +306,14 @@ pub fn msg_object_control_command(msg: &MsgObject) -> Option<SystemControlComman
     if command.is_empty() {
         return None;
     }
+    let registered = registered_commands
+        .iter()
+        .map(|name| name.trim())
+        .find(|name| !name.is_empty() && name.eq_ignore_ascii_case(&command))?;
     let args = parts.next().unwrap_or_default().trim().to_string();
     Some(SystemControlCommand {
         raw: raw.to_string(),
-        command,
+        command: registered.to_ascii_lowercase(),
         args,
     })
 }
@@ -395,12 +424,18 @@ fn collect_text_and_attachment_tags(
     text_parts: &mut Vec<String>,
     refs: &mut Vec<RefItem>,
     validator: &dyn AttachmentValidator,
+    options: MsgEgressOptions,
 ) -> Result<(), MsgParserError> {
     let mut ordinary = Vec::new();
     for line in text.lines() {
         if let Some(tag) = parse_attachment_tag(line.trim()) {
             match attachment_tag_to_ref_item(&tag, validator)? {
-                AttachmentLowering::Ref(item) => refs.push(item),
+                AttachmentLowering::Ref(item) => {
+                    refs.push(item);
+                    if options.preserve_attachment_tag_in_egress {
+                        ordinary.push(render_attachment_tag(&tag));
+                    }
+                }
                 AttachmentLowering::Keep => ordinary.push(render_attachment_tag(&tag)),
                 AttachmentLowering::Rejected(reason) => {
                     ordinary.push(render_attachment_rejection(&tag, &reason));
@@ -725,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_text_is_reserved_control_command() {
+    fn slash_text_matching_registered_name_is_control_command() {
         let msg = MsgObject {
             content: MsgContent {
                 format: Some(MsgContentFormat::TextPlain),
@@ -735,12 +770,34 @@ mod tests {
             ..MsgObject::default()
         };
 
-        match parse_msg_object(&msg) {
+        match parse_msg_object(&msg, &["clear", "list", "switch", "help"]) {
             MsgParseOutput::ControlCommand(cmd) => {
                 assert_eq!(cmd.command, "switch");
                 assert_eq!(cmd.args, "coding");
             }
             other => panic!("expected control command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slash_text_not_in_registry_lowers_as_message() {
+        let msg = MsgObject {
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: "/etc/nginx/conf 帮我看下".to_string(),
+                ..MsgContent::default()
+            },
+            ..MsgObject::default()
+        };
+
+        match parse_msg_object(&msg, &["clear", "list", "switch", "help"]) {
+            MsgParseOutput::Message(ai) => match &ai.content[0] {
+                AiContent::Text { text } => {
+                    assert_eq!(text, "/etc/nginx/conf 帮我看下");
+                }
+                other => panic!("expected text message, got {other:?}"),
+            },
+            other => panic!("expected normal message, got {other:?}"),
         }
     }
 
@@ -790,5 +847,32 @@ mod tests {
         assert_eq!(out.content.content, "see this");
         assert_eq!(out.content.refs.len(), 1);
         assert_eq!(out.content.refs[0].label.as_deref(), Some("x.png"));
+    }
+
+    #[test]
+    fn text_attachment_marker_can_be_preserved_by_option() {
+        let msg = AiMessage::text(
+            AiRole::Assistant,
+            "see this\n<attachment kind=\"image\" obj_id=\"file:010203\" title=\"x.png\" />",
+        );
+        let base = MsgObject::new(
+            DID::undefined(),
+            vec![DID::undefined()],
+            MsgObjKind::Chat,
+            MsgContent::default(),
+        );
+
+        let out = ai_message_to_msg_object_with_base_validated_with_options(
+            &msg,
+            base,
+            &PermissiveAttachmentValidator,
+            MsgEgressOptions {
+                preserve_attachment_tag_in_egress: true,
+            },
+        )
+        .unwrap();
+
+        assert!(out.content.content.contains("<attachment"));
+        assert_eq!(out.content.refs.len(), 1);
     }
 }

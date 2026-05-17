@@ -41,6 +41,12 @@ const TG_API_HASH_ENV_KEY: &str = "BUCKYOS_TG_API_HASH";
 const TG_SESSION_DIR_ENV_KEY: &str = "BUCKYOS_TG_SESSION_DIR";
 const TG_BINDING_EXTRA_BOT_TOKEN: &str = "bot_token";
 const TG_BOT_API_ENDPOINT: &str = "https://api.telegram.org";
+const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
+    ("clear", "Clear current session history"),
+    ("list", "List active sessions on this agent"),
+    ("switch", "Bind this chat to another session"),
+    ("help", "Show supported commands"),
+];
 
 #[derive(Debug, Clone)]
 pub struct TgTunnelConfig {
@@ -772,6 +778,56 @@ fn resolve_binding_bot_token(binding: &TgBotBinding) -> AnyResult<String> {
     Ok(token)
 }
 
+fn tg_builtin_commands_payload() -> Value {
+    let commands = TG_BUILTIN_COMMANDS
+        .iter()
+        .map(|(command, description)| {
+            json!({
+                "command": command,
+                "description": description,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "commands": commands })
+}
+
+async fn register_tg_builtin_commands(
+    http: &HttpClient,
+    token: &str,
+    gateway: &str,
+    owner_did: &DID,
+    bot_account_id: &str,
+) {
+    match BotApiTgGateway::call_api_with_client::<bool>(
+        http,
+        token,
+        "setMyCommands",
+        Some(tg_builtin_commands_payload()),
+    )
+    .await
+    {
+        Ok(true) => info!(
+            "telegram commands registered (gateway={}): owner={}, bot={}",
+            gateway,
+            owner_did.to_string(),
+            bot_account_id
+        ),
+        Ok(false) => warn!(
+            "telegram setMyCommands returned false (gateway={}): owner={}, bot={}",
+            gateway,
+            owner_did.to_string(),
+            bot_account_id
+        ),
+        Err(error) => warn!(
+            "telegram setMyCommands failed (gateway={}): owner={}, bot={}, error={}",
+            gateway,
+            owner_did.to_string(),
+            bot_account_id,
+            error
+        ),
+    }
+}
+
 struct GrammersTgRuntime {
     owner_did: DID,
     bot_account_id: String,
@@ -1274,6 +1330,15 @@ impl GrammersTgGateway {
             me.bare_id(),
             me.username()
         );
+        let http = HttpClient::new();
+        register_tg_builtin_commands(
+            &http,
+            token,
+            "grammers",
+            &binding.owner_did,
+            &binding.bot_account_id,
+        )
+        .await;
 
         Ok((
             GrammersTgRuntime {
@@ -2447,6 +2512,14 @@ impl TgGateway for BotApiTgGateway {
                 me.id,
                 me.username
             );
+            register_tg_builtin_commands(
+                &self.http,
+                &token,
+                "bot_api",
+                &binding.owner_did,
+                &binding.bot_account_id,
+            )
+            .await;
 
             let runtime = BotApiTgRuntime {
                 owner_did: binding.owner_did.clone(),

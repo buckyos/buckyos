@@ -6,53 +6,106 @@
 
 Agent 在执行复杂任务时，需要把当前 work session 中的工作拆成一组较小的 Todo，并把每个 Todo 交给更干净的上下文去执行。Todo 工具的目标不是创建一个全局任务系统，而是在当前 session 内维护一个有序、可追踪、可回溯的工作列表。
 
-核心目标：
+### 1.1 设计哲学
+
+Todo **不是一个通用任务系统**，它本质上是一种 **LLM Behavior 引导机制 —— 可以理解为 CoT 的升级版**。
+
+在我们的 LLM Behavior 状态机里：
+
+- 旧的 PDCA 状态机是一个**图**。
+- 现在的 Behavior 状态机更接近一棵**树**。
+
+#### 为什么从图（Graph PDCA）转到树（Tree Plan-Do）
+
+全图 PDCA 模式下我们观察到的核心问题是：**Do 不仅要干活，还要操心"下一步该把自己切到 Plan 还是 Check"**。Do 本来是整条工作流里最重要、最实际的执行层，结果它的 prompt 里被迫塞进了对整体工作流的判断 —— 这既污染了 Do 的上下文，又让 Do 的实现变重。
+
+转到树模式之后，Do 的责任被收窄到**只负责"结束"**：
+
+1. Do 是核心干活的环节，是真正的执行层。
+2. Do 领到任务时，**任务和必要的 skills 都已经由 Plan 在一个纯不干活的环境里准备好**，直接交付。
+3. Do 在一个**干净的、只属于自己的上下文**里专注做完这一件事。
+4. 做完以后，Do **不需要决定下一步状态机走到哪里**，只需要告诉调用方"我这件事做完了"。
+5. 上层是什么状态机、下一个分支是 Plan / Check / 还是再 fork 一个 Do，**Do 完全不关心**。
+
+这就是为什么 Todo 在结构上是 Behavior 树的一个分支节点：
+
+- `createTodo` 显式地把当前 session 的 Behavior 切换到 Execute / DO 状态；
+- DO 模块的实现非常简单 —— 它只需要调用 `get_current_todo` 拿到那一个 Todo 并执行，不需要在多个候选里挑；
+- 执行 Todo 相当于一次 **MContext 的 Fork**，创建出一个推理分支；
+- 分支执行完毕后**自动回到主干**；主干视角下这等同于一次"函数调用"，直接看到上一次执行的结果（status + summary + report）。
+
+正是因为采用了 **fork-join 的执行模型**，Todo 的状态管理才能保持轻量 —— 主干不需要维护一个复杂的状态机，只需要显式 push 下一步要做的事情；Do 也不需要维护它，只需要在分支结束时"返回"。
+
+我们也刻意保持工具面**尽量小**：能交给分支自身推理历史承担的，就不挂在 Todo 工具上。
+
+### 1.2 核心目标
 
 1. 在 `plan` 模式下创建、查看、管理当前 session 的 Todo 列表。
 2. 在执行模式下，Agent 只看到并执行当前 `current todo`。
 3. Todo 执行完成后，主干上下文只接收该 Todo 的状态、简短摘要和最终报告。
-4. 如需深入了解某个 Todo 的内部执行过程，可通过详情接口进入该 Todo 的工作记录目录继续探索。
-5. 与系统级 `Task` 区分清楚：Task 是全局、长期、可分布式查询状态的任务；Todo 是 session 级、临时、只在当前 work session 内有效的工作项。
+4. 如需深入了解某个 Todo 的内部执行过程，**直接进入对应分支的推理历史 / 工作目录查看**，而不是查 Todo 工具的中间日志。
+5. 与系统级 `Task` 区分清楚：Task 的**状态**保存在系统侧、可分布式查询；但 Task 的**历史**归档在 Workspace 维度，因此跨 session 仍能看见。Todo 是 session 级、临时、只在当前 work session 内有效的工作项。
 
 ---
 
 ## 2. 核心概念
 
-### 2.1 Task：系统级任务
+### 2.1 Workspace 与 Session 的生命周期
+
+理解 Task / Todo 持久化层级的前提，是先理清两层容器：
+
+- **Workspace**：长期存在的工作空间（典型例子：一个代码目录）。生命周期远长于 Session，一个 Workspace 会被多个 Session 反复进入。
+- **Session**：可以结束、可以被删除的会话。
+
+由此引出一条核心原则：
+
+> 凡是会对**外部产生影响**的事情，即使发起它的 Session 已经结束，下次另一个 Session 关联到同一个 Workspace 时，**也必须仍能看到它**。
+
+这是 Task 和 Todo 持久化粒度不同的根本原因 —— delegate 出去的 Task 已经对外部造成影响，必须在 Workspace 维度可见；而 Todo 只是对本次 LLM 推理的引导，没有外部副作用，可以随 Session 一起消失。
+
+### 2.2 Task：系统级任务
 
 `Task` 是系统级概念。
 
-- 一旦创建，Task 可通过 `taskID` 在整个分布式系统中查询状态。
-- Task 是长期存在的，不依赖当前 work session 生命周期。
+- **状态管理在系统侧**：一旦创建，Task 可通过 `taskID` 在整个分布式系统中查询状态。
+- **历史 / 记录归档在 Workspace 维度**：
+  - 一旦 delegate 出去（例如发请求让另一位 Agent / 人帮忙 review），就已经产生了外部影响 —— 不能因为发起它的 Session 结束就让这条记录消失；
+  - 后续任何关联到同一个 Workspace 的 Session 都应该能看到这个 Task 的存在与最新状态。
+- 创建 / delegate 一个 Task 时，**必须显式记录**：
+  - 由哪一个 Session 发起；
+  - 基于什么目的（purpose / context）。
+- Task 是长期存在的，不依赖单个 Session 的生命周期。
 - Task 可能被 delegate 到外部执行者或外部系统。
-- Task 的状态变化不依赖 `plan` 模式本身。
 - 如果 Agent 需要等待某个 delegated task 的结果，Agent 应等待、设置后续检查计划，或者在超时后决定是否重新 plan。
 
-### 2.2 Todo：Session 级工作项
+### 2.3 Todo：Session 级工作项
 
-`Todo` 是当前 work session 内部的工作项。
+`Todo` 是当前 work session 内部的工作项，本质上是 **LLM Behavior 树上的一个分支节点**。
 
 - Todo 与当前 session 绑定。
-- session 被删除后，Todo 列表及其 Todo 项也随之失效。
+- session 被删除后，Todo 列表及其 Todo 项也随之失效（因为它从未对外部产生影响）。
 - Todo 的有效范围只在当前 session 内。
 - Todo 用来承载 Agent 在当前 session 中拆出来的下一步执行单元。
-- Todo 没有外部执行者选择，默认由当前 Agent 在执行模式下完成。
+- Todo 没有外部执行者选择 —— 默认由当前 Agent 在执行模式下完成，对应推理分支的一次 fork-join。
 
-### 2.3 Task 与 Todo 的区别
+### 2.4 Task 与 Todo 的区别
 
 | 维度 | Task | Todo |
 | --- | --- | --- |
 | 生命周期 | 长期存在 | 随 session 存在 |
-| 作用域 | 系统级 / 分布式系统级 | 当前 work session |
+| 状态归属 | 系统级 / 分布式系统级 | 当前 work session |
+| 历史归档 | Workspace 维度（跨 session 可见）| 随 session 消失 |
 | ID | 较长的 `taskID` | 较短的 `todoID` |
 | 可查询性 | 可全局查询状态 | 仅当前 session 内有效 |
 | 执行者 | 可 delegate 给外部执行者或系统 | 默认由当前 Agent 执行 |
-| 删除 session 后 | 仍可能存在 | 不再存在 |
+| 删除 session 后 | 仍可见（已对外部产生影响）| 不再存在 |
 | 是否可混入列表展示 | 可在 TodoList 中展示 delegated task 状态 | TodoList 的主要对象 |
 
 ---
 
 ## 3. 模式与执行语义
+
+> 整体心智模型见 §1.1：Todo 是 Behavior 树的分支节点；`createTodo` 切到 DO，DO 只 `get_current_todo` 不做选择，执行=MContext fork，结束=自动 join 回主干。本节给出具体的模式语义。
 
 ### 3.1 Plan 模式
 
@@ -70,16 +123,16 @@ Agent 在执行复杂任务时，需要把当前 work session 中的工作拆成
 
 ### 3.2 执行模式 / Worker 模式
 
-执行模式只负责完成当前 `current todo`。
+执行模式只负责完成当前 `current todo`。这是一次 MContext 分支的生命周期。
 
 在执行模式下：
 
-- Agent 只看到当前 Todo，而不是完整 Todo 列表。
+- Agent 只看到当前 Todo，而不是完整 Todo 列表 —— **DO 模块的唯一动作就是 `get_current_todo`**，不需要从候选里挑。
 - 当前 Todo 的提示词由 `current todo` 的模板渲染而来。
-- Agent 应能看到该 Todo 被创建时所在回合的必要上下文，也就是“为什么创建这个 Todo”。
+- Agent 应能看到该 Todo 被创建时所在回合的必要上下文，也就是”为什么创建这个 Todo”。
 - Agent 基于当前 Todo 的详细描述、checklist、tags、skills 和创建上下文执行工作。
-- Todo 完成后，Agent 需要设置最终状态，并给出摘要和最终报告。
-- 主干上下文默认只看到 Todo 完成后的 report / summary，而不是完整内部执行轨迹。
+- Todo 完成后，Agent 调用 `updateState` 设置最终状态，并给出摘要和最终报告 —— 此时分支 join 回主干。
+- 主干上下文默认只看到 Todo 完成后的 status / summary / report，**完整内部执行轨迹保留在该分支的推理历史 / 工作目录中**，需要时再追溯。
 
 ### 3.3 Current Todo
 
@@ -116,7 +169,7 @@ Todo 工具的设计目标之一，是支持树状执行路径。
 
 #### 用途
 
-创建一个绑定到当前 session 的 Todo。
+创建一个绑定到当前 session 的 Todo。**副作用**：这是显式地把当前 session 的 Behavior 切换到 Execute / DO 状态的开关。
 
 #### 语义
 
@@ -173,7 +226,33 @@ agent todo create \
 
 ---
 
-### 5.2 `todoList`
+### 5.2 `get_current_todo`
+
+#### 用途
+
+DO 模块进入执行模式后，调用本接口拿到**当前要执行的那一个** Todo —— DO 不做选择。
+
+#### 语义
+
+- 返回当前 session 的 `current todo`（§3.3 给出的定义：第一个未完成的 Todo）。
+- 同时返回执行该 Todo 所必需的全部上下文：详细描述、checklist、tags、skills、创建上下文（为什么创建这个 Todo）。
+- 若没有未完成 Todo，返回空 —— 这意味着该 session 的 DO 阶段已经结束，Behavior 应回到 plan。
+- 这是一个**只读**接口，不改变状态；状态由 `updateState` 收尾。
+
+#### 返回字段
+
+| 字段 | 说明 |
+| --- | --- |
+| `todoID` | 当前 Todo 的 ID。 |
+| `status` | 当前状态。 |
+| `description` | 详细描述。 |
+| `checklist` | 验收点。 |
+| `tags` | 标签。 |
+| `skills` | 绑定 skills。 |
+| `creationContext` | 创建该 Todo 时的回合上下文。 |
+| `orderIndex` | 在队列中的顺序。 |
+
+### 5.3 `todoList`
 
 #### 用途
 
@@ -212,7 +291,7 @@ agent todo list
 
 ---
 
-### 5.3 详情接口：`getDetail`
+### 5.4 详情接口：`getDetail`
 
 > 命名建议：语音中出现了 `getTodo`、`getTodoDetail`、`getTaskDetail`。需求上应统一为一个详情接口，避免维护两个语义重复的函数。建议命名为 `getDetail(id)`，并兼容 TodoID 与 TaskID。若最终仍采用更具体的命名，则应保证 `getTodoDetail` / `getTaskDetail` 在底层是同一能力。
 
@@ -268,7 +347,7 @@ agent detail task_01J...
 
 ---
 
-### 5.4 状态更新接口：`updateState`
+### 5.5 状态更新接口：`updateState`
 
 > 命名建议：语音中出现了 `updateTaskState` 和 `updateTodoState`。需求上二者语义接近，建议统一为 `updateState(id, ...)`，并根据 ID 类型处理 Todo 或 Task。若保留两个命令，也应共享同一套状态枚举与参数结构。
 
@@ -377,6 +456,16 @@ currentTodo = TodoList 中第一个 status 不属于 completed / failed / timeou
 ---
 
 ## 7. Delegated Task 与 TodoList 的关系
+
+### 7.0 持久化层级与归属
+
+- Delegated Task 一旦发出，已经对外部产生影响 —— 它的记录必须保存在 **Workspace 维度**，跨 session 可见（详见 §2.1 / §2.2）。
+- 即使发起它的 session 已经结束，下次另一个 session 关联到同一 Workspace 时，TodoList 仍应能列出这个 Task 及其最新状态。
+- 每个 delegated Task 必须显式记录：
+  - **发起 session**：由哪一个 session 发起；
+  - **目的（purpose / context）**：基于什么目的发出。
+- Workspace 维度的隔离是硬要求：不同 Workspace 之间不互相看见对方 delegate 出去的 Task。
+- 使用TaskMgr来保存Task（注意能用workspaceid查询到相关的Task)
 
 ### 7.1 展示关系
 
@@ -560,7 +649,7 @@ Todo A 已完成
 
 ## 12. 待确认事项
 
-以下内容语音中已有方向，但需要最终定稿：
+以下内容已有方向，但需要最终定稿：
 
 1. 统一详情接口最终命名：`getDetail`、`getTodoDetail`，还是兼容 `getTaskDetail`。
 2. 统一状态更新接口最终命名：`updateState`，还是保留 `updateTodoState` / `updateTaskState` 两个外壳。
@@ -568,3 +657,6 @@ Todo A 已完成
 4. Todo 工作目录结构的具体文件命名与 manifest 格式。
 5. `blocked` 是否作为正式状态，还是只保留 `pending/running/completed/failed/timeout`。
 6. “设置稍后检查计划”的能力是否属于 Todo CLI，还是由另一个 scheduler / task 工具负责。
+7. **Todo 是否提供 note 接口（中间记录）**：PDCA 有 notes。Todo 当前倾向**不加** —— 工具面尽量小，中间过程交给分支自身的推理历史 / 工作目录承担，要看细节直接进对应分支历史查。仍在考虑中。
+8. **Worker 完成被主干否决后的回流路径**：旧版的 `CHECK_FAILED` 在新版状态机里已被砍掉。当主干评审 Worker 产物不通过时，是新建一个 Todo 来重做（更符合§8.1 “不修改 / 要重做就新建”原则），还是补一个 `needs_revision` 态？默认走前者，需文档显式声明。
+9. **Workspace 与 Session 关联模型**：同一 Workspace 在不同时刻被不同 Session 关联时，TodoList 中”前任 session 留下的 delegated Task”如何展示（按时间倒序？按未完成置顶？），需要补一份具体规则。

@@ -1,13 +1,10 @@
 //! §3 — slash-command dispatcher.
 //!
-//! `llm_context::msg_parser::parse_msg_object` recognizes anything whose
-//! `MsgContent.content` starts with `/` as a candidate
-//! `SystemControlCommand`. The protocol requires a **strict whitelist**:
-//! the command name must be in the registry below, otherwise the message
-//! is treated as ordinary text and flows into normal LLM inference. This
-//! is what eliminates the "`/etc/nginx/conf` looks like a command"
-//! false-positive — the parser is permissive on shape, this dispatcher
-//! is strict on identity.
+//! `llm_context::msg_parser::parse_msg_object` receives the registry below
+//! and only returns `SystemControlCommand` when the message exactly matches
+//! one of these command names. Everything else is treated as ordinary text
+//! and flows into normal LLM inference, including paths such as
+//! `/etc/nginx/conf`.
 //!
 //! Each `CommandSpec` carries a short `summary` so `/help` can enumerate
 //! the registry without duplicating documentation.
@@ -55,13 +52,18 @@ pub struct CommandOutcome {
 /// small — it only routes by name and delegates the side-effects to
 /// existing agent methods (clear/list/switch). Adding new commands means
 /// extending `BUILTIN_COMMANDS` and the `match` arm below.
-pub async fn run_command(agent: &Arc<AIAgent>, invocation: &CommandInvocation) -> Result<CommandOutcome> {
+pub async fn run_command(
+    agent: &Arc<AIAgent>,
+    invocation: &CommandInvocation,
+) -> Result<CommandOutcome> {
     let cmd = invocation.command.trim().to_ascii_lowercase();
     match cmd.as_str() {
         "clear" => clear_session(agent, invocation).await,
         "list" => list_sessions(agent).await,
         "switch" => switch_session(agent, invocation).await,
-        "help" => Ok(CommandOutcome { reply: render_help() }),
+        "help" => Ok(CommandOutcome {
+            reply: render_help(),
+        }),
         _ => Ok(CommandOutcome {
             reply: format!(
                 "unknown command `/{}` — try /help for the full list",
