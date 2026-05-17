@@ -578,6 +578,22 @@ impl WorklogSink for OpenDanWorklogSink {
                     "compressed history: {from_messages} → {to_messages}"
                 )),
             ),
+            WorkEvent::SelfReportSet { trace_id, chars } => (
+                "SelfReportSet",
+                "ok",
+                json!({"trace_id": trace_id, "chars": chars}),
+                Some(format!("self-report set ({chars} chars)")),
+            ),
+            WorkEvent::MessageSent {
+                trace_id,
+                target,
+                chars,
+            } => (
+                "MessageSent",
+                "ok",
+                json!({"trace_id": trace_id, "target": &target, "chars": chars}),
+                Some(format!("message → {target} ({chars} chars)")),
+            ),
         };
 
         self.update_status(status_line);

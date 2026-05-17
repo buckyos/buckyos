@@ -138,6 +138,20 @@ pub enum WorkEvent {
         from_messages: usize,
         to_messages: usize,
     },
+    /// Self Report (`<report>` without `target`) just overwrote
+    /// `LLMContextState.last_report`. `chars` is for size-quota visibility.
+    SelfReportSet {
+        trace_id: Option<String>,
+        chars: usize,
+    },
+    /// SendMessage-form report (`<report target="...">`) emitted by the LLM.
+    /// v2 first cut is stub-only: this event records intent, but no real
+    /// delivery happens until the `send_message` agent_tool lands.
+    MessageSent {
+        trace_id: Option<String>,
+        target: String,
+        chars: usize,
+    },
 }
 
 /// Cheap token estimator. Implementations can wrap a tokeniser library or

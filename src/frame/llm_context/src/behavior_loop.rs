@@ -12,11 +12,15 @@ use serde::{Deserialize, Serialize};
 use crate::observation::Observation;
 
 /// One Behavior step. Carries both the LLM-emitted intent (`assistant_text`
-/// + the 4 schema slots) and the dispatcher-side echo (`action_result`).
+/// + the parsed slots) and the dispatcher-side echo (`action_results`).
 ///
 /// Persisted into `LLMContextState::steps` once sedimented; the freshest
 /// (still-hot) step lives in `LLMContextState::last_step` and is rendered
 /// verbatim into the next inference.
+///
+/// v2 of the Behavior protocol (`doc/opendan/Agent Actions.md`) allows
+/// multiple actions per step via the `<actions>` container. `actions` is
+/// `Vec<_>` and `action_results` is index-aligned with it.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StepRecord {
     // —— Filled by parser (before action dispatch) ——
@@ -30,24 +34,44 @@ pub struct StepRecord {
     /// "Thought" slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thought: Option<String>,
-    /// "Action" slot — at most one action per step in v1.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<AiToolCall>,
+    /// "Actions" slot — zero or more actions per step. Empty on
+    /// pure-thought / terminal-only steps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<AiToolCall>,
     /// "Next behavior" slot — when `Some`, this step is terminal and the
-    /// action (if any) is **not** dispatched.
+    /// actions (if any) are still dispatched first, then the loop returns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_behavior: Option<String>,
+    /// Self Report (`<report>` without `target`) — overwrites
+    /// `LLMContextState.last_report` at dispatch time. Kept on the step too
+    /// so the rendered history preserves the report-emit event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_report: Option<String>,
+    /// SendMessage-form reports (`<report target=...>`) emitted in this step.
+    /// Stub in v2 first cut: parser captures them, executor only emits a
+    /// worklog event. Real delivery moves to a standard `send_message`
+    /// agent_tool in a later phase.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages_sent: Vec<SendMessageRecord>,
 
     // —— Filled by executor (after action dispatch) ——
-    /// Echo of the dispatched action. `None` on terminal steps or when there
-    /// was no action (pure-thought step).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action_result: Option<Observation>,
+    /// Per-action observation, index-aligned with `actions`. Empty on
+    /// steps with no actions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub action_results: Vec<Observation>,
+}
+
+/// One `<report target=...>` emit (SendMessage form). v2 stub: recorded on
+/// the step for transcript / audit; not actually delivered yet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendMessageRecord {
+    pub target: String,
+    pub body: String,
 }
 
 impl StepRecord {
-    /// Build a step from a parser result. `action_result` is left empty —
-    /// the dispatcher fills it after running the action.
+    /// Build a step from a parser result. `action_results` is left empty —
+    /// the dispatcher fills it after running the actions.
     pub fn from_result(result: LLMBehaviorResult) -> Self {
         let LLMBehaviorResult {
             assistant_text,
@@ -55,31 +79,37 @@ impl StepRecord {
             thought,
             do_actions,
             next_behavior,
+            self_report,
+            messages_to_send,
         } = result;
         Self {
             assistant_text,
             observation,
             thought,
-            action: do_actions.into_iter().next(),
+            actions: do_actions,
             next_behavior,
-            action_result: None,
+            self_report,
+            messages_sent: messages_to_send,
+            action_results: Vec::new(),
         }
     }
 
     /// Synthetic step describing a parser failure. The error text is exposed
-    /// to the LLM as `assistant_text` and as a synthetic error observation,
-    /// so the next inference can self-correct (FeedAsObservation style).
+    /// to the LLM as a synthetic error observation so the next inference can
+    /// self-correct (FeedAsObservation style).
     pub fn from_parse_error(error: &str) -> Self {
         Self {
             assistant_text: String::new(),
             observation: None,
             thought: None,
-            action: None,
+            actions: Vec::new(),
             next_behavior: None,
-            action_result: Some(Observation::Error {
+            self_report: None,
+            messages_sent: Vec::new(),
+            action_results: vec![Observation::Error {
                 call_id: String::new(),
                 message: format!("parse failed: {error}"),
-            }),
+            }],
         }
     }
 }
@@ -89,8 +119,8 @@ impl StepRecord {
 /// and by `StepRecord::from_result`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LLMBehaviorResult {
-    /// Dispatchable actions extracted from the "Action" slot. v1 ships at
-    /// most one entry; the field is `Vec` to leave room for parallel actions.
+    /// Dispatchable actions extracted from the `<actions>` container,
+    /// excluding `<report>` (which is captured separately below).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub do_actions: Vec<AiToolCall>,
     /// Terminal signal + jump target. `Some(_)` is terminal; the loop does
@@ -104,6 +134,15 @@ pub struct LLMBehaviorResult {
     pub observation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thought: Option<String>,
+
+    /// Self Report (`<report>` without `target`) — at most one per step;
+    /// last occurrence wins. Overwrites `LLMContextState.last_report`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_report: Option<String>,
+    /// SendMessage-form reports (`<report target=...>`); recorded in order of
+    /// appearance. Stub-delivered in v2 first cut.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages_to_send: Vec<SendMessageRecord>,
 }
 
 impl LLMBehaviorResult {
@@ -112,11 +151,13 @@ impl LLMBehaviorResult {
     /// parser produced.
     pub fn from_step(step: &StepRecord) -> Self {
         Self {
-            do_actions: step.action.clone().into_iter().collect(),
+            do_actions: step.actions.clone(),
             next_behavior: step.next_behavior.clone(),
             assistant_text: step.assistant_text.clone(),
             observation: step.observation.clone(),
             thought: step.thought.clone(),
+            self_report: step.self_report.clone(),
+            messages_to_send: step.messages_sent.clone(),
         }
     }
 }

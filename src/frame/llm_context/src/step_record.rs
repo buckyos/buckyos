@@ -87,11 +87,7 @@ impl XmlStepRenderer {
 
     fn render_full(&self, step: &StepRecord) -> (AiMessage, AiMessage) {
         let assistant = AiMessage::text(AiRole::Assistant, step.assistant_text.clone());
-        let user_text = render_action_result_full(
-            step.action.as_ref(),
-            step.action_result.as_ref(),
-            self.max_result_chars,
-        );
+        let user_text = render_action_results_full(step, self.max_result_chars);
         let user = AiMessage::text(AiRole::User, user_text);
         (assistant, user)
     }
@@ -99,11 +95,7 @@ impl XmlStepRenderer {
     fn render_compact(&self, step: &StepRecord) -> (AiMessage, AiMessage) {
         let assistant_text = compact_assistant_text(step, self.summary_chars);
         let assistant = AiMessage::text(AiRole::Assistant, assistant_text);
-        let user_text = render_action_result_compact(
-            step.action.as_ref(),
-            step.action_result.as_ref(),
-            self.summary_chars / 2,
-        );
+        let user_text = render_action_results_compact(step, self.summary_chars / 2);
         let user = AiMessage::text(AiRole::User, user_text);
         (assistant, user)
     }
@@ -139,15 +131,83 @@ impl StepRenderer for XmlStepRenderer {
 // not part of the public surface.
 // =========================================================================
 
-fn render_action_result_full(
-    action: Option<&buckyos_api::AiToolCall>,
-    obs: Option<&Observation>,
+/// Render the dispatcher echo for one step. v2 supports zero or more
+/// actions per step plus a `<report>` echo (Self Report) plus zero or more
+/// SendMessage echoes. Renders as a `<step_results>` wrapper containing one
+/// `<action_result>` per action (index-aligned with `step.actions` and
+/// `step.action_results`), followed by `<report_ack/>` and
+/// `<message_sent .../>` markers. When the step had nothing, emits
+/// `<step_ack/>` so the assistant→user alternation stays well-formed.
+fn render_action_results_full(step: &StepRecord, max_body_chars: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // Action echoes — pair actions[i] with action_results[i]. If lengths
+    // differ (a bug, but tolerate it), use whichever is shorter.
+    let n = step.actions.len().min(step.action_results.len());
+    for i in 0..n {
+        parts.push(render_one_action_result_full(
+            &step.actions[i],
+            &step.action_results[i],
+            max_body_chars,
+        ));
+    }
+    // Self Report echo — single tag, no body (the body is already visible
+    // in the assistant message). Helps the next inference notice "we did
+    // already report".
+    if step.self_report.is_some() {
+        parts.push("<report_ack/>".to_string());
+    }
+    // SendMessage echoes.
+    for msg in &step.messages_sent {
+        parts.push(format!(
+            "<message_sent target=\"{}\"/>",
+            xml_escape(&msg.target)
+        ));
+    }
+
+    if parts.is_empty() {
+        return "<step_ack/>".to_string();
+    }
+    if parts.len() == 1 {
+        return parts.into_iter().next().unwrap();
+    }
+    format!("<step_results>{}</step_results>", parts.join(""))
+}
+
+fn render_action_results_compact(step: &StepRecord, max_body_chars: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let n = step.actions.len().min(step.action_results.len());
+    for i in 0..n {
+        parts.push(render_one_action_result_compact(
+            &step.actions[i],
+            &step.action_results[i],
+            max_body_chars,
+        ));
+    }
+    if step.self_report.is_some() {
+        parts.push("<report_ack/>".to_string());
+    }
+    for msg in &step.messages_sent {
+        parts.push(format!(
+            "<message_sent target=\"{}\"/>",
+            xml_escape(&msg.target)
+        ));
+    }
+    if parts.is_empty() {
+        return "<step_ack/>".to_string();
+    }
+    if parts.len() == 1 {
+        return parts.into_iter().next().unwrap();
+    }
+    format!("<step_results>{}</step_results>", parts.join(""))
+}
+
+fn render_one_action_result_full(
+    action: &buckyos_api::AiToolCall,
+    obs: &Observation,
     max_body_chars: usize,
 ) -> String {
-    let Some(obs) = obs else {
-        return "<step_ack/>".to_string();
-    };
-    let tool = action.map(|a| a.name.as_str()).unwrap_or("");
+    let tool = action.name.as_str();
     match obs {
         Observation::Success {
             call_id,
@@ -157,12 +217,7 @@ fn render_action_result_full(
         } => {
             let body = stringify_content(content);
             let (body, body_truncated) = clip(body.as_str(), max_body_chars);
-            let attrs = action_result_attrs(
-                tool,
-                call_id,
-                "ok",
-                *truncated || body_truncated,
-            );
+            let attrs = action_result_attrs(tool, call_id, "ok", *truncated || body_truncated);
             format!(
                 "<action_result{attrs}>{}</action_result>",
                 xml_escape(&body)
@@ -191,17 +246,16 @@ fn render_action_result_full(
     }
 }
 
-fn render_action_result_compact(
-    action: Option<&buckyos_api::AiToolCall>,
-    obs: Option<&Observation>,
+fn render_one_action_result_compact(
+    action: &buckyos_api::AiToolCall,
+    obs: &Observation,
     max_body_chars: usize,
 ) -> String {
-    let Some(obs) = obs else {
-        return "<step_ack/>".to_string();
-    };
-    let tool = action.map(|a| a.name.as_str()).unwrap_or("");
+    let tool = action.name.as_str();
     match obs {
-        Observation::Success { call_id, content, .. } => {
+        Observation::Success {
+            call_id, content, ..
+        } => {
             let body = stringify_content(content);
             let (body, _) = clip(body.as_str(), max_body_chars);
             let body = body.trim();
@@ -334,19 +388,20 @@ mod tests {
     fn render_full_pair_preserves_assistant_text() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
-        step.assistant_text = "<thinking>plan</thinking><action tool=\"x\">{}</action>".into();
-        step.action = Some(tool_call("x", "c-1"));
-        step.action_result = Some(Observation::Success {
+        step.assistant_text =
+            "<thinking>plan</thinking><actions><exec_bash>ls</exec_bash></actions>".into();
+        step.actions = vec![tool_call("exec_bash", "c-1")];
+        step.action_results = vec![Observation::Success {
             call_id: "c-1".into(),
             content: json!("ok"),
             bytes: 2,
             truncated: false,
-        });
+        }];
 
         let (a, u) = renderer.render(&step);
         assert!(assistant_text_of(&a).contains("<thinking>plan</thinking>"));
         let user_text = user_text_of(&u);
-        assert!(user_text.contains("tool=\"x\""));
+        assert!(user_text.contains("tool=\"exec_bash\""));
         assert!(user_text.contains("call_id=\"c-1\""));
         assert!(user_text.contains("status=\"ok\""));
         assert!(user_text.contains(">ok</action_result>"));
@@ -362,14 +417,65 @@ mod tests {
     }
 
     #[test]
+    fn multiple_actions_render_as_step_results_wrapper() {
+        let renderer = XmlStepRenderer::new();
+        let mut step = StepRecord::default();
+        step.actions = vec![tool_call("exec_bash", "c-1"), tool_call("write_file", "c-2")];
+        step.action_results = vec![
+            Observation::Success {
+                call_id: "c-1".into(),
+                content: json!("first"),
+                bytes: 5,
+                truncated: false,
+            },
+            Observation::Success {
+                call_id: "c-2".into(),
+                content: json!("second"),
+                bytes: 6,
+                truncated: false,
+            },
+        ];
+        let (_, u) = renderer.render(&step);
+        let text = user_text_of(&u);
+        assert!(text.starts_with("<step_results>"));
+        assert!(text.ends_with("</step_results>"));
+        // Both action_results present, in order.
+        let i1 = text.find("call_id=\"c-1\"").expect("c-1");
+        let i2 = text.find("call_id=\"c-2\"").expect("c-2");
+        assert!(i1 < i2, "actions should render in order");
+    }
+
+    #[test]
+    fn self_report_renders_as_report_ack() {
+        let renderer = XmlStepRenderer::new();
+        let mut step = StepRecord::default();
+        step.self_report = Some("checkpoint".into());
+        let (_, u) = renderer.render(&step);
+        assert_eq!(user_text_of(&u), "<report_ack/>");
+    }
+
+    #[test]
+    fn message_sent_renders_with_target_attr() {
+        use crate::behavior_loop::SendMessageRecord;
+        let renderer = XmlStepRenderer::new();
+        let mut step = StepRecord::default();
+        step.messages_sent = vec![SendMessageRecord {
+            target: "user".into(),
+            body: "progress".into(),
+        }];
+        let (_, u) = renderer.render(&step);
+        assert!(user_text_of(&u).contains("<message_sent target=\"user\"/>"));
+    }
+
+    #[test]
     fn error_result_carries_message() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
-        step.action = Some(tool_call("bash", "c-9"));
-        step.action_result = Some(Observation::Error {
+        step.actions = vec![tool_call("exec_bash", "c-9")];
+        step.action_results = vec![Observation::Error {
             call_id: "c-9".into(),
             message: "permission denied".into(),
-        });
+        }];
         let (_, u) = renderer.render(&step);
         let user_text = user_text_of(&u);
         assert!(user_text.contains("status=\"error\""));
@@ -380,8 +486,10 @@ mod tests {
     fn pending_result_is_self_closing() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
-        step.action = Some(tool_call("slow", "p-1"));
-        step.action_result = Some(Observation::Pending { call_id: "p-1".into() });
+        step.actions = vec![tool_call("read", "p-1")];
+        step.action_results = vec![Observation::Pending {
+            call_id: "p-1".into(),
+        }];
         let (_, u) = renderer.render(&step);
         let user_text = user_text_of(&u);
         assert!(user_text.contains("status=\"pending\""));
@@ -392,13 +500,13 @@ mod tests {
     fn json_content_is_stringified() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
-        step.action = Some(tool_call("query", "q-1"));
-        step.action_result = Some(Observation::Success {
+        step.actions = vec![tool_call("read", "q-1")];
+        step.action_results = vec![Observation::Success {
             call_id: "q-1".into(),
             content: json!({"rows": 3}),
             bytes: 0,
             truncated: false,
-        });
+        }];
         let (_, u) = renderer.render(&step);
         // JSON object stringified — angle brackets escaped, "rows":3 visible.
         let user_text = user_text_of(&u);
@@ -409,13 +517,13 @@ mod tests {
     fn xml_special_chars_in_body_are_escaped() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
-        step.action = Some(tool_call("echo", "e-1"));
-        step.action_result = Some(Observation::Success {
+        step.actions = vec![tool_call("exec_bash", "e-1")];
+        step.action_results = vec![Observation::Success {
             call_id: "e-1".into(),
             content: json!("<b>not html</b> & friends"),
             bytes: 0,
             truncated: false,
-        });
+        }];
         let (_, u) = renderer.render(&step);
         let user_text = user_text_of(&u);
         assert!(user_text.contains("&lt;b&gt;not html&lt;/b&gt; &amp; friends"));
@@ -431,16 +539,16 @@ mod tests {
         let make_step = |idx: u32, body: &str| {
             let mut step = StepRecord::default();
             step.assistant_text = format!(
-                "<thinking>thought-{idx}</thinking><action tool=\"t\">{{}}</action>"
+                "<thinking>thought-{idx}</thinking><actions><exec_bash>t</exec_bash></actions>"
             );
             step.thought = Some(format!("thought-{idx}"));
-            step.action = Some(tool_call("t", &format!("c-{idx}")));
-            step.action_result = Some(Observation::Success {
+            step.actions = vec![tool_call("exec_bash", &format!("c-{idx}"))];
+            step.action_results = vec![Observation::Success {
                 call_id: format!("c-{idx}"),
                 content: json!(body),
                 bytes: body.len(),
                 truncated: false,
-            });
+            }];
             step
         };
 
@@ -458,11 +566,11 @@ mod tests {
             a0.contains("<thinking>thought-0</thinking>"),
             "expected compact form, got: {a0}"
         );
-        assert!(!a0.contains("<action tool=\"t\">{}</action>"));
+        assert!(!a0.contains("<exec_bash>t</exec_bash>"));
 
         // Step 1 (newest, full) keeps the verbatim original assistant_text.
         let a1 = plain_text(&msgs[2]);
-        assert!(a1.contains("<action tool=\"t\">{}</action>"));
+        assert!(a1.contains("<exec_bash>t</exec_bash>"));
     }
 
     #[test]
@@ -471,13 +579,13 @@ mod tests {
         let make_step = |idx: u32| {
             let mut step = StepRecord::default();
             step.assistant_text = format!("turn-{idx}");
-            step.action = Some(tool_call("t", &format!("c-{idx}")));
-            step.action_result = Some(Observation::Success {
+            step.actions = vec![tool_call("exec_bash", &format!("c-{idx}"))];
+            step.action_results = vec![Observation::Success {
                 call_id: format!("c-{idx}"),
                 content: json!("ok"),
                 bytes: 2,
                 truncated: false,
-            });
+            }];
             step
         };
         let msgs = renderer.render_history(vec![make_step(0), make_step(1), make_step(2)]);

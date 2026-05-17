@@ -143,8 +143,8 @@ use llm_context::LLMContext;
 use crate::llm_compress::LlmSummarizeCompressor;
 use crate::{
     AgentToolManager, AgentToolResult, AgentToolStatus, BinOverlayConfig, EditFileTool,
-    ExecBashTool, FileToolConfig, GlobTool, GrepTool, LlmBashConfig, NoopFileWriteAudit,
-    ReadFileTool, SessionRuntimeContext, WriteFileTool,
+    ExecBashTool, FileToolConfig, LlmBashConfig, NoopFileWriteAudit, ReadTool,
+    SessionRuntimeContext, WriteFileTool,
 };
 
 // =========================================================================
@@ -1208,20 +1208,18 @@ impl LocalDirToolManager {
         let inner = AgentToolManager::new();
         let cfg = FileToolConfig::new(workspace.clone());
         let write_audit = Arc::new(NoopFileWriteAudit);
+        // v2 Action set (see doc/opendan/Agent Actions.md §1):
+        // - `read` replaces v1 `read_file`
+        // - `glob` / `grep` removed (LLM uses find/grep/rg via exec_bash)
+        // - `write_file` / `edit_file` unchanged
         inner
-            .register_typed_tool(ReadFileTool::new(cfg.clone()))
+            .register_tool(ReadTool::new(cfg.clone()))
             .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
         inner
             .register_typed_tool(WriteFileTool::new(cfg.clone(), write_audit.clone()))
             .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
         inner
-            .register_typed_tool(EditFileTool::new(cfg.clone(), write_audit))
-            .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
-        inner
-            .register_typed_tool(GlobTool::new(cfg.clone()))
-            .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
-        inner
-            .register_typed_tool(GrepTool::new(cfg))
+            .register_typed_tool(EditFileTool::new(cfg, write_audit))
             .map_err(|e| LocalLLMContextError::ToolWiringFailed(e.to_string()))?;
 
         // exec_bash:cwd = `<dir>/workspace`,PATH overlay = `<dir>/bin`。

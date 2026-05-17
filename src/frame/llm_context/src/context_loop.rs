@@ -739,111 +739,169 @@ impl LLMContext {
                 }
             }
 
-            // 4. Terminal: next_behavior pinned ⇒ finish immediately, action
-            //    (if any) is **not** dispatched.
-            if new_step.next_behavior.is_some() {
-                return self.finish_done_behavior(new_step, response).await;
+            // 4. Apply `<report>` side-effects BEFORE actions. self_report
+            //    updates LLMContextState.last_report unconditionally (the
+            //    snapshot/fork-and-collect contract — see
+            //    doc/opendan/Agent Actions.md §3.3). SendMessage-form reports
+            //    are stub-emitted via worklog in v2 first cut; real delivery
+            //    moves to a standard `send_message` agent_tool later.
+            if let Some(report) = new_step.self_report.clone() {
+                let chars = report.chars().count();
+                self.state.last_report = Some(report);
+                self.deps
+                    .worklog
+                    .emit(WorkEvent::SelfReportSet {
+                        trace_id: self.request.trace.clone(),
+                        chars,
+                    })
+                    .await;
+            }
+            for msg in &new_step.messages_sent {
+                self.deps
+                    .worklog
+                    .emit(WorkEvent::MessageSent {
+                        trace_id: self.request.trace.clone(),
+                        target: msg.target.clone(),
+                        chars: msg.body.chars().count(),
+                    })
+                    .await;
             }
 
-            // 5. Dispatch the action (if any). No action = natural ReAct
-            //    convergence ⇒ also terminal.
-            let action = match new_step.action.clone() {
-                Some(a) => a,
-                None => {
-                    return self.finish_done_behavior(new_step, response).await;
-                }
-            };
+            // 5. Dispatch all actions in document order. v2 allows multiple
+            //    actions per step via the `<actions>` container. On the first
+            //    error we stop dispatching remaining actions (later actions
+            //    are often conditional on earlier ones succeeding) and feed
+            //    the partial result list back to the LLM via observation.
+            let actions = new_step.actions.clone();
+            let mut action_results: Vec<Observation> = Vec::with_capacity(actions.len());
+            let mut error_outcome: Option<LLMContextOutcome> = None;
+            let mut error_to_bump: Option<LLMComputeError> = None;
 
-            let started = now_ms();
-            self.deps
-                .worklog
-                .emit(WorkEvent::ToolCallPlanned {
-                    trace_id: self.request.trace.clone(),
-                    tool: action.name.clone(),
-                    call_id: action.call_id.clone(),
-                })
-                .await;
-            let observation = self.deps.tools.call_tool(action.clone()).await;
-            let duration_ms = now_ms().saturating_sub(started);
-
-            match &observation {
-                Observation::Success { .. } => {
-                    self.tool_trace.push(ToolExecRecord {
-                        tool_name: action.name.clone(),
+            for action in &actions {
+                let started = now_ms();
+                self.deps
+                    .worklog
+                    .emit(WorkEvent::ToolCallPlanned {
+                        trace_id: self.request.trace.clone(),
+                        tool: action.name.clone(),
                         call_id: action.call_id.clone(),
-                        ok: true,
-                        duration_ms,
-                        error: None,
-                    });
-                    self.deps
-                        .worklog
-                        .emit(WorkEvent::ToolCallFinished {
-                            trace_id: self.request.trace.clone(),
-                            tool: action.name.clone(),
+                    })
+                    .await;
+                let observation = self.deps.tools.call_tool(action.clone()).await;
+                let duration_ms = now_ms().saturating_sub(started);
+
+                match &observation {
+                    Observation::Success { .. } => {
+                        self.tool_trace.push(ToolExecRecord {
+                            tool_name: action.name.clone(),
                             call_id: action.call_id.clone(),
                             ok: true,
                             duration_ms,
-                        })
-                        .await;
-                    self.state.consecutive_errors = 0;
-                }
-                Observation::Error { message, .. } => {
-                    self.tool_trace.push(ToolExecRecord {
-                        tool_name: action.name.clone(),
-                        call_id: action.call_id.clone(),
-                        ok: false,
-                        duration_ms,
-                        error: Some(message.clone()),
-                    });
-                    self.deps
-                        .worklog
-                        .emit(WorkEvent::ToolCallFailed {
-                            trace_id: self.request.trace.clone(),
+                            error: None,
+                        });
+                        self.deps
+                            .worklog
+                            .emit(WorkEvent::ToolCallFinished {
+                                trace_id: self.request.trace.clone(),
+                                tool: action.name.clone(),
+                                call_id: action.call_id.clone(),
+                                ok: true,
+                                duration_ms,
+                            })
+                            .await;
+                        action_results.push(observation);
+                    }
+                    Observation::Error { message, .. } => {
+                        self.tool_trace.push(ToolExecRecord {
+                            tool_name: action.name.clone(),
+                            call_id: action.call_id.clone(),
+                            ok: false,
+                            duration_ms,
+                            error: Some(message.clone()),
+                        });
+                        self.deps
+                            .worklog
+                            .emit(WorkEvent::ToolCallFailed {
+                                trace_id: self.request.trace.clone(),
+                                tool: action.name.clone(),
+                                call_id: action.call_id.clone(),
+                                message: message.clone(),
+                            })
+                            .await;
+                        let err = LLMComputeError::ToolFailed {
                             tool: action.name.clone(),
                             call_id: action.call_id.clone(),
                             message: message.clone(),
-                        })
-                        .await;
-                    // Error feeds back into the next step via action_result;
-                    // we still count it against the consecutive-error cap.
-                    new_step.action_result = Some(observation.clone());
-                    self.sediment(new_step);
-                    let err = LLMComputeError::ToolFailed {
-                        tool: action.name.clone(),
-                        call_id: action.call_id.clone(),
-                        message: message.clone(),
-                    };
-                    if let Some(outcome) = self.bump_consecutive_errors(err).await {
-                        return outcome;
+                        };
+                        action_results.push(observation);
+                        error_to_bump = Some(err);
+                        // Stop the remaining actions — let the LLM see the
+                        // error and decide how to proceed.
+                        break;
                     }
-                    self.maybe_compress().await;
-                    continue;
-                }
-                Observation::Pending { .. } => {
-                    // D7 — Behavior Loop v1 does not support deferred actions
-                    // (would require inner yield). Surface as fatal.
-                    return LLMContextOutcome::Error {
-                        error: LLMComputeError::Internal(
-                            "behavior loop: Pending action not supported in v1".to_string(),
-                        ),
-                        usage: self.state.usage.clone(),
-                    };
-                }
-                Observation::Cancelled { .. } => {
-                    // Same rationale as the traditional-loop arm: Cancelled
-                    // must arrive via ResumeFill, never inline. Surface as
-                    // fatal so a misbehaving ToolManager is visible.
-                    return LLMContextOutcome::Error {
-                        error: LLMComputeError::Internal(
-                            "behavior loop: tool returned Cancelled inline; only valid via ResumeFill::ToolResults"
-                                .to_string(),
-                        ),
-                        usage: self.state.usage.clone(),
-                    };
+                    Observation::Pending { .. } => {
+                        // D7 — Behavior Loop v1 does not support deferred
+                        // actions (would require inner yield). Surface as fatal.
+                        error_outcome = Some(LLMContextOutcome::Error {
+                            error: LLMComputeError::Internal(
+                                "behavior loop: Pending action not supported in v1".to_string(),
+                            ),
+                            usage: self.state.usage.clone(),
+                        });
+                        break;
+                    }
+                    Observation::Cancelled { .. } => {
+                        // Same rationale as the traditional-loop arm: Cancelled
+                        // must arrive via ResumeFill, never inline.
+                        error_outcome = Some(LLMContextOutcome::Error {
+                            error: LLMComputeError::Internal(
+                                "behavior loop: tool returned Cancelled inline; only valid via ResumeFill::ToolResults"
+                                    .to_string(),
+                            ),
+                            usage: self.state.usage.clone(),
+                        });
+                        break;
+                    }
                 }
             }
 
-            new_step.action_result = Some(observation);
+            if let Some(outcome) = error_outcome {
+                return outcome;
+            }
+
+            new_step.action_results = action_results;
+            if error_to_bump.is_none() && !new_step.actions.is_empty() {
+                self.state.consecutive_errors = 0;
+            }
+
+            // 6. Terminal cases:
+            //    a) `<next_behavior>` was set — finish (after dispatching the
+            //       actions above; v2 allows actions + next_behavior in one
+            //       step, see doc §2.2).
+            //    b) No actions, no report, no message, no next_behavior — a
+            //       pure-thought response = natural convergence.
+            if new_step.next_behavior.is_some() {
+                return self.finish_done_behavior(new_step, response).await;
+            }
+            let nothing_happened = new_step.actions.is_empty()
+                && new_step.self_report.is_none()
+                && new_step.messages_sent.is_empty();
+            if nothing_happened {
+                return self.finish_done_behavior(new_step, response).await;
+            }
+
+            // 7. Action error path: sediment the step (so the LLM sees the
+            //    failed action_result on the next inference) and bump the
+            //    consecutive-error counter.
+            if let Some(err) = error_to_bump {
+                self.sediment(new_step);
+                if let Some(outcome) = self.bump_consecutive_errors(err).await {
+                    return outcome;
+                }
+                self.maybe_compress().await;
+                continue;
+            }
+
             self.sediment(new_step);
             self.maybe_compress().await;
         }

@@ -1,56 +1,100 @@
-//! Default XML-flavored Behavior protocol.
+//! Default XML-flavored Behavior protocol — v2.
 //!
 //! This is the system-default implementation of [`LLMResultParser`] paired
 //! with [`crate::step_record::XmlStepRenderer`]. A worksession can swap in
 //! its own parser/renderer; this pair just ships sensible defaults so the
 //! common case is "build LLMContextDeps, point at this parser, go".
 //!
-//! ## Wire format the LLM is expected to produce
+//! ## Wire format the LLM is expected to produce (v2)
+//!
+//! See `doc/opendan/Agent Actions.md` for the full spec.
 //!
 //! ```xml
 //! <response>
 //!   <observation>...reading of the previous action's result...</observation>
 //!   <thinking>...free-form reasoning...</thinking>
-//!   <action tool="exec_bash" call_id="optional">
-//!     {"command": "ls -la"}
-//!   </action>
-//!   <next_behavior>END</next_behavior>
+//!
+//!   <actions>
+//!     <exec_bash>cargo test</exec_bash>
+//!     <write_file path="src/foo.rs"><![CDATA[
+//! pub fn bar() -> u32 { 42 }
+//! ]]></write_file>
+//!     <report target="user"><![CDATA[已开始测试...]]></report>
+//!   </actions>
+//!
+//!   <report><![CDATA[本步骤完成总结...]]></report>
+//!   <next_behavior>plan_step_3</next_behavior>
 //! </response>
 //! ```
 //!
-//! Every tag is optional. Outer `<response>` is optional too — when present
-//! we narrow the scan to its body, otherwise we scan the whole text. This
-//! mirrors the legacy opendan behavior format closely enough that prior
-//! prompts keep working.
+//! ## Recognized Action tags (first-class, hardcoded allowlist)
+//!
+//! `exec_bash`, `write_file`, `edit_file`, `read`, `report`,
+//! `subscribe_event`, `unsubscribe_event`. Any other element inside
+//! `<actions>` is silently skipped — the v2 Action set is prompt-coupled,
+//! not registry-driven.
+//!
+//! ## `<report>` handling
+//!
+//! `<report>` is **not** turned into an `AiToolCall`. It is captured into
+//! a dedicated slot on [`LLMBehaviorResult`]:
+//!
+//! - `<report>` without `target` attribute  → `self_report` (last one wins)
+//! - `<report target="...">`                → `messages_to_send` (ordered)
+//!
+//! Location is tolerant: `<report>` is scanned across the whole response,
+//! so it works inside or outside `<actions>`. The doc convention (Self
+//! Report outside, SendMessage inside) is prompt guidance, not parser
+//! enforcement.
 //!
 //! ## Tolerance
 //!
 //! 1. Strips ```` ```xml ```` and bare ```` ``` ```` markdown fences.
 //! 2. Trims preamble / postamble around the recognized tag region.
 //! 3. Missing close tags fall back to "take until next known tag or EOF".
-//! 4. Action body is parsed as a JSON object when possible; otherwise the
-//!    body becomes the `content` arg verbatim.
+//! 4. Bodies are CDATA-aware. CDATA inner content is taken verbatim
+//!    (leading/trailing newlines preserved — they may be part of file
+//!    content). Non-CDATA bodies go through `xml_unescape`.
 //! 5. Provider-returned `tool_calls` (when the model uses native function
-//!    calling) take precedence over `<action>` parsing.
-//! 6. Empty `assistant_text` + no actions + no `next_behavior` is **not**
-//!    a parse error — it's a natural convergence step. The parser only
-//!    fails when the response is completely empty (no text *and* no
-//!    provider tool_calls).
+//!    calling) take precedence over `<actions>` parsing.
+//! 6. Empty response (no text, no tool_calls) is the only hard error.
 
 use std::collections::HashMap;
 
 use buckyos_api::{AiResponse, AiToolCall};
 use serde_json::Value;
 
-use crate::behavior_loop::{LLMBehaviorResult, LLMResultParser};
+use crate::behavior_loop::{LLMBehaviorResult, LLMResultParser, SendMessageRecord};
+
+/// Hardcoded allowlist of v2 first-class Action tag names. Everything in
+/// `<actions>` that isn't one of these is silently skipped.
+const V2_ACTION_TAGS: &[&str] = &[
+    "exec_bash",
+    "write_file",
+    "edit_file",
+    "read",
+    "subscribe_event",
+    "unsubscribe_event",
+    "report",
+];
+
+/// Per-tag body→arg mapping. Tags not in the table either expect no body
+/// (e.g. `<read uri="..."/>`) or are special-cased (`report`).
+fn body_arg_name(tag: &str) -> Option<&'static str> {
+    match tag {
+        "exec_bash" => Some("command"),
+        "write_file" | "edit_file" => Some("content"),
+        _ => None,
+    }
+}
 
 /// Default XML behavior parser. Stateless — share one `Arc<XmlBehaviorParser>`
 /// across all sessions.
 #[derive(Debug, Clone, Default)]
 pub struct XmlBehaviorParser {
     /// When `true`, parse succeeds only if at least one of `do_actions` /
-    /// `next_behavior` is set. Defaults to `false` (lenient: a pure-text
-    /// response is a valid terminal step).
+    /// `self_report` / `messages_to_send` / `next_behavior` is set. Defaults
+    /// to `false` (lenient: a pure-text response is a valid terminal step).
     pub strict: bool,
 }
 
@@ -91,16 +135,22 @@ impl LLMResultParser for XmlBehaviorParser {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        // Provider-native tool_calls win when present; otherwise parse <action>.
-        let do_actions = if !provider_calls.is_empty() {
-            provider_calls
-        } else {
-            extract_actions(&scan_region)
-        };
+        // Provider-native tool_calls win when present; otherwise parse the
+        // v2 XML actions. Reports are extracted from the XML even when
+        // provider tool_calls are present — they're a separate slot.
+        let (mut do_actions, self_report, messages_to_send) = extract_v2_actions(&scan_region);
+        if !provider_calls.is_empty() {
+            do_actions = provider_calls;
+        }
 
-        if self.strict && do_actions.is_empty() && next_behavior.is_none() {
+        if self.strict
+            && do_actions.is_empty()
+            && next_behavior.is_none()
+            && self_report.is_none()
+            && messages_to_send.is_empty()
+        {
             return Err(
-                "strict parse: response has neither <action> nor <next_behavior>".to_string(),
+                "strict parse: response has no <actions>, <report>, or <next_behavior>".to_string(),
             );
         }
 
@@ -110,8 +160,243 @@ impl LLMResultParser for XmlBehaviorParser {
             assistant_text: raw_text,
             observation,
             thought,
+            self_report,
+            messages_to_send,
         })
     }
+}
+
+// =========================================================================
+// v2 Action extraction
+// =========================================================================
+
+/// Walk the scan region and split out (regular actions, self_report,
+/// messages_to_send). Document order is preserved within `do_actions`.
+///
+/// Strategy:
+/// 1. Find `<actions>` container body — if missing, treat the whole region
+///    as the container (tolerant: LLM may forget the wrapper).
+/// 2. Inside the container, walk left-to-right with [`scan_v2_action_tags`];
+///    each known tag becomes an `AiToolCall` (except `<report>`).
+/// 3. Scan the **whole region** (not just the container) for `<report>`
+///    tags — they're valid inside or outside `<actions>`.
+fn extract_v2_actions(
+    scan_region: &str,
+) -> (Vec<AiToolCall>, Option<String>, Vec<SendMessageRecord>) {
+    let actions_body =
+        extract_tag_body(scan_region, "actions").unwrap_or_else(|| scan_region.to_string());
+
+    let mut do_actions: Vec<AiToolCall> = Vec::new();
+    let mut auto_id: u32 = 0;
+
+    // Pass 1: walk the actions container for non-report tags only. Reports
+    // inside `<actions>` are picked up by pass 2 (we don't want to double-
+    // count, so skip them here).
+    for raw in scan_v2_action_tags(&actions_body) {
+        if raw.tag == "report" {
+            continue;
+        }
+        auto_id += 1;
+        let call_id = raw
+            .attrs
+            .get("call_id")
+            .cloned()
+            .unwrap_or_else(|| format!("call-{auto_id}"));
+
+        let mut args: HashMap<String, Value> = raw
+            .attrs
+            .into_iter()
+            .filter(|(k, _)| k != "call_id")
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect();
+
+        if let Some(arg_name) = body_arg_name(raw.tag) {
+            if !raw.body.is_empty() {
+                args.insert(arg_name.to_string(), Value::String(raw.body));
+            }
+        }
+
+        do_actions.push(AiToolCall {
+            name: raw.tag.to_string(),
+            args,
+            call_id,
+        });
+    }
+
+    // Pass 2: scan the WHOLE region for `<report>` — works inside or outside
+    // `<actions>`. Self Report (no target): last one wins; messages_to_send
+    // preserves emission order.
+    let mut self_report: Option<String> = None;
+    let mut messages_to_send: Vec<SendMessageRecord> = Vec::new();
+    for raw in scan_v2_action_tags(scan_region) {
+        if raw.tag != "report" {
+            continue;
+        }
+        let target = raw
+            .attrs
+            .get("target")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        match target {
+            Some(target) => messages_to_send.push(SendMessageRecord {
+                target,
+                body: raw.body,
+            }),
+            None => self_report = Some(raw.body),
+        }
+    }
+
+    (do_actions, self_report, messages_to_send)
+}
+
+/// One v2 Action tag occurrence, in document order.
+struct RawActionTag {
+    tag: &'static str,
+    attrs: HashMap<String, String>,
+    body: String,
+}
+
+/// Walk `input` left-to-right, yielding every recognized v2 Action tag in
+/// document order. Unknown tag names are skipped (treated as opaque text).
+fn scan_v2_action_tags(input: &str) -> Vec<RawActionTag> {
+    let lc_input = input.to_ascii_lowercase();
+    let bytes = lc_input.as_bytes();
+    let mut out: Vec<RawActionTag> = Vec::new();
+    let mut cursor = 0usize;
+
+    while cursor < input.len() {
+        let Some(rel) = lc_input[cursor..].find('<') else {
+            break;
+        };
+        let open = cursor + rel;
+
+        // Try matching against each known tag name. Byte-level comparison
+        // (not str slicing!) — when `tag.len()` extends past the tag name
+        // into following content like `<report>本...</report>`, a str slice
+        // can land mid-multibyte-char and panic. Bytes are safe and faster.
+        let mut matched: Option<&'static str> = None;
+        for &tag in V2_ACTION_TAGS {
+            let needed = 1 + tag.len();
+            if open + needed > bytes.len() {
+                continue;
+            }
+            if &bytes[open + 1..open + 1 + tag.len()] != tag.as_bytes() {
+                continue;
+            }
+            // After the tag name must come a terminator.
+            match bytes.get(open + 1 + tag.len()) {
+                Some(c) if matches!(*c, b'>' | b' ' | b'\t' | b'\n' | b'\r' | b'/') => {
+                    matched = Some(tag);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(tag) = matched else {
+            cursor = open + 1;
+            continue;
+        };
+
+        // Locate '>' that closes the opening tag.
+        let Some(close_open_rel) = input[open..].find('>') else {
+            break;
+        };
+        let open_end = open + close_open_rel;
+        let opening_inner = &input[open + 1..open_end]; // "tag attr=val ... [/]"
+        let self_closing = opening_inner.trim_end().ends_with('/');
+        let attrs_str = if self_closing {
+            opening_inner.trim_end().trim_end_matches('/').trim_end()
+        } else {
+            opening_inner
+        };
+        let attrs = parse_attrs(attrs_str);
+
+        if self_closing {
+            out.push(RawActionTag {
+                tag,
+                attrs,
+                body: String::new(),
+            });
+            cursor = open_end + 1;
+            continue;
+        }
+
+        // CDATA-aware close-tag search.
+        let body_start = open_end + 1;
+        let close_marker = format!("</{tag}>");
+        let (body_raw, after_close) =
+            extract_body_cdata_aware(input, &lc_input, body_start, &close_marker);
+        let body = normalize_action_body(&body_raw);
+        out.push(RawActionTag { tag, attrs, body });
+        cursor = after_close;
+    }
+
+    out
+}
+
+/// Scan forward from `body_start` for `close_marker_lc`, skipping over any
+/// `<![CDATA[...]]>` regions so a literal close-tag inside CDATA does not
+/// terminate the body prematurely. Returns `(raw_body, position_after_close)`.
+/// If no close tag is found, returns body = everything-to-EOF.
+fn extract_body_cdata_aware(
+    input: &str,
+    lc_input: &str,
+    body_start: usize,
+    close_marker_lc: &str,
+) -> (String, usize) {
+    let mut search_from = body_start;
+    loop {
+        if search_from >= input.len() {
+            return (input[body_start..].to_string(), input.len());
+        }
+        let next_cdata = lc_input[search_from..]
+            .find("<![cdata[")
+            .map(|r| search_from + r);
+        let next_close = lc_input[search_from..]
+            .find(close_marker_lc)
+            .map(|r| search_from + r);
+
+        match (next_cdata, next_close) {
+            (Some(c), Some(cl)) if c < cl => {
+                // CDATA opens before close — skip past its `]]>` and retry.
+                let after_open = c + "<![CDATA[".len();
+                match lc_input[after_open..].find("]]>") {
+                    Some(rel) => {
+                        search_from = after_open + rel + "]]>".len();
+                    }
+                    None => {
+                        // Unterminated CDATA — bail by taking the rest.
+                        return (input[body_start..].to_string(), input.len());
+                    }
+                }
+            }
+            (_, Some(cl)) => {
+                let body = input[body_start..cl].to_string();
+                return (body, cl + close_marker_lc.len());
+            }
+            (Some(_), None) | (None, None) => {
+                return (input[body_start..].to_string(), input.len());
+            }
+        }
+    }
+}
+
+/// Trim outer whitespace; if the body is a single CDATA wrapper, take its
+/// inner contents **verbatim** (no further trim — preserves leading/trailing
+/// newlines that may be part of file content). Otherwise apply `xml_unescape`
+/// for the `&lt;` / `&gt;` / `&amp;` form.
+fn normalize_action_body(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lc = trimmed.to_ascii_lowercase();
+    if lc.starts_with("<![cdata[") && lc.ends_with("]]>") && trimmed.len() >= "<![CDATA[]]>".len() {
+        let inner_start = "<![CDATA[".len();
+        let inner_end = trimmed.len() - "]]>".len();
+        return trimmed[inner_start..inner_end].to_string();
+    }
+    xml_unescape(trimmed)
 }
 
 // =========================================================================
@@ -141,6 +426,10 @@ fn strip_code_fences(input: &str) -> String {
 /// Find the first `<tag ...>` ... `</tag>` body in `input` (case-insensitive
 /// on the tag name). If no closing tag is found, take everything from after
 /// the opening tag to end-of-input. Returns `None` if no opening tag exists.
+///
+/// This helper is **not** CDATA-aware — it's used for short, scalar-style
+/// tags (`<thinking>`, `<observation>`, `<next_behavior>`, `<actions>`,
+/// `<response>`) where CDATA collisions are not expected.
 pub(crate) fn extract_tag_body(input: &str, tag: &str) -> Option<String> {
     let lc_input = input.to_ascii_lowercase();
     let lc_tag = tag.to_ascii_lowercase();
@@ -180,102 +469,7 @@ pub(crate) fn extract_tag_body(input: &str, tag: &str) -> Option<String> {
     Some(input[body_start..body_end].to_string())
 }
 
-/// Scan the input for every `<action ...>...</action>` block and convert
-/// each into an [`AiToolCall`]. Empty `tool` (or `name`) attribute ⇒ skip.
-fn extract_actions(input: &str) -> Vec<AiToolCall> {
-    let lc_input = input.to_ascii_lowercase();
-    let open_marker = "<action";
-    let close_marker = "</action>";
-    let mut out: Vec<AiToolCall> = Vec::new();
-    let mut auto_id: u32 = 0;
-    let mut cursor = 0usize;
-
-    while let Some(rel) = lc_input[cursor..].find(open_marker) {
-        let open = cursor + rel;
-        let after = open + open_marker.len();
-        match lc_input.as_bytes().get(after) {
-            Some(c) if matches!(*c, b'>' | b' ' | b'\t' | b'\n' | b'\r' | b'/') => {}
-            None => break,
-            _ => {
-                cursor = after;
-                continue;
-            }
-        }
-
-        let Some(open_end_rel) = input[open..].find('>') else {
-            break;
-        };
-        let open_end = open + open_end_rel;
-
-        let opening_inner = &input[open + 1..open_end]; // "action tool=... [/]"
-        let self_closing = opening_inner.trim_end().ends_with('/');
-        let attrs_str = if self_closing {
-            opening_inner.trim_end().trim_end_matches('/').trim_end()
-        } else {
-            opening_inner
-        };
-        let attrs = parse_attrs(attrs_str);
-
-        let body = if self_closing {
-            cursor = open_end + 1;
-            String::new()
-        } else {
-            let body_start = open_end + 1;
-            if let Some(close_rel) = lc_input[body_start..].find(close_marker) {
-                let close_at = body_start + close_rel;
-                cursor = close_at + close_marker.len();
-                input[body_start..close_at].trim().to_string()
-            } else {
-                cursor = input.len();
-                input[body_start..].trim().to_string()
-            }
-        };
-
-        let name = attrs
-            .get("tool")
-            .or_else(|| attrs.get("name"))
-            .cloned()
-            .unwrap_or_default();
-        if name.trim().is_empty() {
-            continue;
-        }
-
-        let call_id = attrs.get("call_id").cloned().unwrap_or_else(|| {
-            auto_id += 1;
-            format!("call-{auto_id}")
-        });
-
-        let mut args: HashMap<String, Value> = attrs
-            .into_iter()
-            .filter(|(k, _)| !matches!(k.as_str(), "tool" | "name" | "call_id"))
-            .map(|(k, v)| (k, Value::String(v)))
-            .collect();
-
-        if !body.is_empty() {
-            match serde_json::from_str::<Value>(&body) {
-                Ok(Value::Object(map)) => {
-                    for (k, v) in map {
-                        args.insert(k, v);
-                    }
-                }
-                _ => {
-                    args.entry("content".to_string())
-                        .or_insert(Value::String(body));
-                }
-            }
-        }
-
-        out.push(AiToolCall {
-            name,
-            args,
-            call_id,
-        });
-    }
-
-    out
-}
-
-/// Parse an XML attribute string like `action tool="x" path='y' flag` into a
+/// Parse an XML attribute string like `tag attr="x" path='y' flag` into a
 /// key→string map. Leading tag name is discarded. Quotes optional; unquoted
 /// values terminate at the next whitespace. Flag attributes (no `=`) bind
 /// to the empty string.
@@ -422,6 +616,7 @@ mod tests {
         assert_eq!(out.assistant_text, "just thinking out loud");
         assert!(out.do_actions.is_empty());
         assert!(out.next_behavior.is_none());
+        assert!(out.self_report.is_none());
     }
 
     #[test]
@@ -431,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn basic_tags_extracted() {
+    fn basic_scalar_tags_extracted() {
         let parser = XmlBehaviorParser::new();
         let out = parser
             .parse(&resp(
@@ -450,69 +645,197 @@ mod tests {
         assert_eq!(out.next_behavior.as_deref(), Some("plan_review"));
     }
 
+    // ---- v2 first-class Action tags ----
+
     #[test]
-    fn action_with_json_body() {
+    fn exec_bash_body_maps_to_command_arg() {
         let parser = XmlBehaviorParser::new();
         let out = parser
             .parse(&resp(
-                r#"<action tool="exec_bash" call_id="c1">
-{"command": "ls -la"}
-</action>"#,
+                r#"<actions><exec_bash>ls -la | head -5</exec_bash></actions>"#,
             ))
             .unwrap();
         assert_eq!(out.do_actions.len(), 1);
         let call = &out.do_actions[0];
         assert_eq!(call.name, "exec_bash");
-        assert_eq!(call.call_id, "c1");
-        assert_eq!(call.args.get("command"), Some(&json!("ls -la")));
+        assert_eq!(call.args.get("command"), Some(&json!("ls -la | head -5")));
     }
 
     #[test]
-    fn action_with_attrs_and_text_body() {
+    fn write_file_path_attr_and_cdata_body() {
         let parser = XmlBehaviorParser::new();
-        let out = parser
-            .parse(&resp(
-                r#"<action tool="write_file" path="foo.md">
-hello world
-</action>"#,
-            ))
-            .unwrap();
+        let raw = "<actions><write_file path=\"src/foo.rs\"><![CDATA[\npub fn bar() -> u32 { 42 }\n]]></write_file></actions>";
+        let out = parser.parse(&resp(raw)).unwrap();
+        assert_eq!(out.do_actions.len(), 1);
         let call = &out.do_actions[0];
         assert_eq!(call.name, "write_file");
-        assert_eq!(call.args.get("path"), Some(&json!("foo.md")));
-        assert_eq!(call.args.get("content"), Some(&json!("hello world")));
-    }
-
-    #[test]
-    fn multiple_actions_in_one_response() {
-        let parser = XmlBehaviorParser::new();
-        let out = parser
-            .parse(&resp(
-                r#"<action tool="t1">{"a":1}</action>
-<action tool="t2">{"b":2}</action>"#,
-            ))
-            .unwrap();
-        assert_eq!(out.do_actions.len(), 2);
-        assert_eq!(out.do_actions[0].name, "t1");
-        assert_eq!(out.do_actions[1].name, "t2");
-        assert_ne!(out.do_actions[0].call_id, out.do_actions[1].call_id);
-    }
-
-    #[test]
-    fn self_closing_action_works() {
-        let parser = XmlBehaviorParser::new();
-        let out = parser
-            .parse(&resp(r#"<action tool="ping" host="localhost"/>"#))
-            .unwrap();
-        assert_eq!(out.do_actions.len(), 1);
+        assert_eq!(call.args.get("path"), Some(&json!("src/foo.rs")));
+        // CDATA inner is verbatim — leading/trailing newlines preserved.
         assert_eq!(
-            out.do_actions[0].args.get("host"),
-            Some(&json!("localhost"))
+            call.args.get("content"),
+            Some(&json!("\npub fn bar() -> u32 { 42 }\n"))
         );
     }
 
     #[test]
-    fn provider_tool_calls_take_priority() {
+    fn cdata_body_with_literal_close_tag_inside() {
+        // CDATA must shield a literal `</write_file>` from being matched as
+        // the close tag.
+        let parser = XmlBehaviorParser::new();
+        let raw = "<actions><write_file path=\"x.md\"><![CDATA[</write_file>literal</write_file>]]></write_file></actions>";
+        let out = parser.parse(&resp(raw)).unwrap();
+        assert_eq!(out.do_actions.len(), 1);
+        assert_eq!(
+            out.do_actions[0].args.get("content"),
+            Some(&json!("</write_file>literal</write_file>"))
+        );
+    }
+
+    #[test]
+    fn read_uri_attr_self_closing() {
+        let parser = XmlBehaviorParser::new();
+        let out = parser
+            .parse(&resp(
+                r#"<actions><read uri="file:///workspace/x" offset="0" limit="1024"/></actions>"#,
+            ))
+            .unwrap();
+        assert_eq!(out.do_actions.len(), 1);
+        let call = &out.do_actions[0];
+        assert_eq!(call.name, "read");
+        assert_eq!(call.args.get("uri"), Some(&json!("file:///workspace/x")));
+        assert_eq!(call.args.get("offset"), Some(&json!("0")));
+        assert_eq!(call.args.get("limit"), Some(&json!("1024")));
+    }
+
+    #[test]
+    fn multiple_actions_preserve_document_order() {
+        let parser = XmlBehaviorParser::new();
+        let out = parser
+            .parse(&resp(
+                r#"<actions>
+<exec_bash>echo first</exec_bash>
+<write_file path="a">A</write_file>
+<exec_bash>echo third</exec_bash>
+</actions>"#,
+            ))
+            .unwrap();
+        assert_eq!(out.do_actions.len(), 3);
+        assert_eq!(out.do_actions[0].name, "exec_bash");
+        assert_eq!(
+            out.do_actions[0].args.get("command"),
+            Some(&json!("echo first"))
+        );
+        assert_eq!(out.do_actions[1].name, "write_file");
+        assert_eq!(out.do_actions[2].name, "exec_bash");
+        assert_eq!(
+            out.do_actions[2].args.get("command"),
+            Some(&json!("echo third"))
+        );
+    }
+
+    #[test]
+    fn unknown_tags_inside_actions_are_skipped() {
+        let parser = XmlBehaviorParser::new();
+        let out = parser
+            .parse(&resp(
+                r#"<actions>
+<unknown_thing>nope</unknown_thing>
+<exec_bash>ok</exec_bash>
+</actions>"#,
+            ))
+            .unwrap();
+        assert_eq!(out.do_actions.len(), 1);
+        assert_eq!(out.do_actions[0].name, "exec_bash");
+    }
+
+    #[test]
+    fn missing_actions_wrapper_is_tolerated() {
+        // LLM forgets `<actions>` wrapper — known action tags directly under
+        // `<response>` still get picked up.
+        let parser = XmlBehaviorParser::new();
+        let out = parser
+            .parse(&resp(
+                r#"<response><exec_bash>ls</exec_bash></response>"#,
+            ))
+            .unwrap();
+        assert_eq!(out.do_actions.len(), 1);
+        assert_eq!(out.do_actions[0].name, "exec_bash");
+    }
+
+    // ---- <report> handling ----
+
+    #[test]
+    fn self_report_outside_actions() {
+        let parser = XmlBehaviorParser::new();
+        let out = parser
+            .parse(&resp(
+                r#"<response>
+<actions><exec_bash>echo done</exec_bash></actions>
+<report><![CDATA[本步骤完成]]></report>
+<next_behavior>END</next_behavior>
+</response>"#,
+            ))
+            .unwrap();
+        assert_eq!(out.do_actions.len(), 1);
+        assert_eq!(out.self_report.as_deref(), Some("本步骤完成"));
+        assert!(out.messages_to_send.is_empty());
+        assert_eq!(out.next_behavior.as_deref(), Some("END"));
+    }
+
+    #[test]
+    fn report_with_target_becomes_message_send() {
+        let parser = XmlBehaviorParser::new();
+        let out = parser
+            .parse(&resp(
+                r#"<actions><report target="user">进度更新</report></actions>"#,
+            ))
+            .unwrap();
+        assert!(out.do_actions.is_empty()); // <report> is NOT a do_action
+        assert!(out.self_report.is_none());
+        assert_eq!(out.messages_to_send.len(), 1);
+        assert_eq!(out.messages_to_send[0].target, "user");
+        assert_eq!(out.messages_to_send[0].body, "进度更新");
+    }
+
+    #[test]
+    fn both_self_report_and_send_message_in_same_step() {
+        let parser = XmlBehaviorParser::new();
+        let out = parser
+            .parse(&resp(
+                r#"<response>
+<actions>
+<report target="user">中途反馈</report>
+<exec_bash>echo work</exec_bash>
+</actions>
+<report>最终总结</report>
+</response>"#,
+            ))
+            .unwrap();
+        assert_eq!(out.do_actions.len(), 1);
+        assert_eq!(out.do_actions[0].name, "exec_bash");
+        assert_eq!(out.self_report.as_deref(), Some("最终总结"));
+        assert_eq!(out.messages_to_send.len(), 1);
+        assert_eq!(out.messages_to_send[0].target, "user");
+        assert_eq!(out.messages_to_send[0].body, "中途反馈");
+    }
+
+    #[test]
+    fn multiple_self_reports_last_one_wins() {
+        let parser = XmlBehaviorParser::new();
+        let out = parser
+            .parse(&resp(
+                r#"<report>first</report><report>second</report>"#,
+            ))
+            .unwrap();
+        assert_eq!(out.self_report.as_deref(), Some("second"));
+    }
+
+    // ---- precedence / strictness ----
+
+    #[test]
+    fn provider_tool_calls_replace_xml_actions_but_keep_reports() {
+        // Provider-native tool_calls override XML do_actions, but the report
+        // slot is independent and survives.
         let parser = XmlBehaviorParser::new();
         let provider_call = AiToolCall {
             name: "real_tool".to_string(),
@@ -521,7 +844,10 @@ hello world
         };
         let response = AiResponse {
             message: AiResponse::message_from_parts(
-                Some(r#"<action tool="ignored">{"foo":"bar"}</action>"#.to_string()),
+                Some(
+                    r#"<actions><exec_bash>ignored</exec_bash></actions><report>kept</report>"#
+                        .to_string(),
+                ),
                 vec![provider_call],
                 vec![],
             ),
@@ -530,7 +856,20 @@ hello world
         let out = parser.parse(&response).unwrap();
         assert_eq!(out.do_actions.len(), 1);
         assert_eq!(out.do_actions[0].name, "real_tool");
+        assert_eq!(out.self_report.as_deref(), Some("kept"));
     }
+
+    #[test]
+    fn strict_mode_accepts_self_report_only() {
+        // A response with only `<report>` is a valid strict-mode step.
+        let parser = XmlBehaviorParser::strict();
+        let out = parser
+            .parse(&resp(r#"<report>checkpoint</report>"#))
+            .unwrap();
+        assert_eq!(out.self_report.as_deref(), Some("checkpoint"));
+    }
+
+    // ---- tolerance / quirks ----
 
     #[test]
     fn markdown_fences_are_stripped() {
@@ -568,17 +907,27 @@ hello world
     fn xml_entities_in_attrs_are_decoded() {
         let parser = XmlBehaviorParser::new();
         let out = parser
-            .parse(&resp(r#"<action tool="grep" pattern="a &amp; b"/>"#))
+            .parse(&resp(
+                r#"<actions><read uri="file:///a&amp;b"/></actions>"#,
+            ))
             .unwrap();
-        assert_eq!(out.do_actions[0].args.get("pattern"), Some(&json!("a & b")));
+        assert_eq!(
+            out.do_actions[0].args.get("uri"),
+            Some(&json!("file:///a&b"))
+        );
     }
 
     #[test]
-    fn action_without_tool_name_is_skipped() {
+    fn non_cdata_body_unescapes_entities() {
         let parser = XmlBehaviorParser::new();
         let out = parser
-            .parse(&resp(r#"<action>not a real action</action>"#))
+            .parse(&resp(
+                r#"<actions><exec_bash>echo &lt;hi&gt;</exec_bash></actions>"#,
+            ))
             .unwrap();
-        assert!(out.do_actions.is_empty());
+        assert_eq!(
+            out.do_actions[0].args.get("command"),
+            Some(&json!("echo <hi>"))
+        );
     }
 }

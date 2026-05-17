@@ -28,6 +28,7 @@ pub mod llm_compress;
 pub mod llm_explore;
 pub mod local_llm_context;
 pub mod path_utils;
+pub mod read_tool;
 pub mod run_local_llm;
 pub mod todo;
 pub mod tool;
@@ -45,6 +46,7 @@ pub use file_tools::{
 };
 pub use glob_tool::{GlobTool, TOOL_GLOB};
 pub use grep_tool::{GrepTool, TOOL_GREP};
+pub use read_tool::{ReadTool, TOOL_READ};
 pub use llm_bash::{
     BashRunOutput, BashRunRequest, BashRunner, BashTarget, BashTargetSpec, BinOverlayConfig,
     ExecBashTool, LlmBashConfig, LocalProcessBashRunner, TOOL_EXEC_BASH,

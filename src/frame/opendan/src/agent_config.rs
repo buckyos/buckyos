@@ -164,18 +164,17 @@ impl AgentConfig {
 
     /// Synthesize a minimal built-in `ui_default` behavior when no
     /// behaviors/ui_default.toml is present on disk. Keeps first-boot from
-    /// requiring any manual setup.
+    /// requiring any manual setup. The Action set aligns with
+    /// `doc/opendan/Agent Actions.md` §1 — the v2 7-action fixed list.
     pub fn builtin_ui_default() -> BehaviorCfg {
         BehaviorCfg {
             name: "ui_default".to_string(),
             objective: "interactive UI session".to_string(),
             tool_whitelist: vec![
                 "exec_bash".to_string(),
-                "read_file".to_string(),
-                "glob".to_string(),
-                "grep".to_string(),
-                "edit_file".to_string(),
                 "write_file".to_string(),
+                "edit_file".to_string(),
+                "read".to_string(),
                 "subscribe_event".to_string(),
                 "unsubscribe_event".to_string(),
             ],

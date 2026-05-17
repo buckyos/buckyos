@@ -355,7 +355,7 @@ v2 与 v1 之间没有 transition window，所有变更同步发布：
 |---|---|
 | [`src/frame/llm_context/src/xml_behavior.rs`](../../src/frame/llm_context/src/xml_behavior.rs) | 解析器主体改写：识别 `<actions>` 容器、一级标签即 Action 名、CDATA body 提取 |
 | [`src/frame/llm_context/src/context_loop.rs`](../../src/frame/llm_context/src/context_loop.rs) | 派发逻辑：Self Report 直接更新 `LLMContext.last_report`；`<report target=...>` 走 message bus；其它 Action 调 ToolManager |
-| [`src/frame/llm_context/src/behavior_cfg.rs`](../../src/frame/llm_context/src/behavior_cfg.rs) | `tool_whitelist` 语义改为 Action 名白名单；默认全集就是 §1 的 7 个 |
+| [`src/frame/opendan/src/behavior_cfg.rs`](../../src/frame/opendan/src/behavior_cfg.rs) | `tool_whitelist` 保留旧语义（ToolManager 暴露的工具名白名单）；v2 默认 6 项：`exec_bash`/`write_file`/`edit_file`/`read`/`subscribe_event`/`unsubscribe_event`。`<report>` 不进 whitelist——它在 parser/dispatcher 走特殊路径，不经过 ToolManager |
 | `LLMContext` 结构 | 新增 `last_report: Option<ReportRecord>` 字段，进快照 |
 | `src/frame/agent_tool` | 删除 Glob / Grep / session/workspace/memory/todo_manage / read_file 相关 Tool 实现；新增 `read` Tool（带 uri scheme dispatch） |
 | Overlay shim 二进制 | 新增 `opendan-session` / `opendan-workspace` / `opendan-memory` / `opendan-todo` 4 个 shim |

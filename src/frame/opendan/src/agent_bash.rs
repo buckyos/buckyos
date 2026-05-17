@@ -30,8 +30,8 @@ use tokio::time::{sleep, Duration};
 
 use agent_tool::{
     AgentToolError, AgentToolManager, BashRunOutput, BashRunRequest, BashRunner, BashTarget,
-    BinOverlayConfig, EditFileTool, ExecBashTool, FileToolConfig, GlobTool, GrepTool,
-    LlmBashConfig, NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, WriteFileTool,
+    BinOverlayConfig, EditFileTool, ExecBashTool, FileToolConfig, LlmBashConfig,
+    NoopFileWriteAudit, ReadTool, SessionRuntimeContext, WriteFileTool,
 };
 
 use crate::paths;
@@ -337,11 +337,13 @@ pub fn build_default_tool_manager(
 
     let file_cfg = fs_roots.to_file_tool_config();
     let audit = Arc::new(NoopFileWriteAudit);
-    let _ = manager.register_typed_tool(ReadFileTool::new(file_cfg.clone()));
+    // v2 Action set (see doc/opendan/Agent Actions.md §1):
+    // - `read` replaces v1 `read_file`
+    // - `glob` / `grep` removed (LLM uses find/grep/rg via exec_bash)
+    // - `write_file` / `edit_file` unchanged
+    let _ = manager.register_tool(ReadTool::new(file_cfg.clone()));
     let _ = manager.register_typed_tool(WriteFileTool::new(file_cfg.clone(), audit.clone()));
-    let _ = manager.register_typed_tool(EditFileTool::new(file_cfg.clone(), audit));
-    let _ = manager.register_typed_tool(GlobTool::new(file_cfg.clone()));
-    let _ = manager.register_typed_tool(GrepTool::new(file_cfg));
+    let _ = manager.register_typed_tool(EditFileTool::new(file_cfg, audit));
 
     Arc::new(manager)
 }
@@ -775,13 +777,20 @@ mod tests {
             bin_renderer: None,
         })
         .expect("build tools");
-        for name in ["exec_bash", "read_file", "Glob", "Grep"] {
+        for name in ["exec_bash", "read"] {
             assert!(manager.has_tool(name), "tool {name} not registered");
         }
         for action_only in ["write_file", "edit_file"] {
             assert!(
                 manager.get_any_tool(action_only).is_some(),
                 "tool {action_only} not registered"
+            );
+        }
+        // v2 dropped Glob/Grep/read_file from the action registry.
+        for dropped in ["Glob", "Grep", "read_file"] {
+            assert!(
+                !manager.has_tool(dropped),
+                "tool {dropped} should be unregistered in v2"
             );
         }
     }

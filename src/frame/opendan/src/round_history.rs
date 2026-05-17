@@ -974,7 +974,7 @@ fn behavior_step_observation_text(step: &StepRecord) -> Option<String> {
             parts.push(observation.to_string());
         }
     }
-    if let Some(result) = &step.action_result {
+    for result in &step.action_results {
         parts.push(render_observation(result));
     }
     if parts.is_empty() {
@@ -1155,12 +1155,12 @@ mod tests {
                 StepRecord {
                     assistant_text: "done".to_string(),
                     observation: Some("ok".to_string()),
-                    action_result: Some(Observation::Success {
+                    action_results: vec![Observation::Success {
                         call_id: "call-1".to_string(),
                         content: json!("ok"),
                         bytes: 2,
                         truncated: false,
-                    }),
+                    }],
                     ..Default::default()
                 },
                 2,
