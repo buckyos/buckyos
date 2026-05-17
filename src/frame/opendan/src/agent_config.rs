@@ -332,20 +332,29 @@ impl AgentConfig {
     }
 
     /// Resolve a class for an on-disk [`SessionKind`]. Used by the restore
-    /// path which only has the persisted kind to go on. Picks the first
-    /// configured class with a matching `kind`; falls back to "ui" / "work"
-    /// literal class names so an `agent.toml` that uses the canonical names
-    /// from the doc examples works without an explicit kind tag.
+    /// path which only has the persisted kind to go on. Prefer the canonical
+    /// "ui" / "work" class when present, then pick the first configured class
+    /// with a matching `kind`; fall back to the canonical literal.
     pub fn class_name_for_kind(&self, kind: SessionKind) -> String {
+        let canonical = match kind {
+            SessionKind::Ui => "ui",
+            SessionKind::Work => "work",
+        };
+        if self
+            .toml
+            .session
+            .get(canonical)
+            .map(|cfg| cfg.kind == kind)
+            .unwrap_or(false)
+        {
+            return canonical.to_string();
+        }
         for (name, cfg) in self.toml.session.iter() {
             if cfg.kind == kind {
                 return name.clone();
             }
         }
-        match kind {
-            SessionKind::Ui => "ui".to_string(),
-            SessionKind::Work => "work".to_string(),
-        }
+        canonical.to_string()
     }
 
     /// Default behavior for a class name. Used when ensure_session_inner
@@ -510,11 +519,17 @@ mod tests {
     }
 
     #[test]
-    fn class_name_for_kind_picks_first_match_then_falls_back() {
+    fn class_name_for_kind_prefers_canonical_then_first_match() {
         let dir = tempdir().unwrap();
         std::fs::write(
             dir.path().join("agent.toml"),
             r#"
+                [session.group]
+                kind = "ui"
+
+                [session.ui]
+                kind = "ui"
+
                 [session.chat]
                 kind = "ui"
 
@@ -524,9 +539,7 @@ mod tests {
         )
         .unwrap();
         let cfg = AgentConfig::open(dir.path().to_path_buf()).unwrap();
-        // Either "chat" or "ops" can come out for UI/Work — BTreeMap key
-        // ordering makes the choice deterministic ("chat" < "ops").
-        assert_eq!(cfg.class_name_for_kind(SessionKind::Ui), "chat");
+        assert_eq!(cfg.class_name_for_kind(SessionKind::Ui), "ui");
         assert_eq!(cfg.class_name_for_kind(SessionKind::Work), "ops");
     }
 
@@ -565,5 +578,27 @@ mod tests {
             .capabilities
             .tool_whitelist
             .contains(&"exec_bash".to_string()));
+    }
+
+    /// Pins the on-disk minimal demo (`doc/opendan/mini_agent_demo/`) into
+    /// the test suite. Any schema drift that makes the demo file stop
+    /// parsing trips here so README/example/code stay in sync.
+    #[test]
+    fn mini_agent_demo_parses() {
+        let demo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../doc/opendan/mini_agent_demo");
+        let cfg = AgentConfig::open(demo_root.clone()).expect("open demo agent root");
+        assert_eq!(cfg.toml.identity.display_name, "echo-bot");
+        assert_eq!(cfg.toml.dispatch.default_class, "ui");
+        let ui = cfg
+            .session_class("ui")
+            .expect("demo defines [session.ui]");
+        assert_eq!(ui.default_behavior, "ui_default");
+        assert!(ui.keep_alive);
+
+        let beh = cfg.load_behavior("ui_default").expect("load demo behavior");
+        assert_eq!(beh.name(), "ui_default");
+        assert_eq!(beh.capabilities.tool_whitelist, vec!["report"]);
+        assert!(beh.prompt.on_init.contains("{agent_name}"));
     }
 }

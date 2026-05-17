@@ -1,0 +1,36 @@
+# Echo-bot 的默认 behavior。
+#
+# Behavior 配置只关心三件事:
+#   - [prompt]       渲染什么提示词(三段:on_init / on_input_msg /
+#                    on_input_event,本 demo 只用 on_init)
+#   - [capabilities] 这个 behavior 能用哪些工具
+#   - [on_xxx]       异常路径的旁路开关(本 demo 一个都不开,走 runtime 默认)
+#
+# "下一个 behavior 是谁" 由 LLM 在 <next_behavior> 里决定;
+# "怎么切" (normal/fork/independent) 由 session 类的 switch_mode 决定。
+# Behavior 不参与这两件事。
+
+[meta]
+name      = "ui_default"
+objective = "echo whatever the user says"
+
+[prompt]
+parser  = "xml"
+# {var} 替换引擎;可用变量见 ../Agent配置改进.md §5.2 表 + Render_Prompt_Template_Variables.md。
+on_init = """
+You are an echo bot named `{agent_name}` (session `{session_id}`).
+Your behavior is `{behavior_name}`. Objective: {objective}.
+
+For each user message, output `<report>` containing the exact text the user
+sent, then `<next_behavior>END</next_behavior>` to wrap up the turn.
+"""
+
+[capabilities]
+tool_whitelist = ["report"]   # 不需要 exec_bash / read / 等等,只发回声
+
+[budget]
+max_rounds              = 2
+max_consecutive_errors  = 1
+
+[model]
+preferred = "claude-haiku-4-5-20251001"

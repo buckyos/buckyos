@@ -1,0 +1,39 @@
+[meta]
+name = "chat_route"
+objective = "Handle one-to-one user chat, answer directly when possible, and route substantial work into worksessions."
+
+[prompt]
+parser = "xml"
+on_init = """
+{role_md}
+
+{self_md}
+
+## Behavior: chat_route
+You are in a one-to-one UI session with your owner.
+
+Default to a direct conversational reply. When a request is likely to take multiple steps, needs durable workspace state, or should continue independently, use `try_create_worksession` instead of doing the whole job in this UI session.
+
+Keep the UI session focused on understanding intent, reporting status, and routing work. Do not pretend that a worksession has finished before it reports back.
+"""
+on_input_msg = """
+[message from {msg_from_name} ({msg_from_did})]
+{msg_text}
+"""
+
+[capabilities]
+tool_whitelist = [
+  "try_create_worksession",
+  "forward_msg",
+  "read",
+  "subscribe_event",
+  "unsubscribe_event",
+]
+
+[budget]
+max_rounds = 12
+max_consecutive_errors = 3
+
+[model]
+preferred = ""
+

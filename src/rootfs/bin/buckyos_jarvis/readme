@@ -1,0 +1,13 @@
+关于Jarvis的实现，Session 这一块我们准备在第一个版本实现下面的几个
+
+UI Session 分两个：
+1. 单聊的 Session,默认的 behavior 就是 chat_route。
+2. 群聊的 Session,默认的 behaviors groupchat_route
+Loop是传统的agent loop
+
+worksession 有1个
+这个 work session 里面 default 的 behavior 是 plan。根据之前的讨论，在 plan 里面它会在合适的时候switch 到 behavior do。
+Work Sessions 用的是标准的 behavior loop 模式
+
+总结一下，就是一共要写 4 个 behavior
+

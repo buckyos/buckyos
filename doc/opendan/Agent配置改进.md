@@ -133,8 +133,8 @@ preserve_attachment_tag_in_egress = false
 [identity]
 agent_did    = ""                       # 空 ⇒ 启动期从 system_config 拉的 AgentDocument 回填
 display_name = ""                       # 空 ⇒ 从目录名推断
-# role.md / self.md 不在这里声明——它们是约定俗成的文件名,由具体 behavior 的
-# 提示词通过 prompt compiler 的 `{{ include "role.md" }}` 显式引入。
+# role.md / self.md 不在这里声明——它们是约定俗成的文件名。当前实现中,
+# 由 runtime 读取后作为 `[prompt].on_init` 的 `{role_md}` / `{self_md}` 变量注入。
 # agent.toml 不掺合"哪个 behavior 用哪段身份描述"。
 
 # ─── Runtime ─────────────────────────────────────────────────
@@ -286,39 +286,40 @@ behavior 里:
 name      = "explorer"
 objective = "explore unknown territory"
 
-# ─── prompt 渲染:三个时机,三段模板 ───────────────────────
-# 模板引擎(Agent Prompt Compiler)在每个时机都能访问当前 session / behavior / 环境状态,
-# 具体可见变量见 Render_Prompt_Template_Variables.md。
+# ─── prompt 渲染:当前实现是简单 `{var}` 替换 ───────────────
+# 注意:OpenDAN behavior 主路径当前没有接入 llm_context::PromptRenderEngine,
+# 不支持 `{{ include "role.md" }}` / `{{ behavior.name }}` / filter/function 调用。
 # 提示词内联在 toml 多行字符串里——一个 behavior 的提示词是一个整体,不拆文件。
 [prompt]
 parser = "xml"                          # LLM 输出 parse 方式;renderer 等细节全部走默认值
 
 # 进入这个 behavior 的瞬间,渲染 system 段
+# 可用变量:
+#   {agent_name} {behavior_name} {session_id}
+#   {objective} {title} {workspace_id} {role_md} {self_md}
 on_init = """
-{{ include "role.md" }}
-{{ include "self.md" }}
+{role_md}
+{self_md}
 
-You are now in behavior `{{ behavior.name }}`. Your objective: {{ behavior.objective }}.
+You are now in behavior `{behavior_name}`. Your objective: {objective}.
 
 ## Available actions
-{{ actions.render_xml_schema() }}
-
-## Workspace state
-{{ workspace.summary }}
+Use only the tools allowed by this behavior's capabilities.
 """
 
-# 收到一条 user/peer message,即将拼进本轮 input 时渲染
-# 不写 ⇒ 走 runtime 内建的最小消息模板(仅原文 + 发送者)
-on_input_msg = """
-[message from {{ msg.from_did }}]
-{{ msg.content }}
-"""
+# 收到一条 user/peer message 时:
+# 当前字段已在 schema 中存在,但 worker drain 路径尚未应用该模板;
+# PendingInput::Msg 仍作为原始 User AiMessage 拼进本轮 input。
+# 因此当前不要依赖 on_input_msg 改写消息文本。
+# on_input_msg = "[message from {msg_from_did}]\n{msg_text}"
 
 # 收到一条业务 event,即将拼进本轮 input 时渲染
-# 不写 ⇒ 走 runtime 内建的最小事件模板(type + 关键字段)
+# 行为级 fallback:只有没有命中 subscription 自带 message_template 时才使用。
+# 可用变量:{event_id} {data},以及 JSON payload 顶层 scalar 字段的 {key}。
+# 不写 ⇒ 走 runtime 内建的最小事件模板(event_id + payload)
 on_input_event = """
-[event {{ event.type }}]
-{{ event.payload | json }}
+[event {event_id}]
+{data}
 """
 
 # ─── 能力声明(占位,§5.3 详述)────────────────────────────
@@ -385,7 +386,7 @@ v0 **直接沿用现状 `BehaviorCfg.tool_whitelist` / `approval_required` / `to
 | `max_rounds` / `max_consecutive_errors` / `budget` | `[budget]` | — |
 | `switch_mode` | `[session.<class>].switch_mode` | **上提到 session 类** |
 | `model` | `[model]` | — |
-| — | `[prompt].on_input_msg` / `on_input_event` | **新增**:消息/事件渲染时机的模板槽 |
+| — | `[prompt].on_input_msg` / `on_input_event` | **新增**:`on_input_event` 当前已作为行为级 fallback 使用;`on_input_msg` 字段已进 schema,但 worker drain 尚未应用 |
 | — | `[on_xxx]` 旁路开关 | **新增**:异常路径从 Rust 默认逻辑里提出来做成可见开关 |
 
 ### 5.5 `[on_xxx]` 与 LLM 输出 `<actions>` 的层级澄清
@@ -561,9 +562,11 @@ Workflow DSL 时就尾大不掉。要么不要,要么一次性全要。
 4. **Channel 类型的对外接口**:`type = "msg_center" | "kevent" | "http" | ...` 的清单需要定一个准入
    表,跟 [Agent Session 的事件订阅](./Agent%20Session的事件订阅.md) §2 三种模式对齐。
 
-5. **prompt 模板默认值**:`[prompt].on_input_msg` / `on_input_event` 缺省走 runtime 内建的最小模板
-   ——这两个内建模板的具体形态需要跟 [Render_Prompt_Template_Variables](./Render_Prompt_Template_Variables.md)
-   一起定,并明确"自定义模板可以访问哪些上下文变量"的清单。
+5. **prompt 模板默认值**:当前 `[prompt].on_init` 使用简单 `{var}` 替换;`on_input_event` 作为
+   subscription template 之后的 fallback,同样使用简单 `{var}` 替换;`on_input_msg` 已进 schema,
+   但当前 worker drain 路径尚未应用它。若后续要切到
+   [Render_Prompt_Template_Variables](./Render_Prompt_Template_Variables.md) 中的通用
+   `PromptRenderEngine`,需要先补 OpenDAN 专用变量 loader,并把可访问变量清单重新定稿。
 
 ---
 
@@ -636,6 +639,7 @@ preferred = "claude-haiku-4-5-20251001"
 
 > **`agent.toml` 承载 Gateway + Session 类骨架(事件类型 → session class 的固定映射,loop / switch /
 > session_id 派生策略全归 session 类);`behaviors/<name>.toml` 单文件承载"已经决定要推理之后,
-> 渲染哪段提示词、能用哪些能力、有没有打开异常旁路"——三段 prompt 模板(on_init / on_input_msg /
-> on_input_event)内联在 toml 里 + `[capabilities]` + `[on_xxx]` 开关。v0 整份配置不带表达式,
+> 渲染哪段提示词、能用哪些能力、有没有打开异常旁路"——prompt 模板字段内联在 toml 里
+> (`on_init` 当前生效,`on_input_event` 作为事件 fallback 生效,`on_input_msg` 尚未接入 worker drain)
+> + `[capabilities]` + `[on_xxx]` 开关。v0 整份配置不带表达式,
 > LLM 不选择 switch_mode,复杂状态机走 Workflow LLMContext DSL,不在本 schema 上叠加。**

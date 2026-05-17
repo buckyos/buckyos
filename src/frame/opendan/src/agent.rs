@@ -87,6 +87,8 @@ pub enum Inbound {
         tunnel_did: Option<String>,
         /// Optional explicit target. `None` ⇒ resolve via `from`.
         session_id: Option<String>,
+        /// Group DID for group messages. `None` for one-to-one chat.
+        group_id: Option<String>,
         text: String,
         ai_message: AiMessage,
     },
@@ -509,10 +511,16 @@ impl AIAgent {
                 from_name,
                 tunnel_did,
                 session_id,
+                group_id,
                 text,
                 ai_message,
             } => {
-                let class = self.route_to_class("msg.chat");
+                let event_type = if group_id.as_deref().is_some_and(|s| !s.is_empty()) {
+                    "msg.group"
+                } else {
+                    "msg.chat"
+                };
+                let class = self.route_to_class(event_type);
                 let kind = self
                     .config
                     .session_class(&class)
@@ -530,6 +538,7 @@ impl AIAgent {
                         from_name: from_name.clone(),
                         tunnel_did: tunnel_did.clone(),
                         session_id: None,
+                        group_id: group_id.clone(),
                         text: String::new(),
                         ai_message: ai_message.clone(),
                     };

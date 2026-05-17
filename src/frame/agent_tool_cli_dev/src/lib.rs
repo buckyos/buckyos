@@ -19,6 +19,7 @@ use tokio::process::Command;
 use agent_tool::agent_memory::{
     AgentMemory, AgentMemoryConfig, AgentMemoryError, LoadOptions,
 };
+use agent_tool::llm_tool_carft::{self, CommandNotFoundRequest};
 use agent_tool::{llm_explore, run_local_llm};
 use agent_tool::{
     cli_error_result, cli_exit_code_for_error, cli_result_from_tool_result, cli_success_result,
@@ -50,8 +51,7 @@ const TOOL_NAMES: [&str; 12] = [
 const AGENT_MEMORY_ROOT_ENV: &str = "AGENT_MEMORY_ROOT";
 const AGENT_MEMORY_DIR_NAME: &str = "memory";
 const EXIT_SUCCESS: i32 = agent_tool::CLI_EXIT_SUCCESS;
-const EXIT_COMMAND_NOT_FOUND: i32 = agent_tool::CLI_EXIT_COMMAND_NOT_FOUND;
-const COMMAND_NOT_FOUND_PROXY: &str = "__command_not_found__";
+const COMMAND_NOT_FOUND_PROXY: &str = agent_tool::CLI_COMMAND_NOT_FOUND_SUBCOMMAND;
 const MAIN_BINARY_NAME: &str = "agent_tool";
 const DEFAULT_AGENT_NAME: &str = "did:opendan:cli";
 const DEFAULT_TRACE_ID: &str = "cli-trace";
@@ -242,11 +242,22 @@ async fn execute(
 ) -> Result<CliRunOutput, AgentToolError> {
     let parsed = parse_command(&args, &env.current_dir)?;
     match parsed {
-        ParsedCommand::CommandNotFound { command, argv } => Ok(CliRunOutput {
-            exit_code: EXIT_COMMAND_NOT_FOUND,
-            stdout: String::new(),
-            stderr: render_command_not_found_log(command.as_deref(), &argv),
-        }),
+        ParsedCommand::CommandNotFound { command, argv } => {
+            // Delegate to `llm_tool_carft` — the intent-engine-bypass scaffold.
+            // Today the scaffold's step 1 always skips (no behavior cfg toggle
+            // wired yet), so the visible behavior matches the old placeholder:
+            // exit 127 + a one-liner explaining why. Once behavior cfg can flip
+            // the bypass on, the same dispatch will start exercising step 2-4
+            // without further changes here.
+            let req = CommandNotFoundRequest {
+                command,
+                argv,
+                current_dir: env.current_dir.clone(),
+                agent_env_root: env.has_agent_env.then(|| env.agent_env_root.clone()),
+            };
+            let (result, exit_code) = llm_tool_carft::run_subcommand(req).await;
+            Ok(render_cli_output(&result, exit_code))
+        }
         ParsedCommand::Help { tool_name } => Ok(render_cli_output(
             &build_help_result(&env, tool_name.as_deref()).await,
             EXIT_SUCCESS,
@@ -1438,20 +1449,6 @@ async fn build_help_result(env: &CliRuntimeEnv, tool_name: Option<&str>) -> Agen
             }),
             "show usage",
         ),
-    }
-}
-
-fn render_command_not_found_log(command: Option<&str>, argv: &[String]) -> String {
-    let command = command.unwrap_or("").trim();
-    let argv_text = if argv.is_empty() {
-        String::new()
-    } else {
-        format!(" argv={}", argv.join(" "))
-    };
-    if command.is_empty() {
-        "agent_tool auto-implement placeholder: command_not_found with empty command".to_string()
-    } else {
-        format!("agent_tool auto-implement placeholder: missing command `{command}`{argv_text}")
     }
 }
 
@@ -2653,10 +2650,17 @@ mod tests {
         .await
         .expect("run command_not_found proxy");
 
-        assert_eq!(output.exit_code, EXIT_COMMAND_NOT_FOUND);
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.contains("auto-implement placeholder"));
-        assert!(output.stderr.contains("missing_tool"));
+        // The dispatcher now delegates to `llm_tool_carft::run_subcommand`.
+        // Until step 1 reads behavior cfg, every call falls through with
+        // exit 127 + a structured AgentToolResult on stdout (stderr stays
+        // empty — render_cli_output puts the envelope on stdout). The shell
+        // hook's own `printf 'bash: %s: command not found\n'` is responsible
+        // for re-emitting the canonical error to stderr, not this CLI.
+        assert_eq!(output.exit_code, agent_tool::CLI_EXIT_COMMAND_NOT_FOUND);
+        assert!(output.stderr.is_empty());
+        assert!(output.stdout.contains("llm_tool_carft"));
+        assert!(output.stdout.contains("missing_tool"));
+        assert!(output.stdout.contains("skipped"));
     }
 
     #[tokio::test]

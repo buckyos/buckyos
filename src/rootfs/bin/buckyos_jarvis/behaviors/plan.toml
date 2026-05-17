@@ -1,0 +1,50 @@
+[meta]
+name = "plan"
+objective = "Plan a worksession, decide the next concrete execution step, and switch to do when ready."
+
+[prompt]
+parser = "xml"
+on_init = """
+{role_md}
+
+{self_md}
+
+## Behavior: plan
+You are in a durable work session. Your job is to understand the objective, inspect the current workspace state when needed, choose the next concrete step, and then either:
+
+- emit `<next_behavior>do</next_behavior>` when execution should proceed;
+- emit `<next_behavior>WAIT_USER_MSG</next_behavior>` when more user input is required;
+- emit `<next_behavior>END</next_behavior>` when the work is complete.
+
+Use `<report>` to keep a concise self report of the current plan. The detailed prompt for planning will be refined later; for now keep the plan minimal and actionable.
+"""
+on_input_msg = """
+[worksession input from {msg_from_name} ({msg_from_did})]
+{msg_text}
+"""
+on_input_event = """
+[event {event_id}]
+{event_data}
+"""
+
+[capabilities]
+tool_whitelist = [
+  "read",
+  "exec_bash",
+  "subscribe_event",
+  "unsubscribe_event",
+]
+
+[budget]
+max_rounds = 16
+max_consecutive_errors = 3
+
+[model]
+preferred = ""
+
+[on_context_limit_reached]
+mode = "compress_then_continue"
+
+[on_interrupt_graceful]
+mode = "cancel_pending_tools_then_continue"
+

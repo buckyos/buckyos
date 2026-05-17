@@ -1,0 +1,38 @@
+# Minimal AgentRootFS root config — see ../Agent配置改进.md §11.
+#
+# Three concepts on display:
+#   1. [[channel]]      — Gateway 接入(本 demo 只挂 msg_center)
+#   2. [dispatch]       — 事件类型 → 哪个 session 类
+#   3. [session.<class>]— session 类的行为骨架(loop / 默认 behavior /
+#                         session_id 派生策略 / switch_mode / keep_alive 等)
+#
+# 跟这份 schema 配对的 behavior 配置位于 ./behaviors/<name>.toml。
+
+[identity]
+display_name = "echo-bot"
+# agent_did 留空 ⇒ opendan 启动时按 buckyos identity 回填。
+
+[runtime]
+cancel_reason = "user canceled"
+
+# ─── Gateway: 只接 msg_center 的对话消息 ────────────────────────────────
+[[channel]]
+type = "msg_center"
+
+# ─── Dispatcher: msg.chat → ui 类 session ───────────────────────────────
+[dispatch]
+default_class = "ui"
+
+[[dispatch.rule]]
+on = "msg.chat"
+session_class = "ui"
+
+# ─── Session 类: 一个 peer 一个 UI session,永远 keep_alive ─────────────
+[session.ui]
+kind                = "ui"
+loop_mode           = "agent"
+default_behavior    = "ui_default"
+subscribe_events    = ["msg.incoming"]
+session_id_strategy = "per_peer"     # session_id = `ui-<peer_did>`
+switch_mode         = "normal"
+keep_alive          = true

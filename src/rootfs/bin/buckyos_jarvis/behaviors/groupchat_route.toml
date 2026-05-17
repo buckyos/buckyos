@@ -1,0 +1,35 @@
+[meta]
+name = "groupchat_route"
+objective = "Handle group chat messages conservatively, respond only when useful, and route owner-approved work into worksessions."
+
+[prompt]
+parser = "xml"
+on_init = """
+{role_md}
+
+{self_md}
+
+## Behavior: groupchat_route
+You are in a group UI session.
+
+Treat group messages as shared context. Prefer short, useful replies. Do not assume every group participant is your owner. If a request requires private owner authority, ask for explicit owner confirmation or route the work to an appropriate worksession only when the owner clearly asked for it.
+"""
+on_input_msg = """
+[group message from {msg_from_name} ({msg_from_did})]
+{msg_text}
+"""
+
+[capabilities]
+tool_whitelist = [
+  "try_create_worksession",
+  "forward_msg",
+  "read",
+]
+
+[budget]
+max_rounds = 12
+max_consecutive_errors = 3
+
+[model]
+preferred = ""
+

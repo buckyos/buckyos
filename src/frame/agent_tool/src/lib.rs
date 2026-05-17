@@ -26,6 +26,7 @@ pub mod json_args;
 pub mod llm_bash;
 pub mod llm_compress;
 pub mod llm_explore;
+pub mod llm_tool_carft;
 pub mod local_llm_context;
 pub mod path_utils;
 pub mod read_tool;
@@ -426,6 +427,12 @@ pub const CLI_EXIT_SUCCESS: i32 = 0;
 pub const CLI_EXIT_ERROR: i32 = 1;
 pub const CLI_EXIT_USAGE: i32 = 2;
 pub const CLI_EXIT_COMMAND_NOT_FOUND: i32 = 127;
+
+/// Subcommand the bash `command_not_found_handle` hook proxies to. Lives here
+/// (not in `agent_tool_cli_dev`) because both ends — the shell-side hook
+/// injected by `opendan::agent_bash::build_exec_script` and the CLI-side
+/// dispatcher in `agent_tool_cli_dev` — must spell it the same way.
+pub const CLI_COMMAND_NOT_FOUND_SUBCOMMAND: &str = "__command_not_found__";
 
 const PROMPT_STDIO_MAX_LINES: usize = 3000;
 

@@ -1,0 +1,62 @@
+[identity]
+display_name = "Jarvis"
+
+[runtime]
+cancel_reason = "user requested cancel"
+preserve_attachment_tag_in_egress = false
+
+[[channel]]
+type = "msg_center"
+
+[[channel]]
+type = "kevent"
+filters = ["task_mgr/**", "kvdoc/**"]
+
+[dispatch]
+default_class = "ui"
+
+[[dispatch.rule]]
+on = "msg.group"
+session_class = "group"
+
+[[dispatch.rule]]
+on = "msg.chat"
+session_class = "ui"
+
+[[dispatch.rule]]
+on = "task_mgr.*"
+session_class = "work"
+
+[[dispatch.rule]]
+on = "kvdoc.*"
+session_class = "work"
+
+[session.ui]
+kind = "ui"
+loop_mode = "agent"
+default_behavior = "chat_route"
+subscribe_events = ["msg.incoming"]
+session_id_strategy = "per_peer"
+switch_mode = "normal"
+process_stack_limit = 4
+keep_alive = true
+
+[session.group]
+kind = "ui"
+loop_mode = "agent"
+default_behavior = "groupchat_route"
+subscribe_events = ["msg.group"]
+session_id_strategy = "per_group"
+switch_mode = "normal"
+process_stack_limit = 4
+keep_alive = true
+
+[session.work]
+kind = "work"
+loop_mode = "behavior"
+default_behavior = "plan"
+subscribe_events = ["task_mgr.*", "kvdoc.*"]
+session_id_strategy = "per_event_session"
+switch_mode = "normal"
+process_stack_limit = 8
+keep_alive = false

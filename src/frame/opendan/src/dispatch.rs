@@ -48,13 +48,14 @@ impl<'a> SessionIdInput<'a> {
             Inbound::Msg {
                 from,
                 from_did,
+                group_id,
                 ai_message: _,
                 ..
             } => Some(Self {
                 session_class: class,
                 from: Some(from.as_str()),
                 from_did: from_did.as_deref(),
-                group_id: None,
+                group_id: group_id.as_deref(),
                 event_session_id: None,
             }),
             Inbound::Event {
@@ -268,6 +269,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(id, "scheduler");
+    }
+
+    #[test]
+    fn per_group_uses_group_id() {
+        let s = EnumSessionIdStrategy;
+        let id = s
+            .compute(
+                SessionIdStrategy::PerGroup,
+                &SessionIdInput {
+                    session_class: "group",
+                    from: Some("tunnel"),
+                    from_did: Some("did:dev:alice"),
+                    group_id: Some("did:dev:family"),
+                    event_session_id: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(id, "group-did_dev_family");
+
+        assert!(s
+            .compute(
+                SessionIdStrategy::PerGroup,
+                &SessionIdInput {
+                    session_class: "group",
+                    from: Some("tunnel"),
+                    from_did: None,
+                    group_id: None,
+                    event_session_id: None,
+                },
+            )
+            .is_none());
     }
 
     #[test]

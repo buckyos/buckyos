@@ -54,6 +54,18 @@ const TMUX_GC_TRIGGER_COUNT: usize = 16;
 /// that crashed agents don't leak forever.
 const TMUX_GC_IDLE_SECS: u64 = 24 * 60 * 60;
 
+/// Env var that gates the bash `command_not_found_handle` proxy injected by
+/// [`build_exec_script`]. When set on the exec_bash request env, its value
+/// must be the absolute path to the `agent_tool` CLI binary; an unknown
+/// command in the user's script is then proxied through
+/// `"$OPENDAN_AGENT_TOOL" __command_not_found__ <argv...>` so the intent
+/// engine bypass (see `agent_tool::llm_tool_carft`) gets a chance to
+/// synthesise a tool before bash falls back to the native
+/// `command not found` error. Unset ⇒ no hook installed, bash behaves
+/// normally. The session-level intent-bypass toggle is responsible for
+/// populating this var when wired up.
+pub const OPENDAN_AGENT_TOOL_ENV: &str = "OPENDAN_AGENT_TOOL";
+
 static EXEC_RUN_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Layout for the 4 PATH layers as described in §2 of the notepad. All four
@@ -703,6 +715,33 @@ fn build_exec_script(
     for (key, value) in env_vars {
         lines.push(format!("  export {}={}", key, shell_quote(value.as_str())));
     }
+    // Intent-engine bypass hook: when the session sets OPENDAN_AGENT_TOOL,
+    // install bash's command_not_found_handle so unknown commands are
+    // proxied to `agent_tool __command_not_found__` instead of dying with
+    // 127 immediately. The handler still falls back to bash's native error
+    // message when the proxy itself reports 127, so a fully-failed bypass
+    // looks the same to the LLM as no bypass. Functions defined here are
+    // inherited by the `( ... )` subshell below.
+    lines.push(format!(
+        "  if [ -n \"${{{env}:-}}\" ]; then",
+        env = OPENDAN_AGENT_TOOL_ENV
+    ));
+    lines.push("    command_not_found_handle() {".to_string());
+    lines.push(format!(
+        "      local __od_tool=\"${{{env}:-}}\"",
+        env = OPENDAN_AGENT_TOOL_ENV
+    ));
+    lines.push(format!(
+        "      \"$__od_tool\" {} \"$@\"",
+        shell_quote(agent_tool::CLI_COMMAND_NOT_FOUND_SUBCOMMAND)
+    ));
+    lines.push("      local __od_cnf_ec=$?".to_string());
+    lines.push("      if [ \"$__od_cnf_ec\" -eq 127 ]; then".to_string());
+    lines.push("        printf 'bash: %s: command not found\\n' \"$1\" >&2".to_string());
+    lines.push("      fi".to_string());
+    lines.push("      return \"$__od_cnf_ec\"".to_string());
+    lines.push("    }".to_string());
+    lines.push("  fi".to_string());
     lines.push("  (".to_string());
     lines.push(command.to_string());
     lines.push("  )".to_string());
@@ -870,6 +909,35 @@ mod tests {
         assert!(script.contains("export FOO='bar'"));
         assert!(script.contains(&format!("cd \"$__od_cwd\"")));
         assert!(script.contains("echo hi"));
+    }
+
+    #[test]
+    fn exec_script_installs_command_not_found_proxy() {
+        let dir = tempdir().unwrap();
+        let script = build_exec_script(
+            "rid",
+            &dir.path().join("out"),
+            &dir.path().join("err"),
+            &dir.path().join("ec"),
+            &dir.path().join("work"),
+            "missing-cmd",
+            &[],
+        );
+        // Hook is gated on OPENDAN_AGENT_TOOL being set on the request env.
+        assert!(script.contains(&format!("if [ -n \"${{{}:-}}\" ]", OPENDAN_AGENT_TOOL_ENV)));
+        // Proxies to the shared `__command_not_found__` subcommand…
+        assert!(script.contains("command_not_found_handle()"));
+        assert!(script.contains(agent_tool::CLI_COMMAND_NOT_FOUND_SUBCOMMAND));
+        // …and falls back to bash's native error when the proxy returns 127.
+        assert!(script.contains("command not found"));
+        // Handler is defined inside the outer `{ ... }` group (before the
+        // user-command subshell) so the `( ... )` below inherits it.
+        let handler_idx = script.find("command_not_found_handle()").unwrap();
+        let subshell_idx = script.find("\n  (\n").unwrap();
+        assert!(
+            handler_idx < subshell_idx,
+            "handler must be defined before the user-command subshell so it's inherited"
+        );
     }
 
     #[test]

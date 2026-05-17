@@ -29,6 +29,7 @@ use buckyos_api::{
     MsgState,
 };
 use llm_context::{parse_msg_object, MsgParseOutput};
+use ndn_lib::MsgObjKind;
 
 use crate::command_dispatcher::BUILTIN_COMMANDS;
 use log::{debug, info, warn};
@@ -282,6 +283,21 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
         .ui_session_id
         .clone()
         .filter(|s| !s.trim().is_empty());
+    let group_id = if record.record.msg_kind == MsgObjKind::GroupMsg {
+        msg.to
+            .first()
+            .map(|did| did.to_string())
+            .or_else(|| {
+                record
+                    .record
+                    .tags
+                    .iter()
+                    .find_map(|tag| tag.strip_prefix("group:").map(str::to_string))
+            })
+            .filter(|s| !s.trim().is_empty())
+    } else {
+        None
+    };
 
     // `from_name` enrichment: prefer the value msg-center attached to the
     // record; otherwise consult ContactLookup. Failures stay as `None` —
@@ -316,6 +332,7 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
             from_name,
             tunnel_did,
             session_id,
+            group_id,
             text,
             ai_message,
         },
