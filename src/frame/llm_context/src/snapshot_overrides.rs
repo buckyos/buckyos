@@ -38,6 +38,7 @@ pub struct RequestOverrides {
     pub system_messages: Option<Vec<AiMessage>>,
     pub tool_policy: Option<ToolPolicy>,
     pub objective: Option<String>,
+    pub behavior_name: Option<String>,
     /// Outer Option = override or not; inner Option = override target value
     /// (`Some(Some(_))` set, `Some(None)` clear, `None` keep).
     pub trace: Option<Option<String>>,
@@ -55,6 +56,8 @@ pub struct RequestOverrides {
     /// independent — switch keeps the counter so a behavior swap cannot
     /// silently bypass the error cap.
     pub reset_errors: bool,
+
+    pub reset_behavior_hot_tail: bool,
 
     /// Fork-only hard constraint. When `true`, the rebuilt request will
     /// carry `forbid_next_behavior = true` and the Behavior Loop will scrub
@@ -95,6 +98,9 @@ pub fn apply_overrides_to_snapshot(
     if let Some(obj) = ov.objective {
         snap.request.objective = obj;
     }
+    if let Some(behavior_name) = ov.behavior_name {
+        snap.request.behavior_name = behavior_name;
+    }
     if let Some(trace) = ov.trace {
         snap.request.trace = trace;
     }
@@ -121,6 +127,12 @@ pub fn apply_overrides_to_snapshot(
     // the no-op case for this field — so we only ever flip the bit on.
     if ov.forbid_next_behavior {
         snap.request.forbid_next_behavior = true;
+    }
+
+    if ov.reset_behavior_hot_tail {
+        if let Some(last) = snap.state.last_step.take() {
+            snap.state.steps.push(last);
+        }
     }
 
     snap
@@ -173,9 +185,9 @@ pub fn build_fresh(request: LLMContextRequest, deps: LLMContextDeps) -> LLMConte
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::AiContent;
     use crate::request::{ContextOwnerRef, ToolMode};
     use crate::state::LLMContextState;
+    use buckyos_api::AiContent;
 
     fn msg(role: AiRole, text: &str) -> AiMessage {
         AiMessage {
@@ -193,6 +205,7 @@ mod tests {
             },
             trace: None,
             objective: String::new(),
+            behavior_name: String::new(),
             input,
             model_policy: ModelPolicy::default(),
             tool_policy: ToolPolicy::default(),
@@ -356,5 +369,31 @@ mod tests {
         };
         let out = apply_overrides_to_snapshot(snap, ov);
         assert!(out.request.forbid_next_behavior);
+    }
+
+    #[test]
+    fn apply_overrides_behavior_switch_resets_hot_tail() {
+        let mut snap = snap_with(vec![msg(AiRole::User, "u")], vec![msg(AiRole::User, "u")]);
+        let mut last = crate::behavior_loop::StepRecord::default();
+        last.meta.behavior_name = "plan".into();
+        last.meta.step_index = 7;
+        last.assistant_text = "old hot".into();
+        snap.state.last_step = Some(last);
+        snap.request.behavior_name = "plan".into();
+
+        let out = apply_overrides_to_snapshot(
+            snap,
+            RequestOverrides {
+                behavior_name: Some("execute".into()),
+                reset_behavior_hot_tail: true,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(out.request.behavior_name, "execute");
+        assert!(out.state.last_step.is_none());
+        assert_eq!(out.state.steps.len(), 1);
+        assert_eq!(out.state.steps[0].meta.behavior_name, "plan");
+        assert_eq!(out.state.steps[0].assistant_text, "old hot");
     }
 }

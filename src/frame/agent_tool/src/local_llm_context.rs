@@ -271,6 +271,7 @@ impl OneShotRequest {
             },
             trace: Some(run_id.to_string()),
             objective: self.objective.clone(),
+            behavior_name: String::new(),
             input: self.input.clone(),
             model_policy: self.model_policy.clone().unwrap_or_default(),
             tool_policy: self.tool_policy.clone().unwrap_or_default(),

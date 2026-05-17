@@ -11,6 +11,44 @@ use serde::{Deserialize, Serialize};
 
 use crate::observation::Observation;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepCompressionLevel {
+    Full,
+    Compact,
+    Summary,
+}
+
+impl Default for StepCompressionLevel {
+    fn default() -> Self {
+        Self::Full
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StepMeta {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub behavior_name: String,
+    pub step_index: u32,
+    pub started_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_ms: Option<u64>,
+    #[serde(default)]
+    pub compression_level: StepCompressionLevel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HistorySummaryRecord {
+    pub step_count: u32,
+    pub start_step_index: u32,
+    pub end_step_index: u32,
+    pub started_at_ms: u64,
+    pub ended_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub behavior_names: Vec<String>,
+    pub summary: String,
+}
+
 /// One Behavior step. Carries both the LLM-emitted intent (`assistant_text`
 /// + the parsed slots) and the dispatcher-side echo (`action_results`).
 ///
@@ -23,6 +61,9 @@ use crate::observation::Observation;
 /// `Vec<_>` and `action_results` is index-aligned with it.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StepRecord {
+    #[serde(default)]
+    pub meta: StepMeta,
+
     // —— Filled by parser (before action dispatch) ——
     /// Raw LLM response text, used verbatim as assistant message content
     /// when this step is rendered back to the LLM.
@@ -83,6 +124,7 @@ impl StepRecord {
             messages_to_send,
         } = result;
         Self {
+            meta: StepMeta::default(),
             assistant_text,
             observation,
             thought,
@@ -111,6 +153,7 @@ impl StepRecord {
 
     fn synthetic_error(message: String) -> Self {
         Self {
+            meta: StepMeta::default(),
             assistant_text: String::new(),
             observation: None,
             thought: None,
@@ -188,15 +231,53 @@ pub trait StepRenderer: Send + Sync {
     /// Render one step into an `(assistant, user)` pair.
     fn render(&self, step: &StepRecord) -> (AiMessage, AiMessage);
 
-    /// Render the historical (sedimented) tail. Default implementation just
-    /// concatenates `render()` over each step; implementors may override for
-    /// summary-style compression artifacts.
-    fn render_history(&self, steps: Vec<StepRecord>) -> Vec<AiMessage> {
-        let mut out = Vec::with_capacity(steps.len() * 2);
+    fn render_inherited(&self, step: &StepRecord) -> AiMessage {
+        AiMessage::text(
+            buckyos_api::AiRole::User,
+            format!(
+                "history step record:\nbehavior: {}\nindex: {}\nsummary: {}",
+                step.meta.behavior_name,
+                step.meta.step_index,
+                step.thought
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| step.assistant_text.trim())
+            ),
+        )
+    }
+
+    fn render_summary(&self, summary: &HistorySummaryRecord) -> AiMessage {
+        AiMessage::text(
+            buckyos_api::AiRole::User,
+            format!(
+                "history summary:\nsteps: {}..{}\ncount: {}\nbehaviors: {}\nsummary: {}",
+                summary.start_step_index,
+                summary.end_step_index,
+                summary.step_count,
+                summary.behavior_names.join(", "),
+                summary.summary
+            ),
+        )
+    }
+
+    fn render_history(
+        &self,
+        steps: Vec<StepRecord>,
+        current_behavior: &str,
+        summaries: Vec<HistorySummaryRecord>,
+    ) -> Vec<AiMessage> {
+        let mut out = Vec::with_capacity(steps.len() * 2 + summaries.len());
+        for summary in &summaries {
+            out.push(self.render_summary(summary));
+        }
         for step in &steps {
-            let (a, u) = self.render(step);
-            out.push(a);
-            out.push(u);
+            if !current_behavior.is_empty() && step.meta.behavior_name != current_behavior {
+                out.push(self.render_inherited(step));
+            } else {
+                let (a, u) = self.render(step);
+                out.push(a);
+                out.push(u);
+            }
         }
         out
     }
@@ -226,13 +307,19 @@ impl std::error::Error for CompressError {}
 
 /// Optional history compressor. Same role as `ResumeFill::RewrittenHistory`
 /// but triggered from inside the outer loop rather than by an external
-/// scheduler. Compression output is still `Vec<StepRecord>` — alternation /
-/// renderer contract are preserved.
+/// scheduler.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HistoryCompressionOutput {
+    pub steps: Vec<StepRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub summaries: Vec<HistorySummaryRecord>,
+}
+
 #[async_trait]
 pub trait HistoryCompressor: Send + Sync {
     async fn compress(
         &self,
         steps: Vec<StepRecord>,
         budget: CompressBudget,
-    ) -> Result<Vec<StepRecord>, CompressError>;
+    ) -> Result<HistoryCompressionOutput, CompressError>;
 }

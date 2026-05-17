@@ -15,7 +15,7 @@ use crate::request::{
     ContextOwnerRef, LLMContextRequest, ModelPolicy, OutputSpec, ToolMode, ToolPolicy,
 };
 use crate::state::LLMContextSnapshot;
-use crate::LLMContext;
+use crate::{LLMContext, XmlBehaviorParser, XmlStepRenderer};
 
 /// Scripted LLM responses popped off in order.
 struct ScriptedLlm {
@@ -69,6 +69,7 @@ fn base_request() -> LLMContextRequest {
         owner: ContextOwnerRef::OneShot { id: "t".into() },
         trace: Some("trace-1".into()),
         objective: "test".into(),
+        behavior_name: String::new(),
         input: vec![AiMessage::text(AiRole::User, "hello")],
         model_policy: ModelPolicy {
             preferred: "test-model".into(),
@@ -413,4 +414,38 @@ async fn tool_rounds_budget_exhausted() {
         }
         other => panic!("expected BudgetExhausted, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn behavior_loop_assigns_step_metadata() {
+    let llm = Arc::new(ScriptedLlm::new(vec![text_response(
+        "<response><thinking>done</thinking><next_behavior>END</next_behavior></response>",
+    )]));
+    let mut req = base_request();
+    req.behavior_name = "plan".into();
+    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools))
+        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::Done {
+        behavior_result, ..
+    } = outcome
+    else {
+        panic!("expected behavior Done");
+    };
+    assert_eq!(
+        behavior_result.and_then(|r| r.next_behavior).as_deref(),
+        Some("END")
+    );
+
+    let snapshot = ctx.snapshot();
+    assert_eq!(snapshot.state.steps.len(), 1);
+    let step = &snapshot.state.steps[0];
+    assert_eq!(step.meta.behavior_name, "plan");
+    assert_eq!(step.meta.step_index, 0);
+    assert!(step.meta.started_at_ms > 0);
+    assert!(step.meta.ended_at_ms.is_some());
+    assert_eq!(snapshot.state.next_step_index, 1);
 }

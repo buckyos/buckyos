@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolResultContent, AiUsage};
 use serde_json::Value;
 
-use crate::behavior_loop::{CompressBudget, LLMBehaviorResult, StepRecord};
+use crate::behavior_loop::{CompressBudget, LLMBehaviorResult, StepMeta, StepRecord};
 use crate::deps::{resolve_tool_specs, LLMContextDeps, LlmInferenceRequest, WorkEvent};
 use crate::error::LLMComputeError;
 use crate::interrupt::{
@@ -682,6 +682,8 @@ impl LLMContext {
                 return outcome;
             }
 
+            let step_started_at_ms = now_ms();
+
             // 1. Inner run — get one AiResponse, or bubble up an error
             //    / budget / yield translation as the outer outcome.
             let response = match self.run_inner_for_step().await {
@@ -707,7 +709,9 @@ impl LLMContext {
                             error: err_msg.clone(),
                         })
                         .await;
-                    let err_step = StepRecord::from_parse_error(&err_msg);
+                    let mut err_step = self
+                        .prepare_step(StepRecord::from_parse_error(&err_msg), step_started_at_ms);
+                    self.finish_step(&mut err_step);
                     self.sediment(err_step);
                     if let Some(outcome) = self
                         .bump_consecutive_errors(LLMComputeError::OutputParse(err_msg))
@@ -721,7 +725,8 @@ impl LLMContext {
 
             // 3. Wrap into a StepRecord. action_result is filled below if we
             //    actually dispatch.
-            let mut new_step = StepRecord::from_result(result);
+            let mut new_step =
+                self.prepare_step(StepRecord::from_result(result), step_started_at_ms);
 
             // 3a. Honor `forbid_next_behavior`: a fork sub-ctx must terminate
             //     into its own caller, not jump to a sibling behavior. We
@@ -783,7 +788,9 @@ impl LLMContext {
                     gated
                 }
                 Err(msg) => {
-                    let err_step = StepRecord::from_policy_rejection(&msg);
+                    let mut err_step = self
+                        .prepare_step(StepRecord::from_policy_rejection(&msg), step_started_at_ms);
+                    self.finish_step(&mut err_step);
                     self.sediment(err_step);
                     if let Some(outcome) = self
                         .bump_consecutive_errors(LLMComputeError::PolicyRejected(msg))
@@ -921,6 +928,7 @@ impl LLMContext {
             //    failed action_result on the next inference) and bump the
             //    consecutive-error counter.
             if let Some(err) = error_to_bump {
+                self.finish_step(&mut new_step);
                 self.sediment(new_step);
                 if let Some(outcome) = self.bump_consecutive_errors(err).await {
                     return outcome;
@@ -929,6 +937,7 @@ impl LLMContext {
                 continue;
             }
 
+            self.finish_step(&mut new_step);
             self.sediment(new_step);
             self.maybe_compress().await;
         }
@@ -1022,8 +1031,13 @@ impl LLMContext {
             .as_ref()
             .expect("behavior mode requires step_renderer");
 
+        let current_behavior = self.request.behavior_name.as_str();
         let mut messages = self.request.input.clone();
-        messages.extend(renderer.render_history(self.state.steps.clone()));
+        messages.extend(renderer.render_history(
+            self.state.steps.clone(),
+            current_behavior,
+            self.state.history_summaries.clone(),
+        ));
         if let Some(ref last) = self.state.last_step {
             let (assistant_msg, user_msg) = renderer.render(last);
             messages.push(assistant_msg);
@@ -1041,6 +1055,23 @@ impl LLMContext {
         if let Some(prev) = self.state.last_step.replace(new_step) {
             self.state.steps.push(prev);
         }
+    }
+
+    fn prepare_step(&mut self, mut step: StepRecord, started_at_ms: u64) -> StepRecord {
+        let step_index = self.state.next_step_index;
+        self.state.next_step_index = self.state.next_step_index.saturating_add(1);
+        step.meta = StepMeta {
+            behavior_name: self.request.behavior_name.clone(),
+            step_index,
+            started_at_ms,
+            ended_at_ms: None,
+            compression_level: Default::default(),
+        };
+        step
+    }
+
+    fn finish_step(&self, step: &mut StepRecord) {
+        step.meta.ended_at_ms = Some(now_ms());
     }
 
     /// Run the optional history compressor. Compression failures are
@@ -1062,8 +1093,9 @@ impl LLMContext {
         let snapshot = self.state.steps.clone();
         match compressor.compress(snapshot, budget).await {
             Ok(compressed) => {
-                let steps_after = compressed.len();
-                self.state.steps = compressed;
+                let steps_after = compressed.steps.len();
+                self.state.steps = compressed.steps;
+                self.state.history_summaries.extend(compressed.summaries);
                 self.deps
                     .worklog
                     .emit(WorkEvent::ContextRewritten {
@@ -1094,15 +1126,17 @@ impl LLMContext {
         None
     }
 
-    /// Terminal path for the Behavior Loop. Sediments `last_step` and emits
-    /// `Done.behavior_result = Some(...)`.
     async fn finish_done_behavior(
         &mut self,
-        last_step: StepRecord,
+        mut last_step: StepRecord,
         response: AiResponse,
     ) -> LLMContextOutcome {
+        self.finish_step(&mut last_step);
         let behavior_result = LLMBehaviorResult::from_step(&last_step);
-        self.sediment(last_step);
+        if let Some(prev) = self.state.last_step.take() {
+            self.state.steps.push(prev);
+        }
+        self.state.steps.push(last_step);
 
         let output = ContextOutput::Text {
             content: response.message.text_content(),

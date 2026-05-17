@@ -33,7 +33,7 @@
 use buckyos_api::{AiMessage, AiRole};
 use serde_json::Value;
 
-use crate::behavior_loop::{StepRecord, StepRenderer};
+use crate::behavior_loop::{HistorySummaryRecord, StepRecord, StepRenderer};
 use crate::observation::Observation;
 use crate::xml_behavior::xml_escape;
 
@@ -106,19 +106,69 @@ impl StepRenderer for XmlStepRenderer {
         self.render_full(step)
     }
 
-    fn render_history(&self, steps: Vec<StepRecord>) -> Vec<AiMessage> {
-        if steps.is_empty() {
+    fn render_inherited(&self, step: &StepRecord) -> AiMessage {
+        AiMessage::text(AiRole::User, render_inherited_step_record(step))
+    }
+
+    fn render_summary(&self, summary: &HistorySummaryRecord) -> AiMessage {
+        let behaviors = if summary.behavior_names.is_empty() {
+            String::new()
+        } else {
+            summary.behavior_names.join(",")
+        };
+        AiMessage::text(
+            AiRole::User,
+            format!(
+                "<history_summary steps=\"{}..{}\" count=\"{}\" started_at_ms=\"{}\" ended_at_ms=\"{}\" behaviors=\"{}\">{}</history_summary>",
+                summary.start_step_index,
+                summary.end_step_index,
+                summary.step_count,
+                summary.started_at_ms,
+                summary.ended_at_ms,
+                xml_escape(&behaviors),
+                xml_escape(&summary.summary)
+            ),
+        )
+    }
+
+    fn render_history(
+        &self,
+        steps: Vec<StepRecord>,
+        current_behavior: &str,
+        summaries: Vec<HistorySummaryRecord>,
+    ) -> Vec<AiMessage> {
+        if steps.is_empty() && summaries.is_empty() {
             return Vec::new();
         }
-        let total = steps.len();
-        let full_cutoff = total.saturating_sub(self.recent_full_steps);
-        let mut out = Vec::with_capacity(total * 2);
-        for (idx, step) in steps.iter().enumerate() {
-            let (a, u) = if idx >= full_cutoff {
+        let current_indices: Vec<usize> = steps
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, step)| {
+                if current_behavior.is_empty() || step.meta.behavior_name == current_behavior {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let current_full_cutoff = current_indices.len().saturating_sub(self.recent_full_steps);
+        let mut current_seen = 0usize;
+
+        let mut out = Vec::with_capacity(steps.len() * 2 + summaries.len());
+        for summary in &summaries {
+            out.push(self.render_summary(summary));
+        }
+        for step in &steps {
+            if !current_behavior.is_empty() && step.meta.behavior_name != current_behavior {
+                out.push(self.render_inherited(step));
+                continue;
+            }
+            let (a, u) = if current_seen >= current_full_cutoff {
                 self.render_full(step)
             } else {
                 self.render_compact(step)
             };
+            current_seen = current_seen.saturating_add(1);
             out.push(a);
             out.push(u);
         }
@@ -226,10 +276,7 @@ fn render_one_action_result_full(
         Observation::Error { call_id, message } => {
             let (msg, _) = clip(message.as_str(), max_body_chars.max(1024));
             let attrs = action_result_attrs(tool, call_id, "error", false);
-            format!(
-                "<action_result{attrs}>{}</action_result>",
-                xml_escape(&msg)
-            )
+            format!("<action_result{attrs}>{}</action_result>", xml_escape(&msg))
         }
         Observation::Pending { call_id } => {
             let attrs = action_result_attrs(tool, call_id, "pending", false);
@@ -282,10 +329,7 @@ fn render_one_action_result_compact(
             if body.is_empty() {
                 format!("<action_result{attrs}/>")
             } else {
-                format!(
-                    "<action_result{attrs}>{}</action_result>",
-                    xml_escape(body)
-                )
+                format!("<action_result{attrs}>{}</action_result>", xml_escape(body))
             }
         }
     }
@@ -311,6 +355,33 @@ fn stringify_content(content: &Value) -> String {
         Some(s) => s.to_string(),
         None => serde_json::to_string(content).unwrap_or_default(),
     }
+}
+
+fn render_inherited_step_record(step: &StepRecord) -> String {
+    let thought = step
+        .thought
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| step.assistant_text.trim());
+    let result = render_action_results_compact(step, 512);
+    format!(
+        "<history_step behavior=\"{}\" index=\"{}\" started_at_ms=\"{}\" ended_at_ms=\"{}\" compression=\"{}\"><summary>{}</summary><result>{}</result></history_step>",
+        xml_escape(&step.meta.behavior_name),
+        step.meta.step_index,
+        step.meta.started_at_ms,
+        step.meta
+            .ended_at_ms
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        match step.meta.compression_level {
+            crate::behavior_loop::StepCompressionLevel::Full => "full",
+            crate::behavior_loop::StepCompressionLevel::Compact => "compact",
+            crate::behavior_loop::StepCompressionLevel::Summary => "summary",
+        },
+        xml_escape(thought),
+        xml_escape(&result)
+    )
 }
 
 /// Truncate to `max_chars` characters (not bytes). Returns `(clipped, was_clipped)`.
@@ -420,7 +491,10 @@ mod tests {
     fn multiple_actions_render_as_step_results_wrapper() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
-        step.actions = vec![tool_call("exec_bash", "c-1"), tool_call("write_file", "c-2")];
+        step.actions = vec![
+            tool_call("exec_bash", "c-1"),
+            tool_call("write_file", "c-2"),
+        ];
         step.action_results = vec![
             Observation::Success {
                 call_id: "c-1".into(),
@@ -556,7 +630,7 @@ mod tests {
             make_step(0, "old body, should compress"),
             make_step(1, "newest body, full"),
         ];
-        let msgs = renderer.render_history(steps);
+        let msgs = renderer.render_history(steps, "", Vec::new());
         assert_eq!(msgs.len(), 4);
 
         // Step 0 (older, compressed) should use the <thinking>thought-0</thinking>
@@ -588,7 +662,11 @@ mod tests {
             }];
             step
         };
-        let msgs = renderer.render_history(vec![make_step(0), make_step(1), make_step(2)]);
+        let msgs = renderer.render_history(
+            vec![make_step(0), make_step(1), make_step(2)],
+            "",
+            Vec::new(),
+        );
         // Pairs: A U A U A U
         for (idx, msg) in msgs.iter().enumerate() {
             let expected = if idx % 2 == 0 {
@@ -598,5 +676,35 @@ mod tests {
             };
             assert_eq!(msg.role, expected, "msg {idx} role mismatch");
         }
+    }
+
+    #[test]
+    fn inherited_behavior_steps_render_as_single_history_records() {
+        let renderer = XmlStepRenderer {
+            recent_full_steps: 1,
+            summary_chars: 20,
+            max_result_chars: 0,
+        };
+        let make_step = |behavior: &str, idx: u32| {
+            let mut step = StepRecord::default();
+            step.meta.behavior_name = behavior.to_string();
+            step.meta.step_index = idx;
+            step.assistant_text = format!("<thinking>{behavior}-{idx}</thinking>");
+            step.thought = Some(format!("{behavior}-{idx}"));
+            step
+        };
+
+        let msgs = renderer.render_history(
+            vec![make_step("plan", 0), make_step("execute", 1)],
+            "execute",
+            Vec::new(),
+        );
+
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].role, AiRole::User);
+        assert!(plain_text(&msgs[0]).contains("<history_step"));
+        assert!(plain_text(&msgs[0]).contains("behavior=\"plan\""));
+        assert_eq!(msgs[1].role, AiRole::Assistant);
+        assert_eq!(msgs[2].role, AiRole::User);
     }
 }

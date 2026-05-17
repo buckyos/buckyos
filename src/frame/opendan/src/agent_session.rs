@@ -1837,6 +1837,7 @@ impl AgentSession {
             system_messages: Some(self.render_system_messages(behavior).await),
             tool_policy: Some(behavior.to_tool_policy()),
             objective: Some(behavior.meta.objective.clone()),
+            behavior_name: Some(behavior.meta.name.clone()),
             model_policy: Some(behavior.to_model_policy()),
             budget: Some(behavior.to_budget_spec()),
             human_policy: Some(behavior.to_human_policy()),
@@ -1845,6 +1846,7 @@ impl AgentSession {
             trace: None,
             reset_rounds: false,
             reset_errors: false,
+            reset_behavior_hot_tail: false,
             forbid_next_behavior: false,
         }
     }
@@ -1975,6 +1977,7 @@ impl AgentSession {
             },
             trace: Some(trace_id.to_string()),
             objective: behavior.meta.objective.clone(),
+            behavior_name: behavior.meta.name.clone(),
             input,
             model_policy: behavior.to_model_policy(),
             tool_policy: behavior.to_tool_policy(),
@@ -2041,6 +2044,7 @@ impl AgentSession {
             },
             trace: None,
             objective: cfg.meta.objective.clone(),
+            behavior_name: cfg.meta.name.clone(),
             input: self.render_system_messages(cfg).await,
             model_policy: cfg.to_model_policy(),
             tool_policy: cfg.to_tool_policy(),
@@ -2557,6 +2561,7 @@ impl AgentSession {
             system_messages: Some(new_system),
             tool_policy: Some(new_cfg.to_tool_policy()),
             objective: Some(new_cfg.meta.objective.clone()),
+            behavior_name: Some(new_cfg.meta.name.clone()),
             model_policy: Some(new_cfg.to_model_policy()),
             budget: Some(new_cfg.to_budget_spec()),
             human_policy: Some(new_cfg.to_human_policy()),
@@ -2565,6 +2570,7 @@ impl AgentSession {
             trace: None,
             reset_rounds: false,
             reset_errors: false,
+            reset_behavior_hot_tail: true,
             forbid_next_behavior: false,
         };
         let rebuilt = apply_overrides_to_snapshot(final_snapshot, overrides);
@@ -2606,6 +2612,8 @@ impl AgentSession {
             let overrides = RequestOverrides {
                 reset_rounds: true,
                 reset_errors: true,
+                behavior_name: Some(new_cfg.meta.name.clone()),
+                reset_behavior_hot_tail: true,
                 ..Default::default()
             };
             apply_overrides_to_snapshot(loaded, overrides)
@@ -2779,6 +2787,16 @@ impl AgentSession {
             stack: Arc::clone(&self.fork_stack),
         };
         let trace_id = format!("{}::fork-{}", parent_trace, depth);
+
+        let mut overrides = overrides;
+        if overrides.system_messages.is_none() {
+            overrides.system_messages = Some(self.render_system_messages(&sub_cfg).await);
+        }
+        if overrides.behavior_name.is_none() {
+            overrides.behavior_name = Some(sub_cfg.meta.name.clone());
+        }
+        overrides.reset_behavior_hot_tail = true;
+        overrides.forbid_next_behavior = true;
 
         let from_user_did = self.current_from_user_did().await;
         let run_result = run_fork_sub_context(ForkSubContextInput {

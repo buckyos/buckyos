@@ -222,6 +222,9 @@ pub struct LLMContextRequest {
     #[serde(default)]
     pub objective: String,
 
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub behavior_name: String,
+
     /// Already-compiled conversation history (system / user / assistant / tool).
     /// The L4 prompt compiler is responsible for template expansion before
     /// reaching the waist.

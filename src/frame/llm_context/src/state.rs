@@ -8,7 +8,7 @@
 use buckyos_api::{AiMessage, AiUsage};
 use serde::{Deserialize, Serialize};
 
-use crate::behavior_loop::StepRecord;
+use crate::behavior_loop::{HistorySummaryRecord, StepRecord};
 use crate::observation::PendingToolCall;
 use crate::request::LLMContextRequest;
 
@@ -52,6 +52,9 @@ pub struct LLMContextState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<StepRecord>,
 
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history_summaries: Vec<HistorySummaryRecord>,
+
     /// Behavior mode: the freshest step still being processed — rendered
     /// verbatim into the next inference. `None` until the first iteration
     /// finishes parsing.
@@ -65,6 +68,9 @@ pub struct LLMContextState {
     /// `doc/opendan/Agent Actions.md` §3.3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_report: Option<String>,
+
+    #[serde(default)]
+    pub next_step_index: u32,
 }
 
 impl LLMContextState {
@@ -83,8 +89,10 @@ impl LLMContextState {
             pending_tool_calls: Vec::new(),
             llm_task_ids: Vec::new(),
             steps: Vec::new(),
+            history_summaries: Vec::new(),
             last_step: None,
             last_report: None,
+            next_step_index: 0,
         }
     }
 }
