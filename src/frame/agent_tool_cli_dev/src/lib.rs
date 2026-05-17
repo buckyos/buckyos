@@ -26,21 +26,20 @@ use agent_tool::{
     AgentToolManager, AgentToolPendingReason, AgentToolResult, AgentToolStatus, BindWorkspaceTool,
     CliRunOutput, CreateWorkspaceTool, EditFileTool, FileToolConfig, GetSessionTool, GlobTool,
     GrepTool, NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, SessionViewBackend,
-    TodoTool, TodoToolConfig, WorkspaceToolBackend, WriteFileTool,
+    WorkspaceToolBackend, WriteFileTool,
 };
 
 const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
 const TOOL_AGENT_MEMORY: &str = "agent-memory";
 const TOOL_AGENT_MEMORY_SNAKE: &str = "agent_memory";
-const TOOL_NAMES: [&str; 13] = [
+const TOOL_NAMES: [&str; 12] = [
     "Glob",
     "Grep",
     "read_file",
     "write_file",
     "edit_file",
     "get_session",
-    "todo",
     "create_workspace",
     "bind_workspace",
     TOOL_AGENT_MEMORY,
@@ -1347,11 +1346,6 @@ async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager,
         state_root: state_root.clone(),
     })))?;
 
-    let todo_tool = TodoTool::new(TodoToolConfig::with_db_path(
-        state_root.join("todo").join("todo.db"),
-    ))?;
-    mgr.register_typed_tool(todo_tool)?;
-
     let workspace_backend = Arc::new(CliWorkspaceBackend {
         state_root: state_root.clone(),
         agent_id: env.call_ctx.agent_name.clone(),
@@ -2231,7 +2225,7 @@ mod tests {
         assert_eq!(payload["status"], "success");
         assert_eq!(
             payload["detail"]["tools"].as_array().map(|v| v.len()),
-            Some(13)
+            Some(12)
         );
     }
 
@@ -2746,55 +2740,5 @@ mod tests {
             .next()
             .unwrap_or_default()
             .starts_with("ws-"));
-    }
-
-    #[tokio::test]
-    async fn todo_alias_uses_bound_workspace_without_rpc() {
-        let temp = tempdir().expect("create tempdir");
-        let root = temp.path().join("agent");
-        let cwd = root.join("workspace");
-        fs::create_dir_all(&cwd)
-            .await
-            .expect("create workspace dir");
-        seed_session(&root, "session-test", &cwd).await;
-
-        let _ = execute(
-            vec![
-                OsString::from("/tmp/create_workspace"),
-                OsString::from("demo"),
-                OsString::from("workspace summary"),
-            ],
-            test_env(root.clone(), cwd.clone()),
-            None,
-        )
-        .await
-        .expect("create workspace");
-
-        let add_output = execute(
-            vec![
-                OsString::from("/tmp/todo"),
-                OsString::from("add"),
-                OsString::from("Task A"),
-            ],
-            test_env(root.clone(), cwd.clone()),
-            None,
-        )
-        .await
-        .expect("run todo add");
-        let add_payload: Json = serde_json::from_str(&add_output.stdout).expect("parse add json");
-        assert_eq!(add_payload["status"], "success");
-        assert_eq!(add_payload["detail"]["created_items"][0]["title"], "Task A");
-
-        let next_output = execute(
-            vec![OsString::from("/tmp/todo"), OsString::from("next")],
-            test_env(root, cwd),
-            None,
-        )
-        .await
-        .expect("run todo next");
-        let next_payload: Json =
-            serde_json::from_str(&next_output.stdout).expect("parse next json");
-        assert_eq!(next_payload["status"], "success");
-        assert_eq!(next_payload["detail"]["item"]["title"], "Task A");
     }
 }

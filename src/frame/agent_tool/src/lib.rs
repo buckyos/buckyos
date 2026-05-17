@@ -30,7 +30,6 @@ pub mod local_llm_context;
 pub mod path_utils;
 pub mod read_tool;
 pub mod run_local_llm;
-pub mod todo;
 pub mod tool;
 pub mod workspace;
 
@@ -72,10 +71,6 @@ pub fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
-pub use todo::{
-    get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
-    TodoAdminListItem, TodoAdminListOptions, TodoAdminListResult, TodoTool, TodoToolConfig,
-};
 pub use workspace::{
     ExternalWorkspaceBinding, ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
     LocalWorkspaceLock, LocalWorkspaceSessionBinding, ManagedExternalWorkspaceBackend,
