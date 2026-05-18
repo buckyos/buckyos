@@ -47,7 +47,7 @@ impl AgentLayout {
     pub fn from_root(root: PathBuf) -> Self {
         Self {
             behaviors_dir: root.join("behaviors"),
-            sessions_dir: root.join("session"),
+            sessions_dir: root.join("sessions"),
             workspaces_dir: root.join("workspace"),
             memory_dir: root.join("memory"),
             notepads_dir: root.join("notepads"),

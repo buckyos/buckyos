@@ -87,6 +87,14 @@ pub trait PolicyEngine: Send + Sync {
         request: &LLMContextRequest,
         calls: Vec<AiToolCall>,
     ) -> Result<Vec<AiToolCall>, String>;
+
+    async fn gate_action_calls(
+        &self,
+        request: &LLMContextRequest,
+        calls: Vec<AiToolCall>,
+    ) -> Result<Vec<AiToolCall>, String> {
+        self.gate_tool_calls(request, calls).await
+    }
 }
 
 /// Worklog event sink. The schema of `WorkEvent` is intentionally

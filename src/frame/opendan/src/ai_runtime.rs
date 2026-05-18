@@ -400,6 +400,12 @@ pub struct AgentPolicy {
     pub enforce_whitelist: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum InvocationSurface {
+    Tool,
+    Action,
+}
+
 impl AgentPolicy {
     pub fn new(approval_required: Vec<String>) -> Self {
         Self {
@@ -412,14 +418,12 @@ impl AgentPolicy {
         self.enforce_whitelist = enforce;
         self
     }
-}
 
-#[async_trait]
-impl PolicyEngine for AgentPolicy {
-    async fn gate_tool_calls(
+    fn gate_calls_on_surface(
         &self,
         request: &LLMContextRequest,
         calls: Vec<AiToolCall>,
+        surface: InvocationSurface,
     ) -> Result<Vec<AiToolCall>, String> {
         if !self.approval_required.is_empty() {
             if let Some(blocked) = calls
@@ -434,21 +438,20 @@ impl PolicyEngine for AgentPolicy {
         }
         if self.enforce_whitelist {
             use llm_context::request::ToolMode;
-            use llm_context::xml_behavior::is_v2_action_tag;
             for call in &calls {
-                let is_action = is_v2_action_tag(&call.name);
-                let (mode, whitelist, kind) = if is_action {
-                    (
-                        request.tool_policy.action_mode,
-                        &request.tool_policy.action_whitelist,
-                        "action",
-                    )
-                } else {
-                    (
+                let (mode, whitelist, kind, whitelist_name) = match surface {
+                    InvocationSurface::Tool => (
                         request.tool_policy.mode,
                         &request.tool_policy.whitelist,
                         "tool",
-                    )
+                        "tool_whitelist",
+                    ),
+                    InvocationSurface::Action => (
+                        request.tool_policy.action_mode,
+                        &request.tool_policy.action_whitelist,
+                        "action",
+                        "action_whitelist",
+                    ),
                 };
                 match mode {
                     ToolMode::None => {
@@ -460,8 +463,8 @@ impl PolicyEngine for AgentPolicy {
                     ToolMode::Whitelist => {
                         if !whitelist.iter().any(|n| n == &call.name) {
                             return Err(format!(
-                                "{kind} `{}` is not in this behavior's {kind}_whitelist",
-                                call.name
+                                "{kind} `{}` is not in this behavior's {whitelist_name}",
+                                call.name,
                             ));
                         }
                     }
@@ -470,6 +473,102 @@ impl PolicyEngine for AgentPolicy {
             }
         }
         Ok(calls)
+    }
+}
+
+#[async_trait]
+impl PolicyEngine for AgentPolicy {
+    async fn gate_tool_calls(
+        &self,
+        request: &LLMContextRequest,
+        calls: Vec<AiToolCall>,
+    ) -> Result<Vec<AiToolCall>, String> {
+        self.gate_calls_on_surface(request, calls, InvocationSurface::Tool)
+    }
+
+    async fn gate_action_calls(
+        &self,
+        request: &LLMContextRequest,
+        calls: Vec<AiToolCall>,
+    ) -> Result<Vec<AiToolCall>, String> {
+        self.gate_calls_on_surface(request, calls, InvocationSurface::Action)
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use llm_context::request::{ContextOwnerRef, ToolMode, ToolPolicy};
+    use std::collections::HashMap;
+
+    fn request_with_policy(tool_policy: ToolPolicy) -> LLMContextRequest {
+        LLMContextRequest {
+            owner: ContextOwnerRef::Other {
+                label: "test".to_string(),
+            },
+            trace: None,
+            objective: String::new(),
+            behavior_name: "test".to_string(),
+            input: Vec::new(),
+            model_policy: Default::default(),
+            tool_policy,
+            output: Default::default(),
+            budget: Default::default(),
+            human_policy: Default::default(),
+            error_policy: Default::default(),
+            forbid_next_behavior: false,
+        }
+    }
+
+    fn call(name: &str) -> AiToolCall {
+        AiToolCall {
+            name: name.to_string(),
+            args: HashMap::new(),
+            call_id: "call-1".to_string(),
+        }
+    }
+
+    #[test]
+    fn exec_bash_provider_tool_uses_tool_whitelist() {
+        let policy = AgentPolicy::new(Vec::new());
+        let request = request_with_policy(ToolPolicy {
+            mode: ToolMode::Whitelist,
+            whitelist: vec!["exec_bash".to_string()],
+            action_mode: ToolMode::None,
+            action_whitelist: Vec::new(),
+            ..Default::default()
+        });
+
+        let result = policy.gate_calls_on_surface(
+            &request,
+            vec![call("exec_bash")],
+            InvocationSurface::Tool,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn exec_bash_xml_action_uses_action_whitelist() {
+        let policy = AgentPolicy::new(Vec::new());
+        let request = request_with_policy(ToolPolicy {
+            mode: ToolMode::Whitelist,
+            whitelist: vec!["exec_bash".to_string()],
+            action_mode: ToolMode::None,
+            action_whitelist: Vec::new(),
+            ..Default::default()
+        });
+
+        let result = policy.gate_calls_on_surface(
+            &request,
+            vec![call("exec_bash")],
+            InvocationSurface::Action,
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            "action `exec_bash` is rejected: this behavior disables the action surface"
+        );
     }
 }
 

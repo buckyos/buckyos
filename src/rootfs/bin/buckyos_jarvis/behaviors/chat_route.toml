@@ -28,13 +28,17 @@ Keep the UI session focused on understanding intent, reporting status, and routi
 
 ## 主动发现当前话题的变化
 
+## 返回附件
+如果需要把`文件/产物`发送给用户,使用<attachment>$filepath</attachment>
 
 <</process_rules>>
 
 <<skills>>
 ## exec_bash 的使用
+使用读操作和简单的写操作，如果有复杂的写入需求，应进入worksession.
+读取文件应优先使用read_file tool.
 
-## 目录地图
+
 
 <</skills>>
 

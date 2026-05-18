@@ -772,15 +772,14 @@ impl LLMContext {
                     .await;
             }
 
-            // 5. Gate parsed actions through the policy. Mirrors the
-            //    traditional loop's `policy.gate_tool_calls` (run_inner step 4)
-            //    so that `action_whitelist` / `tool_whitelist` decisions land
-            //    on every invocation regardless of which loop dispatched it.
+            // 5. Gate parsed XML actions through the action policy. Mirrors
+            //    the traditional loop's provider-tool policy gate while
+            //    preserving the surface that produced the invocation.
             //    A rejection is folded back as a recoverable error step.
             let actions = match self
                 .deps
                 .policy
-                .gate_tool_calls(&self.request, new_step.actions.clone())
+                .gate_action_calls(&self.request, new_step.actions.clone())
                 .await
             {
                 Ok(gated) => {
