@@ -12,9 +12,7 @@ use serde_json::{json, Value};
 use crate::app::*;
 use crate::scheduler::*;
 use crate::service::*;
-use crate::zone_route_builder::{
-    build_forward_plan, DidIpHint, NodeGatewayRouteCandidate,
-};
+use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,

@@ -246,8 +246,7 @@ fn truncate_to_budget(
             let usable = budget - marker_tokens;
             let head_budget = usable / 2 + (usable % 2);
             let tail_budget = usable - head_budget;
-            let head_chars =
-                binary_search_chars(tokenizer, text, head_budget, &char_indices, true);
+            let head_chars = binary_search_chars(tokenizer, text, head_budget, &char_indices, true);
             let tail_chars =
                 binary_search_chars(tokenizer, text, tail_budget, &char_indices, false);
             let head_end = char_indices.get(head_chars).copied().unwrap_or(text.len());

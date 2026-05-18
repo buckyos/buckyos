@@ -11,6 +11,11 @@ Examples:
   ./debug_jarvis.sh devtest
   ./debug_jarvis.sh devtest --port 14060
   ./debug_jarvis.sh --port 14060
+
+Environment:
+  BUCKYOS_ROOT=/opt/buckyos
+  JARVIS_PACKAGE_ROOT=src/rootfs/bin/buckyos_jarvis
+  DEBUG_JARVIS_REFRESH=1
 EOF
 }
 
@@ -23,18 +28,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
 APP_ID="jarvis"
 OWNER_USER_ID="devtest"
+DEBUG_JARVIS_REFRESH="${DEBUG_JARVIS_REFRESH:-1}"
 
 if [[ $# -gt 0 && "${1}" != -* ]]; then
   OWNER_USER_ID="$1"
   shift
 fi
 
-SOURCE_ROOT="${SCRIPT_DIR}/rootfs/bin/buckyos_jarvis"
+JARVIS_PACKAGE_ROOT="${JARVIS_PACKAGE_ROOT:-${SCRIPT_DIR}/rootfs/bin/buckyos_jarvis}"
 TARGET_ROOT="${BUCKYOS_ROOT}/data/home/${OWNER_USER_ID}/.local/share/${APP_ID}"
 SERVICE_DEBUG_SCRIPT="${SCRIPT_DIR}/rootfs/bin/service_debug.tsx"
 
-if [[ ! -d "${SOURCE_ROOT}" ]]; then
-  echo "jarvis source directory not found: ${SOURCE_ROOT}" >&2
+if [[ ! -d "${JARVIS_PACKAGE_ROOT}" ]]; then
+  echo "jarvis package directory not found: ${JARVIS_PACKAGE_ROOT}" >&2
   exit 2
 fi
 
@@ -48,17 +54,29 @@ if ! command -v deno >/dev/null 2>&1; then
   exit 2
 fi
 
-mkdir -p "${TARGET_ROOT}/behaviors"
+if [[ "${DEBUG_JARVIS_REFRESH}" != "0" ]]; then
+  mkdir -p "${TARGET_ROOT}"
+  for file in agent.toml role.md self.md; do
+    if [[ -f "${JARVIS_PACKAGE_ROOT}/${file}" ]]; then
+      cp "${JARVIS_PACKAGE_ROOT}/${file}" "${TARGET_ROOT}/${file}"
+      chmod 0644 "${TARGET_ROOT}/${file}"
+    fi
+  done
+  for dir in behaviors tool_plans tools; do
+    if [[ -d "${JARVIS_PACKAGE_ROOT}/${dir}" ]]; then
+      mkdir -p "${TARGET_ROOT}/${dir}"
+      cp -R "${JARVIS_PACKAGE_ROOT}/${dir}/." "${TARGET_ROOT}/${dir}/"
+    fi
+  done
+  echo "[debug_jarvis] refreshed editable jarvis assets in ${TARGET_ROOT}"
+fi
 
-install -m 0644 "${SOURCE_ROOT}/role.md" "${TARGET_ROOT}/role.md"
-install -m 0644 "${SOURCE_ROOT}/self.md" "${TARGET_ROOT}/self.md"
-cp -R "${SOURCE_ROOT}/behaviors/." "${TARGET_ROOT}/behaviors/"
-
-echo "[debug_jarvis] synced jarvis assets to ${TARGET_ROOT}"
 echo "[debug_jarvis] launching service_debug for ${APP_ID}/${OWNER_USER_ID}"
+echo "[debug_jarvis] jarvis package root: ${JARVIS_PACKAGE_ROOT}"
 
 exec deno run --quiet -A \
   "${SERVICE_DEBUG_SCRIPT}" \
   "${APP_ID}" \
   "${OWNER_USER_ID}" \
+  --agent-package-root "${JARVIS_PACKAGE_ROOT}" \
   "$@"

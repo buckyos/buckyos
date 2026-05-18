@@ -63,6 +63,7 @@ use buckyos_api::{
     init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType, KEventClient,
     WORKFLOW_SERVICE_HTTP_PATH, WORKFLOW_SERVICE_NAME, WORKFLOW_SERVICE_PORT,
 };
+use buckyos_http_server::Runner;
 use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
@@ -72,7 +73,6 @@ use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};
-use buckyos_http_server::Runner;
 use std::sync::Arc;
 
 use crate::server::WorkflowRpcHandler;
@@ -210,8 +210,7 @@ pub async fn start_workflow_service() -> Result<()> {
     subscriptions.start().await;
 
     let rpc = Arc::new(
-        WorkflowRpcHandler::new(definitions, runs, orchestrator)
-            .with_subscriptions(subscriptions),
+        WorkflowRpcHandler::new(definitions, runs, orchestrator).with_subscriptions(subscriptions),
     );
     let server = Arc::new(WorkflowHttpServer::new(rpc));
 

@@ -20,18 +20,18 @@
 use buckyos_api::{
     group_action, parse_group_request, DIDEntityKind, DIDMemberKind, ExpandedDID,
     GroupAccessDecision, GroupApproveMemberReq, GroupAttributionPolicy, GroupCheckAccessReq,
-    GroupCollectionPolicy, GroupCreateReq, GroupCreateSubgroupReq, GroupDoc,
-    GroupEndpoints, GroupEvent, GroupEventType, GroupExpandMembersReq, GroupExpansionPolicy,
-    GroupExpansionPurpose, GroupExpansionSnapshot, GroupGetDocReq, GroupInviteMemberReq,
-    GroupListByMemberReq, GroupListMembersReq, GroupListParentsReq, GroupListSubgroupsReq,
-    GroupMemberProof, GroupMemberProofScope, GroupMemberRecord, GroupMemberState, GroupPolicy,
-    GroupProfilePatch, GroupPurpose, GroupRejectMemberReq, GroupRemoveMemberReq, GroupRequestJoinReq,
-    GroupRole, GroupSettings, GroupSubgroup, GroupSubgroupPatch, GroupSubmitMemberProofReq,
-    GroupSummary, GroupUpdateAttributionPolicyReq, GroupUpdateCollectionPolicyReq,
-    GroupUpdateMemberRoleReq, GroupUpdateProfileReq, GroupUpdateSubgroupReq, JoinPolicy,
-    MembershipVisibility, NestedGroupPolicy, PostPolicy, RdbBackend, GROUP_DOC_OBJ_TYPE,
-    GROUP_DOC_SCHEMA_VERSION, GROUP_EVENT_OBJ_TYPE, GROUP_EVENT_SCHEMA_VERSION,
-    GROUP_EXPANSION_SNAPSHOT_OBJ_TYPE, GROUP_EXPANSION_SNAPSHOT_SCHEMA_VERSION,
+    GroupCollectionPolicy, GroupCreateReq, GroupCreateSubgroupReq, GroupDoc, GroupEndpoints,
+    GroupEvent, GroupEventType, GroupExpandMembersReq, GroupExpansionPolicy, GroupExpansionPurpose,
+    GroupExpansionSnapshot, GroupGetDocReq, GroupInviteMemberReq, GroupListByMemberReq,
+    GroupListMembersReq, GroupListParentsReq, GroupListSubgroupsReq, GroupMemberProof,
+    GroupMemberProofScope, GroupMemberRecord, GroupMemberState, GroupPolicy, GroupProfilePatch,
+    GroupPurpose, GroupRejectMemberReq, GroupRemoveMemberReq, GroupRequestJoinReq, GroupRole,
+    GroupSettings, GroupSubgroup, GroupSubgroupPatch, GroupSubmitMemberProofReq, GroupSummary,
+    GroupUpdateAttributionPolicyReq, GroupUpdateCollectionPolicyReq, GroupUpdateMemberRoleReq,
+    GroupUpdateProfileReq, GroupUpdateSubgroupReq, JoinPolicy, MembershipVisibility,
+    NestedGroupPolicy, PostPolicy, RdbBackend, GROUP_DOC_OBJ_TYPE, GROUP_DOC_SCHEMA_VERSION,
+    GROUP_EVENT_OBJ_TYPE, GROUP_EVENT_SCHEMA_VERSION, GROUP_EXPANSION_SNAPSHOT_OBJ_TYPE,
+    GROUP_EXPANSION_SNAPSHOT_SCHEMA_VERSION,
 };
 use kRPC::RPCErrors;
 use log::{debug, info};
@@ -157,7 +157,8 @@ impl GroupMgr {
             .endpoints
             .clone()
             .unwrap_or_else(|| Self::default_endpoints(&group_did));
-        let mut effective_settings = settings.unwrap_or_else(|| GroupSettings::defaults_for(group_did.clone()));
+        let mut effective_settings =
+            settings.unwrap_or_else(|| GroupSettings::defaults_for(group_did.clone()));
         effective_settings.group_did = group_did.clone();
 
         let doc = GroupDoc {
@@ -256,8 +257,13 @@ impl GroupMgr {
             host_owner,
         } = req;
         let owner_key = Self::owner_key(host_owner.as_ref());
-        self.require_action(&owner_key, &group_did, &actor_did, group_action::UPDATE_PROFILE)
-            .await?;
+        self.require_action(
+            &owner_key,
+            &group_did,
+            &actor_did,
+            group_action::UPDATE_PROFILE,
+        )
+        .await?;
 
         let mut doc = self
             .load_group_doc(&owner_key, &group_did)
@@ -457,8 +463,13 @@ impl GroupMgr {
             host_owner,
         } = req;
         let owner_key = Self::owner_key(host_owner.as_ref());
-        self.require_action(&owner_key, &group_did, &actor_did, group_action::INVITE_MEMBER)
-            .await?;
+        self.require_action(
+            &owner_key,
+            &group_did,
+            &actor_did,
+            group_action::INVITE_MEMBER,
+        )
+        .await?;
 
         let doc = self
             .load_group_doc(&owner_key, &group_did)
@@ -487,7 +498,10 @@ impl GroupMgr {
         }
 
         // Already-active members short-circuit; everything else moves to Invited.
-        if let Some(mut existing) = self.load_member(&owner_key, &group_did, &member_did).await? {
+        if let Some(mut existing) = self
+            .load_member(&owner_key, &group_did, &member_did)
+            .await?
+        {
             if existing.state == GroupMemberState::Active {
                 return Ok(existing);
             }
@@ -497,8 +511,14 @@ impl GroupMgr {
             existing.invited_by = Some(actor_did.clone());
             existing.updated_at_ms = Self::now_ms();
             self.persist_member(&owner_key, &existing).await?;
-            self.record_member_invited_event(&owner_key, &group_did, &actor_did, &member_did, invite_id.as_deref())
-                .await?;
+            self.record_member_invited_event(
+                &owner_key,
+                &group_did,
+                &actor_did,
+                &member_did,
+                invite_id.as_deref(),
+            )
+            .await?;
             return Ok(existing);
         }
 
@@ -518,8 +538,14 @@ impl GroupMgr {
             delivery_preference: None,
         };
         self.persist_member(&owner_key, &record).await?;
-        self.record_member_invited_event(&owner_key, &group_did, &actor_did, &member_did, invite_id.as_deref())
-            .await?;
+        self.record_member_invited_event(
+            &owner_key,
+            &group_did,
+            &actor_did,
+            &member_did,
+            invite_id.as_deref(),
+        )
+        .await?;
         Ok(record)
     }
 
@@ -671,8 +697,13 @@ impl GroupMgr {
             host_owner,
         } = req;
         let owner_key = Self::owner_key(host_owner.as_ref());
-        self.require_action(&owner_key, &group_did, &actor_did, group_action::APPROVE_MEMBER)
-            .await?;
+        self.require_action(
+            &owner_key,
+            &group_did,
+            &actor_did,
+            group_action::APPROVE_MEMBER,
+        )
+        .await?;
 
         let mut record = self
             .load_member(&owner_key, &group_did, &member_did)
@@ -730,8 +761,13 @@ impl GroupMgr {
             host_owner,
         } = req;
         let owner_key = Self::owner_key(host_owner.as_ref());
-        self.require_action(&owner_key, &group_did, &actor_did, group_action::APPROVE_MEMBER)
-            .await?;
+        self.require_action(
+            &owner_key,
+            &group_did,
+            &actor_did,
+            group_action::APPROVE_MEMBER,
+        )
+        .await?;
 
         let mut record = self
             .load_member(&owner_key, &group_did, &member_did)
@@ -775,8 +811,13 @@ impl GroupMgr {
             host_owner,
         } = req;
         let owner_key = Self::owner_key(host_owner.as_ref());
-        self.require_action(&owner_key, &group_did, &actor_did, group_action::REMOVE_MEMBER)
-            .await?;
+        self.require_action(
+            &owner_key,
+            &group_did,
+            &actor_did,
+            group_action::REMOVE_MEMBER,
+        )
+        .await?;
 
         let mut record = self
             .load_member(&owner_key, &group_did, &member_did)
@@ -826,8 +867,13 @@ impl GroupMgr {
             host_owner,
         } = req;
         let owner_key = Self::owner_key(host_owner.as_ref());
-        self.require_action(&owner_key, &group_did, &actor_did, group_action::UPDATE_ROLE)
-            .await?;
+        self.require_action(
+            &owner_key,
+            &group_did,
+            &actor_did,
+            group_action::UPDATE_ROLE,
+        )
+        .await?;
 
         let mut record = self
             .load_member(&owner_key, &group_did, &member_did)
@@ -866,14 +912,19 @@ impl GroupMgr {
         let mut records = self.load_members(&owner_key, &req.group_did).await?;
 
         if let Some(filter) = req.state_filter.as_ref() {
-            let filter: HashSet<&'static str> = filter.iter().map(Self::member_state_name).collect();
+            let filter: HashSet<&'static str> =
+                filter.iter().map(Self::member_state_name).collect();
             records.retain(|record| filter.contains(Self::member_state_name(&record.state)));
         }
         if let Some(filter) = req.role_filter.as_ref() {
             let filter: HashSet<&'static str> = filter.iter().map(Self::role_name).collect();
             records.retain(|record| filter.contains(Self::role_name(&record.role)));
         }
-        records.sort_by(|left, right| left.member_did.to_string().cmp(&right.member_did.to_string()));
+        records.sort_by(|left, right| {
+            left.member_did
+                .to_string()
+                .cmp(&right.member_did.to_string())
+        });
 
         let offset = req.offset.unwrap_or(0) as usize;
         let limit = req
@@ -900,8 +951,13 @@ impl GroupMgr {
             host_owner,
         } = req;
         let owner_key = Self::owner_key(host_owner.as_ref());
-        self.require_action(&owner_key, &group_did, &actor_did, group_action::MANAGE_SUBGROUP)
-            .await?;
+        self.require_action(
+            &owner_key,
+            &group_did,
+            &actor_did,
+            group_action::MANAGE_SUBGROUP,
+        )
+        .await?;
         self.ensure_active_members(&owner_key, &group_did, &member_dids)
             .await?;
         let now_ms = Self::now_ms();
@@ -942,8 +998,13 @@ impl GroupMgr {
             host_owner,
         } = req;
         let owner_key = Self::owner_key(host_owner.as_ref());
-        self.require_action(&owner_key, &group_did, &actor_did, group_action::MANAGE_SUBGROUP)
-            .await?;
+        self.require_action(
+            &owner_key,
+            &group_did,
+            &actor_did,
+            group_action::MANAGE_SUBGROUP,
+        )
+        .await?;
 
         let mut subgroup = self
             .load_subgroup(&owner_key, &group_did, &subgroup_id)
@@ -1251,9 +1312,9 @@ impl GroupMgr {
 
         let mut summaries = Vec::with_capacity(rows.len());
         for row in rows {
-            let group_did_str: String = row
-                .try_get("group_did")
-                .map_err(|error| RPCErrors::ReasonError(format!("decode group_did failed: {}", error)))?;
+            let group_did_str: String = row.try_get("group_did").map_err(|error| {
+                RPCErrors::ReasonError(format!("decode group_did failed: {}", error))
+            })?;
             let group_did = Self::parse_did(&group_did_str, "group_did")?;
             if let Some(summary) = self.summarize_group(&owner_key, &group_did).await? {
                 summaries.push(summary);
@@ -1284,9 +1345,9 @@ impl GroupMgr {
             })?;
         let mut summaries = Vec::with_capacity(rows.len());
         for row in rows {
-            let group_did_str: String = row
-                .try_get("group_did")
-                .map_err(|error| RPCErrors::ReasonError(format!("decode group_did failed: {}", error)))?;
+            let group_did_str: String = row.try_get("group_did").map_err(|error| {
+                RPCErrors::ReasonError(format!("decode group_did failed: {}", error))
+            })?;
             let group_did = Self::parse_did(&group_did_str, "group_did")?;
             if let Some(summary) = self.summarize_group(&owner_key, &group_did).await? {
                 summaries.push(summary);
@@ -1378,10 +1439,9 @@ impl GroupMgr {
             | group_action::UPDATE_ROLE
             | group_action::MANAGE_SUBGROUP
             | group_action::MANAGE_COLLECTION_POLICY
-            | group_action::UPDATE_ATTRIBUTION_POLICY => matches!(
-                role,
-                Some(GroupRole::Owner) | Some(GroupRole::Admin)
-            ),
+            | group_action::UPDATE_ATTRIBUTION_POLICY => {
+                matches!(role, Some(GroupRole::Owner) | Some(GroupRole::Admin))
+            }
             group_action::ARCHIVE_OR_DELETE => matches!(role, Some(GroupRole::Owner)),
             group_action::EXPAND_MEMBERS => member.is_some(),
             _ => matches!(role, Some(GroupRole::Owner) | Some(GroupRole::Admin)),
@@ -1396,12 +1456,13 @@ impl GroupMgr {
                 group_did.to_string()
             ))
         } else {
-            Some(format!(
-                "role {:?} is not permitted for {}",
-                role, action
-            ))
+            Some(format!("role {:?} is not permitted for {}", role, action))
         };
-        Ok(ResolvedAction { allowed, reason, role })
+        Ok(ResolvedAction {
+            allowed,
+            reason,
+            role,
+        })
     }
 
     fn can_post(policy: &PostPolicy, role: Option<&GroupRole>) -> bool {
@@ -1478,30 +1539,29 @@ impl GroupMgr {
         owner_key: &str,
         group_did: &DID,
     ) -> std::result::Result<Option<GroupDoc>, RPCErrors> {
-        let sql = self.render_sql(
-            "SELECT doc_json FROM groups WHERE host_owner_key = ? AND group_did = ?",
-        );
+        let sql = self
+            .render_sql("SELECT doc_json FROM groups WHERE host_owner_key = ? AND group_did = ?");
         let row = sqlx::query(&sql)
             .bind(owner_key.to_string())
             .bind(group_did.to_string())
             .fetch_optional(self.pool())
             .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!("load group doc failed: {}", error))
-            })?;
+            .map_err(|error| RPCErrors::ReasonError(format!("load group doc failed: {}", error)))?;
         let Some(row) = row else {
             return Ok(None);
         };
-        let raw: String = row
-            .try_get("doc_json")
-            .map_err(|error| RPCErrors::ReasonError(format!("decode doc_json failed: {}", error)))?;
-        serde_json::from_str::<GroupDoc>(&raw).map(Some).map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "parse group doc for {} failed: {}",
-                group_did.to_string(),
-                error
-            ))
-        })
+        let raw: String = row.try_get("doc_json").map_err(|error| {
+            RPCErrors::ReasonError(format!("decode doc_json failed: {}", error))
+        })?;
+        serde_json::from_str::<GroupDoc>(&raw)
+            .map(Some)
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "parse group doc for {} failed: {}",
+                    group_did.to_string(),
+                    error
+                ))
+            })
     }
 
     async fn load_group_settings(
@@ -1526,13 +1586,15 @@ impl GroupMgr {
         let raw: String = row.try_get("settings_json").map_err(|error| {
             RPCErrors::ReasonError(format!("decode settings_json failed: {}", error))
         })?;
-        serde_json::from_str::<GroupSettings>(&raw).map(Some).map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "parse group settings for {} failed: {}",
-                group_did.to_string(),
-                error
-            ))
-        })
+        serde_json::from_str::<GroupSettings>(&raw)
+            .map(Some)
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "parse group settings for {} failed: {}",
+                    group_did.to_string(),
+                    error
+                ))
+            })
     }
 
     async fn summarize_group(
@@ -1638,9 +1700,9 @@ impl GroupMgr {
         let Some(row) = row else {
             return Ok(None);
         };
-        let raw: String = row
-            .try_get("record_json")
-            .map_err(|error| RPCErrors::ReasonError(format!("decode record_json failed: {}", error)))?;
+        let raw: String = row.try_get("record_json").map_err(|error| {
+            RPCErrors::ReasonError(format!("decode record_json failed: {}", error))
+        })?;
         serde_json::from_str::<GroupMemberRecord>(&raw)
             .map(Some)
             .map_err(|error| {
@@ -1925,7 +1987,9 @@ impl GroupMgr {
             .execute(self.pool())
             .await
             .map(|_| ())
-            .map_err(|error| RPCErrors::ReasonError(format!("persist group event failed: {}", error)))
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("persist group event failed: {}", error))
+            })
     }
 
     async fn record_member_invited_event(
@@ -2213,8 +2277,7 @@ mod tests {
         DIDMemberKind, GroupCreateProfile, GroupCreateReq, GroupExpandMembersReq,
         GroupExpansionPurpose, GroupInviteMemberReq, GroupListByMemberReq, GroupListMembersReq,
         GroupMemberProof, GroupMemberProofScope, GroupMemberState, GroupRole,
-        GroupSubmitMemberProofReq, GROUP_MEMBER_PROOF_OBJ_TYPE,
-        GROUP_MEMBER_PROOF_SCHEMA_VERSION,
+        GroupSubmitMemberProofReq, GROUP_MEMBER_PROOF_OBJ_TYPE, GROUP_MEMBER_PROOF_SCHEMA_VERSION,
     };
     use tempfile::tempdir;
 

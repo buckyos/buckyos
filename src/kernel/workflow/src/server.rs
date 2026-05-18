@@ -253,11 +253,7 @@ impl WorkflowRpcHandler {
             }));
         }
 
-        let (mut run, mut events) = match self
-            .orchestrator
-            .create_run(&definition.compiled)
-            .await
-        {
+        let (mut run, mut events) = match self.orchestrator.create_run(&definition.compiled).await {
             Ok(pair) => pair,
             Err(err) => return Ok(workflow_error_value(&err)),
         };
@@ -379,11 +375,11 @@ impl WorkflowRpcHandler {
             .get("workflow_id")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let status = params.get("status").and_then(Value::as_str).map(str::to_string);
-        let handles = self
-            .runs
-            .list(owner.as_ref(), workflow_id.as_deref())
-            .await;
+        let status = params
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let handles = self.runs.list(owner.as_ref(), workflow_id.as_deref()).await;
 
         let mut out = Vec::with_capacity(handles.len());
         for handle in handles {
@@ -424,7 +420,13 @@ impl WorkflowRpcHandler {
         let pre_seq = record.run.seq;
         let mut events = match self
             .orchestrator
-            .submit_step_output(&definition.compiled, &mut record.run, &node_id, &actor, output)
+            .submit_step_output(
+                &definition.compiled,
+                &mut record.run,
+                &node_id,
+                &actor,
+                output,
+            )
             .await
         {
             Ok(events) => events,
@@ -560,18 +562,16 @@ impl WorkflowRpcHandler {
     }
 
     async fn approve_amendment(&self, params: &Value) -> RpcResult<Value> {
-        self.decide_amendment(params, AmendmentStatus::Approved).await
+        self.decide_amendment(params, AmendmentStatus::Approved)
+            .await
     }
 
     async fn reject_amendment(&self, params: &Value) -> RpcResult<Value> {
-        self.decide_amendment(params, AmendmentStatus::Rejected).await
+        self.decide_amendment(params, AmendmentStatus::Rejected)
+            .await
     }
 
-    async fn decide_amendment(
-        &self,
-        params: &Value,
-        status: AmendmentStatus,
-    ) -> RpcResult<Value> {
+    async fn decide_amendment(&self, params: &Value, status: AmendmentStatus) -> RpcResult<Value> {
         let run_id = require_string(params, "run_id")?;
         let amendment_id = require_string(params, "amendment_id")?;
         let actor = optional_actor(params);
@@ -585,11 +585,7 @@ impl WorkflowRpcHandler {
         };
         let mut record = handle.state.lock().await;
         let payload = {
-            let amendment = match record
-                .amendments
-                .iter_mut()
-                .find(|a| a.id == amendment_id)
-            {
+            let amendment = match record.amendments.iter_mut().find(|a| a.id == amendment_id) {
                 Some(a) => a,
                 None => return Ok(not_found("amendment", &amendment_id)),
             };
@@ -624,14 +620,8 @@ impl WorkflowRpcHandler {
 
     async fn get_history(&self, params: &Value) -> RpcResult<Value> {
         let run_id = require_string(params, "run_id")?;
-        let since_seq = params
-            .get("since_seq")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let limit = params
-            .get("limit")
-            .and_then(Value::as_u64)
-            .unwrap_or(200) as usize;
+        let since_seq = params.get("since_seq").and_then(Value::as_u64).unwrap_or(0);
+        let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
         let handle = match self.runs.get(&run_id).await {
             Some(h) => h,
             None => return Ok(not_found("run", &run_id)),
@@ -669,8 +659,13 @@ impl WorkflowRpcHandler {
     async fn lookup_run(
         &self,
         run_id: &str,
-    ) -> std::result::Result<(Arc<crate::state::RunHandle>, Arc<crate::state::DefinitionRecord>), Value>
-    {
+    ) -> std::result::Result<
+        (
+            Arc<crate::state::RunHandle>,
+            Arc<crate::state::DefinitionRecord>,
+        ),
+        Value,
+    > {
         let handle = match self.runs.get(run_id).await {
             Some(h) => h,
             None => return Err(not_found("run", run_id)),
@@ -721,10 +716,9 @@ fn optional_actor(params: &Value) -> String {
 }
 
 fn require_definition(params: &Value) -> RpcResult<WorkflowDefinition> {
-    let raw = params
-        .get("definition")
-        .cloned()
-        .ok_or_else(|| RPCErrors::ParseRequestError("missing required field `definition`".into()))?;
+    let raw = params.get("definition").cloned().ok_or_else(|| {
+        RPCErrors::ParseRequestError("missing required field `definition`".into())
+    })?;
     serde_json::from_value::<WorkflowDefinition>(raw)
         .map_err(|err| RPCErrors::ParseRequestError(format!("invalid `definition`: {}", err)))
 }
@@ -767,8 +761,8 @@ fn merge_warnings(report: AnalysisReport, compiled: &CompiledWorkflow) -> Analys
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::{ExecutorRegistry, InMemoryObjectStore, InMemoryThunkDispatcher};
+    use std::sync::Arc;
 
     fn sample_definition_value() -> Value {
         // 一个最小可运行的 workflow：两步 + 一条边 + 一个人工节点。compile 通过即可。
@@ -868,7 +862,10 @@ mod tests {
 
         let resp = handler
             .handle_rpc_call(
-                make_req("service.get_definition", json!({"workflow_id": workflow_id})),
+                make_req(
+                    "service.get_definition",
+                    json!({"workflow_id": workflow_id}),
+                ),
                 "127.0.0.1".parse().unwrap(),
             )
             .await

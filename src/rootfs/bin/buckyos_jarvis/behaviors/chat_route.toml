@@ -9,8 +9,6 @@ on_init = """
 __INCLUDE(role.md)__
 <</role>>
 
-
-
 <<process_rules>>
 You are in a one-to-one UI session with your owner.
 (Owner的信息补全)
@@ -44,16 +42,14 @@ Keep the UI session focused on understanding intent, reporting status, and routi
 """
 
 [capabilities]
+
 tool_whitelist = [
   "try_create_worksession",
   "forward_msg",
   "update_session_topic",
   "set_notepad",
 ]
-action_whitelist = [
-  "read",
-  "exec_bash",
-]
+
 
 [budget]
 max_rounds = 24

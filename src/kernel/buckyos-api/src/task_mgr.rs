@@ -891,34 +891,36 @@ impl TaskManagerClient {
 
         // EventReader holds only a Weak ref to its KEventClient's inner — we
         // must keep the client alive for the lifetime of the wait.
-        let kevent: Option<(crate::kevent_client::KEventClient, crate::kevent_client::EventReader)> =
-            match crate::get_buckyos_api_runtime() {
-                Ok(runtime) => match runtime.get_kevent_client().await {
-                    Ok(client) => match client
-                        .create_event_reader(vec![format!("/task_mgr/{}", id)])
-                        .await
-                    {
-                        Ok(reader) => Some((client, reader)),
-                        Err(err) => {
-                            warn!(
-                                "wait_for_task_end_kevent: subscribe failed (task_id={}): {}; \
-                                 falling back to polling sweep",
-                                id, err
-                            );
-                            None
-                        }
-                    },
+        let kevent: Option<(
+            crate::kevent_client::KEventClient,
+            crate::kevent_client::EventReader,
+        )> = match crate::get_buckyos_api_runtime() {
+            Ok(runtime) => match runtime.get_kevent_client().await {
+                Ok(client) => match client
+                    .create_event_reader(vec![format!("/task_mgr/{}", id)])
+                    .await
+                {
+                    Ok(reader) => Some((client, reader)),
                     Err(err) => {
                         warn!(
-                            "wait_for_task_end_kevent: get_kevent_client failed (task_id={}): {}; \
-                             falling back to polling sweep",
+                            "wait_for_task_end_kevent: subscribe failed (task_id={}): {}; \
+                                 falling back to polling sweep",
                             id, err
                         );
                         None
                     }
                 },
-                Err(_) => None,
-            };
+                Err(err) => {
+                    warn!(
+                        "wait_for_task_end_kevent: get_kevent_client failed (task_id={}): {}; \
+                             falling back to polling sweep",
+                        id, err
+                    );
+                    None
+                }
+            },
+            Err(_) => None,
+        };
 
         // Authoritative first read — closes the subscribe race.
         let task = self.get_task(id).await?;

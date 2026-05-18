@@ -76,11 +76,7 @@ impl<'a> SessionIdInput<'a> {
 /// enum from doc §4.2; a script-driven evaluator can later override the
 /// `Singleton`-and-beyond cases without touching the agent's dispatch.
 pub trait SessionIdEvaluator: Send + Sync {
-    fn compute(
-        &self,
-        strategy: SessionIdStrategy,
-        input: &SessionIdInput<'_>,
-    ) -> Option<String>;
+    fn compute(&self, strategy: SessionIdStrategy, input: &SessionIdInput<'_>) -> Option<String>;
 }
 
 /// v0 dispatcher: walks `[[dispatch.rule]]` in order, applying exact-match
@@ -130,11 +126,7 @@ impl DispatchEvaluator for FixedRulesDispatch {
 pub struct EnumSessionIdStrategy;
 
 impl SessionIdEvaluator for EnumSessionIdStrategy {
-    fn compute(
-        &self,
-        strategy: SessionIdStrategy,
-        input: &SessionIdInput<'_>,
-    ) -> Option<String> {
+    fn compute(&self, strategy: SessionIdStrategy, input: &SessionIdInput<'_>) -> Option<String> {
         match strategy {
             SessionIdStrategy::PerPeer => {
                 // The on-disk key is `from_did` when present; fall back to

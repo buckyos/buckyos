@@ -20,15 +20,11 @@ use llm_context::{
 use crate::agent_config::{AgentConfig, LoopMode, SwitchMode};
 use crate::ai_runtime::{build_session_deps, AgentRuntime, OneLineStatusSink, SessionDepsInput};
 use crate::behavior_cfg::BehaviorCfg;
-use crate::behavior_hooks::{
-    self, CtxLimitOutcome, InterruptOutcome, ProviderFailedOutcome,
-};
+use crate::behavior_hooks::{self, CtxLimitOutcome, InterruptOutcome, ProviderFailedOutcome};
 use crate::llm_context_helper::{
     apply_overrides_to_snapshot, run_fork_sub_context, ForkSubContextInput, RequestOverrides,
 };
-use crate::prompt_env::{
-    self, AgentSessionEnv, ENVIRONMENT_BLOCK_TEMPLATE,
-};
+use crate::prompt_env::{self, AgentSessionEnv, ENVIRONMENT_BLOCK_TEMPLATE};
 use crate::round_history::{
     CompactionTarget, ContextMode, HistoryEvent, InterruptMode as HistoryInterruptMode,
     RoundStatus, RoundTrigger, SessionHistoryRecorder,
@@ -1252,10 +1248,8 @@ impl AgentSession {
                 let outcome = behavior_for_hook
                     .as_ref()
                     .and_then(|b| {
-                        behavior_hooks::resolve_interrupt_graceful(
-                            b.on_interrupt_graceful.as_ref(),
-                        )
-                        .ok()
+                        behavior_hooks::resolve_interrupt_graceful(b.on_interrupt_graceful.as_ref())
+                            .ok()
                     })
                     .unwrap_or(InterruptOutcome::Default);
                 // v0 has only one mode here; both Default and the explicit
@@ -1269,10 +1263,8 @@ impl AgentSession {
                 let outcome = behavior_for_hook
                     .as_ref()
                     .and_then(|b| {
-                        behavior_hooks::resolve_interrupt_discard(
-                            b.on_interrupt_discard.as_ref(),
-                        )
-                        .ok()
+                        behavior_hooks::resolve_interrupt_discard(b.on_interrupt_discard.as_ref())
+                            .ok()
                     })
                     .unwrap_or(InterruptOutcome::Default);
                 let _ = outcome;
@@ -1678,17 +1670,16 @@ impl AgentSession {
         //     compress strategy on the same on-disk slot.
         // Future "skip compress / fail fast" modes will read this and
         // jump straight to the synthesized-error branch.
-        let ctx_limit_outcome = behavior_hooks::resolve_ctx_limit(
-            behavior.on_context_limit_reached.as_ref(),
-        )
-        .unwrap_or_else(|err| {
-            warn!(
-                "opendan.session[{}]: invalid on_context_limit_reached hook: {err} \
+        let ctx_limit_outcome =
+            behavior_hooks::resolve_ctx_limit(behavior.on_context_limit_reached.as_ref())
+                .unwrap_or_else(|err| {
+                    warn!(
+                        "opendan.session[{}]: invalid on_context_limit_reached hook: {err} \
                  — falling back to runtime default",
-                self.session_id
-            );
-            CtxLimitOutcome::Default
-        });
+                        self.session_id
+                    );
+                    CtxLimitOutcome::Default
+                });
         // Both v0 modes currently route into the compress loop; the variant
         // is captured here so future modes don't have to refactor the loop.
         let _ = matches!(
@@ -2405,9 +2396,8 @@ impl AgentSession {
                 // to the named fallback (e.g. a smaller-model safe-mode) and
                 // continue the next turn there. Unset / Default ⇒ surface
                 // the error and park the session (historical behavior).
-                match behavior_hooks::resolve_provider_failed(
-                    behavior.on_provider_failed.as_ref(),
-                ) {
+                match behavior_hooks::resolve_provider_failed(behavior.on_provider_failed.as_ref())
+                {
                     Ok(ProviderFailedOutcome::FallbackBehavior { target }) => {
                         warn!(
                             "opendan.session[{}]: provider failed ({}); on_provider_failed → fallback_behavior `{target}`",

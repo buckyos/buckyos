@@ -263,15 +263,15 @@ fn same_trusted_lan(
 fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> {
     let mut result = HashMap::new();
 
-    if let Some(network_observation) = device_info.device_doc.extra_info.get(NETWORK_OBSERVATION_KEY)
+    if let Some(network_observation) = device_info
+        .device_doc
+        .extra_info
+        .get(NETWORK_OBSERVATION_KEY)
     {
-        if let Ok(parsed) = serde_json::from_value::<NetworkObservation>(network_observation.clone())
+        if let Ok(parsed) =
+            serde_json::from_value::<NetworkObservation>(network_observation.clone())
         {
-            collect_reachable_probe_targets(
-                &parsed.direct_probe,
-                parsed.observed_at,
-                &mut result,
-            );
+            collect_reachable_probe_targets(&parsed.direct_probe, parsed.observed_at, &mut result);
         } else if let Some(direct_probe) = network_observation
             .get("direct_probe")
             .and_then(Value::as_array)
@@ -738,8 +738,7 @@ pub(crate) fn build_forward_plan(
                     backup: relay_is_backup,
                     keep_tunnel: false,
                     url: format_relay_rtcp_url(
-                        format_rtcp_did_url(gateway_node, zone_host, DEFAULT_RTCP_PORT)
-                            .as_str(),
+                        format_rtcp_did_url(gateway_node, zone_host, DEFAULT_RTCP_PORT).as_str(),
                         target_node_id,
                         zone_host,
                         target_port,
@@ -943,10 +942,7 @@ mod tests {
         assert_eq!(ood2_routes[0].id, "direct");
         assert_eq!(ood2_routes[0].kind, "rtcp_direct");
         assert_eq!(ood2_routes[0].priority, DIRECT_PRIORITY);
-        assert_eq!(
-            ood2_routes[0].url,
-            format!("rtcp://ood2.{}/", zone_host)
-        );
+        assert_eq!(ood2_routes[0].url, format!("rtcp://ood2.{}/", zone_host));
         assert!(!ood2_routes[0].backup);
         assert_eq!(
             ood2_routes[0].evidence.as_ref().unwrap().evidence_type,
@@ -1269,9 +1265,7 @@ mod tests {
         let ood2_routes = plan.routes.get("ood2").unwrap();
 
         // routes 只剩 DID hostname 的 direct，没有 IP 形态 candidate。
-        assert!(ood2_routes
-            .iter()
-            .all(|c| !c.url.contains("192.168.1.23")));
+        assert!(ood2_routes.iter().all(|c| !c.url.contains("192.168.1.23")));
         assert_eq!(ood2_routes[0].id, "direct");
 
         let target_did = format!("ood2.{}", zone_host);
@@ -1347,7 +1341,11 @@ mod tests {
                 != Some("ipv6_global_endpoint")));
 
         let target_did = format!("ood2.{}", zone_host);
-        let hints = plan.did_ip_hints.get(&target_did).cloned().unwrap_or_default();
+        let hints = plan
+            .did_ip_hints
+            .get(&target_did)
+            .cloned()
+            .unwrap_or_default();
         assert!(hints
             .iter()
             .all(|h| h.source != DidIpHintSource::GlobalIpv6));

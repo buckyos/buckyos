@@ -39,18 +39,16 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::{AiMessage, AiRole};
-use llm_context::{
-    ContextOutput, LLMContextOutcome, LlmClient, ModelPolicy, ToolMode, ToolPolicy,
-};
+use llm_context::{ContextOutput, LLMContextOutcome, LlmClient, ModelPolicy, ToolMode, ToolPolicy};
 use serde_json::{json, Value};
 
 use crate::run_local_llm::{
     acquire_aicc_client, ensure_buckyos_runtime, AiccLlmClient, KeepTailCompressor,
 };
 use crate::{
-    cli_error_result, render_cli_output, AgentToolError, AgentToolPendingReason,
-    AgentToolResult, AgentToolStatus, LocalLLMContext, OneShotRequest,
-    AGENT_TOOL_PROTOCOL_VERSION, CLI_EXIT_ERROR, CLI_EXIT_SUCCESS, CLI_EXIT_USAGE,
+    cli_error_result, render_cli_output, AgentToolError, AgentToolPendingReason, AgentToolResult,
+    AgentToolStatus, LocalLLMContext, OneShotRequest, AGENT_TOOL_PROTOCOL_VERSION, CLI_EXIT_ERROR,
+    CLI_EXIT_SUCCESS, CLI_EXIT_USAGE,
 };
 
 const TOOL_NAME: &str = "llm_explore";
@@ -510,8 +508,9 @@ fn build_outcome_result(
 fn output_to_text(output: &ContextOutput) -> String {
     match output {
         ContextOutput::Text { content } => content.clone(),
-        ContextOutput::Json { content } => serde_json::to_string_pretty(content)
-            .unwrap_or_else(|_| content.to_string()),
+        ContextOutput::Json { content } => {
+            serde_json::to_string_pretty(content).unwrap_or_else(|_| content.to_string())
+        }
     }
 }
 
@@ -530,7 +529,10 @@ fn build_error_result(work_dir: Option<&Path>, opts: &CliOpts, message: &str) ->
     if let Some(dir) = work_dir {
         details.insert("work_dir".into(), Value::String(dir.display().to_string()));
     }
-    details.insert("description".into(), Value::String(opts.description.clone()));
+    details.insert(
+        "description".into(),
+        Value::String(opts.description.clone()),
+    );
     details.insert("error".into(), Value::String(message.to_string()));
     AgentToolResult {
         agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
@@ -617,8 +619,8 @@ impl CliOpts {
             idx += 1;
         }
 
-        let description = description
-            .ok_or_else(|| ParseError::Bad("missing --description".into()))?;
+        let description =
+            description.ok_or_else(|| ParseError::Bad("missing --description".into()))?;
         let prompt = prompt.ok_or_else(|| ParseError::Bad("missing --prompt".into()))?;
         if description.trim().is_empty() {
             return Err(ParseError::Bad("--description must not be empty".into()));

@@ -128,14 +128,13 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use llm_context::deps::{
-    LLMContextDeps, LlmClient, NoopWorklogSink, ToolManager, ToolSpecLite, TurnHook,
-    WorklogSink,
+    LLMContextDeps, LlmClient, NoopWorklogSink, ToolManager, ToolSpecLite, TurnHook, WorklogSink,
 };
 use llm_context::observation::Observation;
 use llm_context::outcome::{LLMContextOutcome, ResumeFill};
 use llm_context::request::{
-    BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorPolicy,
-    LLMContextRequest, ModelPolicy, OutputSpec, ToolPolicy,
+    BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorPolicy, LLMContextRequest, ModelPolicy,
+    OutputSpec, ToolPolicy,
 };
 use llm_context::state::LLMContextSnapshot;
 use llm_context::LLMContext;
@@ -389,9 +388,8 @@ impl LocalLLMContext {
         if let Some(existing) = Self::find_running_run(&dir)? {
             return Err(LocalLLMContextError::RunningRunExists {
                 run_id: existing.run_id,
-                hint:
-                    "use `resume_or_new` to auto-resume, or delete the run dir to start fresh"
-                        .into(),
+                hint: "use `resume_or_new` to auto-resume, or delete the run dir to start fresh"
+                    .into(),
             });
         }
 
@@ -501,10 +499,12 @@ impl LocalLLMContext {
         // 取最新 snapshot。
         let snapshot = match meta.latest_snapshot_idx {
             Some(idx) => snapshot_store.get(idx)?,
-            None => return Err(LocalLLMContextError::CorruptedRun {
-                run_id: run_id.clone(),
-                reason: "running run has no snapshot on disk".into(),
-            }),
+            None => {
+                return Err(LocalLLMContextError::CorruptedRun {
+                    run_id: run_id.clone(),
+                    reason: "running run has no snapshot on disk".into(),
+                })
+            }
         };
 
         // **关键决策**:崩溃后的 resume 形态分流:
@@ -529,10 +529,12 @@ impl LocalLLMContext {
         }
 
         let deps = build_deps(&dir, &run_id, llm.clone(), snapshot_store.clone())?;
-        let ctx = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps)
-            .map_err(|e| LocalLLMContextError::CorruptedRun {
-                run_id: run_id.clone(),
-                reason: format!("ResumeFromMidRun failed: {e}"),
+        let ctx =
+            LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps).map_err(|e| {
+                LocalLLMContextError::CorruptedRun {
+                    run_id: run_id.clone(),
+                    reason: format!("ResumeFromMidRun failed: {e}"),
+                }
             })?;
 
         Ok(Self {
@@ -763,9 +765,9 @@ impl LocalLLMContext {
     /// 不再尝试 release(避免 TOCTOU),配合 `drop_lock_if_held` 的 no-op 语义。
     fn acquire_dir_lock(dir: &Path) -> Result<(), LocalLLMContextError> {
         let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-        let mut guard = dir_lock_registry().lock().map_err(|_| {
-            LocalLLMContextError::LockFailed("dir lock registry poisoned".into())
-        })?;
+        let mut guard = dir_lock_registry()
+            .lock()
+            .map_err(|_| LocalLLMContextError::LockFailed("dir lock registry poisoned".into()))?;
         if guard.contains_key(&key) {
             return Ok(());
         }
@@ -821,12 +823,12 @@ impl LocalLLMContext {
                 ),
             });
         }
-        let idx = latest.latest_snapshot_idx.ok_or_else(|| {
-            LocalLLMContextError::CorruptedRun {
+        let idx = latest
+            .latest_snapshot_idx
+            .ok_or_else(|| LocalLLMContextError::CorruptedRun {
                 run_id: latest.run_id.clone(),
                 reason: "completed run has no snapshot on disk".into(),
-            }
-        })?;
+            })?;
         let snapshot_store = FileSnapshotStore::new(dir.join("runs").join(&latest.run_id));
         let snapshot = snapshot_store.get(idx)?;
         let prior_request = read_run_request(dir, &latest.run_id)?;
@@ -1141,8 +1143,10 @@ fn build_deps(
     llm: Arc<dyn LlmClient>,
     snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<LLMContextDeps, LocalLLMContextError> {
-    let tools: Arc<dyn ToolManager> =
-        Arc::new(LocalDirToolManager::new(dir.to_path_buf(), run_id.to_string())?);
+    let tools: Arc<dyn ToolManager> = Arc::new(LocalDirToolManager::new(
+        dir.to_path_buf(),
+        run_id.to_string(),
+    )?);
     let worklog: Arc<dyn WorklogSink> = Arc::new(NoopWorklogSink);
     let hook: Arc<dyn TurnHook> = Arc::new(SnapshotPersistingTurnHook { snapshot_store });
     Ok(LLMContextDeps::new(llm, tools)

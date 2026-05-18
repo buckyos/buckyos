@@ -134,9 +134,7 @@ impl TaskDispatch {
             TaskStatus::Failed
         };
         if let Err(err) = self.client.update_task_status(task_id, status).await {
-            warn!(
-                "opendan.task_dispatch: update_task_status({task_id}, {status:?}) failed: {err}"
-            );
+            warn!("opendan.task_dispatch: update_task_status({task_id}, {status:?}) failed: {err}");
         }
     }
 }

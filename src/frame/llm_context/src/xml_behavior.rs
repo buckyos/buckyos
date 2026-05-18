@@ -66,6 +66,59 @@ use serde_json::Value;
 
 use crate::behavior_loop::{LLMBehaviorResult, LLMResultParser, SendMessageRecord};
 
+/// Prompt snippet that teaches an LLM to emit the XML Behavior v2 result
+/// format accepted by [`XmlBehaviorParser`].
+///
+/// This is intentionally protocol-shaped rather than behavior-shaped:
+/// behavior prompts should still decide when to use each action and which
+/// `next_behavior` values are valid.
+pub const XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT: &str = r#"请严格按以下 XML Behavior v2 格式输出；最终回复只输出 XML，不要用 Markdown code fence 包裹。
+
+```xml
+<response>
+  <observation><![CDATA[
+基于 last_step / action_result / 当前已知状态提炼的结论。请尽量自包含，后续步骤可能看不到原始 action_result。
+  ]]></observation>
+  <thinking><![CDATA[
+距离评估：当前状态距目标还差什么？
+动作选择：本步做什么能最有效缩短距离？为什么？
+  ]]></thinking>
+  <actions>
+    <exec_bash cwd="src" timeout_ms="30000"><![CDATA[
+cargo test
+    ]]></exec_bash>
+    <write_file path="src/foo.rs"><![CDATA[
+pub fn bar() -> u32 { 42 }
+    ]]></write_file>
+    <edit_file path="src/foo.rs" mode="replace_range" from_line="10" to_line="20"><![CDATA[
+new content
+    ]]></edit_file>
+    <read uri="file:///workspace/src/foo.rs" offset="0" limit="4096"/>
+    <report target="user"><![CDATA[
+给用户的消息；可选；仅在有重要进展或需要用户输入时填写。
+    ]]></report>
+  </actions>
+  <report><![CDATA[
+本步骤完成总结；写入 last_report；可选但建议在阶段性完成时填写。
+  ]]></report>
+  <next_behavior>END</next_behavior>
+</response>
+```
+
+## 输出规则
+- `<observation>`：填写对上一步结果或当前状态的自包含结论；没有新观察时也要简洁说明当前已知状态。
+- `<thinking>`：填写本步推理，重点说明距离评估和动作选择。
+- `<actions>`：只放当前 behavior 允许使用的 XML action；不需要 action 时可省略整个 `<actions>`。
+- `<exec_bash>`：一条 shell 命令对应一个标签；不要把结构化写文件动作塞进 shell。
+- 写文本文件必须使用 `<write_file>` 或 `<edit_file>`，不要用 `echo` / `cat` / heredoc 写文件。
+- XML body 统一使用 CDATA；文件内容、命令、报告正文都放在对应标签 body 中。
+- 文件路径优先使用 workspace 内路径；需要绝对路径时必须明确且可访问。
+- `<report target="user">` 表示发送给用户的过程消息，不写入 last_report。
+- `<report>` 不带 target 表示 Self Report，写入 last_report，但不会自动终止 behavior。
+- `<next_behavior>` 只在当前 behavior 应结束或切换时填写；继续当前 behavior 时省略。
+- `<report>` 与 `<next_behavior>` 相互独立：结束并留下结果时同时输出二者。
+"#;
+
 /// Hardcoded allowlist of v2 first-class Action tag names. Everything in
 /// `<actions>` that isn't one of these is silently skipped.
 ///
@@ -92,12 +145,7 @@ pub const V2_ACTION_TAGS: &[&str] = &[
 pub fn is_v2_action_tag(name: &str) -> bool {
     matches!(
         name,
-        "exec_bash"
-            | "write_file"
-            | "edit_file"
-            | "read"
-            | "subscribe_event"
-            | "unsubscribe_event"
+        "exec_bash" | "write_file" | "edit_file" | "read" | "subscribe_event" | "unsubscribe_event"
     )
 }
 
@@ -777,9 +825,7 @@ mod tests {
         // `<response>` still get picked up.
         let parser = XmlBehaviorParser::new();
         let out = parser
-            .parse(&resp(
-                r#"<response><exec_bash>ls</exec_bash></response>"#,
-            ))
+            .parse(&resp(r#"<response><exec_bash>ls</exec_bash></response>"#))
             .unwrap();
         assert_eq!(out.do_actions.len(), 1);
         assert_eq!(out.do_actions[0].name, "exec_bash");
@@ -846,9 +892,7 @@ mod tests {
     fn multiple_self_reports_last_one_wins() {
         let parser = XmlBehaviorParser::new();
         let out = parser
-            .parse(&resp(
-                r#"<report>first</report><report>second</report>"#,
-            ))
+            .parse(&resp(r#"<report>first</report><report>second</report>"#))
             .unwrap();
         assert_eq!(out.self_report.as_deref(), Some("second"));
     }
@@ -930,9 +974,7 @@ mod tests {
     fn xml_entities_in_attrs_are_decoded() {
         let parser = XmlBehaviorParser::new();
         let out = parser
-            .parse(&resp(
-                r#"<actions><read uri="file:///a&amp;b"/></actions>"#,
-            ))
+            .parse(&resp(r#"<actions><read uri="file:///a&amp;b"/></actions>"#))
             .unwrap();
         assert_eq!(
             out.do_actions[0].args.get("uri"),

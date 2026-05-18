@@ -1319,13 +1319,13 @@ fn process_args0_basename(p: &ProcessInfo) -> String {
 }
 
 pub fn process_matches<S: AsRef<str>>(p: &ProcessInfo, aliases: &[S]) -> bool {
-    let normalized: Vec<String> = aliases
-        .iter()
-        .map(|s| normalize_name(s.as_ref()))
-        .collect();
+    let normalized: Vec<String> = aliases.iter().map(|s| normalize_name(s.as_ref())).collect();
     let base = process_command_basename(p);
     let arg0 = process_args0_basename(p);
-    if normalized.iter().any(|alias| alias == &base || alias == &arg0) {
+    if normalized
+        .iter()
+        .any(|alias| alias == &base || alias == &arg0)
+    {
         return true;
     }
     let haystack = normalize_name(&p.args);
@@ -1399,10 +1399,7 @@ pub fn get_port_listener(port: u16) -> Option<String> {
         return None;
     }
 
-    if let Some(raw) = run_capture(
-        "lsof",
-        &["-nP", &format!("-iTCP:{}", port), "-sTCP:LISTEN"],
-    ) {
+    if let Some(raw) = run_capture("lsof", &["-nP", &format!("-iTCP:{}", port), "-sTCP:LISTEN"]) {
         let mut lines = raw.lines();
         let _ = lines.next();
         if let Some(line) = lines.next() {
@@ -1452,10 +1449,7 @@ pub fn detect_host_control_state() -> NodeHostControlState {
                 service_unit_name = Some("buckyos.service".to_string());
                 model = NodeHostControlModel::ServiceManager;
                 confidence = Confidence::High;
-                if let Some(out) = run_capture(
-                    "launchctl",
-                    &["print", "system/buckyos.service"],
-                ) {
+                if let Some(out) = run_capture("launchctl", &["print", "system/buckyos.service"]) {
                     let lower = out.to_lowercase();
                     let active = lower.contains("state = running");
                     service_active = Some(active);
@@ -1485,16 +1479,12 @@ pub fn detect_host_control_state() -> NodeHostControlState {
                 service_unit_name = Some("buckyos.service".to_string());
                 model = NodeHostControlModel::ServiceManager;
                 confidence = Confidence::High;
-                if let Some(out) =
-                    run_capture("systemctl", &["is-enabled", "buckyos.service"])
-                {
+                if let Some(out) = run_capture("systemctl", &["is-enabled", "buckyos.service"]) {
                     let trimmed = out.trim();
                     service_enabled = Some(trimmed == "enabled" || trimmed == "static");
                     evidence.push(format!("systemctl is-enabled: {}", trimmed));
                 }
-                if let Some(out) =
-                    run_capture("systemctl", &["is-active", "buckyos.service"])
-                {
+                if let Some(out) = run_capture("systemctl", &["is-active", "buckyos.service"]) {
                     let trimmed = out.trim();
                     service_active = Some(trimmed == "active");
                     evidence.push(format!("systemctl is-active: {}", trimmed));
@@ -1597,7 +1587,11 @@ pub fn node_check(
     // node_daemon 进程
     let node_daemon_procs = find_processes(&processes, NODE_DAEMON_ALIASES);
     if !node_daemon_procs.is_empty() {
-        let pids: Vec<String> = node_daemon_procs.iter().take(5).map(|p| p.pid.to_string()).collect();
+        let pids: Vec<String> = node_daemon_procs
+            .iter()
+            .take(5)
+            .map(|p| p.pid.to_string())
+            .collect();
         checks.push(
             CheckItem::new(
                 "node_daemon Process",
@@ -1642,11 +1636,23 @@ pub fn node_check(
     } else {
         // 核心进程
         for (label, aliases, severity_when_missing) in [
-            ("cyfs_gateway Process", CYFS_GATEWAY_ALIASES, CheckStatus::Fail),
-            ("system_config Process", SYSTEM_CONFIG_ALIASES, CheckStatus::Fail),
+            (
+                "cyfs_gateway Process",
+                CYFS_GATEWAY_ALIASES,
+                CheckStatus::Fail,
+            ),
+            (
+                "system_config Process",
+                SYSTEM_CONFIG_ALIASES,
+                CheckStatus::Fail,
+            ),
             ("scheduler Process", SCHEDULER_ALIASES, CheckStatus::Fail),
             ("verify_hub Process", VERIFY_HUB_ALIASES, CheckStatus::Fail),
-            ("control_panel Process", CONTROL_PANEL_ALIASES, CheckStatus::Warn),
+            (
+                "control_panel Process",
+                CONTROL_PANEL_ALIASES,
+                CheckStatus::Warn,
+            ),
         ] {
             let found = find_processes(&processes, aliases);
             if !found.is_empty() {
@@ -1670,8 +1676,16 @@ pub fn node_check(
 
         // 端口
         let ports: &[(&str, u16, CheckStatus)] = &[
-            ("zone_gateway_http", PORT_ZONE_GATEWAY_HTTP, CheckStatus::Fail),
-            ("node_gateway_http", PORT_NODE_GATEWAY_HTTP, CheckStatus::Fail),
+            (
+                "zone_gateway_http",
+                PORT_ZONE_GATEWAY_HTTP,
+                CheckStatus::Fail,
+            ),
+            (
+                "node_gateway_http",
+                PORT_NODE_GATEWAY_HTTP,
+                CheckStatus::Fail,
+            ),
             ("system_config", PORT_SYSTEM_CONFIG, CheckStatus::Fail),
             ("verify_hub", PORT_VERIFY_HUB, CheckStatus::Fail),
             ("control_panel", PORT_CONTROL_PANEL, CheckStatus::Warn),
@@ -1705,11 +1719,21 @@ pub fn node_check(
         let port80 = *port_results.get(&PORT_ZONE_GATEWAY_HTTP).unwrap_or(&false);
         let port_node_gw = *port_results.get(&PORT_NODE_GATEWAY_HTTP).unwrap_or(&false);
         if !cyfs_gw_running || !port80 || !port_node_gw {
-            let suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
+            let suffix = if cfg!(target_os = "windows") {
+                ".exe"
+            } else {
+                ""
+            };
             let candidates = [
-                bin_dir.join("cyfs-gateway").join(format!("cyfs_gateway{}", suffix)),
-                bin_dir.join("cyfs_gateway").join(format!("cyfs_gateway{}", suffix)),
-                bin_dir.join("cyfs-gateway").join(format!("cyfs-gateway{}", suffix)),
+                bin_dir
+                    .join("cyfs-gateway")
+                    .join(format!("cyfs_gateway{}", suffix)),
+                bin_dir
+                    .join("cyfs_gateway")
+                    .join(format!("cyfs_gateway{}", suffix)),
+                bin_dir
+                    .join("cyfs-gateway")
+                    .join(format!("cyfs-gateway{}", suffix)),
             ];
             let exists = candidates.iter().find(|p| p.exists());
             if let Some(p) = exists {
@@ -1742,11 +1766,20 @@ pub fn node_check(
             NodeHostControlModel::ServiceManager => {
                 let active = host_control.service_active.unwrap_or(false);
                 if active {
-                    (CheckStatus::Ok, "Service manager unit is active".to_string())
+                    (
+                        CheckStatus::Ok,
+                        "Service manager unit is active".to_string(),
+                    )
                 } else if host_control.platform != NodePlatform::Unknown {
-                    (CheckStatus::Warn, "Service manager unit not active".to_string())
+                    (
+                        CheckStatus::Warn,
+                        "Service manager unit not active".to_string(),
+                    )
                 } else {
-                    (CheckStatus::Info, "Service manager state unknown".to_string())
+                    (
+                        CheckStatus::Info,
+                        "Service manager state unknown".to_string(),
+                    )
                 }
             }
             NodeHostControlModel::ScheduledLauncher => (
@@ -1764,10 +1797,9 @@ pub fn node_check(
                 CheckStatus::Info,
                 "Containerized runtime detected".to_string(),
             ),
-            NodeHostControlModel::Unknown => (
-                CheckStatus::Warn,
-                "Host control model unknown".to_string(),
-            ),
+            NodeHostControlModel::Unknown => {
+                (CheckStatus::Warn, "Host control model unknown".to_string())
+            }
         };
         let mut item = CheckItem::new("Host Control", host_status.0, host_status.1);
         for ev in &host_control.evidence {
@@ -1863,7 +1895,8 @@ fn summarize(
         if activation_ready {
             return (
                 "Activation Ready".into(),
-                "node_active is serving on this machine and the system is waiting for activation".into(),
+                "node_active is serving on this machine and the system is waiting for activation"
+                    .into(),
             );
         }
         return (
@@ -2120,10 +2153,7 @@ fn spawn_node_daemon_direct(
     Ok(pid)
 }
 
-fn start_via_launchd(
-    host: &NodeHostControlState,
-    actions: &mut Vec<String>,
-) -> Result<(), String> {
+fn start_via_launchd(host: &NodeHostControlState, actions: &mut Vec<String>) -> Result<(), String> {
     let plist = host
         .service_plist_path
         .as_ref()
@@ -2147,18 +2177,23 @@ fn start_via_launchd(
             actions.push(format!("launchctl bootstrap system {}", plist.display()));
         }
         _ => {
-            run_quiet("launchctl", &["bootout", "system", plist.to_str().unwrap_or_default()], actions);
-            run_must("launchctl", &["bootstrap", "system", plist.to_str().unwrap_or_default()], actions)?;
+            run_quiet(
+                "launchctl",
+                &["bootout", "system", plist.to_str().unwrap_or_default()],
+                actions,
+            );
+            run_must(
+                "launchctl",
+                &["bootstrap", "system", plist.to_str().unwrap_or_default()],
+                actions,
+            )?;
         }
     }
     run_must("launchctl", &["kickstart", "-k", &target], actions)?;
     Ok(())
 }
 
-fn start_via_systemd(
-    host: &NodeHostControlState,
-    actions: &mut Vec<String>,
-) -> Result<(), String> {
+fn start_via_systemd(host: &NodeHostControlState, actions: &mut Vec<String>) -> Result<(), String> {
     let unit = host
         .service_unit_name
         .clone()
@@ -2305,7 +2340,11 @@ fn stop_host_service(host: &NodeHostControlState, report: &mut NodeStopReport) {
                 .clone()
                 .unwrap_or_else(|| "buckyos.service".to_string());
             let target = format!("system/{}", label);
-            run_quiet("launchctl", &["disable", &target], &mut report.host_service_actions);
+            run_quiet(
+                "launchctl",
+                &["disable", &target],
+                &mut report.host_service_actions,
+            );
             if let Some(plist) = &host.service_plist_path {
                 run_quiet(
                     "launchctl",
@@ -2373,11 +2412,7 @@ fn wait_for_node_daemon_exit(timeout_secs: u64) -> u64 {
     waited
 }
 
-fn blackbox_stop(
-    req: &NodeStopRequest,
-    host: &NodeHostControlState,
-    report: &mut NodeStopReport,
-) {
+fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mut NodeStopReport) {
     let snapshot = read_run_plist();
     if let Some(snap) = &snapshot {
         report.actions.push(format!(
@@ -2430,10 +2465,7 @@ fn blackbox_stop(
         }
         // 兼容历史脚本 devtest-* 容器（如 run.plist 不可用时的开发场景）。
         if targets.is_empty() && !cfg!(target_os = "windows") {
-            if let Some(out) = run_capture(
-                "docker",
-                &["ps", "-a", "--format", "{{.Names}}"],
-            ) {
+            if let Some(out) = run_capture("docker", &["ps", "-a", "--format", "{{.Names}}"]) {
                 for line in out.lines() {
                     let name = line.trim();
                     if name.starts_with("devtest-") {

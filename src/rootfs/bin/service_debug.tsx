@@ -8,7 +8,7 @@
 //   - pkg_list.script => HostScript
 //   - pkg_list.agent  => Agent / OpenDan
 //
-//   service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--detach]
+//   service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--detach]
 
 type JsonValue =
   | string
@@ -27,6 +27,7 @@ type StartupOptions = {
   port?: number
   detach: boolean
   systemConfigUrl: string
+  agentPackageRoot?: string
 }
 
 const DEFAULT_BUCKYOS_ROOT = '/opt/buckyos'
@@ -90,12 +91,13 @@ function printUsage(): never {
   console.error(
     [
       'Usage:',
-      '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--detach]',
+      '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--detach]',
       '',
       'Example:',
       '  service_debug jarvis alice',
       '  service_debug buckyos_systest devtest',
       '  service_debug jarvis alice --port 14060',
+      '  service_debug jarvis alice --agent-package-root ./rootfs/bin/buckyos_jarvis',
     ].join('\n'),
   )
   Deno.exit(1)
@@ -116,6 +118,7 @@ function parseArgs(args: string[]): StartupOptions {
   let port: number | undefined
   let detach = false
   let systemConfigUrl = 'http://127.0.0.1:3200/kapi/system_config'
+  let agentPackageRoot: string | undefined
 
   for (let index = 2; index < args.length; index += 1) {
     const arg = args[index]
@@ -147,6 +150,16 @@ function parseArgs(args: string[]): StartupOptions {
         index += 1
         break
       }
+      case '--agent-package-root':
+      case '--agent-bin': {
+        const raw = args[index + 1]?.trim()
+        index += 1
+        if (!raw) {
+          throw new Error(`missing value for ${arg}`)
+        }
+        agentPackageRoot = raw
+        break
+      }
       default: {
         throw new Error(`unknown argument: ${arg}`)
       }
@@ -160,6 +173,7 @@ function parseArgs(args: string[]): StartupOptions {
     port,
     detach,
     systemConfigUrl,
+    agentPackageRoot,
   }
 }
 
@@ -425,10 +439,21 @@ async function resolveOpendanBinary(buckyosRoot: string): Promise<string> {
 async function resolveAgentPackageRoot(
   buckyosRoot: string,
   appDoc: JsonObject,
+  overridePath?: string,
 ): Promise<{ pkgId: string; fullPath: string }> {
   const pkgId = getNestedString(appDoc, ['pkg_list', 'agent', 'pkg_id'])
   if (!pkgId) {
     throw new Error('app_doc.pkg_list.agent.pkg_id is missing, only agent/opendan is supported')
+  }
+
+  if (overridePath) {
+    if (await fileExists(overridePath)) {
+      return {
+        pkgId,
+        fullPath: overridePath,
+      }
+    }
+    throw new Error(`agent package root override not found: ${overridePath}`)
   }
 
   const pkgName = uniquePkgName(pkgId)
@@ -681,7 +706,7 @@ async function buildLaunchContext(options: StartupOptions) {
   }
 
   if (hasAgentPkg(appDoc)) {
-    const agentPackage = await resolveAgentPackageRoot(buckyosRoot, appDoc)
+    const agentPackage = await resolveAgentPackageRoot(buckyosRoot, appDoc, options.agentPackageRoot)
     const opendanBinary = await resolveOpendanBinary(buckyosRoot)
     const agentEnvRoot = getAppDataDir(buckyosRoot, options.appId, options.ownerUserId)
     await Deno.mkdir(agentEnvRoot, { recursive: true })

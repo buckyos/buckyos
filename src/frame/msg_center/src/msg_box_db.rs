@@ -96,15 +96,11 @@ impl MsgBoxDbMgr {
     /// Resolve the msg-center rdb instance from the service spec and open a
     /// pool against it. This is the production entry point.
     pub async fn open_from_service_spec() -> std::result::Result<Self, RPCErrors> {
-        let instance =
-            get_rdb_instance(MSG_CENTER_SERVICE_NAME, None, MSG_CENTER_RDB_INSTANCE_ID)
-                .await
-                .map_err(|error| {
-                    RPCErrors::ReasonError(format!(
-                        "resolve msg-center rdb instance failed: {}",
-                        error
-                    ))
-                })?;
+        let instance = get_rdb_instance(MSG_CENTER_SERVICE_NAME, None, MSG_CENTER_RDB_INSTANCE_ID)
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("resolve msg-center rdb instance failed: {}", error))
+            })?;
         info!("msg_box_db.open {}", instance.connection);
         Self::open(
             &instance.connection,
@@ -412,8 +408,7 @@ WHERE owner = ? AND box_kind = ?
         owner: &DID,
         msg_id: &ObjId,
     ) -> std::result::Result<bool, RPCErrors> {
-        let sql =
-            self.render_sql("SELECT 1 FROM msg_refs WHERE owner = ? AND msg_id = ? LIMIT 1");
+        let sql = self.render_sql("SELECT 1 FROM msg_refs WHERE owner = ? AND msg_id = ? LIMIT 1");
         let row = sqlx::query(&sql)
             .bind(owner.to_string())
             .bind(msg_id.to_string())
@@ -430,7 +425,10 @@ WHERE owner = ? AND box_kind = ?
     }
 }
 
-fn decode_record_row(row: &AnyRow, fallback_id: &str) -> std::result::Result<MsgRecordRow, RPCErrors> {
+fn decode_record_row(
+    row: &AnyRow,
+    fallback_id: &str,
+) -> std::result::Result<MsgRecordRow, RPCErrors> {
     let decode = |field: &str, err: sqlx::Error| {
         RPCErrors::ReasonError(format!(
             "failed to decode msg_records.{} (record {}): {}",
@@ -438,7 +436,9 @@ fn decode_record_row(row: &AnyRow, fallback_id: &str) -> std::result::Result<Msg
         ))
     };
     Ok(MsgRecordRow {
-        record_id: row.try_get("record_id").map_err(|e| decode("record_id", e))?,
+        record_id: row
+            .try_get("record_id")
+            .map_err(|e| decode("record_id", e))?,
         box_kind: row.try_get("box_kind").map_err(|e| decode("box_kind", e))?,
         msg_id: row.try_get("msg_id").map_err(|e| decode("msg_id", e))?,
         msg_kind: row.try_get("msg_kind").map_err(|e| decode("msg_kind", e))?,
@@ -451,14 +451,22 @@ fn decode_record_row(row: &AnyRow, fallback_id: &str) -> std::result::Result<Msg
         updated_at_ms: row
             .try_get("updated_at_ms")
             .map_err(|e| decode("updated_at_ms", e))?,
-        thread_key: row.try_get("thread_key").map_err(|e| decode("thread_key", e))?,
-        session_id: row.try_get("session_id").map_err(|e| decode("session_id", e))?,
+        thread_key: row
+            .try_get("thread_key")
+            .map_err(|e| decode("thread_key", e))?,
+        session_id: row
+            .try_get("session_id")
+            .map_err(|e| decode("session_id", e))?,
         sort_key: row.try_get("sort_key").map_err(|e| decode("sort_key", e))?,
-        tags_json: row.try_get("tags_json").map_err(|e| decode("tags_json", e))?,
+        tags_json: row
+            .try_get("tags_json")
+            .map_err(|e| decode("tags_json", e))?,
         route_tunnel_did: row
             .try_get("route_tunnel_did")
             .map_err(|e| decode("route_tunnel_did", e))?,
-        route_json: row.try_get("route_json").map_err(|e| decode("route_json", e))?,
+        route_json: row
+            .try_get("route_json")
+            .map_err(|e| decode("route_json", e))?,
         delivery_json: row
             .try_get("delivery_json")
             .map_err(|e| decode("delivery_json", e))?,
@@ -806,12 +814,14 @@ mod tests {
     }
 
     fn sample_record(owner: &DID, box_kind: BoxKind, suffix: &str) -> MsgRecord {
-        let record_id = format!("{}|{}|{}", owner.to_string(), box_kind_name(&box_kind), suffix);
-        let msg_id: ObjId = serde_json::from_value(Value::String(format!(
-            "mobjchat:{}",
-            "a".repeat(40)
-        )))
-        .unwrap();
+        let record_id = format!(
+            "{}|{}|{}",
+            owner.to_string(),
+            box_kind_name(&box_kind),
+            suffix
+        );
+        let msg_id: ObjId =
+            serde_json::from_value(Value::String(format!("mobjchat:{}", "a".repeat(40)))).unwrap();
         MsgRecord {
             record_id,
             box_kind,
@@ -872,8 +882,7 @@ mod tests {
         let (mgr, _tmp) = setup_test_mgr().await;
         let owner = sample_owner();
         let msg_id: ObjId =
-            serde_json::from_value(Value::String(format!("mobjchat:{}", "b".repeat(40))))
-                .unwrap();
+            serde_json::from_value(Value::String(format!("mobjchat:{}", "b".repeat(40)))).unwrap();
         assert!(!mgr.has_message(&owner, &msg_id).await.unwrap());
         mgr.touch_message(&owner, &msg_id, 1_700_000_000_000)
             .await

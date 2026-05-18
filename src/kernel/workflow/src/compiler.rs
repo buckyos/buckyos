@@ -1,7 +1,7 @@
 use crate::analysis::{analyze_workflow, AnalysisIssue};
 use crate::dsl::*;
 use crate::error::{WorkflowError, WorkflowResult};
-use crate::types::{AwaitKind, Expr, ExecutorRef, JoinStrategy, ValueTemplate};
+use crate::types::{AwaitKind, ExecutorRef, Expr, JoinStrategy, ValueTemplate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

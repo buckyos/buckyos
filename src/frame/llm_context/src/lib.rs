@@ -65,7 +65,7 @@ pub use snapshot_overrides::{
 };
 pub use state::{LLMContextSnapshot, LLMContextState};
 pub use step_record::XmlStepRenderer;
-pub use xml_behavior::XmlBehaviorParser;
+pub use xml_behavior::{XmlBehaviorParser, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT};
 
 #[cfg(test)]
 mod tests;

@@ -29,9 +29,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use buckyos_api::{
-    match_event_patterns, EventReader, KEventClient, KEventError,
-};
+use buckyos_api::{match_event_patterns, EventReader, KEventClient, KEventError};
 use log::{debug, info, warn};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::sleep;

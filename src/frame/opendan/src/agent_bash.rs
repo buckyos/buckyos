@@ -338,8 +338,8 @@ pub fn build_default_tool_manager(
 ) -> Arc<AgentToolManager> {
     let manager = AgentToolManager::new();
 
-    let bash_cfg = LlmBashConfig::local_workspace(&fs_roots.workspace_root)
-        .with_overlay(layout.to_overlay());
+    let bash_cfg =
+        LlmBashConfig::local_workspace(&fs_roots.workspace_root).with_overlay(layout.to_overlay());
     let mut runner = TmuxBashRunner::new(bash_runtime_dir);
     if let Some(renderer) = bin_renderer {
         runner = runner.with_bin_renderer(renderer);
@@ -365,8 +365,7 @@ pub fn build_default_tool_manager(
 /// bootstrap. The tmux scratch dir lives under the session dir so it gets
 /// reaped with it.
 pub fn build_session_tools(build: SessionToolsBuild) -> std::io::Result<Arc<AgentToolManager>> {
-    let layout =
-        SessionBinLayout::compute(&build.agent_id, &build.session_id, &build.agent_root);
+    let layout = SessionBinLayout::compute(&build.agent_id, &build.session_id, &build.agent_root);
     layout.ensure_dirs()?;
     let bash_runtime_dir = build.session_dir.join(".runtime").join("exec_bash");
     std::fs::create_dir_all(&bash_runtime_dir)?;
@@ -627,15 +626,12 @@ async fn read_exit_code_file(path: &Path) -> Result<Option<i32>, AgentToolError>
     if trimmed.is_empty() {
         return Ok(None);
     }
-    trimmed
-        .parse::<i32>()
-        .map(Some)
-        .map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "invalid exit code file `{}` content `{trimmed}`: {err}",
-                path.display()
-            ))
-        })
+    trimmed.parse::<i32>().map(Some).map_err(|err| {
+        AgentToolError::ExecFailed(format!(
+            "invalid exit code file `{}` content `{trimmed}`: {err}",
+            path.display()
+        ))
+    })
 }
 
 fn parse_exit_code_from_pane(pane: &str, marker: &str) -> Result<Option<i32>, AgentToolError> {
@@ -838,8 +834,7 @@ mod tests {
     fn session_bin_layout_overlay_has_four_layers() {
         let dir = tempdir().unwrap();
         let _bg = ScopedBuckyosRoot::set(dir.path());
-        let layout =
-            SessionBinLayout::compute("agent-1", "ses-1", &dir.path().join("agent_root"));
+        let layout = SessionBinLayout::compute("agent-1", "ses-1", &dir.path().join("agent_root"));
         layout.ensure_dirs().unwrap();
         assert!(layout.runtime_bin.exists());
         assert!(layout.agent_bin.exists());
@@ -883,8 +878,7 @@ mod tests {
         let name = build_tmux_session_name(raw);
         assert!(name.starts_with(TMUX_SESSION_PREFIX));
         assert!(
-            name.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
             "name `{name}` must be shell-safe"
         );
     }
@@ -952,9 +946,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(code2, 7);
-        assert!(parse_exit_code_from_pane("no marker here", "__OD_EXIT__rid:")
-            .unwrap()
-            .is_none());
+        assert!(
+            parse_exit_code_from_pane("no marker here", "__OD_EXIT__rid:")
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// End-to-end: requires `tmux` on PATH. Verifies that `exec_bash` runs

@@ -27,8 +27,7 @@ use std::sync::Arc;
 use llm_context::{
     behavior_loop::{LLMResultParser, StepRenderer},
     request::{
-        BudgetSpec, ErrorPolicy, HumanPolicy, ModelPolicy, OutputSpec,
-        ToolMode, ToolPolicy,
+        BudgetSpec, ErrorPolicy, HumanPolicy, ModelPolicy, OutputSpec, ToolMode, ToolPolicy,
     },
     step_record::XmlStepRenderer,
     xml_behavior::XmlBehaviorParser,
@@ -103,7 +102,7 @@ impl BehaviorOutput {
 ///     `{{ session.id }}`, `{{ session.title }}`, `{{ behavior.name }}`,
 ///     `{{ behavior.objective }}`, `{{ workspace.id }}`,
 ///     `{{ paths.agent_root }}`, `{{ paths.session_root }}`,
-///     `{{ runtime.clock_unix_ms }}`, … See `doc/opendan/Agent Enviroment.md`
+///     `{{ runtime.clock_unix_ms }}`, `{{ result_protocol }}`, … See `doc/opendan/Agent Enviroment.md`
 ///     §15.1 for the complete set. Render-time extras: `{{ role_md }}`,
 ///     `{{ self_md }}` (pre-read from `agent_root/role.md` and
 ///     `agent_root/self.md`).

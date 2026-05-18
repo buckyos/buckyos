@@ -192,24 +192,30 @@ impl LocalWorkspaceManager {
     pub async fn save_record(&self, record: &WorkspaceRecord) -> Result<(), WorkspaceError> {
         validate_workspace_id(&record.workspace_id)?;
         let dir = self.workspace_dir(&record.workspace_id);
-        fs::create_dir_all(&dir).await.map_err(|err| WorkspaceError::Io {
-            path: dir.display().to_string(),
-            err,
-        })?;
+        fs::create_dir_all(&dir)
+            .await
+            .map_err(|err| WorkspaceError::Io {
+                path: dir.display().to_string(),
+                err,
+            })?;
         let mut to_save = record.clone();
         to_save.updated_at_ms = now_ms();
         let bytes =
             serde_json::to_vec_pretty(&to_save).map_err(|err| WorkspaceError::Encode { err })?;
         let path = self.record_path(&record.workspace_id);
         let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, &bytes).await.map_err(|err| WorkspaceError::Io {
-            path: tmp.display().to_string(),
-            err,
-        })?;
-        fs::rename(&tmp, &path).await.map_err(|err| WorkspaceError::Io {
-            path: path.display().to_string(),
-            err,
-        })?;
+        fs::write(&tmp, &bytes)
+            .await
+            .map_err(|err| WorkspaceError::Io {
+                path: tmp.display().to_string(),
+                err,
+            })?;
+        fs::rename(&tmp, &path)
+            .await
+            .map_err(|err| WorkspaceError::Io {
+                path: path.display().to_string(),
+                err,
+            })?;
         Ok(())
     }
 
@@ -318,10 +324,7 @@ mod tests {
     async fn create_or_open_is_idempotent() {
         let tmp = tempdir().unwrap();
         let mgr = LocalWorkspaceManager::new(tmp.path().to_path_buf());
-        let a = mgr
-            .create_or_open("ws-2", "x", Some("ui-1"))
-            .await
-            .unwrap();
+        let a = mgr.create_or_open("ws-2", "x", Some("ui-1")).await.unwrap();
         let b = mgr
             .create_or_open("ws-2", "different name", Some("other"))
             .await

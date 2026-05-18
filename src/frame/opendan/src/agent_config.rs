@@ -596,9 +596,7 @@ mod tests {
         let cfg = AgentConfig::open(demo_root.clone()).expect("open demo agent root");
         assert_eq!(cfg.toml.identity.display_name, "echo-bot");
         assert_eq!(cfg.toml.dispatch.default_class, "ui");
-        let ui = cfg
-            .session_class("ui")
-            .expect("demo defines [session.ui]");
+        let ui = cfg.session_class("ui").expect("demo defines [session.ui]");
         assert_eq!(ui.default_behavior, "ui_default");
         assert!(ui.keep_alive);
 

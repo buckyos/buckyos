@@ -2074,7 +2074,9 @@ impl MsgCenterClient {
     ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_group_create(req, RPCContext::default()).await
+                handler
+                    .handle_group_create(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let req_json = serialize_to_json(&req, "GroupCreateReq")?;
@@ -2767,7 +2769,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _req: crate::group_mgr::GroupCreateSubgroupReq,
         _ctx: RPCContext,
     ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
-        Err(RPCErrors::UnknownMethod("group.create_subgroup".to_string()))
+        Err(RPCErrors::UnknownMethod(
+            "group.create_subgroup".to_string(),
+        ))
     }
 
     async fn handle_group_update_subgroup(
@@ -2775,7 +2779,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _req: crate::group_mgr::GroupUpdateSubgroupReq,
         _ctx: RPCContext,
     ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
-        Err(RPCErrors::UnknownMethod("group.update_subgroup".to_string()))
+        Err(RPCErrors::UnknownMethod(
+            "group.update_subgroup".to_string(),
+        ))
     }
 
     async fn handle_group_list_subgroups(
@@ -3180,10 +3186,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
             }
             METHOD_GROUP_SUBMIT_MEMBER_PROOF => {
                 let parsed: crate::group_mgr::GroupSubmitMemberProofReq =
-                    crate::group_mgr::parse_group_request(
-                        req.params,
-                        "GroupSubmitMemberProofReq",
-                    )?;
+                    crate::group_mgr::parse_group_request(req.params, "GroupSubmitMemberProofReq")?;
                 let result = self.0.handle_group_submit_member_proof(parsed, ctx).await?;
                 RPCResult::Success(json!(result))
             }
@@ -3213,10 +3216,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
             }
             METHOD_GROUP_UPDATE_MEMBER_ROLE => {
                 let parsed: crate::group_mgr::GroupUpdateMemberRoleReq =
-                    crate::group_mgr::parse_group_request(
-                        req.params,
-                        "GroupUpdateMemberRoleReq",
-                    )?;
+                    crate::group_mgr::parse_group_request(req.params, "GroupUpdateMemberRoleReq")?;
                 let result = self.0.handle_group_update_member_role(parsed, ctx).await?;
                 RPCResult::Success(json!(result))
             }

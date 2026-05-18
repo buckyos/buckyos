@@ -1371,10 +1371,7 @@ mod tests {
         assert!(pattern_subsumes("/sys/*/online", "/sys/node/online"));
         assert!(pattern_subsumes("/sys/*/online", "/sys/*/online"));
         assert!(!pattern_subsumes("/sys/*/online", "/sys/*/offline"));
-        assert!(!pattern_subsumes(
-            "/sys/*/online",
-            "/sys/node/sub/online"
-        ));
+        assert!(!pattern_subsumes("/sys/*/online", "/sys/node/sub/online"));
         // ** absorbs star matches too
         assert!(pattern_subsumes("/**/online", "/sys/node/online"));
         assert!(pattern_subsumes("/**/online", "/sys/*/online"));
@@ -1383,18 +1380,15 @@ mod tests {
     #[test]
     fn test_normalize_patterns() {
         // broad pattern swallows a later finer one
-        let normalized =
-            normalize_patterns(vec!["/sys/**".into(), "/sys/node/online".into()]);
+        let normalized = normalize_patterns(vec!["/sys/**".into(), "/sys/node/online".into()]);
         assert_eq!(normalized, vec!["/sys/**".to_string()]);
 
         // finer pattern arriving first is removed when a later broad pattern subsumes it
-        let normalized =
-            normalize_patterns(vec!["/sys/node/online".into(), "/sys/**".into()]);
+        let normalized = normalize_patterns(vec!["/sys/node/online".into(), "/sys/**".into()]);
         assert_eq!(normalized, vec!["/sys/**".to_string()]);
 
         // unrelated patterns coexist
-        let normalized =
-            normalize_patterns(vec!["/sys/**".into(), "/taskmgr/**".into()]);
+        let normalized = normalize_patterns(vec!["/sys/**".into(), "/taskmgr/**".into()]);
         assert_eq!(
             normalized,
             vec!["/sys/**".to_string(), "/taskmgr/**".to_string()]

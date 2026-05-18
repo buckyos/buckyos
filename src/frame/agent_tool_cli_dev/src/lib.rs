@@ -16,11 +16,8 @@ use tokio::fs;
 use tokio::io::{self, AsyncReadExt};
 use tokio::process::Command;
 
-use agent_tool::agent_memory::{
-    AgentMemory, AgentMemoryConfig, AgentMemoryError, LoadOptions,
-};
+use agent_tool::agent_memory::{AgentMemory, AgentMemoryConfig, AgentMemoryError, LoadOptions};
 use agent_tool::llm_tool_carft::{self, CommandNotFoundRequest};
-use agent_tool::{llm_explore, run_local_llm};
 use agent_tool::{
     cli_error_result, cli_exit_code_for_error, cli_result_from_tool_result, cli_success_result,
     normalize_abs_path, now_ms, render_cli_output, session_record_path, AgentToolError,
@@ -29,6 +26,7 @@ use agent_tool::{
     GrepTool, NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext, SessionViewBackend,
     WorkspaceToolBackend, WriteFileTool,
 };
+use agent_tool::{llm_explore, run_local_llm};
 
 const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
@@ -768,7 +766,10 @@ fn parse_agent_memory_load(rest: &[String]) -> Result<AgentMemoryVerb, AgentTool
                 max_records = Some(parse_load_count(value, "max-records")?);
             }
             v if v.starts_with("--max-records=") => {
-                max_records = Some(parse_load_count(&v["--max-records=".len()..], "max-records")?);
+                max_records = Some(parse_load_count(
+                    &v["--max-records=".len()..],
+                    "max-records",
+                )?);
             }
             "--max-bytes" => {
                 idx += 1;
@@ -924,20 +925,25 @@ async fn dispatch_agent_memory(
                 return CliRunOutput {
                     exit_code: 1,
                     stdout: String::new(),
-                    stderr: if quiet { String::new() } else { format!("{err}\n") },
+                    stderr: if quiet {
+                        String::new()
+                    } else {
+                        format!("{err}\n")
+                    },
                 }
             }
         },
         v => v,
     };
 
-    let result = tokio::task::spawn_blocking(move || run_agent_memory_blocking(&root, resolved_verb))
-        .await
-        .unwrap_or_else(|join| {
-            Err(AgentMemoryError::Invalid(format!(
-                "agent-memory worker panicked: {join}"
-            )))
-        });
+    let result =
+        tokio::task::spawn_blocking(move || run_agent_memory_blocking(&root, resolved_verb))
+            .await
+            .unwrap_or_else(|join| {
+                Err(AgentMemoryError::Invalid(format!(
+                    "agent-memory worker panicked: {join}"
+                )))
+            });
 
     match result {
         Ok(stdout) => CliRunOutput {
@@ -1045,7 +1051,10 @@ fn format_verify_report(report: &agent_tool::VerifyReport) -> String {
     for k in &report.missing_content {
         out.push_str(&format!("  missing {}\n", k));
     }
-    out.push_str(&format!("DIGEST_MISMATCH {}\n", report.digest_mismatch.len()));
+    out.push_str(&format!(
+        "DIGEST_MISMATCH {}\n",
+        report.digest_mismatch.len()
+    ));
     for k in &report.digest_mismatch {
         out.push_str(&format!("  mismatch {}\n", k));
     }
@@ -2486,11 +2495,7 @@ mod tests {
     fn agent_memory_root_override_resolves_relative_to_cwd() {
         let parsed = parse_agent_memory_cli_command(
             "agent-memory".into(),
-            &[
-                "--root".into(),
-                "/tmp/custom-root".into(),
-                "init".into(),
-            ],
+            &["--root".into(), "/tmp/custom-root".into(), "init".into()],
         )
         .expect("parse init with --root");
         match parsed {

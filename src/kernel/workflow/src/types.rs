@@ -48,10 +48,14 @@ mod tests {
 
     #[test]
     fn is_function_object_only_for_func_actual() {
-        assert!(ExecutorRef::parse("func::xyz").unwrap().is_function_object());
+        assert!(ExecutorRef::parse("func::xyz")
+            .unwrap()
+            .is_function_object());
         assert!(!ExecutorRef::parse("service::a.b")
             .unwrap()
             .is_function_object());
-        assert!(!ExecutorRef::parse("/skill/fs").unwrap().is_function_object());
+        assert!(!ExecutorRef::parse("/skill/fs")
+            .unwrap()
+            .is_function_object());
     }
 }

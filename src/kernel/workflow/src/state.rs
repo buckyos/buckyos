@@ -223,7 +223,10 @@ impl DefinitionStore {
             .values()
             .filter(|record| owner.map(|o| record.owner == *o).unwrap_or(true))
             .filter(|record| status.map(|s| record.status == s).unwrap_or(true))
-            .filter(|record| tag.map(|t| record.tags.iter().any(|x| x == t)).unwrap_or(true))
+            .filter(|record| {
+                tag.map(|t| record.tags.iter().any(|x| x == t))
+                    .unwrap_or(true)
+            })
             .cloned()
             .collect();
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -414,11 +417,7 @@ impl WorkflowTaskTracker for ServiceTracker {
         }
     }
 
-    async fn sync_step(
-        &self,
-        run: &WorkflowRun,
-        step: &crate::StepTaskView,
-    ) -> WorkflowResult<()> {
+    async fn sync_step(&self, run: &WorkflowRun, step: &crate::StepTaskView) -> WorkflowResult<()> {
         match &self.inner {
             TrackerKind::Noop(t) => t.sync_step(run, step).await,
             TrackerKind::TaskManager(t) => t.sync_step(run, step).await,

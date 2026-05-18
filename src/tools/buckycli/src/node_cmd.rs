@@ -74,11 +74,7 @@ pub fn build_node_command() -> Command {
                         .long("buckyos_root")
                         .help("override BUCKYOS_ROOT for this invocation"),
                 )
-                .arg(
-                    Arg::new("json")
-                        .long("json")
-                        .action(ArgAction::SetTrue),
-                ),
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue)),
         )
         .subcommand(
             Command::new("ensure-running")

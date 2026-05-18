@@ -224,15 +224,15 @@ impl PromptRenderEngine {
         resolved_vars: &'a mut HashMap<String, bool>,
         render_ctx: &'a mut Map<String, Json>,
         depth: u8,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<String, RenderError>> + Send + 'a>,
-    >
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, RenderError>> + Send + 'a>>
     where
         L: ValueLoader + ?Sized,
     {
         Box::pin(async move {
             if depth > self.config.max_recursion_depth {
-                return Err(RenderError::RecursionTooDeep(self.config.max_recursion_depth));
+                return Err(RenderError::RecursionTooDeep(
+                    self.config.max_recursion_depth,
+                ));
             }
 
             let mut preprocessed = input.to_string();
@@ -334,7 +334,15 @@ impl PromptRenderEngine {
                 }
                 "include" => {
                     match self
-                        .load_include(raw_arg, vars, loader, stats, resolved_vars, render_ctx, depth)
+                        .load_include(
+                            raw_arg,
+                            vars,
+                            loader,
+                            stats,
+                            resolved_vars,
+                            render_ctx,
+                            depth,
+                        )
                         .await
                     {
                         Ok(content) => {
@@ -380,8 +388,7 @@ impl PromptRenderEngine {
                     }
                     let expr = expr_raw.trim();
                     let value = resolve_env_or_dynamic(expr, vars, loader).await?;
-                    let resolved_entry =
-                        resolved_vars.entry(name.to_string()).or_insert(false);
+                    let resolved_entry = resolved_vars.entry(name.to_string()).or_insert(false);
                     if let Some(v) = value {
                         render_ctx.insert(name.to_string(), v);
                         stats.var_registered = stats.var_registered.saturating_add(1);
@@ -438,7 +445,10 @@ impl PromptRenderEngine {
         let expanded = expand_path_env_vars(raw_path.as_str());
         let path = PathBuf::from(expanded.trim());
         if !path.is_absolute() {
-            return Err(format!("path must be absolute after expansion: `{}`", expanded.trim()));
+            return Err(format!(
+                "path must be absolute after expansion: `{}`",
+                expanded.trim()
+            ));
         }
         if !path_within_any_root(&path, &self.config.include_roots) {
             return Err(format!(
@@ -515,11 +525,18 @@ impl PromptRenderEngine {
             return Err(format!(
                 "exit_code={} stderr={}",
                 exit_code,
-                if stderr.is_empty() { "<empty>" } else { stderr.as_str() }
+                if stderr.is_empty() {
+                    "<empty>"
+                } else {
+                    stderr.as_str()
+                }
             ));
         }
         let stdout = String::from_utf8_lossy(&result.stdout);
-        Ok(truncate_utf8(stdout.as_ref(), self.config.max_include_bytes))
+        Ok(truncate_utf8(
+            stdout.as_ref(),
+            self.config.max_include_bytes,
+        ))
     }
 }
 
@@ -536,7 +553,11 @@ fn contains_unhandled_directive(text: &str) -> bool {
 
 fn failed_marker(directive: &str, reason: &str) -> String {
     let reason = truncate_chars(reason, 160);
-    format!("<!-- __{}__ failed: {} -->", directive.to_uppercase(), reason)
+    format!(
+        "<!-- __{}__ failed: {} -->",
+        directive.to_uppercase(),
+        reason
+    )
 }
 
 async fn resolve_env_or_dynamic<L>(
@@ -706,10 +727,7 @@ where
 fn path_within_any_root(path: &Path, roots: &[PathBuf]) -> bool {
     // Reject `..` components defensively; canonicalisation may be unavailable
     // when the file does not yet exist.
-    if path
-        .components()
-        .any(|c| matches!(c, Component::ParentDir))
-    {
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return false;
     }
     roots.iter().any(|root| path.starts_with(root))
@@ -846,10 +864,7 @@ fn collect_declared_prompt_vars(template: &str) -> HashSet<String> {
     const VAR_TOKEN_OPEN: &str = "__VAR(";
     let mut declared: HashSet<String> = HashSet::new();
     let mut cursor = 0usize;
-    while let Some(start) = template[cursor..]
-        .find(VAR_TOKEN_OPEN)
-        .map(|i| cursor + i)
-    {
+    while let Some(start) = template[cursor..].find(VAR_TOKEN_OPEN).map(|i| cursor + i) {
         let arg_start = start + VAR_TOKEN_OPEN.len();
         let Some(arg_end) = template[arg_start..].find(')').map(|i| arg_start + i) else {
             break;
@@ -978,7 +993,11 @@ mod tests {
     async fn escapes_literal_braces() {
         let engine = PromptRenderEngine::with_defaults();
         let result = engine
-            .render(r"keep \{{ raw \}} pass", &RenderVars::new(), &NullValueLoader)
+            .render(
+                r"keep \{{ raw \}} pass",
+                &RenderVars::new(),
+                &NullValueLoader,
+            )
             .await
             .unwrap();
         assert_eq!(result.rendered, "keep {{ raw }} pass");
@@ -1103,7 +1122,10 @@ mod tests {
         vars.vars
             .insert("name".to_string(), Json::String("x".to_string()));
         let template = format!("[__INCLUDE({})__]", path.display());
-        let result = engine.render(&template, &vars, &NullValueLoader).await.unwrap();
+        let result = engine
+            .render(&template, &vars, &NullValueLoader)
+            .await
+            .unwrap();
         assert_eq!(result.rendered, "[INNER x]");
         assert_eq!(result.stats.content_loaded, 1);
     }
@@ -1189,7 +1211,11 @@ mod tests {
         };
         let engine = PromptRenderEngine::new(cfg);
         let result = engine
-            .render("v=__EXEC(printf hi)__!", &RenderVars::new(), &NullValueLoader)
+            .render(
+                "v=__EXEC(printf hi)__!",
+                &RenderVars::new(),
+                &NullValueLoader,
+            )
             .await
             .unwrap();
         assert_eq!(result.rendered, "v=hi!");
@@ -1205,11 +1231,7 @@ mod tests {
         };
         let engine = PromptRenderEngine::new(cfg);
         let result = engine
-            .render(
-                "v=__EXEC(sleep 1)__",
-                &RenderVars::new(),
-                &NullValueLoader,
-            )
+            .render("v=__EXEC(sleep 1)__", &RenderVars::new(), &NullValueLoader)
             .await
             .unwrap();
         assert_eq!(result.stats.exec_failed, 1);
@@ -1229,7 +1251,10 @@ mod tests {
         let mut vars = RenderVars::new();
         vars.env.insert("name".into(), Json::String("ada".into()));
         let template = format!("[__INCLUDE({})__]", path.display());
-        let result = engine.render(&template, &vars, &NullValueLoader).await.unwrap();
+        let result = engine
+            .render(&template, &vars, &NullValueLoader)
+            .await
+            .unwrap();
         assert_eq!(result.rendered, "[name=ada]");
     }
 

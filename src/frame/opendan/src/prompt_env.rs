@@ -3,7 +3,7 @@
 //! contract.
 //!
 //! Surfaces the minimal Phase-1 variable set (session / behavior / workspace
-//! / paths / input / runtime) as both static `RenderVars.vars` (for upon
+//! / paths / input / runtime / result_protocol) as both static `RenderVars.vars` (for upon
 //! `{{ session.id }}` placeholders) and a `ValueLoader` (for explicit
 //! `__VAR(name, $session)__` / `__ENV($session.id)__` lookups). Aggregate
 //! objects carry sibling `has_*` booleans so templates can branch on
@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use llm_context::{
     EngineConfig, PromptRenderEngine, RenderError, RenderVars, ValueLoader,
+    XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT,
 };
 use serde_json::{json, Value as Json};
 
@@ -100,6 +101,14 @@ pub fn build_render_vars(env: &AgentSessionEnv) -> RenderVars {
         .with_var("paths", paths_object(env))
         .with_var("input", input_object(env))
         .with_var("runtime", runtime_object(env))
+        .with_var(
+            "result_protocol",
+            Json::String(XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT.to_string()),
+        )
+        .with_var(
+            "xml_behavior_result_protocol",
+            Json::String(XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT.to_string()),
+        )
 }
 
 /// `EngineConfig` for Phase 1.
@@ -119,7 +128,7 @@ pub fn build_engine_config(env: &AgentSessionEnv) -> EngineConfig {
 }
 
 /// Loader that resolves Phase-1 `$session.*` / `$behavior.*` / `$workspace.*`
-/// / `$paths.*` / `$input.*` / `$runtime.*` expressions. Aggregate names
+/// / `$paths.*` / `$input.*` / `$runtime.*` / `$result_protocol` expressions. Aggregate names
 /// without a trailing path return the matching JSON object so
 /// `__VAR(session, $session)__` works.
 pub struct AgentSessionValueLoader {
@@ -156,9 +165,7 @@ fn resolve_phase1(env: &AgentSessionEnv, expr: &str) -> Option<Json> {
         "behavior.mode" => Some(Json::String(env.behavior_mode.to_string())),
 
         "workspace" => Some(workspace_object(env)),
-        "workspace.id" => Some(Json::String(
-            env.workspace_id.clone().unwrap_or_default(),
-        )),
+        "workspace.id" => Some(Json::String(env.workspace_id.clone().unwrap_or_default())),
         "workspace.root" => Some(Json::String(env.workspace_root_display())),
         "workspace.has_id" => Some(Json::Bool(env.has_workspace_id())),
 
@@ -176,6 +183,10 @@ fn resolve_phase1(env: &AgentSessionEnv, expr: &str) -> Option<Json> {
         "runtime.clock_unix_ms" => Some(Json::from(env.clock_unix_ms)),
         "runtime.recent_activity" => Some(Json::String(env.recent_activity.clone())),
         "runtime.has_activity" => Some(Json::Bool(env.has_recent_activity())),
+
+        "result_protocol" | "xml_behavior_result_protocol" => Some(Json::String(
+            XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT.to_string(),
+        )),
 
         _ => None,
     }
@@ -342,6 +353,12 @@ mod tests {
             loader.load("$workspace.has_id").await.unwrap(),
             Some(Json::Bool(true))
         );
+        assert_eq!(
+            loader.load("$result_protocol").await.unwrap(),
+            Some(Json::String(
+                XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT.to_string()
+            ))
+        );
         assert_eq!(loader.load("$unknown.path").await.unwrap(), None);
     }
 
@@ -362,6 +379,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, "id=s-1");
+    }
+
+    #[tokio::test]
+    async fn engine_substitutes_xml_behavior_result_protocol() {
+        let env = sample_env();
+        let out = render_template("{{ result_protocol }}", &env, &[])
+            .await
+            .unwrap();
+        assert_eq!(out, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT);
+
+        let alias = render_template("{{ xml_behavior_result_protocol }}", &env, &[])
+            .await
+            .unwrap();
+        assert_eq!(alias, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT);
     }
 
     #[tokio::test]
@@ -424,8 +455,7 @@ clock: unix_ms=123";
     async fn extras_and_phase1_vars_compose() {
         let env = sample_env();
         let extras = vec![("role_md", Json::String("ROLE".into()))];
-        let template =
-            "agent={{ behavior.name }}\nsession={{ session.id }}\n---\n{{ role_md }}";
+        let template = "agent={{ behavior.name }}\nsession={{ session.id }}\n---\n{{ role_md }}";
         let out = render_template(template, &env, &extras).await.unwrap();
         assert_eq!(out, "agent=chat_route\nsession=s-1\n---\nROLE");
     }

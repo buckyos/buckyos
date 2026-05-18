@@ -11,9 +11,7 @@ use buckyos_api::{AiMessage, AiRole};
 
 use crate::deps::Tokenizer;
 use crate::prompt_budget::{BudgetedSection, PromptBudgeter, TruncFrom};
-use crate::prompt_engine::{
-    PromptRenderEngine, RenderError, RenderStats, RenderVars, ValueLoader,
-};
+use crate::prompt_engine::{PromptRenderEngine, RenderError, RenderStats, RenderVars, ValueLoader};
 
 #[derive(Debug, Clone)]
 pub struct SectionSpec {
@@ -109,7 +107,10 @@ where
         if fitted.content.is_empty() {
             continue;
         }
-        let role = role_by_key.get(&fitted.key).copied().unwrap_or(AiRole::User);
+        let role = role_by_key
+            .get(&fitted.key)
+            .copied()
+            .unwrap_or(AiRole::User);
         messages.push(AiMessage::text(role, fitted.content.clone()));
     }
 
@@ -157,13 +158,7 @@ mod tests {
         }
     }
 
-    fn spec(
-        key: &str,
-        role: AiRole,
-        template: &str,
-        priority: u8,
-        min_tokens: u32,
-    ) -> SectionSpec {
+    fn spec(key: &str, role: AiRole, template: &str, priority: u8, min_tokens: u32) -> SectionSpec {
         SectionSpec {
             key: key.into(),
             role,
@@ -346,10 +341,7 @@ mod tests {
         let tok = CharTok;
         let vars = RenderVars::new();
         let loader = MapLoader {
-            values: HashMap::from([(
-                "user".to_string(),
-                Json::String("alice".to_string()),
-            )]),
+            values: HashMap::from([("user".to_string(), Json::String("alice".to_string()))]),
         };
         let req = CompositionRequest {
             sections: vec![spec("s", AiRole::User, "hi {{ user }}", 1, 0)],

@@ -139,9 +139,9 @@ impl NetworkObserver {
     ) -> NetworkObservation {
         let observed_at = buckyos_get_unix_timestamp();
         let endpoints = collect_endpoints(all_ip, &device_doc.ips, observed_at);
-        let has_global_v6 = endpoints
-            .iter()
-            .any(|ep| ep.family.as_deref() == Some("ipv6") && ep.scope.as_deref() == Some("global"));
+        let has_global_v6 = endpoints.iter().any(|ep| {
+            ep.family.as_deref() == Some("ipv6") && ep.scope.as_deref() == Some("global")
+        });
         let ipv6 = self.probe_ipv6_state(has_global_v6, observed_at).await;
         let direct_probe = self
             .probe_peers(device_doc.name.as_str(), peers, observed_at)
@@ -224,10 +224,7 @@ impl NetworkObserver {
             if candidates.is_empty() {
                 continue;
             }
-            let port = peer_info
-                .device_doc
-                .rtcp_port
-                .unwrap_or(DEFAULT_RTCP_PORT);
+            let port = peer_info.device_doc.rtcp_port.unwrap_or(DEFAULT_RTCP_PORT);
             let timeout = self.config.direct_probe_timeout;
             let source = self.config.probe_source.clone();
             let ttl = self.config.direct_probe_freshness_ttl_secs;
@@ -487,10 +484,8 @@ mod tests {
 
     #[test]
     fn classify_global_ipv6() {
-        let (family, scope) = classify_ip(&IpAddr::V6(
-            "2001:db9::1".parse::<Ipv6Addr>().unwrap(),
-        ))
-        .unwrap();
+        let (family, scope) =
+            classify_ip(&IpAddr::V6("2001:db9::1".parse::<Ipv6Addr>().unwrap())).unwrap();
         assert_eq!(family, "ipv6");
         assert_eq!(scope, "global");
     }

@@ -435,7 +435,10 @@ mod tests {
 
     #[test]
     fn file_uri_path_parser_accepts_canonical_forms() {
-        assert_eq!(parse_file_uri_path("file:///abs/path").unwrap(), "/abs/path");
+        assert_eq!(
+            parse_file_uri_path("file:///abs/path").unwrap(),
+            "/abs/path"
+        );
         assert_eq!(
             parse_file_uri_path("file://localhost/abs/path").unwrap(),
             "/abs/path"

@@ -504,9 +504,7 @@ impl WorklogListOptions {
                 .workspace_id
                 .and_then(|v| optional_non_empty(v.as_str())),
             step_id: self.step_id.and_then(|v| optional_non_empty(v.as_str())),
-            event_type: self
-                .event_type
-                .and_then(|v| optional_non_empty(v.as_str())),
+            event_type: self.event_type.and_then(|v| optional_non_empty(v.as_str())),
             status: self
                 .status
                 .and_then(|v| optional_non_empty(v.as_str()))

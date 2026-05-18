@@ -880,7 +880,11 @@ fn lower_assistant_blocks(content: &[AiContent]) -> Result<Vec<Value>, ProviderE
                     blocks.push(text_content_block(text));
                 }
             }
-            AiContent::ToolUse { call_id, name, args } => {
+            AiContent::ToolUse {
+                call_id,
+                name,
+                args,
+            } => {
                 let input = serde_json::to_value(args).unwrap_or_else(|_| json!({}));
                 blocks.push(json!({
                     "type": "tool_use",
@@ -1436,12 +1440,9 @@ mod tests {
             ),
         ];
 
-        let (request, _) = convert_complete_request_with_dialect(
-            &req,
-            "MiniMax-M2.5",
-            ProtocolDialect::MiniMax,
-        )
-        .expect("convert should work");
+        let (request, _) =
+            convert_complete_request_with_dialect(&req, "MiniMax-M2.5", ProtocolDialect::MiniMax)
+                .expect("convert should work");
         let value = Value::Object(request);
 
         // The tool result must NOT carry a Claude-shaped tool_result block;

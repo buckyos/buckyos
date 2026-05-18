@@ -197,10 +197,9 @@ impl WorkflowTaskTracker for RecordingTaskTracker {
 
     async fn sync_step(&self, run: &WorkflowRun, step: &StepTaskView) -> WorkflowResult<()> {
         let mut guard = self.inner.lock().await;
-        guard.steps.insert(
-            (run.run_id.clone(), step.node_id.clone()),
-            step.clone(),
-        );
+        guard
+            .steps
+            .insert((run.run_id.clone(), step.node_id.clone()), step.clone());
         guard
             .step_history
             .push((step.node_id.clone(), step.clone()));
@@ -346,11 +345,7 @@ impl TaskManagerTaskTracker {
             )
             .await
             .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
-        self.state
-            .lock()
-            .await
-            .step_tasks
-            .insert(key, task.id);
+        self.state.lock().await.step_tasks.insert(key, task.id);
         Ok(task.id)
     }
 
@@ -382,7 +377,10 @@ impl TaskManagerTaskTracker {
         let task = self
             .client
             .create_task(
-                &format!("{}[{}] [{}]", shard.for_each_id, shard.shard_index, run.run_id),
+                &format!(
+                    "{}[{}] [{}]",
+                    shard.for_each_id, shard.shard_index, run.run_id
+                ),
                 "workflow/map_shard",
                 Some(initial_map_shard_task_data(run, shard)),
                 self.user_id.as_str(),
@@ -395,11 +393,7 @@ impl TaskManagerTaskTracker {
             )
             .await
             .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
-        self.state
-            .lock()
-            .await
-            .map_shard_tasks
-            .insert(key, task.id);
+        self.state.lock().await.map_shard_tasks.insert(key, task.id);
         Ok(task.id)
     }
 
@@ -458,11 +452,7 @@ impl TaskManagerTaskTracker {
             )
             .await
             .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
-        self.state
-            .lock()
-            .await
-            .thunk_tasks
-            .insert(key, task.id);
+        self.state.lock().await.thunk_tasks.insert(key, task.id);
         Ok(task.id)
     }
 }
@@ -606,19 +596,10 @@ fn step_task_data(run: &WorkflowRun, step: &StepTaskView) -> Value {
 fn workflow_descriptor(run: &WorkflowRun, step: &StepTaskView) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("run_id".to_string(), Value::String(run.run_id.clone()));
-    obj.insert(
-        "node_id".to_string(),
-        Value::String(step.node_id.clone()),
-    );
-    obj.insert(
-        "attempt".to_string(),
-        Value::Number(step.attempt.into()),
-    );
+    obj.insert("node_id".to_string(), Value::String(step.node_id.clone()));
+    obj.insert("attempt".to_string(), Value::Number(step.attempt.into()));
     if let Some(executor) = step.executor.as_ref() {
-        obj.insert(
-            "executor".to_string(),
-            Value::String(executor.clone()),
-        );
+        obj.insert("executor".to_string(), Value::String(executor.clone()));
     }
     if let Some(prompt) = step.prompt.as_ref() {
         obj.insert("prompt".to_string(), Value::String(prompt.clone()));
@@ -648,10 +629,7 @@ fn workflow_descriptor(run: &WorkflowRun, step: &StepTaskView) -> Value {
         );
     }
     if let Some(ts) = step.waiting_human_since {
-        obj.insert(
-            "waiting_human_since".to_string(),
-            Value::Number(ts.into()),
-        );
+        obj.insert("waiting_human_since".to_string(), Value::Number(ts.into()));
     }
     Value::Object(obj)
 }

@@ -25,9 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::tool::CallingConventions;
-use crate::{
-    AgentToolError, CliInvocation, ToolCtx, TypedTool,
-};
+use crate::{AgentToolError, CliInvocation, ToolCtx, TypedTool};
 
 pub const TOOL_TODO: &str = "todo";
 pub const TOOL_DELEGATE_TASK: &str = "delegateTask";
@@ -203,10 +201,7 @@ where
 {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "create dir {} failed: {err}",
-                parent.display()
-            ))
+            AgentToolError::ExecFailed(format!("create dir {} failed: {err}", parent.display()))
         })?;
     }
     let mut file = OpenOptions::new()
@@ -229,10 +224,7 @@ where
         T::default()
     } else {
         serde_json::from_str(&buf).map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "parse {} failed: {err}",
-                path.display()
-            ))
+            AgentToolError::ExecFailed(format!("parse {} failed: {err}", path.display()))
         })?
     };
 
@@ -520,19 +512,21 @@ impl TypedTool for TodoTool {
                 "added {todo_id}{}",
                 if *is_current { " (current)" } else { "" }
             ),
-            TodoOutput::Current { todo: Some(t) } => format!("current {} {:?}", t.todo_id, t.status),
+            TodoOutput::Current { todo: Some(t) } => {
+                format!("current {} {:?}", t.todo_id, t.status)
+            }
             TodoOutput::Current { todo: None } => "no current todo".to_string(),
             TodoOutput::List { todos, tasks } => {
                 format!("{} todos / {} delegated tasks", todos.len(), tasks.len())
             }
-            TodoOutput::Done { todo_id, status }
-            | TodoOutput::Finish { todo_id, status } => format!("{todo_id} -> {:?}", status),
+            TodoOutput::Done { todo_id, status } | TodoOutput::Finish { todo_id, status } => {
+                format!("{todo_id} -> {:?}", status)
+            }
             TodoOutput::Show { todo: Some(t) } => format!("show {} {:?}", t.todo_id, t.status),
             TodoOutput::Show { todo: None } => "no such todo".to_string(),
-            TodoOutput::Clean { removed, kept } => format!(
-                "cleaned {} pending, kept {kept}",
-                removed.len()
-            ),
+            TodoOutput::Clean { removed, kept } => {
+                format!("cleaned {} pending, kept {kept}", removed.len())
+            }
         }
     }
 
@@ -697,10 +691,7 @@ fn execute_list(ctx: &ToolCtx<'_>, todos_path: &Path) -> Result<TodoOutput, Agen
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string()),
             purpose: t.purpose.clone(),
-            updated_at: t
-                .cached_at
-                .clone()
-                .unwrap_or_else(|| t.added_at.clone()),
+            updated_at: t.cached_at.clone().unwrap_or_else(|| t.added_at.clone()),
         })
         .collect();
 
@@ -761,10 +752,7 @@ async fn execute_finish(
     }
 }
 
-fn execute_show(
-    todos_path: &Path,
-    todo_id: Option<&str>,
-) -> Result<TodoOutput, AgentToolError> {
+fn execute_show(todos_path: &Path, todo_id: Option<&str>) -> Result<TodoOutput, AgentToolError> {
     let todos = read_todos(todos_path)?;
     let view = match todo_id {
         Some(id) => todos.iter().find(|r| r.todo_id == id).map(TodoView::from),
@@ -851,12 +839,11 @@ fn first_line(s: &str, max_chars: usize) -> String {
 
 fn parse_todo_cli_tokens(tokens: &[String]) -> Result<Json, AgentToolError> {
     let mut iter = tokens.iter();
-    let sub = iter
-        .next()
-        .map(String::as_str)
-        .ok_or_else(|| {
-            AgentToolError::InvalidArgs("todo requires a subcommand (add|current|list|done|finish|show)".to_string())
-        })?;
+    let sub = iter.next().map(String::as_str).ok_or_else(|| {
+        AgentToolError::InvalidArgs(
+            "todo requires a subcommand (add|current|list|done|finish|show)".to_string(),
+        )
+    })?;
     let rest: Vec<String> = iter.cloned().collect();
 
     match sub {
@@ -899,10 +886,7 @@ struct ParsedFlags {
     repeated: std::collections::HashMap<String, Vec<String>>,
 }
 
-fn parse_flags(
-    tokens: &[String],
-    repeated_flags: &[&str],
-) -> Result<ParsedFlags, AgentToolError> {
+fn parse_flags(tokens: &[String], repeated_flags: &[&str]) -> Result<ParsedFlags, AgentToolError> {
     let mut out = ParsedFlags::default();
     let mut i = 0;
     while i < tokens.len() {
@@ -918,12 +902,9 @@ fn parse_flags(
                 Some(v) => v,
                 None => {
                     i += 1;
-                    tokens
-                        .get(i)
-                        .cloned()
-                        .ok_or_else(|| {
-                            AgentToolError::InvalidArgs(format!("--{name} requires a value"))
-                        })?
+                    tokens.get(i).cloned().ok_or_else(|| {
+                        AgentToolError::InvalidArgs(format!("--{name} requires a value"))
+                    })?
                 }
             };
             if repeated_flags.contains(&name.as_str()) {
@@ -949,11 +930,7 @@ fn parse_add(tokens: &[String]) -> Result<Json, AgentToolError> {
         ));
     }
     let task = flags.positionals.into_iter().next().unwrap();
-    let skills = flags
-        .repeated
-        .get("skill")
-        .cloned()
-        .unwrap_or_default();
+    let skills = flags.repeated.get("skill").cloned().unwrap_or_default();
     let context = flags.single.get("context").cloned();
     let unknown: Vec<&String> = flags
         .single
@@ -1113,10 +1090,7 @@ impl TypedTool for DelegateTaskTool {
     }
 
     fn usage(&self) -> Option<String> {
-        Some(
-            "delegateTask \"<task>\" [--to <target>] [--context <text>]"
-                .to_string(),
-        )
+        Some("delegateTask \"<task>\" [--to <target>] [--context <text>]".to_string())
     }
 
     fn parse_bash_args(
@@ -1427,16 +1401,9 @@ mod tests {
         // execute_finish 内部约束：done 别名只能 completed。
         let dir = tempdir().unwrap();
         let path = dir.path().join("todos.json");
-        let err = execute_finish(
-            &path,
-            None,
-            TodoStatus::Failed,
-            "x".into(),
-            None,
-            true,
-        )
-        .await
-        .expect_err("must reject");
+        let err = execute_finish(&path, None, TodoStatus::Failed, "x".into(), None, true)
+            .await
+            .expect_err("must reject");
         assert!(matches!(err, AgentToolError::InvalidArgs(_)));
     }
 
@@ -1471,8 +1438,7 @@ mod tests {
     fn parse_show_optional_id() {
         let json = parse_todo_cli_tokens(&["show".to_string()]).unwrap();
         assert!(json["todo_id"].is_null());
-        let json =
-            parse_todo_cli_tokens(&["show".to_string(), "T02".to_string()]).unwrap();
+        let json = parse_todo_cli_tokens(&["show".to_string(), "T02".to_string()]).unwrap();
         assert_eq!(json["todo_id"], "T02");
     }
 

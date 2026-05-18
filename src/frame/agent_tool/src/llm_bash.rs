@@ -491,12 +491,7 @@ impl ExecBashTool {
         Ok(out)
     }
 
-    fn build_details(
-        &self,
-        command: &str,
-        target: &BashTarget,
-        output: &BashRunOutput,
-    ) -> Json {
+    fn build_details(&self, command: &str, target: &BashTarget, output: &BashRunOutput) -> Json {
         json!({
             "command": command,
             "target": target.label(),
@@ -637,10 +632,7 @@ impl AgentTool for ExecBashTool {
         let summary = if output.exit_code == 0 {
             format!("exit=0 in {}ms", output.duration_ms)
         } else {
-            format!(
-                "exit={} in {}ms",
-                output.exit_code, output.duration_ms
-            )
+            format!("exit={} in {}ms", output.exit_code, output.duration_ms)
         };
 
         let details = self.build_details(&command, &target, &output);
@@ -660,9 +652,9 @@ mod tests {
     use super::*;
 
     use std::fs;
-    use std::path::Path;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     use tempfile::tempdir;
 
@@ -853,7 +845,11 @@ mod tests {
             .expect("call ok");
         assert_eq!(result.details["output_truncated"], true);
         let output = result.details["output"].as_str().unwrap();
-        assert!(output.len() <= 32, "output should be truncated, got {} bytes", output.len());
+        assert!(
+            output.len() <= 32,
+            "output should be truncated, got {} bytes",
+            output.len()
+        );
     }
 
     #[tokio::test]
@@ -893,10 +889,15 @@ mod tests {
             .find(|(k, _)| k == "PATH")
             .map(|(_, v)| v.as_str())
             .unwrap_or_default();
-        assert!(path.starts_with("/tmp/llm_bash_overlay:"), "got PATH={path}");
+        assert!(
+            path.starts_with("/tmp/llm_bash_overlay:"),
+            "got PATH={path}"
+        );
 
-        let env_disabled =
-            prepare_overlay_env(&BinOverlayConfig::disabled(), &[("PATH".into(), "/p".into())]);
+        let env_disabled = prepare_overlay_env(
+            &BinOverlayConfig::disabled(),
+            &[("PATH".into(), "/p".into())],
+        );
         let path2 = env_disabled
             .iter()
             .find(|(k, _)| k == "PATH")
@@ -907,7 +908,8 @@ mod tests {
 
     #[test]
     fn overlay_env_stacks_multiple_layers_in_priority_order() {
-        let overlay = BinOverlayConfig::layered(["/a/session", "/a/agent", "/a/runtime", "/a/system"]);
+        let overlay =
+            BinOverlayConfig::layered(["/a/session", "/a/agent", "/a/runtime", "/a/system"]);
         let env = prepare_overlay_env(
             &overlay,
             &[("PATH".to_string(), "/usr/bin:/bin".to_string())],
@@ -917,6 +919,9 @@ mod tests {
             .find(|(k, _)| k == "PATH")
             .map(|(_, v)| v.clone())
             .unwrap();
-        assert_eq!(path, "/a/session:/a/agent:/a/runtime:/a/system:/usr/bin:/bin");
+        assert_eq!(
+            path,
+            "/a/session:/a/agent:/a/runtime:/a/system:/usr/bin:/bin"
+        );
     }
 }

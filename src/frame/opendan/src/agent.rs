@@ -499,7 +499,8 @@ impl AIAgent {
     fn evaluate_session_id(&self, class: &str, inbound: &Inbound) -> Option<String> {
         let cfg = self.config.session_class(class)?;
         let input = SessionIdInput::from_inbound(class, inbound)?;
-        self.session_id_eval.compute(cfg.session_id_strategy, &input)
+        self.session_id_eval
+            .compute(cfg.session_id_strategy, &input)
     }
 
     async fn dispatch_inbound(self: Arc<Self>, item: Inbound) -> Result<()> {

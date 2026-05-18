@@ -163,7 +163,10 @@ mod tests {
         registry.register(Arc::new(make_adapter()));
         let exec = ExecutorRef::parse("service::aicc.complete").unwrap();
         let adapter = registry.find(&exec).expect("should find adapter");
-        let out = adapter.invoke(&exec, &serde_json::json!({"q": 1})).await.unwrap();
+        let out = adapter
+            .invoke(&exec, &serde_json::json!({"q": 1}))
+            .await
+            .unwrap();
         assert_eq!(out["executor"], "service::aicc.complete");
         assert_eq!(out["input"]["q"], 1);
     }

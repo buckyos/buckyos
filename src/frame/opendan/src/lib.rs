@@ -17,8 +17,8 @@ pub mod behavior_cfg;
 // `[on_xxx]` bypass switches, dispatcher rule strategies, and session-id
 // strategies. The seam future revisions plug a script engine into without
 // touching consumer call sites.
-pub mod hook_point;
 pub mod behavior_hooks;
+pub mod hook_point;
 // v0 dispatcher + session-id evaluators (FixedRulesDispatch /
 // EnumSessionIdStrategy). Consumed by `agent.rs::dispatch_inbound`.
 pub mod dispatch;

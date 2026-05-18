@@ -62,10 +62,7 @@ fn run_pattern(run_id: &str) -> String {
 fn is_terminal(status: RunStatus) -> bool {
     matches!(
         status,
-        RunStatus::Completed
-            | RunStatus::Failed
-            | RunStatus::Aborted
-            | RunStatus::BudgetExhausted
+        RunStatus::Completed | RunStatus::Failed | RunStatus::Aborted | RunStatus::BudgetExhausted
     )
 }
 
@@ -370,11 +367,7 @@ impl RunSubscriptionManager {
     /// 的节点对应的 task，把 task.data 喂回 apply_run_data。其他 task（已经
     /// 通过 event 路径处理过的、还没到 waiting_human 的、根本没人写过
     /// human_action 的）都跳过，避免每个周期重复回放产生噪声。
-    async fn sweep_run(
-        &self,
-        client: &TaskManagerClient,
-        run_id: &str,
-    ) -> Result<(), String> {
+    async fn sweep_run(&self, client: &TaskManagerClient, run_id: &str) -> Result<(), String> {
         let waiting_nodes: HashSet<String> = {
             let handle = match self.runs.get(run_id).await {
                 Some(h) => h,

@@ -107,7 +107,12 @@ impl ContactMgr {
             })?;
             let binding_key = Self::binding_key(&platform, &account_id);
             if let Some(existing_did) = store.binding_index.get(&binding_key) {
-                (Some(existing_did.clone()), false, platform.clone(), account_id.clone())
+                (
+                    Some(existing_did.clone()),
+                    false,
+                    platform.clone(),
+                    account_id.clone(),
+                )
             } else {
                 (None, true, platform.clone(), account_id.clone())
             }
@@ -607,10 +612,8 @@ impl ContactMgr {
                         let canonical = sorted[0].clone();
                         for source in sorted.into_iter().skip(1) {
                             if source != canonical {
-                                if Self::merge_contacts_in_store(
-                                    store, &canonical, &source, now_ms,
-                                )
-                                .is_ok()
+                                if Self::merge_contacts_in_store(store, &canonical, &source, now_ms)
+                                    .is_ok()
                                 {
                                     report.merged = report.merged.saturating_add(1);
                                 }
@@ -1095,8 +1098,8 @@ impl ContactMgr {
 
         let mut contacts: Vec<&Contact> = store.contacts.values().collect();
         contacts.sort_by(|left, right| left.did.to_string().cmp(&right.did.to_string()));
-        let insert_contact = self
-            .render_sql("INSERT INTO contacts (owner_key, did, payload) VALUES (?, ?, ?)");
+        let insert_contact =
+            self.render_sql("INSERT INTO contacts (owner_key, did, payload) VALUES (?, ?, ?)");
         for contact in contacts {
             let payload = serde_json::to_string(contact).map_err(|error| {
                 RPCErrors::ReasonError(format!(
@@ -1121,8 +1124,7 @@ impl ContactMgr {
                 })?;
         }
 
-        let delete_groups =
-            self.render_sql("DELETE FROM group_subscribers WHERE owner_key = ?");
+        let delete_groups = self.render_sql("DELETE FROM group_subscribers WHERE owner_key = ?");
         sqlx::query(&delete_groups)
             .bind(owner_key.to_string())
             .execute(&mut *tx)
@@ -1186,7 +1188,10 @@ impl ContactMgr {
         match row {
             Some(row) => {
                 let value: String = row.try_get("value").map_err(|error| {
-                    RPCErrors::ReasonError(format!("failed to decode did sequence value: {}", error))
+                    RPCErrors::ReasonError(format!(
+                        "failed to decode did sequence value: {}",
+                        error
+                    ))
                 })?;
                 value.parse::<u64>().map_err(|error| {
                     RPCErrors::ReasonError(format!(
@@ -1939,7 +1944,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(merged.did, target);
-        assert!(mgr.get_contact(source.clone(), None).await.unwrap().is_none());
+        assert!(mgr
+            .get_contact(source.clone(), None)
+            .await
+            .unwrap()
+            .is_none());
 
         let resolved = mgr
             .resolve_did(

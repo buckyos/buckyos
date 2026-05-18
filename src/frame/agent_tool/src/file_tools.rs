@@ -177,9 +177,7 @@ impl TypedTool for EditFileTool {
     type Output = EditFileOutput;
 
     fn name(&self) -> &str {
-
         TOOL_EDIT_FILE
-
     }
     fn description(&self) -> &str {
         "Edit file."
@@ -197,11 +195,7 @@ impl TypedTool for EditFileTool {
         tokens: &[String],
         shell_cwd: Option<&Path>,
     ) -> Result<CliInvocation, AgentToolError> {
-        parse_write_or_edit_cli(
-            tokens,
-            shell_cwd,
-            WriteOrEditCliSpec::EDIT_FILE,
-        )
+        parse_write_or_edit_cli(tokens, shell_cwd, WriteOrEditCliSpec::EDIT_FILE)
     }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
@@ -363,7 +357,11 @@ impl TypedTool for EditFileTool {
         }
 
         let line_no = original_content.find(&pos_chunk).map(|pos| {
-            original_content[..pos].bytes().filter(|b| *b == b'\n').count() + 1
+            original_content[..pos]
+                .bytes()
+                .filter(|b| *b == b'\n')
+                .count()
+                + 1
         });
         Ok(EditFileOutput {
             matched,
@@ -421,9 +419,7 @@ impl TypedTool for WriteFileTool {
     type Output = WriteFileOutput;
 
     fn name(&self) -> &str {
-
         TOOL_WRITE_FILE
-
     }
     fn description(&self) -> &str {
         "Write file."
@@ -433,7 +429,10 @@ impl TypedTool for WriteFileTool {
     }
 
     fn usage(&self) -> Option<String> {
-        Some("write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)".to_string())
+        Some(
+            "write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)"
+                .to_string(),
+        )
     }
 
     fn parse_cli_args(
@@ -441,11 +440,7 @@ impl TypedTool for WriteFileTool {
         tokens: &[String],
         shell_cwd: Option<&Path>,
     ) -> Result<CliInvocation, AgentToolError> {
-        parse_write_or_edit_cli(
-            tokens,
-            shell_cwd,
-            WriteOrEditCliSpec::WRITE_FILE,
-        )
+        parse_write_or_edit_cli(tokens, shell_cwd, WriteOrEditCliSpec::WRITE_FILE)
     }
 
     fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
@@ -646,9 +641,7 @@ impl TypedTool for ReadFileTool {
     type Output = ReadFileOutput;
 
     fn name(&self) -> &str {
-
         TOOL_READ_FILE
-
     }
     fn description(&self) -> &str {
         "Read file."
@@ -709,10 +702,7 @@ impl TypedTool for ReadFileTool {
                 }
                 _ => "0 lines".to_string(),
             };
-            let base = format!(
-                "succeeded, read {} bytes across {lines_text}",
-                output.bytes
-            );
+            let base = format!("succeeded, read {} bytes across {lines_text}", output.bytes);
             if output.preview.is_empty() {
                 base
             } else {
@@ -794,11 +784,8 @@ impl TypedTool for ReadFileTool {
         let preview = build_read_file_output_preview(start_line, &selected_lines);
         let preview_truncated = read_line_count > READ_FILE_PREVIEW_MAX_LINES;
         let bytes = content.len();
-        let cmd_line = build_read_result_cmd_line(
-            &file_path,
-            first_chunk.as_deref(),
-            args.range.as_ref(),
-        );
+        let cmd_line =
+            build_read_result_cmd_line(&file_path, first_chunk.as_deref(), args.range.as_ref());
         Ok(ReadFileOutput {
             content,
             matched,
@@ -1504,7 +1491,9 @@ pub(crate) fn parse_write_or_edit_cli(
             content = Some(ContentInput::Inline(
                 tokens
                     .get(idx)
-                    .ok_or_else(|| spec.usage_err(format!("missing value for `{}`", spec.content_flag)))?
+                    .ok_or_else(|| {
+                        spec.usage_err(format!("missing value for `{}`", spec.content_flag))
+                    })?
                     .clone(),
             ));
         } else if token == spec.content_stdin_flag {
@@ -1642,7 +1631,10 @@ mod tests {
             pr(json!({"start": 10, "end": 20}), 100).expect("parse"),
             Some((10, 20))
         );
-        assert_eq!(pr(json!({"start": 10}), 100).expect("parse"), Some((10, 10)));
+        assert_eq!(
+            pr(json!({"start": 10}), 100).expect("parse"),
+            Some((10, 10))
+        );
         assert_eq!(
             pr(json!({"start": -5}), 100).expect("parse"),
             Some((96, 100))

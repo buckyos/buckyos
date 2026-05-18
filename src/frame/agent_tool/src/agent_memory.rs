@@ -492,13 +492,16 @@ impl AgentMemory {
             .unwrap_or_else(Utc::now)
             .to_rfc3339_opts(SecondsFormat::Secs, true);
 
-        let normalized_tags: Vec<String> =
-            tags.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+        let normalized_tags: Vec<String> = tags
+            .iter()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
         for t in &normalized_tags {
             validate_tag(t)?;
         }
-        let star_query = normalized_tags.is_empty()
-            || (normalized_tags.len() == 1 && normalized_tags[0] == "*");
+        let star_query =
+            normalized_tags.is_empty() || (normalized_tags.len() == 1 && normalized_tags[0] == "*");
 
         // Surface candidates from SQLite when possible.
         let conn = self.open_db()?;
@@ -642,7 +645,9 @@ impl AgentMemory {
                 b.boost
                     .cmp(&a.boost)
                     .then_with(|| {
-                        a.bm25.partial_cmp(&b.bm25).unwrap_or(std::cmp::Ordering::Equal)
+                        a.bm25
+                            .partial_cmp(&b.bm25)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .then_with(|| b.ts.cmp(&a.ts))
                     .then_with(|| b.importance.cmp(&a.importance))
@@ -687,7 +692,10 @@ impl AgentMemory {
         for item in items {
             out.push_str(&format!("KEY {}\n", item.key));
             out.push_str(&format!("SIZE {}\n", item.size));
-            out.push_str(&format!("TRUNCATED {}\n", if item.truncated { 1 } else { 0 }));
+            out.push_str(&format!(
+                "TRUNCATED {}\n",
+                if item.truncated { 1 } else { 0 }
+            ));
             out.push_str(&format!("MATCHED {}\n", item.matched.join(",")));
             out.push_str(&format!("TS {}\n", item.ts));
             out.push_str("---\n");
@@ -978,9 +986,9 @@ fn blake3_hex(bytes: &[u8]) -> String {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AgentMemoryError::Invalid(format!("path has no parent: {}", path.display())))?;
+    let parent = path.parent().ok_or_else(|| {
+        AgentMemoryError::Invalid(format!("path has no parent: {}", path.display()))
+    })?;
     fs::create_dir_all(parent)?;
     let tmp = parent.join(format!(
         "{}.tmp.{}",
@@ -990,10 +998,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         random_suffix()
     ));
     {
-        let mut f = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp)?;
+        let mut f = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
     }
@@ -1395,12 +1400,13 @@ mod tests {
     #[test]
     fn set_get_remove_roundtrip() {
         let (_tmp, m) = open_tmp();
-        m.set("/user/preference/style", "concise english", "user conversation;c=1")
-            .unwrap();
-        assert_eq!(
-            m.get("/user/preference/style").unwrap(),
-            "concise english"
-        );
+        m.set(
+            "/user/preference/style",
+            "concise english",
+            "user conversation;c=1",
+        )
+        .unwrap();
+        assert_eq!(m.get("/user/preference/style").unwrap(), "concise english");
         m.remove("/user/preference/style", Some("user removed"))
             .unwrap();
         assert!(matches!(

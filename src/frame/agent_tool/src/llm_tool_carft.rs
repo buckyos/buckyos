@@ -150,10 +150,7 @@ pub async fn run_subcommand(req: CommandNotFoundRequest) -> (AgentToolResult, i3
     // step 3
     match craft_new_tool(&req, &task_id).await {
         Ok(artifact) => run_artifact(&req, &task_id, artifact).await,
-        Err(err) => surface_fallthrough(
-            &req,
-            FallthroughCause::CraftFailed { task_id, err },
-        ),
+        Err(err) => surface_fallthrough(&req, FallthroughCause::CraftFailed { task_id, err }),
     }
 }
 
@@ -174,7 +171,13 @@ pub async fn run_subcommand(req: CommandNotFoundRequest) -> (AgentToolResult, i3
 /// - 创建并持久化 task_id (写进
 ///   `<agent_env_root>/tasks/llm_tool_carft/<task_id>.json`)
 fn decide_should_construct(req: &CommandNotFoundRequest) -> Decision {
-    if req.command.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if req
+        .command
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
         return Decision::Skip {
             reason: SkipReason::EmptyCommand,
         };

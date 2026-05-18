@@ -512,7 +512,11 @@ name = "cat"
         .unwrap();
         let u = universe(&["rm", "cat", "ls", "ffmpeg"]);
         let resolved = ResolvedToolPlan::resolve("worker_safe", &plan, &u);
-        let names: Vec<_> = resolved.tombstones.iter().map(|t| t.tool.as_str()).collect();
+        let names: Vec<_> = resolved
+            .tombstones
+            .iter()
+            .map(|t| t.tool.as_str())
+            .collect();
         assert_eq!(names, vec!["ffmpeg", "rm"]);
     }
 

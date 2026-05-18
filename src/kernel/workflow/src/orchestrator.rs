@@ -8,10 +8,8 @@ use crate::runtime::{
     EventEnvelope, HumanAction, HumanActionKind, HumanWait, MapState, NodeRunState, ParJoin,
     ParState, PendingThunk, RunStatus, WorkflowRun,
 };
-use crate::task_tracker::{
-    MapShardTaskView, StepTaskView, ThunkTaskView, WorkflowTaskTracker,
-};
-use crate::types::{AwaitKind, Expr, ExecutorRef, JoinStrategy, RetryPolicy, ValueTemplate};
+use crate::task_tracker::{MapShardTaskView, StepTaskView, ThunkTaskView, WorkflowTaskTracker};
+use crate::types::{AwaitKind, ExecutorRef, Expr, JoinStrategy, RetryPolicy, ValueTemplate};
 use buckyos_api::{ThunkExecutionResult, ThunkExecutionStatus, ThunkObject};
 use chrono::Utc;
 use ndn_lib::ObjId;
@@ -124,8 +122,7 @@ where
                             .await?;
                     }
                     Expr::Par { .. } => {
-                        self.enter_par(workflow, run, compiled, &mut events)
-                            .await?;
+                        self.enter_par(workflow, run, compiled, &mut events).await?;
                     }
                     Expr::Map { .. } => {
                         self.enter_map(workflow, run, compiled, &mut events).await?;
@@ -695,10 +692,8 @@ where
             .await?;
         run.node_states
             .insert(compiled.id.clone(), NodeRunState::Completed);
-        run.node_outputs
-            .insert(compiled.id.clone(), output.clone());
-        run.metrics
-            .insert(compiled.id.clone(), metrics.clone());
+        run.node_outputs.insert(compiled.id.clone(), output.clone());
+        run.metrics.insert(compiled.id.clone(), metrics.clone());
         if is_idempotent(compiled) {
             let key = cache_key(compiled, resolved_input);
             self.object_store
@@ -893,9 +888,11 @@ where
         run.human_waiting_nodes.insert(compiled.id.clone());
         let subject = self.subject_for_node(run, compiled).ok();
         let subject_obj_id = match subject.as_ref() {
-            Some(value) if !value.is_null() => {
-                Some(self.object_store.put_json("workflow_subject", value).await?)
-            }
+            Some(value) if !value.is_null() => Some(
+                self.object_store
+                    .put_json("workflow_subject", value)
+                    .await?,
+            ),
             _ => None,
         };
         let wait = HumanWait {
@@ -1308,12 +1305,11 @@ where
         }
 
         let collection_value = resolve_reference_value(run, collection)?;
-        let items = extract_items(&collection_value).ok_or_else(|| {
-            WorkflowError::ForEachItemsType {
+        let items =
+            extract_items(&collection_value).ok_or_else(|| WorkflowError::ForEachItemsType {
                 node_id: compiled.id.clone(),
                 actual: format!("{:?}", collection_value),
-            }
-        })?;
+            })?;
 
         if items.len() as u32 > *max_items {
             return Err(WorkflowError::ForEachTooManyItems {
@@ -1346,7 +1342,8 @@ where
         self.sync_step_basic(run, compiled).await?;
 
         if total == 0 {
-            self.complete_map(workflow, run, &compiled.id, events).await?;
+            self.complete_map(workflow, run, &compiled.id, events)
+                .await?;
             return Ok(());
         }
 
@@ -1515,7 +1512,8 @@ where
             if let Some(state) = run.map_states.get_mut(for_each_id) {
                 state.shard_states[index] = NodeRunState::Running;
             }
-            self.sync_shard(run, for_each_id, index as u32, None).await?;
+            self.sync_shard(run, for_each_id, index as u32, None)
+                .await?;
             self.sync_thunk_dispatch(
                 run,
                 for_each_id,
@@ -1545,7 +1543,8 @@ where
                 })
                 .unwrap_or(false);
             if all_done {
-                self.complete_map(workflow, run, for_each_id, events).await?;
+                self.complete_map(workflow, run, for_each_id, events)
+                    .await?;
             }
         }
         Ok(())
@@ -1626,7 +1625,8 @@ where
             .unwrap_or(false);
 
         if all_done {
-            self.complete_map(workflow, run, for_each_id, events).await?;
+            self.complete_map(workflow, run, for_each_id, events)
+                .await?;
         }
         Ok(())
     }
@@ -1895,7 +1895,11 @@ where
 
         let subject_value = subject.clone();
         let subject_obj_id = if let Some(value) = subject.as_ref() {
-            Some(self.object_store.put_json("workflow_subject", value).await?)
+            Some(
+                self.object_store
+                    .put_json("workflow_subject", value)
+                    .await?,
+            )
         } else {
             None
         };
@@ -1938,17 +1942,15 @@ where
         run: &mut WorkflowRun,
         task_data: &Value,
     ) -> WorkflowResult<Vec<EventEnvelope>> {
-        let workflow_meta = task_data
-            .get("workflow")
-            .ok_or_else(|| WorkflowError::Serialization(
-                "task_data missing `workflow` descriptor".to_string(),
-            ))?;
+        let workflow_meta = task_data.get("workflow").ok_or_else(|| {
+            WorkflowError::Serialization("task_data missing `workflow` descriptor".to_string())
+        })?;
         let node_id = workflow_meta
             .get("node_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| WorkflowError::Serialization(
-                "task_data.workflow.node_id missing".to_string(),
-            ))?
+            .ok_or_else(|| {
+                WorkflowError::Serialization("task_data.workflow.node_id missing".to_string())
+            })?
             .to_string();
         if let Some(declared_run) = workflow_meta.get("run_id").and_then(Value::as_str) {
             if declared_run != run.run_id {
@@ -1966,9 +1968,9 @@ where
         let kind = action
             .get("kind")
             .and_then(Value::as_str)
-            .ok_or_else(|| WorkflowError::Serialization(
-                "task_data.human_action.kind missing".to_string(),
-            ))?
+            .ok_or_else(|| {
+                WorkflowError::Serialization("task_data.human_action.kind missing".to_string())
+            })?
             .to_string();
         let actor = action
             .get("actor")
@@ -2049,11 +2051,7 @@ struct SyncStepOpts {
     progress_message: Option<String>,
 }
 
-fn build_step_view(
-    run: &WorkflowRun,
-    compiled: &CompiledNode,
-    opts: SyncStepOpts,
-) -> StepTaskView {
+fn build_step_view(run: &WorkflowRun, compiled: &CompiledNode, opts: SyncStepOpts) -> StepTaskView {
     let state = run
         .node_states
         .get(&compiled.id)
@@ -2667,11 +2665,7 @@ mod tests {
     }
 
     async fn finish_thunk<T>(
-        orchestrator: &WorkflowOrchestrator<
-            InMemoryThunkDispatcher,
-            InMemoryObjectStore,
-            T,
-        >,
+        orchestrator: &WorkflowOrchestrator<InMemoryThunkDispatcher, InMemoryObjectStore, T>,
         compiled: &CompiledWorkflow,
         run: &mut WorkflowRun,
         thunk_id: &str,
@@ -2704,8 +2698,7 @@ mod tests {
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
         let tracker = Arc::new(NoopTaskTracker);
-        let orchestrator =
-            WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker);
+        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker);
 
         let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
         orchestrator.tick(&compiled, &mut run).await.unwrap();
@@ -2724,7 +2717,11 @@ mod tests {
 
         orchestrator.tick(&compiled, &mut run).await.unwrap();
         let scheduled = dispatcher.scheduled().await;
-        assert_eq!(scheduled.len(), 3, "branch_a + branch_b should be dispatched");
+        assert_eq!(
+            scheduled.len(),
+            3,
+            "branch_a + branch_b should be dispatched"
+        );
 
         let branch_thunks = scheduled[1..3].to_vec();
         for sched in &branch_thunks {
@@ -2859,8 +2856,7 @@ mod tests {
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
         let tracker = Arc::new(NoopTaskTracker);
-        let orchestrator =
-            WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker);
+        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker);
 
         let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
         orchestrator.tick(&compiled, &mut run).await.unwrap();
@@ -3043,17 +3039,22 @@ mod tests {
         );
         assert!(run.pending_thunks.is_empty());
         assert_eq!(run.status, RunStatus::Completed);
-        assert_eq!(
-            run.node_states.get("fetch"),
-            Some(&NodeRunState::Completed)
-        );
+        assert_eq!(run.node_states.get("fetch"), Some(&NodeRunState::Completed));
         assert_eq!(
             run.node_states.get("notify"),
             Some(&NodeRunState::Completed)
         );
-        let fetch_out = run.node_outputs.get("fetch").cloned().unwrap_or(Value::Null);
+        let fetch_out = run
+            .node_outputs
+            .get("fetch")
+            .cloned()
+            .unwrap_or(Value::Null);
         assert_eq!(fetch_out["answer"], "ok");
-        let notify_out = run.node_outputs.get("notify").cloned().unwrap_or(Value::Null);
+        let notify_out = run
+            .node_outputs
+            .get("notify")
+            .cloned()
+            .unwrap_or(Value::Null);
         assert_eq!(notify_out["delivered"], true);
         assert_eq!(notify_out["echo"]["answer"], "ok");
     }
@@ -3197,9 +3198,8 @@ mod tests {
                 })
             },
         );
-        let registry = Arc::new(
-            crate::executor_adapter::ExecutorRegistry::new().with(Arc::new(adapter)),
-        );
+        let registry =
+            Arc::new(crate::executor_adapter::ExecutorRegistry::new().with(Arc::new(adapter)));
         let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker)
             .with_executor_registry(registry);
 
@@ -3238,9 +3238,7 @@ mod tests {
         let failing = crate::executor_adapter::NamespaceAdapter::new(
             ["service", "http"],
             |_executor, _input| {
-                Box::pin(async move {
-                    Err(WorkflowError::Dispatcher("boom".to_string()))
-                })
+                Box::pin(async move { Err(WorkflowError::Dispatcher("boom".to_string())) })
             },
         );
         let registry =
@@ -3268,11 +3266,8 @@ mod tests {
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
         let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator = WorkflowOrchestrator::new(
-            dispatcher.clone(),
-            object_store.clone(),
-            tracker.clone(),
-        );
+        let orchestrator =
+            WorkflowOrchestrator::new(dispatcher.clone(), object_store.clone(), tracker.clone());
 
         let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
         orchestrator.tick(&compiled, &mut run).await.unwrap();
@@ -3327,11 +3322,8 @@ mod tests {
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
         let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator = WorkflowOrchestrator::new(
-            dispatcher.clone(),
-            object_store,
-            tracker.clone(),
-        );
+        let orchestrator =
+            WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker.clone());
 
         let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
         orchestrator.tick(&compiled, &mut run).await.unwrap();
@@ -3380,8 +3372,7 @@ mod tests {
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
         let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator =
-            WorkflowOrchestrator::new(dispatcher, object_store, tracker.clone());
+        let orchestrator = WorkflowOrchestrator::new(dispatcher, object_store, tracker.clone());
 
         let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
 
@@ -3410,8 +3401,7 @@ mod tests {
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
         let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator =
-            WorkflowOrchestrator::new(dispatcher, object_store, tracker.clone());
+        let orchestrator = WorkflowOrchestrator::new(dispatcher, object_store, tracker.clone());
         let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
 
         let task_data = json!({
@@ -3435,11 +3425,8 @@ mod tests {
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
         let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator = WorkflowOrchestrator::new(
-            dispatcher.clone(),
-            object_store,
-            tracker.clone(),
-        );
+        let orchestrator =
+            WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker.clone());
 
         let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
         orchestrator.tick(&compiled, &mut run).await.unwrap();
@@ -3457,10 +3444,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            run.node_states.get("plan"),
-            Some(&NodeRunState::Completed)
-        );
+        assert_eq!(run.node_states.get("plan"), Some(&NodeRunState::Completed));
         // 应当取消挂起的 thunk
         assert!(run.pending_thunks.is_empty());
         assert_eq!(
@@ -3475,11 +3459,8 @@ mod tests {
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
         let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator = WorkflowOrchestrator::new(
-            dispatcher,
-            object_store.clone(),
-            tracker.clone(),
-        );
+        let orchestrator =
+            WorkflowOrchestrator::new(dispatcher, object_store.clone(), tracker.clone());
 
         let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
         orchestrator.tick(&compiled, &mut run).await.unwrap();
@@ -3514,11 +3495,8 @@ mod tests {
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
         let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator = WorkflowOrchestrator::new(
-            dispatcher.clone(),
-            object_store,
-            tracker.clone(),
-        );
+        let orchestrator =
+            WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker.clone());
 
         let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
         orchestrator.tick(&compiled, &mut run).await.unwrap();

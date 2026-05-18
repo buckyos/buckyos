@@ -1,6 +1,6 @@
 use crate::{
-    docker_command, external_command, ControlPanelServer, DockerOverviewCacheEntry,
-    GATEWAY_CONFIG_FILES, ZONE_CONFIG_FILES, gateway_etc_dir, sn_self_cert_state_path,
+    docker_command, external_command, gateway_etc_dir, sn_self_cert_state_path, ControlPanelServer,
+    DockerOverviewCacheEntry, GATEWAY_CONFIG_FILES, ZONE_CONFIG_FILES,
 };
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use chrono::{DateTime, Utc};

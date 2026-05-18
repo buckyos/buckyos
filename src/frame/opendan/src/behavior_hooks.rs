@@ -33,7 +33,9 @@ pub enum CtxLimitOutcome {
 pub enum ProviderFailedOutcome {
     Default,
     /// `mode = "fallback_behavior"` with `target = "<behavior_name>"`.
-    FallbackBehavior { target: String },
+    FallbackBehavior {
+        target: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,9 +48,7 @@ pub enum InterruptOutcome {
     End,
 }
 
-pub fn resolve_ctx_limit(
-    hook: Option<&HookPoint>,
-) -> Result<CtxLimitOutcome, HookPointError> {
+pub fn resolve_ctx_limit(hook: Option<&HookPoint>) -> Result<CtxLimitOutcome, HookPointError> {
     let Some(hook) = hook else {
         return Ok(CtxLimitOutcome::Default);
     };
@@ -83,8 +83,10 @@ pub fn resolve_interrupt_graceful(
     let Some(hook) = hook else {
         return Ok(InterruptOutcome::Default);
     };
-    let mode =
-        hook.ensure_mode("on_interrupt_graceful", &["cancel_pending_tools_then_continue"])?;
+    let mode = hook.ensure_mode(
+        "on_interrupt_graceful",
+        &["cancel_pending_tools_then_continue"],
+    )?;
     match mode {
         "cancel_pending_tools_then_continue" => Ok(InterruptOutcome::CancelPendingThenContinue),
         _ => unreachable!("ensure_mode whitelist already verified"),
