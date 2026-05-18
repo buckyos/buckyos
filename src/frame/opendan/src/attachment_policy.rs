@@ -20,17 +20,32 @@ use std::path::{Path, PathBuf};
 
 use llm_context::{AttachmentValidation, AttachmentValidator};
 
-/// Validator that bounds outbound `<attachment path=…>` to the session's
-/// workspace directory. `workspace_root` is canonicalized at construction
-/// so symlinks pointing outside the workspace can't sneak in via a
-/// pre-resolved root.
+use crate::agent_config::AttachmentPathPolicy;
+
+/// Validator that bounds outbound `<attachment path=…>` according to the
+/// agent's path policy:
+///
+/// - `Workspace` (default): path must resolve under `workspace_root` after
+///   canonicalization — symlink-escape and `..` traversal are rejected.
+/// - `Unrestricted`: workspace fence is lifted, so the agent can attach
+///   host-readable files such as `/opt/buckyos/logs/...`. `..` traversal
+///   is still rejected so audit logs surface the raw input verbatim.
 pub struct WorkspaceAttachmentValidator {
     workspace_root: Option<PathBuf>,
     agent_id: String,
+    path_policy: AttachmentPathPolicy,
 }
 
 impl WorkspaceAttachmentValidator {
     pub fn new(workspace_root: Option<PathBuf>, agent_id: impl Into<String>) -> Self {
+        Self::with_policy(workspace_root, agent_id, AttachmentPathPolicy::default())
+    }
+
+    pub fn with_policy(
+        workspace_root: Option<PathBuf>,
+        agent_id: impl Into<String>,
+        path_policy: AttachmentPathPolicy,
+    ) -> Self {
         let canonical = workspace_root.and_then(|p| {
             std::fs::canonicalize(&p).ok().or_else(|| {
                 // Workspace dir may not exist on disk yet for brand-new
@@ -42,6 +57,7 @@ impl WorkspaceAttachmentValidator {
         Self {
             workspace_root: canonical,
             agent_id: agent_id.into(),
+            path_policy,
         }
     }
 
@@ -61,27 +77,45 @@ impl WorkspaceAttachmentValidator {
                 "attachment path `{trimmed}` rejected: contains `..` or volume prefix"
             ));
         }
-        let Some(root) = self.workspace_root.as_deref() else {
-            return Err(format!(
-                "attachment path `{trimmed}` rejected: agent `{}` has no workspace bound",
-                self.agent_id
-            ));
-        };
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            root.join(path)
-        };
-        // canonicalize when the target exists — resolves any symlink chain
-        // and lets us compare against the workspace root deterministically.
-        let resolved = std::fs::canonicalize(&absolute).unwrap_or(absolute);
-        if !resolved.starts_with(root) {
-            return Err(format!(
-                "attachment path `{trimmed}` rejected: resolves outside workspace `{}`",
-                root.display()
-            ));
+        match self.path_policy {
+            AttachmentPathPolicy::Unrestricted => {
+                // Workspace fence lifted by config. `..` traversal is still
+                // rejected above; everything else the host can read is
+                // fair game (e.g. /opt/buckyos/logs/aicc/*.html). Relative
+                // paths require a workspace_root to anchor against.
+                if !path.is_absolute() && self.workspace_root.is_none() {
+                    return Err(format!(
+                        "attachment path `{trimmed}` rejected: relative path needs workspace anchor (agent `{}`)",
+                        self.agent_id
+                    ));
+                }
+                Ok(())
+            }
+            AttachmentPathPolicy::Workspace => {
+                let Some(root) = self.workspace_root.as_deref() else {
+                    return Err(format!(
+                        "attachment path `{trimmed}` rejected: agent `{}` has no workspace bound",
+                        self.agent_id
+                    ));
+                };
+                let absolute = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    root.join(path)
+                };
+                // canonicalize when the target exists — resolves any symlink
+                // chain and lets us compare against the workspace root
+                // deterministically.
+                let resolved = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+                if !resolved.starts_with(root) {
+                    return Err(format!(
+                        "attachment path `{trimmed}` rejected: resolves outside workspace `{}`",
+                        root.display()
+                    ));
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 }
 
@@ -160,5 +194,30 @@ mod tests {
     fn empty_workspace_rejects_paths() {
         let v = WorkspaceAttachmentValidator::new(None, "agent-a");
         assert!(v.validate_path("file.txt").is_err());
+    }
+
+    #[test]
+    fn unrestricted_allows_paths_outside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = WorkspaceAttachmentValidator::with_policy(
+            Some(dir.path().to_path_buf()),
+            "agent-a",
+            AttachmentPathPolicy::Unrestricted,
+        );
+        // /tmp or any host-readable absolute path passes when fence is lifted.
+        assert!(v.validate_path("/opt/buckyos/logs/aicc.html").is_ok());
+        // `..` traversal still rejected even under unrestricted.
+        assert!(v.validate_path("../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn unrestricted_relative_needs_workspace_anchor() {
+        let v = WorkspaceAttachmentValidator::with_policy(
+            None,
+            "agent-a",
+            AttachmentPathPolicy::Unrestricted,
+        );
+        assert!(v.validate_path("file.txt").is_err());
+        assert!(v.validate_path("/etc/hosts").is_ok());
     }
 }

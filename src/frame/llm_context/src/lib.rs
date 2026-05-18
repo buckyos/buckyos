@@ -39,10 +39,11 @@ pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterrup
 pub use msg_parser::{
     ai_message_to_msg_object, ai_message_to_msg_object_with_base,
     ai_message_to_msg_object_with_base_validated,
+    ai_message_to_msg_object_with_base_validated_async,
     ai_message_to_msg_object_with_base_validated_with_options, msg_object_control_command,
     msg_object_to_ai_message, msg_object_to_ai_message_with_role, parse_msg_object, AttachmentTag,
-    AttachmentValidation, AttachmentValidator, MsgEgressOptions, MsgParseOutput, MsgParserError,
-    PermissiveAttachmentValidator, SystemControlCommand,
+    AttachmentValidation, AttachmentValidator, LocalFileResolver, MsgEgressOptions, MsgParseOutput,
+    MsgParserError, PermissiveAttachmentValidator, SystemControlCommand,
 };
 pub use observation::{Observation, PendingToolCall, ToolExecRecord};
 pub use outcome::{

@@ -7,6 +7,7 @@ use buckyos_api::{
 use kRPC::RPCContext;
 use name_lib::DID;
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject};
+use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tempfile::{tempdir, TempDir};
 
@@ -333,6 +334,123 @@ async fn update_record_state_checks_transition_rules() {
         .handle_update_record_state(record_id, MsgState::Sent, None, ctx())
         .await;
     assert!(invalid.is_err());
+}
+
+#[tokio::test]
+async fn update_record_ui_session_sets_ui_session_id() {
+    let (center, _tmp) = new_center("update_record_ui_session").await;
+    let sender = DID::new("bns", "sender-ui-session");
+    let recipient = DID::new("bns", "recipient-ui-session");
+
+    center
+        .handle_grant_temporary_access(
+            vec![sender.clone()],
+            "ctx-ui-session".to_string(),
+            60,
+            Some(recipient.clone()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+
+    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
+    center
+        .handle_dispatch(
+            msg,
+            Some(IngressContext {
+                context_id: Some("ctx-ui-session".to_string()),
+                ..Default::default()
+            }),
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+
+    let inbox = center
+        .handle_peek_box(recipient, BoxKind::Inbox, None, None, None, ctx())
+        .await
+        .unwrap();
+    let record_id = inbox[0].record.record_id.clone();
+
+    let updated = center
+        .handle_update_record_ui_session(
+            record_id.clone(),
+            " ui-session-record ".to_string(),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.ui_session_id.as_deref(), Some("ui-session-record"));
+
+    let loaded = center
+        .handle_get_record(record_id, None, ctx())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        loaded.record.ui_session_id.as_deref(),
+        Some("ui-session-record")
+    );
+}
+
+#[tokio::test]
+async fn ui_session_state_is_key_value_state() {
+    let (center, _tmp) = new_center("ui_session_state").await;
+
+    let first = center
+        .handle_update_ui_session_state(
+            "ui-session-1".to_string(),
+            "typing".to_string(),
+            json!({"active": true, "source": "telegram"}),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.session_id, "ui-session-1");
+    assert_eq!(first.key, "typing");
+    assert_eq!(first.value["active"], true);
+
+    let updated = center
+        .handle_update_ui_session_state(
+            " ui-session-1 ".to_string(),
+            " typing ".to_string(),
+            json!({"active": false}),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.value["active"], false);
+    assert!(updated.updated_at_ms >= first.updated_at_ms);
+
+    let loaded = center
+        .handle_get_ui_session_state("ui-session-1".to_string(), "typing".to_string(), ctx())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.value, json!({"active": false}));
+
+    center
+        .handle_update_ui_session_state(
+            "ui-session-1".to_string(),
+            "status".to_string(),
+            json!("ready"),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let listed = center
+        .handle_list_ui_session_state("ui-session-1".to_string(), ctx())
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].key, "status");
+    assert_eq!(listed[1].key, "typing");
+
+    let empty_session = center
+        .handle_update_ui_session_state(" ".to_string(), "typing".to_string(), json!(true), ctx())
+        .await;
+    assert!(empty_session.is_err());
 }
 
 #[tokio::test]

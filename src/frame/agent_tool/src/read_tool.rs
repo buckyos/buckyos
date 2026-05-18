@@ -2,17 +2,16 @@
 //!
 //! The v2 Behavior protocol (see `doc/opendan/Agent Actions.md` §1.4) uses
 //! `<read uri="..."/>` as a placeholder for a generic "read by URI scheme"
-//! action. v1 first cut only implements the `file://` scheme — every other
-//! scheme returns `InvalidArgs`. New schemes (`kv://`, `event://`,
-//! `http://`, `mcp://...`) get added by extending the dispatch table in
-//! [`ReadTool::call`].
+//! action. v1 first cut implements filesystem reads: an explicit `file://`
+//! URI is accepted, and a target without a `://` protocol header is treated
+//! as a file path. Other schemes return `InvalidArgs`. New schemes (`kv://`,
+//! `event://`, `http://`, `mcp://...`) get added by extending the dispatch
+//! table in [`ReadTool::call`].
 //!
-//! **Why a separate tool from `read_file`:** the legacy `read_file` tool
-//! returns a line-numbered text preview suitable for code reading; this
-//! tool is byte-oriented and intentionally does *not* truncate within the
-//! requested window — its existence reason is "bypass the `exec_bash`
-//! `max_output_bytes` clipping when the model genuinely needs to read a
-//! large file in chunks."
+//! Compared with the legacy CLI-oriented `read_file`, this tool is
+//! byte-oriented and intentionally does *not* truncate within the requested
+//! window — its existence reason is "bypass the `exec_bash` `max_output_bytes`
+//! clipping when the model genuinely needs to read a large file in chunks."
 
 use std::io::{Read, Seek, SeekFrom};
 
@@ -56,14 +55,14 @@ impl AgentTool for ReadTool {
         ToolSpec {
             name: TOOL_READ.to_string(),
             description:
-                "Protocol-aware read by URI. v1 first cut: only `file://` scheme is supported."
+                "Protocol-aware read. Targets without `://` default to filesystem reads; v1 also accepts explicit `file://`."
                     .to_string(),
             args_schema: json!({
                 "type": "object",
                 "properties": {
                     "uri": {
                         "type": "string",
-                        "description": "Target URI. v1 supports `file:///<path-under-workspace>`."
+                        "description": "Target to read. Bare paths default to file reads; explicit `file:///<path>` is also supported."
                     },
                     "offset": {
                         "type": "integer",
@@ -92,7 +91,7 @@ impl AgentTool for ReadTool {
                 }
             }),
             usage: Some(format!(
-                "{TOOL_READ} uri=\"file:///<path>\" [offset=<bytes>] [limit=<bytes>]"
+                "{TOOL_READ} uri=\"<path-or-uri>\" [offset=<bytes>] [limit=<bytes>]"
             )),
         }
     }
@@ -129,12 +128,12 @@ impl AgentTool for ReadTool {
             .unwrap_or(DEFAULT_LIMIT_BYTES)
             .clamp(1, MAX_LIMIT_BYTES);
 
-        let scheme_end = uri.find(':').ok_or_else(|| {
-            AgentToolError::InvalidArgs(format!("uri missing scheme (no colon): {uri}"))
-        })?;
-        let scheme = &uri[..scheme_end];
-        match scheme {
-            "file" => self.read_file_uri(&uri, offset, limit).await,
+        let target = parse_read_target(&uri)?;
+        match target.scheme.as_str() {
+            "file" => {
+                self.read_file_path(&target.uri, &target.path, offset, limit)
+                    .await
+            }
             other => Err(AgentToolError::InvalidArgs(format!(
                 "unsupported read scheme `{other}` (v1 first cut only supports `file`)"
             ))),
@@ -143,13 +142,13 @@ impl AgentTool for ReadTool {
 }
 
 impl ReadTool {
-    async fn read_file_uri(
+    async fn read_file_path(
         &self,
         uri: &str,
+        path_str: &str,
         offset: u64,
         limit: u64,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let path_str = parse_file_uri_path(uri)?;
         let workspace = to_abs_path(&self.cfg.root_dir)?;
         let resolved = resolve_path_under_root(&workspace, &path_str)?;
         if !resolved.exists() {
@@ -243,6 +242,40 @@ fn parse_u64_arg(v: Option<&Json>, name: &str) -> Result<Option<u64>, AgentToolE
     )))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ReadTarget {
+    scheme: String,
+    uri: String,
+    path: String,
+}
+
+fn parse_read_target(raw: &str) -> Result<ReadTarget, AgentToolError> {
+    if let Some((scheme, _)) = raw.split_once("://") {
+        let scheme = scheme.trim();
+        if scheme.is_empty() {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "read uri has empty scheme: {raw}"
+            )));
+        }
+        let path = if scheme == "file" {
+            parse_file_uri_path(raw)?
+        } else {
+            String::new()
+        };
+        return Ok(ReadTarget {
+            scheme: scheme.to_string(),
+            uri: raw.to_string(),
+            path,
+        });
+    }
+
+    Ok(ReadTarget {
+        scheme: "file".to_string(),
+        uri: raw.to_string(),
+        path: raw.to_string(),
+    })
+}
+
 /// Parse `file://[host]/abs/path` → `/abs/path`. The host portion is
 /// accepted but ignored (`localhost` and empty both valid, others rejected
 /// to surface typos).
@@ -309,6 +342,18 @@ mod tests {
         assert_eq!(res.details["content"], "hello world\n");
         assert_eq!(res.details["bytes_read"], 12);
         assert_eq!(res.details["eof"], true);
+    }
+
+    #[tokio::test]
+    async fn bare_path_defaults_to_file_scheme() {
+        let (_dir, ws) = ws_with_file("hello.txt", b"hello world\n");
+        let tool = ReadTool::new(FileToolConfig::new(ws.clone()));
+        let res = tool
+            .call(&ctx(), json!({ "uri": "hello.txt" }))
+            .await
+            .expect("call");
+        assert_eq!(res.details["scheme"], "file");
+        assert_eq!(res.details["content"], "hello world\n");
     }
 
     #[tokio::test]
@@ -447,5 +492,37 @@ mod tests {
         assert!(parse_file_uri_path("file://workspace/x").is_err());
         // Non-file uri rejected.
         assert!(parse_file_uri_path("kv:///x").is_err());
+    }
+
+    #[test]
+    fn read_target_defaults_paths_without_protocol_header_to_file() {
+        assert_eq!(
+            parse_read_target("src/main.rs").unwrap(),
+            ReadTarget {
+                scheme: "file".to_string(),
+                uri: "src/main.rs".to_string(),
+                path: "src/main.rs".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_read_target("/abs/path").unwrap(),
+            ReadTarget {
+                scheme: "file".to_string(),
+                uri: "/abs/path".to_string(),
+                path: "/abs/path".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_read_target("file:///abs/path").unwrap(),
+            ReadTarget {
+                scheme: "file".to_string(),
+                uri: "file:///abs/path".to_string(),
+                path: "/abs/path".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_read_target("http://example.com").unwrap().scheme,
+            "http"
+        );
     }
 }

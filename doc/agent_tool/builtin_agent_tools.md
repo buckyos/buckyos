@@ -35,7 +35,7 @@ execute(arguments: AgentArguments) -> AgentToolResult
 
 builtin agent tool 目前常见三种入口：
 
-- `bash`：以命令别名形式调用，例如 `read_file demo.txt 1-20`
+- `bash`：以命令别名形式调用，例如 `agent_tool read uri=demo.txt`
 - `action`：以结构化 JSON 参数调用，主要用于写操作
 - `llm_tool_call`：以 `ToolSpec.args_schema` 声明的 JSON 调用
 
@@ -134,7 +134,7 @@ builtin tool 的标准输出协议是 `AgentToolResult`，详细字段见：
 
 例如：
 
-- `read_file` 的 `content` 是读取结果，可以放在 `detail`
+- `read` 的 `content` 是读取结果，可以放在 `detail`
 - `write_file` 的 `content` 是输入参数，不应放在 `detail`
 - `edit_file` 的 `new_content` / `pos_chunk` 是输入参数，不应放在 `detail`
 - `todo` / `worklog_manage` 的 `action` 是输入参数，不应只为了回显而放在 `detail`
@@ -142,9 +142,9 @@ builtin tool 的标准输出协议是 `AgentToolResult`，详细字段见：
 
 如果某个结果字段和输入参数同名，必须确认它表达的是执行后事实，而不是简单回显。
 
-### 3.2 `read_file` 的纯文本例外
+### 3.2 legacy `read_file` 的纯文本例外
 
-`read_file` 在 CLI 下存在一个特例：
+legacy CLI `read_file` 在 CLI 下存在一个特例：
 
 - 当“没有 agent 环境”且“stdout 不是 TTY”时
 - 自动切换到纯文本模式
@@ -156,7 +156,7 @@ builtin tool 的标准输出协议是 `AgentToolResult`，详细字段见：
 
 | Tool | 入口 | 主要用途 | 代码位置 |
 |---|---|---|---|
-| `read_file` | bash / llm_tool_call | 读取文件内容 | `src/file_tools.rs` |
+| `read` | action / llm_tool_call | 按 uri/path 读取内容；无 `://` 时默认文件路径 | `src/read_tool.rs` |
 | `write_file` | action | 覆盖/追加写文件 | `src/file_tools.rs` |
 | `edit_file` | action | 基于锚点编辑文件 | `src/file_tools.rs` |
 | `get_session` | bash | 读取 session 状态 | `src/lib.rs` |
@@ -174,50 +174,53 @@ builtin tool 的标准输出协议是 `AgentToolResult`，详细字段见：
 
 - `bind_external_workspace` / `list_external_workspaces` 当前主要走结构化调用
 - `check_task` / `cancel_task` 是 CLI 暴露能力，不走 `AgentTool` trait 的常规注册路径
+- `read_file` 是 legacy CLI 兼容工具，不再是 v2 Agent Action；当前 Action 应使用 `read`
 - `list_session` 常量已预留，但当前文档不把它当作已完成 builtin tool
 
 ## 5. 各工具输入 / 输出约定
 
-### 5.1 `read_file`
+### 5.1 `read`
 
 用途：
 
 - 读取文件
-- 支持从 `first_chunk` 命中点开始读取
-- 支持 1-based 行范围切片
+- 支持 `file://` 显式文件 URI
+- 支持无协议头路径，默认按文件路径处理
+- 支持 byte offset / limit 分页
 
 输入：
 
 ```json
 {
-  "path": "string",
-  "range": "string|number|array|object",
-  "first_chunk": "string"
+  "uri": "string",
+  "offset": "number|string",
+  "limit": "number|string"
 }
 ```
 
-bash 形式：
+action 形式：
 
-```bash
-read_file <path> [range] [first_chunk]
+```xml
+<read uri="src/foo.rs" offset="0" limit="4096"/>
 ```
 
 detail 关键字段：
 
 
 - `content`
-- `line_count`
-- `preview_truncated`
+- `offset`
+- `bytes_read`
+- `total_bytes`
+- `eof`
 
 
 输出约定：
 
 - 顶层固定字段至少包含 `agent_tool_protocol / status / cmd_name / cmd_args / title / summary`
-- `cmd_name` 应为 `read_file`
-- `cmd_args` 应渲染成 bash 风格参数文本，例如 `demo.txt range=1-20`
-- 标准 builtin 模式下，读取结果放 `detail.content`
-- `summary` 提供英文摘要和预览代码块
-- 非交互纯文本模式下，CLI 直接输出读取到的文件内容
+- `cmd_name` 应为 `read`
+- `cmd_args` 应渲染成 bash 风格参数文本，例如 `src/foo.rs offset=0 limit=4096`
+- 读取结果放 `detail.content`
+- `summary` 提供读取字节数、offset、total 和 EOF 状态
 
 ### 5.2 `write_file`
 

@@ -124,6 +124,20 @@ pub trait AttachmentValidator: Send + Sync {
 pub struct PermissiveAttachmentValidator;
 impl AttachmentValidator for PermissiveAttachmentValidator {}
 
+/// Materializes an LLM-emitted local file path into a CYFS `ObjId` so the
+/// attachment can travel as a content-addressed `RefItem::DataObj` (the
+/// same lane used by uploads coming from outside). The expected
+/// implementation registers the file with NamedStore in LocalLink mode so
+/// no bytes are copied — identical content yields identical ObjIds and
+/// dedupes automatically.
+///
+/// `Err(reason)` lets the caller render an `<!-- attachment rejected: … -->`
+/// note instead of silently dropping the attachment.
+#[async_trait::async_trait]
+pub trait LocalFileResolver: Send + Sync {
+    async fn resolve(&self, path: &str) -> std::result::Result<ObjId, String>;
+}
+
 /// Parse a `MsgObject` into either a registered system-control command or a
 /// normal `AiMessage`. Use this at MessageHub ingress points where
 /// slash-commands should be intercepted before they reach the LLM.
@@ -217,7 +231,7 @@ pub fn ai_message_to_msg_object_with_base_validated(
 
 pub fn ai_message_to_msg_object_with_base_validated_with_options(
     message: &AiMessage,
-    mut base: MsgObject,
+    base: MsgObject,
     validator: &dyn AttachmentValidator,
     options: MsgEgressOptions,
 ) -> Result<MsgObject, MsgParserError> {
@@ -259,6 +273,84 @@ pub fn ai_message_to_msg_object_with_base_validated_with_options(
         }
     }
 
+    Ok(assemble_msg_object(
+        base,
+        message.role,
+        text_parts,
+        refs,
+        machine_payloads,
+    ))
+}
+
+/// Async counterpart of
+/// [`ai_message_to_msg_object_with_base_validated_with_options`]. Routes
+/// validated `<attachment>BODY</attachment>` local paths through `resolver`
+/// (typically NamedStore LocalLink registration) so they leave as
+/// content-addressed `RefItem::DataObj` and are uploadable by tunnels
+/// (Telegram, …) the same way externally-sourced attachments are.
+pub async fn ai_message_to_msg_object_with_base_validated_async(
+    message: &AiMessage,
+    base: MsgObject,
+    validator: &dyn AttachmentValidator,
+    options: MsgEgressOptions,
+    resolver: &dyn LocalFileResolver,
+) -> Result<MsgObject, MsgParserError> {
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut refs: Vec<RefItem> = Vec::new();
+    let mut machine_payloads: Vec<Value> = Vec::new();
+
+    for block in &message.content {
+        match block {
+            AiContent::Text { text } => {
+                collect_text_and_attachment_tags_async(
+                    text,
+                    &mut text_parts,
+                    &mut refs,
+                    validator,
+                    options,
+                    resolver,
+                )
+                .await?;
+            }
+            AiContent::Image { source } => {
+                collect_resource_ref("image", source, None, &mut text_parts, &mut refs, validator);
+            }
+            AiContent::Document { source, title } => {
+                collect_resource_ref(
+                    "document",
+                    source,
+                    title.as_deref(),
+                    &mut text_parts,
+                    &mut refs,
+                    validator,
+                );
+            }
+            AiContent::ProviderState { provider, value } if provider == PROVIDER_MSG_MACHINE => {
+                machine_payloads.push(value.clone());
+            }
+            AiContent::ToolUse { .. }
+            | AiContent::ToolResult { .. }
+            | AiContent::Thinking { .. }
+            | AiContent::ProviderState { .. } => {}
+        }
+    }
+
+    Ok(assemble_msg_object(
+        base,
+        message.role,
+        text_parts,
+        refs,
+        machine_payloads,
+    ))
+}
+
+fn assemble_msg_object(
+    mut base: MsgObject,
+    role: AiRole,
+    text_parts: Vec<String>,
+    refs: Vec<RefItem>,
+    machine_payloads: Vec<Value>,
+) -> MsgObject {
     let content = text_parts
         .into_iter()
         .map(|s| s.trim().to_string())
@@ -279,9 +371,9 @@ pub fn ai_message_to_msg_object_with_base_validated_with_options(
     };
     base.meta.insert(
         "llm_role".to_string(),
-        Value::String(message.role.as_str().to_string()),
+        Value::String(role.as_str().to_string()),
     );
-    Ok(base)
+    base
 }
 
 pub fn msg_object_control_command(
@@ -426,30 +518,125 @@ fn collect_text_and_attachment_tags(
     validator: &dyn AttachmentValidator,
     options: MsgEgressOptions,
 ) -> Result<(), MsgParserError> {
-    let mut ordinary = Vec::new();
+    let mut items = collect_egress_line_items(text, validator)?;
+    // Sync path: no resolver wired. `PendingPath` collapses to the legacy
+    // advisory-text rendering inside `finalize_egress_items_into`.
+    resolve_pending_attachments_sync(&mut items);
+    finalize_egress_items_into(items, text_parts, refs, options);
+    Ok(())
+}
+
+/// Async variant of [`collect_text_and_attachment_tags`]. Pending local-file
+/// references are handed to `resolver` and materialized into
+/// `RefItem::DataObj` entries — typically the resolver registers the file
+/// with NamedStore in LocalLink mode so identical content yields identical
+/// ObjIds without copying bytes. Resolver failures degrade to rejection
+/// text so the LLM's intent stays visible and audit-logged.
+async fn collect_text_and_attachment_tags_async(
+    text: &str,
+    text_parts: &mut Vec<String>,
+    refs: &mut Vec<RefItem>,
+    validator: &dyn AttachmentValidator,
+    options: MsgEgressOptions,
+    resolver: &dyn LocalFileResolver,
+) -> Result<(), MsgParserError> {
+    let mut items = collect_egress_line_items(text, validator)?;
+    resolve_pending_attachments_async(&mut items, resolver).await;
+    finalize_egress_items_into(items, text_parts, refs, options);
+    Ok(())
+}
+
+enum EgressLineItem {
+    Text(String),
+    Tag {
+        tag: AttachmentTag,
+        lowering: AttachmentLowering,
+    },
+}
+
+fn collect_egress_line_items(
+    text: &str,
+    validator: &dyn AttachmentValidator,
+) -> Result<Vec<EgressLineItem>, MsgParserError> {
+    let mut out = Vec::new();
     for line in text.lines() {
         if let Some(tag) = parse_attachment_tag(line.trim()) {
-            match attachment_tag_to_ref_item(&tag, validator)? {
+            let lowering = attachment_tag_to_ref_item(&tag, validator)?;
+            out.push(EgressLineItem::Tag { tag, lowering });
+        } else {
+            out.push(EgressLineItem::Text(line.to_string()));
+        }
+    }
+    Ok(out)
+}
+
+fn resolve_pending_attachments_sync(items: &mut [EgressLineItem]) {
+    for item in items.iter_mut() {
+        if let EgressLineItem::Tag { lowering, .. } = item {
+            if matches!(lowering, AttachmentLowering::PendingPath(_)) {
+                *lowering = AttachmentLowering::Keep;
+            }
+        }
+    }
+}
+
+async fn resolve_pending_attachments_async(
+    items: &mut [EgressLineItem],
+    resolver: &dyn LocalFileResolver,
+) {
+    for item in items.iter_mut() {
+        if let EgressLineItem::Tag { tag, lowering } = item {
+            let path = match lowering {
+                AttachmentLowering::PendingPath(p) => p.clone(),
+                _ => continue,
+            };
+            *lowering = match resolver.resolve(&path).await {
+                Ok(obj_id) => AttachmentLowering::Ref(RefItem {
+                    role: RefRole::Input,
+                    target: RefTarget::DataObj {
+                        obj_id,
+                        uri_hint: None,
+                    },
+                    label: tag.title.clone().or_else(|| tag.label.clone()),
+                }),
+                Err(reason) => AttachmentLowering::Rejected(format!(
+                    "local file resolve failed: {reason}"
+                )),
+            };
+        }
+    }
+}
+
+fn finalize_egress_items_into(
+    items: Vec<EgressLineItem>,
+    text_parts: &mut Vec<String>,
+    refs: &mut Vec<RefItem>,
+    options: MsgEgressOptions,
+) {
+    let mut ordinary = Vec::new();
+    for item in items {
+        match item {
+            EgressLineItem::Text(s) => ordinary.push(s),
+            EgressLineItem::Tag { tag, lowering } => match lowering {
                 AttachmentLowering::Ref(item) => {
                     refs.push(item);
                     if options.preserve_attachment_tag_in_egress {
                         ordinary.push(render_attachment_tag(&tag));
                     }
                 }
-                AttachmentLowering::Keep => ordinary.push(render_attachment_tag(&tag)),
+                AttachmentLowering::Keep | AttachmentLowering::PendingPath(_) => {
+                    ordinary.push(render_attachment_tag(&tag));
+                }
                 AttachmentLowering::Rejected(reason) => {
                     ordinary.push(render_attachment_rejection(&tag, &reason));
                 }
-            }
-        } else {
-            ordinary.push(line.to_string());
+            },
         }
     }
-    let ordinary = ordinary.join("\n").trim().to_string();
-    if !ordinary.is_empty() {
-        text_parts.push(ordinary);
+    let joined = ordinary.join("\n").trim().to_string();
+    if !joined.is_empty() {
+        text_parts.push(joined);
     }
-    Ok(())
 }
 
 enum AttachmentLowering {
@@ -459,6 +646,11 @@ enum AttachmentLowering {
     Keep,
     /// Validator rejected the reference; keep an annotated rejection text.
     Rejected(String),
+    /// Local-path attachment validated but not yet materialized. The async
+    /// egress path hands this to a `LocalFileResolver` (typically NamedStore
+    /// LocalLink registration) to obtain the content-addressed ObjId that
+    /// promotes it to `Ref`.
+    PendingPath(String),
 }
 
 fn attachment_tag_to_ref_item(
@@ -466,15 +658,15 @@ fn attachment_tag_to_ref_item(
     validator: &dyn AttachmentValidator,
 ) -> Result<AttachmentLowering, MsgParserError> {
     if let Some(raw_path) = tag.path.as_ref().filter(|s| !s.trim().is_empty()) {
-        // Local paths are advisory only — they cannot be carried across
-        // tunnels as a stable ref, so even when allowed they stay as text
-        // (the receiver has no way to read the sender's filesystem). The
-        // validation gate is still here so any "..", workspace-escape, or
-        // symlink-bypass attempt is caught and audit-logged.
+        // Validator owns the path-policy decision (workspace fence / `..`
+        // traversal / symlink-escape). The actual file → ObjId
+        // materialization is deferred to a `LocalFileResolver` so the
+        // parser crate stays free of FS / NDN dependencies; without a
+        // resolver wired in, `PendingPath` collapses to `Keep`.
         if let Err(reason) = validator.validate_path(raw_path) {
             return Ok(AttachmentLowering::Rejected(reason));
         }
-        return Ok(AttachmentLowering::Keep);
+        return Ok(AttachmentLowering::PendingPath(raw_path.clone()));
     }
     let Some(raw_obj_id) = tag.obj_id.as_ref().filter(|s| !s.trim().is_empty()) else {
         return Ok(AttachmentLowering::Keep);
@@ -497,34 +689,70 @@ fn attachment_tag_to_ref_item(
 }
 
 fn parse_attachment_tag(raw: &str) -> Option<AttachmentTag> {
-    let body = raw
-        .strip_prefix("<attachment")?
-        .trim()
-        .strip_suffix('>')?
-        .trim()
-        .strip_suffix('/')
-        .unwrap_or_else(|| {
-            raw.strip_prefix("<attachment")
-                .unwrap()
-                .trim()
-                .strip_suffix('>')
-                .unwrap()
-                .trim()
-        })
-        .trim();
-    let attrs = parse_attrs(body);
+    let raw = raw.trim();
+    let after_open = raw.strip_prefix("<attachment")?;
+
+    // Two recognized shapes on a single line:
+    //   self-closing: `<attachment ...attrs... />`  or  `<attachment>`(no attrs)
+    //   body form:    `<attachment ...attrs...>BODY</attachment>`
+    //
+    // Body content lets the LLM write the more natural
+    // `<attachment>/abs/path.html</attachment>` — we sniff it as a CYFS
+    // ObjId first, fall back to a local filesystem path. This is the
+    // primary surface taught to agents; the attribute form remains
+    // available for callers that build tags programmatically.
+    let (attrs_raw, body_text): (&str, Option<&str>) =
+        if let Some(rest) = after_open.strip_suffix("</attachment>") {
+            let open_close = rest.find('>')?;
+            (
+                rest[..open_close].trim(),
+                Some(rest[open_close + 1..].trim()),
+            )
+        } else {
+            let rest = after_open.strip_suffix('>')?;
+            (rest.strip_suffix('/').unwrap_or(rest).trim(), None)
+        };
+
+    let attrs = parse_attrs(attrs_raw);
+    let mut obj_id = attrs.get("obj_id").cloned();
+    let mut path = attrs.get("path").cloned();
+    let url = attrs.get("url").cloned();
+
+    if let Some(body) = body_text.filter(|s| !s.is_empty()) {
+        if obj_id.is_none() && path.is_none() && url.is_none() {
+            if attachment_body_looks_like_obj_id(body) {
+                obj_id = Some(body.to_string());
+            } else {
+                path = Some(body.to_string());
+            }
+        }
+    }
+
     Some(AttachmentTag {
         kind: attrs
             .get("kind")
             .cloned()
             .unwrap_or_else(|| "document".to_string()),
-        obj_id: attrs.get("obj_id").cloned(),
-        url: attrs.get("url").cloned(),
-        path: attrs.get("path").cloned(),
+        obj_id,
+        url,
+        path,
         mime: attrs.get("mime").cloned(),
         title: attrs.get("title").cloned(),
         label: attrs.get("label").cloned(),
     })
+}
+
+fn attachment_body_looks_like_obj_id(body: &str) -> bool {
+    // ObjId strings are content-addressed identifiers with no path
+    // separators or whitespace. The real validation lives in
+    // `attachment_tag_to_ref_item` via `ObjId::new`; this sniff just
+    // routes `<attachment>BODY</attachment>` into the right slot. The
+    // ObjId::new probe is the source of truth — anything that parses
+    // is treated as an obj_id, everything else as a local path.
+    if body.contains('/') || body.contains('\\') || body.chars().any(|c| c.is_whitespace()) {
+        return false;
+    }
+    ObjId::new(body).is_ok()
 }
 
 fn parse_attrs(raw: &str) -> HashMap<String, String> {

@@ -119,20 +119,21 @@ new content for lines 10..=20
 ### 1.4 `<read>` —— uri 风格的"万能读"
 
 ```xml
-<read uri="file:///workspace/src/foo.rs" offset="0" limit="4096"/>
-<read uri="file:///workspace/src/foo.rs"/>
+<read uri="src/foo.rs" offset="0" limit="4096"/>
+<read uri="src/foo.rs"/>
+<read uri="file:///absolute/path/under/workspace/src/foo.rs"/>
 ```
 
-**决策：uri 风格**。scheme 即协议，由解析器按 scheme 分发；其它通用参数（offset / limit）以 attribute 形式给出，protocol-specific 寻址放在 uri 里。
+**决策：uri 风格**。有 `://` 协议头时，scheme 即协议，由解析器按 scheme 分发；没有 `://` 协议头时，`uri` 默认按 `file://` 文件路径处理。其它通用参数（offset / limit）以 attribute 形式给出，protocol-specific 寻址放在 uri 里。
 
 | 字段 | 形态 | 说明 |
 |---|---|---|
-| `uri` | attr | 必填。协议 + 地址 |
+| `uri` | attr | 必填。协议 + 地址；无 `://` 时默认是文件路径 |
 | `offset` | attr | 通用读起点（字节或行，由 scheme 定义） |
 | `limit` | attr | 通用读上限 |
 | body | 空 | `<read>` 永远是空标签 / 自闭合 |
 
-**v2 首版只实现 `file://`**。这一个 scheme 的存在理由是"绕开 `exec_bash` 的 `max_output_bytes` 截断"，所以它必须支持分页（`offset` / `limit`），并且**不被 `max_output_bytes` 限制**——否则不如直接 `cat`。
+**v2 首版只实现文件读取**：显式 `file://` 和无协议头的文件路径等价。它的存在理由是"绕开 `exec_bash` 的 `max_output_bytes` 截断"，所以它必须支持分页（`offset` / `limit`），并且**不被 `max_output_bytes` 限制**——否则不如直接 `cat`。
 
 **路线图**（不在 v2 首版）：
 
@@ -141,7 +142,7 @@ new content for lines 10..=20
 - `http://...` — 受策略约束的外网读取
 - `mcp://server/resource` — MCP resource 桥接
 
-> 注：v2 删除旧的 `read_file` Action。`read` 是改名后的占位，即使首版只支持 `file://`，也直接用新名字。
+> 注：v2 删除旧的 `read_file` Action。`read` 是改名后的占位；文件路径可直接写成 `src/foo.rs`，不必强制写 `file://`。
 
 ### 1.5 `<report>` —— 终止 / SendMessage 二合一
 
@@ -357,7 +358,7 @@ v2 与 v1 之间没有 transition window，所有变更同步发布：
 | [`src/frame/llm_context/src/context_loop.rs`](../../src/frame/llm_context/src/context_loop.rs) | 派发逻辑：Self Report 直接更新 `LLMContext.last_report`；`<report target=...>` 走 message bus；其它 Action 调 ToolManager |
 | [`src/frame/opendan/src/behavior_cfg.rs`](../../src/frame/opendan/src/behavior_cfg.rs) | `tool_whitelist` 保留旧语义（ToolManager 暴露的工具名白名单）；v2 默认 6 项：`exec_bash`/`write_file`/`edit_file`/`read`/`subscribe_event`/`unsubscribe_event`。`<report>` 不进 whitelist——它在 parser/dispatcher 走特殊路径，不经过 ToolManager |
 | `LLMContext` 结构 | 新增 `last_report: Option<ReportRecord>` 字段，进快照 |
-| `src/frame/agent_tool` | 删除 Glob / Grep / session/workspace/memory/todo_manage / read_file 相关 Tool 实现；新增 `read` Tool（带 uri scheme dispatch） |
+| `src/frame/agent_tool` | v2 Action registry 不再注册 Glob / Grep / session/workspace/memory/todo_manage / read_file；新增 `read` Tool（带 uri scheme dispatch，无协议头默认文件路径） |
 | Overlay shim 二进制 | 新增 `opendan-session` / `opendan-workspace` / `opendan-memory` / `opendan-todo` 4 个 shim |
 | 提示词模板 | 所有 Behavior 提示词更新到 v2 XML 形态 |
 

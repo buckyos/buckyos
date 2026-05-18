@@ -89,6 +89,12 @@ pub mod buildin_tool;
 // ACL hook on `<attachment obj_id=…>` references.
 pub mod attachment_policy;
 
+// §2.2.2 — local-path materialization at egress. Pairs with
+// attachment_policy: once a path is approved, this resolver registers
+// the file with NamedStore in LocalLink mode and surfaces a
+// content-addressed ObjId for the standard RefItem::DataObj lane.
+pub mod attachment_resolver;
+
 // §3 — slash-command dispatcher. Maps the strict `/<name>` whitelist
 // (parsed by llm_context::msg_parser) to opendan-side handlers
 // (`/clear`, `/list`, `/switch`, `/help`).

@@ -36,7 +36,7 @@ Keep the UI session focused on understanding intent, reporting status, and routi
 <<skills>>
 ## exec_bash 的使用
 使用读操作和简单的写操作，如果有复杂的写入需求，应进入worksession.
-读取文件应优先使用read_file tool.
+读取文件应优先使用 read action；没有 `://` 协议头时路径默认按文件读取。
 
 
 
@@ -52,7 +52,7 @@ tool_whitelist = [
   "forward_msg",
   "update_session_topic",
   "set_notepad",
-  "read_file",
+  "read",
   "exec_bash"
 ]
 

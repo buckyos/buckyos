@@ -34,7 +34,7 @@
 //!   拿到 `Weak<AIAgent>` / session 句柄）在自己的 `call()` 实现里直接调
 //!   `session.fork_and_run(...)` 这类内部 API，把 sub.output 作为
 //!   `Observation::Ok` 返回。
-//!   - 99% 的标准 CLI 工具（exec_bash / read_file / ...）走
+//!   - 99% 的标准 CLI 工具（exec_bash / read / ...）走
 //!     `AgentToolManager` 静态路径，没有 session 句柄，碰不到 fork
 //!   - 不需要 `ToolKind::Fork` 元数据、也不需要新增 `Observation::ForkRequested`
 //!     之类的变体；session-aware vs 标准工具在构造层面就已经天然分开

@@ -10,8 +10,8 @@
 
 use buckyos_api::{
     get_rdb_instance, msg_center_default_rdb_instance_config, BoxKind, DeliveryInfo, MsgRecord,
-    MsgState, RdbBackend, RouteInfo, MSG_CENTER_RDB_INSTANCE_ID, MSG_CENTER_RDB_SCHEMA_POSTGRES,
-    MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_SERVICE_NAME,
+    MsgState, RdbBackend, RouteInfo, UiSessionStateEntry, MSG_CENTER_RDB_INSTANCE_ID,
+    MSG_CENTER_RDB_SCHEMA_POSTGRES, MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_SERVICE_NAME,
 };
 use kRPC::RPCErrors;
 use log::info;
@@ -21,7 +21,6 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
 use sqlx::{AnyPool, Executor, Row};
-use std::str::FromStr;
 use std::sync::{Arc, Once};
 
 static INSTALL_DRIVERS: Once = Once::new();
@@ -423,6 +422,149 @@ WHERE owner = ? AND box_kind = ?
             })?;
         Ok(row.is_some())
     }
+
+    pub async fn upsert_ui_session_state(
+        &self,
+        session_id: &str,
+        key: &str,
+        value: &Value,
+        updated_at_ms: u64,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        let value_json = serde_json::to_string(value).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode ui session state {}:{}: {}",
+                session_id, key, error
+            ))
+        })?;
+        let sql = self.render_sql(
+            r#"
+INSERT INTO ui_session_states (
+    session_id,
+    state_key,
+    value_json,
+    updated_at_ms
+) VALUES (?, ?, ?, ?)
+ON CONFLICT(session_id, state_key) DO UPDATE SET
+    value_json = excluded.value_json,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+        );
+
+        sqlx::query(&sql)
+            .bind(session_id.to_string())
+            .bind(key.to_string())
+            .bind(value_json)
+            .bind(to_sql_i64(updated_at_ms))
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to upsert ui session state {}:{}: {}",
+                    session_id, key, error
+                ))
+            })?;
+
+        Ok(UiSessionStateEntry {
+            session_id: session_id.to_string(),
+            key: key.to_string(),
+            value: value.clone(),
+            updated_at_ms,
+        })
+    }
+
+    pub async fn get_ui_session_state(
+        &self,
+        session_id: &str,
+        key: &str,
+    ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
+        let sql = self.render_sql(
+            r#"
+SELECT session_id, state_key, value_json, updated_at_ms
+FROM ui_session_states
+WHERE session_id = ? AND state_key = ?
+"#,
+        );
+        let row = sqlx::query(&sql)
+            .bind(session_id.to_string())
+            .bind(key.to_string())
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to query ui session state {}:{}: {}",
+                    session_id, key, error
+                ))
+            })?;
+
+        row.as_ref().map(decode_ui_session_state_row).transpose()
+    }
+
+    pub async fn list_ui_session_state(
+        &self,
+        session_id: &str,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        let sql = self.render_sql(
+            r#"
+SELECT session_id, state_key, value_json, updated_at_ms
+FROM ui_session_states
+WHERE session_id = ?
+ORDER BY state_key ASC
+"#,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(session_id.to_string())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to list ui session state {}: {}",
+                    session_id, error
+                ))
+            })?;
+
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows.iter() {
+            entries.push(decode_ui_session_state_row(row)?);
+        }
+        Ok(entries)
+    }
+}
+
+fn decode_ui_session_state_row(
+    row: &AnyRow,
+) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+    let decode = |field: &str, err: sqlx::Error| {
+        RPCErrors::ReasonError(format!(
+            "failed to decode ui_session_states.{}: {}",
+            field, err
+        ))
+    };
+    let session_id: String = row
+        .try_get("session_id")
+        .map_err(|e| decode("session_id", e))?;
+    let key: String = row
+        .try_get("state_key")
+        .map_err(|e| decode("state_key", e))?;
+    let value_json: String = row
+        .try_get("value_json")
+        .map_err(|e| decode("value_json", e))?;
+    let updated_at_ms: i64 = row
+        .try_get("updated_at_ms")
+        .map_err(|e| decode("updated_at_ms", e))?;
+    let value = serde_json::from_str(&value_json).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "failed to parse ui session state {}:{}: {}",
+            session_id, key, error
+        ))
+    })?;
+    let updated_at_ms = from_sql_i64(updated_at_ms, "updated_at_ms", &session_id)?;
+
+    Ok(UiSessionStateEntry {
+        session_id,
+        key,
+        value,
+        updated_at_ms,
+    })
 }
 
 fn decode_record_row(

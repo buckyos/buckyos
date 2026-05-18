@@ -94,6 +94,25 @@ pub struct RuntimeCfg {
     /// Empty ⇒ runtime falls back to a built-in default.
     pub cancel_reason: String,
     pub preserve_attachment_tag_in_egress: bool,
+    /// Outbound `<attachment>` path policy. `"workspace"` (default) confines
+    /// agent-emitted local paths to the session workspace; `"unrestricted"`
+    /// lifts the workspace fence so the agent can attach any host-readable
+    /// file (e.g. `/opt/buckyos/logs/...`). Path traversal (`..`) is still
+    /// rejected regardless.
+    pub attachment_path_policy: AttachmentPathPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentPathPolicy {
+    Workspace,
+    Unrestricted,
+}
+
+impl Default for AttachmentPathPolicy {
+    fn default() -> Self {
+        AttachmentPathPolicy::Workspace
+    }
 }
 
 impl Default for RuntimeCfg {
@@ -101,6 +120,7 @@ impl Default for RuntimeCfg {
         Self {
             cancel_reason: String::new(),
             preserve_attachment_tag_in_egress: false,
+            attachment_path_policy: AttachmentPathPolicy::default(),
         }
     }
 }

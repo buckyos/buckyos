@@ -18,6 +18,7 @@ buckyos-api = { path = "../../kernel/buckyos-api" }
 kRPC = { workspace = true }
 ndn-lib = {workspace = true}
 named_store = {workspace = true}
+ndn-toolkit = {workspace = true}
 tokio = { workspace = true }
 name-lib = { workspace = true }
 rusqlite = { workspace = true }

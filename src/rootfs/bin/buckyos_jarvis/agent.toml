@@ -4,6 +4,10 @@ display_name = "Jarvis"
 [runtime]
 cancel_reason = "user requested cancel"
 preserve_attachment_tag_in_egress = false
+# Lift the workspace fence on outbound <attachment> paths so the agent can
+# return host-side artifacts (e.g. /opt/buckyos/logs/aicc/*.html). `..`
+# traversal is still rejected by the validator.
+attachment_path_policy = "unrestricted"
 
 [[channel]]
 type = "msg_center"

@@ -15,7 +15,7 @@ use buckyos_api::{
     GroupUpdateSubgroupReq, ImportContactEntry, ImportReport, IngressContext, KEventClient,
     MsgCenterHandler, MsgReceiptObj, MsgRecord, MsgRecordPage, MsgRecordWithObject, MsgState,
     PostSendDelivery, PostSendResult, ReadReceiptState, RouteInfo, SendContext,
-    SetGroupSubscribersResult,
+    SetGroupSubscribersResult, UiSessionStateEntry,
 };
 use kRPC::{RPCContext, RPCErrors};
 use log::{info, warn};
@@ -315,6 +315,14 @@ impl MessageCenter {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.to_string())
+    }
+
+    fn normalize_ui_session_arg(
+        label: &str,
+        value: &str,
+    ) -> std::result::Result<String, RPCErrors> {
+        Self::normalize_non_empty(Some(value))
+            .ok_or_else(|| RPCErrors::ReasonError(format!("{} cannot be empty", label)))
     }
 
     fn extract_session_id_from_value(payload: &Value) -> Option<String> {
@@ -1332,15 +1340,15 @@ impl MessageCenter {
         Ok(record)
     }
 
-    async fn update_record_session_internal(
+    async fn update_record_ui_session_internal(
         &self,
         record_id: String,
-        session_id: String,
+        ui_session_id: String,
     ) -> std::result::Result<MsgRecord, RPCErrors> {
-        let session_id = session_id.trim();
-        if session_id.is_empty() {
+        let ui_session_id = ui_session_id.trim();
+        if ui_session_id.is_empty() {
             return Err(RPCErrors::ReasonError(
-                "session_id cannot be empty".to_string(),
+                "ui_session_id cannot be empty".to_string(),
             ));
         }
 
@@ -1351,11 +1359,11 @@ impl MessageCenter {
             .await?
             .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
 
-        if record.ui_session_id.as_deref() == Some(session_id) {
+        if record.ui_session_id.as_deref() == Some(ui_session_id) {
             return Ok(record);
         }
 
-        record.ui_session_id = Some(session_id.to_string());
+        record.ui_session_id = Some(ui_session_id.to_string());
         record.updated_at_ms = Self::now_ms();
         self.msg_box_db.upsert_record(&record).await?;
         Self::publish_box_changed_event(&record, "session");
@@ -1547,6 +1555,39 @@ impl MessageCenter {
             }
         }
     }
+
+    async fn update_ui_session_state_internal(
+        &self,
+        session_id: String,
+        key: String,
+        value: Value,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        let session_id = Self::normalize_ui_session_arg("session_id", &session_id)?;
+        let key = Self::normalize_ui_session_arg("key", &key)?;
+        self.msg_box_db
+            .upsert_ui_session_state(&session_id, &key, &value, Self::now_ms())
+            .await
+    }
+
+    async fn get_ui_session_state_internal(
+        &self,
+        session_id: String,
+        key: String,
+    ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
+        let session_id = Self::normalize_ui_session_arg("session_id", &session_id)?;
+        let key = Self::normalize_ui_session_arg("key", &key)?;
+        self.msg_box_db
+            .get_ui_session_state(&session_id, &key)
+            .await
+    }
+
+    async fn list_ui_session_state_internal(
+        &self,
+        session_id: String,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        let session_id = Self::normalize_ui_session_arg("session_id", &session_id)?;
+        self.msg_box_db.list_ui_session_state(&session_id).await
+    }
 }
 
 #[async_trait]
@@ -1635,13 +1676,13 @@ impl MsgCenterHandler for MessageCenter {
             .await
     }
 
-    async fn handle_update_record_session(
+    async fn handle_update_record_ui_session(
         &self,
         record_id: String,
-        session_id: String,
+        ui_session_id: String,
         _ctx: RPCContext,
     ) -> std::result::Result<MsgRecord, RPCErrors> {
-        self.update_record_session_internal(record_id, session_id)
+        self.update_record_ui_session_internal(record_id, ui_session_id)
             .await
     }
 
@@ -1696,6 +1737,34 @@ impl MsgCenterHandler for MessageCenter {
         _ctx: RPCContext,
     ) -> std::result::Result<Option<MsgObject>, RPCErrors> {
         self.get_message_internal(msg_id).await
+    }
+
+    async fn handle_update_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+        value: Value,
+        _ctx: RPCContext,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        self.update_ui_session_state_internal(session_id, key, value)
+            .await
+    }
+
+    async fn handle_get_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
+        self.get_ui_session_state_internal(session_id, key).await
+    }
+
+    async fn handle_list_ui_session_state(
+        &self,
+        session_id: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        self.list_ui_session_state_internal(session_id).await
     }
 
     async fn handle_resolve_did(

@@ -20,7 +20,7 @@ pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
 pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
-pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 2;
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 3;
 
 /// Sqlite DDL for the msg-center database. Covers mailbox records, the
 /// per-owner message-id index, and contact-manager tables. All tables carry an
@@ -56,6 +56,16 @@ CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_kind_sort
     ON msg_records(owner, box_kind, msg_kind, sort_key DESC, record_id DESC);
 CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_from_sort
     ON msg_records(owner, box_kind, msg_from, sort_key DESC, record_id DESC);
+
+CREATE TABLE IF NOT EXISTS ui_session_states (
+    session_id    TEXT NOT NULL,
+    state_key     TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (session_id, state_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ui_session_states_session
+    ON ui_session_states(session_id, state_key);
 
 CREATE TABLE IF NOT EXISTS msg_refs (
     owner         TEXT NOT NULL,
@@ -189,6 +199,16 @@ CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_kind_sort
 CREATE INDEX IF NOT EXISTS idx_msg_records_owner_box_from_sort
     ON msg_records(owner, box_kind, msg_from, sort_key DESC, record_id DESC);
 
+CREATE TABLE IF NOT EXISTS ui_session_states (
+    session_id    TEXT NOT NULL,
+    state_key     TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (session_id, state_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ui_session_states_session
+    ON ui_session_states(session_id, state_key);
+
 CREATE TABLE IF NOT EXISTS msg_refs (
     owner         TEXT NOT NULL,
     msg_id        TEXT NOT NULL,
@@ -312,13 +332,16 @@ const METHOD_MSG_POST_SEND: &str = "msg.post_send";
 const METHOD_MSG_GET_NEXT: &str = "msg.get_next";
 const METHOD_MSG_PEEK_BOX: &str = "msg.peek_box";
 const METHOD_MSG_LIST_BOX_BY_TIME: &str = "msg.list_box_by_time";
-const METHOD_MSG_UPDATE_RECORD_SESSION: &str = "msg.update_record_session";
+const METHOD_MSG_UPDATE_RECORD_UI_SESSION: &str = "msg.update_record_ui_session";
 const METHOD_MSG_UPDATE_RECORD_STATE: &str = "msg.update_record_state";
 const METHOD_MSG_REPORT_DELIVERY: &str = "msg.report_delivery";
 const METHOD_MSG_SET_READ_STATE: &str = "msg.set_read_state";
 const METHOD_MSG_LIST_READ_RECEIPTS: &str = "msg.list_read_receipts";
 const METHOD_MSG_GET_RECORD: &str = "msg.get_record";
 const METHOD_MSG_GET_MESSAGE: &str = "msg.get_message";
+const METHOD_UI_SESSION_UPDATE_STATE: &str = "ui_session.update_state";
+const METHOD_UI_SESSION_GET_STATE: &str = "ui_session.get_state";
+const METHOD_UI_SESSION_LIST_STATE: &str = "ui_session.list_state";
 
 const METHOD_CONTACT_RESOLVE_DID: &str = "contact.resolve_did";
 const METHOD_CONTACT_GET_PREFERRED_BINDING: &str = "contact.get_preferred_binding";
@@ -535,6 +558,14 @@ pub struct MsgRecord {
 pub struct MsgRecordWithObject {
     pub record: MsgRecord,
     pub msg: Option<MsgObject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiSessionStateEntry {
+    pub session_id: String,
+    pub key: String,
+    pub value: Value,
+    pub updated_at_ms: u64,
 }
 
 impl MsgRecordWithObject {
@@ -994,21 +1025,73 @@ impl MsgCenterListBoxByTimeReq {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MsgCenterUpdateRecordSessionReq {
+pub struct MsgCenterUpdateRecordUiSessionReq {
     pub record_id: String,
-    pub session_id: String,
+    pub ui_session_id: String,
 }
 
-impl MsgCenterUpdateRecordSessionReq {
-    pub fn new(record_id: String, session_id: String) -> Self {
+impl MsgCenterUpdateRecordUiSessionReq {
+    pub fn new(record_id: String, ui_session_id: String) -> Self {
         Self {
             record_id,
-            session_id,
+            ui_session_id,
         }
     }
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
-        parse_from_json(value, "MsgCenterUpdateRecordSessionReq")
+        parse_from_json(value, "MsgCenterUpdateRecordUiSessionReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterUpdateUiSessionStateReq {
+    pub session_id: String,
+    pub key: String,
+    pub value: Value,
+}
+
+impl MsgCenterUpdateUiSessionStateReq {
+    pub fn new(session_id: String, key: String, value: Value) -> Self {
+        Self {
+            session_id,
+            key,
+            value,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterUpdateUiSessionStateReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterGetUiSessionStateReq {
+    pub session_id: String,
+    pub key: String,
+}
+
+impl MsgCenterGetUiSessionStateReq {
+    pub fn new(session_id: String, key: String) -> Self {
+        Self { session_id, key }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterGetUiSessionStateReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterListUiSessionStateReq {
+    pub session_id: String,
+}
+
+impl MsgCenterListUiSessionStateReq {
+    pub fn new(session_id: String) -> Self {
+        Self { session_id }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterListUiSessionStateReq")
     }
 }
 
@@ -1660,23 +1743,23 @@ impl MsgCenterClient {
         }
     }
 
-    pub async fn update_record_session(
+    pub async fn update_record_ui_session(
         &self,
         record_id: String,
-        session_id: String,
+        ui_session_id: String,
     ) -> std::result::Result<MsgRecord, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
                 handler
-                    .handle_update_record_session(record_id, session_id, ctx)
+                    .handle_update_record_ui_session(record_id, ui_session_id, ctx)
                     .await
             }
             Self::KRPC(client) => {
-                let req = MsgCenterUpdateRecordSessionReq::new(record_id, session_id);
-                let req_json = serialize_to_json(&req, "MsgCenterUpdateRecordSessionReq")?;
+                let req = MsgCenterUpdateRecordUiSessionReq::new(record_id, ui_session_id);
+                let req_json = serialize_to_json(&req, "MsgCenterUpdateRecordUiSessionReq")?;
                 let result = client
-                    .call(METHOD_MSG_UPDATE_RECORD_SESSION, req_json)
+                    .call(METHOD_MSG_UPDATE_RECORD_UI_SESSION, req_json)
                     .await?;
                 parse_rpc_response(result, "MsgRecord")
             }
@@ -1789,6 +1872,69 @@ impl MsgCenterClient {
                 let req_json = serialize_to_json(&req, "MsgCenterGetMessageReq")?;
                 let result = client.call(METHOD_MSG_GET_MESSAGE, req_json).await?;
                 parse_optional_rpc_response(result, "MsgObject")
+            }
+        }
+    }
+
+    pub async fn update_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+        value: Value,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_update_ui_session_state(session_id, key, value, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterUpdateUiSessionStateReq::new(session_id, key, value);
+                let req_json = serialize_to_json(&req, "MsgCenterUpdateUiSessionStateReq")?;
+                let result = client
+                    .call(METHOD_UI_SESSION_UPDATE_STATE, req_json)
+                    .await?;
+                parse_rpc_response(result, "UiSessionStateEntry")
+            }
+        }
+    }
+
+    pub async fn get_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+    ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_get_ui_session_state(session_id, key, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterGetUiSessionStateReq::new(session_id, key);
+                let req_json = serialize_to_json(&req, "MsgCenterGetUiSessionStateReq")?;
+                let result = client.call(METHOD_UI_SESSION_GET_STATE, req_json).await?;
+                parse_optional_rpc_response(result, "UiSessionStateEntry")
+            }
+        }
+    }
+
+    pub async fn list_ui_session_state(
+        &self,
+        session_id: String,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_list_ui_session_state(session_id, ctx).await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterListUiSessionStateReq::new(session_id);
+                let req_json = serialize_to_json(&req, "MsgCenterListUiSessionStateReq")?;
+                let result = client.call(METHOD_UI_SESSION_LIST_STATE, req_json).await?;
+                parse_rpc_response(result, "Vec<UiSessionStateEntry>")
             }
         }
     }
@@ -2521,10 +2667,10 @@ pub trait MsgCenterHandler: Send + Sync {
         ctx: RPCContext,
     ) -> std::result::Result<MsgRecord, RPCErrors>;
 
-    async fn handle_update_record_session(
+    async fn handle_update_record_ui_session(
         &self,
         record_id: String,
-        session_id: String,
+        ui_session_id: String,
         ctx: RPCContext,
     ) -> std::result::Result<MsgRecord, RPCErrors>;
 
@@ -2568,6 +2714,27 @@ pub trait MsgCenterHandler: Send + Sync {
         msg_id: ObjId,
         ctx: RPCContext,
     ) -> std::result::Result<Option<MsgObject>, RPCErrors>;
+
+    async fn handle_update_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+        value: Value,
+        ctx: RPCContext,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors>;
+
+    async fn handle_get_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors>;
+
+    async fn handle_list_ui_session_state(
+        &self,
+        session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors>;
 
     async fn handle_resolve_did(
         &self,
@@ -2939,11 +3106,15 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_UPDATE_RECORD_SESSION | "update_record_session" => {
-                let update_req = MsgCenterUpdateRecordSessionReq::from_json(req.params)?;
+            METHOD_MSG_UPDATE_RECORD_UI_SESSION => {
+                let update_req = MsgCenterUpdateRecordUiSessionReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_update_record_session(update_req.record_id, update_req.session_id, ctx)
+                    .handle_update_record_ui_session(
+                        update_req.record_id,
+                        update_req.ui_session_id,
+                        ctx,
+                    )
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -3010,6 +3181,35 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
             METHOD_MSG_GET_MESSAGE | "get_message" => {
                 let get_req = MsgCenterGetMessageReq::from_json(req.params)?;
                 let result = self.0.handle_get_message(get_req.msg_id, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_UI_SESSION_UPDATE_STATE => {
+                let update_req = MsgCenterUpdateUiSessionStateReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_update_ui_session_state(
+                        update_req.session_id,
+                        update_req.key,
+                        update_req.value,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_UI_SESSION_GET_STATE => {
+                let get_req = MsgCenterGetUiSessionStateReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_get_ui_session_state(get_req.session_id, get_req.key, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_UI_SESSION_LIST_STATE => {
+                let list_req = MsgCenterListUiSessionStateReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_list_ui_session_state(list_req.session_id, ctx)
+                    .await?;
                 RPCResult::Success(json!(result))
             }
             METHOD_CONTACT_RESOLVE_DID | "resolve_did" => {

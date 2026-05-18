@@ -1,7 +1,7 @@
 //! §9.7 of NewOpenDANRuntime — local workspace records.
 //!
 //! Workspaces are the agent-owned private working areas where filesystem
-//! tools (exec_bash / read_file / edit_file / ...) operate. The new
+//! tools (exec_bash / read / edit_file / ...) operate. The new
 //! runtime's invariants:
 //!
 //! 1. Each workspace lives at `<agent_root>/workspace/<workspace_id>/` and

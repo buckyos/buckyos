@@ -93,7 +93,7 @@ pub fn bar() -> u32 { 42 }
     <edit_file path="src/foo.rs" mode="replace_range" from_line="10" to_line="20"><![CDATA[
 new content
     ]]></edit_file>
-    <read uri="file:///workspace/src/foo.rs" offset="0" limit="4096"/>
+    <read uri="src/foo.rs" offset="0" limit="4096"/>
     <report target="user"><![CDATA[
 给用户的消息；可选；仅在有重要进展或需要用户输入时填写。
     ]]></report>
@@ -112,7 +112,7 @@ new content
 - `<exec_bash>`：一条 shell 命令对应一个标签；不要把结构化写文件动作塞进 shell。
 - 写文本文件必须使用 `<write_file>` 或 `<edit_file>`，不要用 `echo` / `cat` / heredoc 写文件。
 - XML body 统一使用 CDATA；文件内容、命令、报告正文都放在对应标签 body 中。
-- 文件路径优先使用 workspace 内路径；需要绝对路径时必须明确且可访问。
+- `read` 读取文件时优先使用 workspace 内相对路径；没有 `://` 协议头时默认按文件路径处理。
 - `<report target="user">` 表示发送给用户的过程消息，不写入 last_report。
 - `<report>` 不带 target 表示 Self Report，写入 last_report，但不会自动终止 behavior。
 - `<next_behavior>` 只在当前 behavior 应结束或切换时填写；继续当前 behavior 时省略。
@@ -767,13 +767,13 @@ mod tests {
         let parser = XmlBehaviorParser::new();
         let out = parser
             .parse(&resp(
-                r#"<actions><read uri="file:///workspace/x" offset="0" limit="1024"/></actions>"#,
+                r#"<actions><read uri="x" offset="0" limit="1024"/></actions>"#,
             ))
             .unwrap();
         assert_eq!(out.do_actions.len(), 1);
         let call = &out.do_actions[0];
         assert_eq!(call.name, "read");
-        assert_eq!(call.args.get("uri"), Some(&json!("file:///workspace/x")));
+        assert_eq!(call.args.get("uri"), Some(&json!("x")));
         assert_eq!(call.args.get("offset"), Some(&json!("0")));
         assert_eq!(call.args.get("limit"), Some(&json!("1024")));
     }

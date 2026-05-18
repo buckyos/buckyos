@@ -6,7 +6,7 @@
 //!     Session > Agent > Runtime > System) — backed by a per-session tmux
 //!     runner so each AgentSession owns one long-lived `od_<sid>` tmux
 //!     session, and `exec_bash` calls land in that pane
-//!   - `read_file` / `write_file` / `edit_file`
+//!   - `read` / `write_file` / `edit_file`
 //!   - `glob` / `grep`
 //!
 //! 4-layer overlay (§2 of NewOpenDANRuntime.md, "渲染规则 2026-05-14 修订"):

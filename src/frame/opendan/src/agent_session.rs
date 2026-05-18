@@ -3133,7 +3133,12 @@ impl AgentSession {
         let workspace_dir = workspace_id
             .as_deref()
             .map(|ws| self.agent_config.layout.workspaces_dir.join(ws));
-        let validator = crate::attachment_policy::WorkspaceAttachmentValidator::new(
+        let validator = crate::attachment_policy::WorkspaceAttachmentValidator::with_policy(
+            workspace_dir.clone(),
+            self.agent_name.clone(),
+            self.agent_config.toml.runtime.attachment_path_policy,
+        );
+        let resolver = crate::attachment_resolver::NamedStoreLocalLinkResolver::new(
             workspace_dir,
             self.agent_name.clone(),
         );
@@ -3144,12 +3149,15 @@ impl AgentSession {
                 .runtime
                 .preserve_attachment_tag_in_egress,
         };
-        let msg = match llm_context::ai_message_to_msg_object_with_base_validated_with_options(
+        let msg = match llm_context::ai_message_to_msg_object_with_base_validated_async(
             message,
             msg,
             &validator,
             egress_options,
-        ) {
+            &resolver,
+        )
+        .await
+        {
             Ok(msg) => msg,
             Err(err) => {
                 warn!(

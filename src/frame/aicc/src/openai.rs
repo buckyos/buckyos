@@ -1039,7 +1039,20 @@ impl OpenAIProvider {
                             "output": output_text,
                         }));
                     }
-                    // Image / Document / Thinking 等暂不处理 —— 现阶段 llm_explore /
+                    AiContent::Image { source } if role_str == "user" => {
+                        pending_text_parts.push(Self::responses_image_part(source)?);
+                    }
+                    AiContent::Document { source, title } if role_str == "user" => {
+                        let mut line = Self::chat_resource_text(source);
+                        if let Some(title) = title.as_deref().filter(|s| !s.is_empty()) {
+                            line = format!("{} ({})", line, title);
+                        }
+                        pending_text_parts.push(json!({
+                            "type": content_type,
+                            "text": line,
+                        }));
+                    }
+                    // Thinking 等暂不处理 —— 现阶段 llm_explore /
                     // run_local_llm 都不产生这些 block,出现的话留给后续阶段。
                     _ => {}
                 }
@@ -1090,6 +1103,23 @@ impl OpenAIProvider {
         }
 
         Ok(items)
+    }
+
+    fn responses_image_part(source: &ResourceRef) -> Result<Value, ProviderError> {
+        match source {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "input_image",
+                "image_url": url,
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "type": "input_image",
+                "image_url": format!("data:{};base64,{}", mime, data_base64),
+            })),
+            ResourceRef::NamedObject { obj_id } => Ok(json!({
+                "type": "input_text",
+                "text": format!("named_object: {}", obj_id),
+            })),
+        }
     }
 
     /// Build OpenAI Chat Completions message array. Unlike the Responses
@@ -4678,6 +4708,67 @@ data: [DONE]
 
         assert_eq!(llm_models, vec!["gpt-5".to_string()]);
         assert!(image_models.is_empty());
+    }
+
+    #[test]
+    fn responses_build_messages_keeps_user_image_blocks() {
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::new(
+                    AiRole::User,
+                    vec![
+                        AiContent::text("what is in this image?"),
+                        AiContent::Image {
+                            source: ResourceRef::Base64 {
+                                mime: "image/png".to_string(),
+                                data_base64: "aGVsbG8=".to_string(),
+                            },
+                        },
+                    ],
+                )],
+                vec![],
+                vec![],
+                None,
+                None,
+            ),
+            None,
+        );
+
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-primary".to_string(),
+                provider_type: "cloud_api".to_string(),
+                base_url: default_base_url(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+        let messages = provider.build_messages(&request).expect("messages");
+
+        assert_eq!(
+            messages[0]
+                .pointer("/content/0/type")
+                .and_then(|v| v.as_str()),
+            Some("input_text")
+        );
+        assert_eq!(
+            messages[0]
+                .pointer("/content/1/type")
+                .and_then(|v| v.as_str()),
+            Some("input_image")
+        );
+        assert_eq!(
+            messages[0]
+                .pointer("/content/1/image_url")
+                .and_then(|v| v.as_str()),
+            Some("data:image/png;base64,aGVsbG8=")
+        );
     }
 
     #[test]
