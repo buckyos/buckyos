@@ -209,7 +209,7 @@ center
         "timeout_ms": 60000,
         "models": ["model-a", "model-b"],
         "default_model": "model-a",
-        "features": ["plan", "json_output", "tool_calling"]
+        "features": ["plan", "json_output", "tool_calling", "web_search"]
       }
     ]
   }

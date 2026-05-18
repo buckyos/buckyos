@@ -30,7 +30,7 @@ AICC 启动和 `reload_settings` / `service.reload_settings` 时会读取该 key
         "timeout_ms": 60000,
         "models": ["gpt-5.2", "gpt-5-mini"],
         "default_model": "gpt-5.2",
-        "features": ["plan", "json_output", "tool_calling"]
+        "features": ["plan", "json_output", "tool_calling", "web_search"]
       }
     ]
   }
@@ -84,7 +84,7 @@ POST /kapi/system_config
   "method": "sys_config_set",
   "params": {
     "key": "services/aicc/settings",
-    "value": "{\"openai\":{\"enabled\":true,\"api_token\":\"sk-xxx\",\"instances\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_driver\":\"openai\",\"base_url\":\"https://api.openai.com/v1\",\"timeout_ms\":60000,\"models\":[\"gpt-5.2\",\"gpt-5-mini\"],\"default_model\":\"gpt-5.2\",\"features\":[\"plan\",\"json_output\",\"tool_calling\"]}]}}"
+    "value": "{\"openai\":{\"enabled\":true,\"api_token\":\"sk-xxx\",\"instances\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_driver\":\"openai\",\"base_url\":\"https://api.openai.com/v1\",\"timeout_ms\":60000,\"models\":[\"gpt-5.2\",\"gpt-5-mini\"],\"default_model\":\"gpt-5.2\",\"features\":[\"plan\",\"json_output\",\"tool_calling\",\"web_search\"]}]}}"
   },
   "sys": [3002, "<session_token>", "trace-aicc-cfg-set"]
 }
@@ -100,7 +100,7 @@ POST /kapi/system_config
   "params": {
     "key": "services/aicc/settings",
     "json_path": "/openai",
-    "value": "{\"enabled\":true,\"api_token\":\"sk-xxx\",\"instances\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_driver\":\"openai\",\"base_url\":\"https://api.openai.com/v1\",\"timeout_ms\":60000,\"models\":[\"gpt-5.2\",\"gpt-5-mini\"],\"default_model\":\"gpt-5.2\",\"features\":[\"plan\",\"json_output\",\"tool_calling\"]}]}"
+    "value": "{\"enabled\":true,\"api_token\":\"sk-xxx\",\"instances\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_driver\":\"openai\",\"base_url\":\"https://api.openai.com/v1\",\"timeout_ms\":60000,\"models\":[\"gpt-5.2\",\"gpt-5-mini\"],\"default_model\":\"gpt-5.2\",\"features\":[\"plan\",\"json_output\",\"tool_calling\",\"web_search\"]}]}"
   },
   "sys": [3003, "<session_token>", "trace-aicc-cfg-patch"]
 }

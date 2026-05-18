@@ -505,6 +505,7 @@ fn build_model_metadata(
             streaming: false,
             tool_call: false,
             json_schema: false,
+            web_search: false,
             vision: false,
             max_context_tokens: None,
         },

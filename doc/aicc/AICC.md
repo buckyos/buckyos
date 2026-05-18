@@ -96,20 +96,21 @@ pub enum Capability {
     Video2Text,
 }
 
-/// 高层特性声明（如 plan/json_output/vision/asr 等）
+/// 高层特性声明（如 plan/json_output/web_search/vision/asr 等）
 pub type Feature = String;
 
 pub mod features {
     pub const PLAN: &str = "plan";
     pub const TOOL_CALLING: &str = "tool_calling";
     pub const JSON_OUTPUT: &str = "json_output";
+    pub const WEB_SEARCH: &str = "web_search";
     pub const VISION: &str = "vision";
     pub const ASR: &str = "asr";
     pub const VIDEO_UNDERSTAND: &str = "video_understand";
 }
 ```
 
-Router 会用 `must_features` 做硬过滤（例如 “要做 Plan” 必须选择声明支持 `plan` 的实例）。
+Router 会用 `must_features` 做硬过滤（例如 “要做 Plan” 必须选择声明支持 `plan` 的实例）。`llm.chat` 默认补充 `web_search`，因此默认对话路由只选择声明支持 Web Search 的模型。
 
 ---
 

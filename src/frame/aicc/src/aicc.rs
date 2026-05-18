@@ -1780,6 +1780,23 @@ fn route_policy_from_request(request: &AiMethodRequest) -> RoutePolicy {
     policy
 }
 
+fn apply_default_features_for_method(method: &str, request: &mut AiMethodRequest) {
+    if method == ai_methods::LLM_CHAT {
+        ensure_must_feature(request, buckyos_api::features::WEB_SEARCH);
+    }
+}
+
+fn ensure_must_feature(request: &mut AiMethodRequest, feature: &str) {
+    if !request
+        .requirements
+        .must_features
+        .iter()
+        .any(|item| item == feature)
+    {
+        request.requirements.must_features.push(feature.to_string());
+    }
+}
+
 fn apply_policy_config_to_route_policy(policy: &mut RoutePolicy, config: &PolicyConfig) {
     if let Some(value) = config.profile.as_ref() {
         policy.profile = value.value.clone();
@@ -1819,6 +1836,7 @@ fn required_model_features(features: &[Feature]) -> RequiredModelFeatures {
         match feature.as_str() {
             buckyos_api::features::TOOL_CALLING => required.tool_call = true,
             buckyos_api::features::JSON_OUTPUT => required.json_schema = true,
+            buckyos_api::features::WEB_SEARCH => required.web_search = true,
             buckyos_api::features::VISION => required.vision = true,
             "streaming" => required.streaming = true,
             _ => {}
@@ -2022,6 +2040,9 @@ pub fn provider_model_metadata(
             json_schema: features
                 .iter()
                 .any(|item| item == buckyos_api::features::JSON_OUTPUT),
+            web_search: features
+                .iter()
+                .any(|item| item == buckyos_api::features::WEB_SEARCH),
             vision: features
                 .iter()
                 .any(|item| item == buckyos_api::features::VISION),
@@ -2688,10 +2709,11 @@ impl AIComputeCenter {
     pub async fn complete_with_method(
         &self,
         method: &str,
-        request: AiMethodRequest,
+        mut request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
         let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
+        apply_default_features_for_method(method, &mut request);
         info!(
             "aicc.complete received: tenant={} caller_app={:?} method={} capability={:?} model_alias={} idempotency_key={:?}",
             invoke_ctx.tenant_id,
@@ -4450,6 +4472,40 @@ mod tests {
     }
 
     #[test]
+    fn llm_chat_default_features_include_web_search_once() {
+        let mut request = base_request();
+        apply_default_features_for_method(ai_methods::LLM_CHAT, &mut request);
+        apply_default_features_for_method(ai_methods::LLM_CHAT, &mut request);
+
+        assert_eq!(
+            request
+                .requirements
+                .must_features
+                .iter()
+                .filter(|feature| feature.as_str() == buckyos_api::features::WEB_SEARCH)
+                .count(),
+            1
+        );
+        assert!(
+            route_policy_from_request(&request)
+                .required_features
+                .web_search
+        );
+    }
+
+    #[test]
+    fn non_chat_methods_do_not_default_web_search() {
+        let mut request = base_request();
+        apply_default_features_for_method(ai_methods::LLM_COMPLETION, &mut request);
+
+        assert!(!request
+            .requirements
+            .must_features
+            .iter()
+            .any(|feature| feature == buckyos_api::features::WEB_SEARCH));
+    }
+
+    #[test]
     fn artifact_output_storage_defaults_to_named_object() {
         let request = base_request();
 
@@ -4529,7 +4585,10 @@ mod tests {
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             capabilities: vec![Capability::Llm],
-            features: vec!["plan".to_string()],
+            features: vec![
+                "plan".to_string(),
+                buckyos_api::features::WEB_SEARCH.to_string(),
+            ],
             endpoint: Some("http://127.0.0.1:8080".to_string()),
             plugin_key: None,
         }

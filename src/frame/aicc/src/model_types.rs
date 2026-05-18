@@ -338,6 +338,8 @@ pub struct ModelCapabilities {
     #[serde(default)]
     pub json_schema: bool,
     #[serde(default)]
+    pub web_search: bool,
+    #[serde(default)]
     pub vision: bool,
     #[serde(default)]
     pub max_context_tokens: Option<u64>,
@@ -348,6 +350,7 @@ impl ModelCapabilities {
         (!required.streaming || self.streaming)
             && (!required.tool_call || self.tool_call)
             && (!required.json_schema || self.json_schema)
+            && (!required.web_search || self.web_search)
             && (!required.vision || self.vision)
             && required
                 .min_context_tokens
@@ -364,6 +367,8 @@ pub struct RequiredModelFeatures {
     pub tool_call: bool,
     #[serde(default)]
     pub json_schema: bool,
+    #[serde(default)]
+    pub web_search: bool,
     #[serde(default)]
     pub vision: bool,
     #[serde(default)]
@@ -1079,6 +1084,7 @@ mod tests {
                 streaming: true,
                 tool_call: true,
                 json_schema: true,
+                web_search: true,
                 vision: false,
                 max_context_tokens: Some(128_000),
             },
@@ -1090,12 +1096,24 @@ mod tests {
         assert!(model.supports_api_type(&ApiType::LlmChat));
         assert!(!model.supports_api_type(&ApiType::ImageTextToImage));
         assert!(model.supports_requirements(&RequiredModelFeatures {
+            web_search: true,
             tool_call: true,
             min_context_tokens: Some(32_000),
             ..Default::default()
         }));
         assert!(!model.supports_requirements(&RequiredModelFeatures {
             vision: true,
+            ..Default::default()
+        }));
+        assert!(!ModelMetadata {
+            capabilities: ModelCapabilities {
+                web_search: false,
+                ..model.capabilities.clone()
+            },
+            ..model
+        }
+        .supports_requirements(&RequiredModelFeatures {
+            web_search: true,
             ..Default::default()
         }));
     }

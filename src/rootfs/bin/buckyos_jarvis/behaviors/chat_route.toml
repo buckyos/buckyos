@@ -48,6 +48,8 @@ tool_whitelist = [
   "forward_msg",
   "update_session_topic",
   "set_notepad",
+  "read_file",
+  "exec_bash"
 ]
 
 
@@ -56,4 +58,4 @@ max_rounds = 24
 max_consecutive_errors = 5
 
 [model]
-preferred = "llm.chat"
+preferred = "llm.plan"

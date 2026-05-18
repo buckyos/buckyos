@@ -80,8 +80,16 @@ pub fn mock_instance(
     instance_id: &str,
     provider_type: &str,
     capabilities: Vec<Capability>,
-    features: Vec<String>,
+    mut features: Vec<String>,
 ) -> ProviderInstance {
+    if capabilities.iter().any(|item| item == &Capability::Llm)
+        && !features
+            .iter()
+            .any(|item| item == buckyos_api::features::WEB_SEARCH)
+    {
+        features.push(buckyos_api::features::WEB_SEARCH.to_string());
+    }
+
     ProviderInstance {
         provider_instance_name: instance_id.to_string(),
         provider_type: ProviderType::CloudApi,

@@ -132,25 +132,29 @@ impl ClaudeProvider {
     ) -> ProviderInventory {
         let mut metadata_list = Vec::with_capacity(models.len());
         for model in models.iter() {
+            let model_features = effective_features_for_claude_model(model.as_str(), features);
             let mut metadata = provider_model_metadata(
                 provider_instance_name,
                 provider_type.clone(),
                 model.as_str(),
                 ApiType::LlmChat,
                 llm_logical_mounts(provider_driver, model.as_str()),
-                features,
+                model_features.as_slice(),
                 Some(0.01),
                 Some(1800),
             );
-            metadata.api_types.push(ApiType::VisionCaption);
-            metadata.api_types.push(ApiType::VisionOcr);
-            metadata
-                .logical_mounts
-                .extend(claude_vision_mounts(ApiType::VisionCaption, model.as_str()));
-            metadata
-                .logical_mounts
-                .extend(claude_vision_mounts(ApiType::VisionOcr, model.as_str()));
-            metadata.capabilities.vision = true;
+            if claude_model_supports_vision(model.as_str()) {
+                metadata.api_types.push(ApiType::VisionCaption);
+                metadata.api_types.push(ApiType::VisionOcr);
+                metadata
+                    .logical_mounts
+                    .extend(claude_vision_mounts(ApiType::VisionCaption, model.as_str()));
+                metadata
+                    .logical_mounts
+                    .extend(claude_vision_mounts(ApiType::VisionOcr, model.as_str()));
+            }
+            metadata.capabilities.max_context_tokens =
+                Some(claude_model_max_context_tokens(model.as_str()));
             metadata_list.push(metadata);
         }
         ProviderInventory {
@@ -786,11 +790,103 @@ fn default_timeout_ms() -> u64 {
 }
 
 fn default_features() -> Vec<String> {
+    // Broad set of features that modern Claude (3.7+/4+) supports. The per-model
+    // classifier in `effective_features_for_claude_model` trims this list for
+    // older families (Claude 3 / 3.5) that lack `plan`, `web_search`, or
+    // `vision`. Refer to Anthropic's public capability docs.
     vec![
         features::PLAN.to_string(),
         features::JSON_OUTPUT.to_string(),
         features::TOOL_CALLING.to_string(),
+        features::WEB_SEARCH.to_string(),
+        features::VISION.to_string(),
     ]
+}
+
+/// Per-model capability classification for Anthropic Claude models.
+///
+/// Anthropic's `GET /v1/models` API only returns `id`/`display_name` and does
+/// not advertise per-model capabilities. We hand-maintain this table from the
+/// public capability docs:
+///   - Extended thinking ("plan"): Claude 3.7 Sonnet and the Claude 4 family.
+///   - Web Search server tool: Claude 3.5 family and newer (3.5 Haiku, 3.5
+///     Sonnet, 3.7 Sonnet, 4.x).
+///   - Vision (image input): all Claude families except `claude-3-5-haiku`,
+///     which is text-only.
+///
+/// Naming pattern accepted: `claude-{3|3-5|3-7}-{family}-...` for legacy and
+/// `claude-{opus|sonnet|haiku}-{4|5}-...` for Claude 4 onwards.
+fn claude_model_family_is_4_or_newer(id: &str) -> bool {
+    id.starts_with("claude-opus-4")
+        || id.starts_with("claude-sonnet-4")
+        || id.starts_with("claude-haiku-4")
+        || id.starts_with("claude-opus-5")
+        || id.starts_with("claude-sonnet-5")
+        || id.starts_with("claude-haiku-5")
+}
+
+fn claude_model_supports_extended_thinking(model_id: &str) -> bool {
+    let id = model_id.trim().to_ascii_lowercase();
+    id.starts_with("claude-3-7-") || claude_model_family_is_4_or_newer(id.as_str())
+}
+
+fn claude_model_supports_web_search(model_id: &str) -> bool {
+    let id = model_id.trim().to_ascii_lowercase();
+    id.starts_with("claude-3-5-")
+        || id.starts_with("claude-3-7-")
+        || claude_model_family_is_4_or_newer(id.as_str())
+}
+
+fn claude_model_supports_vision(model_id: &str) -> bool {
+    let id = model_id.trim().to_ascii_lowercase();
+    // Claude 3.5 Haiku is text-only per Anthropic docs.
+    !id.starts_with("claude-3-5-haiku")
+}
+
+fn claude_model_max_context_tokens(_model_id: &str) -> u64 {
+    // All currently shipping Claude models advertise a 200K-token context
+    // window. Sonnet 4's 1M-token window requires the `context-1m-2025-08-07`
+    // beta header and is not enabled by default.
+    200_000
+}
+
+fn effective_features_for_claude_model(model_id: &str, base: &[Feature]) -> Vec<Feature> {
+    let mut out: Vec<Feature> = Vec::with_capacity(base.len() + 3);
+    let mut push_unique = |out: &mut Vec<Feature>, value: &str| {
+        if !out.iter().any(|item| item == value) {
+            out.push(value.to_string());
+        }
+    };
+
+    for feature in base.iter() {
+        let allowed = match feature.as_str() {
+            "web_search" => claude_model_supports_web_search(model_id),
+            "vision" => claude_model_supports_vision(model_id),
+            "plan" => claude_model_supports_extended_thinking(model_id),
+            _ => true,
+        };
+        if allowed {
+            push_unique(&mut out, feature.as_str());
+        }
+    }
+
+    // Universal Claude 3+ capabilities — present even if the operator's base
+    // config omitted them, so inventory reflects reality.
+    push_unique(&mut out, features::TOOL_CALLING);
+    push_unique(&mut out, features::JSON_OUTPUT);
+    push_unique(&mut out, "streaming");
+
+    if claude_model_supports_web_search(model_id) {
+        push_unique(&mut out, features::WEB_SEARCH);
+    }
+    if claude_model_supports_vision(model_id) {
+        push_unique(&mut out, features::VISION);
+    }
+    if claude_model_supports_extended_thinking(model_id) {
+        push_unique(&mut out, features::PLAN);
+    }
+
+    out
 }
 
 fn normalize_model_list(models: Vec<String>) -> Vec<String> {
@@ -1005,6 +1101,149 @@ pub fn register_claude_providers(center: &AIComputeCenter, settings: &Value) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifier_matches_anthropic_public_capabilities() {
+        // Claude 3 family: vision yes, web_search no, plan no.
+        assert!(claude_model_supports_vision("claude-3-opus-20240229"));
+        assert!(!claude_model_supports_web_search("claude-3-opus-20240229"));
+        assert!(!claude_model_supports_extended_thinking(
+            "claude-3-opus-20240229"
+        ));
+
+        // Claude 3.5 Haiku: text-only, web_search yes, plan no.
+        assert!(!claude_model_supports_vision("claude-3-5-haiku-20241022"));
+        assert!(claude_model_supports_web_search("claude-3-5-haiku-20241022"));
+        assert!(!claude_model_supports_extended_thinking(
+            "claude-3-5-haiku-20241022"
+        ));
+
+        // Claude 3.5 Sonnet: vision + web_search yes, plan no.
+        assert!(claude_model_supports_vision("claude-3-5-sonnet-20241022"));
+        assert!(claude_model_supports_web_search(
+            "claude-3-5-sonnet-20241022"
+        ));
+        assert!(!claude_model_supports_extended_thinking(
+            "claude-3-5-sonnet-20241022"
+        ));
+
+        // Claude 3.7 Sonnet: all of vision/web_search/plan.
+        assert!(claude_model_supports_vision("claude-3-7-sonnet-20250219"));
+        assert!(claude_model_supports_web_search(
+            "claude-3-7-sonnet-20250219"
+        ));
+        assert!(claude_model_supports_extended_thinking(
+            "claude-3-7-sonnet-20250219"
+        ));
+
+        // Claude 4 / 4.5 / 4.7 family.
+        for id in [
+            "claude-opus-4-20250514",
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-5",
+            "claude-opus-4-7",
+        ] {
+            assert!(claude_model_supports_vision(id), "vision: {}", id);
+            assert!(claude_model_supports_web_search(id), "web_search: {}", id);
+            assert!(
+                claude_model_supports_extended_thinking(id),
+                "thinking: {}",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn effective_features_trims_for_legacy_and_extends_for_modern() {
+        let base = vec![
+            features::PLAN.to_string(),
+            features::JSON_OUTPUT.to_string(),
+            features::TOOL_CALLING.to_string(),
+            features::WEB_SEARCH.to_string(),
+            features::VISION.to_string(),
+        ];
+
+        let claude_3 = effective_features_for_claude_model("claude-3-opus-20240229", &base);
+        assert!(!claude_3.iter().any(|f| f == features::PLAN));
+        assert!(!claude_3.iter().any(|f| f == features::WEB_SEARCH));
+        assert!(claude_3.iter().any(|f| f == features::VISION));
+        assert!(claude_3.iter().any(|f| f == features::TOOL_CALLING));
+
+        let haiku_3_5 = effective_features_for_claude_model("claude-3-5-haiku-20241022", &base);
+        assert!(!haiku_3_5.iter().any(|f| f == features::VISION));
+        assert!(haiku_3_5.iter().any(|f| f == features::WEB_SEARCH));
+        assert!(!haiku_3_5.iter().any(|f| f == features::PLAN));
+
+        let sonnet_4 = effective_features_for_claude_model("claude-sonnet-4-5", &base);
+        for expected in [
+            features::PLAN,
+            features::JSON_OUTPUT,
+            features::TOOL_CALLING,
+            features::WEB_SEARCH,
+            features::VISION,
+            "streaming",
+        ] {
+            assert!(
+                sonnet_4.iter().any(|f| f == expected),
+                "modern model missing feature {}",
+                expected
+            );
+        }
+
+        // Even when base is empty, universally-supported features are added back.
+        let empty = effective_features_for_claude_model("claude-3-opus-20240229", &[]);
+        assert!(empty.iter().any(|f| f == features::TOOL_CALLING));
+        assert!(empty.iter().any(|f| f == features::JSON_OUTPUT));
+    }
+
+    #[test]
+    fn build_inventory_reflects_per_model_capabilities() {
+        let models = vec![
+            "claude-3-5-haiku-20241022".to_string(),
+            "claude-3-7-sonnet-20250219".to_string(),
+            "claude-3-opus-20240229".to_string(),
+        ];
+        let inventory = ClaudeProvider::build_inventory_from_models(
+            "claude-test",
+            ProviderType::CloudApi,
+            "claude",
+            models.as_slice(),
+            &default_features(),
+            None,
+        );
+
+        let by_id = |id: &str| {
+            inventory
+                .models
+                .iter()
+                .find(|m| m.provider_model_id == id)
+                .cloned()
+                .unwrap_or_else(|| panic!("missing model {}", id))
+        };
+
+        let haiku = by_id("claude-3-5-haiku-20241022");
+        assert!(!haiku.capabilities.vision);
+        assert!(haiku.capabilities.web_search);
+        assert!(!haiku
+            .api_types
+            .iter()
+            .any(|api| matches!(api, ApiType::VisionCaption | ApiType::VisionOcr)));
+
+        let sonnet = by_id("claude-3-7-sonnet-20250219");
+        assert!(sonnet.capabilities.vision);
+        assert!(sonnet.capabilities.web_search);
+        assert!(sonnet
+            .api_types
+            .iter()
+            .any(|api| matches!(api, ApiType::VisionCaption)));
+
+        let opus3 = by_id("claude-3-opus-20240229");
+        assert!(opus3.capabilities.vision);
+        assert!(!opus3.capabilities.web_search);
+
+        assert_eq!(sonnet.capabilities.max_context_tokens, Some(200_000));
+    }
 
     #[test]
     fn build_claude_instances_uses_defaults() {

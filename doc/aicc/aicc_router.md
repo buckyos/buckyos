@@ -234,7 +234,7 @@ llm
 | 隐私等级 | `private_safe`、`public_cloud` | 决定能否发送到云端 |
 | 成本等级 | `low`、`medium`、`high` | 调度评分 |
 | 延迟等级 | `fast`、`normal`、`slow` | 调度评分 |
-| 能力特性 | `tool_call`、`json_schema`、`vision`、`streaming` | 硬性过滤 |
+| 能力特性 | `tool_call`、`json_schema`、`web_search`、`vision`、`streaming` | 硬性过滤 |
 | 上下文长度 | `128k`、`1m` | 硬性过滤和评分 |
 | 质量评分 | `0.0-1.0` | 调度评分 |
 
@@ -359,6 +359,7 @@ models:
       streaming: true
       tool_call: true
       json_schema: true
+      web_search: true
       vision: true
       max_context_tokens: 128000
     attributes:
@@ -512,7 +513,7 @@ function route(request: AICCRequest): RouteDecision {
 1. API 类型不匹配；
 2. Provider 未启用或凭据不可用；
 3. 模型不可用、下线或健康状态为不可用；
-4. request 所需能力不支持，例如 tool call、JSON schema、vision、streaming；
+4. request 所需能力不支持，例如 tool call、JSON schema、web search、vision、streaming；
 5. 上下文长度不足；
 6. 用户或应用策略禁止该 Provider；
 7. `local_only = true` 时候选不是本地 Provider；
@@ -1315,6 +1316,7 @@ providers:
         capabilities:
           tool_call: true
           json_schema: true
+          web_search: true
           streaming: true
           max_context_tokens: 128000
         attributes:
@@ -1335,6 +1337,7 @@ providers:
         capabilities:
           tool_call: true
           json_schema: true
+          web_search: true
           streaming: true
           max_context_tokens: 128000
         attributes:

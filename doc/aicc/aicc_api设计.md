@@ -1593,6 +1593,7 @@ Fallback：
       "capabilities": {
         "tool_call": true,
         "json_schema": true,
+        "web_search": true,
         "vision": true,
         "max_context_tokens": 400000
       },

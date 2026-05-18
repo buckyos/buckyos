@@ -2101,6 +2101,42 @@ impl OpenAIProvider {
         Ok(())
     }
 
+    fn normalize_web_search_reasoning(request_obj: &mut Map<String, Value>) -> bool {
+        let has_web_search = request_obj
+            .get("tools")
+            .and_then(|value| value.as_array())
+            .map(|tools| {
+                tools.iter().any(|tool| {
+                    tool.get("type")
+                        .and_then(|value| value.as_str())
+                        .map(|tool_type| {
+                            tool_type == OPENAI_TOOL_TYPE_WEB_SEARCH || tool_type == "web_search"
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if !has_web_search {
+            return false;
+        }
+
+        let Some(reasoning) = request_obj
+            .get_mut("reasoning")
+            .and_then(|value| value.as_object_mut())
+        else {
+            return false;
+        };
+        let Some(effort) = reasoning.get_mut("effort") else {
+            return false;
+        };
+        if effort.as_str() != Some("minimal") {
+            return false;
+        }
+
+        *effort = Value::String("low".to_string());
+        true
+    }
+
     async fn post_json(
         &self,
         ctx: &crate::aicc::InvokeCtx,
@@ -2408,6 +2444,12 @@ impl OpenAIProvider {
         merge_requirements_response_format(&mut request_obj, req);
         merge_tool_calls(&mut request_obj, req.payload.tool_specs.as_slice())?;
         Self::merge_requirements_tools(&mut request_obj, req)?;
+        if Self::normalize_web_search_reasoning(&mut request_obj) {
+            info!(
+                "aicc.openai adjusted reasoning.effort for web_search: provider_instance_name={} model={} trace_id={:?} effort=low",
+                self.instance.provider_instance_name, provider_model, ctx.trace_id
+            );
+        }
         if self.use_chat_completions_endpoint() {
             Self::normalize_chat_completions_request(&mut request_obj);
         }
@@ -4121,6 +4163,59 @@ mod tests {
                 .and_then(|tools| tools.as_array())
                 .map(|tools| tools.len()),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn normalize_web_search_reasoning_promotes_minimal_effort() {
+        let mut request = json!({
+            "model": "gpt-5-nano",
+            "input": "hello",
+            "reasoning": {
+                "effort": "minimal"
+            },
+            "tools": [{
+                "type": OPENAI_TOOL_TYPE_WEB_SEARCH
+            }]
+        })
+        .as_object()
+        .cloned()
+        .expect("request object");
+
+        assert!(OpenAIProvider::normalize_web_search_reasoning(&mut request));
+        assert_eq!(
+            Value::Object(request.clone())
+                .pointer("/reasoning/effort")
+                .and_then(|value| value.as_str()),
+            Some("low")
+        );
+    }
+
+    #[test]
+    fn normalize_web_search_reasoning_leaves_non_web_search_requests() {
+        let mut request = json!({
+            "model": "gpt-5-nano",
+            "input": "hello",
+            "reasoning": {
+                "effort": "minimal"
+            },
+            "tools": [{
+                "type": "function",
+                "name": "lookup"
+            }]
+        })
+        .as_object()
+        .cloned()
+        .expect("request object");
+
+        assert!(!OpenAIProvider::normalize_web_search_reasoning(
+            &mut request
+        ));
+        assert_eq!(
+            Value::Object(request.clone())
+                .pointer("/reasoning/effort")
+                .and_then(|value| value.as_str()),
+            Some("minimal")
         );
     }
 

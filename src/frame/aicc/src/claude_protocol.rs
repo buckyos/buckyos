@@ -201,9 +201,15 @@ fn normalize_tools_option(tools: &Value) -> Result<Value, ProviderError> {
 
         let converted = match tool_obj.get("type").and_then(|value| value.as_str()) {
             Some("function") => normalize_openai_function_tool(tool_obj, idx)?,
+            Some(other) if is_claude_server_tool_type(other) => {
+                // Anthropic-native server-side tools (`web_search_20250305`,
+                // `code_execution_20250522`, etc.) pass through verbatim — the
+                // Messages API expects `{type, name, ...}` as-is.
+                Value::Object(tool_obj.clone())
+            }
             Some(other) => {
                 return Err(ProviderError::fatal(format!(
-                    "tools[{}].type '{}' is unsupported; only 'function' is supported",
+                    "tools[{}].type '{}' is unsupported; only 'function' or Anthropic server-side tools are supported",
                     idx, other
                 )));
             }
@@ -233,6 +239,79 @@ pub(crate) fn merge_tool_calls(
         ProviderError::fatal(format!("failed to serialize payload.tool_calls: {err}"))
     })?;
     target.insert("tools".to_string(), normalize_tools_option(&raw_tools)?);
+    Ok(())
+}
+
+/// Anthropic-native server-side tool type prefix. Used to recognise tools that
+/// should pass through `normalize_tools_option` verbatim.
+fn is_claude_server_tool_type(tool_type: &str) -> bool {
+    // Anthropic versions server tools with a `_YYYYMMDD` suffix (e.g.
+    // `web_search_20250305`, `code_execution_20250522`,
+    // `computer_20250124`). Match the family by prefix so newly-released
+    // versions don't require a code change.
+    const PREFIXES: &[&str] = &[
+        "web_search_",
+        "code_execution_",
+        "computer_",
+        "text_editor_",
+        "bash_",
+    ];
+    PREFIXES.iter().any(|p| tool_type.starts_with(p))
+}
+
+const CLAUDE_WEB_SEARCH_TOOL_TYPE: &str = "web_search_20250305";
+const CLAUDE_WEB_SEARCH_TOOL_NAME: &str = "web_search";
+
+/// Inject Anthropic's server-side `web_search` tool when the request
+/// requires the `web_search` feature.
+///
+/// Mirrors `OpenAIProvider::merge_requirements_tools` — the router records
+/// `must_features: [web_search]` for `llm.chat`, and each provider is
+/// responsible for translating that into its native server-tool wire format.
+pub(crate) fn merge_requirements_tools(
+    target: &mut Map<String, Value>,
+    req: &AiMethodRequest,
+) -> Result<(), ProviderError> {
+    let web_search_required = req
+        .requirements
+        .must_features
+        .iter()
+        .any(|feature| feature == buckyos_api::features::WEB_SEARCH);
+    if !web_search_required {
+        return Ok(());
+    }
+
+    let web_search_tool = json!({
+        "type": CLAUDE_WEB_SEARCH_TOOL_TYPE,
+        "name": CLAUDE_WEB_SEARCH_TOOL_NAME,
+    });
+
+    if let Some(tools_value) = target.get_mut("tools") {
+        let Some(tools) = tools_value.as_array_mut() else {
+            return Err(ProviderError::fatal(
+                "tools must be an array when enabling web_search",
+            ));
+        };
+        let already_has_web_search = tools.iter().any(|item| {
+            let type_matches = item
+                .get("type")
+                .and_then(|value| value.as_str())
+                .map(|value| value.starts_with("web_search_"))
+                .unwrap_or(false);
+            let name_matches = item
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(|value| value == CLAUDE_WEB_SEARCH_TOOL_NAME)
+                .unwrap_or(false);
+            type_matches || name_matches
+        });
+        if !already_has_web_search {
+            tools.push(web_search_tool);
+        }
+        return Ok(());
+    }
+
+    target.insert("tools".to_string(), Value::Array(vec![web_search_tool]));
     Ok(())
 }
 
@@ -1118,6 +1197,10 @@ pub(crate) fn convert_complete_request_with_dialect(
 
     merge_tool_calls(&mut request, req.payload.tool_specs.as_slice())?;
 
+    if matches!(dialect, ProtocolDialect::Claude) {
+        merge_requirements_tools(&mut request, req)?;
+    }
+
     if !request.contains_key("max_tokens") {
         request.insert("max_tokens".to_string(), Value::from(DEFAULT_MAX_TOKENS));
     }
@@ -1463,6 +1546,75 @@ mod tests {
             body.contains("call-1") && body.contains("ok"),
             "tool result text must carry call_id and payload: {}",
             body
+        );
+    }
+
+    #[test]
+    fn merge_requirements_tools_injects_anthropic_web_search() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "search")];
+        req.requirements
+            .must_features
+            .push(buckyos_api::features::WEB_SEARCH.to_string());
+
+        let (request, _ignored) =
+            convert_complete_request(&req, "claude-3-7-sonnet-20250219").expect("convert");
+        let tools = request
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].get("type").and_then(|v| v.as_str()),
+            Some("web_search_20250305")
+        );
+        assert_eq!(
+            tools[0].get("name").and_then(|v| v.as_str()),
+            Some("web_search")
+        );
+    }
+
+    #[test]
+    fn merge_requirements_tools_dedupes_existing_web_search() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "search")];
+        req.requirements
+            .must_features
+            .push(buckyos_api::features::WEB_SEARCH.to_string());
+        req.payload.options = Some(json!({
+            "tools": [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 3,
+                }
+            ]
+        }));
+
+        let (request, _ignored) =
+            convert_complete_request(&req, "claude-3-7-sonnet-20250219").expect("convert");
+        let tools = request
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools array");
+        assert_eq!(tools.len(), 1, "should not duplicate web_search tool");
+        assert_eq!(
+            tools[0].get("max_uses").and_then(|v| v.as_u64()),
+            Some(3),
+            "existing user-supplied tool spec must be preserved"
+        );
+    }
+
+    #[test]
+    fn merge_requirements_tools_is_noop_without_requirement() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "hello")];
+        let (request, _ignored) =
+            convert_complete_request(&req, "claude-3-7-sonnet-20250219").expect("convert");
+        assert!(
+            request.get("tools").is_none(),
+            "tools must not be set when web_search not required: {:?}",
+            request.get("tools")
         );
     }
 }

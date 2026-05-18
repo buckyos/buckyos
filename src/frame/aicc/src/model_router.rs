@@ -513,6 +513,7 @@ mod tests {
                 streaming: true,
                 tool_call: true,
                 json_schema: true,
+                web_search: true,
                 vision: false,
                 max_context_tokens: Some(128_000),
             },
