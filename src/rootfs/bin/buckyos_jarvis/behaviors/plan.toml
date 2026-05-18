@@ -6,7 +6,7 @@ objective = "Plan a worksession, decide the next concrete execution step, and sw
 parser = "xml"
 on_init = """
 <<ROLE>>
-__INCLUDE(role.md)__
+__INCLUDE(/role.md)__
 <</ROLE>>
 
 <<OBJECTIVE>>
@@ -111,4 +111,3 @@ mode = "compress_then_continue"
 
 [on_interrupt_graceful]
 mode = "cancel_pending_tools_then_continue"
-

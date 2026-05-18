@@ -2102,6 +2102,10 @@ impl AgentSession {
             behavior_name: behavior.meta.name.clone(),
             behavior_objective: behavior.meta.objective.clone(),
             behavior_mode: "behavior",
+            behavior_template_dir: behavior
+                .source_path
+                .as_ref()
+                .and_then(|path| path.parent().map(|parent| parent.to_path_buf())),
             workspace_id,
             workspace_root,
             agent_root: self.agent_config.layout.root.clone(),
@@ -2133,8 +2137,8 @@ impl AgentSession {
         // session env. role.md / self.md are pre-read and injected as
         // `{{ role_md }}` / `{{ self_md }}` template extras for the four
         // shipped behaviors that reference them by name. A future phase
-        // migrates the templates to `__INCLUDE($paths.agent_root/role.md)__`
-        // and drops these pre-reads entirely.
+        // migrates the templates to `__INCLUDE(/role.md)__` and drops these
+        // pre-reads entirely.
         let role_md = std::fs::read_to_string(self.agent_config.layout.root.join("role.md"))
             .unwrap_or_default();
         let self_md = std::fs::read_to_string(self.agent_config.layout.root.join("self.md"))

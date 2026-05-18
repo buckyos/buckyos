@@ -5,7 +5,7 @@ objective = "Execute the next worksession step, report progress, and return to p
 [prompt]
 parser = "xml"
 on_init = """
-__INCLUDE(role.md)__
+__INCLUDE(/role.md)__
 
 <<TASK_ANCHOR>>
 __ENV($current_todo.title)

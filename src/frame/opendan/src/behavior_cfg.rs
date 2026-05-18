@@ -21,7 +21,7 @@
 //! moved to the session class (`[session.<class>]` in `agent.toml`);
 //! renderer details default to runtime built-ins.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use llm_context::{
@@ -109,6 +109,12 @@ impl BehaviorOutput {
 ///   * `on_input_msg`: `{msg_text}`, `{msg_from_did}`, `{msg_from_name}`
 ///   * `on_input_event`: `{event_id}`, `{event_data}` plus any top-level
 ///     scalar field of the JSON payload as `{<key>}`
+///
+/// `__INCLUDE__` path rules for `on_init`:
+///   * `/role.md` resolves from AgentRootFS, e.g. `<agent_root>/role.md`.
+///   * `./step_record_rule.inc` resolves relative to the current behavior
+///     TOML file; nested relative includes resolve relative to the included
+///     file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PromptCfg {
@@ -239,6 +245,8 @@ impl ModelCfg {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BehaviorCfg {
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
     pub meta: MetaCfg,
     pub prompt: PromptCfg,
     pub capabilities: CapabilitiesCfg,
@@ -276,10 +284,12 @@ impl BehaviorCfg {
             path: path.display().to_string(),
             err,
         })?;
-        let cfg: BehaviorCfg = toml::from_str(&bytes).map_err(|err| BehaviorCfgError::Parse {
-            path: path.display().to_string(),
-            err,
-        })?;
+        let mut cfg: BehaviorCfg =
+            toml::from_str(&bytes).map_err(|err| BehaviorCfgError::Parse {
+                path: path.display().to_string(),
+                err,
+            })?;
+        cfg.source_path = Some(path.to_path_buf());
         cfg.validate()?;
         Ok(cfg)
     }

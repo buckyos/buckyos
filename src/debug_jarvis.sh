@@ -12,6 +12,9 @@ Examples:
   ./debug_jarvis.sh devtest --port 14060
   ./debug_jarvis.sh --port 14060
 
+This script always runs the Jarvis OpenDAN runtime in the foreground.
+Press Ctrl+C to stop it.
+
 Environment:
   BUCKYOS_ROOT=/opt/buckyos
   JARVIS_PACKAGE_ROOT=src/rootfs/bin/buckyos_jarvis
@@ -34,6 +37,13 @@ if [[ $# -gt 0 && "${1}" != -* ]]; then
   OWNER_USER_ID="$1"
   shift
 fi
+
+for arg in "$@"; do
+  if [[ "${arg}" == "--detach" ]]; then
+    echo "debug_jarvis.sh runs OpenDAN in the foreground; --detach is not supported" >&2
+    exit 2
+  fi
+done
 
 JARVIS_PACKAGE_ROOT="${JARVIS_PACKAGE_ROOT:-${SCRIPT_DIR}/rootfs/bin/buckyos_jarvis}"
 TARGET_ROOT="${BUCKYOS_ROOT}/data/home/${OWNER_USER_ID}/.local/share/${APP_ID}"
@@ -71,7 +81,7 @@ if [[ "${DEBUG_JARVIS_REFRESH}" != "0" ]]; then
   echo "[debug_jarvis] refreshed editable jarvis assets in ${TARGET_ROOT}"
 fi
 
-echo "[debug_jarvis] launching service_debug for ${APP_ID}/${OWNER_USER_ID}"
+echo "[debug_jarvis] launching foreground service_debug for ${APP_ID}/${OWNER_USER_ID}"
 echo "[debug_jarvis] jarvis package root: ${JARVIS_PACKAGE_ROOT}"
 
 exec deno run --quiet -A \

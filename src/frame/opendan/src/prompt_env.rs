@@ -42,6 +42,7 @@ pub struct AgentSessionEnv {
     pub behavior_name: String,
     pub behavior_objective: String,
     pub behavior_mode: &'static str,
+    pub behavior_template_dir: Option<PathBuf>,
 
     pub workspace_id: Option<String>,
     pub workspace_root: Option<PathBuf>,
@@ -113,12 +114,16 @@ pub fn build_render_vars(env: &AgentSessionEnv) -> RenderVars {
 
 /// `EngineConfig` for Phase 1.
 ///
-/// - `agent_root` and `session_root` always whitelisted for `__INCLUDE__`.
+/// - `__INCLUDE__` paths starting with `/` are resolved from `agent_root`.
+/// - Relative `__INCLUDE__` paths are resolved from the behavior template dir.
+/// - `agent_root` and `session_root` are whitelisted for `__INCLUDE__`.
 /// - `workspace_root` added when the session is bound to a workspace.
 /// - `__EXEC__` stays disabled (engine default).
 /// - memory / notepads / skills / tools roots are intentionally NOT added.
 pub fn build_engine_config(env: &AgentSessionEnv) -> EngineConfig {
     let mut cfg = EngineConfig::default();
+    cfg.include_root = Some(env.agent_root.clone());
+    cfg.template_dir = env.behavior_template_dir.clone();
     cfg.include_roots.push(env.agent_root.clone());
     cfg.include_roots.push(env.session_root.clone());
     if let Some(root) = &env.workspace_root {
@@ -303,6 +308,7 @@ mod tests {
             behavior_name: "chat_route".into(),
             behavior_objective: "route".into(),
             behavior_mode: "behavior",
+            behavior_template_dir: Some(PathBuf::from("/tmp/agent/behaviors")),
             workspace_id: Some("ws1".into()),
             workspace_root: Some(PathBuf::from("/tmp/ws1")),
             agent_root: PathBuf::from("/tmp/agent"),
@@ -325,6 +331,7 @@ mod tests {
             behavior_name: "chat_route".into(),
             behavior_objective: String::new(),
             behavior_mode: "behavior",
+            behavior_template_dir: Some(PathBuf::from("/tmp/agent/behaviors")),
             workspace_id: None,
             workspace_root: None,
             agent_root: PathBuf::from("/tmp/agent"),
@@ -464,6 +471,11 @@ clock: unix_ms=123";
     async fn engine_config_seeds_phase1_include_roots() {
         let env = sample_env();
         let cfg = build_engine_config(&env);
+        assert_eq!(cfg.include_root, Some(PathBuf::from("/tmp/agent")));
+        assert_eq!(
+            cfg.template_dir,
+            Some(PathBuf::from("/tmp/agent/behaviors"))
+        );
         assert_eq!(cfg.include_roots.len(), 3);
         assert!(cfg.include_roots.contains(&PathBuf::from("/tmp/agent")));
         assert!(cfg

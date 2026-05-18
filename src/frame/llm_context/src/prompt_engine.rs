@@ -85,6 +85,13 @@ pub struct EngineConfig {
     pub exec_timeout: Duration,
     /// `__EXEC__` master gate. Default `false` (sandbox-friendly).
     pub allow_exec: bool,
+    /// Virtual root for `__INCLUDE__` paths that start with `/`.
+    /// When set, `/foo.md` resolves to `<include_root>/foo.md`.
+    pub include_root: Option<PathBuf>,
+    /// Directory of the root template. Relative `__INCLUDE__` paths resolve
+    /// against this directory; nested includes resolve against the included
+    /// file's directory.
+    pub template_dir: Option<PathBuf>,
     /// `__INCLUDE__` root whitelist. Empty ⇒ file include is fully disabled.
     pub include_roots: Vec<PathBuf>,
     /// Max recursion depth for `__INCLUDE__`-nested templates. Default 8.
@@ -98,6 +105,8 @@ impl Default for EngineConfig {
             max_total_bytes: 256 * 1024,
             exec_timeout: Duration::from_secs(10),
             allow_exec: false,
+            include_root: None,
+            template_dir: None,
             include_roots: Vec::new(),
             max_recursion_depth: 8,
         }
@@ -181,6 +190,7 @@ impl PromptRenderEngine {
                 &mut stats,
                 &mut resolved_vars,
                 &mut render_ctx,
+                self.config.template_dir.as_deref(),
                 0,
             )
             .await?;
@@ -223,6 +233,7 @@ impl PromptRenderEngine {
         stats: &'a mut RenderStats,
         resolved_vars: &'a mut HashMap<String, bool>,
         render_ctx: &'a mut Map<String, Json>,
+        current_dir: Option<&'a Path>,
         depth: u8,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, RenderError>> + Send + 'a>>
     where
@@ -245,6 +256,7 @@ impl PromptRenderEngine {
                         stats,
                         resolved_vars,
                         render_ctx,
+                        current_dir,
                         depth,
                     )
                     .await?;
@@ -265,6 +277,7 @@ impl PromptRenderEngine {
         stats: &mut RenderStats,
         resolved_vars: &mut HashMap<String, bool>,
         render_ctx: &mut Map<String, Json>,
+        current_dir: Option<&Path>,
         depth: u8,
     ) -> Result<(String, bool), RenderError>
     where
@@ -341,6 +354,7 @@ impl PromptRenderEngine {
                             stats,
                             resolved_vars,
                             render_ctx,
+                            current_dir,
                             depth,
                         )
                         .await
@@ -422,6 +436,7 @@ impl PromptRenderEngine {
         stats: &mut RenderStats,
         resolved_vars: &mut HashMap<String, bool>,
         render_ctx: &mut Map<String, Json>,
+        current_dir: Option<&Path>,
         depth: u8,
     ) -> Result<String, String>
     where
@@ -443,13 +458,11 @@ impl PromptRenderEngine {
         };
 
         let expanded = expand_path_env_vars(raw_path.as_str());
-        let path = PathBuf::from(expanded.trim());
-        if !path.is_absolute() {
-            return Err(format!(
-                "path must be absolute after expansion: `{}`",
-                expanded.trim()
-            ));
-        }
+        let path = resolve_include_path(
+            expanded.trim(),
+            self.config.include_root.as_deref(),
+            current_dir,
+        )?;
         if !path_within_any_root(&path, &self.config.include_roots) {
             return Err(format!(
                 "path `{}` not under any include_roots whitelist",
@@ -477,6 +490,7 @@ impl PromptRenderEngine {
                 stats,
                 resolved_vars,
                 render_ctx,
+                path.parent(),
                 depth + 1,
             )
             .await
@@ -722,6 +736,59 @@ where
         cursor = next_dollar + token_len;
     }
     Ok(output)
+}
+
+fn resolve_include_path(
+    path: &str,
+    include_root: Option<&Path>,
+    current_dir: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let requested = PathBuf::from(path);
+    if requested.is_absolute() {
+        if let Some(root) = include_root {
+            return Ok(root.join(strip_virtual_root(&requested)?));
+        }
+        return Ok(requested);
+    }
+    if requested
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(format!(
+            "relative include path cannot contain `..`: `{path}`"
+        ));
+    }
+
+    let Some(dir) = current_dir else {
+        return Err(format!(
+            "relative include path requires current template directory: `{path}`"
+        ));
+    };
+    Ok(dir.join(requested))
+}
+
+fn strip_virtual_root(path: &Path) -> Result<PathBuf, String> {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::CurDir => {}
+            Component::Normal(part) => out.push(part),
+            Component::ParentDir => {
+                return Err(format!(
+                    "absolute include path cannot contain `..`: `{}`",
+                    path.display()
+                ));
+            }
+            Component::Prefix(_) => {
+                return Err(format!(
+                    "absolute include path cannot contain platform prefix: `{}`",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn path_within_any_root(path: &Path, roots: &[PathBuf]) -> bool {
@@ -1128,6 +1195,70 @@ mod tests {
             .unwrap();
         assert_eq!(result.rendered, "[INNER x]");
         assert_eq!(result.stats.content_loaded, 1);
+    }
+
+    #[tokio::test]
+    async fn include_resolves_relative_path_under_roots() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("role.md"), "ROLE").unwrap();
+        let snippets = dir.path().join("behaviors");
+        std::fs::create_dir(&snippets).unwrap();
+        std::fs::write(snippets.join("rule.inc"), "RULE __INCLUDE(./nested.inc)__").unwrap();
+        std::fs::write(snippets.join("nested.inc"), "NESTED").unwrap();
+
+        let cfg = EngineConfig {
+            include_root: Some(dir.path().to_path_buf()),
+            template_dir: Some(snippets),
+            include_roots: vec![dir.path().to_path_buf()],
+            ..EngineConfig::default()
+        };
+        let engine = PromptRenderEngine::new(cfg);
+        let result = engine
+            .render(
+                "__INCLUDE(/role.md)__\n__INCLUDE(./rule.inc)__",
+                &RenderVars::new(),
+                &NullValueLoader,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.rendered, "ROLE\nRULE NESTED");
+        assert_eq!(result.stats.content_loaded, 3);
+    }
+
+    #[tokio::test]
+    async fn include_rejects_relative_parent_escape() {
+        let dir = tempdir().unwrap();
+        let cfg = EngineConfig {
+            include_roots: vec![dir.path().to_path_buf()],
+            ..EngineConfig::default()
+        };
+        let engine = PromptRenderEngine::new(cfg);
+        let result = engine
+            .render(
+                "__INCLUDE(../secret.txt)__",
+                &RenderVars::new(),
+                &NullValueLoader,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.stats.content_failed, 1);
+        assert!(result.rendered.contains("cannot contain `..`"));
+    }
+
+    #[tokio::test]
+    async fn include_rejects_relative_path_without_template_dir() {
+        let dir = tempdir().unwrap();
+        let cfg = EngineConfig {
+            include_roots: vec![dir.path().to_path_buf()],
+            ..EngineConfig::default()
+        };
+        let engine = PromptRenderEngine::new(cfg);
+        let result = engine
+            .render("__INCLUDE(role.md)__", &RenderVars::new(), &NullValueLoader)
+            .await
+            .unwrap();
+        assert_eq!(result.stats.content_failed, 1);
+        assert!(result.rendered.contains("current template directory"));
     }
 
     #[tokio::test]

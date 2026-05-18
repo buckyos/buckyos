@@ -6,12 +6,12 @@ objective = "Handle one-to-one user chat, answer directly when possible, and rou
 parser = "xml"
 on_init = """
 <<role>>
-__INCLUDE(role.md)__
+__INCLUDE(/role.md)__
 <</role>>
 
 <<process_rules>>
 You are in a one-to-one UI session with your owner.
-(Owner的信息补全)
+
 
 UI Session的基本思路就是快速响应，利用可用的工具，快速完成查询类的口头任务。
 
@@ -57,4 +57,3 @@ max_consecutive_errors = 5
 
 [model]
 preferred = "llm.chat"
-

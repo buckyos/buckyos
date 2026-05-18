@@ -763,8 +763,27 @@ async function runForeground(
     stderr: 'inherit',
   }).spawn()
 
-  const status = await child.status
-  return status.code
+  let signalCount = 0
+  const forwardSignal = (signal: Deno.Signal) => {
+    signalCount += 1
+    try {
+      child.kill(signalCount > 1 ? 'SIGKILL' : signal)
+    } catch (_error) {
+      return
+    }
+  }
+  const forwardSigint = () => forwardSignal('SIGINT')
+  const forwardSigterm = () => forwardSignal('SIGTERM')
+
+  Deno.addSignalListener('SIGINT', forwardSigint)
+  Deno.addSignalListener('SIGTERM', forwardSigterm)
+  try {
+    const status = await child.status
+    return status.code
+  } finally {
+    Deno.removeSignalListener('SIGINT', forwardSigint)
+    Deno.removeSignalListener('SIGTERM', forwardSigterm)
+  }
 }
 
 function detectHostScriptLanguage(packageRoot: string): 'typescript' | 'python' | 'unknown' {
