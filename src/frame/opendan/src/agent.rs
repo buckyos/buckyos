@@ -763,6 +763,42 @@ impl AIAgent {
         ))
     }
 
+    pub async fn create_ui_session_for_tunnel(
+        self: Arc<Self>,
+        from: &str,
+        from_did: Option<&str>,
+        tunnel_did: Option<&str>,
+    ) -> Result<String> {
+        let session_id = mint_session_id("ui");
+        let class = self.config.class_name_for_kind(SessionKind::Ui);
+        let behavior = self.config.default_behavior_for_class(&class);
+        let mut seed = SessionMeta::new(
+            session_id.clone(),
+            SessionKind::Ui,
+            behavior.clone(),
+            from.to_string(),
+        );
+        seed.peer_did = from_did
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        seed.peer_tunnel_did = tunnel_did
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        self.clone()
+            .ensure_session_inner(
+                session_id.clone(),
+                SessionKind::Ui,
+                from.to_string(),
+                Some(behavior),
+                Some(seed),
+            )
+            .await?;
+        self.bind_tunnel_to_session(from, &session_id).await;
+        Ok(session_id)
+    }
+
     /// Replace the tunnel→session binding so a `/switch <id>` command
     /// reroutes subsequent inbound messages to a different session.
     /// Does not modify the target session's state.

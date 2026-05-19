@@ -46,7 +46,11 @@ const TG_BOT_API_ENDPOINT: &str = "https://api.telegram.org";
 const TG_UI_SESSION_IDLE_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const TG_UI_SESSION_REFRESH_INTERVAL_MS: u64 = 5 * 1000;
 const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
-    ("clear", "Clear current session history"),
+    ("new", "Create a new session"),
+    ("clean", "Clean current session and create a new one"),
+    ("stop", "Stop current response"),
+    ("cancel", "Cancel current response"),
+    ("info", "Show current session status"),
     ("list", "List active sessions on this agent"),
     ("switch", "Bind this chat to another session"),
     ("help", "Show supported commands"),

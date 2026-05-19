@@ -96,6 +96,5 @@ pub mod attachment_policy;
 pub mod attachment_resolver;
 
 // §3 — slash-command dispatcher. Maps the strict `/<name>` whitelist
-// (parsed by llm_context::msg_parser) to opendan-side handlers
-// (`/clear`, `/list`, `/switch`, `/help`).
+// (parsed by llm_context::msg_parser) to opendan-side handlers.
 pub mod command_dispatcher;

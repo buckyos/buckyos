@@ -2520,7 +2520,7 @@ impl AgentSession {
         }
     }
 
-    /// `/clear` command — drop the LLM accumulated state plus every
+    /// `/clean` command — drop the LLM accumulated state plus every
     /// pending input. After this returns the session looks brand-new from
     /// the LLM's perspective but the on-disk meta (session id, behavior,
     /// workspace binding, owner, peer routing) survives so the next user

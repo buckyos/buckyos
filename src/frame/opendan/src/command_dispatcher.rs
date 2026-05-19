@@ -10,17 +10,19 @@
 //! the registry without duplicating documentation.
 
 use crate::agent::AIAgent;
-use crate::session_model::SessionKind;
+use crate::session_model::{InterruptMode, SessionKind, SessionSummary};
 use anyhow::Result;
 use std::sync::Arc;
 
 /// Names of all built-in commands. Anything not in this list is **not**
 /// treated as a command — the message falls through to LLM inference.
-pub const BUILTIN_COMMANDS: &[&str] = &["clear", "list", "switch", "help"];
+pub const BUILTIN_COMMANDS: &[&str] = &[
+    "new", "clean", "stop", "cancel", "info", "list", "switch", "help",
+];
 
 /// Returns `true` iff `name` matches a built-in command (case-insensitive
 /// on the leading byte so `/Help` still works; the rest is exact-match so
-/// `/cl3ar` is treated as text, not as `/clear`).
+/// `/cl3an` is treated as text, not as `/clean`).
 pub fn is_known_command(name: &str) -> bool {
     let n = name.trim();
     BUILTIN_COMMANDS.iter().any(|c| c.eq_ignore_ascii_case(n))
@@ -50,7 +52,7 @@ pub struct CommandOutcome {
 
 /// Execute a command against the live agent. The function is intentionally
 /// small — it only routes by name and delegates the side-effects to
-/// existing agent methods (clear/list/switch). Adding new commands means
+/// existing agent methods. Adding new commands means
 /// extending `BUILTIN_COMMANDS` and the `match` arm below.
 pub async fn run_command(
     agent: &Arc<AIAgent>,
@@ -58,7 +60,11 @@ pub async fn run_command(
 ) -> Result<CommandOutcome> {
     let cmd = invocation.command.trim().to_ascii_lowercase();
     match cmd.as_str() {
-        "clear" => clear_session(agent, invocation).await,
+        "new" => new_session(agent, invocation).await,
+        "clean" => clean_session(agent, invocation).await,
+        "stop" => stop_session(agent, invocation).await,
+        "cancel" => cancel_session(agent, invocation).await,
+        "info" => info_session(agent, invocation).await,
         "list" => list_sessions(agent).await,
         "switch" => switch_session(agent, invocation).await,
         "help" => Ok(CommandOutcome {
@@ -73,17 +79,77 @@ pub async fn run_command(
     }
 }
 
-async fn clear_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
-    // Resolve the session the same way Inbound::Msg does: explicit > tunnel binding.
+async fn new_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
+    let sid = agent
+        .clone()
+        .create_ui_session_for_tunnel(
+            &inv.from,
+            inv.from_did.as_deref(),
+            inv.tunnel_did.as_deref(),
+        )
+        .await?;
+    Ok(CommandOutcome {
+        reply: format!("new session `{sid}` created"),
+    })
+}
+
+async fn clean_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
+    let previous = agent.resolve_session_for_command(&inv.from).await.ok();
+    if let Some(sid) = previous.as_ref() {
+        if let Some(session) = agent.get_session(sid).await {
+            session.clear_history().await?;
+        }
+    }
+    let sid = agent
+        .clone()
+        .create_ui_session_for_tunnel(
+            &inv.from,
+            inv.from_did.as_deref(),
+            inv.tunnel_did.as_deref(),
+        )
+        .await?;
+    let reply = match previous {
+        Some(old) => format!("session `{old}` cleaned; new session `{sid}` created"),
+        None => format!("new session `{sid}` created"),
+    };
+    Ok(CommandOutcome { reply })
+}
+
+async fn stop_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
+    control_current_session(agent, inv, InterruptMode::Graceful, "stopped").await
+}
+
+async fn cancel_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
+    control_current_session(agent, inv, InterruptMode::Discard, "cancelled").await
+}
+
+async fn control_current_session(
+    agent: &Arc<AIAgent>,
+    inv: &CommandInvocation,
+    mode: InterruptMode,
+    verb: &str,
+) -> Result<CommandOutcome> {
     let sid = agent.resolve_session_for_command(&inv.from).await?;
     let Some(session) = agent.get_session(&sid).await else {
         return Ok(CommandOutcome {
-            reply: format!("no active session for `{}` — nothing to clear", inv.from),
+            reply: format!("no active session for `{}`", inv.from),
         });
     };
-    session.clear_history().await?;
+    session.interrupt(mode).await?;
     Ok(CommandOutcome {
-        reply: format!("session `{sid}` history cleared"),
+        reply: format!("session `{sid}` {verb}"),
+    })
+}
+
+async fn info_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
+    let sid = agent.resolve_session_for_command(&inv.from).await?;
+    let Some(session) = agent.get_session(&sid).await else {
+        return Ok(CommandOutcome {
+            reply: format!("no active session for `{}`", inv.from),
+        });
+    };
+    Ok(CommandOutcome {
+        reply: render_summary(&session.summary().await),
     })
 }
 
@@ -113,6 +179,28 @@ async fn list_sessions(agent: &Arc<AIAgent>) -> Result<CommandOutcome> {
     Ok(CommandOutcome { reply: out })
 }
 
+fn render_summary(s: &SessionSummary) -> String {
+    let kind = match s.kind {
+        SessionKind::Ui => "ui",
+        SessionKind::Work => "work",
+    };
+    let title = if s.title.is_empty() {
+        "(no title)"
+    } else {
+        s.title.as_str()
+    };
+    let mut out = String::new();
+    out.push_str(&format!("session: {}\n", s.session_id));
+    out.push_str(&format!("kind: {kind}\n"));
+    out.push_str(&format!("title: {title}\n"));
+    out.push_str(&format!("status: {:?}\n", s.status));
+    out.push_str(&format!("behavior: {}", s.current_behavior));
+    if !s.one_line_status.trim().is_empty() {
+        out.push_str(&format!("\nactivity: {}", s.one_line_status.trim()));
+    }
+    out
+}
+
 async fn switch_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
     let target = inv.args.trim();
     if target.is_empty() {
@@ -133,7 +221,11 @@ async fn switch_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result
 
 fn render_help() -> String {
     let mut out = String::from("available commands:\n");
-    out.push_str("  /clear            clear current session history\n");
+    out.push_str("  /new              create a new session\n");
+    out.push_str("  /clean            clean current session and create a new one\n");
+    out.push_str("  /stop             stop current response\n");
+    out.push_str("  /cancel           cancel current response\n");
+    out.push_str("  /info             show current session status\n");
     out.push_str("  /list             list active sessions on this agent\n");
     out.push_str("  /switch <id>      bind this tunnel to a different session\n");
     out.push_str("  /help             show this message\n");
@@ -146,10 +238,15 @@ mod tests {
 
     #[test]
     fn whitelist_is_case_insensitive() {
-        assert!(is_known_command("clear"));
-        assert!(is_known_command("CLEAR"));
+        assert!(is_known_command("clean"));
+        assert!(is_known_command("CLEAN"));
+        assert!(is_known_command("new"));
+        assert!(is_known_command("stop"));
+        assert!(is_known_command("cancel"));
+        assert!(is_known_command("info"));
         assert!(is_known_command("Help"));
         assert!(!is_known_command("etc"));
-        assert!(!is_known_command("cl3ar"));
+        assert!(!is_known_command("clear"));
+        assert!(!is_known_command("cl3an"));
     }
 }

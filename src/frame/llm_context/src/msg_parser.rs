@@ -599,9 +599,9 @@ async fn resolve_pending_attachments_async(
                     },
                     label: tag.title.clone().or_else(|| tag.label.clone()),
                 }),
-                Err(reason) => AttachmentLowering::Rejected(format!(
-                    "local file resolve failed: {reason}"
-                )),
+                Err(reason) => {
+                    AttachmentLowering::Rejected(format!("local file resolve failed: {reason}"))
+                }
             };
         }
     }
@@ -998,7 +998,12 @@ mod tests {
             ..MsgObject::default()
         };
 
-        match parse_msg_object(&msg, &["clear", "list", "switch", "help"]) {
+        match parse_msg_object(
+            &msg,
+            &[
+                "new", "clean", "stop", "cancel", "info", "list", "switch", "help",
+            ],
+        ) {
             MsgParseOutput::ControlCommand(cmd) => {
                 assert_eq!(cmd.command, "switch");
                 assert_eq!(cmd.args, "coding");
@@ -1018,7 +1023,12 @@ mod tests {
             ..MsgObject::default()
         };
 
-        match parse_msg_object(&msg, &["clear", "list", "switch", "help"]) {
+        match parse_msg_object(
+            &msg,
+            &[
+                "new", "clean", "stop", "cancel", "info", "list", "switch", "help",
+            ],
+        ) {
             MsgParseOutput::Message(ai) => match &ai.content[0] {
                 AiContent::Text { text } => {
                     assert_eq!(text, "/etc/nginx/conf 帮我看下");
