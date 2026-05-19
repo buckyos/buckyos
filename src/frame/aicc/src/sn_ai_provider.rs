@@ -96,9 +96,18 @@ fn build_sn_ai_provider_instances(
         instances.push(OpenAIInstanceConfig {
             provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
+            provider_driver: "sn-ai-provider".to_string(),
             base_url: raw_instance.base_url,
             auth_mode: raw_instance.auth_mode,
+            endpoint_style: "auto".to_string(),
+            api_token: None,
             timeout_ms: raw_instance.timeout_ms,
+            models: vec![],
+            default_model: None,
+            image_models: vec![],
+            default_image_model: None,
+            features: vec![],
+            alias_map: Default::default(),
         });
     }
 

@@ -17,6 +17,7 @@ fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
             base_url,
             auth_mode: "bearer".to_string(),
             timeout_ms,
+            ..Default::default()
         },
         "token",
     )

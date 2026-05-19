@@ -86,13 +86,22 @@ const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
     "user",
 ];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OpenAIInstanceConfig {
     pub provider_instance_name: String,
     pub provider_type: String,
+    pub provider_driver: String,
     pub base_url: String,
     pub auth_mode: String,
+    pub endpoint_style: String,
+    pub api_token: Option<String>,
     pub timeout_ms: u64,
+    pub models: Vec<String>,
+    pub default_model: Option<String>,
+    pub image_models: Vec<String>,
+    pub default_image_model: Option<String>,
+    pub features: Vec<String>,
+    pub alias_map: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,12 +113,21 @@ pub struct OpenAIProvider {
     base_url: String,
     provider_type: crate::model_types::ProviderType,
     provider_driver: String,
+    endpoint_style: OpenAIEndpointStyle,
+    refresh_inventory: bool,
 }
 
 #[derive(Debug, Clone)]
 enum OpenAIAuthMode {
     Bearer(String),
     DeviceJwt,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum OpenAIEndpointStyle {
+    Auto,
+    Responses,
+    ChatCompletions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,10 +166,21 @@ impl OpenAIProvider {
 
         let provider_type = provider_type_from_settings(cfg.provider_type.as_str());
         let provider_instance_name = cfg.provider_instance_name.clone();
-        let provider_driver = default_provider_driver_for_instance(
-            cfg.provider_instance_name.as_str(),
-            cfg.base_url.as_str(),
-        );
+        let provider_driver = if cfg.provider_driver.trim().is_empty() {
+            default_provider_driver_for_instance(
+                cfg.provider_instance_name.as_str(),
+                cfg.base_url.as_str(),
+            )
+        } else {
+            cfg.provider_driver.trim().to_string()
+        };
+        let endpoint_style =
+            parse_endpoint_style(cfg.endpoint_style.as_str(), provider_driver.as_str())?;
+        let features = if cfg.features.is_empty() {
+            default_features_for_driver(provider_driver.as_str())
+        } else {
+            cfg.features.clone()
+        };
         let instance = ProviderInstance {
             provider_instance_name: provider_instance_name.clone(),
             provider_type: provider_type.clone(),
@@ -160,17 +189,28 @@ impl OpenAIProvider {
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             capabilities: vec![Capability::Llm, Capability::Image],
-            features: default_features(),
+            features: features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
-        let inventory = Self::default_inventory(
-            provider_instance_name.as_str(),
-            provider_type.clone(),
-            provider_driver.as_str(),
-        );
+        let configured_models = !cfg.models.is_empty() || !cfg.image_models.is_empty();
+        let inventory = if configured_models {
+            Self::build_configured_inventory(&cfg, provider_type.clone(), provider_driver.as_str())
+        } else {
+            Self::default_inventory(
+                provider_instance_name.as_str(),
+                provider_type.clone(),
+                provider_driver.as_str(),
+            )
+        };
 
-        let auth_mode = Self::parse_auth_mode(cfg.auth_mode.as_str(), openai_api_token)?;
+        let instance_api_token = cfg
+            .api_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(openai_api_token);
+        let auth_mode = Self::parse_auth_mode(cfg.auth_mode.as_str(), instance_api_token)?;
 
         Ok(Self {
             instance,
@@ -180,11 +220,16 @@ impl OpenAIProvider {
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             provider_type,
             provider_driver,
+            endpoint_style,
+            refresh_inventory: !configured_models,
         })
     }
 
     pub fn start_inventory_refresh(self: Arc<Self>) {
         if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        if !self.refresh_inventory {
             return;
         }
 
@@ -317,6 +362,53 @@ impl OpenAIProvider {
         )
     }
 
+    fn build_configured_inventory(
+        cfg: &OpenAIInstanceConfig,
+        provider_type: crate::model_types::ProviderType,
+        provider_driver: &str,
+    ) -> ProviderInventory {
+        let include_openai_builtin_modalities = provider_driver == DEFAULT_OPENAI_PROVIDER_DRIVER
+            || provider_driver == SN_AI_PROVIDER_DRIVER;
+        let embedding_models = if include_openai_builtin_modalities {
+            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS))
+        } else {
+            vec![]
+        };
+        let asr_models = if include_openai_builtin_modalities {
+            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS))
+        } else {
+            vec![]
+        };
+        let tts_models = if include_openai_builtin_modalities {
+            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS))
+        } else {
+            vec![]
+        };
+        let revision = Some(configured_inventory_revision(
+            cfg.models.as_slice(),
+            cfg.image_models.as_slice(),
+            cfg.features.as_slice(),
+        ));
+        let features = if cfg.features.is_empty() {
+            default_features_for_driver(provider_driver)
+        } else {
+            cfg.features.clone()
+        };
+
+        Self::build_inventory_with_features(
+            cfg.provider_instance_name.as_str(),
+            provider_type,
+            provider_driver,
+            cfg.models.as_slice(),
+            cfg.image_models.as_slice(),
+            embedding_models.as_slice(),
+            asr_models.as_slice(),
+            tts_models.as_slice(),
+            features.as_slice(),
+            revision,
+        )
+    }
+
     fn build_inventory_from_remote_value(&self, body: Value) -> Result<ProviderInventory> {
         if body
             .get("models")
@@ -336,7 +428,8 @@ impl OpenAIProvider {
 
         let response = serde_json::from_value::<OpenAIModelsResponse>(body)
             .context("failed to parse openai models response")?;
-        let (llm_models, image_models) = normalize_remote_model_ids(response.data);
+        let (llm_models, image_models) =
+            normalize_remote_model_ids_for_driver(response.data, self.provider_driver.as_str());
         if llm_models.is_empty() && image_models.is_empty() {
             return Err(anyhow!(
                 "openai inventory refresh returned no supported models"
@@ -402,6 +495,32 @@ impl OpenAIProvider {
         revision: Option<String>,
     ) -> ProviderInventory {
         let features = default_features();
+        Self::build_inventory_with_features(
+            provider_instance_name,
+            provider_type,
+            provider_driver,
+            models,
+            image_models,
+            embedding_models,
+            asr_models,
+            tts_models,
+            features.as_slice(),
+            revision,
+        )
+    }
+
+    fn build_inventory_with_features(
+        provider_instance_name: &str,
+        provider_type: crate::model_types::ProviderType,
+        provider_driver: &str,
+        models: &[String],
+        image_models: &[String],
+        embedding_models: &[String],
+        asr_models: &[String],
+        tts_models: &[String],
+        features: &[String],
+        revision: Option<String>,
+    ) -> ProviderInventory {
         let mut metadata = Vec::new();
         for model in models
             .iter()
@@ -413,7 +532,7 @@ impl OpenAIProvider {
                 model.as_str(),
                 ApiType::LlmChat,
                 openai_llm_logical_mounts(provider_driver, model.as_str()),
-                features.as_slice(),
+                features,
                 Some(0.01),
                 Some(1200),
             );
@@ -449,7 +568,7 @@ impl OpenAIProvider {
                 model.as_str(),
                 api_types,
                 dedupe_strings(mounts),
-                features.as_slice(),
+                features,
                 Some(0.04),
                 Some(5000),
             ));
@@ -461,7 +580,7 @@ impl OpenAIProvider {
                 model.as_str(),
                 vec![ApiType::Embedding],
                 openai_method_mounts(ApiType::Embedding, provider_driver, model),
-                features.as_slice(),
+                features,
                 Some(0.0001),
                 Some(800),
             ));
@@ -473,7 +592,7 @@ impl OpenAIProvider {
                 model.as_str(),
                 vec![ApiType::AudioAsr],
                 openai_method_mounts(ApiType::AudioAsr, provider_driver, model),
-                features.as_slice(),
+                features,
                 Some(0.006),
                 Some(5000),
             ));
@@ -485,7 +604,7 @@ impl OpenAIProvider {
                 model.as_str(),
                 vec![ApiType::AudioTts],
                 openai_method_mounts(ApiType::AudioTts, provider_driver, model),
-                features.as_slice(),
+                features,
                 Some(0.015),
                 Some(3000),
             ));
@@ -1394,9 +1513,26 @@ impl OpenAIProvider {
     }
 
     fn use_chat_completions_endpoint(&self) -> bool {
-        self.base_url
+        match self.endpoint_style {
+            OpenAIEndpointStyle::ChatCompletions => true,
+            OpenAIEndpointStyle::Responses => false,
+            OpenAIEndpointStyle::Auto => self
+                .base_url
+                .to_ascii_lowercase()
+                .contains("/chat/completions"),
+        }
+    }
+
+    fn chat_completions_endpoint(&self) -> String {
+        let base_url = self.base_url.trim_end_matches('/');
+        if base_url
             .to_ascii_lowercase()
-            .contains("/chat/completions")
+            .ends_with("/chat/completions")
+        {
+            base_url.to_string()
+        } else {
+            format!("{}/chat/completions", base_url)
+        }
     }
 
     fn convert_text_format_to_chat_response_format(format: Value) -> Value {
@@ -2497,7 +2633,7 @@ impl OpenAIProvider {
         );
 
         let url = if self.use_chat_completions_endpoint() {
-            self.base_url.clone()
+            self.chat_completions_endpoint()
         } else {
             format!("{}/responses", self.base_url)
         };
@@ -3320,7 +3456,11 @@ fn normalize_remote_provider_model(
     if api_types.is_empty() {
         if is_text2image_model_name(provider_model_id.as_str()) {
             api_types.push(ApiType::ImageTextToImage);
-        } else if is_supported_llm_model_name(provider_model_id.as_str()) {
+        } else if (is_openai_driver(provider_driver)
+            && is_supported_llm_model_name(provider_model_id.as_str()))
+            || (!is_openai_driver(provider_driver)
+                && is_supported_compatible_llm_model_name(provider_model_id.as_str()))
+        {
             api_types.push(ApiType::LlmChat);
         } else {
             return None;
@@ -3402,14 +3542,83 @@ fn openai_llm_logical_mounts(provider_driver: &str, provider_model_id: &str) -> 
     // `llm.chat` 见 aicc.rs llm_logical_mounts 注释——OpenAI 这条独立路径也得
     // 同步挂上，否则纯 OpenAI 部署里 workflow 调 `model_alias=llm.chat` 同样
     // 拿不到候选。
-    vec![
+    let mut mounts = vec![
         "llm.chat".to_string(),
         format!("llm.{}", logical_mount_segment(provider_driver)),
-        format!("llm.openai.{}", logical_mount_segment(provider_model_id)),
-    ]
+        format!(
+            "llm.{}.{}",
+            logical_mount_segment(provider_driver),
+            logical_mount_segment(provider_model_id)
+        ),
+    ];
+    add_compatible_llm_family_mounts(&mut mounts, provider_driver, provider_model_id);
+    mounts
 }
 
-fn apply_openai_latest_llm_mounts(_provider_driver: &str, models: &mut [ModelMetadata]) {
+fn add_compatible_llm_family_mounts(
+    mounts: &mut Vec<String>,
+    provider_driver: &str,
+    provider_model_id: &str,
+) {
+    let driver = provider_driver
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    let model = provider_model_id
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    let combined = format!("{} {}", driver, model);
+
+    if combined.contains("deepseek") {
+        add_unique_mount(mounts, "llm.deepseek".to_string());
+        if combined.contains("reasoner") || combined.contains("-r1") {
+            add_unique_mount(mounts, "llm.deepseek-reasoner".to_string());
+        } else {
+            add_unique_mount(mounts, "llm.deepseek-pro".to_string());
+        }
+    }
+
+    if combined.contains("glm") || combined.contains("zhipu") {
+        add_unique_mount(mounts, "llm.glm".to_string());
+        if combined.contains("flash") || combined.contains("air") {
+            add_unique_mount(mounts, "llm.glm-flash".to_string());
+        }
+    }
+
+    if combined.contains("kimi") || combined.contains("moonshot") {
+        add_unique_mount(mounts, "llm.kimi".to_string());
+        if combined.contains("thinking")
+            || combined.contains("think")
+            || combined.contains("reason")
+            || combined.contains("-k2")
+        {
+            add_unique_mount(mounts, "llm.kimi-thinking".to_string());
+        }
+    }
+
+    if combined.contains("qwen") || combined.contains("dashscope") {
+        add_unique_mount(mounts, "llm.qwen".to_string());
+        if combined.contains("coder") || combined.contains("code") {
+            add_unique_mount(mounts, "llm.qwen-coder".to_string());
+        }
+        if combined.contains("max") || combined.contains("plus") {
+            add_unique_mount(mounts, "llm.qwen-max".to_string());
+        }
+        if combined.contains("small")
+            || combined.contains("lite")
+            || combined.contains("turbo")
+            || combined.contains("flash")
+        {
+            add_unique_mount(mounts, "llm.qwen-small".to_string());
+        }
+    }
+}
+
+fn apply_openai_latest_llm_mounts(provider_driver: &str, models: &mut [ModelMetadata]) {
+    if !is_openai_driver(provider_driver) {
+        return;
+    }
     let mut latest = HashMap::<OpenAIGptTier, (usize, GptModelRank)>::new();
 
     for (index, model) in models.iter_mut().enumerate() {
@@ -3637,18 +3846,36 @@ struct OpenAISettings {
     instances: Vec<SettingsOpenAIInstanceConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 struct SettingsOpenAIInstanceConfig {
     #[serde(default = "default_instance_id", alias = "instance_id")]
     provider_instance_name: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
+    #[serde(default)]
+    provider_driver: String,
     #[serde(default = "default_base_url")]
     base_url: String,
     #[serde(default = "default_auth_mode")]
     auth_mode: String,
+    #[serde(default)]
+    endpoint_style: String,
+    #[serde(default, alias = "api_key", alias = "apiKey")]
+    api_token: String,
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
+    #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
+    default_model: Option<String>,
+    #[serde(default)]
+    image_models: Vec<String>,
+    #[serde(default)]
+    default_image_model: Option<String>,
+    #[serde(default)]
+    features: Vec<String>,
+    #[serde(default)]
+    alias_map: HashMap<String, String>,
 }
 
 fn default_openai_enabled() -> bool {
@@ -3675,6 +3902,37 @@ fn default_auth_mode() -> String {
     DEFAULT_AUTH_MODE.to_string()
 }
 
+fn default_endpoint_style_for_driver(provider_driver: &str) -> String {
+    if provider_driver.trim().is_empty()
+        || provider_driver.eq_ignore_ascii_case(DEFAULT_OPENAI_PROVIDER_DRIVER)
+        || provider_driver.eq_ignore_ascii_case(SN_AI_PROVIDER_DRIVER)
+    {
+        "auto".to_string()
+    } else {
+        "chat_completions".to_string()
+    }
+}
+
+fn parse_endpoint_style(value: &str, provider_driver: &str) -> Result<OpenAIEndpointStyle> {
+    let value = value.trim().to_ascii_lowercase();
+    let value = if value.is_empty() {
+        default_endpoint_style_for_driver(provider_driver)
+    } else {
+        value
+    };
+    match value.as_str() {
+        "auto" => Ok(OpenAIEndpointStyle::Auto),
+        "responses" | "response" => Ok(OpenAIEndpointStyle::Responses),
+        "chat_completions" | "chat-completions" | "chat" => {
+            Ok(OpenAIEndpointStyle::ChatCompletions)
+        }
+        _ => Err(anyhow!(
+            "unsupported openai endpoint_style '{}', expected auto, responses, or chat_completions",
+            value
+        )),
+    }
+}
+
 fn default_provider_driver_for_instance(provider_instance_name: &str, base_url: &str) -> String {
     let instance = provider_instance_name.to_ascii_lowercase();
     let endpoint = base_url.to_ascii_lowercase();
@@ -3686,12 +3944,19 @@ fn default_provider_driver_for_instance(provider_instance_name: &str, base_url: 
 }
 
 fn default_features() -> Vec<String> {
-    vec![
+    default_features_for_driver(DEFAULT_OPENAI_PROVIDER_DRIVER)
+}
+
+fn default_features_for_driver(provider_driver: &str) -> Vec<String> {
+    let mut features = vec![
         features::PLAN.to_string(),
         features::JSON_OUTPUT.to_string(),
         features::TOOL_CALLING.to_string(),
-        features::WEB_SEARCH.to_string(),
-    ]
+    ];
+    if is_openai_driver(provider_driver) {
+        features.push(features::WEB_SEARCH.to_string());
+    }
+    features
 }
 
 fn is_text2image_model_name(model: &str) -> bool {
@@ -3729,11 +3994,51 @@ fn is_supported_llm_model_name(model: &str) -> bool {
         || normalized.starts_with("o4")
 }
 
+fn is_supported_compatible_llm_model_name(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    if normalized.is_empty() || is_text2image_model_name(normalized.as_str()) {
+        return false;
+    }
+    if normalized.contains("embedding")
+        || normalized.contains("rerank")
+        || normalized.contains("transcribe")
+        || normalized.contains("-tts")
+        || normalized.contains("-audio")
+        || normalized.contains("-realtime")
+    {
+        return false;
+    }
+
+    normalized.starts_with("deepseek")
+        || normalized.starts_with("glm")
+        || normalized.starts_with("kimi")
+        || normalized.starts_with("moonshot")
+        || normalized.starts_with("qwen")
+        || normalized.starts_with("doubao")
+        || normalized.starts_with("yi-")
+        || normalized.starts_with("abab")
+        || is_supported_llm_model_name(model)
+}
+
+fn is_openai_driver(provider_driver: &str) -> bool {
+    provider_driver.trim().is_empty()
+        || provider_driver.eq_ignore_ascii_case(DEFAULT_OPENAI_PROVIDER_DRIVER)
+        || provider_driver.eq_ignore_ascii_case(SN_AI_PROVIDER_DRIVER)
+}
+
 fn normalize_remote_model_ids(entries: Vec<OpenAIModelEntry>) -> (Vec<String>, Vec<String>) {
+    normalize_remote_model_ids_for_driver(entries, DEFAULT_OPENAI_PROVIDER_DRIVER)
+}
+
+fn normalize_remote_model_ids_for_driver(
+    entries: Vec<OpenAIModelEntry>,
+    provider_driver: &str,
+) -> (Vec<String>, Vec<String>) {
     let mut llm_seen = HashSet::<String>::new();
     let mut image_seen = HashSet::<String>::new();
     let mut llm_models = Vec::new();
     let mut image_models = Vec::new();
+    let openai_driver = is_openai_driver(provider_driver);
 
     for entry in entries.into_iter() {
         let model = entry.id.trim();
@@ -3745,7 +4050,10 @@ fn normalize_remote_model_ids(entries: Vec<OpenAIModelEntry>) -> (Vec<String>, V
             if image_seen.insert(key) {
                 image_models.push(model.to_string());
             }
-        } else if is_supported_llm_model_name(model) && llm_seen.insert(key) {
+        } else if ((openai_driver && is_supported_llm_model_name(model))
+            || (!openai_driver && is_supported_compatible_llm_model_name(model)))
+            && llm_seen.insert(key)
+        {
             llm_models.push(model.to_string());
         }
     }
@@ -3761,6 +4069,24 @@ fn inventory_revision(models: &[String], image_models: &[String]) -> String {
         "models-{}-{}-{:x}",
         models.len(),
         image_models.len(),
+        hasher.finish()
+    )
+}
+
+fn configured_inventory_revision(
+    models: &[String],
+    image_models: &[String],
+    features: &[String],
+) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    models.hash(&mut hasher);
+    image_models.hash(&mut hasher);
+    features.hash(&mut hasher);
+    format!(
+        "configured-models-{}-{}-{}-{:x}",
+        models.len(),
+        image_models.len(),
+        features.len(),
         hasher.finish()
     )
 }
@@ -3824,9 +4150,21 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
         vec![SettingsOpenAIInstanceConfig {
             provider_instance_name: default_instance_id(),
             provider_type: default_provider_type(),
+            provider_driver: default_provider_driver_for_instance(
+                default_instance_id().as_str(),
+                default_base_url().as_str(),
+            ),
             base_url: default_base_url(),
             auth_mode: default_auth_mode(),
+            endpoint_style: "auto".to_string(),
+            api_token: String::new(),
             timeout_ms: default_timeout_ms(),
+            models: vec![],
+            default_model: None,
+            image_models: vec![],
+            default_image_model: None,
+            features: vec![],
+            alias_map: HashMap::new(),
         }]
     } else {
         settings.instances.clone()
@@ -3834,12 +4172,45 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
 
     let mut instances = vec![];
     for raw_instance in raw_instances.into_iter() {
+        let provider_driver = if raw_instance.provider_driver.trim().is_empty() {
+            default_provider_driver_for_instance(
+                raw_instance.provider_instance_name.as_str(),
+                raw_instance.base_url.as_str(),
+            )
+        } else {
+            raw_instance.provider_driver
+        };
+        let endpoint_style = if raw_instance.endpoint_style.trim().is_empty() {
+            default_endpoint_style_for_driver(provider_driver.as_str())
+        } else {
+            raw_instance.endpoint_style
+        };
+        let models = normalize_model_list(raw_instance.models);
+        let image_models = normalize_model_list(raw_instance.image_models);
+        let features = if raw_instance.features.is_empty() {
+            default_features_for_driver(provider_driver.as_str())
+        } else {
+            raw_instance.features
+        };
         instances.push(OpenAIInstanceConfig {
             provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
+            provider_driver,
             base_url: raw_instance.base_url,
             auth_mode: raw_instance.auth_mode,
+            endpoint_style,
+            api_token: Some(raw_instance.api_token).filter(|value| !value.trim().is_empty()),
             timeout_ms: raw_instance.timeout_ms,
+            default_model: raw_instance
+                .default_model
+                .or_else(|| models.first().cloned()),
+            default_image_model: raw_instance
+                .default_image_model
+                .or_else(|| image_models.first().cloned()),
+            models,
+            image_models,
+            features,
+            alias_map: raw_instance.alias_map,
         });
     }
 
@@ -3979,6 +4350,15 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
             .map_err(|_| anyhow!("model registry lock poisoned"))?
             .apply_inventory(inventory)
             .map_err(|err| anyhow!("failed to apply openai inventory: {}", err))?;
+        register_default_aliases(
+            center,
+            config.provider_driver.as_str(),
+            config.models.as_slice(),
+            config.default_model.as_deref(),
+            config.image_models.as_slice(),
+            config.default_image_model.as_deref(),
+        );
+        register_custom_aliases(center, config.provider_driver.as_str(), &config.alias_map);
     }
 
     Ok(instances.len())
@@ -4505,6 +4885,7 @@ data: [DONE]
                 base_url: default_base_url(),
                 auth_mode: default_auth_mode(),
                 timeout_ms: default_timeout_ms(),
+                ..Default::default()
             }],
         };
 
@@ -4525,12 +4906,121 @@ data: [DONE]
                 base_url: "https://sn.buckyos.ai/v1".to_string(),
                 auth_mode: DEVICE_JWT_AUTH_MODE.to_string(),
                 timeout_ms: default_timeout_ms(),
+                ..Default::default()
             }],
         };
 
         let instances = build_openai_instances(&settings).expect("instances should be built");
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].auth_mode, DEVICE_JWT_AUTH_MODE);
+    }
+
+    #[test]
+    fn build_openai_instances_supports_compatible_provider_fields() {
+        let settings = OpenAISettings {
+            enabled: true,
+            api_token: String::new(),
+            instances: vec![SettingsOpenAIInstanceConfig {
+                provider_instance_name: "deepseek-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "deepseek".to_string(),
+                base_url: "https://api.deepseek.com/v1/chat/completions".to_string(),
+                endpoint_style: "chat_completions".to_string(),
+                api_token: "deepseek-token".to_string(),
+                models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+                default_model: Some("deepseek-chat".to_string()),
+                features: vec![features::JSON_OUTPUT.to_string()],
+                alias_map: HashMap::from([(
+                    "llm.deepseek-reasoner".to_string(),
+                    "deepseek-reasoner".to_string(),
+                )]),
+                ..Default::default()
+            }],
+        };
+
+        let instances = build_openai_instances(&settings).expect("instances should be built");
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].provider_driver, "deepseek");
+        assert_eq!(instances[0].endpoint_style, "chat_completions");
+        assert_eq!(instances[0].api_token.as_deref(), Some("deepseek-token"));
+        assert_eq!(instances[0].default_model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(instances[0].models.len(), 2);
+        assert_eq!(
+            instances[0].alias_map.get("llm.deepseek-reasoner"),
+            Some(&"deepseek-reasoner".to_string())
+        );
+    }
+
+    #[test]
+    fn compatible_provider_defaults_to_chat_completions() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "glm-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "glm".to_string(),
+                base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+                auth_mode: "bearer".to_string(),
+                models: vec!["glm-4.5".to_string()],
+                ..Default::default()
+            },
+            "token",
+        )
+        .expect("provider should be built");
+        assert!(provider.use_chat_completions_endpoint());
+        assert_eq!(
+            provider.chat_completions_endpoint(),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+        assert!(
+            !provider
+                .instance
+                .features
+                .iter()
+                .any(|feature| feature == features::WEB_SEARCH),
+            "compatible provider defaults should not advertise OpenAI web_search"
+        );
+    }
+
+    #[test]
+    fn configured_compatible_inventory_exposes_logical_mounts() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "compatible-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "deepseek".to_string(),
+                base_url: "https://api.deepseek.com/v1/chat/completions".to_string(),
+                auth_mode: "bearer".to_string(),
+                endpoint_style: "chat_completions".to_string(),
+                models: vec![
+                    "deepseek-chat".to_string(),
+                    "deepseek-reasoner".to_string(),
+                    "glm-4.5-flash".to_string(),
+                    "kimi-k2".to_string(),
+                    "qwen-coder-plus".to_string(),
+                ],
+                ..Default::default()
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let inventory = provider.inventory();
+        assert_eq!(inventory.provider_driver, "deepseek");
+        assert!(inventory
+            .models
+            .iter()
+            .all(|model| model.api_types.contains(&ApiType::LlmChat)));
+        assert_model_mount(&inventory, "deepseek-chat", "llm.deepseek-pro", true);
+        assert_model_mount(
+            &inventory,
+            "deepseek-reasoner",
+            "llm.deepseek-reasoner",
+            true,
+        );
+        assert_model_mount(&inventory, "glm-4.5-flash", "llm.glm-flash", true);
+        assert_model_mount(&inventory, "kimi-k2", "llm.kimi-thinking", true);
+        assert_model_mount(&inventory, "qwen-coder-plus", "llm.qwen-coder", true);
+        assert_model_mount(&inventory, "qwen-coder-plus", "llm.qwen-max", true);
     }
 
     #[test]
@@ -4542,6 +5032,7 @@ data: [DONE]
                 base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
                 auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
+                ..Default::default()
             },
             "token",
         )
@@ -4558,6 +5049,7 @@ data: [DONE]
                 base_url: default_base_url(),
                 auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
+                ..Default::default()
             },
             "token",
         )
@@ -4622,6 +5114,7 @@ data: [DONE]
                 base_url: default_base_url(),
                 auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
+                ..Default::default()
             },
             "token",
         )
