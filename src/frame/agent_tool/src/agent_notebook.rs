@@ -1417,6 +1417,7 @@ impl AgentNotebook {
                 input.actor_kind.as_str(),
                 input.actor_id,
                 input.write_reason.as_str(),
+                confidence.as_str(),
                 input.valid_from,
                 input.valid_until,
                 metadata_json,
@@ -1485,13 +1486,6 @@ impl AgentNotebook {
                 created_at: now.clone(),
             },
         )?;
-        let _ = confidence; // silence unused warning if removed below
-        // Persist confidence too (column defaults to 'medium'; override if needed).
-        tx.execute(
-            "UPDATE notebook_items SET confidence = ? WHERE item_id = ?",
-            params![confidence.as_str(), item_id],
-        )?;
-
         tx.commit()?;
         Ok(AppendNoteResult {
             status: "ok",

@@ -1,6 +1,6 @@
 //! §8 of NewOpenDANRuntime — UI-session-only worksession control tools.
 //!
-//! Two LLM-callable tools live here:
+//! LLM-callable non-CLI session tools live here:
 //!   - [`CreateWorksessionTool`] (`create_worksession`) — fully-parameterized
 //!     work-session creation. Per §8.1 this is normally only advertised
 //!     inside the `try_create_worksession` fork sub-context; we register
@@ -12,8 +12,12 @@
 //!     message for the tool to pick up automatically, but until that
 //!     plumbing exists the tool takes the text explicitly so the surface
 //!     is usable today.
+//!   - [`TryCreateWorksessionTool`] (`try_create_worksession`) — fork-based
+//!     UI-session decision helper for creating or reusing worksessions.
+//!   - [`UpdateSessionTopicTool`] (`update_session_topic`) — session topic
+//!     and tag-set writer that also synchronously drives recall.
 //!
-//! Both tools hold a `Weak<AIAgent>` so they can call agent-level methods
+//! These tools hold a `Weak<AIAgent>` so they can call agent-level methods
 //! without forming an Arc cycle (AIAgent → sessions → tool manager →
 //! tools → AIAgent would otherwise pin the agent forever).
 
@@ -34,6 +38,10 @@ use crate::agent::{AIAgent, CreateWorkSessionParams};
 use crate::llm_context_helper::RequestOverrides;
 use crate::local_workspace::WorkspaceRecord;
 use crate::session_model::{SessionKind, SessionStatus, SessionSummary};
+use crate::session_topic::{
+    RecallPolicy, SessionTopicError, SessionTopicUpdater, UpdateSessionTopicInput,
+    UpdateSessionTopicResult,
+};
 
 /// Cap on the number of existing worksessions surfaced in the sub-prompt.
 /// Per §8.2 of NewOpenDANRuntime.md; keeps the sub-LLM context small.
@@ -58,6 +66,9 @@ pub const TOOL_FORWARD_MSG: &str = "forward_msg";
 /// Tool name advertised to UI sessions for fork-based worksession decisions.
 /// The tool runs a fork sub-context that internally calls `create_worksession`.
 pub const TOOL_TRY_CREATE_WORKSESSION: &str = "try_create_worksession";
+/// Tool name advertised to sessions so the LLM can persist the current
+/// session's topic hint for later recall.
+pub const TOOL_UPDATE_SESSION_TOPIC: &str = "update_session_topic";
 
 /// `create_worksession` tool arguments. Mirrors §8.1.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -260,6 +271,87 @@ impl TypedTool for ForwardMsgTool {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct UpdateSessionTopicArgs {
+    /// One-line topic hint for the current session. Write for the future self,
+    /// not for the user; this is not a session summary.
+    pub topic: String,
+    /// Optional short tags used as coarse recall keys.
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+pub struct UpdateSessionTopicTool {
+    agent: Weak<AIAgent>,
+    source_session_id: String,
+    updater: SessionTopicUpdater,
+}
+
+impl UpdateSessionTopicTool {
+    pub fn new(agent: Weak<AIAgent>, source_session_id: impl Into<String>) -> Self {
+        Self {
+            agent,
+            source_session_id: source_session_id.into(),
+            updater: SessionTopicUpdater::with_default_recall(RecallPolicy::default()),
+        }
+    }
+}
+
+#[async_trait]
+impl TypedTool for UpdateSessionTopicTool {
+    type Args = UpdateSessionTopicArgs;
+    type Output = UpdateSessionTopicResult;
+
+    fn name(&self) -> &str {
+        TOOL_UPDATE_SESSION_TOPIC
+    }
+
+    fn description(&self) -> &str {
+        "Update this session's one-line topic hint. Call only when the topic first becomes clear, significantly drifts, or reaches a final form. Write for your future self; do not use this for detailed summaries."
+    }
+
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::LLM
+    }
+
+    async fn execute(
+        &self,
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let agent = self
+            .agent
+            .upgrade()
+            .ok_or_else(|| AgentToolError::ExecFailed("agent is shutting down".to_string()))?;
+        let session = agent
+            .get_session(&self.source_session_id)
+            .await
+            .ok_or_else(|| {
+                AgentToolError::ExecFailed(format!(
+                    "session `{}` not mounted",
+                    self.source_session_id
+                ))
+            })?;
+        self.updater
+            .update(UpdateSessionTopicInput {
+                session_id: self.source_session_id.clone(),
+                session_dir: session.session_dir.clone(),
+                topic: args.topic,
+                tags: args.tags,
+                current_turn: ctx.session().step_idx,
+            })
+            .await
+            .map_err(map_session_topic_error)
+    }
+}
+
+fn map_session_topic_error(err: SessionTopicError) -> AgentToolError {
+    match err {
+        SessionTopicError::InvalidInput(msg) => AgentToolError::InvalidArgs(msg),
+        other => AgentToolError::ExecFailed(format!("{other:#}")),
+    }
+}
+
 /// `try_create_worksession` arguments. Per §8.2 the only LLM-supplied
 /// input is a free-text `reason`; the fork sub-context derives everything
 /// else (title / objective / workspace_id) by inspecting the parent
@@ -409,7 +501,7 @@ impl TypedTool for TryCreateWorksessionTool {
     }
 }
 
-/// Register all three worksession-control tools on `manager`. Idempotent —
+/// Register non-CLI session tools on `manager`. Idempotent —
 /// re-registering on an already-populated manager replaces the prior
 /// instances (the manager's `register_typed_tool` handles dedup).
 pub fn register_worksession_tools(
@@ -427,10 +519,17 @@ pub fn register_worksession_tools(
     {
         warn!("opendan.worksession_tools: register `{TOOL_FORWARD_MSG}` failed: {err}");
     }
-    if let Err(err) =
-        manager.register_typed_tool(TryCreateWorksessionTool::new(agent, source_session_id))
-    {
+    if let Err(err) = manager.register_typed_tool(TryCreateWorksessionTool::new(
+        agent.clone(),
+        source_session_id,
+    )) {
         warn!("opendan.worksession_tools: register `{TOOL_TRY_CREATE_WORKSESSION}` failed: {err}");
+    }
+    if let Err(err) = manager.register_typed_tool(UpdateSessionTopicTool::new(
+        agent.clone(),
+        source_session_id,
+    )) {
+        warn!("opendan.worksession_tools: register `{TOOL_UPDATE_SESSION_TOPIC}` failed: {err}");
     }
 }
 
@@ -689,6 +788,7 @@ mod tests {
         assert_eq!(TOOL_CREATE_WORKSESSION, "create_worksession");
         assert_eq!(TOOL_FORWARD_MSG, "forward_msg");
         assert_eq!(TOOL_TRY_CREATE_WORKSESSION, "try_create_worksession");
+        assert_eq!(TOOL_UPDATE_SESSION_TOPIC, "update_session_topic");
     }
 
     fn summary(

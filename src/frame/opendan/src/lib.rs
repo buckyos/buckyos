@@ -74,7 +74,9 @@ pub mod local_workspace;
 pub mod contact;
 pub mod task_dispatch;
 
-// §8 — worksession-control tools (create_worksession, forward_msg).
+// Session-topic storage / recall primitives used by the non-CLI tool entry.
+pub mod session_topic;
+// §8 — non-CLI session tools (worksession control + update_session_topic).
 pub mod worksession_tools;
 
 // Worklog SQLite service (unchanged from beta2.x — consumed by ai_runtime's

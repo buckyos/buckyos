@@ -676,7 +676,7 @@ compaction 目标：
 
 ## 11. 默认读取与浮现语义
 
-Memory 的核心读取模式是 surfacing：上层 session 在每轮推理前维护 ordered tags，并调用 `load` 把相关记忆放入 prompt。
+Memory 的核心读取模式是 surfacing：上层 session 在每轮推理前维护 ordered tags，并在合适的时候调用 `load` 把相关记忆放入 UserMessage
 
 职责边界：
 
