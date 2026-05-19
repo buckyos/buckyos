@@ -19,6 +19,7 @@ use serde_json::{json, Value as Json};
 use tokio::time::{timeout, Duration};
 
 pub mod agent_memory;
+pub mod agent_notebook;
 pub mod file_tools;
 pub mod glob_tool;
 pub mod grep_tool;
