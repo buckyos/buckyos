@@ -592,6 +592,10 @@ mod policy_tests {
 /// channel; the worklog sink calls `set` on every meaningful `WorkEvent`.
 pub trait OneLineStatusSink: Send + Sync {
     fn set(&self, status: String);
+
+    fn set_with_nonce(&self, status: String, _nonce: Option<String>) {
+        self.set(status);
+    }
 }
 
 /// `WorklogSink` that translates waist `WorkEvent`s into worklog records
@@ -618,9 +622,9 @@ impl OpenDanWorklogSink {
         }
     }
 
-    fn update_status(&self, line: Option<String>) {
+    fn update_status(&self, line: Option<String>, nonce: Option<String>) {
         if let (Some(sink), Some(line)) = (self.status.as_ref(), line) {
-            sink.set(line);
+            sink.set_with_nonce(line, nonce);
         }
     }
 }
@@ -761,7 +765,11 @@ impl WorklogSink for OpenDanWorklogSink {
             ),
         };
 
-        self.update_status(status_line);
+        let status_nonce = payload
+            .get("trace_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        self.update_status(status_line, status_nonce);
 
         let record = json!({
             "type": event_type,

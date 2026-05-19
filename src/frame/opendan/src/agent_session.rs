@@ -56,6 +56,7 @@ pub enum SessionReply {
 
 pub struct InMemoryStatus {
     current: std::sync::Mutex<String>,
+    turn_nonce: std::sync::Mutex<Option<String>>,
     ui_session_sync: Option<UiSessionStateSync>,
 }
 
@@ -63,12 +64,33 @@ impl InMemoryStatus {
     pub fn new(ui_session_sync: Option<UiSessionStateSync>) -> Self {
         Self {
             current: std::sync::Mutex::new(String::new()),
+            turn_nonce: std::sync::Mutex::new(None),
             ui_session_sync,
         }
     }
 
     pub fn snapshot(&self) -> String {
         self.current.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    pub fn nonce_snapshot(&self) -> Option<String> {
+        self.turn_nonce.lock().ok().and_then(|g| g.clone())
+    }
+
+    fn set_turn_nonce(&self, nonce: Option<String>) {
+        if let Ok(mut g) = self.turn_nonce.lock() {
+            *g = nonce;
+        }
+    }
+
+    fn status_line_value(&self, status: String) -> serde_json::Value {
+        match self.nonce_snapshot() {
+            Some(nonce) => serde_json::json!({
+                "value": status,
+                "turn_nonce": nonce,
+            }),
+            None => serde_json::Value::String(status),
+        }
     }
 
     fn update_ui_state(&self, key: &'static str, value: serde_json::Value) {
@@ -80,12 +102,17 @@ impl InMemoryStatus {
 
 impl OneLineStatusSink for InMemoryStatus {
     fn set(&self, status: String) {
+        self.set_with_nonce(status, None);
+    }
+
+    fn set_with_nonce(&self, status: String, nonce: Option<String>) {
+        self.set_turn_nonce(nonce);
         if let Ok(mut g) = self.current.lock() {
             *g = status;
         }
         self.update_ui_state(
             UI_SESSION_STATE_STATUS_LINE_KEY,
-            serde_json::Value::String(self.snapshot()),
+            self.status_line_value(self.snapshot()),
         );
     }
 }
@@ -1140,6 +1167,7 @@ impl AgentSession {
                 .await;
         }
         let trace_id = self.next_trace_id();
+        self.status.set_turn_nonce(Some(trace_id.clone()));
         let ctx_runtime = SessionRuntimeContext {
             trace_id: trace_id.clone(),
             agent_name: self.agent_name.clone(),
@@ -1380,6 +1408,7 @@ impl AgentSession {
 
         let behavior = self.load_current_behavior().await?;
         let trace_id = self.next_trace_id();
+        self.status.set_turn_nonce(Some(trace_id.clone()));
         let ctx_runtime = SessionRuntimeContext {
             trace_id,
             agent_name: self.agent_name.clone(),
@@ -1695,6 +1724,7 @@ impl AgentSession {
         }
 
         let trace_id = self.next_trace_id();
+        self.status.set_turn_nonce(Some(trace_id.clone()));
         let (ctx_owner, _request, deps) = self
             .build_or_resume(&behavior, &turn_messages, &trace_id)
             .await?;
@@ -2936,7 +2966,7 @@ impl AgentSession {
             .update_ui_state(UI_SESSION_STATE_TYPING_KEY, serde_json::json!(typing));
         self.status.update_ui_state(
             UI_SESSION_STATE_STATUS_LINE_KEY,
-            serde_json::Value::String(one_line_status),
+            self.status.status_line_value(one_line_status),
         );
         if let Err(err) = self.flush_meta().await {
             warn!(
@@ -3198,6 +3228,12 @@ impl AgentSession {
             "owner_session_id".to_string(),
             serde_json::Value::String(self.session_id.clone()),
         );
+        if let Some(turn_nonce) = self.status.nonce_snapshot() {
+            msg.meta.insert(
+                "turn_nonce".to_string(),
+                serde_json::Value::String(turn_nonce),
+            );
+        }
 
         let workspace_id = {
             let meta = self.meta.lock().await;

@@ -113,6 +113,8 @@ pub struct TgEgressEnvelope {
 /// to emit Markdown-flavored text and Telegram only renders formatting if a
 /// parse_mode is set explicitly.
 pub const TG_DEFAULT_PARSE_MODE: &str = "Markdown";
+const TG_TURN_NONCE_META_KEY: &str = "turn_nonce";
+const TG_NONCE_META_KEY: &str = "nonce";
 
 /// Resolve the effective parse_mode for an outgoing TG message. Returns
 /// `None` when the caller asked for explicit plain text (case-insensitive
@@ -176,7 +178,15 @@ struct TgUiSessionRuntime {
     chat_id: String,
     last_activity_ms: u64,
     status_message_id: Option<String>,
+    status_nonce: Option<String>,
+    completed_status_nonce: Option<String>,
     last_status_line: String,
+}
+
+#[derive(Debug, Clone)]
+struct TgUiStatusLine {
+    line: String,
+    nonce: Option<String>,
 }
 
 #[derive(Clone)]
@@ -203,6 +213,14 @@ impl TgUiSessionTracker {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.to_string())
+    }
+
+    fn nonce_matches(message_nonce: Option<&str>, status_nonce: Option<&str>) -> bool {
+        match (message_nonce, status_nonce) {
+            (Some(message_nonce), Some(status_nonce)) => message_nonce == status_nonce,
+            (None, None) => true,
+            _ => false,
+        }
     }
 
     fn get_msg_center_handler(&self) -> Option<Arc<dyn MsgCenterHandler>> {
@@ -248,6 +266,12 @@ impl TgUiSessionTracker {
             let status_message_id = guard
                 .get(&session_id)
                 .and_then(|session| session.status_message_id.clone());
+            let status_nonce = guard
+                .get(&session_id)
+                .and_then(|session| session.status_nonce.clone());
+            let completed_status_nonce = guard
+                .get(&session_id)
+                .and_then(|session| session.completed_status_nonce.clone());
             let last_status_line = guard
                 .get(&session_id)
                 .map(|session| session.last_status_line.clone())
@@ -260,6 +284,8 @@ impl TgUiSessionTracker {
                     chat_id,
                     last_activity_ms: TgTunnel::now_ms(),
                     status_message_id,
+                    status_nonce,
+                    completed_status_nonce,
                     last_status_line,
                 },
             );
@@ -268,12 +294,13 @@ impl TgUiSessionTracker {
             .await;
     }
 
-    async fn status_message_id(
+    async fn status_message_id_for_nonce(
         &self,
         session_id: Option<&str>,
         owner_did: &DID,
         bot_account_id: &str,
         chat_id: Option<&str>,
+        message_nonce: Option<&str>,
     ) -> Option<String> {
         let session_id = Self::normalize_non_empty(session_id)?;
         let chat_id = Self::normalize_non_empty(chat_id)?;
@@ -285,14 +312,17 @@ impl TgUiSessionTracker {
         {
             return None;
         }
+        if !Self::nonce_matches(message_nonce, session.status_nonce.as_deref()) {
+            return None;
+        }
         session.status_message_id.clone()
     }
 
-    async fn mark_status_message_replaced(&self, session_id: Option<&str>) {
+    async fn mark_status_message_replaced(&self, session_id: Option<&str>, nonce: Option<&str>) {
         let Some(session_id) = Self::normalize_non_empty(session_id) else {
             return;
         };
-        let current_status_line = if let Some(handler) = self.get_msg_center_handler() {
+        let current_status = if let Some(handler) = self.get_msg_center_handler() {
             match handler
                 .handle_get_ui_session_state(
                     session_id.clone(),
@@ -301,8 +331,11 @@ impl TgUiSessionTracker {
                 )
                 .await
             {
-                Ok(Some(entry)) => Some(TgTunnel::ui_session_state_string(&entry.value)),
-                Ok(None) => Some(String::new()),
+                Ok(Some(entry)) => Some(TgTunnel::ui_session_state_status_line(&entry.value)),
+                Ok(None) => Some(TgUiStatusLine {
+                    line: String::new(),
+                    nonce: None,
+                }),
                 Err(error) => {
                     warn!(
                         "telegram ui session status_line read failed after final message replacement: session_id={}, error={}",
@@ -318,16 +351,11 @@ impl TgUiSessionTracker {
         let mut guard = self.sessions.lock().await;
         if let Some(session) = guard.get_mut(&session_id) {
             session.status_message_id = None;
-            if let Some(status_line) = current_status_line {
-                session.last_status_line = status_line;
+            session.completed_status_nonce = nonce.map(str::to_string);
+            if let Some(status) = current_status {
+                session.last_status_line = status.line;
+                session.status_nonce = status.nonce;
             }
-        }
-    }
-
-    async fn mark_status_line_seen(&self, session_id: &str, status_line: String) {
-        let mut guard = self.sessions.lock().await;
-        if let Some(session) = guard.get_mut(session_id) {
-            session.last_status_line = status_line;
         }
     }
 
@@ -925,6 +953,13 @@ pub trait TgGateway: Send + Sync {
         message_id: Option<String>,
         status_line: String,
     ) -> AnyResult<Option<String>>;
+    async fn delete_message(
+        &self,
+        owner_did: DID,
+        bot_account_id: String,
+        chat_id: String,
+        message_id: String,
+    ) -> AnyResult<()>;
 
     async fn set_dispatcher(&self, dispatcher: Option<Arc<dyn MsgCenterHandler>>) -> AnyResult<()> {
         let _ = dispatcher;
@@ -1002,6 +1037,16 @@ impl TgGateway for DryRunTgGateway {
         _status_line: String,
     ) -> AnyResult<Option<String>> {
         Ok(message_id.or_else(|| Some("dry-run-status".to_string())))
+    }
+
+    async fn delete_message(
+        &self,
+        _owner_did: DID,
+        _bot_account_id: String,
+        _chat_id: String,
+        _message_id: String,
+    ) -> AnyResult<()> {
+        Ok(())
     }
 }
 
@@ -1957,6 +2002,39 @@ impl TgGateway for GrammersTgGateway {
         }
         let sent = client.send_message(chat, text).await?;
         Ok(Some(sent.id().to_string()))
+    }
+
+    async fn delete_message(
+        &self,
+        owner_did: DID,
+        bot_account_id: String,
+        chat_id: String,
+        message_id: String,
+    ) -> AnyResult<()> {
+        let (client, runtime_bot_account_id) = {
+            let guard = self.runtimes.lock().await;
+            let runtime = guard.get(&owner_did.to_string()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no running telegram runtime for delete_message owner {}",
+                    owner_did.to_string()
+                )
+            })?;
+            (runtime.client.clone(), runtime.bot_account_id.clone())
+        };
+        if runtime_bot_account_id != bot_account_id {
+            bail!(
+                "delete_message owner {} bound bot {} mismatches requested bot {}",
+                owner_did.to_string(),
+                runtime_bot_account_id,
+                bot_account_id
+            );
+        }
+        let id = message_id
+            .parse::<i32>()
+            .with_context(|| format!("invalid telegram message_id {}", message_id))?;
+        let chat = Self::resolve_chat_peer(&client, &chat_id).await?;
+        client.delete_messages(chat, &[id]).await?;
+        Ok(())
     }
 
     async fn set_dispatcher(&self, dispatcher: Option<Arc<dyn MsgCenterHandler>>) -> AnyResult<()> {
@@ -3246,6 +3324,46 @@ impl TgGateway for BotApiTgGateway {
         Ok(Some(sent.message_id.to_string()))
     }
 
+    async fn delete_message(
+        &self,
+        owner_did: DID,
+        bot_account_id: String,
+        chat_id: String,
+        message_id: String,
+    ) -> AnyResult<()> {
+        let runtime = {
+            let guard = self.runtimes.lock().await;
+            guard.get(&owner_did.to_string()).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no running telegram runtime for delete_message owner {}",
+                    owner_did.to_string()
+                )
+            })?
+        };
+        if runtime.bot_account_id != bot_account_id {
+            bail!(
+                "delete_message owner {} bound bot {} mismatches requested bot {}",
+                owner_did.to_string(),
+                runtime.bot_account_id,
+                bot_account_id
+            );
+        }
+        let id = message_id
+            .parse::<i64>()
+            .with_context(|| format!("invalid telegram message_id {}", message_id))?;
+        Self::call_api_with_client::<Value>(
+            &self.http,
+            runtime.token.as_str(),
+            "deleteMessage",
+            Some(json!({
+                "chat_id": Self::normalize_chat_id_for_send(&chat_id),
+                "message_id": id,
+            })),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn set_dispatcher(&self, dispatcher: Option<Arc<dyn MsgCenterHandler>>) -> AnyResult<()> {
         let mut guard = self.dispatcher.lock().await;
         *guard = dispatcher;
@@ -3563,17 +3681,49 @@ impl TgTunnel {
     }
 
     fn ui_session_state_string(value: &Value) -> String {
+        Self::ui_session_state_status_line(value).line
+    }
+
+    fn ui_session_state_status_line(value: &Value) -> TgUiStatusLine {
         match value {
-            Value::String(value) => value.trim().to_string(),
-            Value::Object(map) => map
-                .get("value")
-                .or_else(|| map.get("status_line"))
-                .or_else(|| map.get("text"))
-                .and_then(|value| value.as_str())
-                .map(|value| value.trim().to_string())
-                .unwrap_or_default(),
-            _ => String::new(),
+            Value::String(value) => TgUiStatusLine {
+                line: value.trim().to_string(),
+                nonce: None,
+            },
+            Value::Object(map) => {
+                let line = map
+                    .get("value")
+                    .or_else(|| map.get("status_line"))
+                    .or_else(|| map.get("text"))
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim().to_string())
+                    .unwrap_or_default();
+                let nonce = map
+                    .get(TG_TURN_NONCE_META_KEY)
+                    .or_else(|| map.get(TG_NONCE_META_KEY))
+                    .or_else(|| map.get("trace_id"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string());
+                TgUiStatusLine { line, nonce }
+            }
+            _ => TgUiStatusLine {
+                line: String::new(),
+                nonce: None,
+            },
         }
+    }
+
+    fn msg_turn_nonce(msg: &MsgObject) -> Option<String> {
+        msg.meta
+            .get(TG_TURN_NONCE_META_KEY)
+            .or_else(|| msg.meta.get(TG_NONCE_META_KEY))
+            .or_else(|| msg.meta.get("trace_id"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
     }
 
     fn render_status_line(status_line: &str) -> String {
@@ -3727,7 +3877,7 @@ impl TgTunnel {
                 continue;
             };
 
-            let status_line = match handler
+            let status = match handler
                 .handle_get_ui_session_state(
                     session_id.clone(),
                     UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
@@ -3735,23 +3885,36 @@ impl TgTunnel {
                 )
                 .await
             {
-                Ok(Some(entry)) => Self::ui_session_state_string(&entry.value),
-                Ok(None) => String::new(),
+                Ok(Some(entry)) => Self::ui_session_state_status_line(&entry.value),
+                Ok(None) => TgUiStatusLine {
+                    line: String::new(),
+                    nonce: None,
+                },
                 Err(error) => {
                     warn!(
                         "telegram ui session status_line read failed: session_id={}, error={}",
                         session_id, error
                     );
-                    String::new()
+                    TgUiStatusLine {
+                        line: String::new(),
+                        nonce: None,
+                    }
                 }
             };
-            if status_line.is_empty() || status_line == session.last_status_line {
+            if status.line.is_empty()
+                || (status.line == session.last_status_line && status.nonce == session.status_nonce)
+            {
                 continue;
             }
-            if session.status_message_id.is_none() && Self::is_terminal_status_line(&status_line) {
-                tracker
-                    .mark_status_line_seen(&session_id, status_line)
-                    .await;
+            if session.status_message_id.is_none()
+                && status.nonce.is_some()
+                && status.nonce == session.completed_status_nonce
+            {
+                let mut guard = tracker.sessions.lock().await;
+                if let Some(current) = guard.get_mut(&session_id) {
+                    current.last_status_line = status.line;
+                    current.status_nonce = status.nonce;
+                }
                 continue;
             }
             match gateway
@@ -3760,7 +3923,7 @@ impl TgTunnel {
                     session.bot_account_id.clone(),
                     session.chat_id.clone(),
                     session.status_message_id.clone(),
-                    status_line.clone(),
+                    status.line.clone(),
                 )
                 .await
             {
@@ -3768,7 +3931,9 @@ impl TgTunnel {
                     let mut guard = tracker.sessions.lock().await;
                     if let Some(current) = guard.get_mut(&session_id) {
                         current.status_message_id = status_message_id;
-                        current.last_status_line = status_line;
+                        current.status_nonce = status.nonce;
+                        current.completed_status_nonce = None;
+                        current.last_status_line = status.line;
                     }
                 }
                 Err(error) => {
@@ -3866,6 +4031,7 @@ impl MsgTunnel for TgTunnel {
             .ui_session_id
             .clone()
             .or_else(|| msg.thread.topic.clone());
+        let msg_turn_nonce = Self::msg_turn_nonce(&msg);
         let sender_did = Self::resolve_sender_did(&msg);
         let binding = self.get_binding(&sender_did)?.ok_or_else(|| {
             anyhow::anyhow!("missing tg bot binding for {}", sender_did.to_string())
@@ -3873,44 +4039,65 @@ impl MsgTunnel for TgTunnel {
 
         let mut envelope = self.build_egress_envelope(&record, &binding).await?;
         let chat_id = envelope.chat_id.clone();
-        if envelope.attachments.is_empty() {
-            if let Some(op_lock) = self
+        if let Some(op_lock) = self
+            .ui_session_tracker
+            .session_op_lock(ui_session_id.as_deref())
+            .await
+        {
+            let _op_guard = op_lock.lock().await;
+            let previous_status_message_id = self
                 .ui_session_tracker
-                .session_op_lock(ui_session_id.as_deref())
-                .await
-            {
-                let _op_guard = op_lock.lock().await;
-                envelope.replace_message_id = self
-                    .ui_session_tracker
-                    .status_message_id(
+                .status_message_id_for_nonce(
+                    ui_session_id.as_deref(),
+                    &sender_did,
+                    &binding.bot_account_id,
+                    chat_id.as_deref(),
+                    msg_turn_nonce.as_deref(),
+                )
+                .await;
+            if envelope.attachments.is_empty() {
+                envelope.replace_message_id = previous_status_message_id.clone();
+            }
+            let report = self.gateway.send(envelope).await?;
+            if report.ok {
+                self.ui_session_tracker
+                    .mark_activity(
                         ui_session_id.as_deref(),
-                        &sender_did,
-                        &binding.bot_account_id,
+                        sender_did.clone(),
+                        binding.bot_account_id.clone(),
                         chat_id.as_deref(),
                     )
                     .await;
-                let status_message_id_to_replace = envelope.replace_message_id.clone();
-                let report = self.gateway.send(envelope).await?;
-                if report.ok {
+                if let Some(status_message_id) = previous_status_message_id {
+                    if report.external_msg_id.as_deref() != Some(status_message_id.as_str()) {
+                        if let Some(chat_id) = chat_id.as_ref() {
+                            if let Err(error) = self
+                                .gateway
+                                .delete_message(
+                                    sender_did,
+                                    binding.bot_account_id,
+                                    chat_id.clone(),
+                                    status_message_id.clone(),
+                                )
+                                .await
+                            {
+                                warn!(
+                                    "telegram old status message delete failed: session_id={:?}, chat_id={}, message_id={}, error={}",
+                                    ui_session_id, chat_id, status_message_id, error
+                                );
+                            }
+                        }
+                    }
                     self.ui_session_tracker
-                        .mark_activity(
+                        .mark_status_message_replaced(
                             ui_session_id.as_deref(),
-                            sender_did,
-                            binding.bot_account_id,
-                            chat_id.as_deref(),
+                            msg_turn_nonce.as_deref(),
                         )
                         .await;
-                    if status_message_id_to_replace.as_deref() == report.external_msg_id.as_deref()
-                    {
-                        self.ui_session_tracker
-                            .mark_status_message_replaced(ui_session_id.as_deref())
-                            .await;
-                    }
                 }
-                return Ok(report);
             }
+            return Ok(report);
         }
-        let status_message_id_to_replace = envelope.replace_message_id.clone();
         let report = self.gateway.send(envelope).await?;
         if report.ok {
             self.ui_session_tracker
@@ -3921,11 +4108,6 @@ impl MsgTunnel for TgTunnel {
                     chat_id.as_deref(),
                 )
                 .await;
-            if status_message_id_to_replace.as_deref() == report.external_msg_id.as_deref() {
-                self.ui_session_tracker
-                    .mark_status_message_replaced(ui_session_id.as_deref())
-                    .await;
-            }
         }
         Ok(report)
     }
@@ -3937,7 +4119,10 @@ mod tests {
     use crate::msg_box_db::MsgBoxDbMgr;
     use crate::msg_center::MessageCenter;
     use buckyos_api::{BoxKind, MsgCenterHandler, MsgRecord, MsgState, RdbBackend, RouteInfo};
-    use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject};
+    use ndn_lib::{
+        MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject, ObjId, RefItem, RefRole,
+        RefTarget,
+    };
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -3998,6 +4183,16 @@ mod tests {
         ) -> AnyResult<Option<String>> {
             self.status_line_count.fetch_add(1, Ordering::SeqCst);
             Ok(message_id.or_else(|| Some("counting-status".to_string())))
+        }
+
+        async fn delete_message(
+            &self,
+            _owner_did: DID,
+            _bot_account_id: String,
+            _chat_id: String,
+            _message_id: String,
+        ) -> AnyResult<()> {
+            Ok(())
         }
     }
 
@@ -4072,6 +4267,20 @@ mod tests {
                 .await
                 .push(format!("status:{status_line}"));
             Ok(message_id.or_else(|| Some("status-1".to_string())))
+        }
+
+        async fn delete_message(
+            &self,
+            _owner_did: DID,
+            _bot_account_id: String,
+            _chat_id: String,
+            message_id: String,
+        ) -> AnyResult<()> {
+            self.operations
+                .lock()
+                .await
+                .push(format!("delete:{message_id}"));
+            Ok(())
         }
     }
 
@@ -4260,7 +4469,10 @@ mod tests {
             .handle_update_ui_session_state(
                 session_id.clone(),
                 UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
-                json!("tool: exec_bash"),
+                json!({
+                    "value": "tool: exec_bash",
+                    "turn_nonce": "turn-1",
+                }),
                 RPCContext::default(),
             )
             .await
@@ -4276,12 +4488,18 @@ mod tests {
             "⏳ LLM finished"
         );
 
-        let final_record = build_record(
+        let mut final_record = build_record(
             owner,
             vec![DID::new("bns", "group-room")],
             MsgObjKind::GroupMsg,
             Some("route-chat-1"),
         );
+        final_record
+            .msg
+            .as_mut()
+            .unwrap()
+            .meta
+            .insert(TG_TURN_NONCE_META_KEY.to_string(), json!("turn-1"));
         let final_report = tunnel.send_record(final_record).await.unwrap();
         assert!(final_report.ok);
         assert_eq!(
@@ -4298,7 +4516,10 @@ mod tests {
             .handle_update_ui_session_state(
                 session_id.clone(),
                 UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
-                json!("LLM finished"),
+                json!({
+                    "value": "LLM finished",
+                    "turn_nonce": "turn-1",
+                }),
                 RPCContext::default(),
             )
             .await
@@ -4309,6 +4530,8 @@ mod tests {
             let guard = tunnel.ui_session_tracker.sessions.lock().await;
             let session = guard.get(&session_id).unwrap();
             assert!(session.status_message_id.is_none());
+            assert_eq!(session.status_nonce.as_deref(), Some("turn-1"));
+            assert_eq!(session.completed_status_nonce.as_deref(), Some("turn-1"));
             assert_eq!(session.last_status_line, "LLM finished");
         }
 
@@ -4328,6 +4551,153 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(inactive.value, json!(false));
+
+        tunnel.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn attachment_reply_deletes_previous_status_message() {
+        let (center, _tmp) = new_msg_center().await;
+        let gateway = Arc::new(BlockingStatusTgGateway::default());
+        let mut cfg = TgTunnelConfig::new(DID::new("bns", "tg-attachment-test"));
+        cfg.supports_ingress = false;
+        let tunnel = TgTunnel::with_gateway(cfg, gateway.clone());
+        let owner = DID::new("bns", "alice");
+        let session_id = "thread-a".to_string();
+        let chat_id = "route-chat-1".to_string();
+
+        tunnel
+            .bind_msg_center_handler(Arc::new(center.clone()))
+            .unwrap();
+        tunnel
+            .bind_bot_simple(
+                owner.clone(),
+                "@alice_bot".to_string(),
+                Some("ALICE_BOT_TOKEN".to_string()),
+                None,
+            )
+            .unwrap();
+        tunnel.start().await.unwrap();
+        {
+            let mut guard = tunnel.ui_session_tracker.sessions.lock().await;
+            guard.insert(
+                session_id.clone(),
+                TgUiSessionRuntime {
+                    owner_did: owner.clone(),
+                    bot_account_id: "@alice_bot".to_string(),
+                    chat_id: chat_id.clone(),
+                    last_activity_ms: TgTunnel::now_ms(),
+                    status_message_id: Some("status-1".to_string()),
+                    status_nonce: Some("turn-1".to_string()),
+                    completed_status_nonce: None,
+                    last_status_line: "tool: exec_bash".to_string(),
+                },
+            );
+        }
+
+        let mut record = build_record(
+            owner,
+            vec![DID::new("bns", "group-room")],
+            MsgObjKind::GroupMsg,
+            Some(chat_id.as_str()),
+        );
+        record
+            .msg
+            .as_mut()
+            .unwrap()
+            .meta
+            .insert(TG_TURN_NONCE_META_KEY.to_string(), json!("turn-1"));
+        record.msg.as_mut().unwrap().content.refs.push(RefItem {
+            role: RefRole::Output,
+            target: RefTarget::DataObj {
+                obj_id: ObjId::new("file:010203").unwrap(),
+                uri_hint: None,
+            },
+            label: Some("text/plain".to_string()),
+        });
+
+        let report = tunnel.send_record(record).await.unwrap();
+        assert!(report.ok);
+        assert_eq!(report.external_msg_id.as_deref(), Some("blocking-sent"));
+        assert_eq!(
+            gateway.operations.lock().await.clone(),
+            vec!["send:hello".to_string(), "delete:status-1".to_string()]
+        );
+        {
+            let guard = tunnel.ui_session_tracker.sessions.lock().await;
+            let session = guard.get(&session_id).unwrap();
+            assert!(session.status_message_id.is_none());
+        }
+
+        tunnel.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reply_does_not_replace_status_from_different_nonce() {
+        let (center, _tmp) = new_msg_center().await;
+        let gateway = Arc::new(BlockingStatusTgGateway::default());
+        let mut cfg = TgTunnelConfig::new(DID::new("bns", "tg-nonce-test"));
+        cfg.supports_ingress = false;
+        let tunnel = TgTunnel::with_gateway(cfg, gateway.clone());
+        let owner = DID::new("bns", "alice");
+        let session_id = "thread-a".to_string();
+        let chat_id = "route-chat-1".to_string();
+
+        tunnel
+            .bind_msg_center_handler(Arc::new(center.clone()))
+            .unwrap();
+        tunnel
+            .bind_bot_simple(
+                owner.clone(),
+                "@alice_bot".to_string(),
+                Some("ALICE_BOT_TOKEN".to_string()),
+                None,
+            )
+            .unwrap();
+        tunnel.start().await.unwrap();
+        {
+            let mut guard = tunnel.ui_session_tracker.sessions.lock().await;
+            guard.insert(
+                session_id.clone(),
+                TgUiSessionRuntime {
+                    owner_did: owner.clone(),
+                    bot_account_id: "@alice_bot".to_string(),
+                    chat_id: chat_id.clone(),
+                    last_activity_ms: TgTunnel::now_ms(),
+                    status_message_id: Some("status-1".to_string()),
+                    status_nonce: Some("old-turn".to_string()),
+                    completed_status_nonce: None,
+                    last_status_line: "tool: exec_bash".to_string(),
+                },
+            );
+        }
+
+        let mut record = build_record(
+            owner,
+            vec![DID::new("bns", "group-room")],
+            MsgObjKind::GroupMsg,
+            Some(chat_id.as_str()),
+        );
+        record
+            .msg
+            .as_mut()
+            .unwrap()
+            .meta
+            .insert(TG_TURN_NONCE_META_KEY.to_string(), json!("new-turn"));
+
+        let report = tunnel.send_record(record).await.unwrap();
+        assert!(report.ok);
+        assert_eq!(report.external_msg_id.as_deref(), Some("blocking-sent"));
+        assert_eq!(
+            gateway.operations.lock().await.clone(),
+            vec!["send:hello".to_string()]
+        );
+        {
+            let guard = tunnel.ui_session_tracker.sessions.lock().await;
+            let session = guard.get(&session_id).unwrap();
+            assert_eq!(session.status_message_id.as_deref(), Some("status-1"));
+            assert_eq!(session.status_nonce.as_deref(), Some("old-turn"));
+        }
 
         tunnel.stop().await.unwrap();
     }
@@ -4365,6 +4735,8 @@ mod tests {
                     chat_id: chat_id.clone(),
                     last_activity_ms: TgTunnel::now_ms(),
                     status_message_id: Some("status-1".to_string()),
+                    status_nonce: Some("turn-1".to_string()),
+                    completed_status_nonce: None,
                     last_status_line: "tool: exec_bash".to_string(),
                 },
             );
@@ -4373,7 +4745,10 @@ mod tests {
             .handle_update_ui_session_state(
                 session_id.clone(),
                 UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
-                json!("思考完成"),
+                json!({
+                    "value": "思考完成",
+                    "turn_nonce": "turn-1",
+                }),
                 RPCContext::default(),
             )
             .await
@@ -4388,12 +4763,18 @@ mod tests {
         });
         gateway.status_entered.notified().await;
 
-        let final_record = build_record(
+        let mut final_record = build_record(
             owner,
             vec![DID::new("bns", "group-room")],
             MsgObjKind::GroupMsg,
             Some(chat_id.as_str()),
         );
+        final_record
+            .msg
+            .as_mut()
+            .unwrap()
+            .meta
+            .insert(TG_TURN_NONCE_META_KEY.to_string(), json!("turn-1"));
         let send_task = tokio::spawn({
             let tunnel = tunnel.clone();
             async move { tunnel.send_record(final_record).await.unwrap() }
