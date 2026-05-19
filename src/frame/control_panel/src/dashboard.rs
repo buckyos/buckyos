@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use sysinfo::{DiskRefreshKind, Disks, Networks, System};
+use sysinfo::{Disks, Networks, System};
 use tokio::sync::RwLock;
 
 impl ControlPanelServer {
@@ -17,12 +17,12 @@ impl ControlPanelServer {
         tokio::spawn(async move {
             let mut system = System::new_all();
             let mut networks = Networks::new_with_refreshed_list();
-            let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
+            let mut disks = Disks::new_with_refreshed_list();
 
             system.refresh_memory();
             system.refresh_cpu_usage();
-            networks.refresh(true);
-            disks.refresh(true);
+            networks.refresh();
+            disks.refresh();
 
             let cpu_brand = system
                 .cpus()
@@ -90,14 +90,14 @@ impl ControlPanelServer {
 
                 system.refresh_memory();
                 system.refresh_cpu_usage();
-                networks.refresh(true);
+                networks.refresh();
                 proc_net_dev_stats = ControlPanelServer::read_proc_net_dev_stats();
 
                 disk_refresh_counter = disk_refresh_counter.saturating_add(1);
                 let refresh_disks =
                     disk_refresh_counter.is_multiple_of(METRICS_DISK_REFRESH_INTERVAL_SECS);
                 if refresh_disks {
-                    disks.refresh(true);
+                    disks.refresh();
                 }
 
                 network_totals =
@@ -237,8 +237,8 @@ impl ControlPanelServer {
             "#1d4ed8", "#6b7280", "#22c55e", "#facc15", "#38bdf8", "#a855f7",
         ];
 
-        let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
-        disks.refresh(true);
+        let mut disks = Disks::new_with_refreshed_list();
+        disks.refresh();
 
         for (idx, disk) in disks.list().iter().enumerate() {
             let total = disk.total_space();
@@ -391,8 +391,8 @@ impl ControlPanelServer {
             0.0
         };
 
-        let mut disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::everything());
-        disks.refresh(true);
+        let mut disks = Disks::new_with_refreshed_list();
+        disks.refresh();
         let mut storage_capacity_bytes: u64 = 0;
         let mut storage_used_bytes: u64 = 0;
         for disk in disks.list().iter() {

@@ -389,7 +389,7 @@ async fn stop_service() -> SmbResult<()> {
     stop_smb_service().await?;
 
     let mut system = System::new_all();
-    system.refresh_processes(ProcessesToUpdate::All, true);
+    system.refresh_processes(ProcessesToUpdate::All);
 
     for process in system.processes_by_name("smb_service".as_ref()) {
         for param in process.cmd().iter() {

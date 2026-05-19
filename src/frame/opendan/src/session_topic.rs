@@ -188,7 +188,7 @@ pub enum RecallResult {
 }
 
 #[async_trait]
-pub trait RecallService: Send + Sync {
+pub trait RetrievalService: Send + Sync {
     async fn recall(
         &self,
         input: RecallInput<'_>,
@@ -198,20 +198,20 @@ pub trait RecallService: Send + Sync {
 }
 
 pub struct SessionTopicUpdater {
-    recall_service: Arc<dyn RecallService>,
+    retrieval_service: Arc<dyn RetrievalService>,
     policy: RecallPolicy,
 }
 
 impl SessionTopicUpdater {
-    pub fn new(recall_service: Arc<dyn RecallService>, policy: RecallPolicy) -> Self {
+    pub fn new(retrieval_service: Arc<dyn RetrievalService>, policy: RecallPolicy) -> Self {
         Self {
-            recall_service,
+            retrieval_service,
             policy,
         }
     }
 
-    pub fn with_default_recall(policy: RecallPolicy) -> Self {
-        Self::new(Arc::new(DefaultRecallService::default()), policy)
+    pub fn with_default_retrieval(policy: RecallPolicy) -> Self {
+        Self::new(Arc::new(DefaultRetrievalService::default()), policy)
     }
 
     pub async fn update(
@@ -268,7 +268,7 @@ impl SessionTopicUpdater {
                 let result = if matches!(mode, RecallMode::Llm) {
                     match tokio::time::timeout(
                         Duration::from_millis(self.policy.llm_timeout_ms),
-                        self.recall_service.recall(
+                        self.retrieval_service.recall(
                             RecallInput {
                                 session_id: &input.session_id,
                                 session_dir: &input.session_dir,
@@ -284,13 +284,13 @@ impl SessionTopicUpdater {
                         Ok(result) => result,
                         Err(_) => RecallResult::Failed {
                             reason: format!(
-                                "LLM recall timed out after {}ms",
+                                "LLM retrieval timed out after {}ms",
                                 self.policy.llm_timeout_ms
                             ),
                         },
                     }
                 } else {
-                    self.recall_service
+                    self.retrieval_service
                         .recall(
                             RecallInput {
                                 session_id: &input.session_id,
@@ -352,18 +352,18 @@ impl SessionTopicUpdater {
 
 impl Default for SessionTopicUpdater {
     fn default() -> Self {
-        Self::with_default_recall(RecallPolicy::default())
+        Self::with_default_retrieval(RecallPolicy::default())
     }
 }
 
 #[derive(Default)]
-pub struct DefaultRecallService {
-    mechanical: MechanicalRecallService,
-    llm: LlmRecallService,
+pub struct DefaultRetrievalService {
+    mechanical: MechanicalRetrievalService,
+    llm: LlmRetrievalService,
 }
 
 #[async_trait]
-impl RecallService for DefaultRecallService {
+impl RetrievalService for DefaultRetrievalService {
     async fn recall(
         &self,
         input: RecallInput<'_>,
@@ -379,10 +379,10 @@ impl RecallService for DefaultRecallService {
 }
 
 #[derive(Default)]
-pub struct MechanicalRecallService;
+pub struct MechanicalRetrievalService;
 
 #[async_trait]
-impl RecallService for MechanicalRecallService {
+impl RetrievalService for MechanicalRetrievalService {
     async fn recall(
         &self,
         input: RecallInput<'_>,
@@ -469,10 +469,10 @@ impl RecallService for MechanicalRecallService {
 }
 
 #[derive(Default)]
-pub struct LlmRecallService;
+pub struct LlmRetrievalService;
 
 #[async_trait]
-impl RecallService for LlmRecallService {
+impl RetrievalService for LlmRetrievalService {
     async fn recall(
         &self,
         _input: RecallInput<'_>,
@@ -480,7 +480,7 @@ impl RecallService for LlmRecallService {
         _policy: &RecallPolicy,
     ) -> RecallResult {
         RecallResult::Failed {
-            reason: "LLM recall backend is not configured".to_string(),
+            reason: "LLM retrieval backend is not configured".to_string(),
         }
     }
 }
@@ -820,12 +820,12 @@ mod tests {
     use std::sync::Mutex;
 
     #[derive(Default)]
-    struct MockRecallService {
+    struct MockRetrievalService {
         result: Mutex<Option<RecallResult>>,
     }
 
     #[async_trait]
-    impl RecallService for MockRecallService {
+    impl RetrievalService for MockRetrievalService {
         async fn recall(
             &self,
             _input: RecallInput<'_>,
@@ -910,7 +910,7 @@ mod tests {
     #[tokio::test]
     async fn updater_writes_topic_tag_set_and_recall_payload() {
         let dir = tempfile::tempdir().unwrap();
-        let service = Arc::new(MockRecallService {
+        let service = Arc::new(MockRetrievalService {
             result: Mutex::new(Some(RecallResult::Recalled {
                 items: vec![RecallItem {
                     session_id: "s-old".to_string(),
@@ -959,7 +959,7 @@ mod tests {
     #[tokio::test]
     async fn updater_keeps_success_when_recall_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let service = Arc::new(MockRecallService {
+        let service = Arc::new(MockRetrievalService {
             result: Mutex::new(Some(RecallResult::Failed {
                 reason: "boom".to_string(),
             })),
@@ -988,7 +988,7 @@ mod tests {
     async fn repeated_same_topic_keeps_topic_doc_content_stable() {
         let dir = tempfile::tempdir().unwrap();
         let updater = SessionTopicUpdater::new(
-            Arc::new(MockRecallService::default()),
+            Arc::new(MockRetrievalService::default()),
             RecallPolicy {
                 change_threshold: 2.0,
                 distance_threshold_turns: u32::MAX,

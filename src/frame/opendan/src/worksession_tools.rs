@@ -292,7 +292,7 @@ impl UpdateSessionTopicTool {
         Self {
             agent,
             source_session_id: source_session_id.into(),
-            updater: SessionTopicUpdater::with_default_recall(RecallPolicy::default()),
+            updater: SessionTopicUpdater::with_default_retrieval(RecallPolicy::default()),
         }
     }
 }

@@ -94,7 +94,7 @@ chrono = "0.4.43"
 time = { version = "0.3.45", features = ["formatting"] }
 
 # Configuration and parsing
-toml = "0.8.23"
+toml = "1.1.2"
 clap = "4.5.54"
 
 # Crypto and security
@@ -120,7 +120,7 @@ fs2 = "0.4.3"
 percent-encoding = "2.3.1"
 semver = "1.0.27"
 num_cpus = "1.17.0"
-sysinfo = "0.37.2"
+sysinfo = "0.31.4"
 if-addrs = "0.14.0"
 hashbrown = "0.16.1"
 rustix = "1.1.3"

@@ -576,7 +576,7 @@ fn is_active_process_status(status: ProcessStatus) -> bool {
 
 fn service_process_pids(spec: &NativeServiceSpec) -> Vec<i32> {
     let mut system = System::new_all();
-    system.refresh_processes(ProcessesToUpdate::All, true);
+    system.refresh_processes(ProcessesToUpdate::All);
 
     let mut pids = system
         .processes()
@@ -652,7 +652,7 @@ fn is_pid_running(pid: i32) -> bool {
     }
 
     let mut system = System::new_all();
-    system.refresh_processes(ProcessesToUpdate::All, true);
+    system.refresh_processes(ProcessesToUpdate::All);
     system
         .process(Pid::from_u32(pid as u32))
         .map(|process| is_active_process_status(process.status()))
