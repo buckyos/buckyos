@@ -2,7 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use buckyos_api::{match_event_patterns, AiContent, AiMessage, AiRole};
+use buckyos_api::{
+    match_event_patterns, AiContent, AiMessage, AiRole, MsgCenterClient,
+    UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
+};
 use log::{info, warn};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -53,17 +56,25 @@ pub enum SessionReply {
 
 pub struct InMemoryStatus {
     current: std::sync::Mutex<String>,
+    ui_session_sync: Option<UiSessionStateSync>,
 }
 
 impl InMemoryStatus {
-    pub fn new() -> Self {
+    pub fn new(ui_session_sync: Option<UiSessionStateSync>) -> Self {
         Self {
             current: std::sync::Mutex::new(String::new()),
+            ui_session_sync,
         }
     }
 
     pub fn snapshot(&self) -> String {
         self.current.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    fn update_ui_state(&self, key: &'static str, value: serde_json::Value) {
+        if let Some(sync) = self.ui_session_sync.as_ref() {
+            sync.update(key, value);
+        }
     }
 }
 
@@ -71,6 +82,44 @@ impl OneLineStatusSink for InMemoryStatus {
     fn set(&self, status: String) {
         if let Ok(mut g) = self.current.lock() {
             *g = status;
+        }
+        self.update_ui_state(
+            UI_SESSION_STATE_STATUS_LINE_KEY,
+            serde_json::Value::String(self.snapshot()),
+        );
+    }
+}
+
+#[derive(Clone)]
+pub struct UiSessionStateSync {
+    msg_center: Arc<MsgCenterClient>,
+    session_id: String,
+}
+
+impl UiSessionStateSync {
+    fn new(msg_center: Arc<MsgCenterClient>, session_id: String) -> Self {
+        Self {
+            msg_center,
+            session_id,
+        }
+    }
+
+    fn update(&self, key: &'static str, value: serde_json::Value) {
+        let msg_center = self.msg_center.clone();
+        let session_id = self.session_id.clone();
+        let key = key.to_string();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(err) = msg_center
+                    .update_ui_session_state(session_id.clone(), key.clone(), value)
+                    .await
+                {
+                    warn!(
+                        "opendan.session[{}]: update ui_session state key={} failed: {err}",
+                        session_id, key
+                    );
+                }
+            });
         }
     }
 }
@@ -242,6 +291,10 @@ impl AgentSession {
             b.session_id.clone(),
             session_dir.clone(),
         ));
+        let ui_session_sync =
+            b.runtime.msg_center.as_ref().map(|msg_center| {
+                UiSessionStateSync::new(msg_center.clone(), b.session_id.clone())
+            });
         let session = Self {
             session_id: b.session_id,
             agent_name: b.agent_name,
@@ -256,7 +309,7 @@ impl AgentSession {
             state_snap_path,
             handle: Arc::new(Mutex::new(None)),
             meta: Arc::new(Mutex::new(meta)),
-            status: Arc::new(InMemoryStatus::new()),
+            status: Arc::new(InMemoryStatus::new(ui_session_sync)),
             event_pump: b.event_pump,
             trace_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             fork_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -2860,11 +2913,19 @@ impl AgentSession {
     }
 
     async fn set_status(&self, status: SessionStatus) {
+        let one_line_status = self.status.snapshot();
         {
             let mut g = self.meta.lock().await;
             g.status = status;
-            g.one_line_status = self.status.snapshot();
+            g.one_line_status = one_line_status.clone();
         }
+        let typing = matches!(status, SessionStatus::Running | SessionStatus::WaitingTool);
+        self.status
+            .update_ui_state(UI_SESSION_STATE_TYPING_KEY, serde_json::json!(typing));
+        self.status.update_ui_state(
+            UI_SESSION_STATE_STATUS_LINE_KEY,
+            serde_json::Value::String(one_line_status),
+        );
         if let Err(err) = self.flush_meta().await {
             warn!(
                 "opendan.session[{}]: flush after status set failed: {err:#}",

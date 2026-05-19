@@ -21,6 +21,40 @@ pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
 pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 3;
+pub const UI_SESSION_STATE_ACTIVE_KEY: &str = "active";
+pub const UI_SESSION_STATE_TYPING_KEY: &str = "typing";
+pub const UI_SESSION_STATE_STATUS_LINE_KEY: &str = "status_line";
+pub const UI_SESSION_PLATFORM_TELEGRAM: &str = "tg";
+
+pub fn build_msg_tunnel_ui_session_id(
+    platform: &str,
+    account_id: &str,
+    tunnel_session_key: &str,
+) -> String {
+    format!(
+        "{}:{}:{}",
+        normalize_ui_session_id_part(platform),
+        normalize_ui_session_id_part(account_id),
+        normalize_ui_session_id_part(tunnel_session_key)
+    )
+}
+
+pub fn build_telegram_ui_session_id(bot_account_id: &str, chat_id: impl ToString) -> String {
+    build_msg_tunnel_ui_session_id(
+        UI_SESSION_PLATFORM_TELEGRAM,
+        bot_account_id,
+        &chat_id.to_string(),
+    )
+}
+
+fn normalize_ui_session_id_part(raw: &str) -> String {
+    let normalized = raw.trim().replace(':', "_");
+    if normalized.is_empty() {
+        "unknown".to_string()
+    } else {
+        normalized
+    }
+}
 
 /// Sqlite DDL for the msg-center database. Covers mailbox records, the
 /// per-owner message-id index, and contact-manager tables. All tables carry an
@@ -3517,4 +3551,25 @@ pub fn generate_msg_center_service_doc() -> AppDoc {
     .selector_type(SelectorType::Single)
     .build()
     .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_telegram_ui_session_id_uses_canonical_parts() {
+        assert_eq!(
+            build_telegram_ui_session_id("lzc_jarvis", 5_397_330_802_i64),
+            "tg:lzc_jarvis:5397330802"
+        );
+    }
+
+    #[test]
+    fn build_msg_tunnel_ui_session_id_normalizes_delimiters() {
+        assert_eq!(
+            build_msg_tunnel_ui_session_id(" tg ", "bot:one", " chat:1 "),
+            "tg:bot_one:chat_1"
+        );
+    }
 }

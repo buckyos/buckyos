@@ -1289,20 +1289,26 @@ impl ToolManager for LocalDirToolManager {
     }
 }
 
-/// 三态映射(注释 §953 起规定的契约):
-/// - `Success` → `Observation::Success`,`content` = `details`,`bytes` 用 JSON 长度近似;
+/// 三态映射:
+/// - `Success` → `Observation::Success`,`content` = `output` 字符串(协议最小形态);
+///   `output` 缺失时回落到 `summary`,让 write/edit 这类不写 output 的工具仍有可读结果。
+///   `details` / `title` / `cmd_args` 等元数据留给 UI 和 worklog,不进 LLM 历史,
+///   这样上层 [`AgentToolResult::render_for_level`] 才有空间做分级压缩。
 /// - `Error`   → `Observation::Error`,`message` 优先 `summary`,fallback `output`;
 /// - `Pending` → `Observation::Pending`(由 ToolPolicy.allow_deferred 决定是否合法,
 ///   不在这里 gate)。
 fn map_result_to_observation(call_id: String, result: AgentToolResult) -> Observation {
     match result.status {
         AgentToolStatus::Success => {
-            let bytes = serde_json::to_vec(&result.details)
-                .map(|v| v.len())
-                .unwrap_or(0);
+            let text = result
+                .output
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| result.summary.clone());
+            let bytes = text.len();
             Observation::Success {
                 call_id,
-                content: result.details,
+                content: serde_json::Value::String(text),
                 bytes,
                 truncated: false,
             }

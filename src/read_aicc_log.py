@@ -46,6 +46,8 @@ ROLE_COLORS = {
     "user": C_GREEN,
     "assistant": C_CYAN,
     "tool": C_YELLOW,
+    "tool_call": C_YELLOW,
+    "tool_result": C_YELLOW,
 }
 
 DEFAULT_BUCKYOS_ROOT = "/opt/buckyos"
@@ -190,12 +192,25 @@ def _extract_message_content(msg: dict) -> str:
                 text = block.get("text", "")
                 if text:
                     parts.append(text)
+                elif block.get("output"):
+                    parts.append(str(block["output"]))
                 elif block.get("type"):
                     parts.append(f"[{block['type']}]")
             elif isinstance(block, str):
                 parts.append(block)
         return "\n".join(parts)
     return str(content)
+
+
+def _format_function_call_content(item: dict) -> str:
+    name = item.get("name", "?")
+    arguments = item.get("arguments", "")
+    try:
+        parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+        arguments = json.dumps(parsed, ensure_ascii=False)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return f"-> {name}({arguments})"
 
 
 def extract_clean_input(payload: dict) -> dict:
@@ -210,6 +225,29 @@ def extract_clean_input(payload: dict) -> dict:
 
     clean_messages = []
     for msg in raw_messages:
+        item_type = msg.get("type")
+        if item_type == "function_call":
+            call_id = msg.get("call_id", "")
+            title = "TOOL_CALL"
+            if call_id:
+                title += f" call_id={call_id}"
+            clean_messages.append({
+                "role": "tool_call",
+                "title": title,
+                "content": _format_function_call_content(msg),
+            })
+            continue
+        if item_type == "function_call_output":
+            call_id = msg.get("call_id", "")
+            title = "TOOL_RESULT"
+            if call_id:
+                title += f" call_id={call_id}"
+            clean_messages.append({
+                "role": "tool_result",
+                "title": title,
+                "content": msg.get("output", ""),
+            })
+            continue
         role = msg.get("role", "unknown")
         content = _extract_message_content(msg)
         clean_messages.append({"role": role, "content": content})
@@ -367,8 +405,9 @@ def display_entry(timestamp, direction, meta, payload, raw=False):
         messages = clean.get("messages", [])
         for i, msg in enumerate(messages):
             role = msg["role"]
+            title = msg.get("title", role.upper())
             color = ROLE_COLORS.get(role, C_WHITE)
-            print(f"  {C_BOLD}{color}[{role.upper()}]{C_RESET}")
+            print(f"  {C_BOLD}{color}[{title}]{C_RESET}")
             print_message_content(msg["content"], role)
             if i < len(messages) - 1:
                 print_separator(".")
@@ -485,6 +524,88 @@ def summarize_entries(entries):
     return summary, llm_count, err_count
 
 
+def _int_value(value) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def collect_html_stats(entries: list) -> dict:
+    stats = {
+        "llm_entries": 0,
+        "input_entries": 0,
+        "output_entries": 0,
+        "error_entries": 0,
+        "usage_entries": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cached_tokens": 0,
+        "reasoning_tokens": 0,
+        "models": {},
+    }
+
+    for entry_type, data in entries:
+        if entry_type == "error":
+            stats["error_entries"] += 1
+            continue
+        if entry_type != "llm":
+            continue
+
+        stats["llm_entries"] += 1
+        _, direction, meta, payload = data
+        if direction == "input":
+            stats["input_entries"] += 1
+            continue
+
+        stats["output_entries"] += 1
+        model = meta.get("model") or payload.get("model")
+        if model:
+            stats["models"][model] = stats["models"].get(model, 0) + 1
+
+        usage = payload.get("usage") or {}
+        if not usage:
+            continue
+
+        stats["usage_entries"] += 1
+        prompt_tokens = _int_value(usage.get("prompt_tokens")) or _int_value(usage.get("input_tokens"))
+        completion_tokens = _int_value(usage.get("completion_tokens")) or _int_value(usage.get("output_tokens"))
+        total_tokens = _int_value(usage.get("total_tokens")) or prompt_tokens + completion_tokens
+        input_details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
+
+        stats["prompt_tokens"] += prompt_tokens
+        stats["completion_tokens"] += completion_tokens
+        stats["total_tokens"] += total_tokens
+        stats["cached_tokens"] += _int_value(input_details.get("cached_tokens"))
+        stats["reasoning_tokens"] += _int_value(output_details.get("reasoning_tokens"))
+
+    return stats
+
+
+def format_count(value: int) -> str:
+    return f"{value:,}"
+
+
+def render_stats_text(stats: dict) -> str:
+    parts = [
+        f"tokens total={format_count(stats['total_tokens'])}",
+        f"input={format_count(stats['prompt_tokens'])}",
+        f"output={format_count(stats['completion_tokens'])}",
+        f"cached={format_count(stats['cached_tokens'])}",
+        f"reasoning={format_count(stats['reasoning_tokens'])}",
+        f"entries input={format_count(stats['input_entries'])}",
+        f"output={format_count(stats['output_entries'])}",
+        f"errors={format_count(stats['error_entries'])}",
+        f"usage={format_count(stats['usage_entries'])}",
+    ]
+    model_parts = [
+        f"{model} x {count}"
+        for model, count in sorted(stats["models"].items())
+    ]
+    if model_parts:
+        parts.append(f"models: {'; '.join(model_parts)}")
+    return " | ".join(parts)
+
+
 def html_pre(text: str) -> str:
     return html.escape(str(text), quote=False)
 
@@ -511,7 +632,7 @@ def render_meta_html(meta: dict, payload: dict) -> str:
 
 
 def render_llm_entry_html(index: int, timestamp: str, direction: str, meta: dict, payload: dict, raw: bool) -> str:
-    title = "INPUT" if direction == "input" else "OUTPUT"
+    entry_title = "INPUT" if direction == "input" else "OUTPUT"
     css_class = "input" if direction == "input" else "output"
     body = []
 
@@ -521,10 +642,11 @@ def render_llm_entry_html(index: int, timestamp: str, direction: str, meta: dict
         clean = extract_clean_input(payload)
         for msg in clean.get("messages", []):
             role = msg.get("role", "unknown")
+            msg_title = msg.get("title", role.upper())
             content = format_message_content(msg.get("content", ""))
             body.append(
                 f"<section class=\"message role-{html.escape(role)}\">"
-                f"<h3>{html.escape(role.upper())}</h3>"
+                f"<h3>{html.escape(msg_title)}</h3>"
                 f"<pre>{html_pre(content)}</pre>"
                 f"</section>"
             )
@@ -564,7 +686,7 @@ def render_llm_entry_html(index: int, timestamp: str, direction: str, meta: dict
     return (
         f"<article class=\"entry {css_class}\" id=\"entry-{index}\">"
         f"<details open>"
-        f"<summary><span class=\"badge\">{title}</span> "
+        f"<summary><span class=\"badge\">{entry_title}</span> "
         f"<span class=\"time\">{html.escape(timestamp)}</span></summary>"
         f"<div class=\"meta\">{render_meta_html(meta, payload)}</div>"
         f"{''.join(body)}"
@@ -591,14 +713,12 @@ def render_error_html(index: int, timestamp: str, meta_str: str) -> str:
 
 
 def default_html_path(logfile: str) -> Path:
-    path = Path(logfile)
-    if path.suffix == ".log":
-        return path.with_suffix(".html")
-    return path.with_name(path.name + ".html")
+    return Path(logfile).with_name("aicc_log.html")
 
 
 def render_html_report(logfile: str, entries: list, raw: bool, summary: str) -> str:
-    title = f"AICC Log - {Path(logfile).name}"
+    title = "AICC Log"
+    stats_text = render_stats_text(collect_html_stats(entries))
     rendered_entries = []
     for index, (entry_type, data) in enumerate(entries, 1):
         if entry_type == "llm":
@@ -651,13 +771,16 @@ def render_html_report(logfile: str, entries: list, raw: bool, summary: str) -> 
       position: sticky;
       top: 0;
       z-index: 1;
-      padding: 14px 22px;
+      padding: 8px 22px;
       border-bottom: 1px solid var(--border);
       background: color-mix(in srgb, var(--panel) 90%, transparent);
       backdrop-filter: blur(10px);
     }}
-    h1 {{ margin: 0 0 4px; font-size: 18px; }}
-    .summary, .path {{ color: var(--muted); overflow-wrap: anywhere; }}
+    .summary, .path {{
+      color: var(--muted);
+      overflow-wrap: anywhere;
+      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }}
     main {{ max-width: 1280px; margin: 0 auto; padding: 18px; }}
     .entry {{
       margin: 0 0 14px;
@@ -719,9 +842,8 @@ def render_html_report(logfile: str, entries: list, raw: bool, summary: str) -> 
 </head>
 <body>
   <header>
-    <h1>{html.escape(title)}</h1>
-    <div class="summary">{html.escape(summary)}</div>
-    <div class="path">{html.escape(str(Path(logfile).resolve()))}</div>
+    <div class="summary">{html.escape(summary)} | {html.escape(stats_text)}</div>
+    <div class="path">Original Log: {html.escape(str(Path(logfile).resolve()))}</div>
   </header>
   <main>
     {''.join(rendered_entries)}

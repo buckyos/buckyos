@@ -352,7 +352,7 @@ LLM 看到的工具签名**不暴露**这个字段——它是 Runtime 层强制
 ### 5.1 入站路由保留(已存在,确认仍然成立)
 
 - `IngressContext` 记录的 `tunnel_did` / `platform` / `chat_id` / `source_account` 在 record route 中保留——**群聊场景下这套机制无需改造**,因为群聊回复目标仍是 group ID,机制对称。
-- `msg.thread.topic = "tg:<bot_account_id>:<chat_id>"` 在群聊场景下天然就是群聊话题,UI session 聚合行为正确。
+- `msg.thread.topic` 由 `buckyos_api::build_telegram_ui_session_id(bot_account_id, chat_id)` 生成,当前形态为 `"tg:<bot_account_id>:<chat_id>"`;在群聊场景下天然就是群聊话题,UI session 聚合行为正确。
 
 ### 5.2 出站偏好(已存在)
 

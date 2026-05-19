@@ -357,8 +357,6 @@ fn result_to_observation(call_id: String, result: AgentToolResult) -> Observatio
     let is_error = matches!(result.status, AgentToolStatus::Error);
     let summary = result.summary.clone();
     let title = result.title.clone();
-    let bytes = serde_json::to_vec(&result).map(|v| v.len()).unwrap_or(0);
-    let content = serde_json::to_value(result).unwrap_or(Value::Null);
     if is_error {
         let message = if !summary.is_empty() {
             summary
@@ -369,9 +367,21 @@ fn result_to_observation(call_id: String, result: AgentToolResult) -> Observatio
         };
         Observation::Error { call_id, message }
     } else {
+        // Per agent_tool protocol, only the canonical `output` is fed back to
+        // the LLM so history records carry the minimum needed for tiered
+        // compression — detail / cmd_args / stdout / stderr / title are
+        // metadata for the UI and worklog, not for the model. Tools that
+        // don't populate `output` (write_file / edit_file / ...) fall back
+        // to `summary`, which already embeds the operation result.
+        let text = result
+            .output
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| summary.clone());
+        let bytes = text.len();
         Observation::Success {
             call_id,
-            content,
+            content: Value::String(text),
             bytes,
             truncated: false,
         }
