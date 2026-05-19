@@ -39,6 +39,9 @@ pub mod llm_context_helper;
 // `doc/opendan/Agent Enviroment.md` §15.1.
 pub mod prompt_env;
 
+// Agent-local i18n dictionaries used for runtime-facing status text.
+pub mod i18n;
+
 // §9 step 5 — UI-session default tool wiring; exec_bash + session /bin scripts.
 pub mod agent_bash;
 

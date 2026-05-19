@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! [identity]            agent_did / display_name
-//! [runtime]             cancel_reason / preserve_attachment_tag_in_egress
+//! [runtime]             cancel_reason / language / preserve_attachment_tag_in_egress
 //! [[channel]]           Gateway inbound sources (msg_center / kevent / ...)
 //! [dispatch]            default_class + ordered match-rule list
 //! [session.<class>]     per-class loop_mode / default_behavior / subscribe /
@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::behavior_cfg::{BehaviorCfg, BehaviorCfgError};
+use crate::i18n::AgentI18n;
 use crate::session_model::SessionKind;
 
 /// Subdirectories under the agent root the runtime needs to know about.
@@ -40,6 +41,7 @@ pub struct AgentLayout {
     pub tools_dir: PathBuf,
     pub tool_plans_dir: PathBuf,
     pub skills_dir: PathBuf,
+    pub i18n_dir: PathBuf,
     pub archive_dir: PathBuf,
 }
 
@@ -54,6 +56,7 @@ impl AgentLayout {
             tools_dir: root.join("tools"),
             tool_plans_dir: root.join("tool_plans"),
             skills_dir: root.join("skills"),
+            i18n_dir: root.join("i18n"),
             archive_dir: root.join("archive"),
             root,
         }
@@ -93,6 +96,9 @@ pub struct RuntimeCfg {
     /// session-layer interrupt path winds down outstanding tool calls.
     /// Empty ⇒ runtime falls back to a built-in default.
     pub cancel_reason: String,
+    /// Current language for agent-local i18n dictionaries under `i18n/`.
+    /// Empty ⇒ `en`.
+    pub language: String,
     pub preserve_attachment_tag_in_egress: bool,
     /// Outbound `<attachment>` path policy. `"workspace"` (default) confines
     /// agent-emitted local paths to the session workspace; `"unrestricted"`
@@ -119,6 +125,7 @@ impl Default for RuntimeCfg {
     fn default() -> Self {
         Self {
             cancel_reason: String::new(),
+            language: "en".to_string(),
             preserve_attachment_tag_in_egress: false,
             attachment_path_policy: AttachmentPathPolicy::default(),
         }
@@ -308,6 +315,7 @@ pub enum AgentConfigError {
 pub struct AgentConfig {
     pub layout: AgentLayout,
     pub toml: AgentTomlFile,
+    pub i18n: AgentI18n,
 }
 
 impl AgentConfig {
@@ -329,7 +337,8 @@ impl AgentConfig {
         } else {
             AgentTomlFile::default()
         };
-        Ok(Self { layout, toml })
+        let i18n = AgentI18n::load(&layout.root, toml.runtime.language.as_str());
+        Ok(Self { layout, toml, i18n })
     }
 
     /// Text used as `Observation::Cancelled.reason` during session-layer
@@ -342,6 +351,10 @@ impl AgentConfig {
         } else {
             configured
         }
+    }
+
+    pub fn language(&self) -> &str {
+        self.i18n.language()
     }
 
     /// Borrow a session class config by name. The class name comes from
@@ -461,6 +474,7 @@ mod tests {
         let cfg = AgentConfig::open(dir.path().to_path_buf()).unwrap();
         assert!(cfg.toml.identity.agent_did.is_empty());
         assert_eq!(cfg.cancel_reason(), "user requested cancel");
+        assert_eq!(cfg.language(), "en");
         assert_eq!(cfg.default_behavior_for_class("ui"), "ui_default");
         assert_eq!(cfg.default_behavior_for_class("work"), "work_default");
     }
@@ -477,6 +491,7 @@ mod tests {
 
                 [runtime]
                 cancel_reason = "user canceled"
+                language = "zh-CN"
                 preserve_attachment_tag_in_egress = true
 
                 [[channel]]
@@ -521,6 +536,7 @@ mod tests {
         assert_eq!(cfg.toml.identity.agent_did, "did:dev:alice");
         assert_eq!(cfg.toml.identity.display_name, "Alice");
         assert_eq!(cfg.cancel_reason(), "user canceled");
+        assert_eq!(cfg.language(), "zh");
         assert!(cfg.toml.runtime.preserve_attachment_tag_in_egress);
         assert_eq!(cfg.toml.channels.len(), 2);
         assert_eq!(cfg.toml.channels[1].kind, "kevent");

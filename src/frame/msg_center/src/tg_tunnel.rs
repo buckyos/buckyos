@@ -47,7 +47,7 @@ const TG_UI_SESSION_IDLE_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const TG_UI_SESSION_REFRESH_INTERVAL_MS: u64 = 5 * 1000;
 const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("new", "Create a new session"),
-    ("clean", "Clean current session and create a new one"),
+    ("clean", "Delete current session and create a new one"),
     ("stop", "Stop current response"),
     ("cancel", "Cancel current response"),
     ("info", "Show current session status"),

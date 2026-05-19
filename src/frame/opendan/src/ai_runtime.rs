@@ -42,6 +42,7 @@ use llm_context::{
     state::LLMContextSnapshot,
 };
 
+use crate::i18n::AgentI18n;
 use crate::worklog::{WorklogAppendCtx, WorklogService};
 
 // =====================================================================
@@ -599,6 +600,7 @@ pub struct OpenDanWorklogSink {
     service: Arc<WorklogService>,
     ctx: WorklogAppendCtx,
     status: Option<Arc<dyn OneLineStatusSink>>,
+    i18n: AgentI18n,
 }
 
 impl OpenDanWorklogSink {
@@ -606,11 +608,13 @@ impl OpenDanWorklogSink {
         service: Arc<WorklogService>,
         ctx: WorklogAppendCtx,
         status: Option<Arc<dyn OneLineStatusSink>>,
+        i18n: AgentI18n,
     ) -> Self {
         Self {
             service,
             ctx,
             status,
+            i18n,
         }
     }
 
@@ -629,23 +633,23 @@ impl WorklogSink for OpenDanWorklogSink {
                 "LLMStarted",
                 "ok",
                 json!({"trace_id": trace_id, "model": &model}),
-                Some(format!("LLM thinking ({model})")),
+                Some(self.i18n.render("status.llm_started", &[("model", model)])),
             ),
             WorkEvent::LLMFinished { trace_id, ok } => (
                 "LLMFinished",
                 if ok { "ok" } else { "error" },
                 json!({"trace_id": trace_id, "ok": ok}),
                 Some(if ok {
-                    "LLM finished".to_string()
+                    self.i18n.render("status.llm_finished", &[])
                 } else {
-                    "LLM failed".to_string()
+                    self.i18n.render("status.llm_failed", &[])
                 }),
             ),
             WorkEvent::LLMInferenceFailed { trace_id, error } => (
                 "LLMInferenceFailed",
                 "error",
                 json!({"trace_id": trace_id, "error": &error}),
-                Some(format!("LLM error: {error}")),
+                Some(self.i18n.render("status.llm_error", &[("error", error)])),
             ),
             WorkEvent::ToolCallPlanned {
                 trace_id,
@@ -655,7 +659,7 @@ impl WorklogSink for OpenDanWorklogSink {
                 "ToolCallPlanned",
                 "ok",
                 json!({"trace_id": trace_id, "tool": &tool, "call_id": call_id}),
-                Some(format!("tool: {tool}")),
+                Some(self.i18n.render("status.tool_planned", &[("tool", tool)])),
             ),
             WorkEvent::ToolCallFinished {
                 trace_id,
@@ -673,9 +677,19 @@ impl WorklogSink for OpenDanWorklogSink {
                     "ok": ok,
                     "duration_ms": duration_ms,
                 }),
-                Some(format!(
-                    "tool {tool} {}",
-                    if ok { "done" } else { "failed" }
+                Some(self.i18n.render(
+                    "status.tool_finished",
+                    &[
+                        ("tool", tool),
+                        (
+                            "result",
+                            if ok {
+                                self.i18n.render("status.tool_result_done", &[])
+                            } else {
+                                self.i18n.render("status.tool_result_failed", &[])
+                            },
+                        ),
+                    ],
                 )),
             ),
             WorkEvent::ToolCallFailed {
@@ -692,13 +706,16 @@ impl WorklogSink for OpenDanWorklogSink {
                     "call_id": call_id,
                     "message": &message,
                 }),
-                Some(format!("tool {tool} failed: {message}")),
+                Some(self.i18n.render(
+                    "status.tool_failed",
+                    &[("tool", tool), ("message", message)],
+                )),
             ),
             WorkEvent::OutputParseFailed { trace_id, error } => (
                 "OutputParseFailed",
                 "error",
                 json!({"trace_id": trace_id, "error": &error}),
-                Some(format!("parse error: {error}")),
+                Some(self.i18n.render("status.parse_error", &[("error", error)])),
             ),
             WorkEvent::ContextRewritten {
                 trace_id,
@@ -712,15 +729,22 @@ impl WorklogSink for OpenDanWorklogSink {
                     "from_messages": from_messages,
                     "to_messages": to_messages,
                 }),
-                Some(format!(
-                    "compressed history: {from_messages} → {to_messages}"
+                Some(self.i18n.render(
+                    "status.context_rewritten",
+                    &[
+                        ("from_messages", from_messages.to_string()),
+                        ("to_messages", to_messages.to_string()),
+                    ],
                 )),
             ),
             WorkEvent::SelfReportSet { trace_id, chars } => (
                 "SelfReportSet",
                 "ok",
                 json!({"trace_id": trace_id, "chars": chars}),
-                Some(format!("self-report set ({chars} chars)")),
+                Some(
+                    self.i18n
+                        .render("status.self_report_set", &[("chars", chars.to_string())]),
+                ),
             ),
             WorkEvent::MessageSent {
                 trace_id,
@@ -730,7 +754,10 @@ impl WorklogSink for OpenDanWorklogSink {
                 "MessageSent",
                 "ok",
                 json!({"trace_id": trace_id, "target": &target, "chars": chars}),
-                Some(format!("message → {target} ({chars} chars)")),
+                Some(self.i18n.render(
+                    "status.message_sent",
+                    &[("target", target), ("chars", chars.to_string())],
+                )),
             ),
         };
 
@@ -863,6 +890,7 @@ pub struct SessionDepsInput {
     pub snapshot_path: PathBuf,
     pub approval_required: Vec<String>,
     pub one_line_status: Option<Arc<dyn OneLineStatusSink>>,
+    pub i18n: AgentI18n,
     /// Behavior Loop: structured parser + matched renderer. `None` ⇒
     /// traditional Agent Loop. Filled by [`behavior_cfg`](crate::behavior_cfg).
     pub parser_renderer: Option<(Arc<dyn LLMResultParser>, Arc<dyn StepRenderer>)>,
@@ -884,6 +912,7 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
         snapshot_path,
         approval_required,
         one_line_status,
+        i18n,
         parser_renderer,
         from_user_did,
     } = input;
@@ -906,6 +935,7 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
         runtime.worklog.clone(),
         worklog_ctx,
         one_line_status,
+        i18n,
     ));
     let hook: Arc<dyn TurnHook> = Arc::new(SessionSnapshotHook::new(snapshot_path));
 

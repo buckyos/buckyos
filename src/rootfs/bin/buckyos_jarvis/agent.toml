@@ -3,6 +3,7 @@ display_name = "Jarvis"
 
 [runtime]
 cancel_reason = "user requested cancel"
+language = "zh"
 preserve_attachment_tag_in_egress = false
 # Lift the workspace fence on outbound <attachment> paths so the agent can
 # return host-side artifacts (e.g. /opt/buckyos/logs/aicc/*.html). `..`

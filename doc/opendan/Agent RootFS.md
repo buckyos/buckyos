@@ -73,6 +73,7 @@
   skills/<category>/<skill_dir>/
   tools/                              # Agent Bin 层（见 §6）
   tool_plans/<plan_name>.toml         # behavior 引用（见 §6.3）
+  i18n/<language>.toml                # runtime-facing 短文案，如 session one-line status
   behaviors/
     <name>.toml                       # ⬅ 扁平形态（§5）
     <name>/                           # ⬅ 新增结构化形态（§5.5）
@@ -137,6 +138,8 @@ display_name = ""                       # 空 ⇒ 从目录名推断
 # ─── Runtime ─────────────────────────────────────────────────
 [runtime]
 cancel_reason = "user requested cancel" # Observation::Cancelled 文案兜底
+language = "en"                         # 选择 i18n/<language>.toml，空值等同 en
+# 支持 zh / zh-TW / en / es / fr / de / ko / ja / ru；zh-CN、en-US 等 alias 会归一化。
 preserve_attachment_tag_in_egress = false
 
 # ─── Channels：Gateway 监听的事件源 ──────────────────────────

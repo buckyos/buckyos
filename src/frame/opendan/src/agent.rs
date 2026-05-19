@@ -799,6 +799,56 @@ impl AIAgent {
         Ok(session_id)
     }
 
+    pub async fn delete_session_physical(&self, session_id: &str) -> Result<bool> {
+        let session = self.sessions.lock().await.remove(session_id);
+        let Some(session) = session else {
+            return Ok(false);
+        };
+        if let Some(pump) = self.event_pump.as_ref() {
+            pump.remove_session(session_id).await;
+        }
+        let workspace_id = session.meta.lock().await.workspace_id.clone();
+        session.abort_worker().await;
+
+        if let Some(workspace_id) = workspace_id.filter(|s| !s.trim().is_empty()) {
+            if workspace_id == session_id {
+                remove_dir_all_if_exists(self.workspaces.workspace_dir(&workspace_id)).await?;
+            } else {
+                match self.workspaces.load_record(&workspace_id).await {
+                    Ok(record) if record.current_session.as_deref() == Some(session_id) => {
+                        if let Err(err) = self
+                            .workspaces
+                            .set_current_session(&workspace_id, None)
+                            .await
+                        {
+                            warn!(
+                                "opendan.agent[{}]: workspace `{}` unbind session {} failed: {err}",
+                                self.agent_name, workspace_id, session_id
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        warn!(
+                            "opendan.agent[{}]: load workspace `{}` before deleting session {} failed: {err}",
+                            self.agent_name, workspace_id, session_id
+                        );
+                    }
+                }
+            }
+        }
+
+        remove_dir_all_if_exists(self.config.layout.session_dir(session_id)).await?;
+        Ok(true)
+    }
+
+    pub async fn unbind_tunnel_if_session(&self, from: &str, session_id: &str) {
+        let mut guard = self.tunnel_to_ui_session.lock().await;
+        if guard.get(from).map(|sid| sid.as_str()) == Some(session_id) {
+            guard.remove(from);
+        }
+    }
+
     /// Replace the tunnel→session binding so a `/switch <id>` command
     /// reroutes subsequent inbound messages to a different session.
     /// Does not modify the target session's state.
@@ -1258,6 +1308,14 @@ fn sanitize_session_segment(raw: &str) -> String {
         out.push_str("anon");
     }
     out
+}
+
+async fn remove_dir_all_if_exists(path: PathBuf) -> Result<()> {
+    match tokio::fs::remove_dir_all(&path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(anyhow!("remove {} failed: {err}", path.display())),
+    }
 }
 
 fn truncate(s: &str, limit: usize) -> String {

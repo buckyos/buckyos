@@ -96,9 +96,8 @@ async fn new_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<Co
 async fn clean_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
     let previous = agent.resolve_session_for_command(&inv.from).await.ok();
     if let Some(sid) = previous.as_ref() {
-        if let Some(session) = agent.get_session(sid).await {
-            session.clear_history().await?;
-        }
+        agent.unbind_tunnel_if_session(&inv.from, sid).await;
+        agent.delete_session_physical(sid).await?;
     }
     let sid = agent
         .clone()
@@ -109,7 +108,7 @@ async fn clean_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<
         )
         .await?;
     let reply = match previous {
-        Some(old) => format!("session `{old}` cleaned; new session `{sid}` created"),
+        Some(old) => format!("session `{old}` deleted; new session `{sid}` created"),
         None => format!("new session `{sid}` created"),
     };
     Ok(CommandOutcome { reply })
@@ -142,10 +141,17 @@ async fn control_current_session(
 }
 
 async fn info_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
-    let sid = agent.resolve_session_for_command(&inv.from).await?;
+    let sid = match agent.resolve_session_for_command(&inv.from).await {
+        Ok(sid) => sid,
+        Err(_) => {
+            return Ok(CommandOutcome {
+                reply: render_agent_status(agent, &inv.from).await,
+            });
+        }
+    };
     let Some(session) = agent.get_session(&sid).await else {
         return Ok(CommandOutcome {
-            reply: format!("no active session for `{}`", inv.from),
+            reply: render_agent_status(agent, &inv.from).await,
         });
     };
     Ok(CommandOutcome {
@@ -201,6 +207,28 @@ fn render_summary(s: &SessionSummary) -> String {
     out
 }
 
+async fn render_agent_status(agent: &Arc<AIAgent>, from: &str) -> String {
+    let summaries = agent.list_session_summaries(None).await;
+    let mut out = String::new();
+    out.push_str(&format!("tunnel: {from}\n"));
+    out.push_str("current session: none\n");
+    out.push_str(&format!("active sessions: {}", summaries.len()));
+    if !summaries.is_empty() {
+        out.push('\n');
+        for s in summaries {
+            let kind = match s.kind {
+                SessionKind::Ui => "ui",
+                SessionKind::Work => "work",
+            };
+            out.push_str(&format!("  - {} [{kind}] {:?}\n", s.session_id, s.status));
+        }
+        if out.ends_with('\n') {
+            out.pop();
+        }
+    }
+    out
+}
+
 async fn switch_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result<CommandOutcome> {
     let target = inv.args.trim();
     if target.is_empty() {
@@ -222,7 +250,7 @@ async fn switch_session(agent: &Arc<AIAgent>, inv: &CommandInvocation) -> Result
 fn render_help() -> String {
     let mut out = String::from("available commands:\n");
     out.push_str("  /new              create a new session\n");
-    out.push_str("  /clean            clean current session and create a new one\n");
+    out.push_str("  /clean            delete current session and create a new one\n");
     out.push_str("  /stop             stop current response\n");
     out.push_str("  /cancel           cancel current response\n");
     out.push_str("  /info             show current session status\n");

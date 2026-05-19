@@ -509,6 +509,14 @@ impl AgentSession {
         }
     }
 
+    pub async fn abort_worker(&self) {
+        let handle = self.handle.lock().await.take();
+        if let Some(h) = handle {
+            h.abort();
+            let _ = h.await;
+        }
+    }
+
     /// Convenience: enqueue a locally-injected human message. The synthetic
     /// `record_id` distinguishes CLI / test injections from msg-center
     /// records (which use the upstream record id).
@@ -1149,6 +1157,7 @@ impl AgentSession {
                 snapshot_path: self.state_snap_path.clone(),
                 approval_required: behavior.capabilities.approval_required.clone(),
                 one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
+                i18n: self.agent_config.i18n.clone(),
                 parser_renderer: behavior.build_parser_and_renderer(self.session_class_loop_mode()),
                 from_user_did,
             },
@@ -1388,6 +1397,7 @@ impl AgentSession {
                 snapshot_path: self.state_snap_path.clone(),
                 approval_required: behavior.capabilities.approval_required.clone(),
                 one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
+                i18n: self.agent_config.i18n.clone(),
                 parser_renderer: behavior.build_parser_and_renderer(self.session_class_loop_mode()),
                 from_user_did,
             },
@@ -1925,6 +1935,7 @@ impl AgentSession {
                 snapshot_path: self.state_snap_path.clone(),
                 approval_required,
                 one_line_status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
+                i18n: self.agent_config.i18n.clone(),
                 parser_renderer,
                 from_user_did,
             },
@@ -2520,7 +2531,7 @@ impl AgentSession {
         }
     }
 
-    /// `/clean` command — drop the LLM accumulated state plus every
+    /// Drop the LLM accumulated state plus every
     /// pending input. After this returns the session looks brand-new from
     /// the LLM's perspective but the on-disk meta (session id, behavior,
     /// workspace binding, owner, peer routing) survives so the next user
@@ -2852,6 +2863,7 @@ impl AgentSession {
             runtime: &self.runtime,
             tools: self.tools.clone(),
             status: Some(self.status.clone() as Arc<dyn OneLineStatusSink>),
+            i18n: self.agent_config.i18n.clone(),
             state_snap_path: &self.state_snap_path,
             parent_snap,
             overrides,

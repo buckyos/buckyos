@@ -103,14 +103,30 @@ fn looks_like_base64_payload(value: &str) -> bool {
         return false;
     }
 
-    let base64ish = value
-        .bytes()
-        .filter(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(*byte, b'+' | b'/' | b'=' | b'-' | b'_' | b'\n' | b'\r')
-        })
-        .count();
-    base64ish * 100 / value.len() >= 95
+    let mut normalized = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if matches!(byte, b'\n' | b'\r') {
+            continue;
+        }
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_') {
+            normalized.push(byte as char);
+            continue;
+        }
+        return false;
+    }
+
+    if normalized.len() < LOG_BASE64_LIKE_MIN_CHARS {
+        return false;
+    }
+
+    general_purpose::STANDARD.decode(normalized.as_bytes()).is_ok()
+        || general_purpose::STANDARD_NO_PAD
+            .decode(normalized.as_bytes())
+            .is_ok()
+        || general_purpose::URL_SAFE.decode(normalized.as_bytes()).is_ok()
+        || general_purpose::URL_SAFE_NO_PAD
+            .decode(normalized.as_bytes())
+            .is_ok()
 }
 
 fn redact_base64_like_string(value: &mut String) {
@@ -4549,6 +4565,7 @@ mod tests {
     #[test]
     fn redacted_json_log_trims_inline_base64_payloads() {
         let long_signature = "a".repeat(LOG_BASE64_LIKE_MIN_CHARS);
+        let long_base64 = general_purpose::STANDARD.encode(vec![0x5a; LOG_BASE64_LIKE_MIN_CHARS]);
         let logged = redacted_json_log(&json!({
             "candidates": [{
                 "content": {
@@ -4564,16 +4581,78 @@ mod tests {
             "data": [{
                 "b64_json": "def456"
             }],
+            "tool_output": long_base64,
             "image_url": "data:image/png;base64,ghi789"
         }));
 
         assert!(logged.contains("[redacted_base64] len=6"));
         assert!(logged.contains("[redacted_data_url_base64 mime=image/png len=6]"));
         assert!(logged.contains("[redacted_base64_like_string] len=512"));
+        assert!(logged.contains("[redacted_base64_like_string] len=684"));
         assert!(!logged.contains("abc123"));
         assert!(!logged.contains("def456"));
         assert!(!logged.contains("ghi789"));
         assert!(!logged.contains(&"a".repeat(LOG_BASE64_LIKE_MIN_CHARS)));
+    }
+
+    #[test]
+    fn redacted_json_log_keeps_plain_multiline_tool_output() {
+        let output = [
+            "PROJECTS_DIR=/Users/liuzhicong/project",
+            "COUNT=39",
+            "NAMES_BEGIN",
+            ".SynologyWorkingDirectory",
+            ".sisyphus",
+            "Agent-Spider",
+            "BuckyOSApp",
+            "OpenDAN",
+            "SourceDAO",
+            "arozos",
+            "bucky-p2p",
+            "bucky_backup_suite",
+            "buckyos",
+            "buckyos-base",
+            "buckyos-base-wt-fix-windows-process-flash",
+            "buckyos-devkit",
+            "buckyos-websdk",
+            "buckyos.ai",
+            "buckyos_webdesktop",
+            "claudecode",
+            "cyfs-gateway",
+            "cyfs-ndn",
+            "demo_desktop",
+            "document",
+            "filebrowser",
+            "forks",
+            "gitpot",
+            "linux",
+            "nfsserve",
+            "review",
+            "sn-business",
+            "temp",
+            "test_agent",
+            "test_cdp",
+            "test_iot",
+            "test_unixcrypto",
+            "usdb",
+            "usdb_doc",
+            "vibe-base-ui",
+            "vibe-web-base",
+            "web3_bridge_data",
+            "win",
+            "NAMES_END",
+        ]
+        .join("\n");
+        assert!(output.len() >= LOG_BASE64_LIKE_MIN_CHARS);
+
+        let logged = redacted_json_log(&json!({
+            "call_id": "call_bXG3pIMWsgSVipAd8XqawO92",
+            "output": output
+        }));
+
+        assert!(!logged.contains(REDACTED_LONG_BASE64_LIKE_PLACEHOLDER));
+        assert!(logged.contains("PROJECTS_DIR=/Users/liuzhicong/project"));
+        assert!(logged.contains("buckyos-websdk"));
     }
 
     fn mock_instance(instance_id: &str, provider_type: &str) -> ProviderInstance {

@@ -232,6 +232,7 @@ use log::warn;
 
 use crate::ai_runtime::{build_session_deps, AgentRuntime, OneLineStatusSink, SessionDepsInput};
 use crate::behavior_cfg::BehaviorCfg;
+use crate::i18n::AgentI18n;
 
 pub use llm_context::snapshot_overrides::{
     apply_overrides_to_snapshot, build_fresh, rebuild_with_inherit, RequestOverrides,
@@ -243,6 +244,7 @@ pub struct ForkSubContextInput<'a> {
     pub runtime: &'a AgentRuntime,
     pub tools: Arc<AgentToolManager>,
     pub status: Option<Arc<dyn OneLineStatusSink>>,
+    pub i18n: AgentI18n,
     pub state_snap_path: &'a Path,
     pub parent_snap: LLMContextSnapshot,
     pub overrides: RequestOverrides,
@@ -265,6 +267,7 @@ pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<Cont
         runtime,
         tools,
         status,
+        i18n,
         state_snap_path,
         parent_snap,
         overrides,
@@ -293,6 +296,7 @@ pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<Cont
             snapshot_path: fork_snap_path.clone(),
             approval_required: sub_cfg.capabilities.approval_required.clone(),
             one_line_status: status,
+            i18n,
             parser_renderer: sub_cfg.build_parser_and_renderer(loop_mode),
             from_user_did,
         },
