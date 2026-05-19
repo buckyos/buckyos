@@ -103,6 +103,45 @@ pub struct TgEgressEnvelope {
     pub payload: Value,
     pub record_id: String,
     pub replace_message_id: Option<String>,
+    /// Telegram message parse_mode. `None` means use the tunnel default
+    /// (currently "Markdown"), set explicitly to `Some("None")` /
+    /// `Some("Plain")` to send as plain text.
+    pub parse_mode: Option<String>,
+}
+
+/// Default parse_mode when MsgObject.meta has not specified one — agents tend
+/// to emit Markdown-flavored text and Telegram only renders formatting if a
+/// parse_mode is set explicitly.
+pub const TG_DEFAULT_PARSE_MODE: &str = "Markdown";
+
+/// Resolve the effective parse_mode for an outgoing TG message. Returns
+/// `None` when the caller asked for explicit plain text (case-insensitive
+/// `none` / `plain` / empty), otherwise returns the requested mode or the
+/// tunnel default.
+fn resolve_tg_parse_mode(mode: Option<&str>) -> Option<&str> {
+    let raw = mode.map(str::trim).unwrap_or("");
+    let effective = if raw.is_empty() {
+        TG_DEFAULT_PARSE_MODE
+    } else {
+        raw
+    };
+    if effective.eq_ignore_ascii_case("none") || effective.eq_ignore_ascii_case("plain") {
+        None
+    } else {
+        Some(effective)
+    }
+}
+
+fn build_grammers_input_message(text: String, parse_mode: Option<&str>) -> InputMessage {
+    match resolve_tg_parse_mode(parse_mode) {
+        Some(mode) if mode.eq_ignore_ascii_case("html") => InputMessage::new().html(text),
+        Some(mode)
+            if mode.eq_ignore_ascii_case("markdown") || mode.eq_ignore_ascii_case("markdownv2") =>
+        {
+            InputMessage::new().markdown(text)
+        }
+        Some(_) | None => InputMessage::new().text(text),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -280,6 +319,13 @@ impl TgUiSessionTracker {
             if let Some(status_line) = current_status_line {
                 session.last_status_line = status_line;
             }
+        }
+    }
+
+    async fn mark_status_line_seen(&self, session_id: &str, status_line: String) {
+        let mut guard = self.sessions.lock().await;
+        if let Some(session) = guard.get_mut(session_id) {
+            session.last_status_line = status_line;
         }
     }
 }
@@ -1768,10 +1814,13 @@ impl TgGateway for GrammersTgGateway {
             envelope.attachments.len()
         );
 
+        let parse_mode = envelope.parse_mode.as_deref();
+
         if envelope.attachments.is_empty() {
             if let Some(message_id) = envelope.replace_message_id.as_deref() {
                 if let Ok(id) = message_id.parse::<i32>() {
-                    match client.edit_message(chat.clone(), id, text.clone()).await {
+                    let edit_input = build_grammers_input_message(text.clone(), parse_mode);
+                    match client.edit_message(chat.clone(), id, edit_input).await {
                         Ok(()) => {
                             return Ok(DeliveryReportResult {
                                 ok: true,
@@ -1803,10 +1852,11 @@ impl TgGateway for GrammersTgGateway {
                         attachment.obj_id.to_string()
                     )
                 })?;
-            let input = InputMessage::new().text(text).document(uploaded);
+            let input = build_grammers_input_message(text, parse_mode).document(uploaded);
             client.send_message(chat, input).await?
         } else {
-            client.send_message(chat, text).await?
+            let input = build_grammers_input_message(text, parse_mode);
+            client.send_message(chat, input).await?
         };
         Ok(DeliveryReportResult {
             ok: true,
@@ -2995,18 +3045,24 @@ impl TgGateway for BotApiTgGateway {
             envelope.attachments.len()
         );
 
+        let parse_mode = resolve_tg_parse_mode(envelope.parse_mode.as_deref());
+
         if envelope.attachments.is_empty() {
             if let Some(message_id) = envelope.replace_message_id.as_deref() {
                 if let Ok(id) = message_id.parse::<i64>() {
+                    let mut body = json!({
+                        "chat_id": Self::normalize_chat_id_for_send(chat_id),
+                        "message_id": id,
+                        "text": text.clone(),
+                    });
+                    if let Some(mode) = parse_mode {
+                        body["parse_mode"] = Value::String(mode.to_string());
+                    }
                     match Self::call_api_with_client::<Value>(
                         &self.http,
                         runtime.token.as_str(),
                         "editMessageText",
-                        Some(json!({
-                            "chat_id": Self::normalize_chat_id_for_send(chat_id),
-                            "message_id": id,
-                            "text": text.clone(),
-                        })),
+                        Some(body),
                     )
                     .await
                     {
@@ -3037,6 +3093,9 @@ impl TgGateway for BotApiTgGateway {
                 .part("document", document_part);
             if !text.trim().is_empty() {
                 form = form.text("caption", text);
+                if let Some(mode) = parse_mode {
+                    form = form.text("parse_mode", mode.to_string());
+                }
             }
             Self::call_api_with_multipart::<TgBotApiSentMessage>(
                 &self.http,
@@ -3046,14 +3105,18 @@ impl TgGateway for BotApiTgGateway {
             )
             .await?
         } else {
+            let mut body = json!({
+                "chat_id": Self::normalize_chat_id_for_send(chat_id),
+                "text": text,
+            });
+            if let Some(mode) = parse_mode {
+                body["parse_mode"] = Value::String(mode.to_string());
+            }
             Self::call_api_with_client::<TgBotApiSentMessage>(
                 &self.http,
                 runtime.token.as_str(),
                 "sendMessage",
-                Some(json!({
-                    "chat_id": Self::normalize_chat_id_for_send(chat_id),
-                    "text": text,
-                })),
+                Some(body),
             )
             .await?
         };
@@ -3441,6 +3504,12 @@ impl TgTunnel {
             .or_else(|| binding.default_chat_id.clone());
 
         let (text, payload, attachments) = TgMessageConverter::msg_object_to_tg_content(&msg);
+        let parse_mode = msg
+            .meta
+            .get("parse_mode")
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
 
         // TODO: 用 grammers 的消息模型做完整转换（媒体、回复链、实体、按钮等）
         Ok(TgEgressEnvelope {
@@ -3452,6 +3521,7 @@ impl TgTunnel {
             payload,
             record_id: record.record.record_id.clone(),
             replace_message_id: None,
+            parse_mode,
         })
     }
 
@@ -3631,6 +3701,12 @@ impl TgTunnel {
                 }
             };
             if status_line.is_empty() || status_line == session.last_status_line {
+                continue;
+            }
+            if session.status_message_id.is_none() && Self::is_terminal_status_line(&status_line) {
+                tracker
+                    .mark_status_line_seen(&session_id, status_line)
+                    .await;
                 continue;
             }
             match gateway
@@ -4073,6 +4149,23 @@ mod tests {
             assert!(session.status_message_id.is_none());
             assert_eq!(session.last_status_line, "tool: exec_bash");
         }
+        center
+            .handle_update_ui_session_state(
+                session_id.clone(),
+                UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
+                json!("LLM finished"),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+        TgTunnel::refresh_ui_sessions(tunnel.ui_session_tracker.as_ref(), gateway.as_ref()).await;
+        assert_eq!(gateway.status_line_count.load(Ordering::SeqCst), 1);
+        {
+            let guard = tunnel.ui_session_tracker.sessions.lock().await;
+            let session = guard.get(&session_id).unwrap();
+            assert!(session.status_message_id.is_none());
+            assert_eq!(session.last_status_line, "LLM finished");
+        }
 
         {
             let mut guard = tunnel.ui_session_tracker.sessions.lock().await;
@@ -4152,6 +4245,7 @@ mod tests {
                 payload: json!({}),
                 record_id: "rt-live-check".to_string(),
                 replace_message_id: None,
+                parse_mode: None,
             })
             .await
             .unwrap_err();

@@ -347,7 +347,9 @@ fn strip_top_level_args_schema_keys(mut schema: Json) -> Json {
         obj.remove("$schema");
         obj.remove("description");
         obj.remove("title");
-        obj.remove("type");
+        // Keep `"type"` — OpenAI/Claude both require function parameters /
+        // input_schema to declare `"type":"object"` at the top level, so
+        // stripping it makes the schema invalid for those providers.
     }
     schema
 }
@@ -557,7 +559,9 @@ mod tests {
         assert!(schema.get("$schema").is_none());
         assert!(schema.get("description").is_none());
         assert!(schema.get("title").is_none());
-        assert!(schema.get("type").is_none());
+        // `"type":"object"` must be preserved — OpenAI/Claude require it on
+        // function parameters / input_schema.
+        assert_eq!(schema.get("type"), Some(&json!("object")));
         assert!(schema.pointer("/properties/message/description").is_some());
         assert_eq!(schema.pointer("/properties/message/type"), Some(&json!("string")));
     }

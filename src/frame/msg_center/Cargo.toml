@@ -25,7 +25,7 @@ name-lib = { workspace = true }
 ndn-lib = { workspace = true }
 buckyos-kit = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
-grammers-client = "=0.8.0"
+grammers-client = { version = "=0.8.0", features = ["markdown", "html"] }
 grammers-mtsender = "=0.8.0"
 reqwest = { workspace = true, features = ["multipart"] }
 
