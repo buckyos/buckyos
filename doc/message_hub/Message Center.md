@@ -22,9 +22,15 @@ MessageCenter 是全系统的“消息域”核心服务，统一承接：
 
 ## 2. 核心概念与数据模型
 
-### 2.1 MsgObject（已完成）
+### 2.1 MsgObject
 
-定义参考ndn_lib::MsgObject
+协议定义见 `doc/message_hub/MsgObject.md`。MessageCenter 只把 `MsgObject` 当作不可变消息事实保存和索引：
+
+* `from` 是逻辑作者或触发者。
+* `to` 是一个或多个逻辑目标，可以是 DID、外部会话、外部账号或组件。
+* `via` / `to[].delivery` 表达 tunnel 或 native transport。
+* Message Tunnel 的平台无损信息放在 `ext["buckyos.message_tunnel"]`。
+* 群消息使用 `from=author`、`to=[group]`，不再用 `source` 重复表达作者。
 
 ### 2.2 MsgRecord（关键：解决“消息副本/状态/删除策略”）
 
@@ -180,8 +186,8 @@ def message_center.dispatch(msg_obj, ingress_ctx=None):
     入站入口：tunnel/system -> MessageCenter
 
     msg_obj 约定：
-      - 1:1：msg_obj.from = author DID, msg_obj.source = None
-      - 群聊：msg_obj.from = group DID, msg_obj.source = author DID  
+      - 1:1：msg_obj.from = author endpoint, msg_obj.to = receiver target
+      - 群聊：msg_obj.from = author endpoint, msg_obj.to = group target(role=Conversation)
     """
 
     msg_id = msg_obj.id  # canonical_json_hash(MsgObject)
@@ -189,13 +195,13 @@ def message_center.dispatch(msg_obj, ingress_ctx=None):
     object_store.put_if_absent(f"objects/msg/{msg_id}", msg_obj)
 
     # 2) 计算“逻辑 sender”（用于 block/策略）
-    sender = _logical_sender(msg_obj)  # 群聊取 source，否则取 from
+    sender = msg_obj.from
     if contact_mgr.is_block(sender, context=ingress_ctx):
         return {"ok": False, "reason": "blocked"}
 
     # 3) 决定投递目标（单聊 inbox / 群聊 inbox）
     if _is_group_chat(msg_obj):
-        group_id = msg_obj.from
+        group_id = _group_target(msg_obj)
         # 3.1 写入 group inbox（用于 UI / 归档 / 群维度历史）
         _put_record(
             owner=group_id,
@@ -230,8 +236,8 @@ def message_center.dispatch(msg_obj, ingress_ctx=None):
         return {"ok": True, "delivered": {"group": group_id, "agents": readers}}
 
     else:
-        # 1:1 或多播：按 to 列表投递 inbox
-        recipients = msg_obj.to or []  # 当前 MsgObject 有 to: Vec<DID>
+        # 1:1 或多播：按 to target 列表投递 inbox
+        recipients = _did_targets(msg_obj.to)
         delivered = []
         for to_did in recipients:
             if contact_mgr.is_block(sender, target=to_did, context=ingress_ctx):
@@ -249,13 +255,22 @@ def message_center.dispatch(msg_obj, ingress_ctx=None):
         return {"ok": True, "delivered": delivered}
 
 
-def _logical_sender(msg_obj):
-    # 群聊：source 是作者；否则 from 是作者
-    return msg_obj.source if msg_obj.source is not None else msg_obj.from
-
 def _is_group_chat(msg_obj):
-    # 最简单判断：source 存在且 from 是 group DID
-    return msg_obj.source is not None and contact_mgr.is_group_did(msg_obj.from)
+    group = _group_target(msg_obj)
+    return group is not None and contact_mgr.is_group_did(group)
+
+def _group_target(msg_obj):
+    for target in msg_obj.to:
+        if target.role == "Conversation" and target.endpoint.type == "did":
+            return target.endpoint.did
+    return None
+
+def _did_targets(targets):
+    return [
+        target.endpoint.did
+        for target in targets
+        if target.endpoint.type == "did"
+    ]
 ```
 
 
@@ -283,7 +298,7 @@ def message_center.post_send(msg_obj, send_ctx=None):
     msg_id = msg_obj.id
     object_store.put_if_absent(f"objects/msg/{msg_id}", msg_obj)
 
-    author = _logical_sender_for_outbound(msg_obj)  # 群聊 msg.source 是作者；非群聊 msg.from 是作者
+    author = msg_obj.from
     if contact_mgr.is_block(author, context=send_ctx):
         return {"ok": False, "reason": "blocked_author"}
 
@@ -318,8 +333,7 @@ def message_center.post_send(msg_obj, send_ctx=None):
 
 
 def _logical_sender_for_outbound(msg_obj):
-    # 已确认：群聊 from=group, source=author；因此出站作者取 source
-    return msg_obj.source if msg_obj.source is not None else msg_obj.from
+    return msg_obj.from
 ```
 
 ---

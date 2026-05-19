@@ -109,31 +109,16 @@ outbox.put_msg()
 
 需要：因为大家对历史消息的删除策略不同
 
-## 参考 MsgObject定义
+## 参考 MsgObject 定义
 
-```rust
-pub struct MsgObject {
-    pub from: DID,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub source: Option<DID>,
-    pub to: Vec<DID>,
-    pub kind: MsgObjKind,
-    #[serde(skip_serializing_if = "Thread::is_empty", default)]
-    pub thread: Thread,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub workspace: Option<DID>,
-    #[serde(skip_serializing_if = "is_zero", default)]
-    pub created_at_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub expires_at_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub nonce: Option<u64>,
-    pub content: MsgContent,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub proof: Option<String>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty", default, flatten)]
-    pub meta: BTreeMap<String, serde_json::Value>,
-}
+新的 `MsgObject` 协议定义见 `doc/message_hub/MsgObject.md`。
 
-```
+关键变化：
+
+- `MsgObject` 是系统通用消息抽象，不绑定 Message Tunnel，也不只支持 BuckyOS DID。
+- 作者只出现在 `from`；群、会话、外部账号、组件等都作为 `to` target 表达，不再使用 `source` 表达群消息作者。
+- Message Tunnel 来源和投递通道放入 `via` / `to[].delivery`；平台无损信息放入 `ext["buckyos.message_tunnel"]`。
+- 会话内或应用内排序放入顶层 `seq`；`created_at_ms` 只做时间事实和缺省兜底。
+- 消息内容使用 `content.parts` 表达；附件使用 `MsgAttachment`，大附件通过 `Url` 或 `ObjId` 引用，不做内联编码。
+- AI 流式交互使用多条不可变 `MsgObject` 帧，通过 `stream.stream_id + MsgObject.seq` 重建。
 
