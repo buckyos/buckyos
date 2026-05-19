@@ -270,10 +270,12 @@ pub trait TypedTool: Send + Sync + 'static {
     /// Tools whose args are a runtime-defined `serde_json::Value` (MCP,
     /// Worklog) override this to supply a richer hand-written schema.
     fn args_schema(&self) -> Json {
-        strip_top_level_args_schema_keys(
+        let mut schema = strip_top_level_args_schema_keys(
             serde_json::to_value(schema_for!(Self::Args))
                 .unwrap_or_else(|_| Json::Object(Default::default())),
-        )
+        );
+        normalize_args_schema_for_llm(&mut schema);
+        schema
     }
 
     fn output_schema(&self) -> Json {
@@ -340,6 +342,48 @@ pub trait TypedTool: Send + Sync + 'static {
         ctx: &ToolCtx<'_>,
         args: Self::Args,
     ) -> Result<Self::Output, AgentToolError>;
+}
+
+/// Coerce a `schemars`-generated schema into a form OpenAI / Claude tool
+/// schemas accept. Walks the tree and rewrites `"type": [X, "null"]` (how
+/// `schemars` represents `Option<T>`) into `"type": X` — optionality is
+/// already conveyed by the absence of the field from the parent's
+/// `required` list, so the LLM just omits the field rather than sending
+/// JSON `null`. Also drops `"default": null` noise that some providers'
+/// strict validators flag.
+fn normalize_args_schema_for_llm(schema: &mut Json) {
+    match schema {
+        Json::Object(map) => {
+            if let Some(Json::Array(types)) = map.get("type").cloned().as_ref() {
+                let non_null: Vec<Json> = types
+                    .iter()
+                    .filter(|v| v.as_str() != Some("null"))
+                    .cloned()
+                    .collect();
+                if non_null.len() < types.len() {
+                    if non_null.len() == 1 {
+                        map.insert("type".to_string(), non_null.into_iter().next().unwrap());
+                    } else if !non_null.is_empty() {
+                        map.insert("type".to_string(), Json::Array(non_null));
+                    } else {
+                        map.remove("type");
+                    }
+                }
+            }
+            if map.get("default").map_or(false, |v| v.is_null()) {
+                map.remove("default");
+            }
+            for (_, v) in map.iter_mut() {
+                normalize_args_schema_for_llm(v);
+            }
+        }
+        Json::Array(arr) => {
+            for v in arr.iter_mut() {
+                normalize_args_schema_for_llm(v);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn strip_top_level_args_schema_keys(mut schema: Json) -> Json {
@@ -497,6 +541,8 @@ mod tests {
     struct EchoArgs {
         #[schemars(description = "Message to echo.")]
         message: String,
+        #[serde(default)]
+        suffix: Option<String>,
     }
 
     #[derive(serde::Serialize, JsonSchema)]
@@ -564,6 +610,11 @@ mod tests {
         assert_eq!(schema.get("type"), Some(&json!("object")));
         assert!(schema.pointer("/properties/message/description").is_some());
         assert_eq!(schema.pointer("/properties/message/type"), Some(&json!("string")));
+        // `Option<String>` must collapse to a plain `"type":"string"` and
+        // shed the `"default":null` schemars emits — both forms cause OpenAI
+        // to reject the tool schema ("got type None").
+        assert_eq!(schema.pointer("/properties/suffix/type"), Some(&json!("string")));
+        assert!(schema.pointer("/properties/suffix/default").is_none());
     }
 
     #[tokio::test]

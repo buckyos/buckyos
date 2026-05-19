@@ -58,6 +58,7 @@ impl AgentTool for ReadTool {
                 "Read everything by uri."
                     .to_string(),
             args_schema: json!({
+                "type": "object",
                 "properties": {
                     "uri": {
                         "type": "string",

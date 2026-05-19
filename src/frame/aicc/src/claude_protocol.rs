@@ -63,7 +63,7 @@ fn default_tool_input_schema() -> Value {
 fn build_claude_tool(
     raw_name: &str,
     description: Option<&str>,
-    input_schema: Value,
+    mut input_schema: Value,
     field_path: &str,
 ) -> Result<Value, ProviderError> {
     let name = validate_claude_tool_name(raw_name, field_path)?;
@@ -81,6 +81,14 @@ fn build_claude_tool(
         );
     }
 
+    if let Some(map) = input_schema.as_object_mut() {
+        // Claude (like OpenAI) requires `input_schema` to declare
+        // `"type":"object"` at the top level. Hand-authored tool specs
+        // sometimes omit it — fill it in rather than letting the API
+        // reject the whole request.
+        map.entry("type".to_string())
+            .or_insert_with(|| Value::String("object".to_string()));
+    }
     normalized.insert("input_schema".to_string(), input_schema);
     Ok(Value::Object(normalized))
 }

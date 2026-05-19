@@ -95,7 +95,7 @@ fn convert_internal_tool(tool: &Map<String, Value>, idx: usize) -> Result<Value,
     };
     let name = validate_openai_function_name(raw_name, format!("tools[{}].name", idx).as_str())?;
 
-    let parameters = tool
+    let mut parameters = tool
         .get("args_schema")
         .or_else(|| tool.get("args_json_schema"))
         .cloned()
@@ -106,6 +106,7 @@ fn convert_internal_tool(tool: &Map<String, Value>, idx: usize) -> Result<Value,
             idx
         )));
     }
+    ensure_object_typed_parameters(&mut parameters);
 
     let mut normalized = Map::new();
     normalized.insert(
@@ -126,6 +127,20 @@ fn convert_internal_tool(tool: &Map<String, Value>, idx: usize) -> Result<Value,
     }
     normalized.insert("parameters".to_string(), parameters);
     Ok(Value::Object(normalized))
+}
+
+/// OpenAI tool `parameters` (and Claude `input_schema`) must declare
+/// `"type":"object"` at the top level. Tool authors who hand-write the
+/// schema sometimes forget — fill it in here so the upstream API doesn't
+/// reject the whole request with the cryptic
+/// `schema must be a JSON Schema of 'type:"object"', got 'type:"None"'`.
+fn ensure_object_typed_parameters(parameters: &mut Value) {
+    let Some(map) = parameters.as_object_mut() else {
+        return;
+    };
+    if !map.contains_key("type") {
+        map.insert("type".to_string(), Value::String("object".to_string()));
+    }
 }
 
 fn normalize_openai_function_tool(
@@ -180,6 +195,8 @@ fn normalize_openai_function_tool(
             idx
         )));
     }
+    let mut parameters = parameters;
+    ensure_object_typed_parameters(&mut parameters);
 
     let mut normalized = Map::new();
     normalized.insert(
