@@ -512,7 +512,7 @@ impl AgentTool for ExecBashTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: self.tool_name().to_string(),
-            description: "Run a shell command in the workspace via /bin/bash -lc.".to_string(),
+            description: "Run bash command at target node (bash -c $command)".to_string(),
             args_schema: json!({
                 "type": "object",
                 "properties": {
@@ -520,23 +520,9 @@ impl AgentTool for ExecBashTool {
                         "type": "string",
                         "description": "shell command to execute"
                     },
-                    "timeout_ms": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "per-call timeout in ms; clamped to the tool's max_timeout_ms"
-                    },
-                    "cwd": {
-                        "type": "string",
-                        "description": "working directory; must live under the configured workspace"
-                    },
-                    "env": {
-                        "type": "object",
-                        "additionalProperties": { "type": "string" },
-                        "description": "extra env vars; keys must match [A-Za-z_][A-Za-z0-9_]*"
-                    },
                     "target": {
                         "type": "string",
-                        "description": "execution target; only `local` is supported in this stage"
+                        "description": "MUST select known node. Blank = current environment."
                     }
                 },
                 "required": ["command"]
@@ -544,20 +530,12 @@ impl AgentTool for ExecBashTool {
             output_schema: json!({
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string"},
-                    "target": {"type": "string"},
-                    "cwd": {"type": "string"},
                     "exit_code": {"type": "integer"},
-                    "stdout": {"type": "string"},
-                    "stderr": {"type": "string"},
                     "output": {"type": "string"},
-                    "output_truncated": {"type": "boolean"},
-                    "duration_ms": {"type": "integer"},
-                    "engine": {"type": "string"}
                 }
             }),
             usage: Some(format!(
-                "{name} command='<shell>' [cwd=<path>] [timeout_ms=<ms>] [env={{\"K\":\"V\"}}] [target=local]",
+                "{name} command='<shell>' [target=local]",
                 name = self.tool_name()
             )),
         }

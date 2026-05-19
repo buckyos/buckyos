@@ -55,14 +55,13 @@ impl AgentTool for ReadTool {
         ToolSpec {
             name: TOOL_READ.to_string(),
             description:
-                "Protocol-aware read. Targets without `://` default to filesystem reads; v1 also accepts explicit `file://`."
+                "Read everything by uri."
                     .to_string(),
             args_schema: json!({
-                "type": "object",
                 "properties": {
                     "uri": {
                         "type": "string",
-                        "description": "Target to read. Bare paths default to file reads; explicit `file:///<path>` is also supported."
+                        "description": "Target to read. Bare paths default to file reads; "
                     },
                     "offset": {
                         "type": "integer",

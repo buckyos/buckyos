@@ -164,11 +164,7 @@ pub struct ForwardMsgArgs {
     /// Target work-session id. Must exist, be a Work session (not UI),
     /// and not yet have Ended.
     pub target_worksession_id: String,
-    /// Override the forwarded text. **Usually omit this.** Per §8.4 the
-    /// runtime auto-captures the user message that triggered this turn —
-    /// pass an explicit string only when forwarding something *other* than
-    /// that origin message (rare; usually a sign the LLM should reword the
-    /// user's input instead of forwarding raw).
+    /// Override the forwarded text. **Usually omit this.** 
     #[serde(default)]
     pub message: Option<String>,
 }
@@ -271,9 +267,7 @@ impl TypedTool for ForwardMsgTool {
 /// session's inherited history.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TryCreateWorksessionArgs {
-    /// Free-text justification — why does the parent think a worksession
-    /// should be created? The fork sub-context sees this verbatim plus
-    /// the parent's accumulated chat history.
+    /// why the worksession should be created? 
     pub reason: String,
 }
 
@@ -308,7 +302,7 @@ impl TypedTool for TryCreateWorksessionTool {
     }
 
     fn description(&self) -> &str {
-        "Decide whether the current request warrants a new worksession; if so, create it. Runs a short fork sub-context that may call `create_worksession`."
+        "Decide whether the current request warrants a new worksession"
     }
 
     fn calling(&self) -> CallingConventions {

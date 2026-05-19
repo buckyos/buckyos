@@ -270,8 +270,10 @@ pub trait TypedTool: Send + Sync + 'static {
     /// Tools whose args are a runtime-defined `serde_json::Value` (MCP,
     /// Worklog) override this to supply a richer hand-written schema.
     fn args_schema(&self) -> Json {
-        serde_json::to_value(schema_for!(Self::Args))
-            .unwrap_or_else(|_| Json::Object(Default::default()))
+        strip_top_level_args_schema_keys(
+            serde_json::to_value(schema_for!(Self::Args))
+                .unwrap_or_else(|_| Json::Object(Default::default())),
+        )
     }
 
     fn output_schema(&self) -> Json {
@@ -338,6 +340,16 @@ pub trait TypedTool: Send + Sync + 'static {
         ctx: &ToolCtx<'_>,
         args: Self::Args,
     ) -> Result<Self::Output, AgentToolError>;
+}
+
+fn strip_top_level_args_schema_keys(mut schema: Json) -> Json {
+    if let Some(obj) = schema.as_object_mut() {
+        obj.remove("$schema");
+        obj.remove("description");
+        obj.remove("title");
+        obj.remove("type");
+    }
+    schema
 }
 
 /// Adapter wrapping a `TypedTool` so it satisfies the `AgentTool`
@@ -479,7 +491,9 @@ mod tests {
     }
 
     #[derive(serde::Deserialize, JsonSchema)]
+    #[schemars(description = "Echo arguments.")]
     struct EchoArgs {
+        #[schemars(description = "Message to echo.")]
         message: String,
     }
 
@@ -534,6 +548,18 @@ mod tests {
         assert_eq!(result.details["echoed"], "hi");
         assert_eq!(result.summary, "ok");
         assert_eq!(result.agent_tool_protocol, "1");
+    }
+
+    #[test]
+    fn typed_tool_default_args_schema_omits_top_level_metadata() {
+        let handle = TypedToolHandle::with_null_host(EchoTypedTool);
+        let schema = handle.spec().args_schema;
+        assert!(schema.get("$schema").is_none());
+        assert!(schema.get("description").is_none());
+        assert!(schema.get("title").is_none());
+        assert!(schema.get("type").is_none());
+        assert!(schema.pointer("/properties/message/description").is_some());
+        assert_eq!(schema.pointer("/properties/message/type"), Some(&json!("string")));
     }
 
     #[tokio::test]

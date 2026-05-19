@@ -207,10 +207,26 @@ def _format_function_call_content(item: dict) -> str:
     arguments = item.get("arguments", "")
     try:
         parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+        if name == "exec_bash" and isinstance(parsed, dict):
+            return _format_exec_bash_call(parsed)
         arguments = json.dumps(parsed, ensure_ascii=False)
     except (json.JSONDecodeError, TypeError):
         pass
     return f"-> {name}({arguments})"
+
+
+def _format_exec_bash_call(args: dict) -> str:
+    command = args.get("command")
+    rest = {key: value for key, value in args.items() if key != "command"}
+    lines = ["-> exec_bash"]
+    if rest:
+        lines.append(f"args: {json.dumps(rest, ensure_ascii=False, sort_keys=True)}")
+    if isinstance(command, str):
+        lines.append("command:")
+        lines.append(command)
+    elif command is not None:
+        lines.append(f"command: {json.dumps(command, ensure_ascii=False)}")
+    return "\n".join(lines)
 
 
 def extract_clean_input(payload: dict) -> dict:
@@ -313,7 +329,7 @@ def extract_clean_output(payload: dict) -> dict:
         elif item.get("type") == "function_call":
             entry = {
                 "role": "tool_call",
-                "content": f"-> {item.get('name', '?')}({json.dumps(item.get('arguments', ''), ensure_ascii=False)})",
+                "content": _format_function_call_content(item),
                 "finish_reason": item.get("status", ""),
             }
             replies.append(entry)
