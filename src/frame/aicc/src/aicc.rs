@@ -2222,10 +2222,9 @@ impl AIComputeCenter {
     }
 
     /// Install the default level-2 logical tree (per `doc/aicc/aicc 逻辑模型目录.md` §4)
-    /// via `set_session_config`. Items are kept verbatim from the doc — the
-    /// router skips unresolvable items at request time, but the directory tree
-    /// always reflects the designed intent. Returns the number of level-2 leaf
-    /// nodes installed.
+    /// via `set_session_config`. Builtin entries are applied as item overrides
+    /// so provider inventories can still mount exact models directly to role
+    /// paths. Returns the number of level-2 leaf nodes installed.
     pub fn apply_default_logical_tree(&self) -> std::result::Result<usize, RPCErrors> {
         let config = crate::default_logical_tree::build_default_session_config();
         let node_count = crate::default_logical_tree::level2_node_count(&config);

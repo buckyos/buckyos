@@ -943,6 +943,7 @@ impl AIAgent {
             agent_root: self.config.layout.root.clone(),
             agent_id: agent_id.clone(),
             session_id: session_id.clone(),
+            filesystem_policy: self.config.toml.runtime.filesystem_policy,
             bin_renderer,
         })
         .map_err(|err| anyhow!("build session tools: {err}"))?;

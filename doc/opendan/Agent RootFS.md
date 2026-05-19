@@ -141,6 +141,7 @@ cancel_reason = "user requested cancel" # Observation::Cancelled 文案兜底
 language = "en"                         # 选择 i18n/<language>.toml，空值等同 en
 # 支持 zh / zh-TW / en / es / fr / de / ko / ja / ru；zh-CN、en-US 等 alias 会归一化。
 preserve_attachment_tag_in_egress = false
+filesystem_policy = "workspace"         # workspace / unrestricted
 
 # ─── Channels：Gateway 监听的事件源 ──────────────────────────
 [[channel]]
@@ -220,6 +221,7 @@ keep_alive          = false             # status != Ended 才算 active
 | `subscribe_events` | `[session.<class>].subscribe_events` | 订阅挂在 session 类上，而不是 Agent 全局 |
 | `cancel_reason` | `[runtime].cancel_reason` | 同语义 |
 | `preserve_attachment_tag_in_egress` | `[runtime]` | 同语义 |
+| — | `[runtime].filesystem_policy` | **新增**，控制 read / attachment 的本地文件路径策略 |
 | — | `[[channel]]` | **新增**，Gateway 接入显式化 |
 | — | `[dispatch]` | **新增**，dispatcher 显式化（当前硬编码在 `AIAgent::dispatch_inbound`） |
 | — | `[session.<class>].loop_mode` | **新增**，对齐指导文档 "UI Session 是 loop_mode=agent 的特例" |

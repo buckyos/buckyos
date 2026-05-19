@@ -34,6 +34,7 @@ use agent_tool::{
     NoopFileWriteAudit, ReadTool, SessionRuntimeContext, WriteFileTool,
 };
 
+use crate::agent_config::FilesystemPolicy;
 use crate::paths;
 use crate::tool_plan::SessionBinRenderer;
 
@@ -130,6 +131,7 @@ pub struct FsRoots {
     pub workspace_root: PathBuf,
     /// Additional read-only roots (agent root, etc.). Granted read but not write.
     pub extra_read_roots: Vec<PathBuf>,
+    pub filesystem_policy: FilesystemPolicy,
 }
 
 impl FsRoots {
@@ -137,6 +139,7 @@ impl FsRoots {
         Self {
             workspace_root: workspace_root.into(),
             extra_read_roots: Vec::new(),
+            filesystem_policy: FilesystemPolicy::default(),
         }
     }
 
@@ -145,9 +148,21 @@ impl FsRoots {
         self
     }
 
+    pub fn with_filesystem_policy(mut self, policy: FilesystemPolicy) -> Self {
+        self.filesystem_policy = policy;
+        self
+    }
+
     fn to_file_tool_config(&self) -> FileToolConfig {
         let mut cfg = FileToolConfig::new(self.workspace_root.clone());
-        cfg.allowed_read_roots.extend(self.extra_read_roots.clone());
+        match self.filesystem_policy {
+            FilesystemPolicy::Workspace => {
+                cfg.allowed_read_roots.extend(self.extra_read_roots.clone());
+            }
+            FilesystemPolicy::Unrestricted => {
+                cfg.allowed_read_roots.clear();
+            }
+        }
         cfg
     }
 }
@@ -320,6 +335,7 @@ pub struct SessionToolsBuild {
     pub agent_root: PathBuf,
     pub agent_id: String,
     pub session_id: String,
+    pub filesystem_policy: FilesystemPolicy,
     /// Pre-resolved Session Exec Bin renderer (per the behavior's tool
     /// plan). `None` ⇒ no tombstones and no Agent tool sync — useful in
     /// tests that just want the file tools wired.
@@ -379,7 +395,9 @@ pub fn build_session_tools(build: SessionToolsBuild) -> std::io::Result<Arc<Agen
     }
 
     let manager = build_default_tool_manager(
-        FsRoots::workspace_only(&build.workspace_root).with_extra_read(&build.agent_root),
+        FsRoots::workspace_only(&build.workspace_root)
+            .with_extra_read(&build.agent_root)
+            .with_filesystem_policy(build.filesystem_policy),
         &layout,
         &bash_runtime_dir,
         build.bin_renderer.clone(),
@@ -809,6 +827,7 @@ mod tests {
             agent_root: dir.path().join("agent_root"),
             agent_id: "test-agent".to_string(),
             session_id: format!("s_{}", now_ms()),
+            filesystem_policy: FilesystemPolicy::Workspace,
             bin_renderer: None,
         })
         .expect("build tools");
@@ -828,6 +847,26 @@ mod tests {
                 "tool {dropped} should be unregistered in v2"
             );
         }
+    }
+
+    #[test]
+    fn filesystem_policy_controls_read_roots() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        let agent_root = dir.path().join("agent");
+
+        let workspace_cfg = FsRoots::workspace_only(&ws)
+            .with_extra_read(&agent_root)
+            .with_filesystem_policy(FilesystemPolicy::Workspace)
+            .to_file_tool_config();
+        assert_eq!(workspace_cfg.allowed_read_roots.len(), 2);
+
+        let unrestricted_cfg = FsRoots::workspace_only(&ws)
+            .with_extra_read(&agent_root)
+            .with_filesystem_policy(FilesystemPolicy::Unrestricted)
+            .to_file_tool_config();
+        assert!(unrestricted_cfg.allowed_read_roots.is_empty());
+        assert_eq!(unrestricted_cfg.allowed_write_roots, vec![ws]);
     }
 
     #[test]

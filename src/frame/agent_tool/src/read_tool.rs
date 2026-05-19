@@ -14,12 +14,13 @@
 //! clipping when the model genuinely needs to read a large file in chunks."
 
 use std::io::{Read, Seek, SeekFrom};
+use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::{json, Value as Json};
 
 use crate::file_tools::FileToolConfig;
-use crate::path_utils::{resolve_path_under_root, to_abs_path};
+use crate::path_utils::{expand_home, normalize_root_path, resolve_path_from_root};
 use crate::tool::CallingConventions;
 use crate::{
     build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult, AgentToolStatus,
@@ -54,9 +55,7 @@ impl AgentTool for ReadTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_READ.to_string(),
-            description:
-                "Read everything by uri."
-                    .to_string(),
+            description: "Read everything by uri.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "properties": {
@@ -142,6 +141,31 @@ impl AgentTool for ReadTool {
 }
 
 impl ReadTool {
+    fn resolve_file_read_path(&self, path_str: &str) -> Result<PathBuf, AgentToolError> {
+        if Path::new(path_str)
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "read path not allowed by policy: {path_str}"
+            )));
+        }
+        let root = normalize_root_path(&self.cfg.root_dir)?;
+        let resolved = resolve_path_from_root(&root, path_str)?;
+        if self.cfg.allowed_read_roots.is_empty() {
+            return Ok(resolved);
+        }
+        for allowed_root in &self.cfg.allowed_read_roots {
+            let allowed_root = normalize_root_path(allowed_root)?;
+            if resolved.starts_with(&allowed_root) {
+                return Ok(resolved);
+            }
+        }
+        Err(AgentToolError::InvalidArgs(format!(
+            "read path not allowed by policy: {path_str}"
+        )))
+    }
+
     async fn read_file_path(
         &self,
         uri: &str,
@@ -149,8 +173,7 @@ impl ReadTool {
         offset: u64,
         limit: u64,
     ) -> Result<AgentToolResult, AgentToolError> {
-        let workspace = to_abs_path(&self.cfg.root_dir)?;
-        let resolved = resolve_path_under_root(&workspace, &path_str)?;
+        let resolved = self.resolve_file_read_path(path_str)?;
         if !resolved.exists() {
             return Err(AgentToolError::InvalidArgs(format!(
                 "file not found: {}",
@@ -272,7 +295,7 @@ fn parse_read_target(raw: &str) -> Result<ReadTarget, AgentToolError> {
     Ok(ReadTarget {
         scheme: "file".to_string(),
         uri: raw.to_string(),
-        path: raw.to_string(),
+        path: expand_home(raw),
     })
 }
 
@@ -465,7 +488,6 @@ mod tests {
     async fn path_escape_attempt_rejected() {
         let (_dir, ws) = ws_with_file("x.txt", b"x");
         let tool = ReadTool::new(FileToolConfig::new(ws.clone()));
-        // Try to escape workspace via `..` — resolve_path_under_root rejects.
         let err = tool
             .call(
                 &ctx(),
@@ -473,6 +495,58 @@ mod tests {
                     "uri": format!("file://{}/../etc/passwd", ws.to_string_lossy())
                 }),
             )
+            .await
+            .expect_err("must reject");
+        assert!(matches!(err, AgentToolError::InvalidArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn extra_read_root_allows_file_outside_workspace() {
+        let (_dir, ws) = ws_with_file("x.txt", b"x");
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("log.txt"), b"external log").unwrap();
+        let mut cfg = FileToolConfig::new(ws.clone());
+        cfg.allowed_read_roots.push(outside.path().to_path_buf());
+        let tool = ReadTool::new(cfg);
+
+        let res = tool
+            .call(
+                &ctx(),
+                json!({ "uri": outside.path().join("log.txt").to_string_lossy().to_string() }),
+            )
+            .await
+            .expect("call");
+        assert_eq!(res.details["content"], "external log");
+    }
+
+    #[tokio::test]
+    async fn empty_read_roots_allows_unrestricted_file_read() {
+        let (_dir, ws) = ws_with_file("x.txt", b"x");
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("log.txt"), b"external log").unwrap();
+        let mut cfg = FileToolConfig::new(ws.clone());
+        cfg.allowed_read_roots.clear();
+        let tool = ReadTool::new(cfg);
+
+        let res = tool
+            .call(
+                &ctx(),
+                json!({ "uri": outside.path().join("log.txt").to_string_lossy().to_string() }),
+            )
+            .await
+            .expect("call");
+        assert_eq!(res.details["content"], "external log");
+    }
+
+    #[tokio::test]
+    async fn unrestricted_read_still_rejects_dot_dot_traversal() {
+        let (_dir, ws) = ws_with_file("x.txt", b"x");
+        let mut cfg = FileToolConfig::new(ws.clone());
+        cfg.allowed_read_roots.clear();
+        let tool = ReadTool::new(cfg);
+
+        let err = tool
+            .call(&ctx(), json!({ "uri": "../outside.txt" }))
             .await
             .expect_err("must reject");
         assert!(matches!(err, AgentToolError::InvalidArgs(_)));
@@ -492,6 +566,28 @@ mod tests {
         assert!(parse_file_uri_path("file://workspace/x").is_err());
         // Non-file uri rejected.
         assert!(parse_file_uri_path("kv:///x").is_err());
+    }
+
+    #[test]
+    fn read_target_expands_leading_tilde_against_home() {
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/home/agent");
+        let target = parse_read_target("~/project/README.md").unwrap();
+        assert_eq!(target.scheme, "file");
+        assert_eq!(target.uri, "~/project/README.md");
+        assert_eq!(target.path, "/home/agent/project/README.md");
+
+        let target = parse_read_target("~").unwrap();
+        assert_eq!(target.path, "/home/agent");
+
+        // `~user/...` is not expanded — would need passwd lookup.
+        let target = parse_read_target("~root/foo").unwrap();
+        assert_eq!(target.path, "~root/foo");
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]

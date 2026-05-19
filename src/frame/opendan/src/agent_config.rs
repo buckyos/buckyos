@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! [identity]            agent_did / display_name
-//! [runtime]             cancel_reason / language / preserve_attachment_tag_in_egress
+//! [runtime]             cancel_reason / language / preserve_attachment_tag_in_egress / filesystem_policy
 //! [[channel]]           Gateway inbound sources (msg_center / kevent / ...)
 //! [dispatch]            default_class + ordered match-rule list
 //! [session.<class>]     per-class loop_mode / default_behavior / subscribe /
@@ -100,24 +100,23 @@ pub struct RuntimeCfg {
     /// Empty ⇒ `en`.
     pub language: String,
     pub preserve_attachment_tag_in_egress: bool,
-    /// Outbound `<attachment>` path policy. `"workspace"` (default) confines
-    /// agent-emitted local paths to the session workspace; `"unrestricted"`
-    /// lifts the workspace fence so the agent can attach any host-readable
-    /// file (e.g. `/opt/buckyos/logs/...`). Path traversal (`..`) is still
-    /// rejected regardless.
-    pub attachment_path_policy: AttachmentPathPolicy,
+    /// Filesystem path policy. `"workspace"` (default) confines file access
+    /// to configured roots; `"unrestricted"` lifts the workspace fence so the
+    /// agent can read or attach host-readable files. Path traversal (`..`) is
+    /// still rejected by each tool.
+    pub filesystem_policy: FilesystemPolicy,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AttachmentPathPolicy {
+pub enum FilesystemPolicy {
     Workspace,
     Unrestricted,
 }
 
-impl Default for AttachmentPathPolicy {
+impl Default for FilesystemPolicy {
     fn default() -> Self {
-        AttachmentPathPolicy::Workspace
+        FilesystemPolicy::Workspace
     }
 }
 
@@ -127,7 +126,7 @@ impl Default for RuntimeCfg {
             cancel_reason: String::new(),
             language: "en".to_string(),
             preserve_attachment_tag_in_egress: false,
-            attachment_path_policy: AttachmentPathPolicy::default(),
+            filesystem_policy: FilesystemPolicy::default(),
         }
     }
 }
@@ -493,6 +492,7 @@ mod tests {
                 cancel_reason = "user canceled"
                 language = "zh-CN"
                 preserve_attachment_tag_in_egress = true
+                filesystem_policy = "unrestricted"
 
                 [[channel]]
                 type = "msg_center"
@@ -538,6 +538,10 @@ mod tests {
         assert_eq!(cfg.cancel_reason(), "user canceled");
         assert_eq!(cfg.language(), "zh");
         assert!(cfg.toml.runtime.preserve_attachment_tag_in_egress);
+        assert_eq!(
+            cfg.toml.runtime.filesystem_policy,
+            FilesystemPolicy::Unrestricted
+        );
         assert_eq!(cfg.toml.channels.len(), 2);
         assert_eq!(cfg.toml.channels[1].kind, "kevent");
         assert_eq!(cfg.toml.dispatch.default_class, "ui");

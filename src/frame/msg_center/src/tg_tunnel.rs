@@ -183,6 +183,7 @@ struct TgUiSessionRuntime {
 pub struct TgUiSessionTracker {
     sessions: Arc<Mutex<HashMap<String, TgUiSessionRuntime>>>,
     dispatcher: Arc<RwLock<Option<Arc<dyn MsgCenterHandler>>>>,
+    session_ops: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl TgUiSessionTracker {
@@ -193,6 +194,7 @@ impl TgUiSessionTracker {
         Self {
             sessions,
             dispatcher,
+            session_ops: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -327,6 +329,21 @@ impl TgUiSessionTracker {
         if let Some(session) = guard.get_mut(session_id) {
             session.last_status_line = status_line;
         }
+    }
+
+    async fn session_op_lock(&self, session_id: Option<&str>) -> Option<Arc<Mutex<()>>> {
+        let session_id = Self::normalize_non_empty(session_id)?;
+        let mut guard = self.session_ops.lock().await;
+        Some(
+            guard
+                .entry(session_id)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone(),
+        )
+    }
+
+    async fn forget_session(&self, session_id: &str) {
+        self.session_ops.lock().await.remove(session_id);
     }
 }
 
@@ -3578,6 +3595,20 @@ impl TgTunnel {
             || line.contains("failed")
             || line.contains("error")
             || line.contains("done")
+            || line.contains("完成")
+            || line.contains("失敗")
+            || line.contains("失败")
+            || line.contains("完了")
+            || line.contains("완료")
+            || line.contains("실패")
+            || line.contains("finalizado")
+            || line.contains("falló")
+            || line.contains("terminé")
+            || line.contains("échoué")
+            || line.contains("abgeschlossen")
+            || line.contains("fehlgeschlagen")
+            || line.contains("заверш")
+            || line.contains("сбой")
     }
 
     async fn start_ui_session_worker(&self) {
@@ -3611,6 +3642,7 @@ impl TgTunnel {
             self.ui_session_tracker
                 .update_state(&session_id, UI_SESSION_STATE_ACTIVE_KEY, json!(false))
                 .await;
+            self.ui_session_tracker.forget_session(&session_id).await;
         }
     }
 
@@ -3644,6 +3676,7 @@ impl TgTunnel {
             tracker
                 .update_state(&session_id, UI_SESSION_STATE_ACTIVE_KEY, json!(false))
                 .await;
+            tracker.forget_session(&session_id).await;
         }
 
         let Some(handler) = tracker.get_msg_center_handler() else {
@@ -3681,6 +3714,18 @@ impl TgTunnel {
                     );
                 }
             }
+
+            let Some(op_lock) = tracker.session_op_lock(Some(&session_id)).await else {
+                continue;
+            };
+            let _op_guard = op_lock.lock().await;
+            let current_session = {
+                let guard = tracker.sessions.lock().await;
+                guard.get(&session_id).cloned()
+            };
+            let Some(session) = current_session else {
+                continue;
+            };
 
             let status_line = match handler
                 .handle_get_ui_session_state(
@@ -3829,15 +3874,41 @@ impl MsgTunnel for TgTunnel {
         let mut envelope = self.build_egress_envelope(&record, &binding).await?;
         let chat_id = envelope.chat_id.clone();
         if envelope.attachments.is_empty() {
-            envelope.replace_message_id = self
+            if let Some(op_lock) = self
                 .ui_session_tracker
-                .status_message_id(
-                    ui_session_id.as_deref(),
-                    &sender_did,
-                    &binding.bot_account_id,
-                    chat_id.as_deref(),
-                )
-                .await;
+                .session_op_lock(ui_session_id.as_deref())
+                .await
+            {
+                let _op_guard = op_lock.lock().await;
+                envelope.replace_message_id = self
+                    .ui_session_tracker
+                    .status_message_id(
+                        ui_session_id.as_deref(),
+                        &sender_did,
+                        &binding.bot_account_id,
+                        chat_id.as_deref(),
+                    )
+                    .await;
+                let status_message_id_to_replace = envelope.replace_message_id.clone();
+                let report = self.gateway.send(envelope).await?;
+                if report.ok {
+                    self.ui_session_tracker
+                        .mark_activity(
+                            ui_session_id.as_deref(),
+                            sender_did,
+                            binding.bot_account_id,
+                            chat_id.as_deref(),
+                        )
+                        .await;
+                    if status_message_id_to_replace.as_deref() == report.external_msg_id.as_deref()
+                    {
+                        self.ui_session_tracker
+                            .mark_status_message_replaced(ui_session_id.as_deref())
+                            .await;
+                    }
+                }
+                return Ok(report);
+            }
         }
         let status_message_id_to_replace = envelope.replace_message_id.clone();
         let report = self.gateway.send(envelope).await?;
@@ -3927,6 +3998,80 @@ mod tests {
         ) -> AnyResult<Option<String>> {
             self.status_line_count.fetch_add(1, Ordering::SeqCst);
             Ok(message_id.or_else(|| Some("counting-status".to_string())))
+        }
+    }
+
+    struct BlockingStatusTgGateway {
+        running: AtomicBool,
+        status_entered: tokio::sync::Notify,
+        status_allow: tokio::sync::Notify,
+        operations: Mutex<Vec<String>>,
+    }
+
+    impl Default for BlockingStatusTgGateway {
+        fn default() -> Self {
+            Self {
+                running: AtomicBool::new(false),
+                status_entered: tokio::sync::Notify::new(),
+                status_allow: tokio::sync::Notify::new(),
+                operations: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl TgGateway for BlockingStatusTgGateway {
+        async fn start(&self, _bindings: &[TgBotBinding]) -> AnyResult<()> {
+            self.running.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn stop(&self) -> AnyResult<()> {
+            self.running.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn send(&self, envelope: TgEgressEnvelope) -> AnyResult<DeliveryReportResult> {
+            if !self.running.load(Ordering::SeqCst) {
+                bail!("blocking tg gateway is not running");
+            }
+            let text = envelope.text.clone().unwrap_or_default();
+            self.operations.lock().await.push(format!("send:{text}"));
+            Ok(DeliveryReportResult {
+                ok: true,
+                external_msg_id: envelope
+                    .replace_message_id
+                    .clone()
+                    .or_else(|| Some("blocking-sent".to_string())),
+                delivered_at_ms: Some(TgTunnel::now_ms()),
+                ..Default::default()
+            })
+        }
+
+        async fn set_typing(
+            &self,
+            _owner_did: DID,
+            _bot_account_id: String,
+            _chat_id: String,
+        ) -> AnyResult<()> {
+            Ok(())
+        }
+
+        async fn set_status_line(
+            &self,
+            _owner_did: DID,
+            _bot_account_id: String,
+            _chat_id: String,
+            message_id: Option<String>,
+            status_line: String,
+        ) -> AnyResult<Option<String>> {
+            self.status_entered.notify_waiters();
+            self.status_allow.notified().await;
+            self.operations
+                .lock()
+                .await
+                .push(format!("status:{status_line}"));
+            Ok(message_id.or_else(|| Some("status-1".to_string())))
         }
     }
 
@@ -4183,6 +4328,93 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(inactive.value, json!(false));
+
+        tunnel.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn final_reply_wins_race_with_terminal_status_refresh() {
+        let (center, _tmp) = new_msg_center().await;
+        let gateway = Arc::new(BlockingStatusTgGateway::default());
+        let mut cfg = TgTunnelConfig::new(DID::new("bns", "tg-race-test"));
+        cfg.supports_ingress = false;
+        let tunnel = Arc::new(TgTunnel::with_gateway(cfg, gateway.clone()));
+        let owner = DID::new("bns", "alice");
+        let session_id = "thread-a".to_string();
+        let chat_id = "route-chat-1".to_string();
+
+        tunnel
+            .bind_msg_center_handler(Arc::new(center.clone()))
+            .unwrap();
+        tunnel
+            .bind_bot_simple(
+                owner.clone(),
+                "@alice_bot".to_string(),
+                Some("ALICE_BOT_TOKEN".to_string()),
+                None,
+            )
+            .unwrap();
+        tunnel.start().await.unwrap();
+        {
+            let mut guard = tunnel.ui_session_tracker.sessions.lock().await;
+            guard.insert(
+                session_id.clone(),
+                TgUiSessionRuntime {
+                    owner_did: owner.clone(),
+                    bot_account_id: "@alice_bot".to_string(),
+                    chat_id: chat_id.clone(),
+                    last_activity_ms: TgTunnel::now_ms(),
+                    status_message_id: Some("status-1".to_string()),
+                    last_status_line: "tool: exec_bash".to_string(),
+                },
+            );
+        }
+        center
+            .handle_update_ui_session_state(
+                session_id.clone(),
+                UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
+                json!("思考完成"),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let refresh_task = tokio::spawn({
+            let tracker = tunnel.ui_session_tracker.clone();
+            let gateway = gateway.clone();
+            async move {
+                TgTunnel::refresh_ui_sessions(tracker.as_ref(), gateway.as_ref()).await;
+            }
+        });
+        gateway.status_entered.notified().await;
+
+        let final_record = build_record(
+            owner,
+            vec![DID::new("bns", "group-room")],
+            MsgObjKind::GroupMsg,
+            Some(chat_id.as_str()),
+        );
+        let send_task = tokio::spawn({
+            let tunnel = tunnel.clone();
+            async move { tunnel.send_record(final_record).await.unwrap() }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        gateway.status_allow.notify_waiters();
+
+        refresh_task.await.unwrap();
+        let report = send_task.await.unwrap();
+        assert!(report.ok);
+        assert_eq!(report.external_msg_id.as_deref(), Some("status-1"));
+        assert_eq!(
+            gateway.operations.lock().await.clone(),
+            vec!["status:思考完成".to_string(), "send:hello".to_string()]
+        );
+        {
+            let guard = tunnel.ui_session_tracker.sessions.lock().await;
+            let session = guard.get(&session_id).unwrap();
+            assert!(session.status_message_id.is_none());
+            assert_eq!(session.last_status_line, "思考完成");
+        }
 
         tunnel.stop().await.unwrap();
     }

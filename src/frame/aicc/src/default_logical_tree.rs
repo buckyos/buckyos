@@ -1,11 +1,10 @@
 // Default level-2 logical directory built per `doc/aicc/aicc 逻辑模型目录.md` §4.
 //
 // Each template defines a task-oriented logical path (e.g. `llm.plan`) whose
-// items reference level-1 provider mounts (e.g. `llm.opus`, `llm.gpt-pro`).
-// The applied SessionConfig is a verbatim transcription of the doc — items
-// are NOT filtered against the current inventory, so the directory tree
-// always reflects the designed intent; the router falls back through items
-// at request time when an underlying provider is unavailable.
+// items reference level-1 provider mounts (e.g. `llm.opus`). The applied
+// SessionConfig uses item_overrides so provider inventories can mount exact
+// models directly to role paths (e.g. `llm.plan`) without being hidden by the
+// builtin role tree.
 //
 // Currently only LLM templates are populated; the doc's embedding/image/
 // audio/video sections still need usage-based subdivision before they can be
@@ -13,7 +12,7 @@
 
 use crate::model_session::{LogicalNode, SessionConfig};
 use crate::model_types::{
-    FallbackMode, FallbackRule, LockedValue, ModelItem, PolicyConfig, SchedulerProfile,
+    FallbackMode, FallbackRule, LockedValue, ModelItem, ModelItemPatch, SchedulerProfile,
 };
 use std::collections::BTreeMap;
 
@@ -48,11 +47,6 @@ const LLM_TEMPLATES: &[Level2Template] = &[
                 weight: 2.5,
             },
             Level2Item {
-                name: "gpt_pro",
-                target: "llm.gpt-pro",
-                weight: 2.5,
-            },
-            Level2Item {
                 name: "gemini",
                 target: "llm.gemini-pro",
                 weight: 2.4,
@@ -77,11 +71,6 @@ const LLM_TEMPLATES: &[Level2Template] = &[
             Level2Item {
                 name: "opus",
                 target: "llm.opus",
-                weight: 2.5,
-            },
-            Level2Item {
-                name: "gpt_pro",
-                target: "llm.gpt-pro",
                 weight: 2.5,
             },
             Level2Item {
@@ -127,11 +116,6 @@ const LLM_TEMPLATES: &[Level2Template] = &[
                 weight: 2.5,
             },
             Level2Item {
-                name: "gpt_nano",
-                target: "llm.gpt-nano",
-                weight: 2.5,
-            },
-            Level2Item {
                 name: "grok_fast",
                 target: "llm.grok-fast",
                 weight: 2.0,
@@ -151,6 +135,12 @@ const LLM_TEMPLATES: &[Level2Template] = &[
         profile: Some(SchedulerProfile::LatencyFirst),
     },
     Level2Template {
+        path: "llm.summarize",
+        items: &[],
+        fallback: FallbackPreset::Parent,
+        profile: Some(SchedulerProfile::CostFirst),
+    },
+    Level2Template {
         path: "llm.reason",
         items: &[
             Level2Item {
@@ -161,11 +151,6 @@ const LLM_TEMPLATES: &[Level2Template] = &[
             Level2Item {
                 name: "opus",
                 target: "llm.opus",
-                weight: 2.5,
-            },
-            Level2Item {
-                name: "gpt_pro",
-                target: "llm.gpt-pro",
                 weight: 2.5,
             },
             Level2Item {
@@ -193,11 +178,6 @@ const LLM_TEMPLATES: &[Level2Template] = &[
             Level2Item {
                 name: "opus",
                 target: "llm.opus",
-                weight: 2.5,
-            },
-            Level2Item {
-                name: "gpt",
-                target: "llm.gpt",
                 weight: 2.5,
             },
             Level2Item {
@@ -250,11 +230,6 @@ const LLM_TEMPLATES: &[Level2Template] = &[
                 weight: 1.0,
             },
             Level2Item {
-                name: "gpt_nano",
-                target: "llm.gpt-nano",
-                weight: 1.0,
-            },
-            Level2Item {
                 name: "qwen_small",
                 target: "llm.qwen-small",
                 weight: 1.0,
@@ -297,23 +272,25 @@ fn descend_or_create<'a>(
 }
 
 /// Build a SessionConfig containing the default level-2 logical tree from the
-/// static templates verbatim. Items are NOT filtered against the current
-/// inventory — the directory tree always reflects the designed intent and the
-/// router skips unresolvable items at request time.
+/// static templates. The builtin entries are encoded as item_overrides so
+/// inventory-provided direct mounts on the same role path remain routable.
 pub fn build_default_session_config() -> SessionConfig {
     let mut tree: BTreeMap<String, LogicalNode> = BTreeMap::new();
     let mut applied_nodes = 0usize;
 
     for template in LLM_TEMPLATES {
-        let mut items: BTreeMap<String, ModelItem> = BTreeMap::new();
+        let mut items: BTreeMap<String, ModelItemPatch> = BTreeMap::new();
         for item in template.items {
             items.insert(
                 item.name.to_string(),
-                ModelItem::new(item.target.to_string(), item.weight),
+                ModelItemPatch {
+                    target: Some(item.target.to_string()),
+                    weight: Some(item.weight),
+                },
             );
         }
         let node = descend_or_create(&mut tree, template.path);
-        node.items = Some(items);
+        node.item_overrides = Some(items);
         node.fallback = Some(fallback_to_rule(&template.fallback));
         if let Some(profile) = template.profile.clone() {
             let mut policy = node.policy.clone().unwrap_or_default();
@@ -334,7 +311,11 @@ pub fn build_default_session_config() -> SessionConfig {
 
 pub fn level2_node_count(config: &SessionConfig) -> usize {
     fn walk(node: &LogicalNode) -> usize {
-        let mut count = if node.items.is_some() { 1 } else { 0 };
+        let mut count = if node.items.is_some() || node.item_overrides.is_some() {
+            1
+        } else {
+            0
+        };
         for child in node.children.values() {
             count += walk(child);
         }
@@ -354,11 +335,18 @@ mod tests {
     }
 
     #[test]
-    fn all_seven_llm_level2_nodes_present() {
+    fn all_eight_llm_level2_nodes_present() {
         let config = build_default_session_config();
         let llm = config.logical_tree.get("llm").expect("llm root");
         for child in [
-            "plan", "code", "swift", "reason", "vision", "long", "fallback",
+            "plan",
+            "code",
+            "swift",
+            "summarize",
+            "reason",
+            "vision",
+            "long",
+            "fallback",
         ] {
             assert!(
                 llm.children.contains_key(child),
@@ -366,29 +354,25 @@ mod tests {
                 child
             );
         }
-        assert_eq!(level2_node_count(&config), 7);
+        assert_eq!(level2_node_count(&config), 8);
     }
 
     #[test]
     fn llm_plan_matches_doc_section_4() {
         let config = build_default_session_config();
-        let plan = config
+        let plan_node = config
             .logical_tree
             .get("llm")
             .and_then(|node| node.children.get("plan"))
-            .and_then(|node| node.items.as_ref())
-            .expect("llm.plan items");
-        // Doc §4: llm.plan items = opus / gpt_pro / gemini / qwen_max / deepseek
+            .expect("llm.plan node");
+        let plan = plan_node.effective_items(None).expect("llm.plan items");
+        // Doc §4: llm.plan builtin items = opus / gemini / qwen_max / deepseek.
         let names: Vec<&str> = plan.keys().map(String::as_str).collect();
         let mut sorted = names.clone();
         sorted.sort();
-        assert_eq!(
-            sorted,
-            vec!["deepseek", "gemini", "gpt_pro", "opus", "qwen_max"]
-        );
+        assert_eq!(sorted, vec!["deepseek", "gemini", "opus", "qwen_max"]);
         assert_eq!(plan.get("opus").unwrap().target, "llm.opus");
         assert_eq!(plan.get("opus").unwrap().weight, 2.5);
-        assert_eq!(plan.get("gpt_pro").unwrap().target, "llm.gpt-pro");
         assert_eq!(plan.get("gemini").unwrap().target, "llm.gemini-pro");
         assert_eq!(plan.get("gemini").unwrap().weight, 2.4);
         assert_eq!(plan.get("qwen_max").unwrap().weight, 1.8);
@@ -398,23 +382,84 @@ mod tests {
     #[test]
     fn llm_swift_matches_doc_section_4() {
         let config = build_default_session_config();
-        let swift = config
+        let swift_node = config
             .logical_tree
             .get("llm")
             .and_then(|node| node.children.get("swift"))
-            .and_then(|node| node.items.as_ref())
-            .expect("llm.swift items");
-        let targets = item_targets(swift);
+            .expect("llm.swift node");
+        let swift = swift_node.effective_items(None).expect("llm.swift items");
+        let targets = item_targets(&swift);
         assert_eq!(
             targets,
             vec![
                 "llm.gemini-flash-lite",
                 "llm.glm-flash",
-                "llm.gpt-nano",
                 "llm.grok-fast",
                 "llm.haiku",
                 "llm.qwen-small",
             ]
+        );
+    }
+
+    #[test]
+    fn builtin_role_items_do_not_hide_inventory_direct_mounts() {
+        let config = build_default_session_config();
+        let plan_node = config
+            .logical_tree
+            .get("llm")
+            .and_then(|node| node.children.get("plan"))
+            .expect("llm.plan node");
+        let inherited: BTreeMap<String, ModelItem> = [(
+            "gpt-5-5-pro-openai".to_string(),
+            ModelItem::new("gpt-5.5-pro@openai".to_string(), 1.0),
+        )]
+        .into_iter()
+        .collect();
+        let effective = plan_node
+            .effective_items(Some(&inherited))
+            .expect("llm.plan effective items");
+        assert_eq!(
+            effective
+                .get("gpt-5-5-pro-openai")
+                .map(|item| item.target.as_str()),
+            Some("gpt-5.5-pro@openai")
+        );
+        assert_eq!(
+            effective.get("opus").map(|item| item.target.as_str()),
+            Some("llm.opus")
+        );
+    }
+
+    #[test]
+    fn llm_summarize_preserves_inventory_direct_mounts() {
+        let config = build_default_session_config();
+        let summarize_node = config
+            .logical_tree
+            .get("llm")
+            .and_then(|node| node.children.get("summarize"))
+            .expect("llm.summarize node");
+        let inherited: BTreeMap<String, ModelItem> = [(
+            "gpt-5-4-mini-openai".to_string(),
+            ModelItem::new("gpt-5.4-mini@openai".to_string(), 1.0),
+        )]
+        .into_iter()
+        .collect();
+        let effective = summarize_node
+            .effective_items(Some(&inherited))
+            .expect("llm.summarize effective items");
+        assert_eq!(
+            effective
+                .get("gpt-5-4-mini-openai")
+                .map(|item| item.target.as_str()),
+            Some("gpt-5.4-mini@openai")
+        );
+        assert_eq!(
+            summarize_node
+                .policy
+                .as_ref()
+                .and_then(|policy| policy.profile.as_ref())
+                .map(|locked| locked.value.clone()),
+            Some(SchedulerProfile::CostFirst)
         );
     }
 

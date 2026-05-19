@@ -7,8 +7,9 @@
 //!   route them through `validate_obj_id` so a future ACL hook (e.g. "is
 //!   this object readable by the recipient zone?") has a single entry
 //!   point to extend.
-//! - **Local paths** must resolve under the agent's workspace directory,
-//!   with `..` traversal and symlink-escape rejected.
+//! - **Local paths** are checked against the agent runtime filesystem policy;
+//!   workspace mode confines them to the workspace directory, while
+//!   unrestricted mode permits host-readable absolute paths.
 //! - **URLs** pass through today; the scheme check lives here for future
 //!   tightening (e.g. block `file://` from being smuggled as a URL).
 //!
@@ -20,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use llm_context::{AttachmentValidation, AttachmentValidator};
 
-use crate::agent_config::AttachmentPathPolicy;
+use crate::agent_config::FilesystemPolicy;
 
 /// Validator that bounds outbound `<attachment path=…>` according to the
 /// agent's path policy:
@@ -33,18 +34,18 @@ use crate::agent_config::AttachmentPathPolicy;
 pub struct WorkspaceAttachmentValidator {
     workspace_root: Option<PathBuf>,
     agent_id: String,
-    path_policy: AttachmentPathPolicy,
+    path_policy: FilesystemPolicy,
 }
 
 impl WorkspaceAttachmentValidator {
     pub fn new(workspace_root: Option<PathBuf>, agent_id: impl Into<String>) -> Self {
-        Self::with_policy(workspace_root, agent_id, AttachmentPathPolicy::default())
+        Self::with_policy(workspace_root, agent_id, FilesystemPolicy::default())
     }
 
     pub fn with_policy(
         workspace_root: Option<PathBuf>,
         agent_id: impl Into<String>,
-        path_policy: AttachmentPathPolicy,
+        path_policy: FilesystemPolicy,
     ) -> Self {
         let canonical = workspace_root.and_then(|p| {
             std::fs::canonicalize(&p).ok().or_else(|| {
@@ -78,7 +79,7 @@ impl WorkspaceAttachmentValidator {
             ));
         }
         match self.path_policy {
-            AttachmentPathPolicy::Unrestricted => {
+            FilesystemPolicy::Unrestricted => {
                 // Workspace fence lifted by config. `..` traversal is still
                 // rejected above; everything else the host can read is
                 // fair game (e.g. /opt/buckyos/logs/aicc/*.html). Relative
@@ -91,7 +92,7 @@ impl WorkspaceAttachmentValidator {
                 }
                 Ok(())
             }
-            AttachmentPathPolicy::Workspace => {
+            FilesystemPolicy::Workspace => {
                 let Some(root) = self.workspace_root.as_deref() else {
                     return Err(format!(
                         "attachment path `{trimmed}` rejected: agent `{}` has no workspace bound",
@@ -202,7 +203,7 @@ mod tests {
         let v = WorkspaceAttachmentValidator::with_policy(
             Some(dir.path().to_path_buf()),
             "agent-a",
-            AttachmentPathPolicy::Unrestricted,
+            FilesystemPolicy::Unrestricted,
         );
         // /tmp or any host-readable absolute path passes when fence is lifted.
         assert!(v.validate_path("/opt/buckyos/logs/aicc.html").is_ok());
@@ -215,7 +216,7 @@ mod tests {
         let v = WorkspaceAttachmentValidator::with_policy(
             None,
             "agent-a",
-            AttachmentPathPolicy::Unrestricted,
+            FilesystemPolicy::Unrestricted,
         );
         assert!(v.validate_path("file.txt").is_err());
         assert!(v.validate_path("/etc/hosts").is_ok());

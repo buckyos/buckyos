@@ -161,10 +161,9 @@ impl TypedTool for CreateWorksessionTool {
 /// `forward_msg` arguments.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ForwardMsgArgs {
-    /// Target work-session id. Must exist, be a Work session (not UI),
-    /// and not yet have Ended.
+    /// Target work-session id.
     pub target_worksession_id: String,
-    /// Override the forwarded text. **Usually omit this.** 
+    /// Override the forwarded text. **Usually omit this.**
     #[serde(default)]
     pub message: Option<String>,
 }
@@ -202,7 +201,7 @@ impl TypedTool for ForwardMsgTool {
     }
 
     fn description(&self) -> &str {
-        "Forward a message to another worksession's pending input queue."
+        "Forward current user message to another worksession"
     }
 
     fn calling(&self) -> CallingConventions {
@@ -267,7 +266,7 @@ impl TypedTool for ForwardMsgTool {
 /// session's inherited history.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TryCreateWorksessionArgs {
-    /// why the worksession should be created? 
+    /// why the worksession should be created?
     pub reason: String,
 }
 

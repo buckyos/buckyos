@@ -3209,7 +3209,7 @@ impl AgentSession {
         let validator = crate::attachment_policy::WorkspaceAttachmentValidator::with_policy(
             workspace_dir.clone(),
             self.agent_name.clone(),
-            self.agent_config.toml.runtime.attachment_path_policy,
+            self.agent_config.toml.runtime.filesystem_policy,
         );
         let resolver = crate::attachment_resolver::NamedStoreLocalLinkResolver::new(
             workspace_dir,

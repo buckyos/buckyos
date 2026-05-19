@@ -93,6 +93,7 @@ llm
 ├── reason     # 显式 reasoning(o1/r1/k2-thinking 类,延迟高)
 ├── vision     # 需要传图的对话(VLM)
 ├── swift      # 极速响应(短回复、低延迟)
+├── summarize  # 总结/抽取(gpt mini 默认挂载)
 ├── summary    # 总结/抽取(可用便宜模型)
 ├── translate  # 翻译
 ├── long       # 超长上下文(>200k)
@@ -169,19 +170,15 @@ agent_runtime
 
 ### 设计约定
 
-- **逻辑挂点**是 Provider 内稳定的 tier 名,永远代表该 tier 的最新可用版本,如 `llm.opus`、`llm.gpt`、`llm.gemini-flash`。
+- **逻辑挂点**是 Provider 内稳定的 tier 名或角色目录挂载,永远代表该 tier / 角色下的最新可用版本,如 `llm.opus`、`llm.gemini-flash`、`llm.chat`。
 - **物理型号**是带版本号的具体快照,如 `claude-opus-4.7@anthropic`、`gpt-5.5@openai`,只用于复现、锁定、审计和 Provider 侧实际路由。
-- **任务抽象目录**与 Provider 逻辑挂点正交。`llm.plan`、`llm.swift`、`llm.reason` 这类抽象分组只链接到 Provider 逻辑挂点,不直接链接物理型号。
+- **任务抽象目录**默认通过内置树链接到 Provider 逻辑挂点,也允许 Provider inventory 直接挂载精确模型。OpenAI 当前按角色直接挂载:GPT nano -> `llm.swift`;GPT mini -> `llm.chat` + `llm.summarize`;GPT 其它非 pro -> `llm.chat`;GPT pro -> `llm.plan` + `llm.reason`;其它 OpenAI LLM -> `llm.gpt`。
 - **家族目录**保留为 UI 展示、用户偏好和物理型号索引用途。物理型号可以同时归入家族目录,但不作为任务抽象目录的直接 target。
 
 ### 3.1 `llm` Provider 逻辑挂点目录
 
 ```
 llm
-├── gpt-pro              # OpenAI 研究级深度推理
-├── gpt                  # OpenAI 旗舰主力
-├── gpt-mini             # OpenAI 低延迟/低成本主力
-├── gpt-nano             # OpenAI 极轻量/批量场景
 ├── opus                 # Anthropic 旗舰推理与 agentic 编排
 ├── sonnet               # Anthropic 性价比主力
 ├── haiku                # Anthropic 轻量快速
@@ -209,10 +206,11 @@ llm
 
 | Provider | 逻辑挂点 | 当前指向 | 定位 |
 |---|---|---|---|
-| OpenAI | `llm.gpt-pro` | GPT-5.5 Pro | 研究级深度推理 |
-| OpenAI | `llm.gpt` | GPT-5.5 | 旗舰,复杂推理与编码 |
-| OpenAI | `llm.gpt-mini` | GPT-5.4-mini | 低延迟、低成本主力 |
-| OpenAI | `llm.gpt-nano` | GPT-5.4-nano | 极轻量、批量场景 |
+| OpenAI | `llm.plan` + `llm.reason` | GPT-5.5 Pro | 研究级深度推理 |
+| OpenAI | `llm.chat` | GPT-5.5 | 旗舰,复杂推理与编码 |
+| OpenAI | `llm.chat` + `llm.summarize` | GPT-5.4-mini | 低延迟、低成本主力 |
+| OpenAI | `llm.swift` | GPT-5.4-nano | 极轻量、批量场景 |
+| OpenAI | `llm.gpt` | o-series 等其它 OpenAI LLM | 非标准 GPT tier 的 OpenAI LLM |
 | Anthropic | `llm.opus` | Claude Opus 4.7 | 最强推理与 agentic 编排 |
 | Anthropic | `llm.sonnet` | Claude Sonnet 4.6 | 性价比主力,接近 Opus |
 | Anthropic | `llm.haiku` | Claude Haiku 4.5 | 轻量快速 |
@@ -237,14 +235,15 @@ llm
 
 #### 物理型号索引示例
 
-物理型号只作为 Provider 逻辑挂点的当前指向或可锁定快照存在。`llm.plan`、`llm.swift` 等任务抽象目录不直接引用下表条目。
+物理型号只作为逻辑挂点的当前指向或可锁定快照存在。OpenAI GPT 由 Provider inventory 直接挂载到角色目录;其它 Provider 主要通过家族挂点进入角色目录。
 
 | 逻辑挂点 | 物理型号 | 家族 | api_type | attributes.tier |
 |---|---|---|---|---|
-| `llm.gpt-pro` | `gpt-5.5-pro@openai` | openai | llm.chat | flagship |
-| `llm.gpt` | `gpt-5.5@openai` | openai | llm.chat | flagship |
-| `llm.gpt-mini` | `gpt-5.4-mini@openai` | openai | llm.chat | mid |
-| `llm.gpt-nano` | `gpt-5.4-nano@openai` | openai | llm.chat | nano |
+| `llm.plan` / `llm.reason` | `gpt-5.5-pro@openai` | openai | llm.chat | flagship |
+| `llm.chat` | `gpt-5.5@openai` | openai | llm.chat | flagship |
+| `llm.chat` / `llm.summarize` | `gpt-5.4-mini@openai` | openai | llm.chat | mid |
+| `llm.swift` | `gpt-5.4-nano@openai` | openai | llm.chat | nano |
+| `llm.gpt` | `o1-2024-12-17@openai` | openai | llm.chat | flagship |
 | `llm.opus` | `claude-opus-4.7@anthropic` | claude | llm.chat | flagship |
 | `llm.sonnet` | `claude-sonnet-4.6@anthropic` | claude | llm.chat | mid |
 | `llm.haiku` | `claude-haiku-4.5@anthropic` | claude | llm.chat | nano |
@@ -267,9 +266,9 @@ llm
 | `llm.glm` | `glm-5.1@zai` | glm | llm.chat | flagship |
 | `llm.glm-flash` | `glm-5-flash@zai` | glm | llm.chat | nano |
 
-**Reasoning 角色专属**:`llm.reason` 默认只挂载支持强 reasoning / thinking 的逻辑挂点,如 `llm.gemini-deepthink`、`llm.opus`、`llm.gpt-pro`、`llm.grok-heavy`、`llm.deepseek-reasoner`、`llm.kimi-thinking`。具体物理型号由对应 Provider 挂点解析。
+**Reasoning 角色专属**:`llm.reason` 默认只挂载支持强 reasoning / thinking 的逻辑挂点,如 `llm.gemini-deepthink`、`llm.opus`、OpenAI GPT Pro 直接挂载、`llm.grok-heavy`、`llm.deepseek-reasoner`、`llm.kimi-thinking`。具体物理型号由对应 Provider 挂点解析。
 
-**Vision 角色**:`llm.vision` 挂载支持图像输入的逻辑挂点,如 `llm.gemini-pro`、`llm.opus`、`llm.gpt`。纯文本逻辑挂点通过 Provider metadata 过滤。
+**Vision 角色**:`llm.vision` 挂载支持图像输入的逻辑挂点,如 `llm.gemini-pro`、`llm.opus`。纯文本逻辑挂点通过 Provider metadata 过滤。
 
 ### 3.2 `embedding` 家族目录
 
@@ -437,7 +436,6 @@ session_config:
     llm.plan:
       items:
         opus:     { target: llm.opus,      weight: 2.5 }
-        gpt_pro:  { target: llm.gpt-pro,   weight: 2.5 }
         gemini:   { target: llm.gemini-pro, weight: 2.4 }
         qwen_max: { target: llm.qwen-max,  weight: 1.8 }
         deepseek: { target: llm.deepseek-pro, weight: 1.5 }
@@ -447,7 +445,6 @@ session_config:
     llm.code:
       items:
         opus:        { target: llm.opus,        weight: 2.5 }
-        gpt_pro:     { target: llm.gpt-pro,     weight: 2.5 }
         gemini:      { target: llm.gemini-pro,  weight: 2.4 }
         qwen_coder:  { target: llm.qwen-coder,  weight: 2.0 }
         kimi:        { target: llm.kimi,        weight: 2.0 }
@@ -459,18 +456,21 @@ session_config:
       items:
         haiku:        { target: llm.haiku,             weight: 2.5 }
         flash_lite:   { target: llm.gemini-flash-lite, weight: 2.5 }
-        gpt_nano:     { target: llm.gpt-nano,          weight: 2.5 }
         grok_fast:    { target: llm.grok-fast,         weight: 2.0 }
         qwen_small:   { target: llm.qwen-small,        weight: 2.0 }
         glm_flash:    { target: llm.glm-flash,         weight: 1.5 }
       fallback: { mode: parent }
       profile: latency_first
 
+    llm.summarize:
+      item_overrides: {}
+      fallback: { mode: parent }
+      profile: cost_first
+
     llm.reason:
       items:
         gemini_deepthink: { target: llm.gemini-deepthink,  weight: 2.5 }
         opus:             { target: llm.opus,              weight: 2.5 }
-        gpt_pro:          { target: llm.gpt-pro,           weight: 2.5 }
         grok_heavy:       { target: llm.grok-heavy,        weight: 2.0 }
         kimi_thinking:    { target: llm.kimi-thinking,     weight: 2.0 }
         deepseek_reasoner: { target: llm.deepseek-reasoner, weight: 2.0 }
@@ -480,7 +480,6 @@ session_config:
     llm.vision:
       items:
         opus:   { target: llm.opus,       weight: 2.5 }
-        gpt:    { target: llm.gpt,        weight: 2.5 }
         gemini: { target: llm.gemini-pro, weight: 2.5 }
         qwen:   { target: llm.qwen-max,   weight: 1.0 }
       fallback: { mode: parent }
@@ -496,7 +495,6 @@ session_config:
       items:
         haiku:      { target: llm.haiku,             weight: 1.0 }
         flash_lite: { target: llm.gemini-flash-lite, weight: 1.0 }
-        gpt_nano:   { target: llm.gpt-nano,          weight: 1.0 }
         qwen_small: { target: llm.qwen-small,        weight: 1.0 }
       fallback: { mode: disabled }
 
@@ -564,6 +562,8 @@ session_config:
     blocked_provider_instances: []
 ```
 
+实现中这份内置树以 `item_overrides` 形式应用,不会覆盖 Provider inventory 直接挂到同一角色目录的精确模型。
+
 ---
 
 ## 五、给 v0.4 的待办
@@ -571,4 +571,4 @@ session_config:
 1. **多语种 TTS 的目录细分**:`audio.tts` 当前没有按语种区分,但 `eleven-v3` 和 `kokoro-82m` 的语种支持差异巨大。考虑在 `attributes.languages` 上做硬过滤。
 2. **图像家族中模型变体的层级**:如 `flux-dev` / `flux-schnell` / `flux-1.1-pro` 都属于 `flux` 家族,但延迟和质量差一档。应在 attributes 中加 `tier: flagship/mid/swift`。
 3. **`agent_runtime` 的 fallback 语义**:跨 sandbox 的环境状态不通用(local Docker 启动的容器在云端 E2B 看不到),实际上 strict 更合理。但 strict 会让 fallback 失效,需要在 Provider 层做"会话级 sandbox 粘性"。
-4. **多模态 any-to-any 的 schema 收敛**:暂时让 `llm.gpt`、`llm.gemini-pro`、`llm.qwen-max` 这类逻辑挂点各自挂多个目录。等业界 API 形态收敛后再考虑合并 namespace。
+4. **多模态 any-to-any 的 schema 收敛**:暂时让 OpenAI GPT 角色挂点、`llm.gemini-pro`、`llm.qwen-max` 这类逻辑挂点各自挂多个目录。等业界 API 形态收敛后再考虑合并 namespace。
