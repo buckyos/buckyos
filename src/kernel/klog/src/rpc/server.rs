@@ -10,9 +10,10 @@ use crate::state_store::KLogStateStoreManagerRef;
 use crate::{
     KRaftRef,
     rpc::{
-        KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_ERR_INTERNAL,
-        KLOG_RPC_ERR_INVALID_PARAMS, KLOG_RPC_ERR_INVALID_REQUEST, KLOG_RPC_ERR_METHOD_NOT_FOUND,
-        KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_APPEND_LEGACY, KLOG_RPC_METHOD_LOG_QUERY,
+        KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_JSON_RPC_VERSION,
+        KLOG_RPC_ERR_INTERNAL, KLOG_RPC_ERR_INVALID_PARAMS, KLOG_RPC_ERR_INVALID_REQUEST,
+        KLOG_RPC_ERR_METHOD_NOT_FOUND, KLOG_RPC_METHOD_LOG_APPEND,
+        KLOG_RPC_METHOD_LOG_APPEND_LEGACY, KLOG_RPC_METHOD_LOG_QUERY,
         KLOG_RPC_METHOD_LOG_QUERY_LEGACY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
         KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
     },
@@ -206,13 +207,17 @@ impl KRpcServer {
             .merge(
                 Router::new()
                     .route(KLOG_JSON_RPC_PATH, post(Self::handle_json_rpc_request))
+                    .route(
+                        KLOG_JSON_RPC_SERVICE_PATH,
+                        post(Self::handle_json_rpc_request),
+                    )
                     .route_layer(jsonrpc_middleware),
             )
             .layer(TraceLayer::new_for_http())
             .with_state(state);
 
         info!(
-            "KRpcServer start listening at {}, append(body_limit_bytes={}, concurrency={}, timeout_ms={}), query(body_limit_bytes={}, concurrency={}, timeout_ms={}), jsonrpc(body_limit_bytes={}, concurrency={}, timeout_ms={}), data_append_path={}, data_query_path={}, data_meta_put_path={}, data_meta_delete_path={}, data_meta_query_path={}, json_rpc_path={}",
+            "KRpcServer start listening at {}, append(body_limit_bytes={}, concurrency={}, timeout_ms={}), query(body_limit_bytes={}, concurrency={}, timeout_ms={}), jsonrpc(body_limit_bytes={}, concurrency={}, timeout_ms={}), data_append_path={}, data_query_path={}, data_meta_put_path={}, data_meta_delete_path={}, data_meta_query_path={}, json_rpc_path={}, service_json_rpc_path={}",
             self.addr,
             self.policy.append.body_limit_bytes,
             self.policy.append.concurrency,
@@ -228,7 +233,8 @@ impl KRpcServer {
             data_meta_put_path,
             data_meta_delete_path,
             data_meta_query_path,
-            KLOG_JSON_RPC_PATH
+            KLOG_JSON_RPC_PATH,
+            KLOG_JSON_RPC_SERVICE_PATH
         );
 
         let listener = tokio::net::TcpListener::bind(&self.addr)

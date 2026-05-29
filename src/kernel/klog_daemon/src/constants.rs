@@ -165,7 +165,7 @@ pub const DEFAULT_INTER_NODE_PORT: u16 = 21002;
 pub const DEFAULT_ADMIN_PORT: u16 = 21003;
 
 /// Default client RPC port (local service client).
-pub const DEFAULT_RPC_PORT: u16 = 21101;
+pub const DEFAULT_RPC_PORT: u16 = 4080;
 
 /// Default timeout for append/query/json-rpc handlers in milliseconds.
 pub const DEFAULT_RPC_TIMEOUT_MS: u64 = 3_000;
@@ -249,4 +249,4 @@ pub const DEFAULT_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP: u64 = 1_000;
 pub const DEFAULT_RAFT_PURGE_BATCH_SIZE: u64 = 1;
 
 /// Service name used to derive default data dir.
-pub const KLOG_SERVICE_NAME: &str = "klog";
+pub const KLOG_SERVICE_NAME: &str = "klog-service";
