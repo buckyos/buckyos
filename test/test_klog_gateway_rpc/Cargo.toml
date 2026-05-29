@@ -3,6 +3,9 @@ name = "test_klog_gateway_rpc"
 version = "0.1.0"
 edition = "2024"
 
+[package.metadata.dv]
+command = "run"
+
 [dependencies]
 tokio = { version = "1.49.0", features = ["full"] }
 serde_json = "1.0.149"

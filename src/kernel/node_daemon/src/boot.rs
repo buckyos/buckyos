@@ -234,6 +234,7 @@ pub fn build_boot_node_gateway_info(
         "service_info": service_info,
         "node_route_map": node_route_map,
         "routes": routes,
+        "cluster_route_map": {},
         "trust_key": {},
     })
 }
