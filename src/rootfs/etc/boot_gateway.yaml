@@ -141,16 +141,13 @@ servers:
               global KLOG_CLUSTER_TARGET_PORT="";
               match-include $CLUSTER_ROUTE_MAP "klog-service" || return false;
               local klog_cluster_route=$CLUSTER_ROUTE_MAP["klog-service"];
-              local request_dest_port="";
-              if !eq $REQ.dest_port "" then
-                request_dest_port=$REQ.dest_port;
-              elif ends-with $REQ.host ":3180" then
-                request_dest_port="3180";
-              end
+              local request_dest_port=$REQ_target_port;
               eq $request_dest_port "${klog_cluster_route.ingress_port}" || return false;
               local route_prefix=$klog_cluster_route.route_prefix;
+              starts-with $REQ.path $route_prefix || return false;
+              local klog_route_suffix=$(strip-prefix $REQ.path $route_prefix);
               map-create klog_target_match;
-              match-reg --capture klog_target_match $REQ.path "^${route_prefix}/([a-zA-Z0-9_-]+)/(raft|inter|admin)(/.*)?" || return false;
+              match-reg --capture klog_target_match $klog_route_suffix "^/([a-zA-Z0-9_-]+)/(raft|inter|admin)(/.*)?" || return false;
               local target_node_name=$klog_target_match[1];
               local target_plane=$klog_target_match[2];
               match-include $klog_cluster_route.nodes $target_node_name || return false;

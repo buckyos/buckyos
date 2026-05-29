@@ -702,7 +702,7 @@ struct NodeGatewayInfo {
     routes: HashMap<String, Vec<NodeGatewayRouteCandidate>>,
     #[serde(default)]
     did_ip_hints: HashMap<String, Vec<DidIpHint>>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default)]
     cluster_route_map: HashMap<String, NodeGatewayClusterRouteEntry>,
     trust_key: HashMap<String, String>,
 }
@@ -958,6 +958,7 @@ fn collect_klog_ports_from_instance(
     node_ports: &mut HashMap<String, HashMap<String, u16>>,
     instance: &ReplicaInstance,
     only_plane: Option<&str>,
+    fallback_ports: Option<&HashMap<String, u16>>,
 ) {
     let planes = [
         KLOG_CLUSTER_RAFT_SERVICE_NAME,
@@ -969,11 +970,16 @@ fn collect_klog_ports_from_instance(
         .unwrap_or_else(|| planes.to_vec());
 
     for plane in selected_planes {
-        if let Some(port) = instance.service_ports.get(plane) {
+        let port = instance
+            .service_ports
+            .get(plane)
+            .copied()
+            .or_else(|| fallback_ports.and_then(|ports| ports.get(plane).copied()));
+        if let Some(port) = port {
             node_ports
                 .entry(instance.node_id.clone())
                 .or_default()
-                .insert(plane.to_string(), *port);
+                .insert(plane.to_string(), port);
         }
     }
 }
@@ -982,14 +988,15 @@ fn collect_klog_ports_from_service_info(
     node_ports: &mut HashMap<String, HashMap<String, u16>>,
     service_info: &ServiceInfo,
     only_plane: Option<&str>,
+    fallback_ports: Option<&HashMap<String, u16>>,
 ) {
     match service_info {
         ServiceInfo::SingleInstance(instance) => {
-            collect_klog_ports_from_instance(node_ports, instance, only_plane);
+            collect_klog_ports_from_instance(node_ports, instance, only_plane, fallback_ports);
         }
         ServiceInfo::RandomCluster(cluster) => {
             for (_, instance) in cluster.values() {
-                collect_klog_ports_from_instance(node_ports, instance, only_plane);
+                collect_klog_ports_from_instance(node_ports, instance, only_plane, fallback_ports);
             }
         }
     }
@@ -1000,6 +1007,10 @@ fn build_klog_cluster_route_entry(
     input_system_config: &HashMap<String, String>,
 ) -> Option<NodeGatewayClusterRouteEntry> {
     let mut node_ports: HashMap<String, HashMap<String, u16>> = HashMap::new();
+    let fallback_ports = scheduler_ctx
+        .specs
+        .get(KLOG_SERVICE_UNIQUE_ID)
+        .map(|spec| &spec.service_ports_config);
 
     for (service_info_id, service_info) in scheduler_ctx.service_infos.iter() {
         let (spec_id, service_name) = get_spec_id_from_service_info_id(service_info_id);
@@ -1014,7 +1025,12 @@ fn build_klog_cluster_route_entry(
             KLOG_CLUSTER_ADMIN_SERVICE_NAME => Some(KLOG_CLUSTER_ADMIN_SERVICE_NAME),
             _ => continue,
         };
-        collect_klog_ports_from_service_info(&mut node_ports, service_info, only_plane);
+        collect_klog_ports_from_service_info(
+            &mut node_ports,
+            service_info,
+            only_plane,
+            fallback_ports,
+        );
     }
 
     let nodes = node_ports
@@ -2701,6 +2717,72 @@ mod tests {
         assert_eq!(remote.ports.get("raft"), Some(&21011));
         assert_eq!(remote.ports.get("inter"), Some(&21012));
         assert_eq!(remote.ports.get("admin"), Some(&21013));
+    }
+
+    #[tokio::test]
+    async fn test_update_node_gateway_info_fills_klog_cluster_ports_from_spec() {
+        let zone_config = create_test_zone_config();
+        let device_ood1 = create_test_device_info("ood1", None);
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.add_service_spec(ServiceSpec {
+            id: KLOG_SERVICE_UNIQUE_ID.to_string(),
+            app_id: KLOG_SERVICE_UNIQUE_ID.to_string(),
+            app_index: 0,
+            owner_id: "root".to_string(),
+            spec_type: ServiceSpecType::Kernel,
+            state: ServiceSpecState::Deployed,
+            need_container: false,
+            best_instance_count: 1,
+            required_cpu_mhz: 200,
+            required_memory: DEFAULT_REQUIRED_MEMORY,
+            required_gpu_tflops: 0.0,
+            required_gpu_mem: 0,
+            node_affinity: None,
+            network_affinity: None,
+            service_ports_config: HashMap::from([
+                ("www".to_string(), 4080),
+                (KLOG_CLUSTER_RAFT_SERVICE_NAME.to_string(), 21001),
+                (KLOG_CLUSTER_INTER_SERVICE_NAME.to_string(), 21002),
+                (KLOG_CLUSTER_ADMIN_SERVICE_NAME.to_string(), 21003),
+            ]),
+        });
+        scheduler_ctx.service_infos.insert(
+            KLOG_SERVICE_UNIQUE_ID.to_string(),
+            ServiceInfo::SingleInstance(create_test_replica_instance(
+                KLOG_SERVICE_UNIQUE_ID,
+                "klog-service@ood1",
+                "ood1",
+                &[("www", 4080)],
+            )),
+        );
+
+        let actions = update_node_gateway_info("ood1", &scheduler_ctx, &input_system_config)
+            .await
+            .unwrap();
+        let gateway_info_str = match actions.get("nodes/ood1/gateway_info").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected kv action: {:?}", other),
+        };
+        let gateway_info: NodeGatewayInfo = serde_json::from_str(gateway_info_str).unwrap();
+        let klog_cluster_route = gateway_info
+            .cluster_route_map
+            .get(KLOG_SERVICE_UNIQUE_ID)
+            .unwrap();
+        let local = klog_cluster_route.nodes.get("ood1").unwrap();
+        assert_eq!(local.ports.get("raft"), Some(&21001));
+        assert_eq!(local.ports.get("inter"), Some(&21002));
+        assert_eq!(local.ports.get("admin"), Some(&21003));
     }
 
     #[test]

@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +31,13 @@ def load_package_json(package_json_path: Path) -> dict:
         return json.loads(package_json_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise RuntimeError(f"failed to read {package_json_path}: {error}") from error
+
+
+def load_cargo_toml(cargo_toml_path: Path) -> dict:
+    try:
+        return tomllib.loads(cargo_toml_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise RuntimeError(f"failed to read {cargo_toml_path}: {error}") from error
 
 
 def detect_runner(path: Path) -> RunnerSpec | None:
@@ -80,11 +88,22 @@ def detect_runner(path: Path) -> RunnerSpec | None:
             )
 
     if cargo_toml_path.exists():
+        cargo_toml = load_cargo_toml(cargo_toml_path)
+        dv_metadata = (
+            cargo_toml.get("package", {})
+            .get("metadata", {})
+            .get("dv", {})
+        )
+        cargo_command = dv_metadata.get("command", "test")
+        if cargo_command not in {"test", "run"}:
+            raise RuntimeError(
+                f"unsupported package.metadata.dv.command={cargo_command!r} in {cargo_toml_path}"
+            )
         return RunnerSpec(
             module_name=path.name,
             path=path,
             kind="cargo",
-            command=["cargo", "test", "--manifest-path", str(cargo_toml_path)],
+            command=["cargo", cargo_command, "--manifest-path", str(cargo_toml_path)],
             cwd=TEST_ROOT.parent,
         )
 
