@@ -1,7 +1,8 @@
 use crate::constants::{
     DEFAULT_ADMIN_LOCAL_ONLY, DEFAULT_ADMIN_PORT, DEFAULT_ADVERTISE_ADDR, DEFAULT_AUTO_BOOTSTRAP,
-    DEFAULT_ENABLE_RPC_SERVER, DEFAULT_INTER_NODE_PORT, DEFAULT_JOIN_BLOCKING,
-    DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
+    DEFAULT_CLUSTER_GATEWAY_ADDR, DEFAULT_CLUSTER_GATEWAY_ROUTE_PREFIX,
+    DEFAULT_CLUSTER_NETWORK_MODE, DEFAULT_ENABLE_RPC_SERVER, DEFAULT_INTER_NODE_PORT,
+    DEFAULT_JOIN_BLOCKING, DEFAULT_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
     DEFAULT_JOIN_RETRY_INITIAL_INTERVAL_MS, DEFAULT_JOIN_RETRY_JITTER_RATIO,
     DEFAULT_JOIN_RETRY_MAX_ATTEMPTS, DEFAULT_JOIN_RETRY_MAX_INTERVAL_MS,
     DEFAULT_JOIN_RETRY_MULTIPLIER, DEFAULT_JOIN_RETRY_REQUEST_TIMEOUT_MS,
@@ -14,8 +15,9 @@ use crate::constants::{
     DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT, DEFAULT_RPC_LISTEN_HOST,
     DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS, DEFAULT_STATE_STORE_SYNC_WRITE,
     ENV_ADMIN_ADVERTISE_PORT, ENV_ADMIN_LISTEN_ADDR, ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR,
-    ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_ID,
-    ENV_CLUSTER_NAME, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
+    ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_NODE_NAME, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP,
+    ENV_CLUSTER_GATEWAY_ADDR, ENV_CLUSTER_GATEWAY_ROUTE_PREFIX, ENV_CLUSTER_ID, ENV_CLUSTER_NAME,
+    ENV_CLUSTER_NETWORK_MODE, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
     ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING,
     ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS, ENV_JOIN_RETRY_INITIAL_INTERVAL_MS,
     ENV_JOIN_RETRY_JITTER_RATIO, ENV_JOIN_RETRY_MAX_ATTEMPTS, ENV_JOIN_RETRY_MAX_INTERVAL_MS,
@@ -32,8 +34,8 @@ use crate::constants::{
     ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
-use klog::KNodeId;
 use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
+use klog::{KClusterTransportConfig, KClusterTransportMode, KNodeId};
 use log::error;
 use openraft::{Config as OpenRaftConfig, SnapshotPolicy};
 use serde::{Deserialize, Serialize};
@@ -328,6 +330,9 @@ pub struct KLogRuntimeConfig {
     /// Advertised client RPC port, set to 0 when RPC server is disabled.
     pub rpc_advertise_port: u16,
 
+    /// Stable BuckyOS node name used for gateway/proxy cluster routing.
+    pub advertise_node_name: Option<String>,
+
     /// Root data directory for raft log, state store and snapshots.
     pub data_dir: PathBuf,
 
@@ -357,6 +362,9 @@ pub struct KLogRuntimeConfig {
 
     /// OpenRaft core runtime settings.
     pub raft: KLogRaftConfig,
+
+    /// Cluster internal transport mode and gateway routing settings.
+    pub cluster_network: KClusterTransportConfig,
 
     /// Restrict admin APIs to loopback clients only.
     pub admin_local_only: bool,
@@ -397,6 +405,9 @@ pub struct KLogNetworkConfigPatch {
 
     /// Optional override for advertised client RPC port.
     pub rpc_advertise_port: Option<u16>,
+
+    /// Optional override for advertised stable BuckyOS node name.
+    pub advertise_node_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -420,6 +431,19 @@ pub struct KLogClusterConfigPatch {
 
     /// Optional override for auto bootstrap switch.
     pub auto_bootstrap: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KLogClusterNetworkConfigPatch {
+    /// Optional cluster internal transport mode.
+    pub mode: Option<KClusterTransportMode>,
+
+    /// Optional local gateway/proxy address for cluster transport.
+    pub gateway_addr: Option<String>,
+
+    /// Optional gateway route prefix for cluster transport.
+    pub gateway_route_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -554,6 +578,9 @@ pub struct KLogRuntimeConfigPatch {
     /// Optional grouped raft runtime section.
     pub raft: Option<KLogRaftConfigPatch>,
 
+    /// Optional grouped cluster internal transport section.
+    pub cluster_network: Option<KLogClusterNetworkConfigPatch>,
+
     /// Optional grouped admin API section.
     pub admin: Option<KLogAdminConfigPatch>,
 
@@ -606,6 +633,7 @@ impl KLogRuntimeConfig {
                 advertise_inter_port: parse_env_u16(ENV_ADVERTISE_INTER_PORT)?,
                 advertise_admin_port: parse_env_u16(ENV_ADMIN_ADVERTISE_PORT)?,
                 rpc_advertise_port: parse_env_u16(ENV_RPC_ADVERTISE_PORT)?,
+                advertise_node_name: parse_env_string(ENV_ADVERTISE_NODE_NAME)?,
             }),
             storage: Some(KLogStorageConfigPatch {
                 data_dir: parse_env_pathbuf(ENV_DATA_DIR)?,
@@ -615,6 +643,11 @@ impl KLogRuntimeConfig {
                 name: parse_env_string(ENV_CLUSTER_NAME)?,
                 id: parse_env_string(ENV_CLUSTER_ID)?,
                 auto_bootstrap: parse_env_bool(ENV_AUTO_BOOTSTRAP)?,
+            }),
+            cluster_network: Some(KLogClusterNetworkConfigPatch {
+                mode: parse_env_cluster_transport_mode(ENV_CLUSTER_NETWORK_MODE)?,
+                gateway_addr: parse_env_string(ENV_CLUSTER_GATEWAY_ADDR)?,
+                gateway_route_prefix: parse_env_string(ENV_CLUSTER_GATEWAY_ROUTE_PREFIX)?,
             }),
             join: Some(KLogJoinConfigPatch {
                 targets: parse_env_string_list(ENV_JOIN_TARGETS)?,
@@ -715,6 +748,7 @@ impl KLogRuntimeConfig {
             cluster,
             join,
             raft,
+            cluster_network,
             admin,
             rpc,
             node_id,
@@ -725,6 +759,7 @@ impl KLogRuntimeConfig {
         let cluster = cluster.unwrap_or_default();
         let join = join.unwrap_or_default();
         let raft = raft.unwrap_or_default();
+        let cluster_network = cluster_network.unwrap_or_default();
         let admin = admin.unwrap_or_default();
         let rpc = rpc.unwrap_or_default();
 
@@ -777,6 +812,7 @@ impl KLogRuntimeConfig {
         let rpc_cfg = merge_rpc_config(rpc)?;
         let join_retry_cfg = merge_join_retry_config(join.retry.unwrap_or_default())?;
         let raft_cfg = merge_raft_config(raft)?;
+        let cluster_network_cfg = merge_cluster_network_config(cluster_network)?;
         let listen_addr = network.listen_addr.unwrap_or_else(default_listen_addr);
         let inter_node_listen_addr = network
             .inter_node_listen_addr
@@ -808,6 +844,10 @@ impl KLogRuntimeConfig {
             .advertise_admin_port
             .or_else(|| parse_port_from_addr(&admin_listen_addr))
             .unwrap_or(DEFAULT_ADMIN_PORT);
+        let advertise_node_name = network
+            .advertise_node_name
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         if advertise_admin_port == advertise_port {
             let msg = format!(
                 "Invalid config: network.advertise_admin_port ({}) must not equal network.advertise_port ({})",
@@ -820,6 +860,26 @@ impl KLogRuntimeConfig {
             let msg = format!(
                 "Invalid config: network.advertise_admin_port ({}) must not equal network.advertise_inter_port ({})",
                 advertise_admin_port, advertise_inter_port
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if let Some(node_name) = advertise_node_name.as_ref()
+            && node_name.contains('/')
+        {
+            let msg = format!(
+                "Invalid config: network.advertise_node_name ({}) must not contain '/'",
+                node_name
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if cluster_network_cfg.mode != KClusterTransportMode::Direct
+            && advertise_node_name.is_none()
+        {
+            let msg = format!(
+                "Missing required field: network.advertise_node_name (BuckyOS node name) for cluster_network.mode={}",
+                cluster_network_cfg.mode
             );
             error!("{}", msg);
             return Err(msg);
@@ -843,6 +903,7 @@ impl KLogRuntimeConfig {
             advertise_inter_port,
             advertise_admin_port,
             rpc_advertise_port: network.rpc_advertise_port.unwrap_or(DEFAULT_RPC_PORT),
+            advertise_node_name,
             data_dir: storage.data_dir.unwrap_or(default_data_dir),
             cluster_name,
             cluster_id,
@@ -855,6 +916,7 @@ impl KLogRuntimeConfig {
             join_target_role: join.target_role.unwrap_or(DEFAULT_JOIN_TARGET_ROLE),
             join_retry: join_retry_cfg,
             raft: raft_cfg,
+            cluster_network: cluster_network_cfg,
             admin_local_only: admin.local_only.unwrap_or(DEFAULT_ADMIN_LOCAL_ONLY),
             rpc: rpc_cfg,
         })
@@ -890,6 +952,43 @@ fn merge_rpc_config(patch: KLogRpcConfigPatch) -> Result<KLogRpcConfig, String> 
         query,
         jsonrpc,
     })
+}
+
+fn merge_cluster_network_config(
+    patch: KLogClusterNetworkConfigPatch,
+) -> Result<KClusterTransportConfig, String> {
+    let cfg = KClusterTransportConfig {
+        mode: patch.mode.unwrap_or(
+            KClusterTransportMode::parse(DEFAULT_CLUSTER_NETWORK_MODE)
+                .expect("DEFAULT_CLUSTER_NETWORK_MODE must be valid"),
+        ),
+        gateway_addr: patch
+            .gateway_addr
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| DEFAULT_CLUSTER_GATEWAY_ADDR.to_string()),
+        gateway_route_prefix: patch
+            .gateway_route_prefix
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| DEFAULT_CLUSTER_GATEWAY_ROUTE_PREFIX.to_string()),
+    };
+
+    if cfg.gateway_addr.trim().is_empty() {
+        let msg =
+            "Invalid cluster_network.gateway_addr: gateway_addr must not be empty".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.gateway_route_prefix.trim().is_empty() {
+        let msg =
+            "Invalid cluster_network.gateway_route_prefix: gateway_route_prefix must not be empty"
+                .to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    Ok(cfg)
 }
 
 fn merge_rpc_route_config(
@@ -1270,6 +1369,15 @@ fn parse_env_join_retry_strategy(key: &str) -> Result<Option<KLogJoinRetryStrate
     }
 }
 
+fn parse_env_cluster_transport_mode(key: &str) -> Result<Option<KClusterTransportMode>, String> {
+    match parse_env_string(key)? {
+        Some(v) => KClusterTransportMode::parse(&v)
+            .map(Some)
+            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1633,6 +1741,62 @@ targets = ["127.0.0.1:21001"]
     }
 
     #[test]
+    fn test_from_file_cluster_network_gateway_proxy_accepted() {
+        let file = unique_test_file("cluster_network_gateway_proxy");
+        let content = r#"
+node_id = 7
+
+[network]
+advertise_addr = "192.168.2.7"
+advertise_node_name = "ood7"
+
+[cluster]
+name = "cluster_gateway"
+id = "cluster_gateway_id"
+
+[cluster_network]
+mode = "gateway_proxy"
+gateway_addr = "127.0.0.1:3180"
+gateway_route_prefix = "/.cluster/klog"
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let cfg = KLogRuntimeConfig::from_file(&file)
+            .expect("cluster_network.mode=gateway_proxy should be accepted");
+        assert_eq!(
+            cfg.cluster_network.mode,
+            KClusterTransportMode::GatewayProxy
+        );
+        assert_eq!(cfg.cluster_network.gateway_addr, "127.0.0.1:3180");
+        assert_eq!(cfg.cluster_network.gateway_route_prefix, "/.cluster/klog");
+        assert_eq!(cfg.advertise_node_name.as_deref(), Some("ood7"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn test_from_file_cluster_network_non_direct_requires_node_name() {
+        let file = unique_test_file("cluster_network_non_direct_requires_node_name");
+        let content = r#"
+node_id = 7
+
+[cluster]
+name = "cluster_gateway"
+id = "cluster_gateway_id"
+
+[cluster_network]
+mode = "hybrid"
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err = KLogRuntimeConfig::from_file(&file)
+            .expect_err("cluster_network.mode=hybrid without advertise_node_name must fail");
+        assert!(err.contains("network.advertise_node_name"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
     fn test_from_file_admin_listener_must_be_distinct() {
         let file = unique_test_file("admin_listener_conflict");
         let content = r#"
@@ -1669,6 +1833,7 @@ id = "cluster_admin_conflict_id"
                 advertise_inter_port: Some(23002),
                 advertise_admin_port: Some(23003),
                 rpc_advertise_port: Some(23101),
+                advertise_node_name: Some("node-buckyos".to_string()),
             }),
             storage: Some(KLogStorageConfigPatch {
                 data_dir: None,
@@ -1728,6 +1893,7 @@ id = "cluster_admin_conflict_id"
         assert_eq!(cfg.advertise_inter_port, 23002);
         assert_eq!(cfg.advertise_admin_port, 23003);
         assert_eq!(cfg.rpc_advertise_port, 23101);
+        assert_eq!(cfg.advertise_node_name.as_deref(), Some("node-buckyos"));
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "bk");
         assert_eq!(cfg.cluster_id, "bk-id");

@@ -6,7 +6,7 @@ use super::request::{
 use crate::error::{KLogErrorEnvelope, KLogServiceError, generate_trace_id};
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
-use crate::{KNode, KNodeId, KRaftRef};
+use crate::{KClusterTransportConfig, KClusterTransportMode, KNode, KNodeId, KRaftRef};
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
@@ -39,6 +39,74 @@ const ADMIN_RPC_CONCURRENCY_LIMIT: usize = 32;
 const CONTROL_RPC_TIMEOUT_MS: u64 = 3_000;
 const SNAPSHOT_RPC_TIMEOUT_MS: u64 = 30_000;
 const ADMIN_RPC_TIMEOUT_MS: u64 = 5_000;
+
+fn normalize_cluster_proxy_route_prefix(prefix: &str) -> Result<String, String> {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() {
+        return Err("cluster proxy route prefix must not be empty".to_string());
+    }
+
+    let with_leading_slash = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{}", trimmed)
+    };
+
+    let normalized = with_leading_slash.trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        return Ok("/".to_string());
+    }
+    Ok(normalized)
+}
+
+fn cluster_proxy_route(
+    route_prefix: &str,
+    plane: KClusterTransportModePlane,
+    source_path: &str,
+) -> Result<String, String> {
+    let path_suffix = match plane {
+        KClusterTransportModePlane::Raft => source_path.strip_prefix("/klog/"),
+        KClusterTransportModePlane::InterNode => source_path.strip_prefix("/klog/data/"),
+        KClusterTransportModePlane::Admin => source_path.strip_prefix("/klog/admin/"),
+    }
+    .ok_or_else(|| {
+        format!(
+            "invalid cluster proxy source path for plane {}: {}",
+            plane.as_str(),
+            source_path
+        )
+    })?;
+
+    let normalized_prefix = normalize_cluster_proxy_route_prefix(route_prefix)?;
+    if normalized_prefix == "/" {
+        Ok(format!("/{{node_name}}/{}/{}", plane.as_str(), path_suffix))
+    } else {
+        Ok(format!(
+            "{}/{{node_name}}/{}/{}",
+            normalized_prefix,
+            plane.as_str(),
+            path_suffix
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum KClusterTransportModePlane {
+    Raft,
+    InterNode,
+    Admin,
+}
+
+impl KClusterTransportModePlane {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Raft => "raft",
+            Self::InterNode => "inter",
+            Self::Admin => "admin",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct AddLearnerQuery {
     node_id: KNodeId,
@@ -47,6 +115,7 @@ struct AddLearnerQuery {
     inter_port: Option<u16>,
     admin_port: Option<u16>,
     rpc_port: Option<u16>,
+    node_name: Option<String>,
     blocking: Option<bool>,
 }
 
@@ -80,6 +149,7 @@ pub struct KNetworkServer {
     admin_local_only: bool,
     cluster_name: String,
     cluster_id: String,
+    transport: KClusterTransportConfig,
 }
 
 impl KNetworkServer {
@@ -93,6 +163,7 @@ impl KNetworkServer {
             admin_local_only: false,
             cluster_name: "klog".to_string(),
             cluster_id: "klog".to_string(),
+            transport: KClusterTransportConfig::default(),
         }
     }
 
@@ -125,6 +196,16 @@ impl KNetworkServer {
         self
     }
 
+    pub fn with_cluster_transport_mode(mut self, transport_mode: KClusterTransportMode) -> Self {
+        self.transport.mode = transport_mode;
+        self
+    }
+
+    pub fn with_cluster_transport_config(mut self, transport: KClusterTransportConfig) -> Self {
+        self.transport = transport;
+        self
+    }
+
     pub async fn run(&self) -> Result<(), String> {
         self.run_with_shutdown(std::future::pending::<()>()).await
     }
@@ -154,9 +235,11 @@ impl KNetworkServer {
             raft: self.raft.clone(),
             write_service: self.state_store_manager.clone().map(|state_store_manager| {
                 KLogWriteService::new("KNetworkServer", self.raft.clone(), state_store_manager)
+                    .with_transport_config(self.transport.clone())
             }),
             query_service: self.state_store_manager.clone().map(|state_store_manager| {
                 KLogQueryService::new("KNetworkServer", self.raft.clone(), state_store_manager)
+                    .with_transport_config(self.transport.clone())
             }),
             admin_local_only: self.admin_local_only,
             cluster_name: self.cluster_name.clone(),
@@ -199,13 +282,73 @@ impl KNetworkServer {
         let admin_remove_learner_path = KLogAdminRequestType::RemoveLearner.klog_path();
         let admin_change_membership_path = KLogAdminRequestType::ChangeMembership.klog_path();
         let admin_cluster_state_path = KLogAdminRequestType::ClusterState.klog_path();
+        let proxy_append_entries_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::Raft,
+            &append_entries_path,
+        )?;
+        let proxy_vote_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::Raft,
+            &vote_path,
+        )?;
+        let proxy_data_append_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::InterNode,
+            &data_append_path,
+        )?;
+        let proxy_data_query_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::InterNode,
+            &data_query_path,
+        )?;
+        let proxy_data_meta_put_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::InterNode,
+            &data_meta_put_path,
+        )?;
+        let proxy_data_meta_delete_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::InterNode,
+            &data_meta_delete_path,
+        )?;
+        let proxy_data_meta_query_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::InterNode,
+            &data_meta_query_path,
+        )?;
+        let proxy_admin_add_learner_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::Admin,
+            &admin_add_learner_path,
+        )?;
+        let proxy_admin_remove_learner_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::Admin,
+            &admin_remove_learner_path,
+        )?;
+        let proxy_admin_change_membership_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::Admin,
+            &admin_change_membership_path,
+        )?;
+        let proxy_admin_cluster_state_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::Admin,
+            &admin_cluster_state_path,
+        )?;
 
         let raft_control_routes = Router::new()
             .route(
                 &append_entries_path,
                 post(Self::handle_append_entries_request),
             )
+            .route(
+                &proxy_append_entries_path,
+                post(Self::handle_append_entries_request),
+            )
             .route(&vote_path, post(Self::handle_vote_request))
+            .route(&proxy_vote_path, post(Self::handle_vote_request))
             .route_layer(raft_control_rpc_middleware);
         let admin_routes = Router::new()
             .route(
@@ -213,7 +356,15 @@ impl KNetworkServer {
                 post(Self::handle_add_learner_request),
             )
             .route(
+                &proxy_admin_add_learner_path,
+                post(Self::handle_add_learner_request),
+            )
+            .route(
                 &admin_change_membership_path,
+                post(Self::handle_change_membership_request),
+            )
+            .route(
+                &proxy_admin_change_membership_path,
                 post(Self::handle_change_membership_request),
             )
             .route(
@@ -221,19 +372,44 @@ impl KNetworkServer {
                 post(Self::handle_remove_learner_request),
             )
             .route(
+                &proxy_admin_remove_learner_path,
+                post(Self::handle_remove_learner_request),
+            )
+            .route(
                 &admin_cluster_state_path,
+                get(Self::handle_cluster_state_request),
+            )
+            .route(
+                &proxy_admin_cluster_state_path,
                 get(Self::handle_cluster_state_request),
             )
             .route_layer(admin_rpc_middleware);
         let inter_node_data_routes = Router::new()
             .route(&data_append_path, post(Self::handle_data_append_request))
+            .route(
+                &proxy_data_append_path,
+                post(Self::handle_data_append_request),
+            )
             .route(&data_query_path, get(Self::handle_data_query_request))
+            .route(&proxy_data_query_path, get(Self::handle_data_query_request))
             .route(&data_meta_put_path, post(Self::handle_meta_put_request))
+            .route(
+                &proxy_data_meta_put_path,
+                post(Self::handle_meta_put_request),
+            )
             .route(
                 &data_meta_delete_path,
                 post(Self::handle_meta_delete_request),
             )
+            .route(
+                &proxy_data_meta_delete_path,
+                post(Self::handle_meta_delete_request),
+            )
             .route(&data_meta_query_path, get(Self::handle_meta_query_request))
+            .route(
+                &proxy_data_meta_query_path,
+                get(Self::handle_meta_query_request),
+            )
             .route_layer(inter_node_rpc_middleware);
 
         let snapshot_rpc_middleware = ServiceBuilder::new()
@@ -249,6 +425,14 @@ impl KNetworkServer {
         let snapshot_routes = Router::new()
             .route(
                 &install_snapshot_path,
+                post(Self::handle_install_snapshot_request),
+            )
+            .route(
+                &cluster_proxy_route(
+                    &self.transport.gateway_route_prefix,
+                    KClusterTransportModePlane::Raft,
+                    &install_snapshot_path,
+                )?,
                 post(Self::handle_install_snapshot_request),
             )
             .route_layer(snapshot_rpc_middleware);
@@ -670,10 +854,19 @@ impl KNetworkServer {
                 .admin_port
                 .unwrap_or_else(|| query.inter_port.unwrap_or(query.port)),
             rpc_port: query.rpc_port.unwrap_or(query.port),
+            node_name: query.node_name.as_ref().and_then(|v| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }),
         };
         info!(
-            "KNetworkServer admin add-learner request: node_id={}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
+            "KNetworkServer admin add-learner request: node_id={}, node_name={:?}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
             query.node_id,
+            node.node_name.as_deref(),
             query.addr,
             query.port,
             node.inter_port,
@@ -954,7 +1147,50 @@ fn parse_voter_ids_csv(raw: &str) -> Result<Vec<KNodeId>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_voter_ids_csv;
+    use super::{
+        KClusterTransportModePlane, cluster_proxy_route, normalize_cluster_proxy_route_prefix,
+        parse_voter_ids_csv,
+    };
+
+    #[test]
+    fn test_cluster_proxy_route_builds_expected_paths() {
+        assert_eq!(
+            cluster_proxy_route(
+                "/.cluster/klog/",
+                KClusterTransportModePlane::Raft,
+                "/klog/vote",
+            )
+            .unwrap(),
+            "/.cluster/klog/{node_name}/raft/vote"
+        );
+        assert_eq!(
+            cluster_proxy_route(
+                ".cluster/klog",
+                KClusterTransportModePlane::InterNode,
+                "/klog/data/query",
+            )
+            .unwrap(),
+            "/.cluster/klog/{node_name}/inter/query"
+        );
+        assert_eq!(
+            cluster_proxy_route(
+                "/.cluster/klog",
+                KClusterTransportModePlane::Admin,
+                "/klog/admin/cluster-state",
+            )
+            .unwrap(),
+            "/.cluster/klog/{node_name}/admin/cluster-state"
+        );
+    }
+
+    #[test]
+    fn test_cluster_proxy_route_prefix_normalization() {
+        assert_eq!(
+            normalize_cluster_proxy_route_prefix(".cluster/klog/").unwrap(),
+            "/.cluster/klog"
+        );
+        assert_eq!(normalize_cluster_proxy_route_prefix("/").unwrap(), "/");
+    }
 
     #[test]
     fn test_parse_voter_ids_csv_ok() {

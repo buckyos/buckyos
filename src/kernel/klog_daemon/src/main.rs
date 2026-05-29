@@ -11,8 +11,8 @@ use buckyos_api::{
 };
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::{
-    BuckyosKlogConfig, KLogClusterConfigPatch, KLogNetworkConfigPatch, KLogRuntimeConfig,
-    KLogRuntimeConfigSource,
+    BuckyosKlogConfig, KLogClusterConfigPatch, KLogClusterNetworkConfigPatch,
+    KLogNetworkConfigPatch, KLogRuntimeConfig, KLogRuntimeConfigSource,
 };
 use klog::logs::RocksDbLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
@@ -21,6 +21,7 @@ use klog::state_machine::{KLogStateMachine, SnapshotManager};
 use klog::state_store::{
     KLogStateStore, KLogStateStoreManager, RocksDbSnapshotMode, RocksDbStateStore,
 };
+use klog::{KClusterTransportConfig, KClusterTransportMode};
 use lifecycle::run_server_lifecycle;
 use log::{error, info, warn};
 use logging::init_logging;
@@ -191,7 +192,24 @@ fn apply_buckyos_runtime_defaults(
         .advertise_admin_port
         .get_or_insert(KLOG_CLUSTER_ADMIN_PORT);
     network.rpc_advertise_port.get_or_insert(KLOG_SERVICE_PORT);
+    network
+        .advertise_node_name
+        .get_or_insert_with(|| node_name.to_string());
     network.enable_rpc_server.get_or_insert(true);
+
+    let default_transport = KClusterTransportConfig::default();
+    let cluster_network = patch
+        .cluster_network
+        .get_or_insert_with(KLogClusterNetworkConfigPatch::default);
+    cluster_network
+        .mode
+        .get_or_insert(KClusterTransportMode::GatewayProxy);
+    cluster_network
+        .gateway_addr
+        .get_or_insert(default_transport.gateway_addr);
+    cluster_network
+        .gateway_route_prefix
+        .get_or_insert(default_transport.gateway_route_prefix);
 
     let cluster = patch
         .cluster
@@ -294,6 +312,14 @@ async fn init_buckyos_runtime_if_needed(
         Some(runtime) => runtime,
         None => init_logged_in_buckyos_runtime().await?,
     };
+    validate_buckyos_cluster_transport_identity(
+        cfg.cluster_network.mode,
+        cfg.advertise_node_name.as_deref(),
+        runtime
+            .device_config
+            .as_ref()
+            .map(|device| device.name.as_str()),
+    )?;
     runtime.set_main_service_port(rpc_port).await;
 
     let runtime_data_dir = runtime.get_data_folder().map_err(|e| {
@@ -345,6 +371,48 @@ fn parse_port_from_addr(addr: &str) -> Option<u16> {
     port_str.parse::<u16>().ok()
 }
 
+fn validate_buckyos_cluster_transport_identity(
+    transport_mode: KClusterTransportMode,
+    advertise_node_name: Option<&str>,
+    runtime_node_name: Option<&str>,
+) -> Result<(), String> {
+    if transport_mode == KClusterTransportMode::Direct {
+        return Ok(());
+    }
+
+    let runtime_node_name = runtime_node_name.ok_or_else(|| {
+        let msg = format!(
+            "Missing BuckyOS runtime node identity for cluster_network.mode={}",
+            transport_mode
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    let advertise_node_name = advertise_node_name.ok_or_else(|| {
+        let msg = format!(
+            "Missing network.advertise_node_name (BuckyOS node name) for cluster_network.mode={} under BuckyOS runtime",
+            transport_mode
+        );
+        error!("{}", msg);
+        msg
+    })?;
+
+    if advertise_node_name != runtime_node_name {
+        let msg = format!(
+            "Invalid cluster transport identity: cluster_network.mode={}, advertise_node_name(BuckyOS node name)={} must equal runtime_node_name={}",
+            transport_mode, advertise_node_name, runtime_node_name
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    info!(
+        "Validated BuckyOS cluster transport identity: cluster_network.mode={}, advertise_node_name(BuckyOS node name)={}, runtime_node_name={}",
+        transport_mode, advertise_node_name, runtime_node_name
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +437,31 @@ mod tests {
         assert_eq!(parse_port_from_addr("localhost"), None);
         assert_eq!(parse_port_from_addr("localhost:not-a-port"), None);
     }
+
+    #[test]
+    fn validate_buckyos_cluster_transport_identity_direct_skips_check() {
+        validate_buckyos_cluster_transport_identity(KClusterTransportMode::Direct, None, None)
+            .expect("direct mode should skip node identity validation");
+    }
+
+    #[test]
+    fn validate_buckyos_cluster_transport_identity_non_direct_requires_match() {
+        validate_buckyos_cluster_transport_identity(
+            KClusterTransportMode::GatewayProxy,
+            Some("ood1"),
+            Some("ood1"),
+        )
+        .expect("matching advertise_node_name should be accepted");
+
+        let err = validate_buckyos_cluster_transport_identity(
+            KClusterTransportMode::Hybrid,
+            Some("ood2"),
+            Some("ood1"),
+        )
+        .expect_err("mismatched advertise_node_name should be rejected");
+        assert!(err.contains("advertise_node_name(BuckyOS node name)=ood2"));
+        assert!(err.contains("runtime_node_name=ood1"));
+    }
 }
 
 async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
@@ -381,7 +474,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
+        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, advertise_node_name(BuckyOS node name)={:?}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, cluster_network_mode={}, cluster_gateway_addr={}, cluster_gateway_route_prefix={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
         cfg.node_id,
         cfg.listen_addr,
         cfg.inter_node_listen_addr,
@@ -393,11 +486,15 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         cfg.advertise_inter_port,
         cfg.advertise_admin_port,
         cfg.rpc_advertise_port,
+        cfg.advertise_node_name.as_deref(),
         cfg.data_dir.display(),
         cfg.cluster_name,
         cfg.cluster_id,
         cfg.auto_bootstrap,
         cfg.state_store_sync_write,
+        cfg.cluster_network.mode,
+        cfg.cluster_network.gateway_addr,
+        cfg.cluster_network.gateway_route_prefix,
         cfg.join_targets,
         cfg.join_blocking,
         cfg.join_target_role,
@@ -494,11 +591,12 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         raft_config.election_timeout_max,
         raft_config.heartbeat_interval
     );
+    let cluster_transport = cfg.cluster_network.clone();
 
     let raft = openraft::Raft::new(
         cfg.node_id,
         Arc::new(raft_config),
-        KNetworkFactory::new(cfg.node_id),
+        KNetworkFactory::new(cfg.node_id, cluster_transport.clone()),
         log_storage,
         state_machine,
     )
@@ -515,6 +613,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         .with_admin_addr(cfg.admin_listen_addr.clone())
         .with_state_store_manager(state_store_manager.clone())
         .with_admin_local_only(cfg.admin_local_only)
+        .with_cluster_transport_config(cluster_transport.clone())
         .with_cluster_identity(cfg.cluster_name.clone(), cfg.cluster_id.clone());
     info!(
         "Starting network server: raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}",
@@ -528,7 +627,8 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         );
         Some(
             KRpcServer::new(cfg.rpc_listen_addr.clone(), raft, state_store_manager)
-                .with_policy(cfg.rpc.into()),
+                .with_policy(cfg.rpc.into())
+                .with_cluster_transport_config(cluster_transport),
         )
     } else {
         warn!("Client RPC server is disabled by config");
