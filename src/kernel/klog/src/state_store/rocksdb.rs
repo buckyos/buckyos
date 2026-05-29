@@ -233,7 +233,7 @@ fn decode_meta_entry_with_legacy(raw: &[u8]) -> KResult<KLogMetaEntry> {
         key: legacy.key,
         value: legacy.value,
         updated_at: legacy.updated_at,
-        updated_by: legacy.updated_by,
+        updated_by_node_name: legacy.updated_by.to_string(),
         revision: 1,
     })
 }

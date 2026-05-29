@@ -81,40 +81,40 @@ pub struct KLogClient {
     client: reqwest::Client,
     next_id: AtomicU64,
     timeout: Duration,
-    request_node_id: u64,
+    request_node_name: String,
 }
 
 impl KLogClient {
-    pub fn new(endpoint: impl Into<String>, request_node_id: u64) -> Self {
+    pub fn new(endpoint: impl Into<String>, request_node_name: impl Into<String>) -> Self {
         Self {
             endpoint: normalize_endpoint(endpoint.into()),
             client: reqwest::Client::new(),
             next_id: AtomicU64::new(1),
             timeout: DEFAULT_RPC_TIMEOUT,
-            request_node_id,
+            request_node_name: request_node_name.into(),
         }
     }
 
-    pub fn from_daemon_addr(addr: &str, request_node_id: u64) -> Self {
+    pub fn from_daemon_addr(addr: &str, request_node_name: impl Into<String>) -> Self {
         Self::new(
             format!("http://{}{}", addr, KLOG_JSON_RPC_PATH),
-            request_node_id,
+            request_node_name,
         )
     }
 
-    pub fn from_buckyos_service_addr(addr: &str, request_node_id: u64) -> Self {
+    pub fn from_buckyos_service_addr(addr: &str, request_node_name: impl Into<String>) -> Self {
         Self::new(
             format!("http://{}{}", addr, KLOG_JSON_RPC_SERVICE_PATH),
-            request_node_id,
+            request_node_name,
         )
     }
 
-    pub fn local_buckyos_service_default(request_node_id: u64) -> Self {
-        Self::from_buckyos_service_addr(DEFAULT_LOCAL_SERVICE_ADDR, request_node_id)
+    pub fn local_buckyos_service_default(request_node_name: impl Into<String>) -> Self {
+        Self::from_buckyos_service_addr(DEFAULT_LOCAL_SERVICE_ADDR, request_node_name)
     }
 
-    pub fn local_default(request_node_id: u64) -> Self {
-        Self::from_daemon_addr("127.0.0.1:4080", request_node_id)
+    pub fn local_default(request_node_name: impl Into<String>) -> Self {
+        Self::local_buckyos_service_default(request_node_name)
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -122,8 +122,8 @@ impl KLogClient {
         self
     }
 
-    pub fn generate_request_id(node_id: u64) -> String {
-        format!("{}-{}", node_id, Uuid::now_v7())
+    pub fn generate_request_id(node_name: &str) -> String {
+        format!("{}-{}", node_name, Uuid::now_v7())
     }
 
     pub async fn append_log(
@@ -150,7 +150,7 @@ impl KLogClient {
             .append_log(KLogAppendRequest {
                 message: message.into(),
                 timestamp: None,
-                node_id: None,
+                node_name: None,
                 level: None,
                 source: None,
                 attrs: None,
@@ -363,6 +363,13 @@ impl KLogClient {
     }
 
     fn fill_append_defaults(&self, mut req: KLogAppendRequest) -> KLogAppendRequest {
+        req.node_name = req
+            .node_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string())
+            .or_else(|| Some(self.request_node_name.clone()));
         let request_id = req
             .request_id
             .as_deref()
@@ -370,8 +377,11 @@ impl KLogClient {
             .filter(|v| !v.is_empty())
             .map(|v| v.to_string());
         req.request_id = Some(request_id.unwrap_or_else(|| {
-            let request_node_id = req.node_id.unwrap_or(self.request_node_id);
-            Self::generate_request_id(request_node_id)
+            let request_node_name = req
+                .node_name
+                .as_deref()
+                .unwrap_or(self.request_node_name.as_str());
+            Self::generate_request_id(request_node_name)
         }));
         req
     }
@@ -456,7 +466,12 @@ mod tests {
         }
 
         fn client(&self) -> KLogClient {
-            KLogClient::from_daemon_addr(&self.addr.to_string(), 9)
+            KLogClient::from_daemon_addr(&self.addr.to_string(), "node-9")
+                .with_timeout(Duration::from_secs(1))
+        }
+
+        fn service_client(&self) -> KLogClient {
+            KLogClient::from_buckyos_service_addr(&self.addr.to_string(), "node-9")
                 .with_timeout(Duration::from_secs(1))
         }
     }
@@ -479,7 +494,7 @@ mod tests {
 
     #[test]
     fn test_buckyos_service_endpoint_uses_kapi_route() {
-        let client = KLogClient::local_buckyos_service_default(9);
+        let client = KLogClient::local_buckyos_service_default("node-9");
         assert_eq!(
             client.endpoint,
             format!("http://127.0.0.1:4080{}", KLOG_JSON_RPC_SERVICE_PATH)
@@ -487,9 +502,9 @@ mod tests {
     }
 
     #[test]
-    fn test_local_default_uses_daemon_rpc_route() {
-        let client = KLogClient::local_default(9);
-        assert_eq!(client.endpoint, "http://127.0.0.1:4080/klog/rpc");
+    fn test_local_default_uses_buckyos_service_entry() {
+        let client = KLogClient::local_default("node-9");
+        assert_eq!(client.endpoint, "http://127.0.0.1:4080/kapi/klog-service");
     }
 
     #[tokio::test]
@@ -523,7 +538,7 @@ mod tests {
             .append_log(KLogAppendRequest {
                 message: "hello-klog".to_string(),
                 timestamp: Some(1000),
-                node_id: Some(1),
+                node_name: Some("node-1".to_string()),
                 level: None,
                 source: Some("kernel/kmsg".to_string()),
                 attrs: Some(attrs),
@@ -572,7 +587,7 @@ mod tests {
             .append_log_with_trace(KLogAppendRequest {
                 message: "hello-trace".to_string(),
                 timestamp: Some(1001),
-                node_id: Some(1),
+                node_name: Some("node-1".to_string()),
                 level: None,
                 source: None,
                 attrs: None,
@@ -586,7 +601,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_json_rpc_client_append_auto_request_id_uses_nodeid_uuid() -> anyhow::Result<()> {
+    async fn test_json_rpc_client_append_success_via_buckyos_service_path() -> anyhow::Result<()> {
+        let app = Router::new().route(
+            KLOG_JSON_RPC_SERVICE_PATH,
+            post(|Json(request): Json<KLogJsonRpcRequest>| async move {
+                assert_eq!(request.method, KLOG_RPC_METHOD_LOG_APPEND);
+                let response =
+                    KLogJsonRpcResponse::success(request.id, KLogAppendResponse { id: 52 });
+                (StatusCode::OK, Json(response))
+            }),
+        );
+
+        let Some(server) = TestJsonRpcServer::try_start(app).await? else {
+            return Ok(());
+        };
+        let client = server.service_client();
+        let resp = client
+            .append_log(KLogAppendRequest {
+                message: "hello-kapi".to_string(),
+                timestamp: Some(1002),
+                node_name: Some("node-1".to_string()),
+                level: None,
+                source: None,
+                attrs: None,
+                request_id: Some("req-kapi".to_string()),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("append via /kapi failed: {}", e))?;
+        assert_eq!(resp.id, 52);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_json_rpc_client_append_auto_request_id_uses_node_name_uuid() -> anyhow::Result<()>
+    {
         let app = Router::new().route(
             KLOG_JSON_RPC_PATH,
             post(|Json(request): Json<KLogJsonRpcRequest>| async move {
@@ -594,11 +642,15 @@ mod tests {
                 let params: KLogAppendRequest =
                     serde_json::from_value(request.params).expect("append params");
                 let request_id = params.request_id.expect("request_id should be auto-filled");
-                let (node_prefix, uuid_part) = request_id
-                    .split_once('-')
-                    .expect("request_id should be in nodeid-uuid format");
-                assert_eq!(node_prefix, "9");
+                let prefix = "node-9-";
+                assert!(
+                    request_id.starts_with(prefix),
+                    "request_id should use node-name prefix, got={}",
+                    request_id
+                );
+                let uuid_part = &request_id[prefix.len()..];
                 Uuid::parse_str(uuid_part).expect("uuid part should be valid");
+                assert_eq!(params.node_name.as_deref(), Some("node-9"));
 
                 let response =
                     KLogJsonRpcResponse::success(request.id, KLogAppendResponse { id: 43 });
@@ -614,7 +666,7 @@ mod tests {
             .append_log(KLogAppendRequest {
                 message: "auto-request-id".to_string(),
                 timestamp: Some(2000),
-                node_id: None,
+                node_name: None,
                 level: None,
                 source: None,
                 attrs: None,
@@ -642,7 +694,7 @@ mod tests {
                         items: vec![KLogEntry {
                             id: 7,
                             timestamp: 123,
-                            node_id: 1,
+                            node_name: "node-1".to_string(),
                             request_id: None,
                             level: Default::default(),
                             source: None,
@@ -708,7 +760,7 @@ mod tests {
                                     key: "cluster/config/epoch".to_string(),
                                     value: "42".to_string(),
                                     updated_at: 1234,
-                                    updated_by: 1,
+                                    updated_by_node_name: "node-1".to_string(),
                                     revision: 7,
                                 }],
                             },
@@ -727,7 +779,7 @@ mod tests {
                                     key: "cluster/config/epoch".to_string(),
                                     value: "42".to_string(),
                                     updated_at: 1234,
-                                    updated_by: 1,
+                                    updated_by_node_name: "node-1".to_string(),
                                     revision: 7,
                                 }),
                             },
@@ -754,6 +806,7 @@ mod tests {
             .put_meta(KLogMetaPutRequest {
                 key: "cluster/config/epoch".to_string(),
                 value: "42".to_string(),
+                node_name: None,
                 expected_revision: None,
             })
             .await

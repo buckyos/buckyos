@@ -7,8 +7,11 @@ use klog::rpc::KLogClient;
 use std::time::Duration;
 
 fn client_for_rpc_port(rpc_port: u16, node_id: u64) -> KLogClient {
-    KLogClient::from_daemon_addr(format!("127.0.0.1:{}", rpc_port).as_str(), node_id)
-        .with_timeout(Duration::from_secs(3))
+    KLogClient::from_daemon_addr(
+        format!("127.0.0.1:{}", rpc_port).as_str(),
+        format!("node-{}", node_id),
+    )
+    .with_timeout(Duration::from_secs(3))
 }
 
 #[tokio::test]
@@ -44,6 +47,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v1".to_string(),
+                node_name: None,
                 expected_revision: Some(0),
             })
             .await
@@ -59,6 +63,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v-create-conflict".to_string(),
+                node_name: None,
                 expected_revision: Some(0),
             })
             .await
@@ -75,6 +80,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v2".to_string(),
+                node_name: None,
                 expected_revision: Some(1),
             })
             .await
@@ -90,6 +96,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v-stale".to_string(),
+                node_name: None,
                 expected_revision: Some(1),
             })
             .await
@@ -106,6 +113,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v3-non-cas".to_string(),
+                node_name: None,
                 expected_revision: None,
             })
             .await
@@ -175,6 +183,7 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "before-failover".to_string(),
+                node_name: None,
                 expected_revision: Some(0),
             })
             .await
@@ -234,6 +243,7 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "after-failover".to_string(),
+                node_name: None,
                 expected_revision: Some(1),
             })
             .await
