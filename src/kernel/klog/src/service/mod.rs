@@ -26,6 +26,27 @@ pub const META_QUERY_MAX_LIMIT: usize = 2_000;
 pub const META_RW_MAX_FORWARD_HOPS: u32 = 2;
 pub type KServiceResult<T> = Result<T, KLogServiceError>;
 
+fn normalize_node_name(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+}
+
+fn resolve_local_node_name(
+    metrics: &openraft::RaftMetrics<crate::KNodeId, crate::KNode>,
+) -> String {
+    metrics
+        .membership_config
+        .nodes()
+        .find_map(|(id, node)| {
+            (*id == metrics.id)
+                .then(|| normalize_node_name(node.node_name.as_deref()))
+                .flatten()
+        })
+        .unwrap_or_else(|| format!("raft-node-{}", metrics.id))
+}
+
 #[derive(Clone)]
 pub struct KLogWriteService {
     service_name: &'static str,
@@ -159,6 +180,7 @@ impl KLogWriteService {
 
         let metrics = self.raft.metrics().borrow().clone();
         let local_node_id = metrics.id;
+        let local_node_name = resolve_local_node_name(&metrics);
         let level = req.level.unwrap_or(KLogLevel::Info);
         let source = req
             .source
@@ -167,10 +189,12 @@ impl KLogWriteService {
             .filter(|v| !v.is_empty())
             .map(|v| v.to_string());
         let attrs = req.attrs.unwrap_or_default();
+        let origin_node_name = normalize_node_name(req.node_name.as_deref())
+            .unwrap_or_else(|| local_node_name.clone());
         let req = KLogAppendRequest {
             message: req.message,
             timestamp: req.timestamp.or_else(|| Some(now_millis())),
-            node_id: req.node_id.or(Some(local_node_id)),
+            node_name: Some(origin_node_name.clone()),
             level: Some(level),
             source: source.clone(),
             attrs: Some(attrs.clone()),
@@ -180,7 +204,7 @@ impl KLogWriteService {
         let item = self.state_store_manager.prepare_append_entry(KLogEntry {
             id: 0,
             timestamp: req.timestamp.unwrap_or(0),
-            node_id: req.node_id.unwrap_or(local_node_id),
+            node_name: origin_node_name.clone(),
             request_id,
             level,
             source,
@@ -190,18 +214,19 @@ impl KLogWriteService {
         let requested_id = item.id;
 
         info!(
-            "{} data append request: trace_id={}, id={}, request_id={:?}, timestamp={}, node_id={}, level={:?}, source={:?}, attrs_len={}, msg_len={}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
+            "{} data append request: trace_id={}, id={}, request_id={:?}, timestamp={}, node_name={}, level={:?}, source={:?}, attrs_len={}, msg_len={}, local_raft_node_id={}, local_node_name={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
             self.service_name,
             trace_id,
             item.id,
             item.request_id.as_deref(),
             item.timestamp,
-            item.node_id,
+            item.node_name,
             item.level,
             item.source.as_deref(),
             item.attrs.len(),
             item.message.len(),
             local_node_id,
+            local_node_name,
             metrics.current_leader,
             forward_hops,
             forwarded_by
@@ -434,25 +459,29 @@ impl KLogWriteService {
 
         let metrics = self.raft.metrics().borrow().clone();
         let local_node_id = metrics.id;
+        let local_node_name = resolve_local_node_name(&metrics);
         let expected_revision = req.expected_revision;
+        let origin_node_name = normalize_node_name(req.node_name.as_deref())
+            .unwrap_or_else(|| local_node_name.clone());
         let item = KLogMetaEntry {
             key: key.clone(),
             value: req.value.clone(),
             // Meta write audit fields are owned by the raft service, not client input.
             updated_at: now_millis(),
-            updated_by: local_node_id,
+            updated_by_node_name: origin_node_name.clone(),
             revision: 0,
         };
         info!(
-            "{} meta put request: trace_id={}, key={}, value_len={}, updated_at={}, updated_by={}, expected_revision={:?}, local_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
+            "{} meta put request: trace_id={}, key={}, value_len={}, updated_at={}, updated_by_node_name={}, expected_revision={:?}, local_raft_node_id={}, local_node_name={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
             self.service_name,
             trace_id,
             item.key,
             item.value.len(),
             item.updated_at,
-            item.updated_by,
+            item.updated_by_node_name,
             expected_revision,
             local_node_id,
+            local_node_name,
             metrics.current_leader,
             forward_hops,
             forwarded_by
@@ -583,6 +612,7 @@ impl KLogWriteService {
                             &KLogMetaPutRequest {
                                 key: key.clone(),
                                 value: req.value,
+                                node_name: Some(origin_node_name.clone()),
                                 expected_revision: req.expected_revision,
                             },
                             target_hops,

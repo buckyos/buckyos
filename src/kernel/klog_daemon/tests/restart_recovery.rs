@@ -7,8 +7,11 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 fn rpc_client(rpc_port: u16, request_node_id: u64) -> KLogClient {
-    KLogClient::from_daemon_addr(format!("127.0.0.1:{}", rpc_port).as_str(), request_node_id)
-        .with_timeout(Duration::from_secs(3))
+    KLogClient::from_daemon_addr(
+        format!("127.0.0.1:{}", rpc_port).as_str(),
+        format!("node-{}", request_node_id),
+    )
+    .with_timeout(Duration::from_secs(3))
 }
 
 fn find_node_index(nodes: &[TestNode], node_id: u64) -> Result<usize, String> {
@@ -73,6 +76,7 @@ async fn test_three_voter_full_restart_recovers_membership_leader_and_writes() -
             .put_meta(KLogMetaPutRequest {
                 key: meta_key.clone(),
                 value: "before-restart".to_string(),
+                node_name: None,
                 expected_revision: Some(0),
             })
             .await
@@ -185,6 +189,7 @@ async fn test_three_voter_full_restart_recovers_membership_leader_and_writes() -
             .put_meta(KLogMetaPutRequest {
                 key: meta_key.clone(),
                 value: "after-restart".to_string(),
+                node_name: None,
                 expected_revision: Some(1),
             })
             .await

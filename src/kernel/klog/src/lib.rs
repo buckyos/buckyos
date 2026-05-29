@@ -44,7 +44,7 @@ pub enum KLogLevel {
 pub struct KLogEntry {
     pub id: u64, // The unique ID of the log entry
     pub timestamp: u64,
-    pub node_id: u64, // The ID of the node that created the log entry
+    pub node_name: String, // The BuckyOS node name that created the log entry
     #[serde(default)]
     pub request_id: Option<String>, // Optional idempotency key for dedup.
     #[serde(default)]
@@ -61,7 +61,7 @@ pub struct KLogMetaEntry {
     pub key: String,
     pub value: String,
     pub updated_at: u64,
-    pub updated_by: KNodeId,
+    pub updated_by_node_name: String,
     #[serde(default)]
     pub revision: u64,
 }
