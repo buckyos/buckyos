@@ -16,6 +16,9 @@ pub const ENV_INTER_NODE_LISTEN_ADDR: &str = "KLOG_INTER_NODE_LISTEN_ADDR";
 /// Environment variable key: advertised host/IP for cluster peers.
 pub const ENV_ADVERTISE_ADDR: &str = "KLOG_ADVERTISE_ADDR";
 
+/// Environment variable key: advertised stable node name for gateway/proxy routing.
+pub const ENV_ADVERTISE_NODE_NAME: &str = "KLOG_ADVERTISE_NODE_NAME";
+
 /// Environment variable key: advertised raft protocol port.
 pub const ENV_ADVERTISE_PORT: &str = "KLOG_ADVERTISE_PORT";
 
@@ -48,6 +51,15 @@ pub const ENV_AUTO_BOOTSTRAP: &str = "KLOG_AUTO_BOOTSTRAP";
 
 /// Environment variable key: fsync/sync-write for state store.
 pub const ENV_STATE_STORE_SYNC_WRITE: &str = "KLOG_STATE_STORE_SYNC_WRITE";
+
+/// Environment variable key: cluster internal transport mode.
+pub const ENV_CLUSTER_NETWORK_MODE: &str = "KLOG_CLUSTER_NETWORK_MODE";
+
+/// Environment variable key: node-gateway or local proxy address for cluster transport.
+pub const ENV_CLUSTER_GATEWAY_ADDR: &str = "KLOG_CLUSTER_GATEWAY_ADDR";
+
+/// Environment variable key: gateway route prefix for cluster transport proxying.
+pub const ENV_CLUSTER_GATEWAY_ROUTE_PREFIX: &str = "KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX";
 
 /// Environment variable key: comma-separated join targets (admin endpoint host:port).
 pub const ENV_JOIN_TARGETS: &str = "KLOG_JOIN_TARGETS";
@@ -184,6 +196,15 @@ pub const DEFAULT_AUTO_BOOTSTRAP: bool = false;
 
 /// Default switch: enable state-store sync write for durability.
 pub const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
+
+/// Default cluster internal transport mode.
+pub const DEFAULT_CLUSTER_NETWORK_MODE: &str = "direct";
+
+/// Default local gateway address for proxy/hybrid cluster transport.
+pub const DEFAULT_CLUSTER_GATEWAY_ADDR: &str = "127.0.0.1:3180";
+
+/// Default route prefix used by cluster transport proxy mode.
+pub const DEFAULT_CLUSTER_GATEWAY_ROUTE_PREFIX: &str = "/.cluster/klog";
 
 /// Default add-learner request mode, non-blocking.
 pub const DEFAULT_JOIN_BLOCKING: bool = false;

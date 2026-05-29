@@ -106,6 +106,58 @@ pub enum KLogResponse {
 
 pub type KNodeId = u64;
 
+/// Selects how cluster-internal traffic reaches a specific peer node.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KClusterTransportMode {
+    #[default]
+    Direct,
+    GatewayProxy,
+    Hybrid,
+}
+
+impl KClusterTransportMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KClusterTransportMode::Direct => "direct",
+            KClusterTransportMode::GatewayProxy => "gateway_proxy",
+            KClusterTransportMode::Hybrid => "hybrid",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "direct" => Ok(KClusterTransportMode::Direct),
+            "gateway_proxy" => Ok(KClusterTransportMode::GatewayProxy),
+            "hybrid" => Ok(KClusterTransportMode::Hybrid),
+            _ => Err("expected direct, gateway_proxy or hybrid".to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for KClusterTransportMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KClusterTransportConfig {
+    pub mode: KClusterTransportMode,
+    pub gateway_addr: String,
+    pub gateway_route_prefix: String,
+}
+
+impl Default for KClusterTransportConfig {
+    fn default() -> Self {
+        Self {
+            mode: KClusterTransportMode::Direct,
+            gateway_addr: "127.0.0.1:3180".to_string(),
+            gateway_route_prefix: "/.cluster/klog".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KNode {
     pub id: KNodeId,
@@ -121,6 +173,9 @@ pub struct KNode {
     /// Client-facing json-rpc port.
     #[serde(default)]
     pub rpc_port: u16,
+    /// Stable BuckyOS node name used by gateway/proxy cluster routing.
+    #[serde(default)]
+    pub node_name: Option<String>,
 }
 
 declare_raft_types!(

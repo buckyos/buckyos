@@ -60,8 +60,9 @@ fn test_client(server: &TestHttpServer) -> KNetworkClient {
         inter_port: server.addr.port(),
         admin_port: server.addr.port(),
         rpc_port: server.addr.port(),
+        node_name: None,
     };
-    KNetworkClient::new(1, 2, node)
+    KNetworkClient::new(1, 2, node, Default::default())
 }
 
 fn vote_request() -> VoteRequest<KNodeId> {
