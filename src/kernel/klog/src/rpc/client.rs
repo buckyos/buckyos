@@ -1,7 +1,7 @@
 use super::{
-    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_METHOD_LOG_APPEND,
-    KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
-    KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
+    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_JSON_RPC_VERSION,
+    KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE,
+    KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
 };
 use crate::KNode;
 use crate::error::{
@@ -20,6 +20,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_LOCAL_SERVICE_ADDR: &str = "127.0.0.1:4080";
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error(
@@ -101,8 +102,19 @@ impl KLogClient {
         )
     }
 
+    pub fn from_buckyos_service_addr(addr: &str, request_node_id: u64) -> Self {
+        Self::new(
+            format!("http://{}{}", addr, KLOG_JSON_RPC_SERVICE_PATH),
+            request_node_id,
+        )
+    }
+
+    pub fn local_buckyos_service_default(request_node_id: u64) -> Self {
+        Self::from_buckyos_service_addr(DEFAULT_LOCAL_SERVICE_ADDR, request_node_id)
+    }
+
     pub fn local_default(request_node_id: u64) -> Self {
-        Self::from_daemon_addr("127.0.0.1:21101", request_node_id)
+        Self::from_daemon_addr("127.0.0.1:4080", request_node_id)
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -393,9 +405,10 @@ mod tests {
         KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
     };
     use crate::rpc::{
-        KLOG_JSON_RPC_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND, KLOG_RPC_METHOD_LOG_APPEND,
-        KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
-        KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
+        KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND,
+        KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE,
+        KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest,
+        KLogJsonRpcResponse,
     };
     use axum::Router;
     use axum::extract::Json;
@@ -462,6 +475,21 @@ mod tests {
             normalize_endpoint(format!("127.0.0.1:21001{}", KLOG_JSON_RPC_PATH)),
             "http://127.0.0.1:21001/klog/rpc"
         );
+    }
+
+    #[test]
+    fn test_buckyos_service_endpoint_uses_kapi_route() {
+        let client = KLogClient::local_buckyos_service_default(9);
+        assert_eq!(
+            client.endpoint,
+            format!("http://127.0.0.1:4080{}", KLOG_JSON_RPC_SERVICE_PATH)
+        );
+    }
+
+    #[test]
+    fn test_local_default_uses_daemon_rpc_route() {
+        let client = KLogClient::local_default(9);
+        assert_eq!(client.endpoint, "http://127.0.0.1:4080/klog/rpc");
     }
 
     #[tokio::test]

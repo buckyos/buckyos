@@ -4,8 +4,16 @@ mod constants;
 mod lifecycle;
 mod logging;
 
+use buckyos_api::{
+    BuckyOSRuntime, BuckyOSRuntimeType, KLOG_CLUSTER_ADMIN_PORT, KLOG_CLUSTER_INTER_PORT,
+    KLOG_CLUSTER_RAFT_PORT, KLOG_SERVICE_PORT, KLOG_SERVICE_UNIQUE_ID, get_session_token_env_key,
+    init_buckyos_api_runtime, set_buckyos_api_runtime,
+};
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
-use config::KLogRuntimeConfig;
+use config::{
+    BuckyosKlogConfig, KLogClusterConfigPatch, KLogNetworkConfigPatch, KLogRuntimeConfig,
+    KLogRuntimeConfigSource,
+};
 use klog::logs::RocksDbLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
 use klog::rpc::KRpcServer;
@@ -16,13 +24,14 @@ use klog::state_store::{
 use lifecycle::run_server_lifecycle;
 use log::{error, info, warn};
 use logging::init_logging;
+use std::env;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
     init_logging();
 
-    let (cfg, source) = match KLogRuntimeConfig::load() {
+    let (mut cfg, source, runtime) = match load_runtime_config().await {
         Ok(result) => result,
         Err(e) => {
             error!("Failed to load runtime config: {}", e);
@@ -31,9 +40,334 @@ async fn main() {
     };
     info!("klog runtime config source: {}", source);
 
+    if let Err(e) = init_buckyos_runtime_if_needed(&mut cfg, runtime).await {
+        error!("Failed to initialize BuckyOS runtime integration: {}", e);
+        std::process::exit(1);
+    }
+
     if let Err(e) = run(cfg).await {
         error!("klog startup failed: {}", e);
         std::process::exit(1);
+    }
+}
+
+async fn load_runtime_config() -> Result<
+    (
+        KLogRuntimeConfig,
+        KLogRuntimeConfigSource,
+        Option<BuckyOSRuntime>,
+    ),
+    String,
+> {
+    match KLogRuntimeConfig::load() {
+        Ok((cfg, source)) => Ok((cfg, source, None)),
+        Err(err) => {
+            let session_token_env_key = get_session_token_env_key(KLOG_SERVICE_UNIQUE_ID, false);
+            if env::var_os(&session_token_env_key).is_none() || is_explicit_klog_config_requested()
+            {
+                return Err(err);
+            }
+
+            warn!(
+                "Klog explicit env/file config is absent under BuckyOS runtime; fallback to services/{}/settings and runtime identity after load failure: {}",
+                KLOG_SERVICE_UNIQUE_ID, err
+            );
+            let runtime = init_logged_in_buckyos_runtime().await?;
+            let (cfg, source) = load_runtime_config_from_buckyos(&runtime).await?;
+            Ok((cfg, source, Some(runtime)))
+        }
+    }
+}
+
+fn is_explicit_klog_config_requested() -> bool {
+    let session_token_env_key = get_session_token_env_key(KLOG_SERVICE_UNIQUE_ID, false);
+    env::vars_os().any(|(key, _)| {
+        let key = key.to_string_lossy();
+        key.starts_with("KLOG_") && key.as_ref() != session_token_env_key
+    })
+}
+
+async fn init_logged_in_buckyos_runtime() -> Result<BuckyOSRuntime, String> {
+    let mut runtime = init_buckyos_api_runtime(
+        KLOG_SERVICE_UNIQUE_ID,
+        None,
+        BuckyOSRuntimeType::KernelService,
+    )
+    .await
+    .map_err(|e| {
+        let msg = format!(
+            "Failed to initialize BuckyOS runtime for {}: {}",
+            KLOG_SERVICE_UNIQUE_ID, e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    runtime.login().await.map_err(|e| {
+        let msg = format!(
+            "Failed to login BuckyOS runtime for {}: {}",
+            KLOG_SERVICE_UNIQUE_ID, e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    Ok(runtime)
+}
+
+async fn load_runtime_config_from_buckyos(
+    runtime: &BuckyOSRuntime,
+) -> Result<(KLogRuntimeConfig, KLogRuntimeConfigSource), String> {
+    let mut patch = match runtime.get_my_settings().await {
+        Ok(settings) => serde_json::from_value::<BuckyosKlogConfig>(settings).map_err(|e| {
+            format!(
+                "Failed to parse services/{}/settings as klog runtime patch: {}",
+                KLOG_SERVICE_UNIQUE_ID, e
+            )
+        })?,
+        Err(err) => {
+            warn!(
+                "services/{}/settings is unavailable; use runtime-derived klog defaults: {}",
+                KLOG_SERVICE_UNIQUE_ID, err
+            );
+            BuckyosKlogConfig::default()
+        }
+    };
+    apply_buckyos_runtime_defaults(&mut patch, runtime)?;
+    KLogRuntimeConfig::load_from_buckyos(&patch)
+}
+
+fn apply_buckyos_runtime_defaults(
+    patch: &mut BuckyosKlogConfig,
+    runtime: &BuckyOSRuntime,
+) -> Result<(), String> {
+    let device = runtime.device_config.as_ref().ok_or_else(|| {
+        format!(
+            "Missing device_config while deriving BuckyOS runtime config for {}",
+            KLOG_SERVICE_UNIQUE_ID
+        )
+    })?;
+    let node_name = device.name.trim();
+    if node_name.is_empty() {
+        return Err(format!(
+            "Missing runtime device name while deriving BuckyOS runtime config for {}",
+            KLOG_SERVICE_UNIQUE_ID
+        ));
+    }
+
+    let zone_host = runtime.zone_id.to_host_name();
+    if zone_host.trim().is_empty() {
+        return Err(format!(
+            "Missing zone host name while deriving BuckyOS runtime config for {}",
+            KLOG_SERVICE_UNIQUE_ID
+        ));
+    }
+
+    if patch.node_id.is_none() {
+        patch.node_id = Some(derive_buckyos_raft_node_id(runtime, node_name)?);
+    }
+
+    let network = patch
+        .network
+        .get_or_insert_with(KLogNetworkConfigPatch::default);
+    network
+        .listen_addr
+        .get_or_insert_with(|| format!("0.0.0.0:{}", KLOG_CLUSTER_RAFT_PORT));
+    network
+        .inter_node_listen_addr
+        .get_or_insert_with(|| format!("0.0.0.0:{}", KLOG_CLUSTER_INTER_PORT));
+    network
+        .admin_listen_addr
+        .get_or_insert_with(|| format!("127.0.0.1:{}", KLOG_CLUSTER_ADMIN_PORT));
+    network
+        .rpc_listen_addr
+        .get_or_insert_with(|| format!("127.0.0.1:{}", KLOG_SERVICE_PORT));
+    network
+        .advertise_addr
+        .get_or_insert_with(|| "127.0.0.1".to_string());
+    network.advertise_port.get_or_insert(KLOG_CLUSTER_RAFT_PORT);
+    network
+        .advertise_inter_port
+        .get_or_insert(KLOG_CLUSTER_INTER_PORT);
+    network
+        .advertise_admin_port
+        .get_or_insert(KLOG_CLUSTER_ADMIN_PORT);
+    network.rpc_advertise_port.get_or_insert(KLOG_SERVICE_PORT);
+    network.enable_rpc_server.get_or_insert(true);
+
+    let cluster = patch
+        .cluster
+        .get_or_insert_with(KLogClusterConfigPatch::default);
+    cluster.name.get_or_insert_with(|| zone_host.clone());
+    cluster.id.get_or_insert(zone_host);
+    cluster
+        .auto_bootstrap
+        .get_or_insert_with(|| derive_buckyos_auto_bootstrap(runtime, node_name));
+
+    Ok(())
+}
+
+fn derive_buckyos_raft_node_id(runtime: &BuckyOSRuntime, node_name: &str) -> Result<u64, String> {
+    if let Some(zone_config) = runtime.zone_config.as_ref() {
+        if let Some(index) = zone_config
+            .oods
+            .iter()
+            .position(|ood| ood.name == node_name)
+        {
+            return Ok((index + 1) as u64);
+        }
+    }
+
+    derive_raft_node_id_from_node_name(node_name)
+}
+
+fn derive_buckyos_auto_bootstrap(runtime: &BuckyOSRuntime, node_name: &str) -> bool {
+    runtime
+        .zone_config
+        .as_ref()
+        .and_then(|zone_config| zone_config.oods.first())
+        .map(|ood| ood.name.as_str() == node_name)
+        .unwrap_or(true)
+}
+
+fn derive_raft_node_id_from_node_name(node_name: &str) -> Result<u64, String> {
+    let digits = node_name
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    if digits.is_empty() {
+        return Err(format!(
+            "Failed to derive raft node_id from BuckyOS node name '{}': missing numeric suffix and zone_config ordering",
+            node_name
+        ));
+    }
+
+    let node_id = digits.parse::<u64>().map_err(|e| {
+        format!(
+            "Failed to parse raft node_id from BuckyOS node name '{}': {}",
+            node_name, e
+        )
+    })?;
+    if node_id == 0 {
+        return Err(format!(
+            "Invalid derived raft node_id=0 from BuckyOS node name '{}'",
+            node_name
+        ));
+    }
+    Ok(node_id)
+}
+
+async fn init_buckyos_runtime_if_needed(
+    cfg: &mut KLogRuntimeConfig,
+    runtime: Option<BuckyOSRuntime>,
+) -> Result<(), String> {
+    let session_token_env_key = get_session_token_env_key(KLOG_SERVICE_UNIQUE_ID, false);
+    if env::var_os(&session_token_env_key).is_none() {
+        info!(
+            "BuckyOS runtime integration disabled because env {} is not set; running in standalone mode",
+            session_token_env_key
+        );
+        return Ok(());
+    }
+
+    if !cfg.enable_rpc_server {
+        let msg = format!(
+            "Invalid config for BuckyOS runtime: enable_rpc_server=false is not allowed when {} is set",
+            session_token_env_key
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    let rpc_port = parse_port_from_addr(&cfg.rpc_listen_addr).ok_or_else(|| {
+        let msg = format!(
+            "Invalid rpc_listen_addr for BuckyOS runtime integration: {}",
+            cfg.rpc_listen_addr
+        );
+        error!("{}", msg);
+        msg
+    })?;
+
+    let runtime = match runtime {
+        Some(runtime) => runtime,
+        None => init_logged_in_buckyos_runtime().await?,
+    };
+    runtime.set_main_service_port(rpc_port).await;
+
+    let runtime_data_dir = runtime.get_data_folder().map_err(|e| {
+        let msg = format!(
+            "Failed to resolve BuckyOS data dir for {}: {}",
+            KLOG_SERVICE_UNIQUE_ID, e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+
+    if cfg.data_dir != runtime_data_dir {
+        info!(
+            "Overriding klog data dir with BuckyOS runtime data dir: old={}, new={}",
+            cfg.data_dir.display(),
+            runtime_data_dir.display()
+        );
+        cfg.data_dir = runtime_data_dir;
+    }
+
+    set_buckyos_api_runtime(runtime).map_err(|e| {
+        let msg = format!(
+            "Failed to register BuckyOS runtime for {}: {}",
+            KLOG_SERVICE_UNIQUE_ID, e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+
+    info!(
+        "BuckyOS runtime integration enabled: service_name={}, service_port={}, data_dir={}",
+        KLOG_SERVICE_UNIQUE_ID,
+        rpc_port,
+        cfg.data_dir.display()
+    );
+
+    if rpc_port != KLOG_SERVICE_PORT {
+        warn!(
+            "klog-service is running with a non-default rpc port: configured={}, default={}",
+            rpc_port, KLOG_SERVICE_PORT
+        );
+    }
+
+    Ok(())
+}
+
+fn parse_port_from_addr(addr: &str) -> Option<u16> {
+    let (_, port_str) = addr.rsplit_once(':')?;
+    port_str.parse::<u16>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_raft_node_id_from_numeric_suffix() {
+        assert_eq!(derive_raft_node_id_from_node_name("ood1").unwrap(), 1);
+        assert_eq!(derive_raft_node_id_from_node_name("node42").unwrap(), 42);
+        assert_eq!(derive_raft_node_id_from_node_name("dev-003").unwrap(), 3);
+    }
+
+    #[test]
+    fn reject_missing_or_zero_raft_node_id_suffix() {
+        assert!(derive_raft_node_id_from_node_name("ood").is_err());
+        assert!(derive_raft_node_id_from_node_name("ood0").is_err());
+    }
+
+    #[test]
+    fn parse_port_from_host_port_addr() {
+        assert_eq!(parse_port_from_addr("127.0.0.1:4080"), Some(4080));
+        assert_eq!(parse_port_from_addr("0.0.0.0:21001"), Some(21001));
+        assert_eq!(parse_port_from_addr("localhost"), None);
+        assert_eq!(parse_port_from_addr("localhost:not-a-port"), None);
     }
 }
 

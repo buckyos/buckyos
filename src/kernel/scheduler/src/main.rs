@@ -115,6 +115,8 @@ async fn create_init_list_by_template(
         .await?
         .add_kmsg()
         .await?
+        .add_klog()
+        .await?
         .add_repo_service()
         .await?
         .add_aicc(&start_config)
@@ -388,6 +390,7 @@ mod test {
         assert!(init_map.contains_key("services/scheduler/spec"));
         assert!(init_map.contains_key("services/task-manager/spec"));
         assert!(init_map.contains_key("services/kmsg/spec"));
+        assert!(init_map.contains_key("services/klog-service/spec"));
         assert!(init_map.contains_key("services/repo-service/spec"));
         assert!(init_map.contains_key("services/repo-service/settings"));
         assert!(init_map.contains_key("services/repo-service/pkg_list"));
@@ -413,6 +416,42 @@ mod test {
             .schedule_snapshot
             .service_infos
             .contains_key("scheduler"));
+        let klog_spec = schedule_plan
+            .schedule_snapshot
+            .specs
+            .get(KLOG_SERVICE_UNIQUE_ID)
+            .expect("klog-service spec should be scheduled");
+        assert_eq!(
+            klog_spec.service_ports_config.get("www"),
+            Some(&KLOG_SERVICE_PORT)
+        );
+        assert_eq!(
+            klog_spec
+                .service_ports_config
+                .get(KLOG_CLUSTER_RAFT_SERVICE_NAME),
+            Some(&KLOG_CLUSTER_RAFT_PORT)
+        );
+        assert_eq!(
+            klog_spec
+                .service_ports_config
+                .get(KLOG_CLUSTER_INTER_SERVICE_NAME),
+            Some(&KLOG_CLUSTER_INTER_PORT)
+        );
+        assert_eq!(
+            klog_spec
+                .service_ports_config
+                .get(KLOG_CLUSTER_ADMIN_SERVICE_NAME),
+            Some(&KLOG_CLUSTER_ADMIN_PORT)
+        );
+        let workflow_spec = schedule_plan
+            .schedule_snapshot
+            .specs
+            .get(WORKFLOW_SERVICE_UNIQUE_ID)
+            .expect("workflow spec should be scheduled");
+        assert_ne!(
+            klog_spec.service_ports_config.get("www"),
+            workflow_spec.service_ports_config.get("www")
+        );
         unsafe {
             std::env::remove_var("BUCKYOS_ROOT");
         }
@@ -565,6 +604,7 @@ g, system-config, kernel
 g, verify-hub, kernel
 g, task-manager, kernel
 g, kmsg, kernel
+g, klog-service, kernel
 g, repo-service, kernel
 g, aicc, kernel
 g, msg-center, kernel
