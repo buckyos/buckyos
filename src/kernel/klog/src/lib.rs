@@ -66,6 +66,59 @@ pub struct KLogMetaEntry {
     pub revision: u64,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct KLogMetaTxGuard {
+    pub key: String,
+    pub expected_revision: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum KLogMetaTxAction {
+    Put {
+        item: KLogMetaEntry,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<u64>,
+    },
+    Delete {
+        key: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<u64>,
+    },
+}
+
+impl KLogMetaTxAction {
+    pub fn key(&self) -> &str {
+        match self {
+            KLogMetaTxAction::Put { item, .. } => item.key.as_str(),
+            KLogMetaTxAction::Delete { key, .. } => key.as_str(),
+        }
+    }
+
+    pub fn expected_revision(&self) -> Option<u64> {
+        match self {
+            KLogMetaTxAction::Put {
+                expected_revision, ..
+            } => *expected_revision,
+            KLogMetaTxAction::Delete {
+                expected_revision, ..
+            } => *expected_revision,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct KLogMetaTxRequest {
+    pub actions: BTreeMap<String, KLogMetaTxAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<KLogMetaTxGuard>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct KLogMetaTxResponse {
+    pub revisions: BTreeMap<String, Option<u64>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KLogRequest {
     AppendLog {
@@ -77,6 +130,9 @@ pub enum KLogRequest {
     },
     DeleteMeta {
         key: String,
+    },
+    ExecMetaTx {
+        tx: KLogMetaTxRequest,
     },
 }
 
@@ -100,6 +156,14 @@ pub enum KLogResponse {
         key: String,
         existed: bool,
         prev_meta: Option<KLogMetaEntry>,
+    },
+    MetaTxOk {
+        revisions: BTreeMap<String, Option<u64>>,
+    },
+    MetaTxConflict {
+        key: String,
+        expected_revision: u64,
+        current_revision: Option<u64>,
     },
     Err(String),
 }

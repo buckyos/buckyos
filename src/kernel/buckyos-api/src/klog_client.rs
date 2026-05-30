@@ -7,7 +7,10 @@ pub use ::klog::network::{
 };
 use ::klog::rpc::KLogClient as KLogRpcClient;
 pub use ::klog::rpc::{KLogCallTrace, KLogClientError};
-pub use ::klog::{KLogEntry, KLogLevel, KLogMetaEntry, KNode, KNodeId};
+pub use ::klog::{
+    KLogEntry, KLogLevel, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxGuard, KLogMetaTxRequest,
+    KLogMetaTxResponse, KNode, KNodeId,
+};
 use name_lib::DID;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -191,6 +194,20 @@ impl KLogClient {
         req: KLogMetaDeleteRequest,
     ) -> Result<(KLogMetaDeleteResponse, KLogCallTrace), KLogClientError> {
         self.inner.delete_meta_with_trace(req).await
+    }
+
+    pub async fn exec_meta_tx(
+        &self,
+        req: KLogMetaTxRequest,
+    ) -> Result<KLogMetaTxResponse, KLogClientError> {
+        self.inner.exec_meta_tx(req).await
+    }
+
+    pub async fn exec_meta_tx_with_trace(
+        &self,
+        req: KLogMetaTxRequest,
+    ) -> Result<(KLogMetaTxResponse, KLogCallTrace), KLogClientError> {
+        self.inner.exec_meta_tx_with_trace(req).await
     }
 
     pub async fn query_meta(

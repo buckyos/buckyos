@@ -5,7 +5,10 @@ use super::request::{
     KLogQueryRequest, KLogQueryResponse, RaftRequest, RaftResponse,
 };
 use crate::error::{KLogErrorCode, KLogServiceError, parse_error_envelope_json};
-use crate::{KClusterTransportConfig, KClusterTransportMode, KNode, KNodeId, KTypeConfig};
+use crate::{
+    KClusterTransportConfig, KClusterTransportMode, KLogMetaTxRequest, KLogMetaTxResponse, KNode,
+    KNodeId, KTypeConfig,
+};
 use openraft::error::{
     InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Timeout, Unreachable,
 };
@@ -563,6 +566,80 @@ impl KDataClient {
                     trace_id.to_string(),
                 )
             })
+    }
+
+    pub async fn exec_meta_tx_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogMetaTxRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogMetaTxResponse, KLogServiceError> {
+        let path = KLogDataRequestType::MetaTx.klog_path();
+        let endpoint_port = Self::inter_node_port(target);
+        let endpoints = self.build_data_endpoints(target, &path, trace_id)?;
+        let first_url = endpoints[0].url.clone();
+        let response = self
+            .send_with_fallback(&endpoints, |candidate_url| {
+                self.client
+                    .post(candidate_url)
+                    .timeout(self.timeout)
+                    .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+                    .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+                    .header(KLOG_TRACE_ID_HEADER, trace_id)
+                    .json(req)
+            })
+            .await
+            .map_err(|(final_url, e)| {
+                let msg = format!(
+                    "forward meta tx send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, endpoint_port, final_url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward meta tx failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, endpoint_port, first_url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response.json::<KLogMetaTxResponse>().await.map_err(|e| {
+            let msg = format!(
+                "forward meta tx decode failed: target={}({}:{}), url={}, err={}",
+                target.id, target.addr, endpoint_port, first_url, e
+            );
+            KLogServiceError::new(
+                reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                KLogErrorCode::Unavailable,
+                msg,
+                trace_id.to_string(),
+            )
+        })
     }
 
     pub async fn query_meta_to_node(

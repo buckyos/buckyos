@@ -1,8 +1,11 @@
 use super::store::{
-    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateSnapshotData,
-    KLogStateStore, REQUEST_DEDUP_WINDOW_MS,
+    KLogMetaTxResult, KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot,
+    KLogStateSnapshotData, KLogStateStore, REQUEST_DEDUP_WINDOW_MS,
 };
-use crate::{KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KResult};
+use crate::{
+    KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxRequest,
+    KLogMetaTxResponse, KResult,
+};
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::{
@@ -10,6 +13,7 @@ use rocksdb::{
     WriteBatch, WriteOptions,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -2122,6 +2126,135 @@ impl KLogStateStore for RocksDbStateStore {
             .put_cf_opt(&meta_cf, meta_key, encoded, &write_opts)
             .map_err(|e| klog_err_with_context("Failed to persist rocksdb data meta entry", e))?;
         Ok(stored)
+    }
+
+    async fn exec_meta_tx(&self, tx: KLogMetaTxRequest) -> KResult<KLogMetaTxResult> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+
+        let mut current_entries = BTreeMap::new();
+        for key in tx
+            .guard
+            .as_ref()
+            .map(|guard| guard.key.as_str())
+            .into_iter()
+            .chain(tx.actions.keys().map(String::as_str))
+        {
+            if current_entries.contains_key(key) {
+                continue;
+            }
+            let raw = self
+                .db
+                .get_cf(&meta_cf, data_meta_key(key).as_slice())
+                .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta entry", e))?;
+            let entry = raw
+                .as_ref()
+                .map(|raw| decode_meta_entry_with_legacy(raw.as_ref()))
+                .transpose()?;
+            current_entries.insert(key.to_string(), entry);
+        }
+
+        if let Some(guard) = tx.guard.as_ref() {
+            let current_revision = current_entries
+                .get(&guard.key)
+                .and_then(|entry| entry.as_ref().map(|entry| entry.revision));
+            let actual_revision = current_revision.unwrap_or(0);
+            if actual_revision != guard.expected_revision {
+                return Ok(KLogMetaTxResult::VersionConflict {
+                    key: guard.key.clone(),
+                    expected_revision: guard.expected_revision,
+                    current_revision,
+                });
+            }
+        }
+
+        for (action_key, action) in tx.actions.iter() {
+            if action.key() != action_key {
+                let msg = format!(
+                    "meta tx action key mismatch: map_key={}, action_key={}",
+                    action_key,
+                    action.key()
+                );
+                error!("{}", msg);
+                return Err(klog_err(msg));
+            }
+
+            let Some(expected_revision) = action.expected_revision() else {
+                continue;
+            };
+            let current_revision = current_entries
+                .get(action_key)
+                .and_then(|entry| entry.as_ref().map(|entry| entry.revision));
+            let matched = if expected_revision == 0 {
+                current_revision.is_none()
+            } else {
+                current_revision == Some(expected_revision)
+            };
+            if !matched {
+                return Ok(KLogMetaTxResult::VersionConflict {
+                    key: action_key.clone(),
+                    expected_revision,
+                    current_revision,
+                });
+            }
+        }
+
+        let guard_key = tx.guard.as_ref().map(|guard| guard.key.clone());
+        let mut guard_touched = false;
+        let mut revisions = BTreeMap::new();
+        let mut batch = WriteBatch::default();
+
+        for (action_key, action) in tx.actions.into_iter() {
+            if guard_key.as_deref() == Some(action_key.as_str()) {
+                guard_touched = true;
+            }
+
+            match action {
+                KLogMetaTxAction::Put { mut item, .. } => {
+                    let next_revision = current_entries
+                        .get(&item.key)
+                        .and_then(|entry| entry.as_ref().map(|entry| entry.revision))
+                        .map(|revision| revision.saturating_add(1))
+                        .unwrap_or(1);
+                    item.revision = next_revision;
+                    let encoded = bincode::serde::encode_to_vec(&item, bincode::config::legacy())
+                        .map_err(|e| {
+                        klog_err_with_context("Failed to encode rocksdb data meta entry", e)
+                    })?;
+                    batch.put_cf(&meta_cf, data_meta_key(&item.key), encoded);
+                    revisions.insert(item.key, Some(next_revision));
+                }
+                KLogMetaTxAction::Delete { key, .. } => {
+                    batch.delete_cf(&meta_cf, data_meta_key(&key));
+                    revisions.insert(key, None);
+                }
+            }
+        }
+
+        if let Some(guard) = tx.guard
+            && !guard_touched
+            && let Some(Some(mut item)) = current_entries.remove(&guard.key)
+        {
+            item.revision = item.revision.saturating_add(1);
+            let encoded =
+                bincode::serde::encode_to_vec(&item, bincode::config::legacy()).map_err(|e| {
+                    klog_err_with_context("Failed to encode rocksdb data meta entry", e)
+                })?;
+            batch.put_cf(&meta_cf, data_meta_key(&item.key), encoded);
+            revisions.insert(guard.key, Some(item.revision));
+        }
+
+        let write_opts = self.write_options();
+        self.db
+            .write_opt(batch, &write_opts)
+            .map_err(|e| klog_err_with_context("Failed to persist rocksdb meta tx", e))?;
+
+        Ok(KLogMetaTxResult::Committed(KLogMetaTxResponse {
+            revisions,
+        }))
     }
 
     async fn delete_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {

@@ -1,9 +1,12 @@
 use super::store::{
-    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateSnapshotData,
-    KLogStateStore, REQUEST_DEDUP_MAX_ITEMS, REQUEST_DEDUP_WINDOW_MS,
+    KLogMetaTxResult, KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot,
+    KLogStateSnapshotData, KLogStateStore, REQUEST_DEDUP_MAX_ITEMS, REQUEST_DEDUP_WINDOW_MS,
 };
-use crate::{KLogEntry, KLogError, KLogMetaEntry, KResult};
-use std::collections::{HashMap, VecDeque};
+use crate::{
+    KLogEntry, KLogError, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxRequest, KLogMetaTxResponse,
+    KResult,
+};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -218,6 +221,88 @@ impl KLogStateStore for MemoryStateStore {
         stored.revision = next_revision;
         metas.insert(key, stored.clone());
         Ok(stored)
+    }
+
+    async fn exec_meta_tx(&self, tx: KLogMetaTxRequest) -> KResult<KLogMetaTxResult> {
+        let mut metas = self.metas.lock().await;
+
+        if let Some(guard) = tx.guard.as_ref() {
+            let current_revision = metas.get(&guard.key).map(|v| v.revision);
+            let actual_revision = current_revision.unwrap_or(0);
+            if actual_revision != guard.expected_revision {
+                return Ok(KLogMetaTxResult::VersionConflict {
+                    key: guard.key.clone(),
+                    expected_revision: guard.expected_revision,
+                    current_revision,
+                });
+            }
+        }
+
+        for (action_key, action) in tx.actions.iter() {
+            if action.key() != action_key {
+                let msg = format!(
+                    "meta tx action key mismatch: map_key={}, action_key={}",
+                    action_key,
+                    action.key()
+                );
+                error!("{}", msg);
+                return Err(KLogError::InvalidFormat(msg));
+            }
+
+            let Some(expected_revision) = action.expected_revision() else {
+                continue;
+            };
+            let current_revision = metas.get(action_key).map(|v| v.revision);
+            let matched = if expected_revision == 0 {
+                current_revision.is_none()
+            } else {
+                current_revision == Some(expected_revision)
+            };
+            if !matched {
+                return Ok(KLogMetaTxResult::VersionConflict {
+                    key: action_key.clone(),
+                    expected_revision,
+                    current_revision,
+                });
+            }
+        }
+
+        let guard_key = tx.guard.as_ref().map(|guard| guard.key.clone());
+        let mut guard_touched = false;
+        let mut revisions = BTreeMap::new();
+        for (action_key, action) in tx.actions.into_iter() {
+            if guard_key.as_deref() == Some(action_key.as_str()) {
+                guard_touched = true;
+            }
+
+            match action {
+                KLogMetaTxAction::Put { mut item, .. } => {
+                    let next_revision = metas
+                        .get(&item.key)
+                        .map(|v| v.revision.saturating_add(1))
+                        .unwrap_or(1);
+                    item.revision = next_revision;
+                    revisions.insert(item.key.clone(), Some(next_revision));
+                    metas.insert(item.key.clone(), item);
+                }
+                KLogMetaTxAction::Delete { key, .. } => {
+                    metas.remove(&key);
+                    revisions.insert(key, None);
+                }
+            }
+        }
+
+        if let Some(guard) = tx.guard
+            && !guard_touched
+            && let Some(item) = metas.get_mut(&guard.key)
+        {
+            item.revision = item.revision.saturating_add(1);
+            revisions.insert(guard.key, Some(item.revision));
+        }
+
+        Ok(KLogMetaTxResult::Committed(KLogMetaTxResponse {
+            revisions,
+        }))
     }
 
     async fn delete_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {

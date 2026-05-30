@@ -19,6 +19,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 pub(crate) struct TestMemoryContext {
     pub(crate) log_storage: MemoryLogStorage,
     pub(crate) state_machine: KLogStateMachine,
+    pub(crate) state_store_manager: Arc<KLogStateStoreManager>,
 }
 
 impl TestMemoryContext {
@@ -41,13 +42,14 @@ impl TestMemoryContext {
         let snapshot_manager = Arc::new(snapshot_manager);
         snapshot_manager.clean_all_snapshots().await.unwrap();
 
-        let state_machine = KLogStateMachine::new(state_store_manager, snapshot_manager)
+        let state_machine = KLogStateMachine::new(state_store_manager.clone(), snapshot_manager)
             .await
             .unwrap();
 
         Self {
             log_storage,
             state_machine,
+            state_store_manager,
         }
     }
 }
