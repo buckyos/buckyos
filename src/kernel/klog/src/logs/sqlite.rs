@@ -350,14 +350,14 @@ impl RaftLogStorage<KTypeConfig> for SqliteLogStorage {
             return Ok(());
         }
 
-        if let (Some(cur), Some(new)) = (current, committed.clone()) {
-            if new < cur {
-                warn!(
-                    "sqlite::save_committed ignore rollback: current={}, incoming={}",
-                    cur, new
-                );
-                return Ok(());
-            }
+        if let (Some(cur), Some(new)) = (current, committed)
+            && new < cur
+        {
+            warn!(
+                "sqlite::save_committed ignore rollback: current={}, incoming={}",
+                cur, new
+            );
+            return Ok(());
         }
 
         match committed {

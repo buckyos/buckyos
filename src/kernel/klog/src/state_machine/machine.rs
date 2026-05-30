@@ -187,10 +187,7 @@ impl RaftStateMachine<KTypeConfig> for KLogStateMachine {
 
     async fn applied_state(&mut self) -> StorageResult<(Option<KLogId>, KStoredMembership)> {
         let data = self.data.read().await;
-        Ok((
-            data.last_applied_log_id.clone(),
-            data.last_membership.clone(),
-        ))
+        Ok((data.last_applied_log_id, data.last_membership.clone()))
     }
 
     async fn apply<I>(&mut self, entries: I) -> StorageResult<Vec<KLogResponse>>
@@ -272,11 +269,8 @@ impl RaftStateMachine<KTypeConfig> for KLogStateMachine {
                     source: StorageIOError::write_snapshot(None, &std::io::Error::other(msg)),
                 }
             })?;
-        self.persist_state_machine_meta(
-            data.meta.last_log_id.clone(),
-            data.meta.last_membership.clone(),
-        )
-        .await?;
+        self.persist_state_machine_meta(data.meta.last_log_id, data.meta.last_membership.clone())
+            .await?;
 
         // Then, update the in-memory state machine metadata.
         let mut state = self.data.write().await;
@@ -328,13 +322,11 @@ impl RaftSnapshotBuilder<KTypeConfig> for KLogStateMachine {
             let snapshot_id =
                 SnapshotManager::generate_snapshot_id(data.last_applied_log_id.as_ref());
 
-            let meta = SnapshotMeta {
+            SnapshotMeta {
                 last_log_id: data.last_applied_log_id,
                 last_membership: data.last_membership.clone(),
                 snapshot_id,
-            };
-
-            meta
+            }
         };
         info!(
             "StateMachine build_snapshot meta prepared: snapshot_id={}, last_log_id={:?}, last_membership={:?}",

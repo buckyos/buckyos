@@ -64,6 +64,12 @@ impl MemoryLogStorage {
     }
 }
 
+impl Default for MemoryLogStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RaftLogReader<KTypeConfig> for MemoryLogStorage {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
@@ -90,12 +96,12 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
     async fn get_log_state(&mut self) -> StorageResult<openraft::LogState<KTypeConfig>> {
         let last_log_id = {
             let logs = self.logs.lock().await;
-            logs.iter().last().map(|(_, item)| item.log_id.clone())
+            logs.iter().last().map(|(_, item)| item.log_id)
         };
 
         let last_purged_log_id = {
             let state = self.state.lock().await;
-            state.last_purged.clone()
+            state.last_purged
         };
         let last_log_id = match last_log_id {
             Some(id) => Some(id),
@@ -115,26 +121,26 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
     async fn save_vote(&mut self, vote: &Vote<KNodeId>) -> StorageResult<()> {
         let mut state = self.state.lock().await;
         debug!("save_vote: {:?}", vote);
-        state.vote = Some(vote.clone());
+        state.vote = Some(*vote);
 
         Ok(())
     }
 
     async fn read_vote(&mut self) -> StorageResult<Option<Vote<KNodeId>>> {
         let state = self.state.lock().await;
-        Ok(state.vote.clone())
+        Ok(state.vote)
     }
 
     async fn save_committed(&mut self, committed: Option<LogId<KNodeId>>) -> StorageResult<()> {
         let mut state = self.state.lock().await;
-        if let (Some(cur), Some(new)) = (&state.last_committed, &committed) {
-            if new < cur {
-                warn!(
-                    "save_committed ignore rollback: current={}, incoming={}",
-                    cur, new
-                );
-                return Ok(());
-            }
+        if let (Some(cur), Some(new)) = (&state.last_committed, &committed)
+            && new < cur
+        {
+            warn!(
+                "save_committed ignore rollback: current={}, incoming={}",
+                cur, new
+            );
+            return Ok(());
         }
 
         state.last_committed = committed;
@@ -143,7 +149,7 @@ impl RaftLogStorage<KTypeConfig> for MemoryLogStorage {
 
     async fn read_committed(&mut self) -> StorageResult<Option<LogId<KNodeId>>> {
         let state = self.state.lock().await;
-        Ok(state.last_committed.clone())
+        Ok(state.last_committed)
     }
 
     async fn append<I>(

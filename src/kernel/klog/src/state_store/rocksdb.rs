@@ -262,18 +262,16 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
 }
 
 fn open_rocksdb_with_cfs(path: &Path, create_if_missing: bool) -> Result<DB, String> {
-    if create_if_missing {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                let msg = format!(
-                    "Failed to create rocksdb parent dir {}: {}",
-                    parent.display(),
-                    e
-                );
-                error!("{}", msg);
-                msg
-            })?;
-        }
+    if create_if_missing && let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            let msg = format!(
+                "Failed to create rocksdb parent dir {}: {}",
+                parent.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
     }
 
     let mut opts = Options::default();
@@ -597,10 +595,10 @@ impl RocksDbStateStore {
             let (k, _) = item.map_err(|e| {
                 klog_err_with_context("Failed to iterate rocksdb while scanning next_log_id", e)
             })?;
-            if let Some(id) = decode_entry_key(&k) {
-                if id > max_id {
-                    max_id = id;
-                }
+            if let Some(id) = decode_entry_key(&k)
+                && id > max_id
+            {
+                max_id = id;
             }
         }
 

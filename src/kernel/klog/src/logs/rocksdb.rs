@@ -273,7 +273,7 @@ impl RaftLogStorage<KTypeConfig> for RocksDbLogStorage {
             .ok_or_else(|| Self::cf_handle_err(CF_LOGS))?;
 
         let mut last_log_id = None;
-        for item in self.db.iterator_cf(&logs_cf, IteratorMode::End) {
+        if let Some(item) = self.db.iterator_cf(&logs_cf, IteratorMode::End).next() {
             let (_k, v) = item.map_err(Self::db_read_err)?;
             let entry: LogEntry = Self::de(
                 PersistPayloadType::RocksDbLogEntry,
@@ -281,7 +281,6 @@ impl RaftLogStorage<KTypeConfig> for RocksDbLogStorage {
                 "last raft log entry",
             )?;
             last_log_id = Some(entry.log_id);
-            break;
         }
 
         let last_purged_log_id = match self.read_meta_value(META_LAST_PURGED)? {
@@ -332,14 +331,14 @@ impl RaftLogStorage<KTypeConfig> for RocksDbLogStorage {
             return Ok(());
         }
 
-        if let (Some(cur), Some(new)) = (current, committed.clone()) {
-            if new < cur {
-                warn!(
-                    "rocksdb::save_committed ignore rollback: current={}, incoming={}",
-                    cur, new
-                );
-                return Ok(());
-            }
+        if let (Some(cur), Some(new)) = (current, committed)
+            && new < cur
+        {
+            warn!(
+                "rocksdb::save_committed ignore rollback: current={}, incoming={}",
+                cur, new
+            );
+            return Ok(());
         }
 
         match committed {

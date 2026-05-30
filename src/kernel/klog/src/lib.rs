@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, clippy::result_large_err)]
 
 #[macro_use]
 extern crate log;
