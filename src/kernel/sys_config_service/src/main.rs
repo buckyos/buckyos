@@ -52,6 +52,11 @@ const INTERNAL_META_PREFIX: &str = "__meta/";
 // Supported values: "sled" (default) or "klog".
 const ENV_SYSTEM_CONFIG_STORE: &str = "BUCKYOS_SYSTEM_CONFIG_STORE";
 
+// Optional. Overrides the service listen port for isolated DV/test processes.
+// Default: 3200.
+const ENV_SYSTEM_CONFIG_PORT: &str = "BUCKYOS_SYSTEM_CONFIG_PORT";
+const DEFAULT_SYSTEM_CONFIG_SERVICE_MAIN_PORT: u16 = 3200;
+
 // Optional. One-shot bootstrap helper for the first klog backend rollout.
 // When true, system_config copies existing local sled data into klog only if
 // klog has no visible system_config keys yet.
@@ -78,6 +83,36 @@ fn system_config_store_kind() -> String {
 
 fn system_config_uses_klog() -> bool {
     system_config_store_kind() == "klog"
+}
+
+fn resolve_system_config_port(raw: Option<String>) -> u16 {
+    let Some(raw) = raw else {
+        return DEFAULT_SYSTEM_CONFIG_SERVICE_MAIN_PORT;
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return DEFAULT_SYSTEM_CONFIG_SERVICE_MAIN_PORT;
+    }
+
+    raw.parse::<u16>()
+        .unwrap_or(DEFAULT_SYSTEM_CONFIG_SERVICE_MAIN_PORT)
+}
+
+fn selected_system_config_port() -> u16 {
+    let raw = std::env::var(ENV_SYSTEM_CONFIG_PORT).ok();
+    let port = resolve_system_config_port(raw.clone());
+    if raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .is_some_and(|v| v.parse::<u16>().is_err())
+    {
+        warn!(
+            "invalid {}, fallback to default port {}",
+            ENV_SYSTEM_CONFIG_PORT, DEFAULT_SYSTEM_CONFIG_SERVICE_MAIN_PORT
+        );
+    }
+    port
 }
 
 fn env_flag_enabled_value(value: &str) -> bool {
@@ -1314,12 +1349,9 @@ async fn service_main() {
     init_by_boot_config().await.unwrap();
 
     let server = SystemConfigServer::new();
-    const SYSTEM_CONFIG_SERVICE_MAIN_PORT: u16 = 3200;
-    info!(
-        "Starting system config service on port {}",
-        SYSTEM_CONFIG_SERVICE_MAIN_PORT
-    );
-    let runner = Runner::new(SYSTEM_CONFIG_SERVICE_MAIN_PORT);
+    let service_port = selected_system_config_port();
+    info!("Starting system config service on port {}", service_port);
+    let runner = Runner::new(service_port);
     let _ = runner.add_http_server("/kapi/system_config".to_string(), Arc::new(server));
 
     let resolver = ZoneDidResolver {};
@@ -1352,6 +1384,26 @@ mod test {
         assert_eq!(
             normalize_system_config_store_kind(Some("sled".to_string())),
             "sled"
+        );
+    }
+
+    #[test]
+    fn resolves_system_config_port() {
+        assert_eq!(
+            resolve_system_config_port(None),
+            DEFAULT_SYSTEM_CONFIG_SERVICE_MAIN_PORT
+        );
+        assert_eq!(
+            resolve_system_config_port(Some(" 43210 ".to_string())),
+            43210
+        );
+        assert_eq!(
+            resolve_system_config_port(Some("invalid".to_string())),
+            DEFAULT_SYSTEM_CONFIG_SERVICE_MAIN_PORT
+        );
+        assert_eq!(
+            resolve_system_config_port(Some("".to_string())),
+            DEFAULT_SYSTEM_CONFIG_SERVICE_MAIN_PORT
         );
     }
 

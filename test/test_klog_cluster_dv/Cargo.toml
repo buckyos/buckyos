@@ -11,5 +11,6 @@ tokio = { version = "1.49.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 reqwest = { version = "0.12.28", features = ["json", "rustls-tls-native-roots"] }
+jsonwebtoken = { version = "=10.2.0", features = ["aws_lc_rs"] }
 
 [workspace]
