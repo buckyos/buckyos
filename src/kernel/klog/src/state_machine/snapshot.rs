@@ -76,17 +76,13 @@ impl SnapshotManager {
     // Parse a snapshot ID into its timestamp and log id components
     fn parse_snapshot_id(sid: &str) -> Option<(i64, i64)> {
         // First part is the timestamp, last part is the log id
-        let Some((ts, _)) = sid.split_once('_') else {
-            return None;
-        };
+        let (ts, _) = sid.split_once('_')?;
 
         let Ok(ts) = ts.parse::<i64>() else {
             return None;
         };
 
-        let Some((_, log_id)) = sid.rsplit_once('_') else {
-            return None;
-        };
+        let (_, log_id) = sid.rsplit_once('_')?;
 
         let Ok(log_id) = log_id.parse::<i64>() else {
             return None;

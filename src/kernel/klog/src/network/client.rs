@@ -770,17 +770,16 @@ impl KNetworkClient {
                 )));
             } else if status.is_client_error() {
                 return Err(RPCError::Unreachable(Unreachable::new(
-                    &std::io::Error::new(std::io::ErrorKind::Other, msg),
+                    &std::io::Error::other(msg),
                 )));
             } else if status.is_server_error() {
-                return Err(RPCError::Network(NetworkError::new(&std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    msg,
-                ))));
+                return Err(RPCError::Network(NetworkError::new(
+                    &std::io::Error::other(msg),
+                )));
             }
 
             return Err(RPCError::Unreachable(Unreachable::new(
-                &std::io::Error::new(std::io::ErrorKind::Other, msg),
+                &std::io::Error::other(msg),
             )));
         }
 

@@ -94,6 +94,12 @@ impl MemoryStateStore {
     }
 }
 
+impl Default for MemoryStateStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait::async_trait]
 impl KLogStateStore for MemoryStateStore {
     async fn append(&self, entries: Vec<KLogEntry>) -> KResult<()> {

@@ -30,9 +30,9 @@ use tower::timeout::TimeoutLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
-const CONTROL_RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
+const CONTROL_RPC_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 const SNAPSHOT_RPC_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024;
-const ADMIN_RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
+const ADMIN_RPC_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 const CONTROL_RPC_CONCURRENCY_LIMIT: usize = 128;
 const SNAPSHOT_RPC_CONCURRENCY_LIMIT: usize = 8;
 const ADMIN_RPC_CONCURRENCY_LIMIT: usize = 32;

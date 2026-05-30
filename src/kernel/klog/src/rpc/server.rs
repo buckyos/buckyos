@@ -35,7 +35,7 @@ use tower::timeout::TimeoutLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
-const DEFAULT_RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
+const DEFAULT_RPC_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 const DEFAULT_RPC_CONCURRENCY_LIMIT: usize = 128;
 const DEFAULT_RPC_TIMEOUT_MS: u64 = 3_000;
 
@@ -410,7 +410,7 @@ impl KRpcServer {
                 req_id,
                 KLOG_RPC_ERR_INVALID_REQUEST,
                 envelope.message.clone(),
-                Some(serde_json::to_value(envelope).unwrap_or_else(|_| serde_json::Value::Null)),
+                Some(serde_json::to_value(envelope).unwrap_or(serde_json::Value::Null)),
             );
             return Self::with_trace_id((StatusCode::OK, Json(resp)).into_response(), &trace_id);
         }
@@ -430,10 +430,7 @@ impl KRpcServer {
                             req_id,
                             KLOG_RPC_ERR_INVALID_PARAMS,
                             envelope.message.clone(),
-                            Some(
-                                serde_json::to_value(envelope)
-                                    .unwrap_or_else(|_| serde_json::Value::Null),
-                            ),
+                            Some(serde_json::to_value(envelope).unwrap_or(serde_json::Value::Null)),
                         );
                         return Self::with_trace_id(
                             (StatusCode::OK, Json(resp)).into_response(),
@@ -462,7 +459,7 @@ impl KRpcServer {
                                     err.error.message.clone(),
                                     Some(
                                         serde_json::to_value(err.error)
-                                            .unwrap_or_else(|_| serde_json::Value::Null),
+                                            .unwrap_or(serde_json::Value::Null),
                                     ),
                                 )),
                             )
@@ -491,7 +488,7 @@ impl KRpcServer {
                                 envelope.message.clone(),
                                 Some(
                                     serde_json::to_value(envelope)
-                                        .unwrap_or_else(|_| serde_json::Value::Null),
+                                        .unwrap_or(serde_json::Value::Null),
                                 ),
                             );
                             return Self::with_trace_id(
@@ -522,7 +519,7 @@ impl KRpcServer {
                                     err.error.message.clone(),
                                     Some(
                                         serde_json::to_value(err.error)
-                                            .unwrap_or_else(|_| serde_json::Value::Null),
+                                            .unwrap_or(serde_json::Value::Null),
                                     ),
                                 )),
                             )
@@ -546,10 +543,7 @@ impl KRpcServer {
                             req_id,
                             KLOG_RPC_ERR_INVALID_PARAMS,
                             envelope.message.clone(),
-                            Some(
-                                serde_json::to_value(envelope)
-                                    .unwrap_or_else(|_| serde_json::Value::Null),
-                            ),
+                            Some(serde_json::to_value(envelope).unwrap_or(serde_json::Value::Null)),
                         );
                         return Self::with_trace_id(
                             (StatusCode::OK, Json(resp)).into_response(),
@@ -578,7 +572,7 @@ impl KRpcServer {
                                     err.error.message.clone(),
                                     Some(
                                         serde_json::to_value(err.error)
-                                            .unwrap_or_else(|_| serde_json::Value::Null),
+                                            .unwrap_or(serde_json::Value::Null),
                                     ),
                                 )),
                             )
@@ -603,10 +597,7 @@ impl KRpcServer {
                             req_id,
                             KLOG_RPC_ERR_INVALID_PARAMS,
                             envelope.message.clone(),
-                            Some(
-                                serde_json::to_value(envelope)
-                                    .unwrap_or_else(|_| serde_json::Value::Null),
-                            ),
+                            Some(serde_json::to_value(envelope).unwrap_or(serde_json::Value::Null)),
                         );
                         return Self::with_trace_id(
                             (StatusCode::OK, Json(resp)).into_response(),
@@ -635,7 +626,7 @@ impl KRpcServer {
                                     err.error.message.clone(),
                                     Some(
                                         serde_json::to_value(err.error)
-                                            .unwrap_or_else(|_| serde_json::Value::Null),
+                                            .unwrap_or(serde_json::Value::Null),
                                     ),
                                 )),
                             )
@@ -665,7 +656,7 @@ impl KRpcServer {
                                 envelope.message.clone(),
                                 Some(
                                     serde_json::to_value(envelope)
-                                        .unwrap_or_else(|_| serde_json::Value::Null),
+                                        .unwrap_or(serde_json::Value::Null),
                                 ),
                             );
                             return Self::with_trace_id(
@@ -696,7 +687,7 @@ impl KRpcServer {
                                     err.error.message.clone(),
                                     Some(
                                         serde_json::to_value(err.error)
-                                            .unwrap_or_else(|_| serde_json::Value::Null),
+                                            .unwrap_or(serde_json::Value::Null),
                                     ),
                                 )),
                             )
@@ -718,10 +709,7 @@ impl KRpcServer {
                         req_id,
                         KLOG_RPC_ERR_METHOD_NOT_FOUND,
                         envelope.message.clone(),
-                        Some(
-                            serde_json::to_value(envelope)
-                                .unwrap_or_else(|_| serde_json::Value::Null),
-                        ),
+                        Some(serde_json::to_value(envelope).unwrap_or(serde_json::Value::Null)),
                     )),
                 )
                     .into_response();
@@ -745,9 +733,10 @@ impl KRpcServer {
             KLOG_RPC_ERR_INTERNAL
         } else if matches!(code, KLogErrorCode::AuthRequired | KLogErrorCode::Forbidden) {
             KLOG_RPC_ERR_INVALID_REQUEST
-        } else if matches!(code, KLogErrorCode::Unavailable | KLogErrorCode::Timeout) {
-            KLOG_RPC_ERR_INTERNAL
-        } else if code == KLogErrorCode::Internal {
+        } else if matches!(
+            code,
+            KLogErrorCode::Unavailable | KLogErrorCode::Timeout | KLogErrorCode::Internal
+        ) {
             KLOG_RPC_ERR_INTERNAL
         } else {
             KLOG_RPC_ERR_METHOD_NOT_FOUND
