@@ -86,6 +86,7 @@ pub enum KLogDataRequestType {
     Query,
     MetaPut,
     MetaDelete,
+    MetaTx,
     MetaQuery,
 }
 
@@ -96,6 +97,7 @@ impl KLogDataRequestType {
             KLogDataRequestType::Query => "query",
             KLogDataRequestType::MetaPut => "meta-put",
             KLogDataRequestType::MetaDelete => "meta-delete",
+            KLogDataRequestType::MetaTx => "meta-tx",
             KLogDataRequestType::MetaQuery => "meta-query",
         }
     }
@@ -571,6 +573,10 @@ mod tests {
         assert_eq!(
             KLogDataRequestType::MetaDelete.klog_path(),
             "/klog/data/meta-delete"
+        );
+        assert_eq!(
+            KLogDataRequestType::MetaTx.klog_path(),
+            "/klog/data/meta-tx"
         );
         assert_eq!(
             KLogDataRequestType::MetaQuery.klog_path(),

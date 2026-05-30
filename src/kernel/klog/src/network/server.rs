@@ -6,7 +6,9 @@ use super::request::{
 use crate::error::{KLogErrorEnvelope, KLogServiceError, generate_trace_id};
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
-use crate::{KClusterTransportConfig, KClusterTransportMode, KNode, KNodeId, KRaftRef};
+use crate::{
+    KClusterTransportConfig, KClusterTransportMode, KLogMetaTxRequest, KNode, KNodeId, KRaftRef,
+};
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
@@ -277,6 +279,7 @@ impl KNetworkServer {
         let data_query_path = KLogDataRequestType::Query.klog_path();
         let data_meta_put_path = KLogDataRequestType::MetaPut.klog_path();
         let data_meta_delete_path = KLogDataRequestType::MetaDelete.klog_path();
+        let data_meta_tx_path = KLogDataRequestType::MetaTx.klog_path();
         let data_meta_query_path = KLogDataRequestType::MetaQuery.klog_path();
         let admin_add_learner_path = KLogAdminRequestType::AddLearner.klog_path();
         let admin_remove_learner_path = KLogAdminRequestType::RemoveLearner.klog_path();
@@ -311,6 +314,11 @@ impl KNetworkServer {
             &self.transport.gateway_route_prefix,
             KClusterTransportModePlane::InterNode,
             &data_meta_delete_path,
+        )?;
+        let proxy_data_meta_tx_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::InterNode,
+            &data_meta_tx_path,
         )?;
         let proxy_data_meta_query_path = cluster_proxy_route(
             &self.transport.gateway_route_prefix,
@@ -405,6 +413,8 @@ impl KNetworkServer {
                 &proxy_data_meta_delete_path,
                 post(Self::handle_meta_delete_request),
             )
+            .route(&data_meta_tx_path, post(Self::handle_meta_tx_request))
+            .route(&proxy_data_meta_tx_path, post(Self::handle_meta_tx_request))
             .route(&data_meta_query_path, get(Self::handle_meta_query_request))
             .route(
                 &proxy_data_meta_query_path,
@@ -451,7 +461,7 @@ impl KNetworkServer {
             .with_state(state);
 
         info!(
-            "KNetworkServer start: raft_addr={}, inter_node_addr={}, admin_addr={}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, admin_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, admin_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_timeout_ms={}, admin_local_only={}, data_append_path={}, data_query_path={}, data_meta_put_path={}, data_meta_delete_path={}, data_meta_query_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
+            "KNetworkServer start: raft_addr={}, inter_node_addr={}, admin_addr={}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, admin_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, admin_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_timeout_ms={}, admin_local_only={}, data_append_path={}, data_query_path={}, data_meta_put_path={}, data_meta_delete_path={}, data_meta_tx_path={}, data_meta_query_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
             self.raft_addr,
             self.inter_node_addr,
             self.admin_addr,
@@ -471,6 +481,7 @@ impl KNetworkServer {
             data_query_path,
             data_meta_put_path,
             data_meta_delete_path,
+            data_meta_tx_path,
             data_meta_query_path,
             admin_add_learner_path,
             admin_remove_learner_path,
@@ -810,6 +821,24 @@ impl KNetworkServer {
         };
 
         match write_service.delete_meta(&headers, req).await {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(err) => Self::service_error_response(err),
+        }
+    }
+
+    async fn handle_meta_tx_request(
+        State(state): State<KNetworkServerState>,
+        headers: HeaderMap,
+        Json(req): Json<KLogMetaTxRequest>,
+    ) -> Response {
+        let Some(write_service) = state.write_service.as_ref() else {
+            let msg = "KNetworkServer meta tx rejected: state store manager is not configured"
+                .to_string();
+            error!("{}", msg);
+            return Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg);
+        };
+
+        match write_service.exec_meta_tx(&headers, req).await {
             Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
             Err(err) => Self::service_error_response(err),
         }

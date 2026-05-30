@@ -1,9 +1,9 @@
 use super::{
     KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_JSON_RPC_VERSION,
     KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE,
-    KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
+    KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLOG_RPC_METHOD_META_TX,
+    KLogJsonRpcRequest, KLogJsonRpcResponse,
 };
-use crate::KNode;
 use crate::error::{
     KLogErrorCode, KLogErrorEnvelope, generate_trace_id, map_http_status_to_error_code,
     map_json_rpc_error_code_to_klog_error_code, parse_error_envelope_json,
@@ -13,6 +13,7 @@ use crate::network::{
     KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest,
     KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
 };
+use crate::{KLogMetaTxRequest, KLogMetaTxResponse, KNode};
 use reqwest::StatusCode;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -204,6 +205,21 @@ impl KLogClient {
     ) -> Result<(KLogMetaDeleteResponse, KLogCallTrace), KLogClientError> {
         self.call_with_trace(KLOG_RPC_METHOD_META_DELETE, &req)
             .await
+    }
+
+    pub async fn exec_meta_tx(
+        &self,
+        req: KLogMetaTxRequest,
+    ) -> Result<KLogMetaTxResponse, KLogClientError> {
+        let (resp, _) = self.exec_meta_tx_with_trace(req).await?;
+        Ok(resp)
+    }
+
+    pub async fn exec_meta_tx_with_trace(
+        &self,
+        req: KLogMetaTxRequest,
+    ) -> Result<(KLogMetaTxResponse, KLogCallTrace), KLogClientError> {
+        self.call_with_trace(KLOG_RPC_METHOD_META_TX, &req).await
     }
 
     pub async fn query_meta(
@@ -412,13 +428,14 @@ mod tests {
     use crate::network::{
         KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaDeleteRequest,
         KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest,
-        KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
+        KLogMetaQueryResponse, KLogMetaTxAction, KLogMetaTxRequest, KLogMetaTxResponse,
+        KLogQueryRequest, KLogQueryResponse,
     };
     use crate::rpc::{
         KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND,
         KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE,
-        KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest,
-        KLogJsonRpcResponse,
+        KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLOG_RPC_METHOD_META_TX,
+        KLogJsonRpcRequest, KLogJsonRpcResponse,
     };
     use axum::Router;
     use axum::extract::Json;
@@ -786,6 +803,21 @@ mod tests {
                         );
                         (StatusCode::OK, Json(response))
                     }
+                    KLOG_RPC_METHOD_META_TX => {
+                        let params: KLogMetaTxRequest =
+                            serde_json::from_value(request.params).expect("meta tx params");
+                        assert_eq!(params.actions.len(), 1);
+                        let response = KLogJsonRpcResponse::success(
+                            request.id,
+                            KLogMetaTxResponse {
+                                revisions: BTreeMap::from([(
+                                    "cluster/config/tx".to_string(),
+                                    Some(1),
+                                )]),
+                            },
+                        );
+                        (StatusCode::OK, Json(response))
+                    }
                     other => {
                         let response = KLogJsonRpcResponse::error(
                             request.id,
@@ -834,6 +866,29 @@ mod tests {
             .map_err(|e| anyhow::anyhow!("delete_meta failed: {}", e))?;
         assert!(del.existed);
         assert_eq!(del.prev_meta.as_ref().map(|v| v.revision), Some(7));
+
+        let mut actions = BTreeMap::new();
+        actions.insert(
+            "cluster/config/tx".to_string(),
+            KLogMetaTxAction::Put {
+                item: crate::KLogMetaEntry {
+                    key: "cluster/config/tx".to_string(),
+                    value: "tx".to_string(),
+                    updated_at: 1235,
+                    updated_by_node_name: "node-1".to_string(),
+                    revision: 0,
+                },
+                expected_revision: Some(0),
+            },
+        );
+        let tx = client
+            .exec_meta_tx(KLogMetaTxRequest {
+                actions,
+                guard: None,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("exec_meta_tx failed: {}", e))?;
+        assert_eq!(tx.revisions.get("cluster/config/tx"), Some(&Some(1)));
         Ok(())
     }
 

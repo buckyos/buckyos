@@ -18,6 +18,7 @@ pub const KLOG_RPC_METHOD_APPEND: &str = KLOG_RPC_METHOD_LOG_APPEND;
 pub const KLOG_RPC_METHOD_QUERY: &str = KLOG_RPC_METHOD_LOG_QUERY;
 pub const KLOG_RPC_METHOD_META_PUT: &str = "klog.meta.put";
 pub const KLOG_RPC_METHOD_META_DELETE: &str = "klog.meta.delete";
+pub const KLOG_RPC_METHOD_META_TX: &str = "klog.meta.tx";
 pub const KLOG_RPC_METHOD_META_QUERY: &str = "klog.meta.query";
 
 pub const KLOG_RPC_ERR_INVALID_REQUEST: i64 = -32600;

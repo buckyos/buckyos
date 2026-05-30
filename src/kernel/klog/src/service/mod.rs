@@ -8,7 +8,8 @@ use crate::network::{
 use crate::state_store::{KLogQuery, KLogQueryOrder, KLogStateStoreManagerRef};
 use crate::{
     KClusterTransportConfig, KClusterTransportMode, KLogEntry, KLogLevel, KLogMetaEntry,
-    KLogRequest, KLogResponse, KNode, KRaftRef,
+    KLogMetaTxAction, KLogMetaTxRequest, KLogMetaTxResponse, KLogRequest, KLogResponse, KNode,
+    KRaftRef,
 };
 use axum::http::{HeaderMap, StatusCode};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -670,6 +671,304 @@ impl KLogWriteService {
                         &trace_id,
                     ))
                 }
+            }
+        }
+    }
+
+    pub async fn exec_meta_tx(
+        &self,
+        headers: &HeaderMap,
+        req: KLogMetaTxRequest,
+    ) -> KServiceResult<KLogMetaTxResponse> {
+        let trace_id = self.resolve_trace_id(headers);
+        if req.actions.is_empty() {
+            let msg = format!("{} meta tx rejected: empty actions", self.service_name);
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+
+        for (action_key, action) in req.actions.iter() {
+            if action_key.trim().is_empty() || action.key().trim().is_empty() {
+                let msg = format!("{} meta tx rejected: empty key", self.service_name);
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::BAD_REQUEST,
+                    KLogErrorCode::InvalidArgument,
+                    msg,
+                    &trace_id,
+                ));
+            }
+            if action_key != action.key() {
+                let msg = format!(
+                    "{} meta tx rejected: action key mismatch, map_key={}, action_key={}",
+                    self.service_name,
+                    action_key,
+                    action.key()
+                );
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::BAD_REQUEST,
+                    KLogErrorCode::InvalidArgument,
+                    msg,
+                    &trace_id,
+                ));
+            }
+            if action_key.len() > META_KEY_MAX_BYTES {
+                let msg = format!(
+                    "{} meta tx rejected: key too large, key={}, bytes={}, max_bytes={}",
+                    self.service_name,
+                    action_key,
+                    action_key.len(),
+                    META_KEY_MAX_BYTES
+                );
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::BAD_REQUEST,
+                    KLogErrorCode::InvalidArgument,
+                    msg,
+                    &trace_id,
+                ));
+            }
+            if let KLogMetaTxAction::Put { item, .. } = action
+                && item.value.len() > META_VALUE_MAX_BYTES
+            {
+                let msg = format!(
+                    "{} meta tx rejected: value too large, key={}, bytes={}, max_bytes={}",
+                    self.service_name,
+                    action_key,
+                    item.value.len(),
+                    META_VALUE_MAX_BYTES
+                );
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    KLogErrorCode::PayloadTooLarge,
+                    msg,
+                    &trace_id,
+                ));
+            }
+        }
+
+        if let Some(guard) = req.guard.as_ref() {
+            if guard.key.trim().is_empty() {
+                let msg = format!("{} meta tx rejected: empty guard key", self.service_name);
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::BAD_REQUEST,
+                    KLogErrorCode::InvalidArgument,
+                    msg,
+                    &trace_id,
+                ));
+            }
+            if guard.key.len() > META_KEY_MAX_BYTES {
+                let msg = format!(
+                    "{} meta tx rejected: guard key too large, key={}, bytes={}, max_bytes={}",
+                    self.service_name,
+                    guard.key,
+                    guard.key.len(),
+                    META_KEY_MAX_BYTES
+                );
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::BAD_REQUEST,
+                    KLogErrorCode::InvalidArgument,
+                    msg,
+                    &trace_id,
+                ));
+            }
+        }
+
+        let forward_hops = self.parse_forward_hops(headers, "meta tx").map_err(|msg| {
+            error!("{}", msg);
+            self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            )
+        })?;
+        let forwarded_by = headers
+            .get(KLOG_FORWARDED_BY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
+        if forward_hops > META_RW_MAX_FORWARD_HOPS {
+            let msg = format!(
+                "{} meta tx rejected: too many forward hops, hops={}, max_hops={}, forwarded_by={}",
+                self.service_name, forward_hops, META_RW_MAX_FORWARD_HOPS, forwarded_by
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_GATEWAY,
+                KLogErrorCode::LeaderUnavailable,
+                msg,
+                &trace_id,
+            ));
+        }
+
+        let metrics = self.raft.metrics().borrow().clone();
+        let local_node_id = metrics.id;
+        info!(
+            "{} meta tx request: trace_id={}, actions={}, guard={:?}, local_raft_node_id={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
+            self.service_name,
+            trace_id,
+            req.actions.len(),
+            req.guard,
+            local_node_id,
+            metrics.current_leader,
+            forward_hops,
+            forwarded_by
+        );
+
+        match self
+            .raft
+            .client_write(KLogRequest::ExecMetaTx { tx: req.clone() })
+            .await
+        {
+            Ok(resp) => match resp.data {
+                KLogResponse::MetaTxOk { revisions } => {
+                    info!(
+                        "{} meta tx committed: revisions={:?}",
+                        self.service_name, revisions
+                    );
+                    Ok(KLogMetaTxResponse { revisions })
+                }
+                KLogResponse::MetaTxConflict {
+                    key,
+                    expected_revision,
+                    current_revision,
+                } => {
+                    let msg = format!(
+                        "{} meta tx version conflict: key={}, expected_revision={}, current_revision={:?}",
+                        self.service_name, key, expected_revision, current_revision
+                    );
+                    warn!("{}", msg);
+                    Err(self.service_error(
+                        StatusCode::CONFLICT,
+                        KLogErrorCode::VersionConflict,
+                        msg,
+                        &trace_id,
+                    ))
+                }
+                KLogResponse::Err(err_msg) => {
+                    let msg = format!(
+                        "{} meta tx failed in state machine: actions={}, err={}",
+                        self.service_name,
+                        req.actions.len(),
+                        err_msg
+                    );
+                    error!("{}", msg);
+                    Err(self.service_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        KLogErrorCode::Internal,
+                        msg,
+                        &trace_id,
+                    ))
+                }
+                other => {
+                    let msg = format!(
+                        "{} meta tx unexpected response: response={:?}",
+                        self.service_name, other
+                    );
+                    error!("{}", msg);
+                    Err(self.service_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        KLogErrorCode::Internal,
+                        msg,
+                        &trace_id,
+                    ))
+                }
+            },
+            Err(err) => {
+                if let Some(forward) = err.forward_to_leader::<KNode>() {
+                    if forward_hops >= META_RW_MAX_FORWARD_HOPS {
+                        let msg = format!(
+                            "{} meta tx forward aborted due to hop limit: local_node_id={}, leader_id={:?}, leader_node={:?}, hops={}, max_hops={}",
+                            self.service_name,
+                            local_node_id,
+                            forward.leader_id,
+                            forward.leader_node,
+                            forward_hops,
+                            META_RW_MAX_FORWARD_HOPS
+                        );
+                        error!("{}", msg);
+                        return Err(self.service_error(
+                            StatusCode::BAD_GATEWAY,
+                            KLogErrorCode::LeaderUnavailable,
+                            msg,
+                            &trace_id,
+                        ));
+                    }
+
+                    let leader_node = forward.leader_node.clone().or_else(|| {
+                        forward.leader_id.and_then(|leader_id| {
+                            metrics
+                                .membership_config
+                                .nodes()
+                                .find_map(|(id, node)| (*id == leader_id).then_some(node.clone()))
+                        })
+                    });
+                    let Some(leader_node) = leader_node else {
+                        let msg = format!(
+                            "{} meta tx can not resolve leader node for forwarding: local_node_id={}, leader_id={:?}",
+                            self.service_name, local_node_id, forward.leader_id
+                        );
+                        warn!("{}", msg);
+                        return Err(self
+                            .service_error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                KLogErrorCode::LeaderUnavailable,
+                                msg,
+                                &trace_id,
+                            )
+                            .with_leader_hint(forward.leader_node.clone()));
+                    };
+
+                    let target_hops = forward_hops + 1;
+                    warn!(
+                        "{} meta tx forwarding to leader: local_node_id={}, leader_id={}, leader_addr={}:{}, hops={} -> {}",
+                        self.service_name,
+                        local_node_id,
+                        leader_node.id,
+                        leader_node.addr,
+                        leader_node.port,
+                        forward_hops,
+                        target_hops
+                    );
+                    return self
+                        .data_client
+                        .exec_meta_tx_to_node(
+                            &leader_node,
+                            &req,
+                            target_hops,
+                            local_node_id,
+                            &trace_id,
+                        )
+                        .await
+                        .map_err(|forward_err| {
+                            let msg = format!(
+                                "{} meta tx forward failed: local_node_id={}, leader_id={}, err={}",
+                                self.service_name, local_node_id, leader_node.id, forward_err
+                            );
+                            with_forward_error_context(forward_err, msg, leader_node.clone())
+                        });
+                }
+
+                let msg = format!(
+                    "{} meta tx raft client_write failed: err={}",
+                    self.service_name, err
+                );
+                error!("{}", msg);
+                Err(self.service_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    KLogErrorCode::Internal,
+                    msg,
+                    &trace_id,
+                ))
             }
         }
     }

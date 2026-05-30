@@ -1,4 +1,7 @@
-use crate::{KLogEntry, KLogId, KLogLevel, KLogMetaEntry, KNode, KNodeId, KResult};
+use crate::{
+    KLogEntry, KLogId, KLogLevel, KLogMetaEntry, KLogMetaTxRequest, KLogMetaTxResponse, KNode,
+    KNodeId, KResult,
+};
 use openraft::StoredMembership;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -18,6 +21,16 @@ pub struct KLogStateSnapshot {
 pub enum KLogMetaPutResult {
     Stored(KLogMetaEntry),
     VersionConflict {
+        expected_revision: u64,
+        current_revision: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KLogMetaTxResult {
+    Committed(KLogMetaTxResponse),
+    VersionConflict {
+        key: String,
         expected_revision: u64,
         current_revision: Option<u64>,
     },
@@ -76,6 +89,8 @@ pub trait KLogStateStore: Send + Sync {
     async fn query(&self, query: KLogQuery) -> KResult<Vec<KLogEntry>>;
 
     async fn put_meta(&self, item: KLogMetaEntry) -> KResult<KLogMetaEntry>;
+
+    async fn exec_meta_tx(&self, tx: KLogMetaTxRequest) -> KResult<KLogMetaTxResult>;
 
     async fn delete_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>>;
 
@@ -329,6 +344,10 @@ impl KLogStateStoreManager {
 
         let stored = self.state_store.put_meta(item).await?;
         Ok(KLogMetaPutResult::Stored(stored))
+    }
+
+    pub async fn exec_meta_tx(&self, tx: KLogMetaTxRequest) -> KResult<KLogMetaTxResult> {
+        self.state_store.exec_meta_tx(tx).await
     }
 
     pub async fn delete_meta_key(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {

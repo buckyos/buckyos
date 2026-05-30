@@ -66,7 +66,21 @@ BuckyOS/gateway layer. `klog` only enforces protocol and consistency rules.
 - `Some(n)`: update only when the current revision is `n`.
 
 Version conflicts are returned as `KLogErrorCode::VersionConflict` with HTTP
-`412` on HTTP APIs.
+`409` on HTTP APIs.
+
+`KLogMetaTxRequest` applies multiple metadata mutations atomically through the
+Raft state machine:
+
+- `actions`: keyed `put` or `delete` operations. The map key must match the
+  action key.
+- `expected_revision` on an action has the same CAS semantics as
+  `KLogMetaPutRequest.expected_revision`.
+- `guard`: optional optimistic transaction guard. When present, the transaction
+  first checks the guard key revision and rejects the whole transaction on
+  mismatch. If the guard key is not otherwise updated by the transaction, the
+  implementation bumps the existing guard key revision after all actions pass.
+
+On any conflict, none of the transaction actions are applied.
 
 ## API Planes
 
@@ -94,6 +108,7 @@ local RPC server.
 | `GET` | `/klog/data/query` | `KLogQueryRequest` query params | `KLogQueryResponse` |
 | `POST` | `/klog/data/meta-put` | `KLogMetaPutRequest` JSON body | `KLogMetaPutResponse` |
 | `POST` | `/klog/data/meta-delete` | `KLogMetaDeleteRequest` JSON body | `KLogMetaDeleteResponse` |
+| `POST` | `/klog/data/meta-tx` | `KLogMetaTxRequest` JSON body | `KLogMetaTxResponse` |
 | `GET` | `/klog/data/meta-query` | `KLogMetaQueryRequest` query params | `KLogMetaQueryResponse` |
 
 Query defaults and constraints:
@@ -122,6 +137,7 @@ Supported method names:
 - `klog.log.query`
 - `klog.meta.put`
 - `klog.meta.delete`
+- `klog.meta.tx`
 - `klog.meta.query`
 
 Legacy aliases are still accepted for log operations:

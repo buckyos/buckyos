@@ -4,7 +4,10 @@ use crate::state_store::{
     KLogQuery, KLogStateSnapshotData, KLogStateStore, KLogStateStoreManager, MemoryStateStore,
     RocksDbSnapshotMode, RocksDbStateStore,
 };
-use crate::{KLogEntry, KLogMetaEntry, KLogRequest, KLogResponse};
+use crate::{
+    KLogEntry, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxGuard, KLogMetaTxRequest, KLogRequest,
+    KLogResponse,
+};
 use openraft::entry::EntryPayload;
 use openraft::storage::RaftStateMachine;
 use openraft::{CommittedLeaderId, Entry, LogId};
@@ -288,6 +291,129 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
             ..
         }
     ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_state_machine_apply_meta_tx_is_atomic_on_conflict() -> anyhow::Result<()> {
+    let context = TestMemoryContext::new().await;
+    let mut sm = context.state_machine;
+
+    let seed = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(6, 0), 1),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "system/config/guard".to_string(),
+                value: "v1".to_string(),
+                updated_at: 7000,
+                updated_by_node_name: "node-1".to_string(),
+                revision: 0,
+            },
+            expected_revision: Some(0),
+        }),
+    };
+
+    let mut actions = std::collections::BTreeMap::new();
+    actions.insert(
+        "system/config/a".to_string(),
+        KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: "system/config/a".to_string(),
+                value: "a1".to_string(),
+                updated_at: 7001,
+                updated_by_node_name: "node-1".to_string(),
+                revision: 0,
+            },
+            expected_revision: Some(0),
+        },
+    );
+    actions.insert(
+        "system/config/b".to_string(),
+        KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: "system/config/b".to_string(),
+                value: "b1".to_string(),
+                updated_at: 7001,
+                updated_by_node_name: "node-1".to_string(),
+                revision: 0,
+            },
+            expected_revision: Some(0),
+        },
+    );
+    let tx = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(6, 0), 2),
+        payload: EntryPayload::Normal(KLogRequest::ExecMetaTx {
+            tx: KLogMetaTxRequest {
+                actions,
+                guard: Some(KLogMetaTxGuard {
+                    key: "system/config/guard".to_string(),
+                    expected_revision: 1,
+                }),
+            },
+        }),
+    };
+
+    let mut stale_actions = std::collections::BTreeMap::new();
+    stale_actions.insert(
+        "system/config/c".to_string(),
+        KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: "system/config/c".to_string(),
+                value: "c1".to_string(),
+                updated_at: 7002,
+                updated_by_node_name: "node-1".to_string(),
+                revision: 0,
+            },
+            expected_revision: Some(0),
+        },
+    );
+    let stale_tx = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(6, 0), 3),
+        payload: EntryPayload::Normal(KLogRequest::ExecMetaTx {
+            tx: KLogMetaTxRequest {
+                actions: stale_actions,
+                guard: Some(KLogMetaTxGuard {
+                    key: "system/config/guard".to_string(),
+                    expected_revision: 1,
+                }),
+            },
+        }),
+    };
+
+    let responses = sm.apply(vec![seed, tx, stale_tx]).await?;
+    assert_eq!(responses.len(), 3);
+    assert!(matches!(
+        responses[0],
+        KLogResponse::MetaPutOk { revision: 1, .. }
+    ));
+    assert!(matches!(responses[1], KLogResponse::MetaTxOk { .. }));
+    assert!(matches!(
+        &responses[2],
+        KLogResponse::MetaTxConflict {
+            key,
+            expected_revision: 1,
+            current_revision: Some(2),
+        } if key == "system/config/guard"
+    ));
+
+    let items = context
+        .state_store_manager
+        .list_meta_entries(Some("system/config/"), 10)
+        .await?;
+    let keys = items
+        .iter()
+        .map(|item| item.key.as_str())
+        .collect::<Vec<_>>();
+    assert!(keys.contains(&"system/config/a"));
+    assert!(keys.contains(&"system/config/b"));
+    assert!(!keys.contains(&"system/config/c"));
+    let guard = context
+        .state_store_manager
+        .get_meta_entry("system/config/guard")
+        .await?
+        .expect("guard should exist");
+    assert_eq!(guard.revision, 2);
 
     Ok(())
 }

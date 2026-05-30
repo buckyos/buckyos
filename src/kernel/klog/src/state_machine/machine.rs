@@ -1,7 +1,9 @@
 use super::snapshot::{KSnapshotMeta, SnapshotManager, SnapshotManagerRef};
 use crate::state_machine::snapshot::KSnapshotData;
 use crate::state_store::KLogStateStoreManagerRef;
-use crate::state_store::{KLogMetaPutResult, KLogStateMachineMeta, KLogStateSnapshot};
+use crate::state_store::{
+    KLogMetaPutResult, KLogMetaTxResult, KLogStateMachineMeta, KLogStateSnapshot,
+};
 use crate::{KLogId, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult};
 use openraft::{
     Entry, EntryPayload, OptionalSend, RaftSnapshotBuilder, SnapshotMeta, StoredMembership,
@@ -174,6 +176,43 @@ impl KLogStateMachine {
                     }
                     Err(err) => {
                         error!("StateMachine delete-meta request failed: {}", err);
+                        KLogResponse::Err(err.to_string())
+                    }
+                }
+            }
+            KLogRequest::ExecMetaTx { tx } => {
+                debug!(
+                    "StateMachine process meta-tx request: actions={}, guard={:?}",
+                    tx.actions.len(),
+                    tx.guard
+                );
+                match self.state_store.exec_meta_tx(tx).await {
+                    Ok(KLogMetaTxResult::Committed(resp)) => {
+                        debug!(
+                            "StateMachine meta-tx request committed: revisions={:?}",
+                            resp.revisions
+                        );
+                        KLogResponse::MetaTxOk {
+                            revisions: resp.revisions,
+                        }
+                    }
+                    Ok(KLogMetaTxResult::VersionConflict {
+                        key,
+                        expected_revision,
+                        current_revision,
+                    }) => {
+                        warn!(
+                            "StateMachine meta-tx request CAS conflict: key={}, expected_revision={}, current_revision={:?}",
+                            key, expected_revision, current_revision
+                        );
+                        KLogResponse::MetaTxConflict {
+                            key,
+                            expected_revision,
+                            current_revision,
+                        }
+                    }
+                    Err(err) => {
+                        error!("StateMachine meta-tx request failed: {}", err);
                         KLogResponse::Err(err.to_string())
                     }
                 }
