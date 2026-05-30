@@ -17,6 +17,7 @@ const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
 const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
 const KLOG_RPC_METHOD_LOG_QUERY: &str = "klog.log.query";
+const KLOG_CLUSTER_DV_ROUTE_MODE_ENV: &str = "KLOG_CLUSTER_DV_ROUTE_MODE";
 
 #[derive(Debug, Deserialize)]
 struct NodeGatewayInfo {
@@ -934,6 +935,46 @@ struct KLogConfigOptions<'a> {
     target_role: &'a str,
 }
 
+struct GatewayRuntimeOptions<'a> {
+    all_nodes: &'a [LocalNodeDef],
+    ingress_port: u16,
+    route_prefix: &'a str,
+    route_mode: LocalGatewayRouteMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalGatewayRouteMode {
+    DirectPlane,
+    TargetGateway,
+}
+
+impl LocalGatewayRouteMode {
+    fn from_env() -> Result<Self, String> {
+        match std::env::var(KLOG_CLUSTER_DV_ROUTE_MODE_ENV) {
+            Ok(value) => match value.as_str() {
+                "direct-plane" => Ok(Self::DirectPlane),
+                "target-gateway" | "" => Ok(Self::TargetGateway),
+                other => Err(format!(
+                    "invalid {}={}, expected direct-plane or target-gateway",
+                    KLOG_CLUSTER_DV_ROUTE_MODE_ENV, other
+                )),
+            },
+            Err(std::env::VarError::NotPresent) => Ok(Self::TargetGateway),
+            Err(err) => Err(format!(
+                "failed to read {}: {}",
+                KLOG_CLUSTER_DV_ROUTE_MODE_ENV, err
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectPlane => "direct-plane",
+            Self::TargetGateway => "target-gateway",
+        }
+    }
+}
+
 fn repo_root() -> Result<PathBuf, String> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
@@ -1095,9 +1136,7 @@ fn write_gateway_runtime(
     repo_root: &Path,
     buckyos_root: &Path,
     node: &LocalNodeDef,
-    all_nodes: &[LocalNodeDef],
-    ingress_port: u16,
-    route_prefix: &str,
+    options: &GatewayRuntimeOptions<'_>,
 ) -> Result<PathBuf, String> {
     let root = harness.root.join(format!("gateway-{}", node.name));
     let etc = root.join("etc");
@@ -1127,12 +1166,14 @@ fn write_gateway_runtime(
     );
     boot_gateway = boot_gateway.replace(
         "bind: 0.0.0.0:3180",
-        format!("bind: {}:{}", node.gateway_host, ingress_port).as_str(),
+        format!("bind: {}:{}", node.gateway_host, options.ingress_port).as_str(),
     );
-    boot_gateway = boot_gateway.replace(
-        r#"local target_url="${route.url}:${KLOG_CLUSTER_INGRESS_PORT}";"#,
-        r#"local target_url="${route.url}:${KLOG_CLUSTER_TARGET_PORT}";"#,
-    );
+    if options.route_mode == LocalGatewayRouteMode::DirectPlane {
+        boot_gateway = boot_gateway.replace(
+            r#"local target_url="${route.url}:${KLOG_CLUSTER_INGRESS_PORT}";"#,
+            r#"local target_url="${route.url}:${KLOG_CLUSTER_TARGET_PORT}";"#,
+        );
+    }
     fs::write(etc.join("boot_gateway.yaml"), boot_gateway)
         .map_err(|err| format!("failed to write temp boot_gateway.yaml: {}", err))?;
 
@@ -1147,7 +1188,8 @@ fn write_gateway_runtime(
     )
     .map_err(|err| format!("failed to copy node_device_config.json: {}", err))?;
 
-    let cluster_nodes = all_nodes
+    let cluster_nodes = options
+        .all_nodes
         .iter()
         .map(|node| {
             (
@@ -1162,15 +1204,22 @@ fn write_gateway_runtime(
             )
         })
         .collect::<serde_json::Map<_, _>>();
-    let routes = all_nodes
+    let routes = options
+        .all_nodes
         .iter()
         .filter(|target| target.name != node.name)
         .map(|target| {
+            let route_url = match options.route_mode {
+                LocalGatewayRouteMode::DirectPlane => "tcp:///127.0.0.1".to_string(),
+                LocalGatewayRouteMode::TargetGateway => {
+                    format!("tcp:///{}", target.gateway_host)
+                }
+            };
             (
                 target.name.clone(),
                 json!({
                     "direct": {
-                        "url": "tcp:///127.0.0.1",
+                        "url": route_url,
                         "backup": false
                     }
                 }),
@@ -1188,8 +1237,8 @@ fn write_gateway_runtime(
         "routes": routes,
         "cluster_route_map": {
             "klog-service": {
-                "route_prefix": route_prefix,
-                "ingress_port": ingress_port,
+                "route_prefix": options.route_prefix,
+                "ingress_port": options.ingress_port,
                 "nodes": cluster_nodes
             }
         },
@@ -1351,6 +1400,7 @@ async fn prepare_local_gateway_setup(
     let buckyos_root = get_buckyos_root();
     let cyfs_gateway_bin = resolve_cyfs_gateway_bin(&repo_root, &buckyos_root)?;
     let klog_daemon_bin = resolve_klog_daemon_bin(&repo_root, &buckyos_root)?;
+    let route_mode = LocalGatewayRouteMode::from_env()?;
     let gateway_hosts = local_gateway_hosts(node_count);
     let mut used_ports = BTreeSet::new();
     let ingress_port = pick_common_port(&gateway_hosts, &mut used_ports)?;
@@ -1367,18 +1417,18 @@ async fn prepare_local_gateway_setup(
         "[klog-cluster-dv] klog_daemon_bin={}",
         klog_daemon_bin.display()
     );
+    println!("[klog-cluster-dv] route_mode={}", route_mode.as_str());
     println!("[klog-cluster-dv] ingress_port={}", ingress_port);
 
+    let gateway_options = GatewayRuntimeOptions {
+        all_nodes: &nodes,
+        ingress_port,
+        route_prefix,
+        route_mode,
+    };
     for node in &nodes {
-        let gateway_config = write_gateway_runtime(
-            harness,
-            &repo_root,
-            &buckyos_root,
-            node,
-            &nodes,
-            ingress_port,
-            route_prefix,
-        )?;
+        let gateway_config =
+            write_gateway_runtime(harness, &repo_root, &buckyos_root, node, &gateway_options)?;
         spawn_gateway(harness, &cyfs_gateway_bin, &gateway_config, node)?;
         wait_tcp(
             node.gateway_host.as_str(),
