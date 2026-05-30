@@ -11,8 +11,8 @@ use buckyos_api::{
 };
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::{
-    BuckyosKlogConfig, KLogClusterConfigPatch, KLogClusterNetworkConfigPatch,
-    KLogNetworkConfigPatch, KLogRuntimeConfig, KLogRuntimeConfigSource,
+    BuckyosKlogConfig, KLogClusterConfigPatch, KLogClusterNetworkConfigPatch, KLogJoinConfigPatch,
+    KLogJoinTargetRole, KLogNetworkConfigPatch, KLogRuntimeConfig, KLogRuntimeConfigSource,
 };
 use klog::logs::RocksDbLogStorage;
 use klog::network::{KNetworkFactory, KNetworkServer};
@@ -210,15 +210,39 @@ fn apply_buckyos_runtime_defaults(
     cluster_network
         .gateway_route_prefix
         .get_or_insert(default_transport.gateway_route_prefix);
+    let gateway_addr = cluster_network
+        .gateway_addr
+        .clone()
+        .unwrap_or_else(|| "127.0.0.1:3180".to_string());
+    let gateway_route_prefix = cluster_network
+        .gateway_route_prefix
+        .clone()
+        .unwrap_or_else(|| "/.cluster/klog".to_string());
 
     let cluster = patch
         .cluster
         .get_or_insert_with(KLogClusterConfigPatch::default);
     cluster.name.get_or_insert_with(|| zone_host.clone());
     cluster.id.get_or_insert(zone_host);
-    cluster
+    let auto_bootstrap = *cluster
         .auto_bootstrap
         .get_or_insert_with(|| derive_buckyos_auto_bootstrap(runtime, node_name));
+
+    if !auto_bootstrap {
+        let join = patch.join.get_or_insert_with(KLogJoinConfigPatch::default);
+        if join.targets.as_ref().map(|v| v.is_empty()).unwrap_or(true)
+            && let Some(target) = derive_buckyos_default_join_target(
+                runtime,
+                node_name,
+                &gateway_addr,
+                &gateway_route_prefix,
+            )?
+        {
+            join.targets = Some(vec![target]);
+        }
+        join.blocking.get_or_insert(true);
+        join.target_role.get_or_insert(KLogJoinTargetRole::Voter);
+    }
 
     Ok(())
 }
@@ -228,6 +252,7 @@ fn derive_buckyos_raft_node_id(runtime: &BuckyOSRuntime, node_name: &str) -> Res
         if let Some(index) = zone_config
             .oods
             .iter()
+            .filter(|ood| ood.node_type.is_ood())
             .position(|ood| ood.name == node_name)
         {
             return Ok((index + 1) as u64);
@@ -241,9 +266,56 @@ fn derive_buckyos_auto_bootstrap(runtime: &BuckyOSRuntime, node_name: &str) -> b
     runtime
         .zone_config
         .as_ref()
-        .and_then(|zone_config| zone_config.oods.first())
+        .and_then(|zone_config| zone_config.oods.iter().find(|ood| ood.node_type.is_ood()))
         .map(|ood| ood.name.as_str() == node_name)
         .unwrap_or(true)
+}
+
+fn derive_buckyos_default_join_target(
+    runtime: &BuckyOSRuntime,
+    node_name: &str,
+    gateway_addr: &str,
+    gateway_route_prefix: &str,
+) -> Result<Option<String>, String> {
+    let Some(zone_config) = runtime.zone_config.as_ref() else {
+        return Ok(None);
+    };
+    let Some(seed_ood) = zone_config.oods.iter().find(|ood| ood.node_type.is_ood()) else {
+        return Err("Cannot derive klog join target: zone_config has no OOD node".to_string());
+    };
+    if seed_ood.name == node_name {
+        return Ok(None);
+    }
+    Ok(Some(build_gateway_admin_target(
+        gateway_addr,
+        gateway_route_prefix,
+        &seed_ood.name,
+    )))
+}
+
+fn build_gateway_admin_target(gateway_addr: &str, route_prefix: &str, node_name: &str) -> String {
+    let gateway_addr = gateway_addr.trim().trim_end_matches('/');
+    let gateway_base =
+        if gateway_addr.starts_with("http://") || gateway_addr.starts_with("https://") {
+            gateway_addr.to_string()
+        } else {
+            format!("http://{}", gateway_addr)
+        };
+    let route_prefix = normalize_gateway_route_prefix(route_prefix);
+    let route_base = if route_prefix == "/" {
+        String::new()
+    } else {
+        route_prefix
+    };
+    format!("{gateway_base}{route_base}/{node_name}/admin")
+}
+
+fn normalize_gateway_route_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        return "/".to_string();
+    }
+    format!("/{trimmed}")
 }
 
 fn derive_raft_node_id_from_node_name(node_name: &str) -> Result<u64, String> {
@@ -428,6 +500,14 @@ mod tests {
     fn reject_missing_or_zero_raft_node_id_suffix() {
         assert!(derive_raft_node_id_from_node_name("ood").is_err());
         assert!(derive_raft_node_id_from_node_name("ood0").is_err());
+    }
+
+    #[test]
+    fn build_gateway_admin_target_normalizes_prefix() {
+        assert_eq!(
+            build_gateway_admin_target("127.0.0.1:3180", "cluster/klog/", "ood1"),
+            "http://127.0.0.1:3180/cluster/klog/ood1/admin"
+        );
     }
 
     #[test]

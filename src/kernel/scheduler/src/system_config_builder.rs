@@ -4,16 +4,16 @@ use buckyos_api::msg_queue::{
     generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
 };
 use buckyos_api::{
-    generate_aicc_service_doc, generate_control_panel_service_doc, generate_klog_service_doc,
-    generate_msg_center_service_doc, generate_opendan_service_doc, generate_repo_service_doc,
-    generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc,
-    generate_verify_hub_service_doc, generate_workflow_service_doc, AppDoc, AppServiceSpec,
-    AppType, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState,
-    SelectorType, ServiceExposeConfig, ServiceInfo, ServiceInstallConfig,
-    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceState, SubPkgDesc,
-    UserContactSettings, UserSettings, UserState, UserTunnelBinding, UserType,
-    OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID,
-    VERIFY_HUB_UNIQUE_ID,
+    default_klog_buckyos_settings, generate_aicc_service_doc, generate_control_panel_service_doc,
+    generate_klog_service_doc, generate_msg_center_service_doc, generate_opendan_service_doc,
+    generate_repo_service_doc, generate_scheduler_service_doc, generate_smb_service_doc,
+    generate_task_manager_service_doc, generate_verify_hub_service_doc,
+    generate_workflow_service_doc, AppDoc, AppServiceSpec, AppType, GatewaySettings,
+    GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SelectorType, ServiceExposeConfig,
+    ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState,
+    ServiceNode, ServiceState, SubPkgDesc, UserContactSettings, UserSettings, UserState,
+    UserTunnelBinding, UserType, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
+    SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
@@ -332,6 +332,10 @@ impl SystemConfigBuilder {
         let service_doc = generate_klog_service_doc();
         let config = build_klog_service_spec(service_doc).await?;
         self.insert_json("services/klog-service/spec", &config)?;
+        self.insert_json_if_absent(
+            "services/klog-service/settings",
+            &default_klog_buckyos_settings(),
+        )?;
         Ok(self)
     }
 
