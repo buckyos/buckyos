@@ -1,3 +1,4 @@
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,10 +16,20 @@ const MULTI_NODE_MODE: &str = "local-gateway-failover";
 const MEMBERSHIP_MODE: &str = "local-gateway-membership";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
+const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
 const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
+const SYSTEM_CONFIG_RPC_SERVICE_PATH: &str = "/kapi/system_config";
 const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
 const KLOG_RPC_METHOD_LOG_QUERY: &str = "klog.log.query";
 const KLOG_CLUSTER_DV_ROUTE_MODE_ENV: &str = "KLOG_CLUSTER_DV_ROUTE_MODE";
+const ENV_SYSTEM_CONFIG_PORT: &str = "BUCKYOS_SYSTEM_CONFIG_PORT";
+const TEST_DEVICE_NAME: &str = "ood1";
+const TEST_DEVICE_PUBLIC_KEY_X: &str = "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0";
+const TEST_DEVICE_PRIVATE_KEY_PEM: &str = r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIK45kLWIAx3CHmbEmyCST4YB3InSCA4XAV6udqHtRV5P
+-----END PRIVATE KEY-----
+"#;
 
 #[derive(Debug, Deserialize)]
 struct NodeGatewayInfo {
@@ -134,6 +145,19 @@ struct JsonRpcResponse {
     result: Option<Value>,
     error: Option<Value>,
     id: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct KrpcRequest<'a> {
+    method: &'a str,
+    params: &'a Value,
+    sys: Vec<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KrpcResponse {
+    result: Option<Value>,
+    error: Option<String>,
 }
 
 fn get_buckyos_root() -> PathBuf {
@@ -1241,6 +1265,35 @@ fn resolve_klog_daemon_bin(repo_root: &Path, buckyos_root: &Path) -> Result<Path
     )
 }
 
+fn resolve_system_config_bin(repo_root: &Path, buckyos_root: &Path) -> Result<PathBuf, String> {
+    if let Ok(raw) = std::env::var("SYSTEM_CONFIG_BIN") {
+        let path = PathBuf::from(raw.trim());
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    first_existing_path(
+        vec![
+            buckyos_root
+                .join("bin")
+                .join("system-config")
+                .join("system_config"),
+            repo_root
+                .join(".dev_buckyos")
+                .join("bin")
+                .join("system-config")
+                .join("system_config"),
+            repo_root
+                .join("src")
+                .join("target")
+                .join("debug")
+                .join("system_config"),
+        ],
+        "system_config binary",
+    )
+}
+
 fn reserve_port(host: &str, port: u16) -> bool {
     TcpListener::bind((host, port)).is_ok()
 }
@@ -1557,6 +1610,24 @@ fn spawn_klog(
     harness.spawn(format!("klog-{}", node.name).as_str(), &mut command)
 }
 
+fn spawn_system_config(
+    harness: &mut LocalHarness,
+    system_config_bin: &Path,
+    service_port: u16,
+    klog_endpoint: &str,
+) -> Result<(), String> {
+    let mut command = Command::new(system_config_bin);
+    command
+        .env("BUCKYOS_ROOT", harness.root.as_os_str())
+        .env("BUCKYOS_SYSTEM_CONFIG_STORE", "klog")
+        .env("BUCKYOS_SYSTEM_CONFIG_KLOG_ENDPOINT", klog_endpoint)
+        .env("BUCKYOS_SYSTEM_CONFIG_KLOG_NODE_NAME", TEST_DEVICE_NAME)
+        .env(ENV_SYSTEM_CONFIG_PORT, service_port.to_string())
+        .env("BUCKYOS_THIS_DEVICE", test_device_doc(TEST_DEVICE_NAME))
+        .env("RUST_LOG", "warn");
+    harness.spawn("system-config-klog", &mut command)
+}
+
 async fn wait_tcp(host: &str, port: u16, timeout: Duration) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
     let addr = format!("{}:{}", host, port);
@@ -1569,6 +1640,137 @@ async fn wait_tcp(host: &str, port: u16, timeout: Duration) -> Result<(), String
             Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0)
+}
+
+fn test_device_doc(device_name: &str) -> String {
+    let did = format!("did:dev:{}", TEST_DEVICE_PUBLIC_KEY_X);
+    json!({
+        "id": did,
+        "verificationMethod": [{
+            "type": "Ed25519VerificationKey2020",
+            "id": "#main_key",
+            "controller": did,
+            "publicKeyJwk": {
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": TEST_DEVICE_PUBLIC_KEY_X
+            }
+        }],
+        "authentication": ["#main_key"],
+        "assertion_method": ["#main_key"],
+        "exp": now_secs() + 3600,
+        "iat": now_secs(),
+        "owner": "did:undefined:undefined",
+        "device_type": "ood",
+        "name": device_name
+    })
+    .to_string()
+}
+
+fn system_config_jwt(issuer: &str, sub: &str, appid: &str) -> Result<String, String> {
+    let private_key = EncodingKey::from_ed_pem(TEST_DEVICE_PRIVATE_KEY_PEM.as_bytes())
+        .map_err(|err| format!("failed to load test device private key: {}", err))?;
+    let mut header = Header::new(Algorithm::EdDSA);
+    header.typ = None;
+    jsonwebtoken::encode(
+        &header,
+        &json!({
+            "iss": issuer,
+            "sub": sub,
+            "appid": appid,
+            "exp": now_secs() + 900
+        }),
+        &private_key,
+    )
+    .map_err(|err| format!("failed to generate system_config JWT: {}", err))
+}
+
+async fn call_system_config_rpc(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let request = KrpcRequest {
+        method,
+        params: &params,
+        sys: vec![json!(0), json!(token)],
+    };
+    let response = client
+        .post(endpoint)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|err| format!("system_config rpc {} send failed: {}", method, err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("system_config rpc {} read body failed: {}", method, err))?;
+    if !status.is_success() {
+        return Err(format!(
+            "system_config rpc {} http status {} body={}",
+            method, status, body
+        ));
+    }
+    let response: KrpcResponse = serde_json::from_str(body.as_str())
+        .map_err(|err| format!("system_config rpc {} decode failed: {}", method, err))?;
+    if let Some(error) = response.error {
+        return Err(format!("system_config rpc {} failed: {}", method, error));
+    }
+    Ok(response.result.unwrap_or(Value::Null))
+}
+
+async fn expect_system_config_rpc_error(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+    method: &str,
+    params: Value,
+) -> Result<String, String> {
+    match call_system_config_rpc(client, endpoint, token, method, params).await {
+        Ok(value) => Err(format!(
+            "system_config rpc {} unexpectedly succeeded: {}",
+            method, value
+        )),
+        Err(err) => Ok(err),
+    }
+}
+
+fn require_system_config_value(
+    value: &Value,
+    expected_value: &str,
+    min_version: u64,
+) -> Result<u64, String> {
+    let actual_value = value
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("system_config get missing value: {}", value))?;
+    if actual_value != expected_value {
+        return Err(format!(
+            "system_config value mismatch: expected={}, actual={}",
+            expected_value, actual_value
+        ));
+    }
+    let version = value
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("system_config get missing version: {}", value))?;
+    if version < min_version {
+        return Err(format!(
+            "system_config version too small: expected>={}, actual={}",
+            min_version, version
+        ));
+    }
+    Ok(version)
 }
 
 async fn prepare_local_gateway_setup(
@@ -2736,6 +2938,398 @@ async fn run_local_gateway_system_config_kv() -> Result<(), String> {
     result
 }
 
+fn collect_used_ports(nodes: &[LocalNodeDef], ingress_port: u16) -> BTreeSet<u16> {
+    let mut used_ports = BTreeSet::from([ingress_port]);
+    for node in nodes {
+        used_ports.insert(node.ports.raft);
+        used_ports.insert(node.ports.inter);
+        used_ports.insert(node.ports.admin);
+        used_ports.insert(node.ports.rpc);
+        used_ports.insert(node.ports.rtcp);
+        used_ports.insert(node.ports.zone_http);
+        used_ports.insert(node.ports.control);
+    }
+    used_ports
+}
+
+async fn run_local_gateway_system_config_service_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-system-config-service-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, SYSTEM_CONFIG_SERVICE_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.rpc, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+    let klog_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        leader.ports.rpc, KLOG_JSON_RPC_SERVICE_PATH
+    );
+
+    let repo_root = repo_root()?;
+    let buckyos_root = get_buckyos_root();
+    let system_config_bin = resolve_system_config_bin(&repo_root, &buckyos_root)?;
+    let mut used_ports = collect_used_ports(&nodes, ingress_port);
+    let system_config_port = pick_local_port(&mut used_ports)?;
+    spawn_system_config(
+        harness,
+        &system_config_bin,
+        system_config_port,
+        klog_endpoint.as_str(),
+    )?;
+    wait_tcp("127.0.0.1", system_config_port, Duration::from_secs(15)).await?;
+
+    let endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        system_config_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    let user_token = system_config_jwt(TEST_DEVICE_NAME, "root", "scheduler")?;
+    let scheduler_token = system_config_jwt(TEST_DEVICE_NAME, "alice", "scheduler")?;
+    let suffix = unique_suffix("syscfg-service");
+    let base = format!("users/alice/klog_service_dv/{}", suffix);
+    let profile_key = format!("{}/profile", base);
+    let notes_key = format!("{}/notes", base);
+    let tx_key1 = format!("{}/tx/key1", base);
+    let tx_key2 = format!("{}/tx/key2", base);
+    let stale_key = format!("{}/tx/stale", base);
+
+    let profile_v1 = r#"{"name":"v1","flags":{"enabled":false}}"#;
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_create",
+        json!({"key": profile_key, "value": profile_v1}),
+    )
+    .await?;
+    let created = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key}),
+    )
+    .await?;
+    require_system_config_value(&created, profile_v1, 1)?;
+    expect_system_config_rpc_error(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_create",
+        json!({"key": profile_key, "value": profile_v1}),
+    )
+    .await?;
+
+    let profile_v2 = r#"{"name":"v2","flags":{"enabled":false}}"#;
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_set",
+        json!({"key": profile_key, "value": profile_v2}),
+    )
+    .await?;
+    let set = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key}),
+    )
+    .await?;
+    require_system_config_value(&set, profile_v2, 1)?;
+
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_set_by_json_path",
+        json!({"key": profile_key, "json_path": "/flags/enabled", "value": "true"}),
+    )
+    .await?;
+    let path_updated = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key}),
+    )
+    .await?;
+    let path_updated_version = path_updated
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("missing version after json path update: {}", path_updated))?;
+    let path_updated_value: Value = serde_json::from_str(
+        path_updated
+            .get("value")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("missing value after json path update: {}", path_updated))?,
+    )
+    .map_err(|err| format!("failed to parse profile json value: {}", err))?;
+    if path_updated_value
+        .pointer("/flags/enabled")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(format!(
+            "json path update was not visible: {}",
+            path_updated_value
+        ));
+    }
+
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_set",
+        json!({"key": profile_key, "value": profile_v2}),
+    )
+    .await?;
+    let mut stale_actions = serde_json::Map::new();
+    stale_actions.insert(
+        stale_key.clone(),
+        json!({
+            "action": "create",
+            "value": "should-not-exist"
+        }),
+    );
+    expect_system_config_rpc_error(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_exec_tx",
+        json!({
+            "main_key": format!("{}:{}", profile_key, path_updated_version),
+            "actions": stale_actions
+        }),
+    )
+    .await?;
+    let stale = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_get",
+        json!({"key": stale_key}),
+    )
+    .await?;
+    if !stale.is_null() {
+        return Err(format!(
+            "stale guarded exec_tx left partial state: {}",
+            stale
+        ));
+    }
+
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_create",
+        json!({"key": notes_key, "value": "hello"}),
+    )
+    .await?;
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_append",
+        json!({"key": notes_key, "append_value": " world"}),
+    )
+    .await?;
+    let notes = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_get",
+        json!({"key": notes_key}),
+    )
+    .await?;
+    require_system_config_value(&notes, "hello world", 1)?;
+
+    let mut tx_actions = serde_json::Map::new();
+    tx_actions.insert(
+        tx_key1.clone(),
+        json!({
+            "action": "create",
+            "value": "tx-value-1"
+        }),
+    );
+    tx_actions.insert(
+        tx_key2.clone(),
+        json!({
+            "action": "create",
+            "value": "tx-value-2"
+        }),
+    );
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_exec_tx",
+        json!({"actions": tx_actions}),
+    )
+    .await?;
+    let tx1 = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_get",
+        json!({"key": tx_key1}),
+    )
+    .await?;
+    require_system_config_value(&tx1, "tx-value-1", 1)?;
+    let tx2 = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_get",
+        json!({"key": tx_key2}),
+    )
+    .await?;
+    require_system_config_value(&tx2, "tx-value-2", 1)?;
+
+    let listed = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_list",
+        json!({"key": base}),
+    )
+    .await?;
+    let listed = listed
+        .as_array()
+        .ok_or_else(|| format!("system_config list result is not array: {}", listed))?;
+    for expected_child in ["profile", "notes", "tx"] {
+        if !listed
+            .iter()
+            .any(|value| value.as_str() == Some(expected_child))
+        {
+            return Err(format!(
+                "system_config list missing child {}: {:?}",
+                expected_child, listed
+            ));
+        }
+    }
+
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_delete",
+        json!({"key": notes_key}),
+    )
+    .await?;
+    let deleted = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        user_token.as_str(),
+        "sys_config_get",
+        json!({"key": notes_key}),
+    )
+    .await?;
+    if !deleted.is_null() {
+        return Err(format!("deleted key is still visible: {}", deleted));
+    }
+
+    let scheduler_dump = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        scheduler_token.as_str(),
+        "dump_configs_for_scheduler",
+        json!({}),
+    )
+    .await?;
+    if scheduler_dump.get(profile_key.as_str()).is_none()
+        || scheduler_dump.get(tx_key1.as_str()).is_none()
+    {
+        return Err(format!(
+            "scheduler dump missing klog-backed system_config keys: {}",
+            scheduler_dump
+        ));
+    }
+
+    println!(
+        "[klog-cluster-dv] system_config service klog backend ok: leader={}, endpoint={}, prefix={}",
+        leader_id, endpoint, base
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_system_config_service() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_system_config_service_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_installed_runtime_smoke() -> Result<(), String> {
     let buckyos_root = get_buckyos_root();
     let local_node_name = load_local_node_name(&buckyos_root)?;
@@ -2833,9 +3427,15 @@ async fn run() -> Result<(), String> {
         MEMBERSHIP_MODE => run_local_gateway_membership().await,
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
+        SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}'",
-            other, MULTI_NODE_MODE, MEMBERSHIP_MODE, RESTART_RECOVERY_MODE, SYSTEM_CONFIG_KV_MODE
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}'",
+            other,
+            MULTI_NODE_MODE,
+            MEMBERSHIP_MODE,
+            RESTART_RECOVERY_MODE,
+            SYSTEM_CONFIG_KV_MODE,
+            SYSTEM_CONFIG_SERVICE_MODE
         )),
     }
 }

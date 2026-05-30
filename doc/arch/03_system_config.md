@@ -65,11 +65,15 @@ system-config 服务以 kRPC 方式暴露在 `/kapi/system_config`，并在入�
 ## klog backend rollout
 `system_config` 的 klog backend 仍然是显式启用，不改变默认 sled 行为：
 - `BUCKYOS_SYSTEM_CONFIG_STORE=klog`：选择 klog backend。
+- `BUCKYOS_SYSTEM_CONFIG_PORT`：可选，覆盖 `system_config` 服务监听端口；默认 `3200`。主要用于 DV/本地隔离测试，避免和已运行的 BuckyOS 实例冲突。
 - `BUCKYOS_SYSTEM_CONFIG_KLOG_ENDPOINT`：可选，覆盖 klog JSON-RPC endpoint；默认走本机 service route `http://127.0.0.1:4080/kapi/klog-service`。
 - `BUCKYOS_SYSTEM_CONFIG_KLOG_NODE_NAME`：可选，覆盖写入 `KLogMetaEntry.updated_by_node_name` 的节点名；默认优先使用 `BUCKYOS_THIS_DEVICE.name`。
 - `BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true`：可选的一次性 seed 辅助。启动时只有在 klog 的 `boot/`、`devices/`、`users/`、`services/`、`system/`、`nodes/` 前缀都为空时，才会把本地 sled 中这些前缀的数据用一次 klog meta transaction 复制到 klog；不会覆盖已有 klog 数据，也不会留下部分写入结果。
 
 切换前必须确认 klog-service 和本机 gateway route 已可用，否则 klog backend 无法读取 `boot/config`、RBAC 和 scheduler 输入。bootstrap 只负责从本机 sled 复制当前 KV 内容，不保留 sled 的历史 revision sidecar；迁移后 revision 以 klog meta revision 为准。
+
+服务层 DV 入口：
+- `uv run test/run.py -p klog_system_config_service_dv`：启动本地 3 节点 klog cluster 和独立 `system_config` 进程，设置 `BUCKYOS_SYSTEM_CONFIG_STORE=klog`，通过真实 `/kapi/system_config` kRPC 覆盖 `create/get/set/set_by_json_path/append/list/delete/exec_tx/dump_configs_for_scheduler`。
 
 参考：
 - `new_doc/ref/doc/key data.md`（列出部分关键 KV；以代码为准）

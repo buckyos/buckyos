@@ -72,19 +72,123 @@ pub struct KLogMetaTxGuard {
     pub expected_revision: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", tag = "action")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KLogMetaTxAction {
     Put {
         item: KLogMetaEntry,
-        #[serde(skip_serializing_if = "Option::is_none")]
         expected_revision: Option<u64>,
     },
     Delete {
         key: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
         expected_revision: Option<u64>,
     },
+}
+
+impl Serialize for KLogMetaTxAction {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        if serializer.is_human_readable() {
+            match self {
+                Self::Put {
+                    item,
+                    expected_revision,
+                } => {
+                    let field_count = if expected_revision.is_some() { 3 } else { 2 };
+                    let mut state = serializer.serialize_struct("KLogMetaTxAction", field_count)?;
+                    state.serialize_field("action", "put")?;
+                    state.serialize_field("item", item)?;
+                    if expected_revision.is_some() {
+                        state.serialize_field("expected_revision", expected_revision)?;
+                    }
+                    return state.end();
+                }
+                Self::Delete {
+                    key,
+                    expected_revision,
+                } => {
+                    let field_count = if expected_revision.is_some() { 3 } else { 2 };
+                    let mut state = serializer.serialize_struct("KLogMetaTxAction", field_count)?;
+                    state.serialize_field("action", "delete")?;
+                    state.serialize_field("key", key)?;
+                    if expected_revision.is_some() {
+                        state.serialize_field("expected_revision", expected_revision)?;
+                    }
+                    return state.end();
+                }
+            }
+        }
+
+        let mut state = serializer.serialize_struct("KLogMetaTxAction", 4)?;
+        match self {
+            Self::Put {
+                item,
+                expected_revision,
+            } => {
+                state.serialize_field("action", "put")?;
+                state.serialize_field("item", &Some(item))?;
+                state.serialize_field("key", &Option::<String>::None)?;
+                state.serialize_field("expected_revision", expected_revision)?;
+            }
+            Self::Delete {
+                key,
+                expected_revision,
+            } => {
+                state.serialize_field("action", "delete")?;
+                state.serialize_field("item", &Option::<KLogMetaEntry>::None)?;
+                state.serialize_field("key", &Some(key))?;
+                state.serialize_field("expected_revision", expected_revision)?;
+            }
+        }
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for KLogMetaTxAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireAction {
+            action: String,
+            #[serde(default)]
+            item: Option<KLogMetaEntry>,
+            #[serde(default)]
+            key: Option<String>,
+            #[serde(default)]
+            expected_revision: Option<u64>,
+        }
+
+        let wire = WireAction::deserialize(deserializer)?;
+        match wire.action.as_str() {
+            "put" => {
+                let item = wire
+                    .item
+                    .ok_or_else(|| serde::de::Error::missing_field("item"))?;
+                Ok(Self::Put {
+                    item,
+                    expected_revision: wire.expected_revision,
+                })
+            }
+            "delete" => {
+                let key = wire
+                    .key
+                    .ok_or_else(|| serde::de::Error::missing_field("key"))?;
+                Ok(Self::Delete {
+                    key,
+                    expected_revision: wire.expected_revision,
+                })
+            }
+            action => Err(serde::de::Error::unknown_variant(
+                action,
+                &["put", "delete"],
+            )),
+        }
+    }
 }
 
 impl KLogMetaTxAction {
@@ -110,7 +214,7 @@ impl KLogMetaTxAction {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct KLogMetaTxRequest {
     pub actions: BTreeMap<String, KLogMetaTxAction>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub guard: Option<KLogMetaTxGuard>,
 }
 
@@ -255,3 +359,58 @@ pub type KLogId = LogId<KNodeId>;
 
 pub type KRaft = Raft<KTypeConfig>;
 pub type KRaftRef = Arc<KRaft>;
+
+#[cfg(test)]
+mod meta_tx_action_tests {
+    use super::*;
+
+    #[test]
+    fn meta_tx_request_roundtrips_with_json_and_bincode() {
+        let action = KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: "boot/config".to_string(),
+                value: "{}".to_string(),
+                updated_at: 1,
+                updated_by_node_name: "ood1".to_string(),
+                revision: 0,
+            },
+            expected_revision: Some(0),
+        };
+
+        let json = serde_json::to_value(&action).expect("serialize action to json");
+        assert_eq!(
+            json.get("action").and_then(|value| value.as_str()),
+            Some("put")
+        );
+        assert!(json.get("key").is_none());
+        let from_json: KLogMetaTxAction =
+            serde_json::from_value(json).expect("deserialize action from json");
+        assert_eq!(from_json, action);
+
+        let encoded = bincode::serde::encode_to_vec(&action, bincode::config::legacy())
+            .expect("serialize action to bincode");
+        let (from_bincode, _): (KLogMetaTxAction, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .expect("deserialize action from bincode");
+        assert_eq!(from_bincode, action);
+
+        let mut actions = BTreeMap::new();
+        actions.insert("boot/config".to_string(), action);
+        let request = KLogRequest::ExecMetaTx {
+            tx: KLogMetaTxRequest {
+                actions,
+                guard: None,
+            },
+        };
+        let encoded = bincode::serde::encode_to_vec(&request, bincode::config::legacy())
+            .expect("serialize request to bincode");
+        let (from_bincode, _): (KLogRequest, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .expect("deserialize request from bincode");
+        let KLogRequest::ExecMetaTx { tx } = from_bincode else {
+            panic!("unexpected request variant");
+        };
+        assert!(tx.guard.is_none());
+        assert_eq!(tx.actions.len(), 1);
+    }
+}

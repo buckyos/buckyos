@@ -10,13 +10,17 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Keep this open until the same path is verified in a real multi-node/cascade DV topology instead of the local multi-process harness.
 - [ ] Validate real system_config service on the klog backend in multi-OOD mode.
   - The first high-level klog meta KV semantics DV is covered locally.
+  - The real `/kapi/system_config` service path is covered locally by
+    `test/klog_system_config_service_dv.sh`, which starts a 3-node klog cluster
+    and an isolated `system_config` process with `BUCKYOS_SYSTEM_CONFIG_STORE=klog`.
   - The klog crate now has an atomic meta transaction primitive for multi-key
     CAS/write semantics, which is the storage prerequisite for
     `sys_config_exec_tx`.
   - `system_config` now has an opt-in klog provider and an explicit
     `BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true` seed helper that
     writes the first rollout seed as one klog meta transaction.
-  - Keep this open until `sys_config_get/set/create/delete/list/exec_tx` run through the actual system_config service backed by klog instead of the local sled provider.
+  - Keep this open until the same system_config service path is verified in a
+    true multi-OOD/cascade DV topology instead of the local multi-process harness.
 
 ## P1: Security / Admin API
 
@@ -64,6 +68,10 @@ This file tracks current implementation gaps after the BuckyOS integration work.
 - [x] Validate klog meta KV semantics needed by system_config replacement.
   - Covered by `test/klog_system_config_kv_dv.sh`.
   - Validates create-as-CAS, stale revision conflict, strong read, prefix listing, and delete through the target-gateway route.
+- [x] Validate real system_config kRPC methods on the klog backend locally.
+  - Covered by `test/klog_system_config_service_dv.sh`.
+  - Validates `create/get/set/set_by_json_path/append/list/delete/exec_tx` and
+    `dump_configs_for_scheduler` through `/kapi/system_config`.
 - [x] Add klog atomic meta transaction primitive for system_config replacement.
   - `KLogMetaTxRequest` supports multi-key put/delete actions plus an optional
     optimistic guard revision.
