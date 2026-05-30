@@ -5,7 +5,7 @@ mod kv_provider;
 mod sled_provider;
 mod zone_did_resolver;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -52,18 +52,115 @@ const INTERNAL_META_PREFIX: &str = "__meta/";
 // Supported values: "sled" (default) or "klog".
 const ENV_SYSTEM_CONFIG_STORE: &str = "BUCKYOS_SYSTEM_CONFIG_STORE";
 
-fn create_sys_store() -> Arc<Mutex<dyn KVStoreProvider>> {
-    let store_kind = std::env::var(ENV_SYSTEM_CONFIG_STORE)
-        .unwrap_or_else(|_| "sled".to_string())
+// Optional. One-shot bootstrap helper for the first klog backend rollout.
+// When true, system_config copies existing local sled data into klog only if
+// klog has no visible system_config keys yet.
+const ENV_KLOG_BOOTSTRAP_FROM_SLED: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED";
+
+const SYSTEM_CONFIG_BOOTSTRAP_PREFIXES: &[&str] = &[
+    "boot/",
+    "devices/",
+    "users/",
+    "services/",
+    "system/",
+    "nodes/",
+];
+
+fn normalize_system_config_store_kind(raw: Option<String>) -> String {
+    raw.unwrap_or_else(|| "sled".to_string())
         .trim()
-        .to_ascii_lowercase();
-    if store_kind == "klog" {
+        .to_ascii_lowercase()
+}
+
+fn system_config_store_kind() -> String {
+    normalize_system_config_store_kind(std::env::var(ENV_SYSTEM_CONFIG_STORE).ok())
+}
+
+fn system_config_uses_klog() -> bool {
+    system_config_store_kind() == "klog"
+}
+
+fn env_flag_enabled_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| env_flag_enabled_value(&value))
+        .unwrap_or(false)
+}
+
+fn create_sys_store() -> Arc<Mutex<dyn KVStoreProvider>> {
+    if system_config_uses_klog() {
         info!("system_config store provider: klog");
         return Arc::new(Mutex::new(KLogStore::new_from_env()));
     }
 
     info!("system_config store provider: sled");
     Arc::new(Mutex::new(SledStore::new().unwrap()))
+}
+
+// First-rollout helper: copy local sled state only when klog is still empty.
+async fn bootstrap_klog_from_sled_if_enabled() -> std::result::Result<(), String> {
+    if !system_config_uses_klog() || !env_flag_enabled(ENV_KLOG_BOOTSTRAP_FROM_SLED) {
+        return Ok(());
+    }
+
+    info!(
+        "system_config klog bootstrap requested by {}",
+        ENV_KLOG_BOOTSTRAP_FROM_SLED
+    );
+    let source = SledStore::new().map_err(|err| format!("open sled store failed: {}", err))?;
+    let target = KLogStore::new_from_env();
+
+    for prefix in SYSTEM_CONFIG_BOOTSTRAP_PREFIXES {
+        let existing = target
+            .list_keys(prefix)
+            .await
+            .map_err(|err| format!("query klog prefix {} failed: {}", prefix, err))?;
+        if !existing.is_empty() {
+            info!(
+                "system_config klog bootstrap skipped: prefix {} already has {} keys",
+                prefix,
+                existing.len()
+            );
+            return Ok(());
+        }
+    }
+
+    let mut entries = BTreeMap::new();
+    for prefix in SYSTEM_CONFIG_BOOTSTRAP_PREFIXES {
+        let prefix_entries = source
+            .list_data(prefix)
+            .await
+            .map_err(|err| format!("read sled prefix {} failed: {}", prefix, err))?;
+        entries.extend(prefix_entries);
+    }
+
+    if entries.is_empty() {
+        warn!("system_config klog bootstrap found no sled data to copy");
+        return Ok(());
+    }
+
+    let copied = entries.len();
+    let tx_actions = entries
+        .into_iter()
+        .map(|(key, value)| (key, KVAction::Create(value)))
+        .collect();
+    target
+        .exec_tx(tx_actions, None)
+        .await
+        .map_err(|err| format!("write klog bootstrap transaction failed: {}", err))?;
+
+    info!(
+        "system_config klog bootstrap copied {} keys atomically",
+        copied
+    );
+    Ok(())
 }
 
 fn is_internal_meta_key(key_path: &str) -> bool {
@@ -1210,6 +1307,10 @@ async fn service_main() {
     //std::env::set_var("BUCKY_LOG","debug");
     init_logging("system_config_service", true);
     info!("Starting system config service............................");
+    if let Err(err) = bootstrap_klog_from_sled_if_enabled().await {
+        error!("system_config klog bootstrap failed: {}", err);
+        panic!("system_config klog bootstrap failed: {}", err);
+    }
     init_by_boot_config().await.unwrap();
 
     let server = SystemConfigServer::new();
@@ -1240,6 +1341,30 @@ mod test {
     use tokio::{task, time::sleep};
 
     use super::*;
+
+    #[test]
+    fn normalizes_system_config_store_kind() {
+        assert_eq!(normalize_system_config_store_kind(None), "sled");
+        assert_eq!(
+            normalize_system_config_store_kind(Some(" KLOG ".to_string())),
+            "klog"
+        );
+        assert_eq!(
+            normalize_system_config_store_kind(Some("sled".to_string())),
+            "sled"
+        );
+    }
+
+    #[test]
+    fn parses_bootstrap_env_flag() {
+        for value in ["1", "true", "TRUE", "yes", "on"] {
+            assert!(env_flag_enabled_value(value));
+        }
+        for value in ["", "0", "false", "off", "no"] {
+            assert!(!env_flag_enabled_value(value));
+        }
+    }
+
     #[allow(dead_code)]
     //#[tokio::test(flavor = "current_thread")]
     async fn test_server_interface() {
