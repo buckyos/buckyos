@@ -83,7 +83,27 @@ rpc_advertise_port = 4080
 - 外部是否能调用 admin，取决于 gateway 的鉴权和路由策略；
 - 建议在 gateway 层对 admin 路径加严格 ACL/鉴权。
 
-## 6. 常见误配
+## 6. Authority 分层
+
+klog 的 authority 设计原则是：BuckyOS/gateway 负责身份、权限和路由暴露策略，klog 只负责最小安全边界和一致性语义校验。
+
+klog 层当前负责：
+
+- admin/raft/inter/rpc 分端口，避免不同能力混在同一个入口；
+- 默认监听 `127.0.0.1`，不主动暴露到公网或跨机网络；
+- `admin_local_only=true` 时拒绝非 loopback 来源访问 admin API；
+- 校验 cluster identity、membership 变更、leader-only 写入和配置变更冲突等一致性规则。
+
+BuckyOS/gateway 层负责：
+
+- 决定 `/.cluster/klog/...` 是否可从某个节点或某类入口访问；
+- 对 admin plane 做 ACL、RBAC、session/node/service token 等策略控制；
+- 基于 DID/RTCP/tunnel 建立节点身份边界；
+- 避免把 klog admin plane 暴露到公网业务入口。
+
+因此，在当前实现下，除未来可能增加的 BuckyOS 内部 token 防御性校验外，klog 层的 authority 边界已经完整：它不实现用户级 RBAC，也不替代 gateway 的访问控制。正式 BuckyOS 部署应保持 klog 监听 localhost，并通过本机 node_gateway 进入；`admin_local_only=false` 只适合 direct 调试或受控内网。
+
+## 7. 常见误配
 
 1. 只改了 `listen_*`，没改 `advertise_*`
 - 结果：本机能起，集群互联失败，选举/复制报连接错误。
@@ -95,7 +115,7 @@ rpc_advertise_port = 4080
 3. 只开放 Raft 端口，未开放 inter/admin
 - 结果：协议层可能通，但转发写入/成员变更失败。
 
-## 7. 最小运维检查清单
+## 8. 最小运维检查清单
 
 1. 每个节点 `advertise_addr` 是否为其他节点可达地址。
 2. `advertise_port/inter/admin` 是否都配置了 gateway 转发。
@@ -103,14 +123,14 @@ rpc_advertise_port = 4080
 4. `network.rpc_listen_addr` 是否只本机暴露（默认建议）。
 5. gateway 是否对 admin 接口实施了鉴权/访问控制。
 
-## 8. 压测工具（klog_bench）
+## 9. 压测工具（klog_bench）
 
 为了验证吞吐和延迟，`klog_daemon` 新增了本地压测二进制：
 
 - 路径：`kernel/klog_daemon/src/bin/klog_bench.rs`
 - 能力：自动拉起本地集群（默认 3 节点），并发发起 append，输出 TPS 和延迟分位数（P50/P95/P99）。
 
-### 8.1 快速开始
+### 9.1 快速开始
 
 先构建 daemon 可执行文件：
 
@@ -133,7 +153,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
   --report-json /tmp/klog_bench_report.json
 ```
 
-### 8.2 常用参数
+### 9.2 常用参数
 
 1. `--nodes`：本地拉起节点数（默认 `3`）。
 2. `--concurrency`：并发 worker 数（默认 `32`）。
@@ -151,7 +171,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
 14. `--report-json`：输出 JSON 报告路径（可选）。
 15. `--keep-data`：保留临时数据目录（用于问题排查）。
 
-### 8.3 配置文件模式
+### 9.3 配置文件模式
 
 仓库提供示例：
 
@@ -166,7 +186,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
   --report-json /tmp/klog_bench_report.json
 ```
 
-### 8.4 指标含义
+### 9.4 指标含义
 
 - `throughput`：成功请求的平均吞吐（req/s）。
 - `success_rate`：成功请求占比。
