@@ -1,1 +1,239 @@
-<TODO>
+# klog
+
+`klog` is the replicated log and metadata KV library used by `klog_daemon`.
+It provides the OpenRaft type definitions, log/state-store implementations,
+cluster HTTP transport, local JSON-RPC service, and client APIs.
+
+Deployment, process lifecycle, daemon config, gateway exposure, and BuckyOS
+integration policy are documented in `src/kernel/klog_daemon/readme.md`.
+
+## Scope
+
+`klog` is responsible for:
+
+- replicated append-only log entries;
+- strongly consistent metadata KV writes;
+- optional linearizable reads through an OpenRaft read barrier;
+- follower-to-leader forwarding for writes and strong reads;
+- cluster membership admin primitives;
+- local client-facing JSON-RPC helpers.
+
+`klog` is not responsible for:
+
+- starting/stopping daemon processes;
+- generating BuckyOS scheduler or gateway config;
+- user/session/RBAC authorization;
+- public route exposure policy.
+
+In BuckyOS deployment, identity, route exposure, and RBAC belong to the
+BuckyOS/gateway layer. `klog` only enforces protocol and consistency rules.
+
+## Data Model
+
+### Log Entries
+
+`KLogEntry` is the replicated append-only record:
+
+- `id`: global log id. Clients normally send `0`; the leader assigns the next id.
+- `timestamp`: milliseconds since Unix epoch. The service fills it when omitted by the request.
+- `node_name`: BuckyOS node name that created the entry.
+- `request_id`: optional idempotency key. Recent ids are deduplicated.
+- `level`: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, or `FATAL`.
+- `source`: optional logical source.
+- `attrs`: optional string attributes.
+- `message`: log body.
+
+`KLogAppendRequest` limits:
+
+- `message` maximum: 64 KiB.
+- `request_id` maximum: 128 bytes.
+- recent `request_id` dedup window: 5 minutes, capped at 10,000 cached ids.
+
+### Metadata KV
+
+`KLogMetaEntry` stores system metadata:
+
+- `key`: metadata key, maximum 256 bytes.
+- `value`: metadata value, maximum 256 KiB.
+- `updated_at`: milliseconds since Unix epoch.
+- `updated_by_node_name`: writer node name.
+- `revision`: monotonically increasing per key.
+
+`KLogMetaPutRequest.expected_revision` controls CAS semantics:
+
+- `None`: unconditional put.
+- `Some(0)`: create only; fails if the key already exists.
+- `Some(n)`: update only when the current revision is `n`.
+
+Version conflicts are returned as `KLogErrorCode::VersionConflict` with HTTP
+`412` on HTTP APIs.
+
+## API Planes
+
+`klog` has four logical planes. `klog_daemon` maps them to separate listen
+addresses in production.
+
+| Plane | Routes | Caller |
+| --- | --- | --- |
+| Raft control | `/klog/append-entries`, `/klog/install-snapshot`, `/klog/vote` | OpenRaft peers |
+| Inter-node data | `/klog/data/*` | peer forwarding and local services |
+| Admin | `/klog/admin/*` | membership/admin tooling |
+| JSON-RPC | `/klog/rpc`, `/kapi/klog-service` | local BuckyOS services |
+
+Raft control requests use the internal bincode frame defined in
+`network/request.rs`. Data, admin, and JSON-RPC APIs use JSON.
+
+## Data HTTP APIs
+
+These routes are exposed by both the network server inter-node plane and the
+local RPC server.
+
+| Method | Path | Request | Response |
+| --- | --- | --- | --- |
+| `POST` | `/klog/data/append` | `KLogAppendRequest` JSON body | `KLogAppendResponse` |
+| `GET` | `/klog/data/query` | `KLogQueryRequest` query params | `KLogQueryResponse` |
+| `POST` | `/klog/data/meta-put` | `KLogMetaPutRequest` JSON body | `KLogMetaPutResponse` |
+| `POST` | `/klog/data/meta-delete` | `KLogMetaDeleteRequest` JSON body | `KLogMetaDeleteResponse` |
+| `GET` | `/klog/data/meta-query` | `KLogMetaQueryRequest` query params | `KLogMetaQueryResponse` |
+
+Query defaults and constraints:
+
+- log query default limit: 200.
+- meta query default limit: 200.
+- maximum query limit: 2,000.
+- `strong_read=true` forces a linearizable OpenRaft read barrier.
+- log queries support `start_id`, `end_id`, `desc`, `level`, `source`,
+  `attr_key`, and `attr_value`.
+- meta queries support either `key` or `prefix`, but not both.
+
+Default reads are local reads. Use `strong_read=true` when callers need
+linearizable reads, for example system-config read-after-write validation.
+
+## JSON-RPC API
+
+The local client-facing JSON-RPC endpoints are:
+
+- `/klog/rpc`
+- `/kapi/klog-service`
+
+Supported method names:
+
+- `klog.log.append`
+- `klog.log.query`
+- `klog.meta.put`
+- `klog.meta.delete`
+- `klog.meta.query`
+
+Legacy aliases are still accepted for log operations:
+
+- `klog.append`
+- `klog.query`
+
+Example:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "klog.meta.put",
+  "params": {
+    "key": "system/config/example",
+    "value": "{\"enabled\":true}",
+    "expected_revision": 0
+  },
+  "id": 1
+}
+```
+
+`KLogClient` wraps this protocol and defaults to the BuckyOS service route
+`http://127.0.0.1:4080/kapi/klog-service`.
+
+## Admin APIs
+
+Admin APIs are cluster membership primitives:
+
+| Method | Path | Params |
+| --- | --- | --- |
+| `POST` | `/klog/admin/add-learner` | `node_id`, `addr`, `port`, optional `inter_port`, `admin_port`, `rpc_port`, `node_name`, `blocking` |
+| `POST` | `/klog/admin/remove-learner` | `node_id` |
+| `POST` | `/klog/admin/change-membership` | `voters`, optional `retain` |
+| `GET` | `/klog/admin/cluster-state` | none |
+
+`cluster-state` returns `KLogClusterStateResponse`, including cluster identity,
+server state, leader id, voters, learners, and node descriptors.
+
+Production exposure is intentionally not decided in this crate. BuckyOS should
+keep admin routes behind local gateway/internal ACLs; see the daemon deployment
+notes for the current authority boundary.
+
+## Cluster Transport
+
+Peer routing is controlled by `KClusterTransportConfig`:
+
+- `direct`: call the peer's advertised host and plane-specific port directly.
+- `gateway_proxy`: call the local gateway route for the target node.
+- `hybrid`: try direct and gateway candidates.
+
+Gateway proxy paths use the configured route prefix and target node name, for
+example:
+
+```text
+/.cluster/klog/{node_name}/raft/{suffix}
+/.cluster/klog/{node_name}/inter/{suffix}
+/.cluster/klog/{node_name}/admin/{suffix}
+```
+
+Forwarded data/meta operations carry:
+
+- `x-klog-forward-hops`
+- `x-klog-forwarded-by`
+- `x-klog-trace-id`
+
+The service rejects excessive forwarding hops to avoid loops.
+
+## Error Model
+
+HTTP APIs return `KLogErrorEnvelope` on failure:
+
+- `error_code`
+- `message`
+- `retryable`
+- `leader_hint`
+- `trace_id`
+
+The same `trace_id` is also returned in `x-klog-trace-id`. JSON-RPC errors put
+the same envelope in `error.data`.
+
+Retryable error codes are:
+
+- `NOT_LEADER`
+- `LEADER_UNAVAILABLE`
+- `CONFIG_CHANGE_IN_PROGRESS`
+- `TIMEOUT`
+- `UNAVAILABLE`
+
+## Storage
+
+`logs` provides OpenRaft log storage implementations:
+
+- memory
+- RocksDB
+- SQLite
+
+`state_store` provides replicated state-machine storage for log entries and
+metadata KV:
+
+- memory
+- RocksDB
+
+Snapshots include both appended log entries and metadata KV state. RocksDB is
+the production-oriented state store for daemon deployments.
+
+## Local Validation
+
+Run from `src/`:
+
+```bash
+cargo fmt -p klog
+cargo clippy -p klog -- -D warnings
+cargo test -p klog
+```

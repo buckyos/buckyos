@@ -26,10 +26,6 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Read/admin operations: `cluster-state`.
 - [ ] Add token/key rotation and reload support without daemon restart.
 
-## P2: Documentation
-
-- [ ] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation or link it to the daemon deployment docs.
-
 ## P3: Deferred / Not Planned Now
 
 - [ ] Consider Scheme 2 read optimization only if strong-read traffic shows leader bottleneck.
@@ -63,3 +59,5 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Validates create-as-CAS, stale revision conflict, strong read, prefix listing, and delete through the target-gateway route.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
+- [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.
+  - The `klog` crate readme now documents scope, data model, HTTP/JSON-RPC/admin APIs, cluster transport, error model, storage, and validation commands.
