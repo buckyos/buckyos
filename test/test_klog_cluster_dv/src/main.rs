@@ -12,6 +12,8 @@ const DEFAULT_BUCKYOS_ROOT: &str = "/opt/buckyos";
 const DEFAULT_CLUSTER_ROUTE_NAME: &str = "klog-service";
 const DEFAULT_TIMEOUT_SECS: u64 = 15;
 const MULTI_NODE_MODE: &str = "local-gateway-failover";
+const MEMBERSHIP_MODE: &str = "local-gateway-membership";
+const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
 const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
 const KLOG_RPC_METHOD_LOG_QUERY: &str = "klog.log.query";
@@ -68,6 +70,32 @@ struct QueryRequest {
 #[derive(Debug, Deserialize)]
 struct QueryResponse {
     items: Vec<LogEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct MetaPutRequest {
+    key: String,
+    value: String,
+    node_name: Option<String>,
+    expected_revision: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaPutResponse {
+    key: String,
+    revision: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaQueryResponse {
+    items: Vec<MetaEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaEntry {
+    key: String,
+    value: String,
+    revision: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,6 +406,105 @@ async fn query_via_cluster_inter_route(
     })
 }
 
+async fn put_meta_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    key: &str,
+    value: &str,
+    expected_revision: Option<u64>,
+) -> Result<MetaPutResponse, String> {
+    let url = cluster_route_url(gateway_addr, route_prefix, node_name, "inter", "/meta-put");
+    let body = MetaPutRequest {
+        key: key.to_string(),
+        value: value.to_string(),
+        node_name: Some(node_name.to_string()),
+        expected_revision,
+    };
+
+    let response = client
+        .post(url.as_str())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| {
+            format!(
+                "cluster inter meta-put request failed: url={}, err={}",
+                url, err
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+        return Err(format!(
+            "cluster inter meta-put returned non-success status {} from {}: {}",
+            status, url, body
+        ));
+    }
+
+    response.json::<MetaPutResponse>().await.map_err(|err| {
+        format!(
+            "failed to decode cluster inter meta-put response from {}: {}",
+            url, err
+        )
+    })
+}
+
+async fn query_meta_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    key: &str,
+) -> Result<MetaQueryResponse, String> {
+    let mut url = Url::parse(
+        cluster_route_url(
+            gateway_addr,
+            route_prefix,
+            node_name,
+            "inter",
+            "/meta-query",
+        )
+        .as_str(),
+    )
+    .map_err(|err| format!("failed to build cluster inter meta-query url: {}", err))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("key", key);
+        query.append_pair("limit", "1");
+        query.append_pair("strong_read", "true");
+    }
+
+    let response = client.get(url.clone()).send().await.map_err(|err| {
+        format!(
+            "cluster inter meta-query request failed: url={}, err={}",
+            url, err
+        )
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+        return Err(format!(
+            "cluster inter meta-query returned non-success status {} from {}: {}",
+            status, url, body
+        ));
+    }
+
+    response.json::<MetaQueryResponse>().await.map_err(|err| {
+        format!(
+            "failed to decode cluster inter meta-query response from {}: {}",
+            url, err
+        )
+    })
+}
+
 async fn fetch_cluster_state_via_admin_route(
     client: &reqwest::Client,
     gateway_addr: &str,
@@ -415,6 +542,134 @@ async fn fetch_cluster_state_via_admin_route(
             url, err
         )
     })
+}
+
+async fn post_add_learner_via_admin_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    leader_node_name: &str,
+    learner: &LocalNodeDef,
+    blocking: bool,
+) -> Result<(), String> {
+    let mut url = Url::parse(
+        cluster_route_url(
+            gateway_addr,
+            route_prefix,
+            leader_node_name,
+            "admin",
+            "/add-learner",
+        )
+        .as_str(),
+    )
+    .map_err(|err| format!("failed to build add-learner url: {}", err))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("node_id", learner.id.to_string().as_str());
+        query.append_pair("node_name", learner.name.as_str());
+        query.append_pair("addr", "127.0.0.1");
+        query.append_pair("port", learner.ports.raft.to_string().as_str());
+        query.append_pair("inter_port", learner.ports.inter.to_string().as_str());
+        query.append_pair("admin_port", learner.ports.admin.to_string().as_str());
+        query.append_pair("rpc_port", learner.ports.rpc.to_string().as_str());
+        query.append_pair("blocking", if blocking { "true" } else { "false" });
+    }
+
+    let response = client
+        .post(url.clone())
+        .send()
+        .await
+        .map_err(|err| format!("add-learner request failed: url={}, err={}", url, err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "add-learner returned {} from {}: {}",
+            status, url, body
+        ))
+    }
+}
+
+async fn post_remove_learner_via_admin_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    leader_node_name: &str,
+    node_id: u64,
+) -> Result<(reqwest::StatusCode, String), String> {
+    let mut url = Url::parse(
+        cluster_route_url(
+            gateway_addr,
+            route_prefix,
+            leader_node_name,
+            "admin",
+            "/remove-learner",
+        )
+        .as_str(),
+    )
+    .map_err(|err| format!("failed to build remove-learner url: {}", err))?;
+    url.query_pairs_mut()
+        .append_pair("node_id", node_id.to_string().as_str());
+
+    let response = client
+        .post(url.clone())
+        .send()
+        .await
+        .map_err(|err| format!("remove-learner request failed: url={}, err={}", url, err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+    Ok((status, body))
+}
+
+async fn post_change_membership_via_admin_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    voters: &[u64],
+    retain: bool,
+) -> Result<(reqwest::StatusCode, String), String> {
+    let mut url = Url::parse(
+        cluster_route_url(
+            gateway_addr,
+            route_prefix,
+            node_name,
+            "admin",
+            "/change-membership",
+        )
+        .as_str(),
+    )
+    .map_err(|err| format!("failed to build change-membership url: {}", err))?;
+    let voters_csv = voters
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("voters", voters_csv.as_str());
+        query.append_pair("retain", if retain { "true" } else { "false" });
+    }
+
+    let response = client
+        .post(url.clone())
+        .send()
+        .await
+        .map_err(|err| format!("change-membership request failed: url={}, err={}", url, err))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+    Ok((status, body))
 }
 
 async fn call_service_json_rpc<Req, Resp>(
@@ -575,7 +830,10 @@ struct LocalNodeDef {
 struct LocalClusterState {
     node_id: u64,
     current_leader: Option<u64>,
+    #[serde(default)]
     voters: Vec<u64>,
+    #[serde(default)]
+    learners: Vec<u64>,
 }
 
 struct LocalProcess {
@@ -615,10 +873,18 @@ impl LocalHarness {
             .stderr(Stdio::from(stderr))
             .spawn()
             .map_err(|err| format!("failed to spawn {}: {}", name, err))?;
-        self.processes.push(LocalProcess {
-            name: name.to_string(),
-            child: Some(child),
-        });
+        if let Some(process) = self
+            .processes
+            .iter_mut()
+            .find(|process| process.name == name && process.child.is_none())
+        {
+            process.child = Some(child);
+        } else {
+            self.processes.push(LocalProcess {
+                name: name.to_string(),
+                child: Some(child),
+            });
+        }
         Ok(())
     }
 
@@ -626,7 +892,8 @@ impl LocalHarness {
         let process = self
             .processes
             .iter_mut()
-            .find(|process| process.name == name)
+            .rev()
+            .find(|process| process.name == name && process.child.is_some())
             .ok_or_else(|| format!("process {} not found", name))?;
         if let Some(mut child) = process.child.take() {
             let _ = child.kill();
@@ -648,6 +915,23 @@ impl Drop for LocalHarness {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+}
+
+struct LocalGatewaySetup {
+    klog_daemon_bin: PathBuf,
+    route_prefix: String,
+    ingress_port: u16,
+    nodes: Vec<LocalNodeDef>,
+    cluster_name: String,
+}
+
+struct KLogConfigOptions<'a> {
+    seed: &'a LocalNodeDef,
+    ingress_port: u16,
+    route_prefix: &'a str,
+    cluster_name: &'a str,
+    auto_join_seed: bool,
+    target_role: &'a str,
 }
 
 fn repo_root() -> Result<PathBuf, String> {
@@ -739,7 +1023,7 @@ fn reserve_port(host: &str, port: u16) -> bool {
     TcpListener::bind((host, port)).is_ok()
 }
 
-fn pick_common_port(hosts: &[&str], used: &mut BTreeSet<u16>) -> Result<u16, String> {
+fn pick_common_port(hosts: &[String], used: &mut BTreeSet<u16>) -> Result<u16, String> {
     for _ in 0..200 {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .map_err(|err| format!("failed to bind ephemeral port: {}", err))?;
@@ -775,15 +1059,19 @@ fn pick_local_port(used: &mut BTreeSet<u16>) -> Result<u16, String> {
     Err("failed to pick free local port".to_string())
 }
 
-fn build_local_node_defs(ingress_port: u16) -> Result<Vec<LocalNodeDef>, String> {
+fn local_gateway_hosts(count: usize) -> Vec<String> {
+    (1..=count).map(|idx| format!("127.0.0.{}", idx)).collect()
+}
+
+fn build_local_node_defs(ingress_port: u16, count: usize) -> Result<Vec<LocalNodeDef>, String> {
     let mut used = BTreeSet::from([ingress_port]);
-    let hosts = ["127.0.0.1", "127.0.0.2", "127.0.0.3"];
+    let hosts = local_gateway_hosts(count);
     let mut nodes = Vec::with_capacity(hosts.len());
     for (idx, host) in hosts.iter().enumerate() {
         nodes.push(LocalNodeDef {
             id: (idx + 1) as u64,
             name: format!("ood{}", idx + 1),
-            gateway_host: (*host).to_string(),
+            gateway_host: host.to_string(),
             ports: LocalNodePorts {
                 raft: pick_local_port(&mut used)?,
                 inter: pick_local_port(&mut used)?,
@@ -841,6 +1129,10 @@ fn write_gateway_runtime(
         "bind: 0.0.0.0:3180",
         format!("bind: {}:{}", node.gateway_host, ingress_port).as_str(),
     );
+    boot_gateway = boot_gateway.replace(
+        r#"local target_url="${route.url}:${KLOG_CLUSTER_INGRESS_PORT}";"#,
+        r#"local target_url="${route.url}:${KLOG_CLUSTER_TARGET_PORT}";"#,
+    );
     fs::write(etc.join("boot_gateway.yaml"), boot_gateway)
         .map_err(|err| format!("failed to write temp boot_gateway.yaml: {}", err))?;
 
@@ -878,7 +1170,7 @@ fn write_gateway_runtime(
                 target.name.clone(),
                 json!({
                     "direct": {
-                        "url": format!("tcp://{}/", target.gateway_host),
+                        "url": "tcp:///127.0.0.1",
                         "backup": false
                     }
                 }),
@@ -915,10 +1207,7 @@ fn write_gateway_runtime(
 fn write_klog_config(
     harness: &LocalHarness,
     node: &LocalNodeDef,
-    seed: &LocalNodeDef,
-    ingress_port: u16,
-    route_prefix: &str,
-    cluster_name: &str,
+    options: &KLogConfigOptions<'_>,
 ) -> Result<PathBuf, String> {
     let data_dir = harness.root.join(format!("klog-data-{}", node.name));
     fs::create_dir_all(&data_dir).map_err(|err| {
@@ -929,10 +1218,10 @@ fn write_klog_config(
         )
     })?;
     let config_path = harness.root.join(format!("klog-{}.toml", node.name));
-    let join_targets = if node.id == seed.id {
+    let join_targets = if node.id == options.seed.id || !options.auto_join_seed {
         String::new()
     } else {
-        format!("\"127.0.0.1:{}\"", seed.ports.admin)
+        format!("\"127.0.0.1:{}\"", options.seed.ports.admin)
     };
     let content = format!(
         r#"
@@ -967,7 +1256,7 @@ gateway_route_prefix = "{route_prefix}"
 [join]
 targets = [{join_targets}]
 blocking = true
-target_role = "voter"
+target_role = "{target_role}"
 
 [join.retry]
 strategy = "fixed"
@@ -993,11 +1282,16 @@ install_snapshot_timeout_ms = 5000
         rpc_port = node.ports.rpc,
         node_name = node.name,
         data_dir = data_dir.display(),
-        cluster_name = cluster_name,
-        auto_bootstrap = if node.id == seed.id { "true" } else { "false" },
-        gateway_addr = gateway_addr(node, ingress_port),
-        route_prefix = route_prefix,
+        cluster_name = options.cluster_name,
+        auto_bootstrap = if node.id == options.seed.id {
+            "true"
+        } else {
+            "false"
+        },
+        gateway_addr = gateway_addr(node, options.ingress_port),
+        route_prefix = options.route_prefix,
         join_targets = join_targets,
+        target_role = options.target_role,
     );
     fs::write(&config_path, content).map_err(|err| {
         format!(
@@ -1045,6 +1339,62 @@ async fn wait_tcp(host: &str, port: u16, timeout: Duration) -> Result<(), String
             Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
+}
+
+async fn prepare_local_gateway_setup(
+    harness: &mut LocalHarness,
+    mode: &str,
+    route_prefix: &str,
+    node_count: usize,
+) -> Result<LocalGatewaySetup, String> {
+    let repo_root = repo_root()?;
+    let buckyos_root = get_buckyos_root();
+    let cyfs_gateway_bin = resolve_cyfs_gateway_bin(&repo_root, &buckyos_root)?;
+    let klog_daemon_bin = resolve_klog_daemon_bin(&repo_root, &buckyos_root)?;
+    let gateway_hosts = local_gateway_hosts(node_count);
+    let mut used_ports = BTreeSet::new();
+    let ingress_port = pick_common_port(&gateway_hosts, &mut used_ports)?;
+    let nodes = build_local_node_defs(ingress_port, node_count)?;
+    let cluster_name = format!("klog_{}_{}", mode.replace('-', "_"), ingress_port);
+
+    println!("[klog-cluster-dv] mode={}", mode);
+    println!("[klog-cluster-dv] temp_root={}", harness.root.display());
+    println!(
+        "[klog-cluster-dv] cyfs_gateway_bin={}",
+        cyfs_gateway_bin.display()
+    );
+    println!(
+        "[klog-cluster-dv] klog_daemon_bin={}",
+        klog_daemon_bin.display()
+    );
+    println!("[klog-cluster-dv] ingress_port={}", ingress_port);
+
+    for node in &nodes {
+        let gateway_config = write_gateway_runtime(
+            harness,
+            &repo_root,
+            &buckyos_root,
+            node,
+            &nodes,
+            ingress_port,
+            route_prefix,
+        )?;
+        spawn_gateway(harness, &cyfs_gateway_bin, &gateway_config, node)?;
+        wait_tcp(
+            node.gateway_host.as_str(),
+            ingress_port,
+            Duration::from_secs(8),
+        )
+        .await?;
+    }
+
+    Ok(LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix: route_prefix.to_string(),
+        ingress_port,
+        nodes,
+        cluster_name,
+    })
 }
 
 async fn fetch_cluster_state_for_node(
@@ -1105,6 +1455,55 @@ async fn wait_voters(
             return Err(format!(
                 "timeout waiting voters {:?}; last={}",
                 expected, last
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_membership(
+    client: &reqwest::Client,
+    nodes: &[LocalNodeDef],
+    ingress_port: u16,
+    route_prefix: &str,
+    expected_voters: &[u64],
+    expected_learners: &[u64],
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let expected_voters = expected_voters.iter().copied().collect::<BTreeSet<_>>();
+    let expected_learners = expected_learners.iter().copied().collect::<BTreeSet<_>>();
+    let mut last = String::new();
+    loop {
+        let mut ok = true;
+        for node in nodes {
+            match fetch_cluster_state_for_node(client, node, ingress_port, route_prefix).await {
+                Ok(state) => {
+                    let voters = state.voters.iter().copied().collect::<BTreeSet<_>>();
+                    let learners = state.learners.iter().copied().collect::<BTreeSet<_>>();
+                    if voters != expected_voters || learners != expected_learners {
+                        ok = false;
+                        last = format!(
+                            "node={} voters={:?} learners={:?}",
+                            node.name, voters, learners
+                        );
+                        break;
+                    }
+                }
+                Err(err) => {
+                    ok = false;
+                    last = err;
+                    break;
+                }
+            }
+        }
+        if ok {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timeout waiting voters {:?} learners {:?}; last={}",
+                expected_voters, expected_learners, last
             ));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1210,61 +1609,31 @@ async fn wait_log_visible_on_nodes(
 }
 
 async fn run_local_gateway_failover_smoke_inner(harness: &mut LocalHarness) -> Result<(), String> {
-    let repo_root = repo_root()?;
-    let buckyos_root = get_buckyos_root();
-    let cyfs_gateway_bin = resolve_cyfs_gateway_bin(&repo_root, &buckyos_root)?;
-    let klog_daemon_bin = resolve_klog_daemon_bin(&repo_root, &buckyos_root)?;
     let route_prefix = "/.cluster/klog-it-dv";
-    let gateway_hosts = ["127.0.0.1", "127.0.0.2", "127.0.0.3"];
-    let mut used_ports = BTreeSet::new();
-    let ingress_port = pick_common_port(&gateway_hosts, &mut used_ports)?;
-    let nodes = build_local_node_defs(ingress_port)?;
-    let cluster_name = format!("klog_gateway_cluster_dv_{}", ingress_port);
-
-    println!("[klog-cluster-dv] mode={}", MULTI_NODE_MODE);
-    println!("[klog-cluster-dv] temp_root={}", harness.root.display());
-    println!(
-        "[klog-cluster-dv] cyfs_gateway_bin={}",
-        cyfs_gateway_bin.display()
-    );
-    println!(
-        "[klog-cluster-dv] klog_daemon_bin={}",
-        klog_daemon_bin.display()
-    );
-    println!("[klog-cluster-dv] ingress_port={}", ingress_port);
-
-    for node in &nodes {
-        let gateway_config = write_gateway_runtime(
-            harness,
-            &repo_root,
-            &buckyos_root,
-            node,
-            &nodes,
-            ingress_port,
-            route_prefix,
-        )?;
-        spawn_gateway(harness, &cyfs_gateway_bin, &gateway_config, node)?;
-        wait_tcp(
-            node.gateway_host.as_str(),
-            ingress_port,
-            Duration::from_secs(8),
-        )
-        .await?;
-    }
+    let setup = prepare_local_gateway_setup(harness, MULTI_NODE_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
 
     let seed = nodes
         .first()
         .ok_or_else(|| "missing seed node".to_string())?
         .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
     for node in &nodes {
-        let config = write_klog_config(
-            harness,
-            node,
-            &seed,
-            ingress_port,
-            route_prefix,
-            cluster_name.as_str(),
-        )?;
+        let config = write_klog_config(harness, node, &voter_config)?;
         spawn_klog(harness, &klog_daemon_bin, &config, node)?;
         wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
         if node.id == seed.id {
@@ -1401,6 +1770,478 @@ async fn run_local_gateway_failover_smoke() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_membership_inner(harness: &mut LocalHarness) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-membership-dv";
+    let setup = prepare_local_gateway_setup(harness, MEMBERSHIP_MODE, route_prefix, 4).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let voter_nodes = nodes.iter().take(3).cloned().collect::<Vec<_>>();
+    let learner = nodes
+        .get(3)
+        .cloned()
+        .ok_or_else(|| "missing learner node".to_string())?;
+    let seed = voter_nodes
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &voter_nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let learner_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "learner",
+    };
+    let learner_config = write_klog_config(harness, &learner, &learner_options)?;
+    spawn_klog(harness, &klog_daemon_bin, &learner_config, &learner)?;
+    wait_tcp("127.0.0.1", learner.ports.admin, Duration::from_secs(12)).await?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &voter_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+
+    let leader_id = wait_consistent_leader(
+        &client,
+        &voter_nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = voter_nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+    post_add_learner_via_admin_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        &learner,
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[4],
+        Duration::from_secs(60),
+    )
+    .await?;
+    println!(
+        "[klog-cluster-dv] gateway admin add-learner ok: leader={}, learner={}",
+        leader.name, learner.name
+    );
+
+    let leader_id = wait_consistent_leader(
+        &client,
+        &voter_nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = voter_nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found after add-learner", leader_id))?;
+    let follower = voter_nodes
+        .iter()
+        .find(|node| node.id != leader_id)
+        .ok_or_else(|| "failed to choose follower for admin semantics check".to_string())?;
+    let (status_change, body_change) = post_change_membership_via_admin_route(
+        &client,
+        gateway_addr(follower, ingress_port).as_str(),
+        route_prefix,
+        follower.name.as_str(),
+        &[1, 2, 3],
+        true,
+    )
+    .await?;
+    if status_change != reqwest::StatusCode::CONFLICT {
+        return Err(format!(
+            "follower change-membership should return 409 via gateway, got status={}, body={}",
+            status_change, body_change
+        ));
+    }
+
+    let (status_remove, body_remove) = post_remove_learner_via_admin_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        learner.id,
+    )
+    .await?;
+    if !status_remove.is_success() {
+        return Err(format!(
+            "remove-learner via gateway returned status={}, body={}",
+            status_remove, body_remove
+        ));
+    }
+    wait_membership(
+        &client,
+        &voter_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    let (repeat_status, repeat_body) = post_remove_learner_via_admin_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        learner.id,
+    )
+    .await?;
+    if repeat_status != reqwest::StatusCode::OK
+        && repeat_status != reqwest::StatusCode::CONFLICT
+        && repeat_status != reqwest::StatusCode::INTERNAL_SERVER_ERROR
+    {
+        return Err(format!(
+            "unexpected repeated remove-learner status via gateway: status={}, body={}",
+            repeat_status, repeat_body
+        ));
+    }
+    wait_membership(
+        &client,
+        &voter_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(30),
+    )
+    .await?;
+    println!(
+        "[klog-cluster-dv] gateway admin remove-learner semantics ok: repeat_status={}",
+        repeat_status
+    );
+    println!("[klog-cluster-dv] local gateway membership DV success");
+    Ok(())
+}
+
+async fn run_local_gateway_membership() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_membership_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
+async fn run_local_gateway_restart_recovery_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-restart-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, RESTART_RECOVERY_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let mut configs = BTreeMap::new();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_before = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader_node = nodes
+        .iter()
+        .find(|node| node.id == leader_before)
+        .ok_or_else(|| format!("leader node {} not found", leader_before))?;
+    let leader_gateway_addr_before = gateway_addr(leader_node, ingress_port);
+    let suffix = unique_suffix("restart");
+    let source = format!("test/test_klog_restart_recovery_dv-{}", suffix);
+    let first = append_via_cluster_inter_route(
+        &client,
+        leader_gateway_addr_before.as_str(),
+        route_prefix,
+        leader_node.name.as_str(),
+        source.as_str(),
+        "restart recovery write before full stop 1",
+    )
+    .await?;
+    let second = append_via_cluster_inter_route(
+        &client,
+        leader_gateway_addr_before.as_str(),
+        route_prefix,
+        leader_node.name.as_str(),
+        source.as_str(),
+        "restart recovery write before full stop 2",
+    )
+    .await?;
+    if second.id <= first.id {
+        return Err(format!(
+            "append id not increasing before restart: first_id={}, second_id={}",
+            first.id, second.id
+        ));
+    }
+    let meta_key = format!("test/test_klog_restart_recovery_dv/meta/{}", suffix);
+    let meta_before = put_meta_via_cluster_inter_route(
+        &client,
+        leader_gateway_addr_before.as_str(),
+        route_prefix,
+        leader_node.name.as_str(),
+        meta_key.as_str(),
+        "before-restart",
+        Some(0),
+    )
+    .await?;
+    if meta_before.key != meta_key || meta_before.revision != 1 {
+        return Err(format!(
+            "unexpected meta before restart: key={}, revision={}",
+            meta_before.key, meta_before.revision
+        ));
+    }
+
+    for node in &nodes {
+        harness.stop(format!("klog-{}", node.name).as_str())?;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    for node_id in [2_u64, 3_u64, 1_u64] {
+        let node = nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .ok_or_else(|| format!("restart node {} not found", node_id))?;
+        let config = configs
+            .get(&node_id)
+            .ok_or_else(|| format!("restart config for node {} not found", node_id))?;
+        spawn_klog(harness, &klog_daemon_bin, config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+    }
+
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(90),
+    )
+    .await?;
+    let leader_after = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(60),
+    )
+    .await?;
+    let leader_node = nodes
+        .iter()
+        .find(|node| node.id == leader_after)
+        .ok_or_else(|| format!("post-restart leader node {} not found", leader_after))?;
+    let leader_gateway_addr_after = gateway_addr(leader_node, ingress_port);
+
+    for log_id in [first.id, second.id] {
+        let response = query_via_cluster_inter_route(
+            &client,
+            leader_gateway_addr_after.as_str(),
+            route_prefix,
+            leader_node.name.as_str(),
+            log_id,
+            source.as_str(),
+        )
+        .await?;
+        require_query_match(&response, log_id, source.as_str())?;
+    }
+
+    let meta_after_restart = query_meta_via_cluster_inter_route(
+        &client,
+        leader_gateway_addr_after.as_str(),
+        route_prefix,
+        leader_node.name.as_str(),
+        meta_key.as_str(),
+    )
+    .await?;
+    if meta_after_restart.items.len() != 1
+        || meta_after_restart.items[0].key != meta_key
+        || meta_after_restart.items[0].value != "before-restart"
+        || meta_after_restart.items[0].revision != 1
+    {
+        return Err(format!(
+            "unexpected meta after restart: items={:?}",
+            meta_after_restart
+                .items
+                .iter()
+                .map(|item| format!(
+                    "key={}, value={}, revision={}",
+                    item.key, item.value, item.revision
+                ))
+                .collect::<Vec<_>>()
+        ));
+    }
+
+    let after = append_via_cluster_inter_route(
+        &client,
+        leader_gateway_addr_after.as_str(),
+        route_prefix,
+        leader_node.name.as_str(),
+        source.as_str(),
+        "restart recovery write after full restart",
+    )
+    .await?;
+    let response = query_via_cluster_inter_route(
+        &client,
+        leader_gateway_addr_after.as_str(),
+        route_prefix,
+        leader_node.name.as_str(),
+        after.id,
+        source.as_str(),
+    )
+    .await?;
+    require_query_match(&response, after.id, source.as_str())?;
+
+    let meta_after_update = put_meta_via_cluster_inter_route(
+        &client,
+        leader_gateway_addr_after.as_str(),
+        route_prefix,
+        leader_node.name.as_str(),
+        meta_key.as_str(),
+        "after-restart",
+        Some(1),
+    )
+    .await?;
+    if meta_after_update.revision != 2 {
+        return Err(format!(
+            "unexpected meta revision after restart update: expected=2, got={}",
+            meta_after_update.revision
+        ));
+    }
+    println!(
+        "[klog-cluster-dv] restart recovery ok: leader_before={}, leader_after={}, log_ids=[{}, {}, {}], meta_revision={}",
+        leader_before, leader_after, first.id, second.id, after.id, meta_after_update.revision
+    );
+    println!("[klog-cluster-dv] local gateway restart recovery DV success");
+    Ok(())
+}
+
+async fn run_local_gateway_restart_recovery() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_restart_recovery_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_installed_runtime_smoke() -> Result<(), String> {
     let buckyos_root = get_buckyos_root();
     let local_node_name = load_local_node_name(&buckyos_root)?;
@@ -1495,9 +2336,11 @@ async fn run() -> Result<(), String> {
     {
         "" => run_installed_runtime_smoke().await,
         MULTI_NODE_MODE => run_local_gateway_failover_smoke().await,
+        MEMBERSHIP_MODE => run_local_gateway_membership().await,
+        RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}'",
-            other, MULTI_NODE_MODE
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}'",
+            other, MULTI_NODE_MODE, MEMBERSHIP_MODE, RESTART_RECOVERY_MODE
         )),
     }
 }
