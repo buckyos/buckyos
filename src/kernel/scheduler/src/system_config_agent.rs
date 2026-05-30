@@ -14,7 +14,7 @@ use crate::scheduler::*;
 use crate::service::*;
 use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
 use buckyos_api::{
-    get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
+    get_buckyos_api_runtime, AppServiceSpec, KLogBuckyosSettings, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,
     ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT, KLOG_CLUSTER_ADMIN_SERVICE_NAME,
     KLOG_CLUSTER_INTER_SERVICE_NAME, KLOG_CLUSTER_RAFT_SERVICE_NAME, KLOG_SERVICE_UNIQUE_ID,
@@ -28,6 +28,7 @@ const DEFAULT_NODE_GATEWAY_HTTP_PORT: u16 = 3180;
 const FIXED_SERVICE_WEIGHT: u32 = 100;
 const DEFAULT_REQUIRED_MEMORY: u64 = 32 * 1024 * 1024;
 const DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX: &str = "/.cluster/klog";
+const KLOG_OOD_VOTER_AFFINITY_LABEL: &str = "klog-ood-voter";
 
 fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     match user_type {
@@ -37,14 +38,63 @@ fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     }
 }
 
-fn craete_node_item_by_device_info(device_name: &str, device_info: &DeviceInfo) -> NodeItem {
+fn extract_zone_config(input_config: &HashMap<String, String>) -> Option<ZoneConfig> {
+    let raw = input_config.get("boot/config")?;
+    match serde_json::from_str::<ZoneConfig>(raw) {
+        Ok(zone_config) => Some(zone_config),
+        Err(err) => {
+            warn!("parse boot/config failed while deriving klog OOD voters: {err}");
+            None
+        }
+    }
+}
+
+fn extract_klog_settings(input_config: &HashMap<String, String>) -> KLogBuckyosSettings {
+    let Some(raw_settings) = input_config.get("services/klog-service/settings") else {
+        return KLogBuckyosSettings::default();
+    };
+
+    match serde_json::from_str::<KLogBuckyosSettings>(raw_settings) {
+        Ok(settings) => settings,
+        Err(err) => {
+            warn!(
+                "parse services/klog-service/settings failed while deriving klog placement: {err}"
+            );
+            KLogBuckyosSettings::default()
+        }
+    }
+}
+
+fn extract_klog_ood_voter_names(input_config: &HashMap<String, String>) -> HashSet<String> {
+    let settings = extract_klog_settings(input_config);
+    if !settings.deployment.mode.is_ood_voters() {
+        return HashSet::new();
+    }
+
+    extract_zone_config(input_config)
+        .map(|zone_config| {
+            zone_config
+                .oods
+                .iter()
+                .filter(|ood| ood.node_type.is_ood())
+                .map(|ood| ood.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn craete_node_item_by_device_info(
+    device_name: &str,
+    device_info: &DeviceInfo,
+    labels: Vec<String>,
+) -> NodeItem {
     let node_state =
         crate::scheduler::NodeState::from(device_info.state.clone().unwrap_or("Ready".to_string()));
     let net_id = device_info.net_id.clone().unwrap_or("".to_string());
     NodeItem {
         id: device_name.to_string(),
         node_type: NodeType::from(device_info.device_doc.device_type.clone()),
-        labels: vec![],
+        labels,
         network_zone: net_id,
         state: node_state,
         support_container: device_info.support_container,
@@ -136,6 +186,7 @@ pub fn create_scheduler_by_system_config(
 ) -> Result<(NodeScheduler, HashMap<String, DeviceInfo>)> {
     let mut scheduler_ctx = NodeScheduler::new_empty(1);
     let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
+    let klog_ood_voter_names = extract_klog_ood_voter_names(input_config);
     for (key, value) in input_config.iter() {
         //add node
         if key.starts_with("devices/") && key.ends_with("/info") {
@@ -144,8 +195,12 @@ pub fn create_scheduler_by_system_config(
                 error!("serde_json::from_str failed: {:?}", e);
                 e
             })?;
-            let node_item = craete_node_item_by_device_info(device_name, &device_info);
-            let node_item = craete_node_item_by_device_info(device_name, &device_info);
+            let labels = if klog_ood_voter_names.contains(device_name) {
+                vec![KLOG_OOD_VOTER_AFFINITY_LABEL.to_string()]
+            } else {
+                Vec::new()
+            };
+            let node_item = craete_node_item_by_device_info(device_name, &device_info, labels);
             device_list.insert(device_name.to_string(), device_info);
             scheduler_ctx.add_node(node_item);
         }
@@ -206,7 +261,12 @@ pub fn create_scheduler_by_system_config(
                     error!("KernelServiceConfig serde_json::from_str failed: {:?}", e);
                     e
                 })?;
-            let service_spec = create_service_spec_by_service_config(service_name, &service_config);
+            let mut service_spec =
+                create_service_spec_by_service_config(service_name, &service_config);
+            if service_name == KLOG_SERVICE_UNIQUE_ID && !klog_ood_voter_names.is_empty() {
+                service_spec.best_instance_count = klog_ood_voter_names.len() as u32;
+                service_spec.node_affinity = Some(KLOG_OOD_VOTER_AFFINITY_LABEL.to_string());
+            }
             scheduler_ctx.add_service_spec(service_spec);
         }
 
@@ -1686,8 +1746,8 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
 mod tests {
     use super::*;
     use buckyos_api::{
-        AppDocBuilder, AppServiceSpec, AppType, ServiceExposeConfig, ServiceInstallConfig,
-        ServiceInstanceState, ServiceState, SubPkgDesc,
+        generate_klog_service_doc, AppDocBuilder, AppServiceSpec, AppType, KernelServiceSpec,
+        ServiceExposeConfig, ServiceInstallConfig, ServiceInstanceState, ServiceState, SubPkgDesc,
     };
     use jsonwebtoken::jwk::Jwk;
     use name_lib::generate_ed25519_key_pair;
@@ -1713,14 +1773,23 @@ mod tests {
         }
     }
 
-    fn create_test_device_info(name: &str, rtcp_port: Option<u32>) -> DeviceInfo {
+    fn create_test_device_info_with_type(
+        name: &str,
+        rtcp_port: Option<u32>,
+        device_type: &str,
+    ) -> DeviceInfo {
         let (_, public_key_jwk) = generate_ed25519_key_pair();
         let public_key_jwk: Jwk = serde_json::from_value(public_key_jwk).unwrap();
         let pkx = get_x_from_jwk(&public_key_jwk).unwrap();
         let mut device = DeviceConfig::new(name, pkx);
         device.rtcp_port = rtcp_port;
         device.owner = DID::new("bns", "owner");
+        device.device_type = device_type.to_string();
         DeviceInfo::from_device_doc(&device)
+    }
+
+    fn create_test_device_info(name: &str, rtcp_port: Option<u32>) -> DeviceInfo {
+        create_test_device_info_with_type(name, rtcp_port, "ood")
     }
 
     fn create_test_zone_config() -> ZoneConfig {
@@ -1742,6 +1811,81 @@ mod tests {
             public_key: verify_hub_key_jwk,
         });
         zone_config
+    }
+
+    fn create_test_klog_kernel_spec() -> KernelServiceSpec {
+        KernelServiceSpec {
+            service_doc: generate_klog_service_doc(),
+            enable: true,
+            app_index: 0,
+            expected_instance_count: 1,
+            state: ServiceState::default(),
+            install_config: ServiceInstallConfig::default(),
+        }
+    }
+
+    #[test]
+    fn test_create_scheduler_places_klog_on_zone_ood_voters() {
+        let mut zone_config = create_test_zone_config();
+        zone_config.oods.push(OODDescriptionString::new(
+            "ood3".to_string(),
+            DeviceNodeType::OOD,
+            None,
+            None,
+        ));
+        let device_ood1 = create_test_device_info("ood1", None);
+        let device_ood2 = create_test_device_info("ood2", None);
+        let device_ood3 = create_test_device_info("ood3", None);
+        let device_node1 = create_test_device_info_with_type("node1", None, "server");
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood2/info".to_string(),
+            serde_json::to_string(&device_ood2).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood3/info".to_string(),
+            serde_json::to_string(&device_ood3).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/node1/info".to_string(),
+            serde_json::to_string(&device_node1).unwrap(),
+        );
+        input_system_config.insert(
+            "services/klog-service/spec".to_string(),
+            serde_json::to_string(&create_test_klog_kernel_spec()).unwrap(),
+        );
+
+        let (scheduler_ctx, _) = create_scheduler_by_system_config(&input_system_config).unwrap();
+        let klog_spec = scheduler_ctx.specs.get(KLOG_SERVICE_UNIQUE_ID).unwrap();
+        assert_eq!(klog_spec.best_instance_count, 3);
+        assert_eq!(
+            klog_spec.node_affinity.as_deref(),
+            Some(KLOG_OOD_VOTER_AFFINITY_LABEL)
+        );
+
+        for node_name in ["ood1", "ood2", "ood3"] {
+            assert!(scheduler_ctx
+                .nodes
+                .get(node_name)
+                .unwrap()
+                .labels
+                .contains(&KLOG_OOD_VOTER_AFFINITY_LABEL.to_string()));
+        }
+        assert!(!scheduler_ctx
+            .nodes
+            .get("node1")
+            .unwrap()
+            .labels
+            .contains(&KLOG_OOD_VOTER_AFFINITY_LABEL.to_string()));
     }
 
     fn create_test_app_spec() -> AppServiceSpec {

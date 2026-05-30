@@ -9,6 +9,7 @@ use ::klog::rpc::KLogClient as KLogRpcClient;
 pub use ::klog::rpc::{KLogCallTrace, KLogClientError};
 pub use ::klog::{KLogEntry, KLogLevel, KLogMetaEntry, KNode, KNodeId};
 use name_lib::DID;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 pub const KLOG_SERVICE_UNIQUE_ID: &str = "klog-service";
@@ -20,6 +21,41 @@ pub const KLOG_CLUSTER_ADMIN_SERVICE_NAME: &str = "admin";
 pub const KLOG_CLUSTER_RAFT_PORT: u16 = 21001;
 pub const KLOG_CLUSTER_INTER_PORT: u16 = 21002;
 pub const KLOG_CLUSTER_ADMIN_PORT: u16 = 21003;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KLogDeploymentMode {
+    #[serde(rename = "ood_voters")]
+    OODVoters,
+}
+
+impl Default for KLogDeploymentMode {
+    fn default() -> Self {
+        Self::OODVoters
+    }
+}
+
+impl KLogDeploymentMode {
+    pub fn is_ood_voters(self) -> bool {
+        matches!(self, Self::OODVoters)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KLogDeploymentSettings {
+    #[serde(default)]
+    pub mode: KLogDeploymentMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KLogBuckyosSettings {
+    #[serde(default)]
+    pub deployment: KLogDeploymentSettings,
+}
+
+pub fn default_klog_buckyos_settings() -> KLogBuckyosSettings {
+    KLogBuckyosSettings::default()
+}
 
 pub fn generate_klog_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -197,5 +233,14 @@ mod tests {
         assert_eq!(KLOG_CLUSTER_RAFT_PORT, 21001);
         assert_eq!(KLOG_CLUSTER_INTER_PORT, 21002);
         assert_eq!(KLOG_CLUSTER_ADMIN_PORT, 21003);
+    }
+
+    #[test]
+    fn test_default_klog_buckyos_settings() {
+        let settings = default_klog_buckyos_settings();
+        assert!(settings.deployment.mode.is_ood_voters());
+
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["deployment"]["mode"], "ood_voters");
     }
 }

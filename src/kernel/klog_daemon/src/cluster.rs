@@ -2,7 +2,7 @@ use crate::config::{
     KLogJoinRetryConfig, KLogJoinRetryStrategy, KLogJoinTargetRole, KLogRuntimeConfig,
 };
 use klog::network::{KLogAdminRequestType, KLogClusterStateResponse};
-use klog::{KNode, KRaftRef};
+use klog::{KClusterTransportMode, KNode, KRaftRef};
 use log::{error, info, warn};
 use rand::Rng;
 use rand::seq::SliceRandom;
@@ -142,7 +142,7 @@ async fn try_join_once(
         if let Some(leader_id) = seed_state.current_leader
             && let Some(leader_node) = seed_state.nodes.get(&leader_id)
         {
-            admin_targets.push(admin_target_from_node(leader_node));
+            admin_targets.push(admin_target_from_node(cfg, leader_node));
         }
         admin_targets.push(target.clone());
         dedup_targets(&mut admin_targets);
@@ -436,7 +436,18 @@ fn ensure_cluster_identity_matches(
     Ok(())
 }
 
-fn admin_target_from_node(node: &KNode) -> String {
+fn admin_target_from_node(cfg: &KLogRuntimeConfig, node: &KNode) -> String {
+    if cfg.cluster_network.mode != KClusterTransportMode::Direct
+        && let Some(node_name) = node.node_name.as_deref()
+        && !node_name.trim().is_empty()
+    {
+        return gateway_admin_target(
+            &cfg.cluster_network.gateway_addr,
+            &cfg.cluster_network.gateway_route_prefix,
+            node_name,
+        );
+    }
+
     let admin_port = if node.admin_port > 0 {
         node.admin_port
     } else if node.inter_port > 0 {
@@ -445,6 +456,36 @@ fn admin_target_from_node(node: &KNode) -> String {
         node.port
     };
     format!("{}:{}", node.addr, admin_port)
+}
+
+fn gateway_admin_target(gateway_addr: &str, route_prefix: &str, node_name: &str) -> String {
+    let gateway_addr = gateway_addr.trim().trim_end_matches('/');
+    let gateway_base =
+        if gateway_addr.starts_with("http://") || gateway_addr.starts_with("https://") {
+            gateway_addr.to_string()
+        } else {
+            format!("http://{}", gateway_addr)
+        };
+    let route_prefix = normalize_gateway_route_prefix(route_prefix);
+    let route_base = if route_prefix == "/" {
+        String::new()
+    } else {
+        route_prefix
+    };
+    format!("{gateway_base}{route_base}/{node_name}/admin")
+}
+
+fn normalize_gateway_route_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        return "/".to_string();
+    }
+    format!("/{trimmed}")
+}
+
+fn admin_path_suffix(path: &str) -> &str {
+    path.strip_prefix("/klog/admin/")
+        .unwrap_or_else(|| path.trim_start_matches('/'))
 }
 
 fn dedup_targets(targets: &mut Vec<String>) {
@@ -476,7 +517,17 @@ fn build_admin_url(target: &str, path: &str) -> Result<reqwest::Url, String> {
 
     let mut url = reqwest::Url::parse(&with_scheme)
         .map_err(|e| format!("invalid join target url '{}': {}", trimmed, e))?;
-    url.set_path(path);
+    let base_path = url.path().trim_end_matches('/');
+    let next_path = if base_path.is_empty() || base_path == "/" {
+        if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        }
+    } else {
+        format!("{}/{}", base_path, admin_path_suffix(path))
+    };
+    url.set_path(&next_path);
     url.set_query(None);
     Ok(url)
 }
@@ -491,7 +542,7 @@ mod tests {
         KLogJoinRetryConfig, KLogJoinTargetRole, KLogRaftConfig, KLogRuntimeConfig,
     };
     use klog::network::KLogClusterStateResponse;
-    use klog::{KClusterTransportConfig, KNode, KNodeId};
+    use klog::{KClusterTransportConfig, KClusterTransportMode, KNode, KNodeId};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -502,6 +553,17 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "http://127.0.0.1:21001/klog/admin/add-learner"
+        );
+    }
+
+    #[test]
+    fn test_build_admin_url_preserves_gateway_admin_base_path() {
+        let path = klog::network::KLogAdminRequestType::ClusterState.klog_path();
+        let url = build_admin_url("http://127.0.0.1:3180/.cluster/klog/ood1/admin", &path)
+            .expect("build admin url");
+        assert_eq!(
+            url.as_str(),
+            "http://127.0.0.1:3180/.cluster/klog/ood1/admin/cluster-state"
         );
     }
 
@@ -520,6 +582,7 @@ mod tests {
 
     #[test]
     fn test_admin_target_from_node() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
         let node = KNode {
             id: 10 as KNodeId,
             addr: "127.0.0.1".to_string(),
@@ -529,12 +592,13 @@ mod tests {
             rpc_port: 31001,
             node_name: None,
         };
-        let target = admin_target_from_node(&node);
+        let target = admin_target_from_node(&cfg, &node);
         assert_eq!(target, "127.0.0.1:21003");
     }
 
     #[test]
     fn test_admin_target_from_node_fallback_to_raft_port() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
         let node = KNode {
             id: 10 as KNodeId,
             addr: "127.0.0.1".to_string(),
@@ -544,8 +608,27 @@ mod tests {
             rpc_port: 31001,
             node_name: None,
         };
-        let target = admin_target_from_node(&node);
+        let target = admin_target_from_node(&cfg, &node);
         assert_eq!(target, "127.0.0.1:21001");
+    }
+
+    #[test]
+    fn test_admin_target_from_node_uses_gateway_proxy_node_name() {
+        let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
+        cfg.cluster_network.mode = KClusterTransportMode::GatewayProxy;
+        cfg.cluster_network.gateway_addr = "127.0.0.1:3180".to_string();
+        cfg.cluster_network.gateway_route_prefix = "/.cluster/klog".to_string();
+        let node = KNode {
+            id: 10 as KNodeId,
+            addr: "10.0.0.8".to_string(),
+            port: 21001,
+            inter_port: 21002,
+            admin_port: 21003,
+            rpc_port: 31001,
+            node_name: Some("ood2".to_string()),
+        };
+        let target = admin_target_from_node(&cfg, &node);
+        assert_eq!(target, "http://127.0.0.1:3180/.cluster/klog/ood2/admin");
     }
 
     #[test]

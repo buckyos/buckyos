@@ -33,6 +33,7 @@ use crate::constants::{
     ENV_RPC_QUERY_BODY_LIMIT_BYTES, ENV_RPC_QUERY_CONCURRENCY, ENV_RPC_QUERY_TIMEOUT_MS,
     ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
 };
+use buckyos_api::KLogDeploymentSettings;
 use buckyos_kit::get_buckyos_service_data_dir;
 use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
 use klog::{KClusterTransportConfig, KClusterTransportMode, KNodeId};
@@ -563,6 +564,9 @@ pub struct KLogRpcConfigPatch {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KLogRuntimeConfigPatch {
+    /// BuckyOS deployment policy; consumed by scheduler and accepted here for shared settings.
+    pub deployment: Option<KLogDeploymentSettings>,
+
     /// Optional grouped network section.
     pub network: Option<KLogNetworkConfigPatch>,
 
@@ -743,6 +747,7 @@ impl KLogRuntimeConfig {
 
     fn from_patch(patch: KLogRuntimeConfigPatch) -> Result<Self, String> {
         let KLogRuntimeConfigPatch {
+            deployment: _,
             network,
             storage,
             cluster,
@@ -1925,6 +1930,13 @@ id = "cluster_admin_conflict_id"
         assert_eq!(cfg.rpc.append.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
         assert_eq!(cfg.rpc.query.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
         assert_eq!(cfg.rpc.jsonrpc.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn test_parse_buckyos_default_settings_accepts_deployment() {
+        let value = serde_json::to_value(buckyos_api::default_klog_buckyos_settings()).unwrap();
+        let patch: BuckyosKlogConfig = serde_json::from_value(value).unwrap();
+        assert!(patch.deployment.unwrap().mode.is_ood_voters());
     }
 
     #[test]
