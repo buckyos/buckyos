@@ -26,6 +26,20 @@ pub const META_QUERY_MAX_LIMIT: usize = 2_000;
 pub const META_RW_MAX_FORWARD_HOPS: u32 = 2;
 pub type KServiceResult<T> = Result<T, KLogServiceError>;
 
+fn with_forward_error_context(
+    mut forward_err: KLogServiceError,
+    context: String,
+    leader_node: KNode,
+) -> KLogServiceError {
+    let upstream_message = forward_err.error.message.clone();
+    error!("{}", context);
+    forward_err.error.message = format!("{}; upstream={}", context, upstream_message);
+    if forward_err.error.leader_hint.is_none() {
+        forward_err.error.leader_hint = Some(leader_node);
+    }
+    forward_err
+}
+
 fn normalize_node_name(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -345,7 +359,7 @@ impl KLogWriteService {
                             );
                             Ok(resp)
                         }
-                        Err(mut forward_err) => {
+                        Err(forward_err) => {
                             let msg = format!(
                                 "{} data append forward failed: local_node_id={}, requested_id={}, leader_id={}, err={}",
                                 self.service_name,
@@ -354,13 +368,11 @@ impl KLogWriteService {
                                 leader_node.id,
                                 forward_err
                             );
-                            error!("{}", msg);
-                            forward_err.http_status = StatusCode::BAD_GATEWAY.as_u16();
-                            forward_err.error.message = msg;
-                            if forward_err.error.leader_hint.is_none() {
-                                forward_err.error.leader_hint = Some(leader_node);
-                            }
-                            Err(forward_err)
+                            Err(with_forward_error_context(
+                                forward_err,
+                                msg,
+                                leader_node.clone(),
+                            ))
                         }
                     }
                 } else {
@@ -633,18 +645,16 @@ impl KLogWriteService {
                             );
                             Ok(resp)
                         }
-                        Err(mut forward_err) => {
+                        Err(forward_err) => {
                             let msg = format!(
                                 "{} meta put forward failed: local_node_id={}, key={}, leader_id={}, err={}",
                                 self.service_name, local_node_id, key, leader_node.id, forward_err
                             );
-                            error!("{}", msg);
-                            forward_err.http_status = StatusCode::BAD_GATEWAY.as_u16();
-                            forward_err.error.message = msg;
-                            if forward_err.error.leader_hint.is_none() {
-                                forward_err.error.leader_hint = Some(leader_node);
-                            }
-                            Err(forward_err)
+                            Err(with_forward_error_context(
+                                forward_err,
+                                msg,
+                                leader_node.clone(),
+                            ))
                         }
                     }
                 } else {
@@ -856,18 +866,16 @@ impl KLogWriteService {
                             );
                             Ok(resp)
                         }
-                        Err(mut forward_err) => {
+                        Err(forward_err) => {
                             let msg = format!(
                                 "{} meta delete forward failed: local_node_id={}, key={}, leader_id={}, err={}",
                                 self.service_name, local_node_id, key, leader_node.id, forward_err
                             );
-                            error!("{}", msg);
-                            forward_err.http_status = StatusCode::BAD_GATEWAY.as_u16();
-                            forward_err.error.message = msg;
-                            if forward_err.error.leader_hint.is_none() {
-                                forward_err.error.leader_hint = Some(leader_node);
-                            }
-                            Err(forward_err)
+                            Err(with_forward_error_context(
+                                forward_err,
+                                msg,
+                                leader_node.clone(),
+                            ))
                         }
                     }
                 } else {
@@ -1078,14 +1086,7 @@ impl KLogQueryService {
                                     "{} data query forward failed: local_node_id={}, leader_id={}, err={}",
                                     self.service_name, local_node_id, leader_node.id, forward_err
                                 );
-                                error!("{}", msg);
-                                self.service_error(
-                                    StatusCode::BAD_GATEWAY,
-                                    KLogErrorCode::LeaderUnavailable,
-                                    msg,
-                                    &trace_id,
-                                )
-                                .with_leader_hint(Some(leader_node.clone()))
+                                with_forward_error_context(forward_err, msg, leader_node.clone())
                             });
                     }
 
@@ -1390,14 +1391,7 @@ impl KLogQueryService {
                                     "{} meta query forward failed: local_node_id={}, leader_id={}, err={}",
                                     self.service_name, local_node_id, leader_node.id, forward_err
                                 );
-                                error!("{}", msg);
-                                self.service_error(
-                                    StatusCode::BAD_GATEWAY,
-                                    KLogErrorCode::LeaderUnavailable,
-                                    msg,
-                                    &trace_id,
-                                )
-                                .with_leader_hint(Some(leader_node.clone()))
+                                with_forward_error_context(forward_err, msg, leader_node.clone())
                             });
                     }
                     let msg = format!(
