@@ -11,6 +11,9 @@ This file tracks current implementation gaps after the BuckyOS integration work.
 - [ ] Finalize the BuckyOS production policy for exposing the klog admin plane.
   - Current docs cover the basic `admin.local_only` and gateway ACL model.
   - Still need the final rule for how OOD voter nodes expose admin routes and which gateway/RBAC layer enforces access control.
+- [ ] Validate real system_config service on the klog backend in multi-OOD mode.
+  - The first high-level klog meta KV semantics DV is covered locally.
+  - Keep this open until `sys_config_get/set/create/delete/list/exec_tx` run through the actual system_config service backed by klog instead of the local sled provider.
 
 ## P1: Security / Admin API
 
@@ -55,5 +58,8 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Covered by `test/klog_membership_dv.sh`.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
+- [x] Validate klog meta KV semantics needed by system_config replacement.
+  - Covered by `test/klog_system_config_kv_dv.sh`.
+  - Validates create-as-CAS, stale revision conflict, strong read, prefix listing, and delete through the target-gateway route.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.

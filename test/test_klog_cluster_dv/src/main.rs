@@ -1,4 +1,4 @@
-use reqwest::Url;
+use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +14,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 15;
 const MULTI_NODE_MODE: &str = "local-gateway-failover";
 const MEMBERSHIP_MODE: &str = "local-gateway-membership";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
+const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
 const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
 const KLOG_RPC_METHOD_LOG_QUERY: &str = "klog.log.query";
@@ -85,6 +86,18 @@ struct MetaPutRequest {
 struct MetaPutResponse {
     key: String,
     revision: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct MetaDeleteRequest {
+    key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaDeleteResponse {
+    key: String,
+    existed: bool,
+    prev_meta: Option<MetaEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -455,6 +468,42 @@ async fn put_meta_via_cluster_inter_route(
     })
 }
 
+async fn expect_meta_put_status_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    body: MetaPutRequest,
+    expected_status: StatusCode,
+) -> Result<(), String> {
+    let url = cluster_route_url(gateway_addr, route_prefix, node_name, "inter", "/meta-put");
+
+    let response = client
+        .post(url.as_str())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| {
+            format!(
+                "cluster inter meta-put request failed: url={}, err={}",
+                url, err
+            )
+        })?;
+    let status = response.status();
+    if status != expected_status {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+        return Err(format!(
+            "cluster inter meta-put expected status {} but got {} from {}: {}",
+            expected_status, status, url, body
+        ));
+    }
+
+    Ok(())
+}
+
 async fn query_meta_via_cluster_inter_route(
     client: &reqwest::Client,
     gateway_addr: &str,
@@ -504,6 +553,138 @@ async fn query_meta_via_cluster_inter_route(
             url, err
         )
     })
+}
+
+async fn query_meta_prefix_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    prefix: &str,
+    limit: usize,
+) -> Result<MetaQueryResponse, String> {
+    let mut url = Url::parse(
+        cluster_route_url(
+            gateway_addr,
+            route_prefix,
+            node_name,
+            "inter",
+            "/meta-query",
+        )
+        .as_str(),
+    )
+    .map_err(|err| format!("failed to build cluster inter meta-query url: {}", err))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("prefix", prefix);
+        query.append_pair("limit", limit.to_string().as_str());
+        query.append_pair("strong_read", "true");
+    }
+
+    let response = client.get(url.clone()).send().await.map_err(|err| {
+        format!(
+            "cluster inter meta-query request failed: url={}, err={}",
+            url, err
+        )
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+        return Err(format!(
+            "cluster inter meta-query returned non-success status {} from {}: {}",
+            status, url, body
+        ));
+    }
+
+    response.json::<MetaQueryResponse>().await.map_err(|err| {
+        format!(
+            "failed to decode cluster inter meta-query response from {}: {}",
+            url, err
+        )
+    })
+}
+
+async fn delete_meta_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    key: &str,
+) -> Result<MetaDeleteResponse, String> {
+    let url = cluster_route_url(
+        gateway_addr,
+        route_prefix,
+        node_name,
+        "inter",
+        "/meta-delete",
+    );
+    let body = MetaDeleteRequest {
+        key: key.to_string(),
+    };
+
+    let response = client
+        .post(url.as_str())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| {
+            format!(
+                "cluster inter meta-delete request failed: url={}, err={}",
+                url, err
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+        return Err(format!(
+            "cluster inter meta-delete returned non-success status {} from {}: {}",
+            status, url, body
+        ));
+    }
+
+    response.json::<MetaDeleteResponse>().await.map_err(|err| {
+        format!(
+            "failed to decode cluster inter meta-delete response from {}: {}",
+            url, err
+        )
+    })
+}
+
+fn require_meta_value(
+    response: &MetaQueryResponse,
+    key: &str,
+    value: &str,
+    revision: u64,
+) -> Result<(), String> {
+    if response.items.len() != 1
+        || response.items[0].key != key
+        || response.items[0].value != value
+        || response.items[0].revision != revision
+    {
+        return Err(format!(
+            "unexpected meta query result for key {}: items={:?}",
+            key, response.items
+        ));
+    }
+    Ok(())
+}
+
+fn require_meta_keys(response: &MetaQueryResponse, expected_keys: &[&str]) -> Result<(), String> {
+    for key in expected_keys {
+        if !response.items.iter().any(|item| item.key == *key) {
+            return Err(format!(
+                "missing expected meta key {} in items={:?}",
+                key, response.items
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn fetch_cluster_state_via_admin_route(
@@ -2292,6 +2473,269 @@ async fn run_local_gateway_restart_recovery() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_system_config_kv_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-system-config-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, SYSTEM_CONFIG_KV_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let source = nodes
+        .first()
+        .ok_or_else(|| "missing source gateway node".to_string())?;
+    let target = nodes
+        .iter()
+        .find(|node| node.name != source.name)
+        .ok_or_else(|| "missing target gateway node".to_string())?;
+    let source_gateway_addr = gateway_addr(source, ingress_port);
+    let suffix = unique_suffix("syscfg");
+    let key_prefix = format!("test/system_config_kv/{}/", suffix);
+    let boot_key = format!("{}boot/config", key_prefix);
+    let node_config_key = format!("{}nodes/ood1/config", key_prefix);
+    let device_info_key = format!("{}devices/ood1/info", key_prefix);
+    let deleted_key = format!("{}nodes/ood2/config", key_prefix);
+
+    let boot_value_v1 = r#"{"oods":["ood1","ood2","ood3"],"revision":1}"#;
+    let boot_created = put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        boot_key.as_str(),
+        boot_value_v1,
+        Some(0),
+    )
+    .await?;
+    if boot_created.revision != 1 {
+        return Err(format!(
+            "system-config create expected revision 1, got {}",
+            boot_created.revision
+        ));
+    }
+    expect_meta_put_status_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        MetaPutRequest {
+            key: boot_key.clone(),
+            value: boot_value_v1.to_string(),
+            node_name: Some(target.name.clone()),
+            expected_revision: Some(0),
+        },
+        StatusCode::CONFLICT,
+    )
+    .await?;
+
+    let boot_value_v2 = r#"{"oods":["ood1","ood2","ood3"],"revision":2}"#;
+    let boot_updated = put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        boot_key.as_str(),
+        boot_value_v2,
+        Some(boot_created.revision),
+    )
+    .await?;
+    if boot_updated.revision != 2 {
+        return Err(format!(
+            "system-config update expected revision 2, got {}",
+            boot_updated.revision
+        ));
+    }
+    expect_meta_put_status_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        MetaPutRequest {
+            key: boot_key.clone(),
+            value: r#"{"stale":true}"#.to_string(),
+            node_name: Some(target.name.clone()),
+            expected_revision: Some(boot_created.revision),
+        },
+        StatusCode::CONFLICT,
+    )
+    .await?;
+
+    let fetched = query_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        boot_key.as_str(),
+    )
+    .await?;
+    require_meta_value(
+        &fetched,
+        boot_key.as_str(),
+        boot_value_v2,
+        boot_updated.revision,
+    )?;
+
+    let node_value = r#"{"kernel":{"scheduler":{},"verify-hub":{}}}"#;
+    let device_value = r#"{"name":"ood1","device_type":"node"}"#;
+    let deleted_value = r#"{"kernel":{"scheduler":{}}}"#;
+    put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        node_config_key.as_str(),
+        node_value,
+        Some(0),
+    )
+    .await?;
+    put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        device_info_key.as_str(),
+        device_value,
+        Some(0),
+    )
+    .await?;
+    put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        deleted_key.as_str(),
+        deleted_value,
+        Some(0),
+    )
+    .await?;
+
+    let listed = query_meta_prefix_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        key_prefix.as_str(),
+        16,
+    )
+    .await?;
+    require_meta_keys(
+        &listed,
+        &[
+            boot_key.as_str(),
+            node_config_key.as_str(),
+            device_info_key.as_str(),
+            deleted_key.as_str(),
+        ],
+    )?;
+
+    let deleted = delete_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        deleted_key.as_str(),
+    )
+    .await?;
+    if deleted.key != deleted_key
+        || !deleted.existed
+        || deleted.prev_meta.as_ref().map(|item| item.value.as_str()) != Some(deleted_value)
+    {
+        return Err(format!("unexpected meta delete result: {:?}", deleted));
+    }
+    let deleted_query = query_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        deleted_key.as_str(),
+    )
+    .await?;
+    if !deleted_query.items.is_empty() {
+        return Err(format!(
+            "deleted system-config key still visible: items={:?}",
+            deleted_query.items
+        ));
+    }
+
+    println!(
+        "[klog-cluster-dv] system-config kv semantics ok: leader={}, source_gateway={}, target_node={}, prefix={}",
+        leader_id, source.name, target.name, key_prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_system_config_kv() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_system_config_kv_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_installed_runtime_smoke() -> Result<(), String> {
     let buckyos_root = get_buckyos_root();
     let local_node_name = load_local_node_name(&buckyos_root)?;
@@ -2388,9 +2832,10 @@ async fn run() -> Result<(), String> {
         MULTI_NODE_MODE => run_local_gateway_failover_smoke().await,
         MEMBERSHIP_MODE => run_local_gateway_membership().await,
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
+        SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}'",
-            other, MULTI_NODE_MODE, MEMBERSHIP_MODE, RESTART_RECOVERY_MODE
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}'",
+            other, MULTI_NODE_MODE, MEMBERSHIP_MODE, RESTART_RECOVERY_MODE, SYSTEM_CONFIG_KV_MODE
         )),
     }
 }
