@@ -1,3 +1,4 @@
+mod klog_provider;
 mod kv_provider;
 //mod etcd_provider;
 //mod rocksdb_provider;
@@ -26,6 +27,7 @@ use buckyos_kit::*;
 use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
+use klog_provider::KLogStore;
 use kv_provider::KVStoreProvider;
 use name_lib::*;
 use rbac::*;
@@ -41,11 +43,28 @@ lazy_static! {
 }
 
 lazy_static! {
-    pub(crate) static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> =
-        Arc::new(Mutex::new(SledStore::new().unwrap()));
+    pub(crate) static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> = create_sys_store();
 }
 
 const INTERNAL_META_PREFIX: &str = "__meta/";
+
+// Optional. Selects the system_config storage backend.
+// Supported values: "sled" (default) or "klog".
+const ENV_SYSTEM_CONFIG_STORE: &str = "BUCKYOS_SYSTEM_CONFIG_STORE";
+
+fn create_sys_store() -> Arc<Mutex<dyn KVStoreProvider>> {
+    let store_kind = std::env::var(ENV_SYSTEM_CONFIG_STORE)
+        .unwrap_or_else(|_| "sled".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    if store_kind == "klog" {
+        info!("system_config store provider: klog");
+        return Arc::new(Mutex::new(KLogStore::new_from_env()));
+    }
+
+    info!("system_config store provider: sled");
+    Arc::new(Mutex::new(SledStore::new().unwrap()))
+}
 
 fn is_internal_meta_key(key_path: &str) -> bool {
     let key = key_path
