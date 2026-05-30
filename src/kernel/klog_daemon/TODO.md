@@ -13,6 +13,9 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - The klog crate now has an atomic meta transaction primitive for multi-key
     CAS/write semantics, which is the storage prerequisite for
     `sys_config_exec_tx`.
+  - `system_config` now has an opt-in klog provider and an explicit
+    `BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true` seed helper that
+    writes the first rollout seed as one klog meta transaction.
   - Keep this open until `sys_config_get/set/create/delete/list/exec_tx` run through the actual system_config service backed by klog instead of the local sled provider.
 
 ## P1: Security / Admin API
