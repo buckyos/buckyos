@@ -103,6 +103,13 @@ BuckyOS/gateway 层负责：
 
 因此，在当前实现下，除未来可能增加的 BuckyOS 内部 token 防御性校验外，klog 层的 authority 边界已经完整：它不实现用户级 RBAC，也不替代 gateway 的访问控制。正式 BuckyOS 部署应保持 klog 监听 localhost，并通过本机 node_gateway 进入；`admin_local_only=false` 只适合 direct 调试或受控内网。
 
+生产部署策略定稿：
+
+- `admin_local_only` 默认保持 `true`，klog daemon 不直接监听公网或跨机地址。
+- OOD voter 之间的 admin 调用只允许走 node gateway 的集群内部路由，用于 `add-learner`、`remove-learner`、`change-membership` 和 `cluster-state`。
+- ZoneGateway/公网业务入口不暴露 `/klog/admin/*`。
+- gateway 是 admin plane 的授权点；现阶段先依赖 gateway 的集群内部路由边界，后续如接入 token/RBAC，应在 gateway 或 klog admin handler 的前置层补充，不改变 klog 的一致性职责边界。
+
 ## 7. 常见误配
 
 1. 只改了 `listen_*`，没改 `advertise_*`

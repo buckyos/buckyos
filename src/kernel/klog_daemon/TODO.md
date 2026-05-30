@@ -8,9 +8,6 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Current local DV coverage validates source gateway -> target gateway -> local klog roundtrips with `KLOG_CLUSTER_DV_ROUTE_MODE=target-gateway`.
   - The earlier target gateway `invalid authority` failure is fixed by the latest cyfs-gateway origin-form URI forwarding behavior.
   - Keep this open until the same path is verified in a real multi-node/cascade DV topology instead of the local multi-process harness.
-- [ ] Finalize the BuckyOS production policy for exposing the klog admin plane.
-  - Current docs cover the basic `admin.local_only` and gateway ACL model.
-  - Still need the final rule for how OOD voter nodes expose admin routes and which gateway/RBAC layer enforces access control.
 - [ ] Validate real system_config service on the klog backend in multi-OOD mode.
   - The first high-level klog meta KV semantics DV is covered locally.
   - The klog crate now has an atomic meta transaction primitive for multi-key
@@ -42,6 +39,10 @@ This file tracks current implementation gaps after the BuckyOS integration work.
 ## Completed / Verified
 
 - [x] Restrict admin APIs to loopback source by default (`admin.local_only = true`).
+- [x] Finalize the BuckyOS production policy for exposing the klog admin plane.
+  - OOD voter admin calls use node gateway internal cluster routes only.
+  - ZoneGateway/public business routes must not expose `/klog/admin/*`.
+  - Covered by `src/kernel/klog_daemon/readme.md`.
 - [x] Add cluster identity fields in `cluster-state` and verify them during auto-join.
 - [x] Add integration test for wrong-cluster seed target rejection.
   - Covered by `src/kernel/klog_daemon/tests/cluster_identity.rs`.
