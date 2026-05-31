@@ -12,7 +12,18 @@
 | `21003` | `network.admin_listen_addr` / `advertise_admin_port` | admin / membership |
 | `3180` | `cluster_network.gateway_addr` | 本机 node gateway |
 
-## 2. 单节点配置
+## 2. BuckyOS managed 部署入口
+
+正式 BuckyOS 集成下，`klog-service` 不建议由人工维护完整 TOML。入口是：
+
+1. `services/klog-service/settings.deployment.mode = "ood_voters"`。
+2. scheduler 从 `boot/config.oods` 推导 OOD voter 集合，并把 `klog-service` 调度到这些 OOD。
+3. scheduler/rootfs 在 `node_gateway_info.json#cluster_route_map` 下写入 key 为 `klog-service` 的 cluster route；该 route 的默认 `route_prefix` 是 `/.cluster/klog`。
+4. node-daemon 启动 `klog-service` 时注入 `KLOG_NODE_ID`、`KLOG_ADVERTISE_NODE_NAME`、`KLOG_CLUSTER_NETWORK_MODE=gateway_proxy`、`KLOG_JOIN_TARGETS` 等环境变量。
+
+正式 BuckyOS managed 模式下，`KLOG_NODE_ID` 按本机 `DeviceConfig.id` 派生，是 Raft 成员身份协议的一部分。不要在部署配置里手写或按 OOD 顺序重新分配 `node_id`。下面的 TOML 示例主要用于 standalone、direct 调试或 DV。
+
+## 3. 单节点 standalone 配置
 
 ```toml
 node_id = 1
@@ -47,9 +58,11 @@ blocking = false
 target_role = "voter"
 ```
 
-## 3. 三节点 direct 配置要点
+## 4. 三节点 direct 配置要点
 
 三节点 HA 推荐 `3 voter`。每个节点必须有唯一 `node_id`，并使用同一个 `cluster.name` / `cluster.id`。
+
+direct 模式适合 standalone 或受控内网调试。BuckyOS 正式部署优先使用 `gateway_proxy`，由 node gateway 提供集群内部 route。
 
 node1 首次引导：
 
@@ -95,7 +108,7 @@ target_role = "voter"
 blocking = false
 ```
 
-## 4. gateway_proxy / hybrid 配置要点
+## 5. gateway_proxy / hybrid 配置要点
 
 启用 gateway 传输时必须配置 BuckyOS 节点名：
 
@@ -118,12 +131,14 @@ mode = "hybrid"
 
 要求：
 
-- scheduler/rootfs 必须生成匹配的 cluster route map。
+- scheduler/rootfs 必须生成匹配的 cluster route map。map key 是 `klog-service`，route path 前缀默认是 `/.cluster/klog`，二者不要混淆。
 - gateway 必须能识别 `/.cluster/klog/{node_name}/{raft|inter|admin}/...`。
 - BuckyOS runtime 中 `advertise_node_name` 必须等于当前 runtime node name。
 
-## 5. admin 暴露策略
+## 6. admin 暴露策略
 
-`admin.local_only` 在单节点或本机调试中可以为 `true`。多节点 direct 模式通常需要设为 `false`，否则远端节点无法调用 add-learner / cluster-state。
+`admin.local_only` 默认应保持 `true`。BuckyOS 正式部署下，OOD voter 之间的 admin 调用通过 node gateway 的 cluster route 进入本机 loopback admin plane，不应让 klog daemon 直接监听公网或跨机地址。
+
+多节点 direct 调试时，如果没有 gateway route，可能需要临时设置 `admin.local_only=false`，否则远端节点无法调用 add-learner / cluster-state。这个模式只适合受控网络和诊断，不是 BuckyOS 正式暴露策略。
 
 gateway proxy 场景下，admin 请求经本机 gateway 转发进入 daemon，仍要把它视为集群内部能力，不应暴露到公网业务入口。

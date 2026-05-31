@@ -48,6 +48,10 @@ single raft voter
 - `1 voter + 1 learner`：有副本，但 voter 故障后不可写。
 - `2 voter`：技术上可运行，但任一节点故障都会丢失 quorum，不应宣传为 HA。
 
+`2 voter` 中如果一个 OOD 掉线，剩余单节点没有 quorum，不能继续强读或写入，也不能在线提交 membership shrink。恢复路径是掉线 OOD 回来后重新形成 quorum；如果要把单节点强制作为新集群继续运行，应按灾备流程处理，不能伪装成普通成员变更。
+
+`1 voter -> 2 voters` 扩容时，新 OOD 应先以 learner 加入并完成日志或 snapshot 同步，再 promote 为 voter。对于长期不稳定的第二 OOD，`1 voter + 1 learner` 比 `2 voter` 更符合可用性预期。
+
 ### 三节点
 
 正式 HA 的基础拓扑是 `3 voter`。
@@ -75,3 +79,4 @@ gateway 不负责改变以下语义：
 - 数据提交顺序。
 - learner 是否能自动晋升为 voter。
 - admin API 的授权和暴露边界。
+- 当前 leader 不能被直接从 voters 中移除；admin API 会拒绝这种 change-membership，避免提交后剩余 voter 长时间无 leader。
