@@ -155,7 +155,24 @@ uv run test/run.py -p klog_system_config_rollout_dv
 
 该用例会启动 3 节点 klog 集群、两个隔离的 `system_config` 实例，并验证只有 bootstrap OOD 的 sled 数据会迁移；非 bootstrap OOD 的本地 sled 残留不会进入 klog。
 
-## 9. 常见误配
+## 9. OOD membership DV
+
+BuckyOS 多 OOD 场景下，klog OOD voter 的增删本质上对应 OpenRaft membership 变更。当前本地 DV 覆盖入口：
+
+```bash
+uv run test/run.py -p klog_ood_membership_dv
+```
+
+覆盖场景：
+
+1. `3 voters -> 4 voters -> 3 voters`：新增 OOD 先作为 learner 加入，再 promote 为 voter；删除时先 demote，再 remove learner 并停止节点。
+2. `2 voters -> 3 voters -> 2 voters`：覆盖进入和退出推荐最小稳定集群规模的临界路径。
+3. `1 voter -> 2 voters -> 1 voter`：覆盖家庭小集群的单 OOD 与双 OOD 切换。
+4. 每次 topology 变化后都通过 gateway inter route 执行 log/meta roundtrip，确认读写仍可用。
+
+该用例仍是本地多进程 DV；真实多 OOD/cascade DV 需要在实际 node-daemon/scheduler/ZoneConfig 变更链路中继续验证。
+
+## 10. 常见误配
 
 1. 只改了 `listen_*`，没改 `advertise_*`
 - 结果：本机能起，集群互联失败，选举/复制报连接错误。
@@ -167,7 +184,7 @@ uv run test/run.py -p klog_system_config_rollout_dv
 3. 只开放 Raft 端口，未开放 inter/admin
 - 结果：协议层可能通，但转发写入/成员变更失败。
 
-## 10. 最小运维检查清单
+## 11. 最小运维检查清单
 
 1. 每个节点 `advertise_addr` 是否为其他节点可达地址。
 2. `advertise_port/inter/admin` 是否都配置了 gateway 转发。
@@ -175,14 +192,14 @@ uv run test/run.py -p klog_system_config_rollout_dv
 4. `network.rpc_listen_addr` 是否只本机暴露（默认建议）。
 5. gateway 是否对 admin 接口实施了鉴权/访问控制。
 
-## 11. 压测工具（klog_bench）
+## 12. 压测工具（klog_bench）
 
 为了验证吞吐和延迟，`klog_daemon` 新增了本地压测二进制：
 
 - 路径：`kernel/klog_daemon/src/bin/klog_bench.rs`
 - 能力：自动拉起本地集群（默认 3 节点），并发发起 append，输出 TPS 和延迟分位数（P50/P95/P99）。
 
-### 11.1 快速开始
+### 12.1 快速开始
 
 先构建 daemon 可执行文件：
 
@@ -205,7 +222,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
   --report-json /tmp/klog_bench_report.json
 ```
 
-### 11.2 常用参数
+### 12.2 常用参数
 
 1. `--nodes`：本地拉起节点数（默认 `3`）。
 2. `--concurrency`：并发 worker 数（默认 `32`）。
@@ -223,7 +240,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
 14. `--report-json`：输出 JSON 报告路径（可选）。
 15. `--keep-data`：保留临时数据目录（用于问题排查）。
 
-### 11.3 配置文件模式
+### 12.3 配置文件模式
 
 仓库提供示例：
 
@@ -238,7 +255,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
   --report-json /tmp/klog_bench_report.json
 ```
 
-### 11.4 指标含义
+### 12.4 指标含义
 
 - `throughput`：成功请求的平均吞吐（req/s）。
 - `success_rate`：成功请求占比。

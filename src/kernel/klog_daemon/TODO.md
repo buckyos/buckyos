@@ -67,6 +67,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Local DV now defaults to the real target-gateway second-hop route; set `KLOG_CLUSTER_DV_ROUTE_MODE=direct-plane` only for legacy diagnostics.
 - [x] Validate membership admin semantics through gateway roundtrip.
   - Covered by `test/klog_membership_dv.sh`.
+- [x] Validate local OOD voter membership changes through gateway roundtrip.
+  - Covered by `test/klog_ood_membership_dv.sh`.
+  - Validates `3 voters <-> 4 voters`, `2 voters <-> 3 voters`, and
+    `1 voter <-> 2 voters` flows, including add as learner, promote to voter,
+    demote, remove learner, and log/meta roundtrips after each topology change.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
 - [x] Validate klog meta KV semantics needed by system_config replacement.
