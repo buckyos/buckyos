@@ -2,6 +2,8 @@
 
 本文说明 `klog-service` / `klog_daemon` 在 BuckyOS 中的集群内部传输模型。当前实现已经支持三种 `cluster_network.mode`：
 
+BuckyOS 视角的完整集成、system_config rollout 和 OOD 运维模型见 `doc/klog/buckyos_integration_and_ood_operations.md`。
+
 - `direct`：peer 之间直接按 `addr:port` 访问。
 - `gateway_proxy`：集群内部流量经本机 node gateway 转发到目标节点。
 - `hybrid`：先尝试 direct，连接或超时失败后回退到 gateway proxy。

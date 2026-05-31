@@ -2,6 +2,8 @@
 
 本文说明当前 `klog` 推荐拓扑、成员变更方式和测试覆盖。
 
+BuckyOS 视角的完整集成、system_config rollout 和 OOD 运维模型见 `doc/klog/buckyos_integration_and_ood_operations.md`。
+
 ## 1. 推荐拓扑
 
 | 拓扑 | 推荐程度 | 说明 |
@@ -34,10 +36,11 @@ gateway transport 需要同时写入 `node_name`：
 
 ### 新增 voter
 
-1. 新节点先通过现有 leader 的 admin 入口执行 add-learner。
-2. learner 复制日志或 snapshot，并能读取加入前的数据。
-3. 如果新节点 `target_role = "voter"`，auto-join 会继续提交 change-membership，把 learner promote 为 voter。
-4. 通过 `/klog/admin/cluster-state` 确认 voters 包含新节点。
+1. BuckyOS managed 模式下，node-daemon 在新 OOD 上启动 `klog-service`，并注入 `KLOG_JOIN_TARGETS` 和 `KLOG_JOIN_TARGET_ROLE=voter`。
+2. 新 OOD 的 `klog_daemon` auto-join 先通过现有 leader 的 admin 入口执行 add-learner。
+3. learner 复制日志或 snapshot，并能读取加入前的数据。
+4. 如果新节点 `target_role = "voter"`，auto-join 会继续提交 change-membership，把 learner promote 为 voter。
+5. 通过 `/klog/admin/cluster-state` 确认 voters 包含新节点。
 
 ### 新增 learner
 
