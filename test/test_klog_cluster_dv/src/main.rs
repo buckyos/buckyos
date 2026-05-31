@@ -14,6 +14,7 @@ const DEFAULT_CLUSTER_ROUTE_NAME: &str = "klog-service";
 const DEFAULT_TIMEOUT_SECS: u64 = 15;
 const MULTI_NODE_MODE: &str = "local-gateway-failover";
 const MEMBERSHIP_MODE: &str = "local-gateway-membership";
+const OOD_MEMBERSHIP_MODE: &str = "local-gateway-ood-membership";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -2087,6 +2088,113 @@ async fn wait_log_visible_on_nodes(
     }
 }
 
+async fn require_log_and_meta_roundtrip(
+    client: &reqwest::Client,
+    ingress_port: u16,
+    route_prefix: &str,
+    source_gateway: &LocalNodeDef,
+    target_node: &LocalNodeDef,
+    visible_nodes: &[LocalNodeDef],
+    scenario: &str,
+) -> Result<(), String> {
+    let source = format!(
+        "test/test_klog_ood_membership_dv-{}",
+        unique_suffix(scenario)
+    );
+    let append = append_via_cluster_inter_route(
+        client,
+        gateway_addr(source_gateway, ingress_port).as_str(),
+        route_prefix,
+        target_node.name.as_str(),
+        source.as_str(),
+        format!("ood membership write {}", scenario).as_str(),
+    )
+    .await?;
+    wait_log_visible_on_nodes(
+        client,
+        visible_nodes,
+        ingress_port,
+        route_prefix,
+        append.id,
+        source.as_str(),
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let meta_key = format!("test/ood_membership/{}/{}", scenario, unique_suffix("meta"));
+    let meta_value = format!("meta-value-{}", scenario);
+    let meta = put_meta_via_cluster_inter_route(
+        client,
+        gateway_addr(source_gateway, ingress_port).as_str(),
+        route_prefix,
+        target_node.name.as_str(),
+        meta_key.as_str(),
+        meta_value.as_str(),
+        Some(0),
+    )
+    .await?;
+    if meta.revision != 1 {
+        return Err(format!(
+            "unexpected meta revision for {}: expected=1, got={}",
+            scenario, meta.revision
+        ));
+    }
+    let queried = query_meta_via_cluster_inter_route(
+        client,
+        gateway_addr(target_node, ingress_port).as_str(),
+        route_prefix,
+        source_gateway.name.as_str(),
+        meta_key.as_str(),
+    )
+    .await?;
+    require_meta_value(&queried, meta_key.as_str(), meta_value.as_str(), 1)?;
+
+    println!(
+        "[klog-cluster-dv] ood membership roundtrip ok: scenario={}, log_id={}, source_gateway={}, target_node={}",
+        scenario, append.id, source_gateway.name, target_node.name
+    );
+    Ok(())
+}
+
+async fn change_voters_via_current_leader(
+    client: &reqwest::Client,
+    nodes: &[LocalNodeDef],
+    ingress_port: u16,
+    route_prefix: &str,
+    voters: &[u64],
+    retain: bool,
+) -> Result<u64, String> {
+    let leader_id = wait_consistent_leader(
+        client,
+        nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+    let (status, body) = post_change_membership_via_admin_route(
+        client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        voters,
+        retain,
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(format!(
+            "change-membership voters={:?} via leader {} returned status={}, body={}",
+            voters, leader.name, status, body
+        ));
+    }
+    Ok(leader_id)
+}
+
 async fn run_local_gateway_failover_smoke_inner(harness: &mut LocalHarness) -> Result<(), String> {
     let route_prefix = "/.cluster/klog-it-dv";
     let setup = prepare_local_gateway_setup(harness, MULTI_NODE_MODE, route_prefix, 3).await?;
@@ -2455,6 +2563,679 @@ async fn run_local_gateway_membership_inner(harness: &mut LocalHarness) -> Resul
 async fn run_local_gateway_membership() -> Result<(), String> {
     let mut harness = LocalHarness::new()?;
     let result = run_local_gateway_membership_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
+async fn run_local_gateway_ood_membership_three_to_four(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-ood-membership-3-4-dv";
+    let setup = prepare_local_gateway_setup(harness, OOD_MEMBERSHIP_MODE, route_prefix, 4).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let base_voters = nodes.iter().take(3).cloned().collect::<Vec<_>>();
+    let added_ood = nodes
+        .get(3)
+        .cloned()
+        .ok_or_else(|| "missing fourth OOD node".to_string())?;
+    let seed = base_voters
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &base_voters {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &base_voters[0],
+        &base_voters[1],
+        &base_voters,
+        "three-voters-before-add",
+    )
+    .await?;
+
+    let added_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "learner",
+    };
+    let added_config = write_klog_config(harness, &added_ood, &added_options)?;
+    spawn_klog(harness, &klog_daemon_bin, &added_config, &added_ood)?;
+    wait_tcp("127.0.0.1", added_ood.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", added_ood.ports.inter, Duration::from_secs(12)).await?;
+
+    let leader_id = wait_consistent_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = base_voters
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found before add OOD", leader_id))?;
+    post_add_learner_via_admin_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        &added_ood,
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[4],
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    let promote_leader = change_voters_via_current_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3, 4],
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3, 4],
+        &[],
+        Duration::from_secs(70),
+    )
+    .await?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &added_ood,
+        &base_voters[0],
+        &nodes,
+        "four-voters-after-add",
+    )
+    .await?;
+
+    let demote_leader = change_voters_via_current_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[4],
+        Duration::from_secs(70),
+    )
+    .await?;
+
+    let leader_id = wait_consistent_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = base_voters
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found before remove OOD", leader_id))?;
+    let (status_remove, body_remove) = post_remove_learner_via_admin_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        added_ood.id,
+    )
+    .await?;
+    if !status_remove.is_success() {
+        return Err(format!(
+            "remove fourth OOD learner returned status={}, body={}",
+            status_remove, body_remove
+        ));
+    }
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    harness.stop(format!("klog-{}", added_ood.name).as_str())?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &base_voters[2],
+        &base_voters[0],
+        &base_voters,
+        "three-voters-after-remove",
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] ood membership 3<->4 ok: promote_leader={}, demote_leader={}, removed_ood={}",
+        promote_leader, demote_leader, added_ood.name
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_ood_membership_one_to_two(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-ood-membership-1-2-dv";
+    let setup = prepare_local_gateway_setup(harness, OOD_MEMBERSHIP_MODE, route_prefix, 2).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing single OOD seed node".to_string())?;
+    let added_ood = nodes
+        .get(1)
+        .cloned()
+        .ok_or_else(|| "missing second OOD node".to_string())?;
+    let seed_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let config = write_klog_config(harness, &seed, &seed_config)?;
+    spawn_klog(harness, &klog_daemon_bin, &config, &seed)?;
+    wait_tcp("127.0.0.1", seed.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", seed.ports.inter, Duration::from_secs(12)).await?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        std::slice::from_ref(&seed),
+        ingress_port,
+        route_prefix,
+        &[1],
+        &[],
+        Duration::from_secs(30),
+    )
+    .await?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &seed,
+        &seed,
+        std::slice::from_ref(&seed),
+        "one-voter-before-add",
+    )
+    .await?;
+
+    let added_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "learner",
+    };
+    let added_config = write_klog_config(harness, &added_ood, &added_options)?;
+    spawn_klog(harness, &klog_daemon_bin, &added_config, &added_ood)?;
+    wait_tcp("127.0.0.1", added_ood.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", added_ood.ports.inter, Duration::from_secs(12)).await?;
+    post_add_learner_via_admin_route(
+        &client,
+        gateway_addr(&seed, ingress_port).as_str(),
+        route_prefix,
+        seed.name.as_str(),
+        &added_ood,
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1],
+        &[2],
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    let promote_leader = change_voters_via_current_leader(
+        &client,
+        std::slice::from_ref(&seed),
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[],
+        Duration::from_secs(70),
+    )
+    .await?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &added_ood,
+        &seed,
+        &nodes,
+        "two-voters-after-add",
+    )
+    .await?;
+
+    let demote_leader =
+        change_voters_via_current_leader(&client, &nodes, ingress_port, route_prefix, &[1], true)
+            .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1],
+        &[2],
+        Duration::from_secs(70),
+    )
+    .await?;
+    let (status_remove, body_remove) = post_remove_learner_via_admin_route(
+        &client,
+        gateway_addr(&seed, ingress_port).as_str(),
+        route_prefix,
+        seed.name.as_str(),
+        added_ood.id,
+    )
+    .await?;
+    if !status_remove.is_success() {
+        return Err(format!(
+            "remove second OOD learner returned status={}, body={}",
+            status_remove, body_remove
+        ));
+    }
+    wait_membership(
+        &client,
+        std::slice::from_ref(&seed),
+        ingress_port,
+        route_prefix,
+        &[1],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    harness.stop(format!("klog-{}", added_ood.name).as_str())?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &seed,
+        &seed,
+        std::slice::from_ref(&seed),
+        "one-voter-after-remove",
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] ood membership 1<->2 ok: promote_leader={}, demote_leader={}, removed_ood={}",
+        promote_leader, demote_leader, added_ood.name
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_ood_membership_two_to_three(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-ood-membership-2-3-dv";
+    let setup = prepare_local_gateway_setup(harness, OOD_MEMBERSHIP_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let base_voters = nodes.iter().take(2).cloned().collect::<Vec<_>>();
+    let added_ood = nodes
+        .get(2)
+        .cloned()
+        .ok_or_else(|| "missing third OOD node".to_string())?;
+    let seed = base_voters
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &base_voters {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &base_voters[0],
+        &base_voters[1],
+        &base_voters,
+        "two-voters-before-add-third",
+    )
+    .await?;
+
+    let added_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "learner",
+    };
+    let added_config = write_klog_config(harness, &added_ood, &added_options)?;
+    spawn_klog(harness, &klog_daemon_bin, &added_config, &added_ood)?;
+    wait_tcp("127.0.0.1", added_ood.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", added_ood.ports.inter, Duration::from_secs(12)).await?;
+
+    let leader_id = wait_consistent_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = base_voters
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found before add third OOD", leader_id))?;
+    post_add_learner_via_admin_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        &added_ood,
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[3],
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    let promote_leader = change_voters_via_current_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(70),
+    )
+    .await?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &added_ood,
+        &base_voters[0],
+        &nodes,
+        "three-voters-after-add-third",
+    )
+    .await?;
+
+    let demote_leader = change_voters_via_current_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[3],
+        Duration::from_secs(70),
+    )
+    .await?;
+
+    let leader_id = wait_consistent_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = base_voters
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| {
+            format!(
+                "leader node {} not found before remove third OOD",
+                leader_id
+            )
+        })?;
+    let (status_remove, body_remove) = post_remove_learner_via_admin_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        added_ood.id,
+    )
+    .await?;
+    if !status_remove.is_success() {
+        return Err(format!(
+            "remove third OOD learner returned status={}, body={}",
+            status_remove, body_remove
+        ));
+    }
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    harness.stop(format!("klog-{}", added_ood.name).as_str())?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &base_voters[1],
+        &base_voters[0],
+        &base_voters,
+        "two-voters-after-remove-third",
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] ood membership 2<->3 ok: promote_leader={}, demote_leader={}, removed_ood={}",
+        promote_leader, demote_leader, added_ood.name
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_ood_membership() -> Result<(), String> {
+    {
+        let mut harness = LocalHarness::new()?;
+        let result = run_local_gateway_ood_membership_three_to_four(&mut harness).await;
+        if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+            harness.keep_temp = true;
+            eprintln!(
+                "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+                harness.root.display()
+            );
+        }
+        result?;
+    }
+
+    {
+        let mut harness = LocalHarness::new()?;
+        let result = run_local_gateway_ood_membership_two_to_three(&mut harness).await;
+        if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+            harness.keep_temp = true;
+            eprintln!(
+                "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+                harness.root.display()
+            );
+        }
+        result?;
+    }
+
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_ood_membership_one_to_two(&mut harness).await;
     if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
         harness.keep_temp = true;
         eprintln!(
@@ -3736,15 +4517,17 @@ async fn run() -> Result<(), String> {
         "" => run_installed_runtime_smoke().await,
         MULTI_NODE_MODE => run_local_gateway_failover_smoke().await,
         MEMBERSHIP_MODE => run_local_gateway_membership().await,
+        OOD_MEMBERSHIP_MODE => run_local_gateway_ood_membership().await,
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
         SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}'",
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
             other,
             MULTI_NODE_MODE,
             MEMBERSHIP_MODE,
+            OOD_MEMBERSHIP_MODE,
             RESTART_RECOVERY_MODE,
             SYSTEM_CONFIG_KV_MODE,
             SYSTEM_CONFIG_SERVICE_MODE,
