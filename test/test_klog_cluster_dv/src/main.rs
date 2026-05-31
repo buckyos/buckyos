@@ -17,6 +17,7 @@ const MEMBERSHIP_MODE: &str = "local-gateway-membership";
 const OOD_MEMBERSHIP_MODE: &str = "local-gateway-ood-membership";
 const OOD_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-ood-snapshot-membership";
 const OOD_LEADER_FAILOVER_SHRINK_MODE: &str = "local-gateway-ood-leader-failover-shrink";
+const OOD_SEED_UNAVAILABLE_JOIN_MODE: &str = "local-gateway-ood-seed-unavailable-join";
 const OOD_SINGLE_TO_TWO_MODE: &str = "local-gateway-ood-single-to-two";
 const OOD_TWO_VOTER_LOSS_MODE: &str = "local-gateway-ood-two-voter-loss";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
@@ -1402,6 +1403,24 @@ fn gateway_addr(node: &LocalNodeDef, ingress_port: u16) -> String {
     format!("{}:{}", node.gateway_host, ingress_port)
 }
 
+fn gateway_admin_join_target(
+    source_gateway: &LocalNodeDef,
+    ingress_port: u16,
+    route_prefix: &str,
+    target_node: &LocalNodeDef,
+) -> String {
+    let gateway = gateway_addr(source_gateway, ingress_port);
+    let route_prefix = route_prefix.trim_matches('/');
+    if route_prefix.is_empty() {
+        format!("http://{}/{}/admin", gateway, target_node.name)
+    } else {
+        format!(
+            "http://{}/{}/{}/admin",
+            gateway, route_prefix, target_node.name
+        )
+    }
+}
+
 fn write_gateway_runtime(
     harness: &LocalHarness,
     repo_root: &Path,
@@ -1532,6 +1551,46 @@ fn write_klog_config(
     write_klog_config_with_raft_patch(harness, node, options, KLogRaftPatch::default())
 }
 
+fn write_klog_config_with_join_targets(
+    harness: &LocalHarness,
+    node: &LocalNodeDef,
+    options: &KLogConfigOptions<'_>,
+    join_targets: &[String],
+) -> Result<PathBuf, String> {
+    write_klog_config_inner(
+        harness,
+        node,
+        options,
+        KLogRaftPatch::default(),
+        Some(join_targets),
+    )
+}
+
+fn render_toml_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn render_toml_string_list(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| render_toml_string(value))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn render_raft_patch(patch: KLogRaftPatch<'_>) -> String {
     let mut lines = String::new();
     if let Some(value) = patch.max_payload_entries {
@@ -1561,6 +1620,16 @@ fn write_klog_config_with_raft_patch(
     options: &KLogConfigOptions<'_>,
     raft_patch: KLogRaftPatch<'_>,
 ) -> Result<PathBuf, String> {
+    write_klog_config_inner(harness, node, options, raft_patch, None)
+}
+
+fn write_klog_config_inner(
+    harness: &LocalHarness,
+    node: &LocalNodeDef,
+    options: &KLogConfigOptions<'_>,
+    raft_patch: KLogRaftPatch<'_>,
+    explicit_join_targets: Option<&[String]>,
+) -> Result<PathBuf, String> {
     let data_dir = harness.root.join(format!("klog-data-{}", node.name));
     fs::create_dir_all(&data_dir).map_err(|err| {
         format!(
@@ -1570,11 +1639,14 @@ fn write_klog_config_with_raft_patch(
         )
     })?;
     let config_path = harness.root.join(format!("klog-{}.toml", node.name));
-    let join_targets = if node.id == options.seed.id || !options.auto_join_seed {
-        String::new()
+    let join_targets = if let Some(targets) = explicit_join_targets {
+        targets.to_vec()
+    } else if node.id == options.seed.id || !options.auto_join_seed {
+        Vec::new()
     } else {
-        format!("\"127.0.0.1:{}\"", options.seed.ports.admin)
+        vec![format!("127.0.0.1:{}", options.seed.ports.admin)]
     };
+    let join_targets = render_toml_string_list(join_targets.as_slice());
     let install_snapshot_timeout_ms = raft_patch.install_snapshot_timeout_ms.unwrap_or(5000);
     let raft_patch = render_raft_patch(raft_patch);
     let content = format!(
@@ -4000,6 +4072,217 @@ async fn run_local_gateway_ood_leader_failover_shrink() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_ood_seed_unavailable_join_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-ood-seed-unavailable-join-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, OOD_SEED_UNAVAILABLE_JOIN_MODE, route_prefix, 4)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let base_voters = nodes.iter().take(3).cloned().collect::<Vec<_>>();
+    let seed = base_voters
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed OOD node".to_string())?;
+    let survivors = base_voters
+        .iter()
+        .filter(|node| node.id != seed.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    if survivors.len() != 2 {
+        return Err(format!(
+            "expected two survivor OOD nodes, got {}",
+            survivors.len()
+        ));
+    }
+    let added_ood = nodes
+        .get(3)
+        .cloned()
+        .ok_or_else(|| "missing fourth OOD node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &base_voters {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let before_seed_stop = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &seed,
+        &survivors[0],
+        &base_voters,
+        "seed-unavailable-before-stop",
+    )
+    .await?;
+
+    harness.stop(format!("klog-{}", seed.name).as_str())?;
+    let survivor_leader = wait_consistent_leader(
+        &client,
+        &survivors,
+        ingress_port,
+        route_prefix,
+        Some(seed.id),
+        Duration::from_secs(70),
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &survivors,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(40),
+    )
+    .await?;
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &survivors,
+        ingress_port,
+        route_prefix,
+        &before_seed_stop,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let after_seed_stop = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &survivors[0],
+        &survivors[1],
+        &survivors,
+        "seed-unavailable-after-stop",
+    )
+    .await?;
+
+    let join_targets = base_voters
+        .iter()
+        .map(|target| gateway_admin_join_target(&added_ood, ingress_port, route_prefix, target))
+        .collect::<Vec<_>>();
+    println!(
+        "[klog-cluster-dv] fourth OOD join_targets={}",
+        join_targets.join(",")
+    );
+    let added_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "voter",
+    };
+    let added_config =
+        write_klog_config_with_join_targets(harness, &added_ood, &added_options, &join_targets)?;
+    spawn_klog(harness, &klog_daemon_bin, &added_config, &added_ood)?;
+    wait_tcp("127.0.0.1", added_ood.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", added_ood.ports.inter, Duration::from_secs(12)).await?;
+
+    let online_after_join = survivors
+        .iter()
+        .cloned()
+        .chain(std::iter::once(added_ood.clone()))
+        .collect::<Vec<_>>();
+    wait_membership(
+        &client,
+        &online_after_join,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3, 4],
+        &[],
+        Duration::from_secs(90),
+    )
+    .await?;
+    for witness in [&before_seed_stop, &after_seed_stop] {
+        verify_log_and_meta_witness_on_nodes(
+            &client,
+            &online_after_join,
+            ingress_port,
+            route_prefix,
+            witness,
+            Duration::from_secs(50),
+        )
+        .await?;
+    }
+    let after_join = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &added_ood,
+        &survivors[0],
+        &online_after_join,
+        "seed-unavailable-after-fourth-join",
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] ood seed-unavailable auto-join ok: stopped_seed={}, survivor_leader={}, added_ood={}, log_ids=[{},{},{}]",
+        seed.id,
+        survivor_leader,
+        added_ood.id,
+        before_seed_stop.log_id,
+        after_seed_stop.log_id,
+        after_join.log_id
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_ood_seed_unavailable_join() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_ood_seed_unavailable_join_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_ood_single_to_two_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -5974,6 +6257,7 @@ async fn run() -> Result<(), String> {
         MEMBERSHIP_MODE => run_local_gateway_membership().await,
         OOD_MEMBERSHIP_MODE => run_local_gateway_ood_membership().await,
         OOD_LEADER_FAILOVER_SHRINK_MODE => run_local_gateway_ood_leader_failover_shrink().await,
+        OOD_SEED_UNAVAILABLE_JOIN_MODE => run_local_gateway_ood_seed_unavailable_join().await,
         OOD_SINGLE_TO_TWO_MODE => run_local_gateway_ood_single_to_two().await,
         OOD_TWO_VOTER_LOSS_MODE => run_local_gateway_ood_two_voter_loss().await,
         OOD_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_ood_snapshot_membership().await,
@@ -5982,12 +6266,13 @@ async fn run() -> Result<(), String> {
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
         SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
             other,
             MULTI_NODE_MODE,
             MEMBERSHIP_MODE,
             OOD_MEMBERSHIP_MODE,
             OOD_LEADER_FAILOVER_SHRINK_MODE,
+            OOD_SEED_UNAVAILABLE_JOIN_MODE,
             OOD_SINGLE_TO_TWO_MODE,
             OOD_TWO_VOTER_LOSS_MODE,
             OOD_SNAPSHOT_MEMBERSHIP_MODE,

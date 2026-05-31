@@ -59,6 +59,7 @@ node-daemon 负责把本机拉到目标状态。klog 相关职责：
 3. 为 klog-service 注入 BuckyOS managed 环境变量，包括 `KLOG_NODE_ID`、`KLOG_ADVERTISE_NODE_NAME`、`KLOG_CLUSTER_NETWORK_MODE=gateway_proxy`、`KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX`、`KLOG_JOIN_TARGETS`。
 4. `KLOG_NODE_ID` 从本机 `DeviceConfig.id` 派生，是 Raft membership 身份，不是 BuckyOS 节点名。
 5. 非 seed OOD 会获得 `KLOG_JOIN_TARGETS` 和 `KLOG_JOIN_TARGET_ROLE=voter`，新 OOD 启动后由 klog_daemon 自动完成 join。
+6. 当前 `KLOG_JOIN_TARGETS` 应包含除自己之外的其它 OOD admin route；这样 bootstrap seed 不可用时，新 OOD 仍可通过任意在线 OOD 发现 leader 并加入。
 
 node-daemon 适合做“本机服务启动/停止”和“新 OOD 自加入”的自动化，不适合单独决定全局 OOD 缩容。
 
@@ -70,7 +71,7 @@ klog-daemon 负责本机 klog 节点运行：
 2. inter-node data/meta plane：默认 `21002`。
 3. admin plane：默认 `21003`，正式 BuckyOS 场景应只监听 loopback。
 4. client JSON-RPC plane：默认 `4080`，由 gateway 暴露为 `/kapi/klog-service`。
-5. auto-join：当 `KLOG_AUTO_BOOTSTRAP=false` 且 `KLOG_JOIN_TARGETS` 非空时，启动后自动向 seed/leader 执行 add-learner；若目标角色是 voter，再执行 change-membership promote。
+5. auto-join：当 `KLOG_AUTO_BOOTSTRAP=false` 且 `KLOG_JOIN_TARGETS` 非空时，启动后自动向任意可用 join target 查询 cluster-state，优先找到当前 leader 后执行 add-learner；若目标角色是 voter，再执行 change-membership promote。
 
 klog-daemon 不做用户级 RBAC，也不应该根据 BuckyOS desired OOD 列表自行删除其他 Raft 成员。它只执行明确的 admin API 请求，并在一致性层面拒绝危险操作，例如直接移除当前 leader。
 
@@ -99,6 +100,8 @@ gateway 是 admin plane 的授权和暴露边界。ZoneGateway/公网业务入�
 5. 如果启用 klog backend，node-daemon 先启动 klog-service，再启动 system_config。
 6. 第一个 OOD 以 `KLOG_AUTO_BOOTSTRAP=true` 初始化单节点集群。
 7. 后续 OOD 以 `KLOG_AUTO_BOOTSTRAP=false` 启动，并通过 auto-join 加入。
+
+当前实现把 OOD 列表中的第一个 OOD 作为 bootstrap seed。它只用于全新集群初始化，不是长期固定 leader。长期更清晰的做法是在 Zone/部署配置中增加显式 `bootstrap_ood` 或等价字段；该字段只决定初始 bootstrap 节点，已有集群扩容仍应使用全部可用 OOD 作为 join candidates。
 
 ### 从 sled rollout 到 klog backend
 
@@ -131,8 +134,8 @@ gateway 是 admin plane 的授权和暴露边界。ZoneGateway/公网业务入�
 
 1. BuckyOS 层完成新 OOD 加入 Zone，并更新 `boot/config.oods`。
 2. scheduler 推导新的 `klog-service` placement 和 `cluster_route_map`。
-3. 新 OOD node-daemon 启动 klog-service，并注入 `KLOG_JOIN_TARGETS` 指向 seed OOD 的 gateway admin route。
-4. 新 OOD 的 klog-daemon auto-join 向现有 leader 执行 add-learner。
+3. 新 OOD node-daemon 启动 klog-service，并注入 `KLOG_JOIN_TARGETS`，其中包含除自己之外的其它 OOD gateway admin route。
+4. 新 OOD 的 klog-daemon auto-join 依次尝试这些 join targets，向可用集群的 leader 执行 add-learner。
 5. 新 learner 复制已有 log/snapshot，确认能读取加入前数据。
 6. 因 `KLOG_JOIN_TARGET_ROLE=voter`，auto-join 继续执行 change-membership，把该节点 promote 为 voter。
 7. 运维或 reconciler 通过 cluster-state 确认 voters 包含新 OOD。
@@ -249,6 +252,7 @@ uv run test/run.py -p klog_system_config_rollout_dv
 uv run test/run.py -p klog_ood_membership_dv
 uv run test/run.py -p klog_ood_snapshot_membership_dv
 uv run test/run.py -p klog_ood_leader_failover_shrink_dv
+uv run test/run.py -p klog_ood_seed_unavailable_join_dv
 uv run test/run.py -p klog_ood_single_to_two_dv
 uv run test/run.py -p klog_ood_two_voter_loss_dv
 ```
@@ -264,9 +268,10 @@ uv run test/run.py -p klog_ood_two_voter_loss_dv
 ## 10. 待讨论问题
 
 1. klog backend 何时从环境变量 opt-in 切到产品级配置入口。
-2. OOD membership reconciler 放在 node-daemon、scheduler 旁路任务，还是独立 kernel service。
-3. 删除 OOD 是否必须人工确认，哪些拓扑允许自动 shrink。
-4. 是否需要 transfer-leader admin API。
-5. admin plane 的 BuckyOS token/RBAC 校验放在 gateway 还是 klog admin handler 前置层。
-6. system_config prefix list 的 pagination/cursor 设计。
-7. `2 voters` 家庭小集群是否默认推荐 `1 voter + 1 learner`，以及 UI/产品上如何表达可用性边界。
+2. 是否在 Zone/部署配置里增加显式 `bootstrap_ood`，替代“第一个 OOD”这个隐式规则。
+3. OOD membership reconciler 放在 node-daemon、scheduler 旁路任务，还是独立 kernel service。
+4. 删除 OOD 是否必须人工确认，哪些拓扑允许自动 shrink。
+5. 是否需要 transfer-leader admin API。
+6. admin plane 的 BuckyOS token/RBAC 校验放在 gateway 还是 klog admin handler 前置层。
+7. system_config prefix list 的 pagination/cursor 设计。
+8. `2 voters` 家庭小集群是否默认推荐 `1 voter + 1 learner`，以及 UI/产品上如何表达可用性边界。

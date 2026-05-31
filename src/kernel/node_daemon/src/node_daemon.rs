@@ -874,6 +874,26 @@ fn derive_klog_node_id_from_device(device_doc: &DeviceConfig) -> u64 {
     if hash == 0 { 1 } else { hash }
 }
 
+fn build_klog_gateway_admin_target(ood_name: &str) -> String {
+    format!(
+        "http://{}{}/{}/admin",
+        KLOG_CLUSTER_GATEWAY_ADDR, KLOG_CLUSTER_ROUTE_PREFIX, ood_name
+    )
+}
+
+fn build_klog_join_targets(this_node_name: &str, ood_names: &[String]) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut seen = Vec::new();
+    for ood_name in ood_names {
+        if ood_name == this_node_name || seen.iter().any(|name| name == ood_name) {
+            continue;
+        }
+        seen.push(ood_name.clone());
+        targets.push(build_klog_gateway_admin_target(ood_name));
+    }
+    targets
+}
+
 fn build_klog_service_env(
     this_device_doc: &DeviceConfig,
     zone_host: &str,
@@ -955,13 +975,8 @@ fn build_klog_service_env(
     env_vars.insert("KLOG_JOIN_BLOCKING".to_string(), "true".to_string());
     env_vars.insert("KLOG_JOIN_TARGET_ROLE".to_string(), "voter".to_string());
     if !auto_bootstrap {
-        env_vars.insert(
-            "KLOG_JOIN_TARGETS".to_string(),
-            format!(
-                "http://{}{}/{}/admin",
-                KLOG_CLUSTER_GATEWAY_ADDR, KLOG_CLUSTER_ROUTE_PREFIX, seed_ood
-            ),
-        );
+        let join_targets = build_klog_join_targets(this_node_name, &ood_names);
+        env_vars.insert("KLOG_JOIN_TARGETS".to_string(), join_targets.join(","));
     }
 
     Ok(env_vars)
@@ -2292,6 +2307,54 @@ mod tests {
         assert_eq!(
             env.get("KLOG_JOIN_TARGETS").map(String::as_str),
             Some("http://127.0.0.1:3180/.cluster/klog/ood1/admin")
+        );
+    }
+
+    #[test]
+    fn build_klog_service_env_joins_later_ood_to_all_other_oods() {
+        let device_doc = test_device_doc("ood4", "ood4-device-key");
+        let env = build_klog_service_env(
+            &device_doc,
+            "test.zone",
+            vec![
+                "ood1".to_string(),
+                "ood2".to_string(),
+                "ood3".to_string(),
+                "ood4".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            env.get("KLOG_AUTO_BOOTSTRAP").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            env.get("KLOG_JOIN_TARGETS").map(String::as_str),
+            Some(
+                "http://127.0.0.1:3180/.cluster/klog/ood1/admin,http://127.0.0.1:3180/.cluster/klog/ood2/admin,http://127.0.0.1:3180/.cluster/klog/ood3/admin"
+            )
+        );
+    }
+
+    #[test]
+    fn build_klog_join_targets_deduplicates_and_excludes_self() {
+        let targets = build_klog_join_targets(
+            "ood2",
+            &[
+                "ood1".to_string(),
+                "ood2".to_string(),
+                "ood1".to_string(),
+                "ood3".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            targets,
+            vec![
+                "http://127.0.0.1:3180/.cluster/klog/ood1/admin".to_string(),
+                "http://127.0.0.1:3180/.cluster/klog/ood3/admin".to_string(),
+            ]
         );
     }
 
