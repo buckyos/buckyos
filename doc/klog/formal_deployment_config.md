@@ -2,6 +2,8 @@
 
 本文给出当前代码可落地的 `klog-service` / `klog_daemon` 部署配置。配置事实以 `src/kernel/klog_daemon/src/constants.rs` 和 `src/kernel/klog_daemon/src/config.rs` 为准。
 
+BuckyOS 视角的完整集成、system_config rollout 和 OOD 运维模型见 `doc/klog/buckyos_integration_and_ood_operations.md`。
+
 ## 1. 默认端口
 
 | 端口 | 配置项 | 作用 |

@@ -2,6 +2,8 @@
 
 本文梳理 `klog-service` 集成到 BuckyOS 后的访问路径、集群内部路径和推荐拓扑。
 
+BuckyOS 视角的完整集成、system_config rollout 和 OOD 运维模型见 `doc/klog/buckyos_integration_and_ood_operations.md`。
+
 ## 1. 结论
 
 - BuckyOS 业务侧访问 `klog-service` 应走 `/kapi/klog-service`。
