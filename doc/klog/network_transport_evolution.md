@@ -13,6 +13,8 @@
 - `node_id`：`u64`，OpenRaft membership 使用的内部一致性身份。
 - `node_name`：BuckyOS 节点名，gateway 路由和业务日志来源使用的外部身份。
 
+正式 BuckyOS managed 模式下，`KLOG_NODE_ID` 由 `node-daemon` 从本机 `DeviceConfig.id` 派生并注入，避免 OOD 列表顺序或设备名变化影响 Raft 成员身份。standalone / direct 调试仍可以手工配置 `node_id`，但必须保证它在集群生命周期内稳定且唯一。
+
 启用 `gateway_proxy` 或 `hybrid` 时，`network.advertise_node_name` 是必填项。BuckyOS runtime 下它还必须等于当前节点的 runtime node name，否则启动会失败。
 
 ## 2. 流量分类
@@ -43,6 +45,8 @@ http://{gateway_addr}{gateway_route_prefix}/{node_name}/{plane}/{suffix}
 - `plane` 取值为 `raft`、`inter`、`admin`。
 - `suffix` 是去掉原始 `/klog/...` 前缀后的路径，例如 `vote`、`append`、`cluster-state`。
 
+gateway 加载的 `cluster_route_map` key 是服务名 `klog-service`；`/.cluster/klog` 是该 route entry 内部的 path prefix。二者是不同层级：前者用于从 gateway 配置中取出 route，后者用于匹配请求路径。
+
 示例：
 
 ```text
@@ -57,3 +61,4 @@ http://127.0.0.1:3180/.cluster/klog/ood1/admin/cluster-state
 - `hybrid` 只对连接失败或超时做回退，不会对所有 HTTP 业务错误做回退。
 - `admin` 面即使经 gateway 转发，也仍应只作为集群内部能力使用，不应暴露成公网业务 API。
 - `2 voter` 不是高可用拓扑；gateway transport 只解决路径可达，不改变 Raft quorum 语义。
+- `2 voters -> 1 online` 时，剩余单节点没有 quorum；gateway route 正常也不能恢复强读或写入。
