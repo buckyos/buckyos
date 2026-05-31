@@ -16,6 +16,7 @@ const MULTI_NODE_MODE: &str = "local-gateway-failover";
 const MEMBERSHIP_MODE: &str = "local-gateway-membership";
 const OOD_MEMBERSHIP_MODE: &str = "local-gateway-ood-membership";
 const OOD_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-ood-snapshot-membership";
+const OOD_LEADER_FAILOVER_SHRINK_MODE: &str = "local-gateway-ood-leader-failover-shrink";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -1710,6 +1711,7 @@ fn spawn_system_config(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_system_config_with_options(
     harness: &mut LocalHarness,
     process_name: &str,
@@ -2278,6 +2280,182 @@ async fn wait_meta_prefix_count_on_nodes(
     }
 }
 
+#[derive(Debug, Clone)]
+struct LogMetaWitness {
+    log_id: u64,
+    log_source: String,
+    meta_key: String,
+    meta_value: String,
+    meta_revision: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn wait_meta_value_on_nodes(
+    client: &reqwest::Client,
+    nodes: &[LocalNodeDef],
+    ingress_port: u16,
+    route_prefix: &str,
+    key: &str,
+    value: &str,
+    revision: u64,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last = String::new();
+    loop {
+        let mut ok = true;
+        for node in nodes {
+            match query_meta_via_cluster_inter_route(
+                client,
+                gateway_addr(node, ingress_port).as_str(),
+                route_prefix,
+                node.name.as_str(),
+                key,
+            )
+            .await
+            .and_then(|response| require_meta_value(&response, key, value, revision))
+            {
+                Ok(()) => {}
+                Err(err) => {
+                    ok = false;
+                    last = format!("node={} {}", node.name, err);
+                    break;
+                }
+            }
+        }
+        if ok {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timeout waiting meta key {} visible on nodes; last={}",
+                key, last
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn verify_log_and_meta_witness_on_nodes(
+    client: &reqwest::Client,
+    nodes: &[LocalNodeDef],
+    ingress_port: u16,
+    route_prefix: &str,
+    witness: &LogMetaWitness,
+    timeout: Duration,
+) -> Result<(), String> {
+    wait_log_visible_on_nodes(
+        client,
+        nodes,
+        ingress_port,
+        route_prefix,
+        witness.log_id,
+        witness.log_source.as_str(),
+        timeout,
+    )
+    .await?;
+    wait_meta_value_on_nodes(
+        client,
+        nodes,
+        ingress_port,
+        route_prefix,
+        witness.meta_key.as_str(),
+        witness.meta_value.as_str(),
+        witness.meta_revision,
+        timeout,
+    )
+    .await
+}
+
+async fn write_log_and_meta_witness(
+    client: &reqwest::Client,
+    ingress_port: u16,
+    route_prefix: &str,
+    source_gateway: &LocalNodeDef,
+    target_node: &LocalNodeDef,
+    visible_nodes: &[LocalNodeDef],
+    scenario: &str,
+) -> Result<LogMetaWitness, String> {
+    let source = format!(
+        "test/test_klog_cluster_dv-{}-{}",
+        scenario,
+        unique_suffix("source")
+    );
+    let append = append_via_cluster_inter_route(
+        client,
+        gateway_addr(source_gateway, ingress_port).as_str(),
+        route_prefix,
+        target_node.name.as_str(),
+        source.as_str(),
+        format!("cluster consistency write {}", scenario).as_str(),
+    )
+    .await?;
+    wait_log_visible_on_nodes(
+        client,
+        visible_nodes,
+        ingress_port,
+        route_prefix,
+        append.id,
+        source.as_str(),
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let meta_key = format!(
+        "test/cluster_consistency/{}/{}",
+        scenario,
+        unique_suffix("meta")
+    );
+    let meta_value = format!("meta-value-{}", scenario);
+    let meta = put_meta_via_cluster_inter_route(
+        client,
+        gateway_addr(source_gateway, ingress_port).as_str(),
+        route_prefix,
+        target_node.name.as_str(),
+        meta_key.as_str(),
+        meta_value.as_str(),
+        Some(0),
+    )
+    .await?;
+    if meta.revision != 1 {
+        return Err(format!(
+            "unexpected meta revision for {}: expected=1, got={}",
+            scenario, meta.revision
+        ));
+    }
+
+    let witness = LogMetaWitness {
+        log_id: append.id,
+        log_source: source,
+        meta_key,
+        meta_value,
+        meta_revision: meta.revision,
+    };
+    verify_log_and_meta_witness_on_nodes(
+        client,
+        visible_nodes,
+        ingress_port,
+        route_prefix,
+        &witness,
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] log/meta witness ok: scenario={}, log_id={}, source_gateway={}, target_node={}, visible_nodes={}",
+        scenario,
+        witness.log_id,
+        source_gateway.name,
+        target_node.name,
+        visible_nodes
+            .iter()
+            .map(|node| node.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    Ok(witness)
+}
+
 async fn require_log_and_meta_roundtrip(
     client: &reqwest::Client,
     ingress_port: u16,
@@ -2375,6 +2553,7 @@ fn snapshot_bulk_checkpoints(count: usize) -> BTreeSet<usize> {
     checkpoints
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_snapshot_bulk_data(
     client: &reqwest::Client,
     ingress_port: u16,
@@ -3580,6 +3759,235 @@ async fn run_local_gateway_ood_membership() -> Result<(), String> {
 
     let mut harness = LocalHarness::new()?;
     let result = run_local_gateway_ood_membership_one_to_two(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
+async fn run_local_gateway_ood_leader_failover_shrink_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-ood-leader-failover-shrink-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, OOD_LEADER_FAILOVER_SHRINK_MODE, route_prefix, 3)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let before_failover = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &nodes[0],
+        &nodes[1],
+        &nodes,
+        "three-voters-before-leader-failover",
+    )
+    .await?;
+
+    let old_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let old_leader = nodes
+        .iter()
+        .find(|node| node.id == old_leader_id)
+        .ok_or_else(|| format!("leader node {} not found", old_leader_id))?;
+    harness.stop(format!("klog-{}", old_leader.name).as_str())?;
+    let alive_nodes = nodes
+        .iter()
+        .filter(|node| node.id != old_leader_id)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let new_leader_id = wait_consistent_leader(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        Some(old_leader_id),
+        Duration::from_secs(70),
+    )
+    .await?;
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        &before_failover,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    let failover_writer = alive_nodes
+        .iter()
+        .find(|node| node.id != new_leader_id)
+        .unwrap_or_else(|| alive_nodes.first().unwrap());
+    let failover_target = alive_nodes
+        .iter()
+        .find(|node| node.id == new_leader_id)
+        .unwrap_or(failover_writer);
+    let after_failover = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        failover_writer,
+        failover_target,
+        &alive_nodes,
+        "two-voters-after-leader-failover",
+    )
+    .await?;
+
+    let alive_voters = alive_nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+    let shrink_leader_id = change_voters_via_current_leader(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        alive_voters.as_slice(),
+        false,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        alive_voters.as_slice(),
+        &[],
+        Duration::from_secs(80),
+    )
+    .await?;
+    let stable_leader_id = wait_consistent_leader(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+
+    for witness in [&before_failover, &after_failover] {
+        verify_log_and_meta_witness_on_nodes(
+            &client,
+            &alive_nodes,
+            ingress_port,
+            route_prefix,
+            witness,
+            Duration::from_secs(40),
+        )
+        .await?;
+    }
+
+    let post_shrink_writer = alive_nodes
+        .iter()
+        .find(|node| node.id != stable_leader_id)
+        .unwrap_or_else(|| alive_nodes.first().unwrap());
+    let post_shrink_target = alive_nodes
+        .iter()
+        .find(|node| node.id == stable_leader_id)
+        .unwrap_or(post_shrink_writer);
+    let after_shrink = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        post_shrink_writer,
+        post_shrink_target,
+        &alive_nodes,
+        "two-voters-after-shrink",
+    )
+    .await?;
+
+    for witness in [&before_failover, &after_failover, &after_shrink] {
+        verify_log_and_meta_witness_on_nodes(
+            &client,
+            &alive_nodes,
+            ingress_port,
+            route_prefix,
+            witness,
+            Duration::from_secs(40),
+        )
+        .await?;
+    }
+
+    println!(
+        "[klog-cluster-dv] ood leader failover shrink ok: old_leader={}, new_leader={}, shrink_leader={}, stable_leader={}, alive_voters={:?}, log_ids=[{},{},{}]",
+        old_leader_id,
+        new_leader_id,
+        shrink_leader_id,
+        stable_leader_id,
+        alive_voters,
+        before_failover.log_id,
+        after_failover.log_id,
+        after_shrink.log_id
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_ood_leader_failover_shrink() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_ood_leader_failover_shrink_inner(&mut harness).await;
     if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
         harness.keep_temp = true;
         eprintln!(
@@ -5194,17 +5602,19 @@ async fn run() -> Result<(), String> {
         MULTI_NODE_MODE => run_local_gateway_failover_smoke().await,
         MEMBERSHIP_MODE => run_local_gateway_membership().await,
         OOD_MEMBERSHIP_MODE => run_local_gateway_ood_membership().await,
+        OOD_LEADER_FAILOVER_SHRINK_MODE => run_local_gateway_ood_leader_failover_shrink().await,
         OOD_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_ood_snapshot_membership().await,
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
         SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
             other,
             MULTI_NODE_MODE,
             MEMBERSHIP_MODE,
             OOD_MEMBERSHIP_MODE,
+            OOD_LEADER_FAILOVER_SHRINK_MODE,
             OOD_SNAPSHOT_MEMBERSHIP_MODE,
             RESTART_RECOVERY_MODE,
             SYSTEM_CONFIG_KV_MODE,

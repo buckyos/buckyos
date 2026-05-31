@@ -186,6 +186,14 @@ KLOG_OOD_SNAPSHOT_DV_VALUE_BYTES=1024 \
 uv run test/run.py -p klog_ood_snapshot_membership_dv
 ```
 
+leader 被动掉线后的 3 OOD 缩容覆盖入口：
+
+```bash
+uv run test/run.py -p klog_ood_leader_failover_shrink_dv
+```
+
+该用例覆盖 `3 voters -> leader 被动停止 -> 剩余 2 voters 重新选主 -> gateway log/meta 读写 -> change-membership 到 2 voters -> 继续读写`。每个阶段都会复查前序 log/meta witness，确认缩容前后的强读一致性和数据保留。
+
 ## 10. 常见误配
 
 1. 只改了 `listen_*`，没改 `advertise_*`

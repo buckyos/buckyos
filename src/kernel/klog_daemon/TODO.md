@@ -83,6 +83,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     instead of committing a membership that can leave remaining voters with
     `current_leader=None`.
   - Covered by `test_admin_change_membership_rejects_current_leader_demotion`.
+- [x] Validate local OOD leader passive failover followed by 3-to-2 voter shrink.
+  - Covered by `test/klog_ood_leader_failover_shrink_dv.sh`.
+  - Validates `3 voters -> stopped leader -> 2 voters elect new leader ->
+    gateway log/meta reads and writes -> change-membership to 2 voters ->
+    continued log/meta reads and writes`.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
 - [x] Validate klog meta KV semantics needed by system_config replacement.
