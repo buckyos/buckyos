@@ -11,6 +11,12 @@ from pathlib import Path
 
 DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
 
+SKIPPED_WEB_ROOTFS_DIRS = (
+    Path("rootfs/bin/node-active"),
+    Path("rootfs/bin/buckyos_systest"),
+    Path("rootfs/bin/control-panel/web"),
+)
+
 
 def _command_names(command: str) -> list[str]:
     if os.name == "nt":
@@ -239,6 +245,16 @@ def _run_command(command: str, args: list[str], env: dict[str, str] | None = Non
     return result.returncode
 
 
+def _has_skip_web(args: list[str]) -> bool:
+    return "--skip-web" in args
+
+
+def _ensure_skipped_web_rootfs_dirs() -> None:
+    src_dir = Path(__file__).resolve().parent
+    for relative_dir in SKIPPED_WEB_ROOTFS_DIRS:
+        (src_dir / relative_dir).mkdir(parents=True, exist_ok=True)
+
+
 def main() -> int:
     print("!!! buckyos depend on cyfs-gateway, MAKE SURE YOU HAVE BUILD IT FIRST!", flush=True)
     env = _build_env(sys.argv[1:])
@@ -247,6 +263,9 @@ def main() -> int:
     if result != 0:
         print(f"buckyos-build failed with return code {result}")
         return result
+
+    if _has_skip_web(sys.argv[1:]):
+        _ensure_skipped_web_rootfs_dirs()
 
     result = _run_command("buckyos-update", [], env=env)
     if result != 0:
