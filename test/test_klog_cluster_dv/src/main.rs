@@ -17,6 +17,8 @@ const MEMBERSHIP_MODE: &str = "local-gateway-membership";
 const OOD_MEMBERSHIP_MODE: &str = "local-gateway-ood-membership";
 const OOD_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-ood-snapshot-membership";
 const OOD_LEADER_FAILOVER_SHRINK_MODE: &str = "local-gateway-ood-leader-failover-shrink";
+const OOD_SINGLE_TO_TWO_MODE: &str = "local-gateway-ood-single-to-two";
+const OOD_TWO_VOTER_LOSS_MODE: &str = "local-gateway-ood-two-voter-loss";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -3998,6 +4000,375 @@ async fn run_local_gateway_ood_leader_failover_shrink() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_ood_single_to_two_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-ood-single-to-two-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, OOD_SINGLE_TO_TWO_MODE, route_prefix, 2).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing single OOD seed node".to_string())?;
+    let added_ood = nodes
+        .get(1)
+        .cloned()
+        .ok_or_else(|| "missing second OOD node".to_string())?;
+
+    let seed_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let config = write_klog_config(harness, &seed, &seed_config)?;
+    spawn_klog(harness, &klog_daemon_bin, &config, &seed)?;
+    wait_tcp("127.0.0.1", seed.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", seed.ports.inter, Duration::from_secs(12)).await?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        std::slice::from_ref(&seed),
+        ingress_port,
+        route_prefix,
+        &[1],
+        &[],
+        Duration::from_secs(30),
+    )
+    .await?;
+    let before_join = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &seed,
+        &seed,
+        std::slice::from_ref(&seed),
+        "single-voter-before-learner-join",
+    )
+    .await?;
+
+    let added_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "learner",
+    };
+    let added_config = write_klog_config(harness, &added_ood, &added_options)?;
+    spawn_klog(harness, &klog_daemon_bin, &added_config, &added_ood)?;
+    wait_tcp("127.0.0.1", added_ood.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", added_ood.ports.inter, Duration::from_secs(12)).await?;
+    post_add_learner_via_admin_route(
+        &client,
+        gateway_addr(&seed, ingress_port).as_str(),
+        route_prefix,
+        seed.name.as_str(),
+        &added_ood,
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1],
+        &[2],
+        Duration::from_secs(60),
+    )
+    .await?;
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &before_join,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    let learner_phase = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &added_ood,
+        &seed,
+        &nodes,
+        "single-voter-plus-learner",
+    )
+    .await?;
+
+    let promote_leader = change_voters_via_current_leader(
+        &client,
+        std::slice::from_ref(&seed),
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[],
+        Duration::from_secs(70),
+    )
+    .await?;
+    for witness in [&before_join, &learner_phase] {
+        verify_log_and_meta_witness_on_nodes(
+            &client,
+            &nodes,
+            ingress_port,
+            route_prefix,
+            witness,
+            Duration::from_secs(40),
+        )
+        .await?;
+    }
+    let post_promote = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &added_ood,
+        &seed,
+        &nodes,
+        "two-voters-after-single-promote",
+    )
+    .await?;
+    for witness in [&before_join, &learner_phase, &post_promote] {
+        verify_log_and_meta_witness_on_nodes(
+            &client,
+            &nodes,
+            ingress_port,
+            route_prefix,
+            witness,
+            Duration::from_secs(40),
+        )
+        .await?;
+    }
+
+    println!(
+        "[klog-cluster-dv] ood single-to-two ok: promote_leader={}, log_ids=[{},{},{}]",
+        promote_leader, before_join.log_id, learner_phase.log_id, post_promote.log_id
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_ood_single_to_two() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_ood_single_to_two_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
+async fn run_local_gateway_ood_two_voter_loss_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-ood-two-voter-loss-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, OOD_TWO_VOTER_LOSS_MODE, route_prefix, 2).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing two-voter seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let before_loss = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &nodes[0],
+        &nodes[1],
+        &nodes,
+        "two-voters-before-loss",
+    )
+    .await?;
+
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+    harness.stop(format!("klog-{}", leader.name).as_str())?;
+    let survivor = nodes
+        .iter()
+        .find(|node| node.id != leader_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "survivor node not found after stopping leader {}",
+                leader_id
+            )
+        })?;
+
+    if wait_consistent_leader(
+        &client,
+        std::slice::from_ref(&survivor),
+        ingress_port,
+        route_prefix,
+        Some(leader_id),
+        Duration::from_secs(12),
+    )
+    .await
+    .is_ok()
+    {
+        return Err(format!(
+            "two-voter cluster unexpectedly elected a replacement leader after node {} stopped",
+            leader_id
+        ));
+    }
+
+    if append_via_cluster_inter_route(
+        &client,
+        gateway_addr(&survivor, ingress_port).as_str(),
+        route_prefix,
+        survivor.name.as_str(),
+        "test/two-voter-loss-unavailable",
+        "write should fail without two-voter quorum",
+    )
+    .await
+    .is_ok()
+    {
+        return Err(format!(
+            "surviving voter {} unexpectedly accepted append without quorum",
+            survivor.id
+        ));
+    }
+
+    if query_via_cluster_inter_route(
+        &client,
+        gateway_addr(&survivor, ingress_port).as_str(),
+        route_prefix,
+        survivor.name.as_str(),
+        before_loss.log_id,
+        before_loss.log_source.as_str(),
+    )
+    .await
+    .is_ok()
+    {
+        return Err(format!(
+            "surviving voter {} unexpectedly served strong log query without quorum",
+            survivor.id
+        ));
+    }
+
+    if put_meta_via_cluster_inter_route(
+        &client,
+        gateway_addr(&survivor, ingress_port).as_str(),
+        route_prefix,
+        survivor.name.as_str(),
+        "test/two_voter_loss/unavailable_meta",
+        "should-not-commit",
+        Some(0),
+    )
+    .await
+    .is_ok()
+    {
+        return Err(format!(
+            "surviving voter {} unexpectedly accepted meta put without quorum",
+            survivor.id
+        ));
+    }
+
+    println!(
+        "[klog-cluster-dv] ood two-voter loss ok: stopped_leader={}, survivor={}, pre_loss_log_id={}",
+        leader_id, survivor.id, before_loss.log_id
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_ood_two_voter_loss() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_ood_two_voter_loss_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 fn ood_snapshot_membership_raft_patch() -> KLogRaftPatch<'static> {
     KLogRaftPatch {
         install_snapshot_timeout_ms: Some(15_000),
@@ -5603,18 +5974,22 @@ async fn run() -> Result<(), String> {
         MEMBERSHIP_MODE => run_local_gateway_membership().await,
         OOD_MEMBERSHIP_MODE => run_local_gateway_ood_membership().await,
         OOD_LEADER_FAILOVER_SHRINK_MODE => run_local_gateway_ood_leader_failover_shrink().await,
+        OOD_SINGLE_TO_TWO_MODE => run_local_gateway_ood_single_to_two().await,
+        OOD_TWO_VOTER_LOSS_MODE => run_local_gateway_ood_two_voter_loss().await,
         OOD_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_ood_snapshot_membership().await,
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
         SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
             other,
             MULTI_NODE_MODE,
             MEMBERSHIP_MODE,
             OOD_MEMBERSHIP_MODE,
             OOD_LEADER_FAILOVER_SHRINK_MODE,
+            OOD_SINGLE_TO_TWO_MODE,
+            OOD_TWO_VOTER_LOSS_MODE,
             OOD_SNAPSHOT_MEMBERSHIP_MODE,
             RESTART_RECOVERY_MODE,
             SYSTEM_CONFIG_KV_MODE,
