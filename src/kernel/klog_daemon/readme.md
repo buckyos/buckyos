@@ -110,7 +110,23 @@ BuckyOS/gateway 层负责：
 - ZoneGateway/公网业务入口不暴露 `/klog/admin/*`。
 - gateway 是 admin plane 的授权点；现阶段先依赖 gateway 的集群内部路由边界，后续如接入 token/RBAC，应在 gateway 或 klog admin handler 的前置层补充，不改变 klog 的一致性职责边界。
 
-## 7. 常见误配
+## 7. BuckyOS 下的 klog node id
+
+`KLOG_NODE_ID` 是 OpenRaft 成员 ID，不是 BuckyOS 的用户可见 node name。BuckyOS 集成模式下由 node-daemon 自动生成：
+
+1. 输入：本机 `DeviceConfig.id` 的 DID 字符串。
+2. 算法：`FNV-1a 64`，输入前缀固定为 `buckyos:klog-node-id:v1:`。
+3. 结果：非 0 的 `u64`，写入 `KLOG_NODE_ID`。
+
+这个算法是 klog voter 身份协议的一部分，一旦集群初始化后不能随意修改。`KLOG_ADVERTISE_NODE_NAME` 仍使用 BuckyOS 的设备名，gateway cluster route 也继续按 node name 转发。
+
+这样做的目的：
+
+- OOD 列表顺序变化不会改变 raft 成员 ID；
+- 设备名变化时，只要 Device DID 不变，klog node id 仍稳定；
+- 替换 OOD 设备时 Device DID 变化，klog 会把它视为新的 raft 成员，符合 membership 语义。
+
+## 8. 常见误配
 
 1. 只改了 `listen_*`，没改 `advertise_*`
 - 结果：本机能起，集群互联失败，选举/复制报连接错误。
@@ -122,7 +138,7 @@ BuckyOS/gateway 层负责：
 3. 只开放 Raft 端口，未开放 inter/admin
 - 结果：协议层可能通，但转发写入/成员变更失败。
 
-## 8. 最小运维检查清单
+## 9. 最小运维检查清单
 
 1. 每个节点 `advertise_addr` 是否为其他节点可达地址。
 2. `advertise_port/inter/admin` 是否都配置了 gateway 转发。
@@ -130,14 +146,14 @@ BuckyOS/gateway 层负责：
 4. `network.rpc_listen_addr` 是否只本机暴露（默认建议）。
 5. gateway 是否对 admin 接口实施了鉴权/访问控制。
 
-## 9. 压测工具（klog_bench）
+## 10. 压测工具（klog_bench）
 
 为了验证吞吐和延迟，`klog_daemon` 新增了本地压测二进制：
 
 - 路径：`kernel/klog_daemon/src/bin/klog_bench.rs`
 - 能力：自动拉起本地集群（默认 3 节点），并发发起 append，输出 TPS 和延迟分位数（P50/P95/P99）。
 
-### 9.1 快速开始
+### 10.1 快速开始
 
 先构建 daemon 可执行文件：
 
@@ -160,7 +176,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
   --report-json /tmp/klog_bench_report.json
 ```
 
-### 9.2 常用参数
+### 10.2 常用参数
 
 1. `--nodes`：本地拉起节点数（默认 `3`）。
 2. `--concurrency`：并发 worker 数（默认 `32`）。
@@ -178,7 +194,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
 14. `--report-json`：输出 JSON 报告路径（可选）。
 15. `--keep-data`：保留临时数据目录（用于问题排查）。
 
-### 9.3 配置文件模式
+### 10.3 配置文件模式
 
 仓库提供示例：
 
@@ -193,7 +209,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
   --report-json /tmp/klog_bench_report.json
 ```
 
-### 9.4 指标含义
+### 10.4 指标含义
 
 - `throughput`：成功请求的平均吞吐（req/s）。
 - `success_rate`：成功请求占比。
