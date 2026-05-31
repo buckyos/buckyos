@@ -1,4 +1,4 @@
-use buckyos_api::ServiceInstanceState;
+use buckyos_api::{KLOG_SERVICE_PORT, ServiceInstanceState};
 use buckyos_kit::*;
 use log::*;
 use package_lib::*;
@@ -233,7 +233,10 @@ impl ServicePkg {
         match op_name {
             "start" => self.native_start(&spec, media_root, params, env_vars).await,
             "stop" => self.native_stop(&spec, media_root, params, env_vars).await,
-            "status" => self.native_status(&spec, media_root, params, env_vars).await,
+            "status" => {
+                self.native_status(&spec, media_root, params, env_vars)
+                    .await
+            }
             _ => Err(ServiceControlError::ReasonError(format!(
                 "script {} not found for pkg {} and native fallback only supports start/stop/status",
                 op_name, self.pkg_id
@@ -473,6 +476,7 @@ fn uses_operation_subcommand(service_name: &str) -> bool {
 
 fn status_port_for_service(service_name: &str) -> Option<u16> {
     match service_name {
+        "klog-service" | "klog_service" | "klog-daemon" | "klog_daemon" => Some(KLOG_SERVICE_PORT),
         "repo-service" | "repo_service" => Some(4000),
         "system-config" | "system_config" => Some(3200),
         _ => None,
@@ -829,6 +833,24 @@ mod tests {
             native_args(&spec, "status", None),
             vec!["status".to_string()]
         );
+    }
+
+    #[test]
+    fn resolves_klog_service_status_port_from_kernel_pkg() {
+        let dir = temp_dir("klog-service");
+        fs::write(
+            dir.join("kernel_pkg.toml"),
+            "service_name = \"klog_daemon\"\n",
+        )
+        .unwrap();
+        fs::write(dir.join("klog_daemon"), "").unwrap();
+
+        let pkg = ServicePkg::new("klog-service".to_string(), PathBuf::new());
+        let spec = pkg.resolve_native_service_spec(dir.as_path()).unwrap();
+
+        assert_eq!(spec.executable, dir.join("klog_daemon"));
+        assert_eq!(spec.status_port, Some(KLOG_SERVICE_PORT));
+        assert!(!spec.use_op_subcommand);
     }
 
     #[test]

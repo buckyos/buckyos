@@ -23,6 +23,7 @@ src/rootfs/bin/scheduler/scheduler
 src/rootfs/bin/system-config/system_config
 src/rootfs/bin/verify-hub/verify_hub
 src/rootfs/bin/node-daemon/node_daemon
+src/rootfs/bin/klog-service/klog_daemon
 src/rootfs/bin/repo-service/repo_service
 src/rootfs/bin/smb-service/smb_service
 src/rootfs/bin/buckycli/buckycli

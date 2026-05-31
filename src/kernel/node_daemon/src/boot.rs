@@ -6,15 +6,22 @@
 
 use std::collections::HashMap;
 
+use buckyos_api::{
+    KLOG_CLUSTER_ADMIN_PORT, KLOG_CLUSTER_ADMIN_SERVICE_NAME, KLOG_CLUSTER_INTER_PORT,
+    KLOG_CLUSTER_INTER_SERVICE_NAME, KLOG_CLUSTER_RAFT_PORT, KLOG_CLUSTER_RAFT_SERVICE_NAME,
+    KLOG_SERVICE_UNIQUE_ID,
+};
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
 use name_lib::{DeviceConfig, ZoneBootConfig};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::finder::{DiscoveredNode, NodeFinderClient};
 
 const DEFAULT_RTCP_PORT: u32 = 2980;
+const DEFAULT_NODE_GATEWAY_HTTP_PORT: u16 = 3180;
 const SYSTEM_CONFIG_PORT: u16 = 3200;
+const KLOG_CLUSTER_ROUTE_PREFIX: &str = "/.cluster/klog";
 const FINDER_DISCOVERY_TIMEOUT_SECS: u64 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +120,7 @@ pub async fn discover_oods_in_lan(
 //  - node_info.this_node_id / this_zone_host
 //  - service_info.system_config 的 selector 指向所有 OOD
 //  - node_route_map 提供 OOD/ZoneGateway 的 RTCP URL（兼容现有 boot_gateway.yaml）
+//  - cluster_route_map.klog-service 提供 klog 集群启动期的 gateway proxy route
 //  - routes 为新格式（per doc 设计）的 direct + via-sn 候选
 //  - app_info / trust_key 留空，等 scheduler 接管
 pub fn build_boot_node_gateway_info(
@@ -225,6 +233,44 @@ pub fn build_boot_node_gateway_info(
         );
     }
 
+    let mut klog_cluster_nodes = serde_json::Map::new();
+    for ood in zone_boot_config.oods.iter() {
+        if !ood.node_type.is_ood() {
+            continue;
+        }
+        let mut ports = serde_json::Map::new();
+        ports.insert(
+            KLOG_CLUSTER_RAFT_SERVICE_NAME.to_string(),
+            json!(KLOG_CLUSTER_RAFT_PORT),
+        );
+        ports.insert(
+            KLOG_CLUSTER_INTER_SERVICE_NAME.to_string(),
+            json!(KLOG_CLUSTER_INTER_PORT),
+        );
+        ports.insert(
+            KLOG_CLUSTER_ADMIN_SERVICE_NAME.to_string(),
+            json!(KLOG_CLUSTER_ADMIN_PORT),
+        );
+        klog_cluster_nodes.insert(
+            ood.name.clone(),
+            json!({
+                "ports": Value::Object(ports),
+            }),
+        );
+    }
+
+    let mut cluster_route_map = serde_json::Map::new();
+    if !klog_cluster_nodes.is_empty() {
+        cluster_route_map.insert(
+            KLOG_SERVICE_UNIQUE_ID.to_string(),
+            json!({
+                "route_prefix": KLOG_CLUSTER_ROUTE_PREFIX,
+                "ingress_port": DEFAULT_NODE_GATEWAY_HTTP_PORT,
+                "nodes": Value::Object(klog_cluster_nodes),
+            }),
+        );
+    }
+
     json!({
         "node_info": {
             "this_node_id": this_node_id,
@@ -234,7 +280,7 @@ pub fn build_boot_node_gateway_info(
         "service_info": service_info,
         "node_route_map": node_route_map,
         "routes": routes,
-        "cluster_route_map": {},
+        "cluster_route_map": Value::Object(cluster_route_map),
         "trust_key": {},
     })
 }
@@ -560,6 +606,39 @@ mod tests {
                 "rtcp://ood2.zone/".to_string(),
                 "rtcp://ood3.zone/".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn build_boot_node_gateway_info_adds_klog_cluster_route() {
+        let zone_boot_config = ZoneBootConfig {
+            id: None,
+            oods: vec!["ood1".parse().unwrap(), "$ood2".parse().unwrap()],
+            sn: None,
+            exp: 0,
+            owner: None,
+            owner_key: None,
+            extra_info: HashMap::new(),
+        };
+
+        let gateway_info = build_boot_node_gateway_info(
+            "ood1",
+            "test.zone",
+            &zone_boot_config,
+            &HashMap::new(),
+            None,
+        );
+        let route = &gateway_info["cluster_route_map"][KLOG_SERVICE_UNIQUE_ID];
+
+        assert_eq!(route["route_prefix"], KLOG_CLUSTER_ROUTE_PREFIX);
+        assert_eq!(route["ingress_port"], DEFAULT_NODE_GATEWAY_HTTP_PORT);
+        assert_eq!(
+            route["nodes"]["ood1"]["ports"][KLOG_CLUSTER_ADMIN_SERVICE_NAME],
+            KLOG_CLUSTER_ADMIN_PORT
+        );
+        assert_eq!(
+            route["nodes"]["ood2"]["ports"][KLOG_CLUSTER_RAFT_SERVICE_NAME],
+            KLOG_CLUSTER_RAFT_PORT
         );
     }
 }
