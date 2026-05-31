@@ -194,6 +194,15 @@ uv run test/run.py -p klog_ood_leader_failover_shrink_dv
 
 该用例覆盖 `3 voters -> leader 被动停止 -> 剩余 2 voters 重新选主 -> gateway log/meta 读写 -> change-membership 到 2 voters -> 继续读写`。每个阶段都会复查前序 log/meta witness，确认缩容前后的强读一致性和数据保留。
 
+极端小集群覆盖入口：
+
+```bash
+uv run test/run.py -p klog_ood_single_to_two_dv
+uv run test/run.py -p klog_ood_two_voter_loss_dv
+```
+
+`klog_ood_single_to_two_dv` 覆盖 `1 voter -> add learner -> promote to 2 voters`，验证加入前数据能同步到 learner，promote 后两个 voter 继续强读写。`klog_ood_two_voter_loss_dv` 覆盖 `2 voters -> 当前 leader 被动停止`，验证剩余单 voter 不能选主，也不能继续处理强读或写入；这是预期的 quorum 安全边界。
+
 ## 10. 常见误配
 
 1. 只改了 `listen_*`，没改 `advertise_*`

@@ -88,6 +88,15 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Validates `3 voters -> stopped leader -> 2 voters elect new leader ->
     gateway log/meta reads and writes -> change-membership to 2 voters ->
     continued log/meta reads and writes`.
+- [x] Validate local OOD single-to-two voter expansion.
+  - Covered by `test/klog_ood_single_to_two_dv.sh`.
+  - Validates `1 voter -> add learner -> promote to 2 voters` with gateway
+    log/meta witness checks before learner join, after learner sync, and after
+    voter promotion.
+- [x] Validate local OOD two-voter quorum loss boundary.
+  - Covered by `test/klog_ood_two_voter_loss_dv.sh`.
+  - Validates that `2 voters -> stopped leader -> 1 survivor` does not elect a
+    replacement leader and rejects strong reads/writes without quorum.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
 - [x] Validate klog meta KV semantics needed by system_config replacement.
