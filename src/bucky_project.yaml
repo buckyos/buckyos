@@ -35,7 +35,7 @@ modules:
     name: buckycli
   node_active:
     type: web
-    name: node_active
+    name: node-active
     src_dir: kernel/node_active/
   control_panel:
     type: rust
