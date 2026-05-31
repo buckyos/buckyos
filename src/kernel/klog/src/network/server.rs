@@ -948,6 +948,17 @@ impl KNetworkServer {
             voter_ids, retain
         );
 
+        let metrics = state.raft.metrics();
+        let metrics = metrics.borrow().clone();
+        if metrics.current_leader == Some(metrics.id) && !voter_ids.contains(&metrics.id) {
+            let msg = format!(
+                "KNetworkServer admin change-membership rejected: cannot remove current leader {} from voters {:?}; transfer leadership or remove a non-leader first",
+                metrics.id, voter_ids
+            );
+            warn!("{}", msg);
+            return Self::error_response(StatusCode::CONFLICT, msg);
+        }
+
         match state
             .raft
             .change_membership(voter_ids.clone(), retain)
