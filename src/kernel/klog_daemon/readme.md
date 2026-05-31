@@ -172,6 +172,20 @@ uv run test/run.py -p klog_ood_membership_dv
 
 该用例仍是本地多进程 DV；真实多 OOD/cascade DV 需要在实际 node-daemon/scheduler/ZoneConfig 变更链路中继续验证。
 
+更重的 snapshot + membership 覆盖入口：
+
+```bash
+uv run test/run.py -p klog_ood_snapshot_membership_dv
+```
+
+该用例会临时调低 raft snapshot 阈值，写入较多 log/meta 数据后再新增 OOD learner，验证新增节点存在本地 `snapshots/snapshot_*` 文件并能通过 gateway 强读到加入前的数据；随后 promote 为 voter、demote/remove 该新增 OOD，并继续验证剩余 voter 的数据一致性。默认写入规模可通过环境变量调整：
+
+```bash
+KLOG_OOD_SNAPSHOT_DV_ITEMS=600 \
+KLOG_OOD_SNAPSHOT_DV_VALUE_BYTES=1024 \
+uv run test/run.py -p klog_ood_snapshot_membership_dv
+```
+
 ## 10. 常见误配
 
 1. 只改了 `listen_*`，没改 `advertise_*`

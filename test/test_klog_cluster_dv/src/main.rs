@@ -15,6 +15,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 15;
 const MULTI_NODE_MODE: &str = "local-gateway-failover";
 const MEMBERSHIP_MODE: &str = "local-gateway-membership";
 const OOD_MEMBERSHIP_MODE: &str = "local-gateway-ood-membership";
+const OOD_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-ood-snapshot-membership";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -30,6 +31,10 @@ const ENV_SYSTEM_CONFIG_KLOG_ENDPOINT: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_ENDPOI
 const ENV_SYSTEM_CONFIG_KLOG_NODE_NAME: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_NODE_NAME";
 const ENV_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED: &str =
     "BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED";
+const ENV_OOD_SNAPSHOT_MEMBERSHIP_ITEMS: &str = "KLOG_OOD_SNAPSHOT_DV_ITEMS";
+const ENV_OOD_SNAPSHOT_MEMBERSHIP_VALUE_BYTES: &str = "KLOG_OOD_SNAPSHOT_DV_VALUE_BYTES";
+const DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_ITEMS: usize = 300;
+const DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_VALUE_BYTES: usize = 512;
 const TEST_DEVICE_NAME: &str = "ood1";
 const TEST_DEVICE_PUBLIC_KEY_X: &str = "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0";
 const TEST_DEVICE_PRIVATE_KEY_PEM: &str = r#"
@@ -216,6 +221,17 @@ fn unique_suffix(prefix: &str) -> String {
         .unwrap_or_default()
         .as_millis();
     format!("{}-{}", prefix, now)
+}
+
+fn parse_env_usize(name: &str, default_value: usize) -> Result<usize, String> {
+    match std::env::var(name) {
+        Ok(raw) => raw
+            .trim()
+            .parse::<usize>()
+            .map_err(|err| format!("invalid {}={}: {}", name, raw, err)),
+        Err(std::env::VarError::NotPresent) => Ok(default_value),
+        Err(err) => Err(format!("failed to read {}: {}", name, err)),
+    }
 }
 
 fn generate_request_id(node_name: &str) -> String {
@@ -1147,6 +1163,17 @@ struct KLogConfigOptions<'a> {
     target_role: &'a str,
 }
 
+#[derive(Clone, Copy, Default)]
+struct KLogRaftPatch<'a> {
+    install_snapshot_timeout_ms: Option<u64>,
+    max_payload_entries: Option<u64>,
+    replication_lag_threshold: Option<u64>,
+    snapshot_policy: Option<&'a str>,
+    snapshot_max_chunk_size_bytes: Option<u64>,
+    max_in_snapshot_log_to_keep: Option<u64>,
+    purge_batch_size: Option<u64>,
+}
+
 struct GatewayRuntimeOptions<'a> {
     all_nodes: &'a [LocalNodeDef],
     ingress_port: u16,
@@ -1499,6 +1526,38 @@ fn write_klog_config(
     node: &LocalNodeDef,
     options: &KLogConfigOptions<'_>,
 ) -> Result<PathBuf, String> {
+    write_klog_config_with_raft_patch(harness, node, options, KLogRaftPatch::default())
+}
+
+fn render_raft_patch(patch: KLogRaftPatch<'_>) -> String {
+    let mut lines = String::new();
+    if let Some(value) = patch.max_payload_entries {
+        lines.push_str(format!("max_payload_entries = {}\n", value).as_str());
+    }
+    if let Some(value) = patch.replication_lag_threshold {
+        lines.push_str(format!("replication_lag_threshold = {}\n", value).as_str());
+    }
+    if let Some(value) = patch.snapshot_policy {
+        lines.push_str(format!("snapshot_policy = \"{}\"\n", value).as_str());
+    }
+    if let Some(value) = patch.snapshot_max_chunk_size_bytes {
+        lines.push_str(format!("snapshot_max_chunk_size_bytes = {}\n", value).as_str());
+    }
+    if let Some(value) = patch.max_in_snapshot_log_to_keep {
+        lines.push_str(format!("max_in_snapshot_log_to_keep = {}\n", value).as_str());
+    }
+    if let Some(value) = patch.purge_batch_size {
+        lines.push_str(format!("purge_batch_size = {}\n", value).as_str());
+    }
+    lines
+}
+
+fn write_klog_config_with_raft_patch(
+    harness: &LocalHarness,
+    node: &LocalNodeDef,
+    options: &KLogConfigOptions<'_>,
+    raft_patch: KLogRaftPatch<'_>,
+) -> Result<PathBuf, String> {
     let data_dir = harness.root.join(format!("klog-data-{}", node.name));
     fs::create_dir_all(&data_dir).map_err(|err| {
         format!(
@@ -1513,6 +1572,8 @@ fn write_klog_config(
     } else {
         format!("\"127.0.0.1:{}\"", options.seed.ports.admin)
     };
+    let install_snapshot_timeout_ms = raft_patch.install_snapshot_timeout_ms.unwrap_or(5000);
+    let raft_patch = render_raft_patch(raft_patch);
     let content = format!(
         r#"
 node_id = {node_id}
@@ -1563,7 +1624,8 @@ config_change_conflict_extra_backoff_ms = 0
 election_timeout_min_ms = 600
 election_timeout_max_ms = 1200
 heartbeat_interval_ms = 100
-install_snapshot_timeout_ms = 5000
+install_snapshot_timeout_ms = {install_snapshot_timeout_ms}
+{raft_patch}
 "#,
         node_id = node.id,
         raft_port = node.ports.raft,
@@ -1582,6 +1644,8 @@ install_snapshot_timeout_ms = 5000
         route_prefix = options.route_prefix,
         join_targets = join_targets,
         target_role = options.target_role,
+        install_snapshot_timeout_ms = install_snapshot_timeout_ms,
+        raft_patch = raft_patch,
     );
     fs::write(&config_path, content).map_err(|err| {
         format!(
@@ -1610,10 +1674,20 @@ fn spawn_klog(
     config_path: &Path,
     node: &LocalNodeDef,
 ) -> Result<(), String> {
+    spawn_klog_with_log_level(harness, klog_daemon_bin, config_path, node, "warn")
+}
+
+fn spawn_klog_with_log_level(
+    harness: &mut LocalHarness,
+    klog_daemon_bin: &Path,
+    config_path: &Path,
+    node: &LocalNodeDef,
+    log_level: &str,
+) -> Result<(), String> {
     let mut command = Command::new(klog_daemon_bin);
     command
         .env("KLOG_CONFIG_FILE", config_path)
-        .env("RUST_LOG", "warn");
+        .env("RUST_LOG", log_level);
     harness.spawn(format!("klog-{}", node.name).as_str(), &mut command)
 }
 
@@ -2088,6 +2162,122 @@ async fn wait_log_visible_on_nodes(
     }
 }
 
+fn klog_snapshot_dir(harness: &LocalHarness, node: &LocalNodeDef) -> PathBuf {
+    harness
+        .root
+        .join(format!("klog-data-{}", node.name))
+        .join("snapshots")
+}
+
+fn snapshot_file_count(harness: &LocalHarness, node: &LocalNodeDef) -> Result<usize, String> {
+    let snapshot_dir = klog_snapshot_dir(harness, node);
+    if !snapshot_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut count = 0;
+    for entry in fs::read_dir(&snapshot_dir).map_err(|err| {
+        format!(
+            "failed to read snapshot dir {}: {}",
+            snapshot_dir.display(),
+            err
+        )
+    })? {
+        let entry = entry.map_err(|err| {
+            format!(
+                "failed to read snapshot dir entry {}: {}",
+                snapshot_dir.display(),
+                err
+            )
+        })?;
+        if entry.file_name().to_string_lossy().starts_with("snapshot_") && entry.path().is_file() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+async fn wait_snapshot_file_count(
+    harness: &LocalHarness,
+    node: &LocalNodeDef,
+    min_count: usize,
+    timeout: Duration,
+) -> Result<usize, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let last_count = snapshot_file_count(harness, node)?;
+        if last_count >= min_count {
+            return Ok(last_count);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timeout waiting snapshot files for {}: expected>={}, actual={}, dir={}",
+                node.name,
+                min_count,
+                last_count,
+                klog_snapshot_dir(harness, node).display()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_meta_prefix_count_on_nodes(
+    client: &reqwest::Client,
+    nodes: &[LocalNodeDef],
+    ingress_port: u16,
+    route_prefix: &str,
+    prefix: &str,
+    expected_count: usize,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last = String::new();
+    loop {
+        let mut ok = true;
+        for node in nodes {
+            let result = query_meta_prefix_via_cluster_inter_route(
+                client,
+                gateway_addr(node, ingress_port).as_str(),
+                route_prefix,
+                node.name.as_str(),
+                prefix,
+                expected_count + 8,
+            )
+            .await;
+            match result {
+                Ok(response) if response.items.len() == expected_count => {}
+                Ok(response) => {
+                    ok = false;
+                    last = format!(
+                        "node={} prefix={} expected_count={} actual_count={}",
+                        node.name,
+                        prefix,
+                        expected_count,
+                        response.items.len()
+                    );
+                    break;
+                }
+                Err(err) => {
+                    ok = false;
+                    last = format!("node={} {}", node.name, err);
+                    break;
+                }
+            }
+        }
+        if ok {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timeout waiting meta prefix count on nodes; last={}",
+                last
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn require_log_and_meta_roundtrip(
     client: &reqwest::Client,
     ingress_port: u16,
@@ -2153,6 +2343,160 @@ async fn require_log_and_meta_roundtrip(
         "[klog-cluster-dv] ood membership roundtrip ok: scenario={}, log_id={}, source_gateway={}, target_node={}",
         scenario, append.id, source_gateway.name, target_node.name
     );
+    Ok(())
+}
+
+struct SnapshotBulkWitness {
+    source: String,
+    meta_prefix: String,
+    expected_meta_count: usize,
+    log_checks: Vec<u64>,
+    meta_checks: Vec<(String, String)>,
+}
+
+fn fixed_payload(label: &str, index: usize, min_bytes: usize) -> String {
+    let seed = format!("{}:{}:", label, index);
+    let mut payload = String::with_capacity(min_bytes.max(seed.len()));
+    while payload.len() < min_bytes {
+        payload.push_str(seed.as_str());
+    }
+    payload.truncate(min_bytes);
+    payload
+}
+
+fn snapshot_bulk_checkpoints(count: usize) -> BTreeSet<usize> {
+    let mut checkpoints = BTreeSet::new();
+    if count == 0 {
+        return checkpoints;
+    }
+    checkpoints.insert(0);
+    checkpoints.insert(count / 2);
+    checkpoints.insert(count - 1);
+    checkpoints
+}
+
+async fn write_snapshot_bulk_data(
+    client: &reqwest::Client,
+    ingress_port: u16,
+    route_prefix: &str,
+    source_gateway: &LocalNodeDef,
+    target_node: &LocalNodeDef,
+    label: &str,
+    count: usize,
+    value_bytes: usize,
+) -> Result<SnapshotBulkWitness, String> {
+    if count == 0 {
+        return Err("snapshot bulk item count must be greater than 0".to_string());
+    }
+
+    let run_id = unique_suffix(label);
+    let source = format!(
+        "test/test_klog_ood_snapshot_membership_dv/{}/{}",
+        label, run_id
+    );
+    let meta_prefix = format!("test/ood_snapshot_membership/{}/{}/meta/", label, run_id);
+    let checkpoints = snapshot_bulk_checkpoints(count);
+    let mut log_checks = Vec::new();
+    let mut meta_checks = Vec::new();
+
+    for index in 0..count {
+        let payload = fixed_payload(label, index, value_bytes);
+        let append = append_via_cluster_inter_route(
+            client,
+            gateway_addr(source_gateway, ingress_port).as_str(),
+            route_prefix,
+            target_node.name.as_str(),
+            source.as_str(),
+            format!("{}:{}", index, payload).as_str(),
+        )
+        .await?;
+        let meta_key = format!("{}{:06}", meta_prefix, index);
+        let meta_value = format!("{}:{}:{}", label, index, payload);
+        let meta = put_meta_via_cluster_inter_route(
+            client,
+            gateway_addr(source_gateway, ingress_port).as_str(),
+            route_prefix,
+            target_node.name.as_str(),
+            meta_key.as_str(),
+            meta_value.as_str(),
+            Some(0),
+        )
+        .await?;
+        if meta.revision != 1 {
+            return Err(format!(
+                "unexpected snapshot bulk meta revision: key={}, expected=1, actual={}",
+                meta_key, meta.revision
+            ));
+        }
+
+        if checkpoints.contains(&index) {
+            log_checks.push(append.id);
+            meta_checks.push((meta_key, meta_value));
+        }
+
+        if index > 0 && index % 50 == 0 {
+            println!(
+                "[klog-cluster-dv] snapshot membership bulk progress: label={}, written={}/{}",
+                label, index, count
+            );
+        }
+    }
+
+    Ok(SnapshotBulkWitness {
+        source,
+        meta_prefix,
+        expected_meta_count: count,
+        log_checks,
+        meta_checks,
+    })
+}
+
+async fn verify_snapshot_bulk_witness(
+    client: &reqwest::Client,
+    ingress_port: u16,
+    route_prefix: &str,
+    nodes: &[LocalNodeDef],
+    witness: &SnapshotBulkWitness,
+    timeout: Duration,
+) -> Result<(), String> {
+    for log_id in &witness.log_checks {
+        wait_log_visible_on_nodes(
+            client,
+            nodes,
+            ingress_port,
+            route_prefix,
+            *log_id,
+            witness.source.as_str(),
+            timeout,
+        )
+        .await?;
+    }
+
+    wait_meta_prefix_count_on_nodes(
+        client,
+        nodes,
+        ingress_port,
+        route_prefix,
+        witness.meta_prefix.as_str(),
+        witness.expected_meta_count,
+        timeout,
+    )
+    .await?;
+
+    for node in nodes {
+        for (key, value) in &witness.meta_checks {
+            let response = query_meta_via_cluster_inter_route(
+                client,
+                gateway_addr(node, ingress_port).as_str(),
+                route_prefix,
+                node.name.as_str(),
+                key.as_str(),
+            )
+            .await?;
+            require_meta_value(&response, key.as_str(), value.as_str(), 1)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -3236,6 +3580,338 @@ async fn run_local_gateway_ood_membership() -> Result<(), String> {
 
     let mut harness = LocalHarness::new()?;
     let result = run_local_gateway_ood_membership_one_to_two(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
+fn ood_snapshot_membership_raft_patch() -> KLogRaftPatch<'static> {
+    KLogRaftPatch {
+        install_snapshot_timeout_ms: Some(15_000),
+        max_payload_entries: Some(16),
+        replication_lag_threshold: Some(10),
+        snapshot_policy: Some("since_last:25"),
+        snapshot_max_chunk_size_bytes: Some(512 * 1024),
+        max_in_snapshot_log_to_keep: Some(5),
+        purge_batch_size: Some(50),
+    }
+}
+
+async fn run_local_gateway_ood_snapshot_membership_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let item_count = parse_env_usize(
+        ENV_OOD_SNAPSHOT_MEMBERSHIP_ITEMS,
+        DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_ITEMS,
+    )?;
+    let value_bytes = parse_env_usize(
+        ENV_OOD_SNAPSHOT_MEMBERSHIP_VALUE_BYTES,
+        DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_VALUE_BYTES,
+    )?;
+    let route_prefix = "/.cluster/klog-it-ood-snapshot-membership-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, OOD_SNAPSHOT_MEMBERSHIP_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let base_voters = nodes.iter().take(2).cloned().collect::<Vec<_>>();
+    let seed = base_voters
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing snapshot membership seed node".to_string())?;
+    let second = base_voters
+        .get(1)
+        .cloned()
+        .ok_or_else(|| "missing second snapshot membership voter".to_string())?;
+    let added_ood = nodes
+        .get(2)
+        .cloned()
+        .ok_or_else(|| "missing snapshot membership third OOD".to_string())?;
+    let raft_patch = ood_snapshot_membership_raft_patch();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &base_voters {
+        let config = write_klog_config_with_raft_patch(harness, node, &voter_config, raft_patch)?;
+        spawn_klog_with_log_level(harness, &klog_daemon_bin, &config, node, "info")?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+
+    let pre_add_witness = write_snapshot_bulk_data(
+        &client,
+        ingress_port,
+        route_prefix,
+        &seed,
+        &second,
+        "pre-add",
+        item_count,
+        value_bytes,
+    )
+    .await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &base_voters,
+        &pre_add_witness,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    let leader_id = wait_consistent_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let snapshot_leader = base_voters
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("snapshot leader {} not found", leader_id))?;
+    let leader_snapshot_count =
+        wait_snapshot_file_count(harness, snapshot_leader, 1, Duration::from_secs(70)).await?;
+
+    let added_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "learner",
+    };
+    let added_config =
+        write_klog_config_with_raft_patch(harness, &added_ood, &added_options, raft_patch)?;
+    spawn_klog_with_log_level(harness, &klog_daemon_bin, &added_config, &added_ood, "info")?;
+    wait_tcp("127.0.0.1", added_ood.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", added_ood.ports.inter, Duration::from_secs(12)).await?;
+
+    let leader = base_voters
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found before snapshot add", leader_id))?;
+    post_add_learner_via_admin_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        &added_ood,
+        false,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[3],
+        Duration::from_secs(80),
+    )
+    .await?;
+    let added_snapshot_count =
+        wait_snapshot_file_count(harness, &added_ood, 1, Duration::from_secs(80)).await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &nodes,
+        &pre_add_witness,
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    let promote_leader = change_voters_via_current_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(80),
+    )
+    .await?;
+    let post_promote_count = (item_count / 5).max(20);
+    let post_promote_witness = write_snapshot_bulk_data(
+        &client,
+        ingress_port,
+        route_prefix,
+        &added_ood,
+        &seed,
+        "post-promote",
+        post_promote_count,
+        value_bytes,
+    )
+    .await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &nodes,
+        &post_promote_witness,
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    let demote_leader = change_voters_via_current_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[3],
+        Duration::from_secs(80),
+    )
+    .await?;
+
+    let remaining_voters = base_voters.clone();
+    let leader_id = wait_consistent_leader(
+        &client,
+        &remaining_voters,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader = remaining_voters
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found before snapshot remove", leader_id))?;
+    let (status_remove, body_remove) = post_remove_learner_via_admin_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        added_ood.id,
+    )
+    .await?;
+    if !status_remove.is_success() {
+        return Err(format!(
+            "remove snapshot-added OOD learner returned status={}, body={}",
+            status_remove, body_remove
+        ));
+    }
+    wait_membership(
+        &client,
+        &remaining_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2],
+        &[],
+        Duration::from_secs(70),
+    )
+    .await?;
+    harness.stop(format!("klog-{}", added_ood.name).as_str())?;
+
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &remaining_voters,
+        &pre_add_witness,
+        Duration::from_secs(60),
+    )
+    .await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &remaining_voters,
+        &post_promote_witness,
+        Duration::from_secs(60),
+    )
+    .await?;
+    require_log_and_meta_roundtrip(
+        &client,
+        ingress_port,
+        route_prefix,
+        &seed,
+        &second,
+        &remaining_voters,
+        "snapshot-two-voters-after-remove-added",
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] ood snapshot membership ok: items={}, value_bytes={}, leader_snapshot_count={}, added_snapshot_count={}, promote_leader={}, demote_leader={}, removed_ood={}",
+        item_count,
+        value_bytes,
+        leader_snapshot_count,
+        added_snapshot_count,
+        promote_leader,
+        demote_leader,
+        added_ood.name
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_ood_snapshot_membership() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_ood_snapshot_membership_inner(&mut harness).await;
     if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
         harness.keep_temp = true;
         eprintln!(
@@ -4518,16 +5194,18 @@ async fn run() -> Result<(), String> {
         MULTI_NODE_MODE => run_local_gateway_failover_smoke().await,
         MEMBERSHIP_MODE => run_local_gateway_membership().await,
         OOD_MEMBERSHIP_MODE => run_local_gateway_ood_membership().await,
+        OOD_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_ood_snapshot_membership().await,
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
         SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
             other,
             MULTI_NODE_MODE,
             MEMBERSHIP_MODE,
             OOD_MEMBERSHIP_MODE,
+            OOD_SNAPSHOT_MEMBERSHIP_MODE,
             RESTART_RECOVERY_MODE,
             SYSTEM_CONFIG_KV_MODE,
             SYSTEM_CONFIG_SERVICE_MODE,

@@ -28,6 +28,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
 
 ## P1: Security / Admin API
 
+- [ ] Define safe admin semantics for demoting/removing the current leader.
+  - The heavy local snapshot membership DV showed that directly changing voters
+    from `[1,2,3]` to `[2,3]` while node `1` is the current leader can leave the
+    remaining voters with `current_leader=None` for an extended period.
+  - Until a transfer-leader or reject-current-leader-demotion policy is added,
+    DV coverage should remove non-leader learners/voters.
 - [ ] Integrate BuckyOS node/session token validation for `/klog/admin/*`.
   - Current state: admin APIs only enforce `admin.local_only` loopback checks.
   - The BuckyOS session token loaded by `klog_daemon` is used for runtime integration, not admin API authentication.
@@ -72,6 +78,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Validates `3 voters <-> 4 voters`, `2 voters <-> 3 voters`, and
     `1 voter <-> 2 voters` flows, including add as learner, promote to voter,
     demote, remove learner, and log/meta roundtrips after each topology change.
+- [x] Validate local OOD snapshot catch-up during membership changes.
+  - Covered by `test/klog_ood_snapshot_membership_dv.sh`.
+  - Forces low snapshot thresholds, writes bulk log/meta data, adds a new OOD
+    as learner, verifies the learner receives a persisted snapshot and sees the
+    pre-existing data, promotes it to voter, demotes/removes that added OOD, and
+    checks data consistency on the remaining voters.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
 - [x] Validate klog meta KV semantics needed by system_config replacement.

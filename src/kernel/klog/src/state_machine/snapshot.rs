@@ -167,7 +167,14 @@ impl SnapshotManager {
             }
         }
 
-        match tokio::fs::File::create(&path).await {
+        match tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .await
+        {
             Ok(file) => Ok(Box::new(file)),
             Err(err) => {
                 error!("Failed to create snapshot file: {}", err);
