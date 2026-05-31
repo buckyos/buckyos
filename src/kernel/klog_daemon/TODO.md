@@ -28,12 +28,6 @@ This file tracks current implementation gaps after the BuckyOS integration work.
 
 ## P1: Security / Admin API
 
-- [ ] Define safe admin semantics for demoting/removing the current leader.
-  - The heavy local snapshot membership DV showed that directly changing voters
-    from `[1,2,3]` to `[2,3]` while node `1` is the current leader can leave the
-    remaining voters with `current_leader=None` for an extended period.
-  - Until a transfer-leader or reject-current-leader-demotion policy is added,
-    DV coverage should remove non-leader learners/voters.
 - [ ] Integrate BuckyOS node/session token validation for `/klog/admin/*`.
   - Current state: admin APIs only enforce `admin.local_only` loopback checks.
   - The BuckyOS session token loaded by `klog_daemon` is used for runtime integration, not admin API authentication.
@@ -84,6 +78,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     as learner, verifies the learner receives a persisted snapshot and sees the
     pre-existing data, promotes it to voter, demotes/removes that added OOD, and
     checks data consistency on the remaining voters.
+- [x] Define safe admin semantics for demoting/removing the current leader.
+  - `change-membership` now rejects direct current-leader removal with HTTP 409
+    instead of committing a membership that can leave remaining voters with
+    `current_leader=None`.
+  - Covered by `test_admin_change_membership_rejects_current_leader_demotion`.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
 - [x] Validate klog meta KV semantics needed by system_config replacement.
