@@ -126,7 +126,36 @@ BuckyOS/gateway 层负责：
 - 设备名变化时，只要 Device DID 不变，klog node id 仍稳定；
 - 替换 OOD 设备时 Device DID 变化，klog 会把它视为新的 raft 成员，符合 membership 语义。
 
-## 8. 常见误配
+## 8. System Config klog backend rollout
+
+当前 `system_config` 切换到 klog backend 仍通过环境变量显式启用：
+
+```bash
+BUCKYOS_SYSTEM_CONFIG_STORE=klog
+```
+
+已有 sled 数据迁移到 klog 时，只允许一个 OOD 临时启用：
+
+```bash
+BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true
+```
+
+推荐 rollout 顺序：
+
+1. 先启动 klog OOD voter 集群，并确认 gateway cluster route 可用。
+2. 选择一个 OOD 作为 seed，启动 `system_config` 时设置 `BUCKYOS_SYSTEM_CONFIG_STORE=klog` 和 `BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true`。
+3. 其它 OOD 只设置 `BUCKYOS_SYSTEM_CONFIG_STORE=klog`，不设置 bootstrap 开关，直接读取 klog 中的 system_config 数据。
+4. seed OOD 首次迁移成功后，应移除 `BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true`，避免后续误触发。
+
+本地 DV 覆盖入口：
+
+```bash
+uv run test/run.py -p klog_system_config_rollout_dv
+```
+
+该用例会启动 3 节点 klog 集群、两个隔离的 `system_config` 实例，并验证只有 bootstrap OOD 的 sled 数据会迁移；非 bootstrap OOD 的本地 sled 残留不会进入 klog。
+
+## 9. 常见误配
 
 1. 只改了 `listen_*`，没改 `advertise_*`
 - 结果：本机能起，集群互联失败，选举/复制报连接错误。
@@ -138,7 +167,7 @@ BuckyOS/gateway 层负责：
 3. 只开放 Raft 端口，未开放 inter/admin
 - 结果：协议层可能通，但转发写入/成员变更失败。
 
-## 9. 最小运维检查清单
+## 10. 最小运维检查清单
 
 1. 每个节点 `advertise_addr` 是否为其他节点可达地址。
 2. `advertise_port/inter/admin` 是否都配置了 gateway 转发。
@@ -146,14 +175,14 @@ BuckyOS/gateway 层负责：
 4. `network.rpc_listen_addr` 是否只本机暴露（默认建议）。
 5. gateway 是否对 admin 接口实施了鉴权/访问控制。
 
-## 10. 压测工具（klog_bench）
+## 11. 压测工具（klog_bench）
 
 为了验证吞吐和延迟，`klog_daemon` 新增了本地压测二进制：
 
 - 路径：`kernel/klog_daemon/src/bin/klog_bench.rs`
 - 能力：自动拉起本地集群（默认 3 节点），并发发起 append，输出 TPS 和延迟分位数（P50/P95/P99）。
 
-### 10.1 快速开始
+### 11.1 快速开始
 
 先构建 daemon 可执行文件：
 
@@ -176,7 +205,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
   --report-json /tmp/klog_bench_report.json
 ```
 
-### 10.2 常用参数
+### 11.2 常用参数
 
 1. `--nodes`：本地拉起节点数（默认 `3`）。
 2. `--concurrency`：并发 worker 数（默认 `32`）。
@@ -194,7 +223,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
 14. `--report-json`：输出 JSON 报告路径（可选）。
 15. `--keep-data`：保留临时数据目录（用于问题排查）。
 
-### 10.3 配置文件模式
+### 11.3 配置文件模式
 
 仓库提供示例：
 
@@ -209,7 +238,7 @@ cargo run -p klog_daemon --bin klog_bench -- \
   --report-json /tmp/klog_bench_report.json
 ```
 
-### 10.4 指标含义
+### 11.4 指标含义
 
 - `throughput`：成功请求的平均吞吐（req/s）。
 - `success_rate`：成功请求占比。

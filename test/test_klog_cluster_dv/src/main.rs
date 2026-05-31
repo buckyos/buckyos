@@ -17,12 +17,18 @@ const MEMBERSHIP_MODE: &str = "local-gateway-membership";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
+const SYSTEM_CONFIG_ROLLOUT_MODE: &str = "local-gateway-system-config-rollout";
 const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
 const SYSTEM_CONFIG_RPC_SERVICE_PATH: &str = "/kapi/system_config";
 const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
 const KLOG_RPC_METHOD_LOG_QUERY: &str = "klog.log.query";
 const KLOG_CLUSTER_DV_ROUTE_MODE_ENV: &str = "KLOG_CLUSTER_DV_ROUTE_MODE";
 const ENV_SYSTEM_CONFIG_PORT: &str = "BUCKYOS_SYSTEM_CONFIG_PORT";
+const ENV_SYSTEM_CONFIG_STORE: &str = "BUCKYOS_SYSTEM_CONFIG_STORE";
+const ENV_SYSTEM_CONFIG_KLOG_ENDPOINT: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_ENDPOINT";
+const ENV_SYSTEM_CONFIG_KLOG_NODE_NAME: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_NODE_NAME";
+const ENV_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED: &str =
+    "BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED";
 const TEST_DEVICE_NAME: &str = "ood1";
 const TEST_DEVICE_PUBLIC_KEY_X: &str = "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0";
 const TEST_DEVICE_PRIVATE_KEY_PEM: &str = r#"
@@ -1616,16 +1622,56 @@ fn spawn_system_config(
     service_port: u16,
     klog_endpoint: &str,
 ) -> Result<(), String> {
+    let buckyos_root = harness.root.clone();
+    spawn_system_config_with_options(
+        harness,
+        "system-config-klog",
+        system_config_bin,
+        buckyos_root.as_path(),
+        service_port,
+        Some(klog_endpoint),
+        TEST_DEVICE_NAME,
+        false,
+    )
+}
+
+fn spawn_system_config_with_options(
+    harness: &mut LocalHarness,
+    process_name: &str,
+    system_config_bin: &Path,
+    buckyos_root: &Path,
+    service_port: u16,
+    klog_endpoint: Option<&str>,
+    device_name: &str,
+    bootstrap_from_sled: bool,
+) -> Result<(), String> {
+    fs::create_dir_all(buckyos_root).map_err(|err| {
+        format!(
+            "failed to create system_config root {}: {}",
+            buckyos_root.display(),
+            err
+        )
+    })?;
+
     let mut command = Command::new(system_config_bin);
     command
-        .env("BUCKYOS_ROOT", harness.root.as_os_str())
-        .env("BUCKYOS_SYSTEM_CONFIG_STORE", "klog")
-        .env("BUCKYOS_SYSTEM_CONFIG_KLOG_ENDPOINT", klog_endpoint)
-        .env("BUCKYOS_SYSTEM_CONFIG_KLOG_NODE_NAME", TEST_DEVICE_NAME)
+        .env("BUCKYOS_ROOT", buckyos_root.as_os_str())
         .env(ENV_SYSTEM_CONFIG_PORT, service_port.to_string())
-        .env("BUCKYOS_THIS_DEVICE", test_device_doc(TEST_DEVICE_NAME))
+        .env("BUCKYOS_THIS_DEVICE", test_device_doc(device_name))
         .env("RUST_LOG", "warn");
-    harness.spawn("system-config-klog", &mut command)
+
+    if let Some(klog_endpoint) = klog_endpoint {
+        command
+            .env(ENV_SYSTEM_CONFIG_STORE, "klog")
+            .env(ENV_SYSTEM_CONFIG_KLOG_ENDPOINT, klog_endpoint)
+            .env(ENV_SYSTEM_CONFIG_KLOG_NODE_NAME, device_name);
+    }
+
+    if bootstrap_from_sled {
+        command.env(ENV_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED, "true");
+    }
+
+    harness.spawn(process_name, &mut command)
 }
 
 async fn wait_tcp(host: &str, port: u16, timeout: Duration) -> Result<(), String> {
@@ -3330,6 +3376,271 @@ async fn run_local_gateway_system_config_service() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_system_config_rollout_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-system-config-rollout-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, SYSTEM_CONFIG_ROLLOUT_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let reader_node = nodes
+        .get(1)
+        .ok_or_else(|| "missing second OOD node".to_string())?
+        .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.rpc, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    let repo_root = repo_root()?;
+    let buckyos_root = get_buckyos_root();
+    let system_config_bin = resolve_system_config_bin(&repo_root, &buckyos_root)?;
+    let mut used_ports = collect_used_ports(&nodes, ingress_port);
+    let bootstrap_sled_port = pick_local_port(&mut used_ports)?;
+    let reader_sled_port = pick_local_port(&mut used_ports)?;
+    let bootstrap_klog_port = pick_local_port(&mut used_ports)?;
+    let reader_klog_port = pick_local_port(&mut used_ports)?;
+    let bootstrap_root = harness.root.join("system-config-ood1-root");
+    let reader_root = harness.root.join("system-config-ood2-root");
+    let bootstrap_token = system_config_jwt(seed.name.as_str(), "root", "scheduler")?;
+    let reader_token = system_config_jwt(reader_node.name.as_str(), "root", "scheduler")?;
+    let suffix = unique_suffix("syscfg-rollout");
+    let base = format!("users/alice/klog_rollout_dv/{}", suffix);
+    let migrated_key = format!("{}/migrated", base);
+    let local_only_key = format!("{}/local_only", base);
+    let reader_write_key = format!("{}/reader_write", base);
+
+    spawn_system_config_with_options(
+        harness,
+        "system-config-ood1-sled",
+        &system_config_bin,
+        bootstrap_root.as_path(),
+        bootstrap_sled_port,
+        None,
+        seed.name.as_str(),
+        false,
+    )?;
+    wait_tcp("127.0.0.1", bootstrap_sled_port, Duration::from_secs(15)).await?;
+    let bootstrap_sled_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        bootstrap_sled_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    call_system_config_rpc(
+        &client,
+        bootstrap_sled_endpoint.as_str(),
+        bootstrap_token.as_str(),
+        "sys_config_create",
+        json!({"key": migrated_key, "value": "from-ood1-sled"}),
+    )
+    .await?;
+    harness.stop("system-config-ood1-sled")?;
+
+    spawn_system_config_with_options(
+        harness,
+        "system-config-ood2-sled",
+        &system_config_bin,
+        reader_root.as_path(),
+        reader_sled_port,
+        None,
+        reader_node.name.as_str(),
+        false,
+    )?;
+    wait_tcp("127.0.0.1", reader_sled_port, Duration::from_secs(15)).await?;
+    let reader_sled_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        reader_sled_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    call_system_config_rpc(
+        &client,
+        reader_sled_endpoint.as_str(),
+        reader_token.as_str(),
+        "sys_config_create",
+        json!({"key": local_only_key, "value": "from-ood2-local-sled"}),
+    )
+    .await?;
+    harness.stop("system-config-ood2-sled")?;
+
+    let bootstrap_klog_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        seed.ports.rpc, KLOG_JSON_RPC_SERVICE_PATH
+    );
+    spawn_system_config_with_options(
+        harness,
+        "system-config-ood1-klog-bootstrap",
+        &system_config_bin,
+        bootstrap_root.as_path(),
+        bootstrap_klog_port,
+        Some(bootstrap_klog_endpoint.as_str()),
+        seed.name.as_str(),
+        true,
+    )?;
+    wait_tcp("127.0.0.1", bootstrap_klog_port, Duration::from_secs(15)).await?;
+    let bootstrap_klog_service_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        bootstrap_klog_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    let migrated = call_system_config_rpc(
+        &client,
+        bootstrap_klog_service_endpoint.as_str(),
+        bootstrap_token.as_str(),
+        "sys_config_get",
+        json!({"key": migrated_key}),
+    )
+    .await?;
+    require_system_config_value(&migrated, "from-ood1-sled", 1)?;
+    let local_only_after_bootstrap = call_system_config_rpc(
+        &client,
+        bootstrap_klog_service_endpoint.as_str(),
+        bootstrap_token.as_str(),
+        "sys_config_get",
+        json!({"key": local_only_key}),
+    )
+    .await?;
+    if !local_only_after_bootstrap.is_null() {
+        return Err(format!(
+            "non-bootstrap OOD local sled key was unexpectedly migrated before reader start: {}",
+            local_only_after_bootstrap
+        ));
+    }
+
+    let reader_klog_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        reader_node.ports.rpc, KLOG_JSON_RPC_SERVICE_PATH
+    );
+    spawn_system_config_with_options(
+        harness,
+        "system-config-ood2-klog-reader",
+        &system_config_bin,
+        reader_root.as_path(),
+        reader_klog_port,
+        Some(reader_klog_endpoint.as_str()),
+        reader_node.name.as_str(),
+        false,
+    )?;
+    wait_tcp("127.0.0.1", reader_klog_port, Duration::from_secs(15)).await?;
+    let reader_klog_service_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        reader_klog_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    let migrated_from_reader = call_system_config_rpc(
+        &client,
+        reader_klog_service_endpoint.as_str(),
+        reader_token.as_str(),
+        "sys_config_get",
+        json!({"key": migrated_key}),
+    )
+    .await?;
+    require_system_config_value(&migrated_from_reader, "from-ood1-sled", 1)?;
+    let local_only_from_reader = call_system_config_rpc(
+        &client,
+        reader_klog_service_endpoint.as_str(),
+        reader_token.as_str(),
+        "sys_config_get",
+        json!({"key": local_only_key}),
+    )
+    .await?;
+    if !local_only_from_reader.is_null() {
+        return Err(format!(
+            "non-bootstrap OOD copied its local sled state without bootstrap flag: {}",
+            local_only_from_reader
+        ));
+    }
+
+    call_system_config_rpc(
+        &client,
+        reader_klog_service_endpoint.as_str(),
+        reader_token.as_str(),
+        "sys_config_create",
+        json!({"key": reader_write_key, "value": "from-ood2-klog"}),
+    )
+    .await?;
+    let reader_write_from_bootstrap = call_system_config_rpc(
+        &client,
+        bootstrap_klog_service_endpoint.as_str(),
+        bootstrap_token.as_str(),
+        "sys_config_get",
+        json!({"key": reader_write_key}),
+    )
+    .await?;
+    require_system_config_value(&reader_write_from_bootstrap, "from-ood2-klog", 1)?;
+
+    println!(
+        "[klog-cluster-dv] system_config rollout ok: leader={}, bootstrap_ood={}, reader_ood={}, prefix={}",
+        leader_id, seed.name, reader_node.name, base
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_system_config_rollout() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_system_config_rollout_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_installed_runtime_smoke() -> Result<(), String> {
     let buckyos_root = get_buckyos_root();
     let local_node_name = load_local_node_name(&buckyos_root)?;
@@ -3428,14 +3739,16 @@ async fn run() -> Result<(), String> {
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
+        SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}'",
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}'",
             other,
             MULTI_NODE_MODE,
             MEMBERSHIP_MODE,
             RESTART_RECOVERY_MODE,
             SYSTEM_CONFIG_KV_MODE,
-            SYSTEM_CONFIG_SERVICE_MODE
+            SYSTEM_CONFIG_SERVICE_MODE,
+            SYSTEM_CONFIG_ROLLOUT_MODE
         )),
     }
 }

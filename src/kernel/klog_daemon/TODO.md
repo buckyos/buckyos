@@ -19,6 +19,10 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - `system_config` now has an opt-in klog provider and an explicit
     `BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true` seed helper that
     writes the first rollout seed as one klog meta transaction.
+  - The local multi-OOD rollout rule is covered by
+    `test/klog_system_config_rollout_dv.sh`: one OOD bootstraps from sled, a
+    second OOD starts without the bootstrap flag and reads/writes the same klog
+    backend without copying its local sled state.
   - Keep this open until the same system_config service path is verified in a
     true multi-OOD/cascade DV topology instead of the local multi-process harness.
 
@@ -72,6 +76,10 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Covered by `test/klog_system_config_service_dv.sh`.
   - Validates `create/get/set/set_by_json_path/append/list/delete/exec_tx` and
     `dump_configs_for_scheduler` through `/kapi/system_config`.
+- [x] Validate local multi-OOD system_config klog rollout rule.
+  - Covered by `test/klog_system_config_rollout_dv.sh`.
+  - Validates that only the bootstrap OOD copies sled data into klog and that a
+    non-bootstrap OOD directly reads/writes the shared klog backend.
 - [x] Add klog atomic meta transaction primitive for system_config replacement.
   - `KLogMetaTxRequest` supports multi-key put/delete actions plus an optional
     optimistic guard revision.
