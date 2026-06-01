@@ -1,13 +1,15 @@
 use super::request::{
     KLogAdminRequestType, KLogAppendRequest, KLogClusterStateResponse, KLogDataRequestType,
-    KLogMetaChangesRequest, KLogMetaDeleteRequest, KLogMetaPutRequest, KLogMetaQueryRequest,
-    KLogQueryRequest, RaftRequest, RaftRequestType, RaftResponse,
+    KLogMetaChangesRequest, KLogMetaCompactRequest, KLogMetaCompactResponse, KLogMetaDeleteRequest,
+    KLogMetaPutRequest, KLogMetaQueryRequest, KLogQueryRequest, RaftRequest, RaftRequestType,
+    RaftResponse,
 };
 use crate::error::{KLogErrorEnvelope, KLogServiceError, generate_trace_id};
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
 use crate::{
-    KClusterTransportConfig, KClusterTransportMode, KLogMetaTxRequest, KNode, KNodeId, KRaftRef,
+    KClusterTransportConfig, KClusterTransportMode, KLogMetaTxRequest, KLogRequest, KLogResponse,
+    KNode, KNodeId, KRaftRef,
 };
 use axum::Json;
 use axum::Router;
@@ -286,6 +288,7 @@ impl KNetworkServer {
         let admin_remove_learner_path = KLogAdminRequestType::RemoveLearner.klog_path();
         let admin_change_membership_path = KLogAdminRequestType::ChangeMembership.klog_path();
         let admin_cluster_state_path = KLogAdminRequestType::ClusterState.klog_path();
+        let admin_meta_compact_path = KLogAdminRequestType::MetaCompact.klog_path();
         let proxy_append_entries_path = cluster_proxy_route(
             &self.transport.gateway_route_prefix,
             KClusterTransportModePlane::Raft,
@@ -351,6 +354,11 @@ impl KNetworkServer {
             KClusterTransportModePlane::Admin,
             &admin_cluster_state_path,
         )?;
+        let proxy_admin_meta_compact_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::Admin,
+            &admin_meta_compact_path,
+        )?;
 
         let raft_control_routes = Router::new()
             .route(
@@ -396,6 +404,14 @@ impl KNetworkServer {
             .route(
                 &proxy_admin_cluster_state_path,
                 get(Self::handle_cluster_state_request),
+            )
+            .route(
+                &admin_meta_compact_path,
+                post(Self::handle_meta_compact_request),
+            )
+            .route(
+                &proxy_admin_meta_compact_path,
+                post(Self::handle_meta_compact_request),
             )
             .route_layer(admin_rpc_middleware);
         let inter_node_data_routes = Router::new()
@@ -475,7 +491,7 @@ impl KNetworkServer {
             .with_state(state);
 
         info!(
-            "KNetworkServer start: raft_addr={}, inter_node_addr={}, admin_addr={}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, admin_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, admin_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_timeout_ms={}, admin_local_only={}, data_append_path={}, data_query_path={}, data_meta_put_path={}, data_meta_delete_path={}, data_meta_tx_path={}, data_meta_query_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}",
+            "KNetworkServer start: raft_addr={}, inter_node_addr={}, admin_addr={}, cluster_name={}, cluster_id={}, control_limit_bytes={}, snapshot_limit_bytes={}, admin_limit_bytes={}, control_concurrency={}, snapshot_concurrency={}, admin_concurrency={}, control_timeout_ms={}, snapshot_timeout_ms={}, admin_timeout_ms={}, admin_local_only={}, data_append_path={}, data_query_path={}, data_meta_put_path={}, data_meta_delete_path={}, data_meta_tx_path={}, data_meta_query_path={}, admin_add_learner_path={}, admin_remove_learner_path={}, admin_change_membership_path={}, admin_cluster_state_path={}, admin_meta_compact_path={}",
             self.raft_addr,
             self.inter_node_addr,
             self.admin_addr,
@@ -500,7 +516,8 @@ impl KNetworkServer {
             admin_add_learner_path,
             admin_remove_learner_path,
             admin_change_membership_path,
-            admin_cluster_state_path
+            admin_cluster_state_path,
+            admin_meta_compact_path
         );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1088,6 +1105,84 @@ impl KNetworkServer {
         );
 
         (StatusCode::OK, axum::Json(body)).into_response()
+    }
+
+    async fn handle_meta_compact_request(
+        State(state): State<KNetworkServerState>,
+        ConnectInfo(peer): ConnectInfo<SocketAddr>,
+        Json(req): Json<KLogMetaCompactRequest>,
+    ) -> Response {
+        if let Some(resp) =
+            Self::reject_non_loopback_admin_access(state.admin_local_only, peer, "meta-compact")
+        {
+            return resp;
+        }
+        if req.revision == 0 {
+            let msg = "KNetworkServer admin meta-compact rejected: revision must be greater than 0"
+                .to_string();
+            error!("{}", msg);
+            return Self::error_response(StatusCode::BAD_REQUEST, msg);
+        }
+
+        info!(
+            "KNetworkServer admin meta-compact request: revision={}",
+            req.revision
+        );
+        match state
+            .raft
+            .client_write(KLogRequest::CompactMeta {
+                revision: req.revision,
+            })
+            .await
+        {
+            Ok(resp) => match resp.data {
+                KLogResponse::MetaCompactOk {
+                    compacted_revision,
+                    current_revision,
+                } => {
+                    info!(
+                        "KNetworkServer admin meta-compact succeeded: compacted_revision={}, current_revision={}",
+                        compacted_revision, current_revision
+                    );
+                    (
+                        StatusCode::OK,
+                        Json(KLogMetaCompactResponse {
+                            compacted_revision,
+                            current_revision,
+                        }),
+                    )
+                        .into_response()
+                }
+                KLogResponse::MetaCompactRejected {
+                    revision,
+                    current_revision,
+                } => {
+                    let msg = format!(
+                        "KNetworkServer admin meta-compact rejected: revision={}, current_revision={}",
+                        revision, current_revision
+                    );
+                    warn!("{}", msg);
+                    Self::error_response(StatusCode::BAD_REQUEST, msg)
+                }
+                KLogResponse::Err(err_msg) => {
+                    let msg = format!(
+                        "KNetworkServer admin meta-compact failed in state machine: revision={}, err={}",
+                        req.revision, err_msg
+                    );
+                    error!("{}", msg);
+                    Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+                }
+                other => {
+                    let msg = format!(
+                        "KNetworkServer admin meta-compact unexpected response: response={:?}",
+                        other
+                    );
+                    error!("{}", msg);
+                    Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+                }
+            },
+            Err(err) => Self::raft_client_write_error_response("meta-compact", err),
+        }
     }
 
     fn decode_request(expected: RaftRequestType, body: &[u8]) -> Result<RaftRequest, Response> {

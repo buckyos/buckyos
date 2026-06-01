@@ -1788,6 +1788,39 @@ impl KLogQueryService {
             }
         }
 
+        if let Some(revision) = query.revision {
+            let compacted_revision = self
+                .state_store_manager
+                .meta_compacted_revision()
+                .await
+                .map_err(|e| {
+                    let msg = format!(
+                        "{} meta query read compacted revision failed: {}",
+                        self.service_name, e
+                    );
+                    error!("{}", msg);
+                    self.service_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        KLogErrorCode::Internal,
+                        msg,
+                        &trace_id,
+                    )
+                })?;
+            if revision <= compacted_revision {
+                let msg = format!(
+                    "{} meta query rejected: revision={} has been compacted, compacted_revision={}",
+                    self.service_name, revision, compacted_revision
+                );
+                warn!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::GONE,
+                    KLogErrorCode::Compacted,
+                    msg,
+                    &trace_id,
+                ));
+            }
+        }
+
         let limit = query.limit.unwrap_or(META_QUERY_DEFAULT_LIMIT);
         if limit == 0 || limit > META_QUERY_MAX_LIMIT {
             let msg = format!(
@@ -2226,6 +2259,40 @@ impl KLogQueryService {
                         &trace_id,
                     )
                 })?;
+            let compacted_revision = self
+                .state_store_manager
+                .meta_compacted_revision()
+                .await
+                .map_err(|e| {
+                    let msg = format!(
+                        "{} meta changes read compacted revision failed: {}",
+                        self.service_name, e
+                    );
+                    error!("{}", msg);
+                    self.service_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        KLogErrorCode::Internal,
+                        msg,
+                        &trace_id,
+                    )
+                })?;
+            let resume_revision = cursor
+                .as_ref()
+                .map(|cursor| cursor.revision)
+                .unwrap_or(start_revision);
+            if resume_revision <= compacted_revision {
+                let msg = format!(
+                    "{} meta changes rejected: resume_revision={} has been compacted, compacted_revision={}",
+                    self.service_name, resume_revision, compacted_revision
+                );
+                warn!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::GONE,
+                    KLogErrorCode::Compacted,
+                    msg,
+                    &trace_id,
+                ));
+            }
 
             let effective_end_revision = query
                 .end_revision

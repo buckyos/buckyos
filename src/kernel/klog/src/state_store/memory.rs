@@ -93,6 +93,7 @@ struct MemoryMetaState {
     history: BTreeMap<(String, u64), KLogMetaHistoryRecord>,
     changes: BTreeMap<(u64, String), KLogMetaHistoryRecord>,
     revision: u64,
+    compacted_revision: u64,
 }
 
 impl MemoryMetaState {
@@ -213,6 +214,38 @@ impl MemoryMetaState {
             }
         }
         out
+    }
+
+    fn compact_history(&mut self, revision: u64) -> KResult<u64> {
+        if revision > self.revision {
+            let msg = format!(
+                "meta compact revision {} is greater than current revision {}",
+                revision, self.revision
+            );
+            error!("{}", msg);
+            return Err(KLogError::InvalidFormat(msg));
+        }
+        if revision <= self.compacted_revision {
+            return Ok(self.compacted_revision);
+        }
+
+        let mut baselines = BTreeMap::new();
+        for record in self.history.values() {
+            if record.mod_revision <= revision {
+                baselines.insert(record.key.clone(), record.clone());
+            }
+        }
+
+        self.history
+            .retain(|(_, mod_revision), _| *mod_revision > revision);
+        for record in baselines.into_values() {
+            self.history
+                .insert((record.key.clone(), record.mod_revision), record);
+        }
+        self.changes
+            .retain(|(mod_revision, _), _| *mod_revision > revision);
+        self.compacted_revision = revision;
+        Ok(self.compacted_revision)
     }
 }
 
@@ -565,6 +598,16 @@ impl KLogStateStore for MemoryStateStore {
         Ok(metas.revision)
     }
 
+    async fn meta_compacted_revision(&self) -> KResult<u64> {
+        let metas = self.metas.lock().await;
+        Ok(metas.compacted_revision)
+    }
+
+    async fn compact_meta(&self, revision: u64) -> KResult<u64> {
+        let mut metas = self.metas.lock().await;
+        metas.compact_history(revision)
+    }
+
     async fn get_meta_at_revision(
         &self,
         key: &str,
@@ -673,6 +716,7 @@ impl KLogStateStore for MemoryStateStore {
             meta_states,
             meta_history,
             meta_revision: metas.revision,
+            meta_compacted_revision: metas.compacted_revision,
         };
         let data = bincode::serde::encode_to_vec(&snapshot_data, bincode::config::legacy())
             .map_err(|e| {
@@ -698,6 +742,7 @@ impl KLogStateStore for MemoryStateStore {
             history: BTreeMap::new(),
             changes: BTreeMap::new(),
             revision: snapshot_data.meta_revision,
+            compacted_revision: snapshot_data.meta_compacted_revision,
         };
         for item in snapshot_data.meta_entries {
             metas.revision = metas.revision.max(item.effective_mod_revision());
@@ -807,6 +852,7 @@ fn decode_snapshot_data(data: &[u8]) -> KResult<KLogStateSnapshotData> {
         meta_states: Vec::new(),
         meta_history: Vec::new(),
         meta_revision: 0,
+        meta_compacted_revision: 0,
     })
 }
 

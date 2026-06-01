@@ -644,6 +644,128 @@ async fn test_rocksdb_meta_change_feed_uses_revision_major_index() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn test_rocksdb_meta_compaction_keeps_baselines_and_drops_change_index() -> anyhow::Result<()>
+{
+    let path = unique_test_path("state_store_meta_compaction.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+    let key_a = "cluster/config/compact/a";
+    let key_b = "cluster/config/compact/b";
+    let key_c = "cluster/config/compact/c";
+
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_a.to_string(),
+            value: "a-v1".to_string(),
+            updated_at: 2600,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_b.to_string(),
+            value: "b-v1".to_string(),
+            updated_at: 2601,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_b.to_string(),
+            value: "b-v2".to_string(),
+            updated_at: 2602,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_c.to_string(),
+            value: "c-v1".to_string(),
+            updated_at: 2603,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+
+    assert_eq!(manager.meta_revision().await?, 4);
+    assert_eq!(manager.compact_meta(3).await?, 3);
+    assert_eq!(manager.meta_compacted_revision().await?, 3);
+
+    let a_at_rev4 = manager
+        .get_meta_entry_at_revision(key_a, 4)
+        .await?
+        .expect("baseline key_a must survive compaction");
+    assert_eq!(
+        (a_at_rev4.value.as_str(), a_at_rev4.mod_revision),
+        ("a-v1", 1)
+    );
+    let b_at_rev4 = manager
+        .get_meta_entry_at_revision(key_b, 4)
+        .await?
+        .expect("latest pre-compaction key_b baseline must survive compaction");
+    assert_eq!(
+        (b_at_rev4.value.as_str(), b_at_rev4.mod_revision),
+        ("b-v2", 3)
+    );
+
+    let changes = manager
+        .list_meta_changes(KLogMetaChangeQuery {
+            start_revision: 1,
+            limit: 10,
+            include_deleted: true,
+            ..KLogMetaChangeQuery::default()
+        })
+        .await?;
+    assert_eq!(
+        changes
+            .iter()
+            .map(|item| (item.mod_revision, item.key.as_str(), item.value.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(4, key_c, "c-v1")]
+    );
+
+    let snapshot = manager.build_snapshot().await?;
+    let dst = RocksDbStateStore::open_with_mode(
+        unique_test_path("state_store_meta_compaction_snapshot_dst.rocks"),
+        RocksDbSnapshotMode::Enumerate,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let dst = Arc::new(Box::new(dst) as Box<dyn KLogStateStore>);
+    let dst_mgr = KLogStateStoreManager::new(dst).await?;
+    dst_mgr.install_snapshot(snapshot).await?;
+    assert_eq!(dst_mgr.meta_compacted_revision().await?, 3);
+    assert_eq!(
+        dst_mgr
+            .get_meta_entry_at_revision(key_a, 4)
+            .await?
+            .expect("snapshot baseline key_a")
+            .value,
+        "a-v1"
+    );
+    assert_eq!(
+        dst_mgr
+            .list_meta_changes(KLogMetaChangeQuery {
+                start_revision: 1,
+                limit: 10,
+                include_deleted: true,
+                ..KLogMetaChangeQuery::default()
+            })
+            .await?
+            .iter()
+            .map(|item| item.mod_revision)
+            .collect::<Vec<_>>(),
+        vec![4]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_rocksdb_meta_history_survives_enumerate_snapshot() -> anyhow::Result<()> {
     let src = RocksDbStateStore::open_with_mode(
         unique_test_path("state_store_meta_history_snapshot_src.rocks"),

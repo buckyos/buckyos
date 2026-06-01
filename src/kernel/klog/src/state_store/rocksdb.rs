@@ -24,6 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const KEY_PREFIX_ENTRY: u8 = b'e';
 const KEY_NEXT_LOG_ID_META: &[u8] = b"m:next_log_id";
 const KEY_META_REVISION: &[u8] = b"m:meta_revision";
+const KEY_META_COMPACTED_REVISION: &[u8] = b"m:meta_compacted_revision";
 const KEY_STATE_MACHINE_META: &[u8] = b"m:state_machine_meta";
 const KEY_REQUEST_DEDUP_PREFIX: &[u8] = b"m:req:";
 const KEY_DATA_META_PREFIX: &[u8] = b"d:";
@@ -727,6 +728,129 @@ impl RocksDbStateStore {
         decode_u64_be(raw.as_ref())
     }
 
+    fn read_meta_compacted_revision(&self) -> KResult<u64> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let value = self
+            .db
+            .get_cf(&meta_cf, KEY_META_COMPACTED_REVISION)
+            .map_err(|e| {
+                klog_err_with_context("Failed to read rocksdb meta compacted revision", e)
+            })?;
+        let Some(raw) = value else {
+            return Ok(0);
+        };
+        decode_u64_be(raw.as_ref())
+    }
+
+    fn compact_meta_history_to_revision(&self, revision: u64) -> KResult<u64> {
+        let current_revision = self.read_meta_revision()?;
+        if revision > current_revision {
+            let msg = format!(
+                "meta compact revision {} is greater than current revision {}",
+                revision, current_revision
+            );
+            error!("{}", msg);
+            return Err(klog_err(msg));
+        }
+
+        let current_compacted = self.read_meta_compacted_revision()?;
+        if revision <= current_compacted {
+            return Ok(current_compacted);
+        }
+
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let mut baseline_by_key = BTreeMap::new();
+        let mut history_keys_to_delete = Vec::new();
+        let history_iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(KEY_DATA_META_HISTORY_PREFIX, Direction::Forward),
+        );
+        for item in history_iter {
+            let (k, v) = item.map_err(|e| {
+                klog_err_with_context("Failed to iterate rocksdb meta history for compaction", e)
+            })?;
+            if !k.as_ref().starts_with(KEY_DATA_META_HISTORY_PREFIX) {
+                break;
+            }
+            let Some((_, history_revision)) = decode_data_meta_history_key(k.as_ref()) else {
+                continue;
+            };
+            if history_revision > revision {
+                continue;
+            }
+
+            let record = decode_meta_history_record(v.as_ref())?;
+            baseline_by_key.insert(record.key.clone(), record);
+            history_keys_to_delete.push(k.to_vec());
+        }
+
+        let mut change_keys_to_delete = Vec::new();
+        let change_iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(KEY_DATA_META_HISTORY_REV_PREFIX, Direction::Forward),
+        );
+        for item in change_iter {
+            let (k, _) = item.map_err(|e| {
+                klog_err_with_context(
+                    "Failed to iterate rocksdb meta change index for compaction",
+                    e,
+                )
+            })?;
+            if !k.as_ref().starts_with(KEY_DATA_META_HISTORY_REV_PREFIX) {
+                break;
+            }
+            let Some((change_revision, _)) = decode_data_meta_history_revision_key(k.as_ref())
+            else {
+                continue;
+            };
+            if change_revision > revision {
+                break;
+            }
+            change_keys_to_delete.push(k.to_vec());
+        }
+
+        let write_opts = self.write_options();
+        let mut batch = WriteBatch::default();
+        for key in history_keys_to_delete {
+            batch.delete_cf(&meta_cf, key);
+        }
+        for key in change_keys_to_delete {
+            batch.delete_cf(&meta_cf, key);
+        }
+        for record in baseline_by_key.values() {
+            let encoded = Self::encode_meta_history_record(record)?;
+            batch.put_cf(
+                &meta_cf,
+                data_meta_history_key(&record.key, record.mod_revision),
+                encoded.as_slice(),
+            );
+        }
+        batch.put_cf(
+            &meta_cf,
+            KEY_META_COMPACTED_REVISION,
+            revision.to_be_bytes(),
+        );
+        self.db
+            .write_opt(batch, &write_opts)
+            .map_err(|e| klog_err_with_context("Failed to compact rocksdb meta history", e))?;
+        info!(
+            "RocksDbStateStore compacted meta history: previous_compacted_revision={}, compacted_revision={}, current_revision={}, kept_baselines={}",
+            current_compacted,
+            revision,
+            current_revision,
+            baseline_by_key.len()
+        );
+        Ok(revision)
+    }
+
     fn scan_meta_revision(&self) -> KResult<u64> {
         let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_META);
@@ -812,17 +936,28 @@ impl RocksDbStateStore {
         meta_cf: &rocksdb::ColumnFamily,
         record: &KLogMetaHistoryRecord,
     ) -> KResult<()> {
+        Self::put_meta_history_in_batch_with_change_index(batch, meta_cf, record, true)
+    }
+
+    fn put_meta_history_in_batch_with_change_index(
+        batch: &mut WriteBatch,
+        meta_cf: &rocksdb::ColumnFamily,
+        record: &KLogMetaHistoryRecord,
+        include_change_index: bool,
+    ) -> KResult<()> {
         let encoded = Self::encode_meta_history_record(record)?;
         batch.put_cf(
             meta_cf,
             data_meta_history_key(&record.key, record.mod_revision),
             encoded.as_slice(),
         );
-        batch.put_cf(
-            meta_cf,
-            data_meta_history_revision_key(record.mod_revision, &record.key),
-            encoded.as_slice(),
-        );
+        if include_change_index {
+            batch.put_cf(
+                meta_cf,
+                data_meta_history_revision_key(record.mod_revision, &record.key),
+                encoded.as_slice(),
+            );
+        }
         Ok(())
     }
 
@@ -1346,6 +1481,7 @@ impl RocksDbStateStore {
             deleted += 1;
         }
         batch.delete_cf(&meta_cf, KEY_META_REVISION);
+        batch.delete_cf(&meta_cf, KEY_META_COMPACTED_REVISION);
         debug!(
             "RocksDbStateStore clear_data_meta_in_batch done: deleted={}",
             deleted
@@ -1397,15 +1533,17 @@ impl RocksDbStateStore {
         meta_states: Vec<KLogMetaKeyState>,
         meta_history: Vec<KLogMetaHistoryRecord>,
         meta_revision: u64,
+        meta_compacted_revision: u64,
     ) -> KResult<()> {
         info!(
-            "RocksDbStateStore replace_with_entries start: snapshot_mode={:?}, incoming_entries={}, incoming_meta_entries={}, incoming_meta_states={}, incoming_meta_history={}, incoming_meta_revision={}",
+            "RocksDbStateStore replace_with_entries start: snapshot_mode={:?}, incoming_entries={}, incoming_meta_entries={}, incoming_meta_states={}, incoming_meta_history={}, incoming_meta_revision={}, incoming_meta_compacted_revision={}",
             self.snapshot_mode,
             summarize_entry_ids(&entries),
             meta_entries.len(),
             meta_states.len(),
             meta_history.len(),
-            meta_revision
+            meta_revision,
+            meta_compacted_revision
         );
         let mut batch = WriteBatch::default();
         self.clear_entries_in_batch(&mut batch)?;
@@ -1492,7 +1630,12 @@ impl RocksDbStateStore {
         } else {
             for record in meta_history {
                 resolved_meta_revision = resolved_meta_revision.max(record.mod_revision);
-                Self::put_meta_history_in_batch(&mut batch, meta_cf, &record)?;
+                Self::put_meta_history_in_batch_with_change_index(
+                    &mut batch,
+                    meta_cf,
+                    &record,
+                    record.mod_revision > meta_compacted_revision,
+                )?;
             }
         }
         batch.put_cf(
@@ -1500,14 +1643,24 @@ impl RocksDbStateStore {
             KEY_META_REVISION,
             resolved_meta_revision.to_be_bytes(),
         );
+        batch.put_cf(
+            &meta_cf,
+            KEY_META_COMPACTED_REVISION,
+            meta_compacted_revision
+                .min(resolved_meta_revision)
+                .to_be_bytes(),
+        );
 
         let write_opts = self.write_options();
         self.db.write_opt(batch, &write_opts).map_err(|e| {
             klog_err_with_context("Failed to write entries during rocksdb snapshot install", e)
         })?;
         info!(
-            "RocksDbStateStore replace_with_entries completed: snapshot_mode={:?}, next_log_id={}, meta_revision={}",
-            self.snapshot_mode, next_log_id, resolved_meta_revision
+            "RocksDbStateStore replace_with_entries completed: snapshot_mode={:?}, next_log_id={}, meta_revision={}, meta_compacted_revision={}",
+            self.snapshot_mode,
+            next_log_id,
+            resolved_meta_revision,
+            meta_compacted_revision.min(resolved_meta_revision)
         );
 
         Ok(())
@@ -1659,6 +1812,14 @@ impl RocksDbStateStore {
             .map_err(|e| klog_err_with_context("Failed to read source meta revision", e))?
         {
             batch.put_cf(&meta_cf, KEY_META_REVISION, raw.as_slice());
+        }
+        if let Some(raw) = source_db
+            .get_cf(&source_meta_cf, KEY_META_COMPACTED_REVISION)
+            .map_err(|e| {
+                klog_err_with_context("Failed to read source meta compacted revision", e)
+            })?
+        {
+            batch.put_cf(&meta_cf, KEY_META_COMPACTED_REVISION, raw.as_slice());
         }
 
         let write_opts = self.write_options();
@@ -2154,6 +2315,7 @@ fn decode_snapshot_data(data: &[u8]) -> KResult<KLogStateSnapshotData> {
         meta_states: Vec::new(),
         meta_history: Vec::new(),
         meta_revision: 0,
+        meta_compacted_revision: 0,
     })
 }
 
@@ -2172,24 +2334,27 @@ impl RocksDbSnapshotStrategy for EnumerateSnapshotStrategy {
         let meta_states = store.read_all_meta_states()?;
         let meta_history = store.read_all_meta_history()?;
         let meta_revision = store.read_meta_revision()?;
+        let meta_compacted_revision = store.read_meta_compacted_revision()?;
         let snapshot_data = KLogStateSnapshotData {
             entries,
             meta_entries,
             meta_states,
             meta_history,
             meta_revision,
+            meta_compacted_revision,
         };
         let data = bincode::serde::encode_to_vec(&snapshot_data, bincode::config::legacy())
             .map_err(|e| {
                 klog_err_with_context("Failed to serialize rocksdb enumerate snapshot", e)
             })?;
         info!(
-            "RocksDb enumerate build_snapshot done: entries={}, meta_entries={}, meta_states={}, meta_history={}, meta_revision={}, payload_bytes={}",
+            "RocksDb enumerate build_snapshot done: entries={}, meta_entries={}, meta_states={}, meta_history={}, meta_revision={}, meta_compacted_revision={}, payload_bytes={}",
             snapshot_data.entries.len(),
             snapshot_data.meta_entries.len(),
             snapshot_data.meta_states.len(),
             snapshot_data.meta_history.len(),
             snapshot_data.meta_revision,
+            snapshot_data.meta_compacted_revision,
             data.len()
         );
         Ok(KLogStateSnapshot { data })
@@ -2222,12 +2387,13 @@ impl RocksDbSnapshotStrategy for EnumerateSnapshotStrategy {
         };
 
         info!(
-            "RocksDb enumerate install_snapshot apply: entries={}, meta_entries={}, meta_states={}, meta_history={}, meta_revision={}",
+            "RocksDb enumerate install_snapshot apply: entries={}, meta_entries={}, meta_states={}, meta_history={}, meta_revision={}, meta_compacted_revision={}",
             summarize_entry_ids(&snapshot_data.entries),
             snapshot_data.meta_entries.len(),
             snapshot_data.meta_states.len(),
             snapshot_data.meta_history.len(),
-            snapshot_data.meta_revision
+            snapshot_data.meta_revision,
+            snapshot_data.meta_compacted_revision
         );
         store.replace_with_entries(
             snapshot_data.entries,
@@ -2235,6 +2401,7 @@ impl RocksDbSnapshotStrategy for EnumerateSnapshotStrategy {
             snapshot_data.meta_states,
             snapshot_data.meta_history,
             snapshot_data.meta_revision,
+            snapshot_data.meta_compacted_revision,
         )?;
         Ok(true)
     }
@@ -3153,6 +3320,14 @@ impl KLogStateStore for RocksDbStateStore {
 
     async fn meta_revision(&self) -> KResult<u64> {
         self.read_meta_revision()
+    }
+
+    async fn meta_compacted_revision(&self) -> KResult<u64> {
+        self.read_meta_compacted_revision()
+    }
+
+    async fn compact_meta(&self, revision: u64) -> KResult<u64> {
+        self.compact_meta_history_to_revision(revision)
     }
 
     async fn get_meta_at_revision(

@@ -2,7 +2,10 @@ mod common;
 
 use common::*;
 use klog::error::KLogErrorCode;
-use klog::network::{KLogMetaDeleteRequest, KLogMetaPutRequest, KLogMetaQueryRequest};
+use klog::network::{
+    KLogMetaChangesRequest, KLogMetaCompactRequest, KLogMetaDeleteRequest, KLogMetaPutRequest,
+    KLogMetaQueryRequest,
+};
 use klog::rpc::KLogClient;
 use std::time::Duration;
 
@@ -12,6 +15,14 @@ fn client_for_rpc_port(rpc_port: u16, node_id: u64) -> KLogClient {
         format!("node-{}", node_id),
     )
     .with_timeout(Duration::from_secs(3))
+}
+
+fn admin_port_by_node_id(nodes: &[TestNode], node_id: u64) -> Result<u16, String> {
+    nodes
+        .iter()
+        .find(|n| n.node_id == node_id)
+        .map(|n| n.admin_port)
+        .ok_or_else(|| format!("admin port not found for node_id={}", node_id))
 }
 
 #[tokio::test]
@@ -438,6 +449,151 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
             return Err(format!(
                 "unexpected revision after failover update: revision={}, create_revision={}, mod_revision={}, version={}",
                 second.revision, second.create_revision, second.mod_revision, second.version
+            ));
+        }
+
+        Ok(())
+    }
+    .await;
+
+    for n in &mut nodes {
+        n.stop().await;
+    }
+    result
+}
+
+#[tokio::test]
+async fn test_three_node_meta_compaction_rejects_compacted_revision() -> Result<(), String> {
+    if !can_bind_localhost() {
+        eprintln!("skip meta compaction test: localhost bind is not available");
+        return Ok(());
+    }
+
+    let ports = choose_unique_ports(3)?;
+    let port1 = ports[0];
+    let port2 = ports[1];
+    let port3 = ports[2];
+    let cluster_name = format!("klog_meta_compaction_{}_{}_{}", port1, port2, port3);
+    let mut nodes = spawn_three_voter_cluster(&cluster_name, port1, port2, port3).await?;
+
+    let result = async {
+        let leader_id =
+            wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40))
+                .await?;
+        let leader_rpc_port = rpc_port_by_node_id(&nodes, leader_id)?;
+        let leader_admin_port = admin_port_by_node_id(&nodes, leader_id)?;
+        let client = client_for_rpc_port(leader_rpc_port, 9021);
+        let key = format!("cluster/meta/compact/{}", leader_id);
+
+        for value in ["v1", "v2", "v3", "v4"] {
+            client
+                .put_meta(KLogMetaPutRequest {
+                    key: key.clone(),
+                    value: value.to_string(),
+                    node_name: None,
+                    expected_revision: None,
+                })
+                .await
+                .map_err(|e| format!("put_meta {} failed: {}", value, e))?;
+        }
+
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .map_err(|e| format!("failed to build http client: {}", e))?;
+        let compact_url = format!(
+            "http://127.0.0.1:{}/klog/admin/meta-compact",
+            leader_admin_port
+        );
+        let compact_resp = http
+            .post(compact_url)
+            .json(&KLogMetaCompactRequest { revision: 3 })
+            .send()
+            .await
+            .map_err(|e| format!("meta-compact request failed: {}", e))?;
+        if !compact_resp.status().is_success() {
+            let status = compact_resp.status();
+            let body = compact_resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "meta-compact failed: status={}, body={}",
+                status, body
+            ));
+        }
+
+        let compacted_query = client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: Some(2),
+                strong_read: Some(true),
+            })
+            .await
+            .expect_err("expected compacted historical query error");
+        if compacted_query.error_code != KLogErrorCode::Compacted {
+            return Err(format!(
+                "unexpected compacted query code: expected={:?}, got={:?}, message={}",
+                KLogErrorCode::Compacted,
+                compacted_query.error_code,
+                compacted_query.message
+            ));
+        }
+
+        let live = client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: None,
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("live query after compaction failed: {}", e))?;
+        if live.items.len() != 1 || live.items[0].value != "v4" {
+            return Err(format!(
+                "unexpected live query after compaction: {:?}",
+                live
+            ));
+        }
+
+        let compacted_changes = client
+            .query_meta_changes(KLogMetaChangesRequest {
+                start_revision: Some(1),
+                key: Some(key.clone()),
+                limit: Some(10),
+                strong_read: Some(true),
+                ..KLogMetaChangesRequest::default()
+            })
+            .await
+            .expect_err("expected compacted changes query error");
+        if compacted_changes.error_code != KLogErrorCode::Compacted {
+            return Err(format!(
+                "unexpected compacted changes code: expected={:?}, got={:?}, message={}",
+                KLogErrorCode::Compacted,
+                compacted_changes.error_code,
+                compacted_changes.message
+            ));
+        }
+
+        let changes = client
+            .query_meta_changes(KLogMetaChangesRequest {
+                start_revision: Some(4),
+                key: Some(key.clone()),
+                limit: Some(10),
+                strong_read: Some(true),
+                ..KLogMetaChangesRequest::default()
+            })
+            .await
+            .map_err(|e| format!("changes query after compaction failed: {}", e))?;
+        if changes.items.len() != 1
+            || changes.items[0].mod_revision != 4
+            || changes.items[0].value != "v4"
+        {
+            return Err(format!(
+                "unexpected changes after compaction: {:?}",
+                changes.items
             ));
         }
 

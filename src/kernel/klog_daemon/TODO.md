@@ -39,10 +39,10 @@ This file tracks current implementation gaps after the BuckyOS integration work.
 
 ## P2: MVCC / Watch API
 
-- [ ] Add MVCC compaction policy and compacted-revision errors.
-  - Historical reads and change-feed scans currently retain all metadata
-    history. Long-running deployments need an explicit retention policy before
-    watch APIs are treated as production interfaces.
+- [ ] Add automatic MVCC compaction policy.
+  - Manual compaction and compacted-revision errors are implemented.
+  - Long-running deployments still need an explicit retention policy and
+    trigger strategy before watch APIs are treated as production interfaces.
 - [ ] Consider push/stream watch APIs only if active polling becomes insufficient.
   - The first watch-compatible interface is short long-poll over
     `/klog/data/meta-changes` and JSON-RPC `klog.meta.changes`.
@@ -151,6 +151,14 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     scans and short long-poll active querying with `wait_timeout_ms`.
   - The API returns change records, `current_revision`, `next_start_revision`,
     and an exclusive `(revision, key)` cursor when more matching changes remain.
+- [x] Add explicit MVCC metadata compaction.
+  - `/klog/admin/meta-compact` submits a Raft state-machine command and
+    persists `meta_compacted_revision`.
+  - Storage keeps one key-major baseline per compacted key for post-compaction
+    historical reads, drops old revision-major change-feed index entries, and
+    returns compacted-revision errors through HTTP/JSON-RPC query paths.
+  - Covered by klog state-machine/RocksDB state-store tests and the
+    klog_daemon meta compaction client test.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
 - [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.
