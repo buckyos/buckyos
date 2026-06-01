@@ -1,10 +1,10 @@
 use super::common::{decode_entry_ids, sample_membership, sample_state_entries, unique_test_path};
 use crate::state_store::{
-    KLogMetaPutResult, KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot,
-    KLogStateStore, KLogStateStoreManager, MemoryStateStore, RocksDbSnapshotMode,
-    RocksDbStateStore,
+    KLogMetaChangeCursor, KLogMetaChangeQuery, KLogMetaPutResult, KLogQuery, KLogQueryOrder,
+    KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore, KLogStateStoreManager,
+    MemoryStateStore, RocksDbSnapshotMode, RocksDbStateStore,
 };
-use crate::{KLogEntry, KLogLevel, KLogMetaEntry};
+use crate::{KLogEntry, KLogLevel, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxRequest};
 use openraft::{CommittedLeaderId, LogId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -434,6 +434,216 @@ async fn test_rocksdb_meta_history_query_by_revision() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn test_rocksdb_meta_change_feed_uses_revision_major_index() -> anyhow::Result<()> {
+    let path = unique_test_path("state_store_meta_change_feed.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+    let key_a = "cluster/config/change/a";
+    let key_b = "cluster/config/change/b";
+    let key_aa = "cluster/config/change/aa";
+    let key_c = "cluster/config/change/c";
+    let key_d = "cluster/config/change/d";
+
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_a.to_string(),
+            value: "a-v1".to_string(),
+            updated_at: 2500,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_b.to_string(),
+            value: "b-v1".to_string(),
+            updated_at: 2501,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_a.to_string(),
+            value: "a-v2".to_string(),
+            updated_at: 2502,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    manager.delete_meta_key(key_b).await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_b.to_string(),
+            value: "b-v2".to_string(),
+            updated_at: 2503,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+
+    let mut actions = BTreeMap::new();
+    actions.insert(
+        key_aa.to_string(),
+        KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: key_aa.to_string(),
+                value: "aa-v1".to_string(),
+                updated_at: 2504,
+                updated_by_node_name: "node-2".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(0),
+        },
+    );
+    actions.insert(
+        key_c.to_string(),
+        KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: key_c.to_string(),
+                value: "c-v1".to_string(),
+                updated_at: 2504,
+                updated_by_node_name: "node-2".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(0),
+        },
+    );
+    actions.insert(
+        key_d.to_string(),
+        KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: key_d.to_string(),
+                value: "d-v1".to_string(),
+                updated_at: 2504,
+                updated_by_node_name: "node-2".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(0),
+        },
+    );
+    manager
+        .exec_meta_tx(KLogMetaTxRequest {
+            actions,
+            guard: None,
+        })
+        .await?;
+
+    let changes = manager
+        .list_meta_changes(KLogMetaChangeQuery {
+            start_revision: 1,
+            limit: 10,
+            include_deleted: true,
+            ..KLogMetaChangeQuery::default()
+        })
+        .await?;
+    assert_eq!(
+        changes
+            .iter()
+            .map(|item| (
+                item.mod_revision,
+                item.key.as_str(),
+                item.value.as_str(),
+                item.deleted
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, key_a, "a-v1", false),
+            (2, key_b, "b-v1", false),
+            (3, key_a, "a-v2", false),
+            (4, key_b, "b-v1", true),
+            (5, key_b, "b-v2", false),
+            (6, key_aa, "aa-v1", false),
+            (6, key_c, "c-v1", false),
+            (6, key_d, "d-v1", false),
+        ]
+    );
+
+    let live_only = manager
+        .list_meta_changes(KLogMetaChangeQuery {
+            start_revision: 1,
+            limit: 10,
+            include_deleted: false,
+            ..KLogMetaChangeQuery::default()
+        })
+        .await?;
+    assert_eq!(
+        live_only
+            .iter()
+            .map(|item| (item.mod_revision, item.key.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, key_a),
+            (2, key_b),
+            (3, key_a),
+            (5, key_b),
+            (6, key_aa),
+            (6, key_c),
+            (6, key_d)
+        ]
+    );
+
+    let b_changes = manager
+        .list_meta_changes(KLogMetaChangeQuery {
+            start_revision: 1,
+            key: Some(key_b.to_string()),
+            limit: 10,
+            include_deleted: true,
+            ..KLogMetaChangeQuery::default()
+        })
+        .await?;
+    assert_eq!(
+        b_changes
+            .iter()
+            .map(|item| (item.mod_revision, item.deleted))
+            .collect::<Vec<_>>(),
+        vec![(2, false), (4, true), (5, false)]
+    );
+
+    let page_after_cursor = manager
+        .list_meta_changes(KLogMetaChangeQuery {
+            start_revision: 1,
+            cursor: Some(KLogMetaChangeCursor {
+                revision: 3,
+                key: key_a.to_string(),
+            }),
+            limit: 3,
+            include_deleted: true,
+            ..KLogMetaChangeQuery::default()
+        })
+        .await?;
+    assert_eq!(
+        page_after_cursor
+            .iter()
+            .map(|item| (item.mod_revision, item.key.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(4, key_b), (5, key_b), (6, key_aa)]
+    );
+
+    let bounded = manager
+        .list_meta_changes(KLogMetaChangeQuery {
+            start_revision: 2,
+            end_revision: Some(4),
+            prefix: Some("cluster/config/change/".to_string()),
+            limit: 10,
+            include_deleted: true,
+            ..KLogMetaChangeQuery::default()
+        })
+        .await?;
+    assert_eq!(
+        bounded
+            .iter()
+            .map(|item| (item.mod_revision, item.key.as_str(), item.deleted))
+            .collect::<Vec<_>>(),
+        vec![(2, key_b, false), (3, key_a, false), (4, key_b, true)]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_rocksdb_meta_history_survives_enumerate_snapshot() -> anyhow::Result<()> {
     let src = RocksDbStateStore::open_with_mode(
         unique_test_path("state_store_meta_history_snapshot_src.rocks"),
@@ -502,6 +712,26 @@ async fn test_rocksdb_meta_history_survives_enumerate_snapshot() -> anyhow::Resu
     assert_eq!(
         (rev4.create_revision, rev4.mod_revision, rev4.version),
         (4, 4, 1)
+    );
+    let changes = dst_mgr
+        .list_meta_changes(KLogMetaChangeQuery {
+            start_revision: 1,
+            limit: 10,
+            include_deleted: true,
+            ..KLogMetaChangeQuery::default()
+        })
+        .await?;
+    assert_eq!(
+        changes
+            .iter()
+            .map(|item| (item.mod_revision, item.value.as_str(), item.deleted))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, "v1", false),
+            (2, "v2", false),
+            (3, "v2", true),
+            (4, "v3", false)
+        ]
     );
 
     Ok(())

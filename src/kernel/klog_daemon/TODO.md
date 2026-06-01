@@ -37,6 +37,20 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Read/admin operations: `cluster-state`.
 - [ ] Add token/key rotation and reload support without daemon restart.
 
+## P2: MVCC / Watch API
+
+- [ ] Expose an etcd-style metadata watch/change-feed API on top of the
+  revision-major storage index.
+  - The storage layer can already scan metadata changes by `(mod_revision, key)`
+    with `start_revision`, `end_revision`, exclusive cursor, optional key/prefix
+    filters, and tombstone inclusion control.
+  - The remaining work is the network/RPC API shape, long-poll or stream
+    semantics, cancellation, backpressure, and error mapping.
+- [ ] Add MVCC compaction policy and compacted-revision errors.
+  - Historical reads and change-feed scans currently retain all metadata
+    history. Long-running deployments need an explicit retention policy before
+    watch APIs are treated as production interfaces.
+
 ## P3: Deferred / Not Planned Now
 
 - [ ] Consider Scheme 2 read optimization only if strong-read traffic shows leader bottleneck.
@@ -128,6 +142,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     visible value set at a previous global revision.
   - Covered by RocksDB state-store tests and the klog_daemon meta revision
     client test.
+- [x] Add revision-major metadata change index for future watch/change-feed APIs.
+  - RocksDB persists a `(mod_revision, key)` index beside the key-major history
+    index; MemoryStateStore keeps the same ordering in memory.
+  - Snapshot install rebuilds the index from metadata history.
+  - Covered by RocksDB state-store tests for ordering, cursor pagination,
+    filters, tombstones, and snapshot install.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
 - [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.
