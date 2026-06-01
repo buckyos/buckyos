@@ -560,6 +560,11 @@ impl KLogStateStore for MemoryStateStore {
         Ok(metas.current_revision(key))
     }
 
+    async fn meta_revision(&self) -> KResult<u64> {
+        let metas = self.metas.lock().await;
+        Ok(metas.revision)
+    }
+
     async fn get_meta_at_revision(
         &self,
         key: &str,

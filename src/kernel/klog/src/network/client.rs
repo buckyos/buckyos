@@ -1,8 +1,9 @@
 use super::request::{
     KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLOG_TRACE_ID_HEADER, KLogAppendRequest,
-    KLogAppendResponse, KLogDataRequestType, KLogMetaDeleteRequest, KLogMetaDeleteResponse,
-    KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest, KLogMetaQueryResponse,
-    KLogQueryRequest, KLogQueryResponse, RaftRequest, RaftResponse,
+    KLogAppendResponse, KLogDataRequestType, KLogMetaChangesRequest, KLogMetaChangesResponse,
+    KLogMetaDeleteRequest, KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse,
+    KLogMetaQueryRequest, KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse, RaftRequest,
+    RaftResponse,
 };
 use crate::error::{KLogErrorCode, KLogServiceError, parse_error_envelope_json};
 use crate::{
@@ -714,6 +715,86 @@ impl KDataClient {
                 trace_id.to_string(),
             )
         })
+    }
+
+    pub async fn query_meta_changes_to_node(
+        &self,
+        target: &KNode,
+        req: &KLogMetaChangesRequest,
+        forward_hops: u32,
+        forwarded_by: KNodeId,
+        trace_id: &str,
+    ) -> Result<KLogMetaChangesResponse, KLogServiceError> {
+        let path = KLogDataRequestType::MetaChanges.klog_path();
+        let endpoint_port = Self::inter_node_port(target);
+        let endpoints = self.build_data_endpoints(target, &path, trace_id)?;
+        let first_url = endpoints[0].url.clone();
+        let wait_timeout =
+            Duration::from_millis(req.wait_timeout_ms.unwrap_or(0).saturating_add(500));
+        let request_timeout = self.timeout.max(wait_timeout);
+        let response = self
+            .send_with_fallback(&endpoints, |candidate_url| {
+                self.client
+                    .get(candidate_url)
+                    .timeout(request_timeout)
+                    .header(KLOG_FORWARD_HOPS_HEADER, forward_hops.to_string())
+                    .header(KLOG_FORWARDED_BY_HEADER, forwarded_by.to_string())
+                    .header(KLOG_TRACE_ID_HEADER, trace_id)
+                    .query(req)
+            })
+            .await
+            .map_err(|(final_url, e)| {
+                let msg = format!(
+                    "forward meta changes send failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, endpoint_port, final_url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!(r#"{{"message":"<failed to read body: {}>"}}"#, e));
+            let fallback_msg = format!(
+                "forward meta changes failed: target={}({}:{}), url={}, status={}, body={}",
+                target.id, target.addr, endpoint_port, first_url, status, body
+            );
+            return Err(parse_error_envelope_json(&body)
+                .map(|e| KLogServiceError {
+                    http_status: status.as_u16(),
+                    error: e,
+                })
+                .unwrap_or_else(|| {
+                    KLogServiceError::from_http_status(
+                        status.as_u16(),
+                        fallback_msg,
+                        trace_id.to_string(),
+                    )
+                }));
+        }
+
+        response
+            .json::<KLogMetaChangesResponse>()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "forward meta changes decode failed: target={}({}:{}), url={}, err={}",
+                    target.id, target.addr, endpoint_port, first_url, e
+                );
+                KLogServiceError::new(
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id.to_string(),
+                )
+            })
     }
 
     fn inter_node_port(target: &KNode) -> u16 {

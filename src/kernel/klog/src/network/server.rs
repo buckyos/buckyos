@@ -1,7 +1,7 @@
 use super::request::{
     KLogAdminRequestType, KLogAppendRequest, KLogClusterStateResponse, KLogDataRequestType,
-    KLogMetaDeleteRequest, KLogMetaPutRequest, KLogMetaQueryRequest, KLogQueryRequest, RaftRequest,
-    RaftRequestType, RaftResponse,
+    KLogMetaChangesRequest, KLogMetaDeleteRequest, KLogMetaPutRequest, KLogMetaQueryRequest,
+    KLogQueryRequest, RaftRequest, RaftRequestType, RaftResponse,
 };
 use crate::error::{KLogErrorEnvelope, KLogServiceError, generate_trace_id};
 use crate::service::{KLogQueryService, KLogWriteService};
@@ -281,6 +281,7 @@ impl KNetworkServer {
         let data_meta_delete_path = KLogDataRequestType::MetaDelete.klog_path();
         let data_meta_tx_path = KLogDataRequestType::MetaTx.klog_path();
         let data_meta_query_path = KLogDataRequestType::MetaQuery.klog_path();
+        let data_meta_changes_path = KLogDataRequestType::MetaChanges.klog_path();
         let admin_add_learner_path = KLogAdminRequestType::AddLearner.klog_path();
         let admin_remove_learner_path = KLogAdminRequestType::RemoveLearner.klog_path();
         let admin_change_membership_path = KLogAdminRequestType::ChangeMembership.klog_path();
@@ -324,6 +325,11 @@ impl KNetworkServer {
             &self.transport.gateway_route_prefix,
             KClusterTransportModePlane::InterNode,
             &data_meta_query_path,
+        )?;
+        let proxy_data_meta_changes_path = cluster_proxy_route(
+            &self.transport.gateway_route_prefix,
+            KClusterTransportModePlane::InterNode,
+            &data_meta_changes_path,
         )?;
         let proxy_admin_add_learner_path = cluster_proxy_route(
             &self.transport.gateway_route_prefix,
@@ -419,6 +425,14 @@ impl KNetworkServer {
             .route(
                 &proxy_data_meta_query_path,
                 get(Self::handle_meta_query_request),
+            )
+            .route(
+                &data_meta_changes_path,
+                get(Self::handle_meta_changes_request),
+            )
+            .route(
+                &proxy_data_meta_changes_path,
+                get(Self::handle_meta_changes_request),
             )
             .route_layer(inter_node_rpc_middleware);
 
@@ -857,6 +871,24 @@ impl KNetworkServer {
         };
 
         match query_service.query_meta(&headers, query).await {
+            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+            Err(err) => Self::service_error_response(err),
+        }
+    }
+
+    async fn handle_meta_changes_request(
+        State(state): State<KNetworkServerState>,
+        headers: HeaderMap,
+        Query(query): Query<KLogMetaChangesRequest>,
+    ) -> Response {
+        let Some(query_service) = state.query_service.as_ref() else {
+            let msg = "KNetworkServer meta changes rejected: state store manager is not configured"
+                .to_string();
+            error!("{}", msg);
+            return Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg);
+        };
+
+        match query_service.query_meta_changes(&headers, query).await {
             Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
             Err(err) => Self::service_error_response(err),
         }

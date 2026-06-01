@@ -3151,6 +3151,10 @@ impl KLogStateStore for RocksDbStateStore {
         Ok(Some(item.effective_mod_revision()))
     }
 
+    async fn meta_revision(&self) -> KResult<u64> {
+        self.read_meta_revision()
+    }
+
     async fn get_meta_at_revision(
         &self,
         key: &str,

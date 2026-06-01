@@ -39,17 +39,15 @@ This file tracks current implementation gaps after the BuckyOS integration work.
 
 ## P2: MVCC / Watch API
 
-- [ ] Expose an etcd-style metadata watch/change-feed API on top of the
-  revision-major storage index.
-  - The storage layer can already scan metadata changes by `(mod_revision, key)`
-    with `start_revision`, `end_revision`, exclusive cursor, optional key/prefix
-    filters, and tombstone inclusion control.
-  - The remaining work is the network/RPC API shape, long-poll or stream
-    semantics, cancellation, backpressure, and error mapping.
 - [ ] Add MVCC compaction policy and compacted-revision errors.
   - Historical reads and change-feed scans currently retain all metadata
     history. Long-running deployments need an explicit retention policy before
     watch APIs are treated as production interfaces.
+- [ ] Consider push/stream watch APIs only if active polling becomes insufficient.
+  - The first watch-compatible interface is short long-poll over
+    `/klog/data/meta-changes` and JSON-RPC `klog.meta.changes`.
+  - SSE/WebSocket/gRPC streaming remains deferred until gateway behavior,
+    cancellation, backpressure, and operational demand are clear.
 
 ## P3: Deferred / Not Planned Now
 
@@ -148,6 +146,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Snapshot install rebuilds the index from metadata history.
   - Covered by RocksDB state-store tests for ordering, cursor pagination,
     filters, tombstones, and snapshot install.
+- [x] Expose first metadata change-feed API.
+  - `/klog/data/meta-changes` and JSON-RPC `klog.meta.changes` support one-shot
+    scans and short long-poll active querying with `wait_timeout_ms`.
+  - The API returns change records, `current_revision`, `next_start_revision`,
+    and an exclusive `(revision, key)` cursor when more matching changes remain.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
 - [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.

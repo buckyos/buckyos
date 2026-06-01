@@ -233,6 +233,8 @@ pub trait KLogStateStore: Send + Sync {
 
     async fn current_meta_revision(&self, key: &str) -> KResult<Option<u64>>;
 
+    async fn meta_revision(&self) -> KResult<u64>;
+
     async fn get_meta_at_revision(
         &self,
         key: &str,
@@ -524,6 +526,10 @@ impl KLogStateStoreManager {
 
     pub async fn current_meta_revision(&self, key: &str) -> KResult<Option<u64>> {
         self.state_store.current_meta_revision(key).await
+    }
+
+    pub async fn meta_revision(&self) -> KResult<u64> {
+        self.state_store.meta_revision().await
     }
 
     pub async fn get_meta_entry_at_revision(

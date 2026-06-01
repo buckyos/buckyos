@@ -1,3 +1,4 @@
+use crate::state_store::{KLogMetaChangeCursor, KLogMetaHistoryRecord};
 use crate::{
     KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KLogMetaVersion, KNode, KNodeId, KResult,
     KTypeConfig,
@@ -91,6 +92,7 @@ pub enum KLogDataRequestType {
     MetaDelete,
     MetaTx,
     MetaQuery,
+    MetaChanges,
 }
 
 impl KLogDataRequestType {
@@ -102,6 +104,7 @@ impl KLogDataRequestType {
             KLogDataRequestType::MetaDelete => "meta-delete",
             KLogDataRequestType::MetaTx => "meta-tx",
             KLogDataRequestType::MetaQuery => "meta-query",
+            KLogDataRequestType::MetaChanges => "meta-changes",
         }
     }
 
@@ -222,6 +225,42 @@ pub struct KLogMetaQueryResponse {
     pub next_cursor: Option<String>,
     #[serde(default)]
     pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KLogMetaChangesRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_deleted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_timeout_ms: Option<u64>,
+    /// When true, require linearizable read on leader before serving query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strong_read: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaChangesResponse {
+    pub items: Vec<KLogMetaHistoryRecord>,
+    #[serde(default)]
+    pub next_cursor: Option<KLogMetaChangeCursor>,
+    #[serde(default)]
+    pub has_more: bool,
+    pub current_revision: u64,
+    pub next_start_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -613,6 +652,10 @@ mod tests {
         assert_eq!(
             KLogDataRequestType::MetaQuery.klog_path(),
             "/klog/data/meta-query"
+        );
+        assert_eq!(
+            KLogDataRequestType::MetaChanges.klog_path(),
+            "/klog/data/meta-changes"
         );
     }
 }
