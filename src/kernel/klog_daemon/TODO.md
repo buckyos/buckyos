@@ -53,12 +53,6 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     `/klog/data/meta-changes` and JSON-RPC `klog.meta.changes`.
   - SSE/WebSocket/gRPC streaming remains deferred until gateway behavior,
     cancellation, backpressure, and operational demand are clear.
-- [ ] Add high-level system_config MVCC regression coverage.
-  - klog store/state-machine tests cover the low-level MVCC matrix first.
-  - A later BuckyOS-level DV should validate `system_config` CAS,
-    delete/recreate, prefix pagination, change-feed resume, and explicit
-    compaction through the real klog backend.
-
 ## P3: Deferred / Not Planned Now
 
 - [ ] Consider Scheme 2 read optimization only if strong-read traffic shows leader bottleneck.
@@ -174,6 +168,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Validates 3-voter gateway cluster routes, atomic meta transactions,
     historical prefix reads, change-feed cursor pagination, explicit
     compaction/compacted-revision errors, and restart persistence.
+- [x] Validate high-level system_config MVCC behavior on the klog backend.
+  - Covered by `test/klog_system_config_mvcc_dv.sh`.
+  - Validates real `/kapi/system_config` create/set/set-by-json-path/delete,
+    guarded `exec_tx` conflict atomicity, delete/recreate revision semantics,
+    klog historical reads, change-feed visibility, and explicit compaction
+    through the local 3-voter gateway cluster harness.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
 - [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.

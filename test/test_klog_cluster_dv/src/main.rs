@@ -26,6 +26,7 @@ const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
 const SYSTEM_CONFIG_ROLLOUT_MODE: &str = "local-gateway-system-config-rollout";
 const SYSTEM_CONFIG_PAGINATION_MODE: &str = "local-gateway-system-config-pagination";
+const SYSTEM_CONFIG_MVCC_MODE: &str = "local-gateway-system-config-mvcc";
 const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
 const SYSTEM_CONFIG_RPC_SERVICE_PATH: &str = "/kapi/system_config";
 const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
@@ -2569,6 +2570,18 @@ fn require_system_config_value(
         ));
     }
     Ok(version)
+}
+
+fn system_config_value_and_version(value: &Value) -> Result<(String, u64), String> {
+    let actual_value = value
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("system_config get missing value: {}", value))?;
+    let version = value
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("system_config get missing version: {}", value))?;
+    Ok((actual_value.to_string(), version))
 }
 
 async fn prepare_local_gateway_setup(
@@ -6985,6 +6998,595 @@ async fn run_local_gateway_system_config_service() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_system_config_mvcc_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-system-config-mvcc-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, SYSTEM_CONFIG_MVCC_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.rpc, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+    let source = nodes
+        .first()
+        .ok_or_else(|| "missing source gateway node".to_string())?;
+    let target = nodes
+        .iter()
+        .find(|node| node.name != source.name)
+        .ok_or_else(|| "missing target gateway node".to_string())?;
+    let source_gateway_addr = gateway_addr(source, ingress_port);
+
+    let klog_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        leader.ports.rpc, KLOG_JSON_RPC_SERVICE_PATH
+    );
+    let repo_root = repo_root()?;
+    let buckyos_root = get_buckyos_root();
+    let system_config_bin = resolve_system_config_bin(&repo_root, &buckyos_root)?;
+    let mut used_ports = collect_used_ports(&nodes, ingress_port);
+    let system_config_port = pick_local_port(&mut used_ports)?;
+    spawn_system_config(
+        harness,
+        &system_config_bin,
+        system_config_port,
+        klog_endpoint.as_str(),
+    )?;
+    wait_tcp("127.0.0.1", system_config_port, Duration::from_secs(15)).await?;
+
+    let endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        system_config_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    let token = system_config_jwt(TEST_DEVICE_NAME, "root", "scheduler")?;
+    let suffix = unique_suffix("syscfg-mvcc");
+    let base = format!("users/alice/klog_mvcc_dv/{}", suffix);
+    let prefix = format!("{}/", base);
+    let profile_key = format!("{}profile", prefix);
+    let tx_key1 = format!("{}tx/key1", prefix);
+    let tx_key2 = format!("{}tx/key2", prefix);
+    let stale_key = format!("{}tx/stale", prefix);
+
+    let profile_v1 = r#"{"name":"v1","flags":{"enabled":false}}"#;
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_create",
+        json!({"key": profile_key.as_str(), "value": profile_v1}),
+    )
+    .await?;
+    let created = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+    )
+    .await?;
+    let (_, r1) = system_config_value_and_version(&created)?;
+    require_system_config_value(&created, profile_v1, r1)?;
+
+    let profile_v2 = r#"{"name":"v2","flags":{"enabled":false}}"#;
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_set",
+        json!({"key": profile_key.as_str(), "value": profile_v2}),
+    )
+    .await?;
+    let set = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+    )
+    .await?;
+    let (_, r2) = system_config_value_and_version(&set)?;
+    if r2 <= r1 {
+        return Err(format!(
+            "system_config set revision did not advance: r1={r1}, r2={r2}"
+        ));
+    }
+    require_system_config_value(&set, profile_v2, r2)?;
+
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_set_by_json_path",
+        json!({"key": profile_key.as_str(), "json_path": "/flags/enabled", "value": "true"}),
+    )
+    .await?;
+    let path_updated = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+    )
+    .await?;
+    let (profile_v3, r3) = system_config_value_and_version(&path_updated)?;
+    if r3 <= r2 {
+        return Err(format!(
+            "system_config json-path revision did not advance: r2={r2}, r3={r3}"
+        ));
+    }
+    let profile_v3_json: Value = serde_json::from_str(profile_v3.as_str())
+        .map_err(|err| format!("failed to decode json-path profile value: {}", err))?;
+    if profile_v3_json
+        .pointer("/flags/enabled")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(format!(
+            "system_config json-path update not visible: {}",
+            profile_v3_json
+        ));
+    }
+
+    let mut stale_actions = serde_json::Map::new();
+    stale_actions.insert(
+        profile_key.clone(),
+        json!({
+            "action": "update",
+            "value": "stale-profile-value"
+        }),
+    );
+    stale_actions.insert(
+        stale_key.clone(),
+        json!({
+            "action": "create",
+            "value": "should-not-exist"
+        }),
+    );
+    let stale_err = expect_system_config_rpc_error(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_exec_tx",
+        json!({
+            "main_key": format!("{}:{}", profile_key, r2),
+            "actions": stale_actions
+        }),
+    )
+    .await?;
+    if !stale_err.contains("revision mismatch") {
+        return Err(format!(
+            "stale system_config exec_tx returned unexpected error: {}",
+            stale_err
+        ));
+    }
+    let stale = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": stale_key.as_str()}),
+    )
+    .await?;
+    if !stale.is_null() {
+        return Err(format!(
+            "stale system_config exec_tx left partial create: {}",
+            stale
+        ));
+    }
+    let after_stale = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+    )
+    .await?;
+    let (after_stale_value, after_stale_revision) = system_config_value_and_version(&after_stale)?;
+    if after_stale_value != profile_v3 || after_stale_revision != r3 {
+        return Err(format!(
+            "stale system_config exec_tx changed guarded key: before=({}, {}), after=({}, {})",
+            profile_v3, r3, after_stale_value, after_stale_revision
+        ));
+    }
+
+    let profile_v4 = "profile-v4";
+    let mut good_actions = serde_json::Map::new();
+    good_actions.insert(
+        profile_key.clone(),
+        json!({
+            "action": "update",
+            "value": profile_v4
+        }),
+    );
+    good_actions.insert(
+        tx_key1.clone(),
+        json!({
+            "action": "create",
+            "value": "tx-value-1"
+        }),
+    );
+    good_actions.insert(
+        tx_key2.clone(),
+        json!({
+            "action": "create",
+            "value": "tx-value-2"
+        }),
+    );
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_exec_tx",
+        json!({
+            "main_key": format!("{}:{}", profile_key, r3),
+            "actions": good_actions
+        }),
+    )
+    .await?;
+    let profile_after_tx = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+    )
+    .await?;
+    let (_, r4) = system_config_value_and_version(&profile_after_tx)?;
+    if r4 <= r3 {
+        return Err(format!(
+            "system_config tx revision did not advance: r3={r3}, r4={r4}"
+        ));
+    }
+    require_system_config_value(&profile_after_tx, profile_v4, r4)?;
+    let tx1 = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": tx_key1.as_str()}),
+    )
+    .await?;
+    let (_, tx1_revision) = system_config_value_and_version(&tx1)?;
+    let tx2 = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": tx_key2.as_str()}),
+    )
+    .await?;
+    let (_, tx2_revision) = system_config_value_and_version(&tx2)?;
+    if tx1_revision != r4 || tx2_revision != r4 {
+        return Err(format!(
+            "system_config exec_tx keys did not share one klog revision: profile={}, tx1={}, tx2={}",
+            r4, tx1_revision, tx2_revision
+        ));
+    }
+
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_delete",
+        json!({"key": tx_key1.as_str()}),
+    )
+    .await?;
+    let deleted_tx1 = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": tx_key1.as_str()}),
+    )
+    .await?;
+    if !deleted_tx1.is_null() {
+        return Err(format!(
+            "deleted system_config key still visible: {}",
+            deleted_tx1
+        ));
+    }
+    let delete_changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        r4 + 1,
+        8,
+        None,
+    )
+    .await?;
+    require_meta_changes(
+        &delete_changes,
+        &[(
+            delete_changes
+                .items
+                .first()
+                .ok_or_else(|| "missing delete change".to_string())?
+                .mod_revision,
+            &tx_key1,
+            "tx-value-1",
+            true,
+            r4,
+            0,
+        )],
+    )?;
+    let r5 = delete_changes.items[0].mod_revision;
+
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_create",
+        json!({"key": tx_key1.as_str(), "value": "tx-value-1-recreated"}),
+    )
+    .await?;
+    let recreated_tx1 = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": tx_key1.as_str()}),
+    )
+    .await?;
+    let (_, r6) = system_config_value_and_version(&recreated_tx1)?;
+    if r6 <= r5 {
+        return Err(format!(
+            "system_config recreate revision did not advance: r5={r5}, r6={r6}"
+        ));
+    }
+    require_system_config_value(&recreated_tx1, "tx-value-1-recreated", r6)?;
+
+    let rev1 = query_meta_prefix_page_at_revision_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        16,
+        None,
+        Some(r1),
+    )
+    .await?;
+    require_meta_values(&rev1, &[(&profile_key, profile_v1, r1, r1, 1)])?;
+
+    let rev3 = query_meta_prefix_page_at_revision_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        16,
+        None,
+        Some(r3),
+    )
+    .await?;
+    require_meta_values(&rev3, &[(&profile_key, profile_v3.as_str(), r1, r3, 3)])?;
+
+    let rev5 = query_meta_prefix_page_at_revision_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        16,
+        None,
+        Some(r5),
+    )
+    .await?;
+    require_meta_values(
+        &rev5,
+        &[
+            (&profile_key, profile_v4, r1, r4, 4),
+            (&tx_key2, "tx-value-2", r4, r4, 1),
+        ],
+    )?;
+
+    let current = query_meta_prefix_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        16,
+    )
+    .await?;
+    require_meta_values(
+        &current,
+        &[
+            (&profile_key, profile_v4, r1, r4, 4),
+            (&tx_key1, "tx-value-1-recreated", r6, r6, 1),
+            (&tx_key2, "tx-value-2", r4, r4, 1),
+        ],
+    )?;
+
+    let all_changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        r1,
+        16,
+        None,
+    )
+    .await?;
+    if all_changes.has_more {
+        return Err(format!(
+            "system_config MVCC change-feed unexpectedly paginated: {:?}",
+            all_changes
+        ));
+    }
+    require_meta_changes(
+        &all_changes,
+        &[
+            (r1, &profile_key, profile_v1, false, r1, 1),
+            (r2, &profile_key, profile_v2, false, r1, 2),
+            (r3, &profile_key, profile_v3.as_str(), false, r1, 3),
+            (r4, &profile_key, profile_v4, false, r1, 4),
+            (r4, &tx_key1, "tx-value-1", false, r4, 1),
+            (r4, &tx_key2, "tx-value-2", false, r4, 1),
+            (r5, &tx_key1, "tx-value-1", true, r4, 0),
+            (r6, &tx_key1, "tx-value-1-recreated", false, r6, 1),
+        ],
+    )?;
+
+    let compacted = post_meta_compact_via_admin_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        r5,
+    )
+    .await?;
+    if compacted.compacted_revision != r5 || compacted.current_revision < r6 {
+        return Err(format!(
+            "unexpected system_config MVCC compaction response: {:?}, expected compacted={}, current>={}",
+            compacted, r5, r6
+        ));
+    }
+
+    expect_meta_query_status_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        Some(profile_key.as_str()),
+        None,
+        Some(r1),
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+    expect_meta_changes_status_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        r1,
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+
+    let profile_after_compact = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+    )
+    .await?;
+    require_system_config_value(&profile_after_compact, profile_v4, r4)?;
+    let recreated_after_compact = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": tx_key1.as_str()}),
+    )
+    .await?;
+    require_system_config_value(&recreated_after_compact, "tx-value-1-recreated", r6)?;
+
+    let post_compact_changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        r6,
+        8,
+        None,
+    )
+    .await?;
+    require_meta_changes(
+        &post_compact_changes,
+        &[(r6, &tx_key1, "tx-value-1-recreated", false, r6, 1)],
+    )?;
+
+    println!(
+        "[klog-cluster-dv] system_config MVCC ok: leader={}, endpoint={}, revisions=[{},{},{},{},{},{}], prefix={}",
+        leader_id, endpoint, r1, r2, r3, r4, r5, r6, prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_system_config_mvcc() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_system_config_mvcc_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_pagination_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -7607,6 +8209,7 @@ async fn run() -> Result<(), String> {
         MVCC_CLUSTER_MODE => run_local_gateway_mvcc_cluster().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
+        SYSTEM_CONFIG_MVCC_MODE => run_local_gateway_system_config_mvcc().await,
         SYSTEM_CONFIG_PAGINATION_MODE => run_local_gateway_system_config_pagination().await,
         SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
         other => {
@@ -7624,6 +8227,7 @@ async fn run() -> Result<(), String> {
                 MVCC_CLUSTER_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
+                SYSTEM_CONFIG_MVCC_MODE,
                 SYSTEM_CONFIG_PAGINATION_MODE,
                 SYSTEM_CONFIG_ROLLOUT_MODE,
             ]
