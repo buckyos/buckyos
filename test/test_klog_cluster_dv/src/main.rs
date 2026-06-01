@@ -28,6 +28,7 @@ const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
 const SYSTEM_CONFIG_ROLLOUT_MODE: &str = "local-gateway-system-config-rollout";
 const SYSTEM_CONFIG_PAGINATION_MODE: &str = "local-gateway-system-config-pagination";
 const SYSTEM_CONFIG_MVCC_MODE: &str = "local-gateway-system-config-mvcc";
+const SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE: &str = "local-gateway-system-config-multi-ood-mvcc";
 const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
 const SYSTEM_CONFIG_RPC_SERVICE_PATH: &str = "/kapi/system_config";
 const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
@@ -2628,6 +2629,23 @@ fn system_config_value_and_version(value: &Value) -> Result<(String, u64), Strin
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("system_config get missing version: {}", value))?;
     Ok((actual_value.to_string(), version))
+}
+
+#[derive(Clone)]
+struct SystemConfigRpcEndpoint {
+    node_name: String,
+    endpoint: String,
+    token: String,
+}
+
+fn require_system_config_null(value: &Value, context: &str) -> Result<(), String> {
+    if !value.is_null() {
+        return Err(format!(
+            "system_config value should be null for {}: {}",
+            context, value
+        ));
+    }
+    Ok(())
 }
 
 async fn prepare_local_gateway_setup(
@@ -8352,6 +8370,613 @@ async fn run_local_gateway_system_config_mvcc() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_system_config_multi_ood_mvcc_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-system-config-multi-ood-mvcc-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE, route_prefix, 3)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.rpc, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+    let source = nodes
+        .first()
+        .ok_or_else(|| "missing source gateway node".to_string())?;
+    let target = nodes
+        .iter()
+        .find(|node| node.name != source.name)
+        .ok_or_else(|| "missing target gateway node".to_string())?;
+    let source_gateway_addr = gateway_addr(source, ingress_port);
+
+    let repo_root = repo_root()?;
+    let buckyos_root = get_buckyos_root();
+    let system_config_bin = resolve_system_config_bin(&repo_root, &buckyos_root)?;
+    let mut used_ports = collect_used_ports(&nodes, ingress_port);
+    let mut endpoints = Vec::new();
+    for node in &nodes {
+        let system_config_port = pick_local_port(&mut used_ports)?;
+        let klog_endpoint = format!(
+            "http://127.0.0.1:{}{}",
+            node.ports.rpc, KLOG_JSON_RPC_SERVICE_PATH
+        );
+        let process_name = format!("system-config-{}", node.name);
+        let system_config_root = harness.root.join(process_name.as_str());
+        spawn_system_config_with_options(
+            harness,
+            process_name.as_str(),
+            &system_config_bin,
+            system_config_root.as_path(),
+            system_config_port,
+            Some(klog_endpoint.as_str()),
+            node.name.as_str(),
+            false,
+        )?;
+        wait_tcp("127.0.0.1", system_config_port, Duration::from_secs(15)).await?;
+        endpoints.push(SystemConfigRpcEndpoint {
+            node_name: node.name.clone(),
+            endpoint: format!(
+                "http://127.0.0.1:{}{}",
+                system_config_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+            ),
+            token: system_config_jwt(node.name.as_str(), "root", "scheduler")?,
+        });
+    }
+
+    let suffix = unique_suffix("syscfg-multi-ood-mvcc");
+    let base = format!("users/alice/klog_multi_ood_mvcc_dv/{}", suffix);
+    let prefix = format!("{}/", base);
+    let items_per_ood = 8usize;
+    let mut create_tasks = Vec::new();
+    for endpoint in &endpoints {
+        for index in 0..items_per_ood {
+            let client = client.clone();
+            let endpoint_url = endpoint.endpoint.clone();
+            let token = endpoint.token.clone();
+            let node_name = endpoint.node_name.clone();
+            let key = format!("{}{}/item-{:02}", prefix, endpoint.node_name, index);
+            let value = format!("value-{}-{:02}", endpoint.node_name, index);
+            create_tasks.push(tokio::spawn(async move {
+                call_system_config_rpc(
+                    &client,
+                    endpoint_url.as_str(),
+                    token.as_str(),
+                    "sys_config_create",
+                    json!({"key": key.as_str(), "value": value.as_str()}),
+                )
+                .await?;
+                let got = call_system_config_rpc(
+                    &client,
+                    endpoint_url.as_str(),
+                    token.as_str(),
+                    "sys_config_get",
+                    json!({"key": key.as_str()}),
+                )
+                .await?;
+                let (_, revision) = system_config_value_and_version(&got)?;
+                Ok::<_, String>((node_name, key, value, revision))
+            }));
+        }
+    }
+
+    let mut created_records = Vec::new();
+    for task in create_tasks {
+        let record = task
+            .await
+            .map_err(|err| format!("system_config create task join failed: {}", err))??;
+        created_records.push(record);
+    }
+    created_records.sort_by(|left, right| left.1.cmp(&right.1));
+
+    for (_, key, value, revision) in &created_records {
+        for endpoint in &endpoints {
+            let got = call_system_config_rpc(
+                &client,
+                endpoint.endpoint.as_str(),
+                endpoint.token.as_str(),
+                "sys_config_get",
+                json!({"key": key.as_str()}),
+            )
+            .await?;
+            require_system_config_value(&got, value.as_str(), *revision)?;
+        }
+    }
+
+    for endpoint in &endpoints {
+        let node_base = format!("{}/{}", base, endpoint.node_name);
+        let listed = call_system_config_rpc(
+            &client,
+            endpoint.endpoint.as_str(),
+            endpoint.token.as_str(),
+            "sys_config_list",
+            json!({"key": node_base.as_str()}),
+        )
+        .await?;
+        let listed = listed.as_array().ok_or_else(|| {
+            format!(
+                "system_config multi-OOD list result is not array for {}: {}",
+                endpoint.node_name, listed
+            )
+        })?;
+        if listed.len() != items_per_ood {
+            return Err(format!(
+                "system_config multi-OOD list length mismatch on {}: expected={}, actual={}, value={}",
+                endpoint.node_name,
+                items_per_ood,
+                listed.len(),
+                Value::Array(listed.clone())
+            ));
+        }
+    }
+
+    let initial_current = query_meta_prefix_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        128,
+    )
+    .await?;
+    if initial_current.items.len() != created_records.len() {
+        return Err(format!(
+            "system_config multi-OOD initial current count mismatch: expected={}, actual={}, items={:?}",
+            created_records.len(),
+            initial_current.items.len(),
+            initial_current.items
+        ));
+    }
+
+    let shared_key = format!("{}shared/profile", prefix);
+    let shared_v1 = "shared-v1";
+    call_system_config_rpc(
+        &client,
+        endpoints[0].endpoint.as_str(),
+        endpoints[0].token.as_str(),
+        "sys_config_create",
+        json!({"key": shared_key.as_str(), "value": shared_v1}),
+    )
+    .await?;
+    let shared_created = call_system_config_rpc(
+        &client,
+        endpoints[1].endpoint.as_str(),
+        endpoints[1].token.as_str(),
+        "sys_config_get",
+        json!({"key": shared_key.as_str()}),
+    )
+    .await?;
+    let (_, shared_r1) = system_config_value_and_version(&shared_created)?;
+
+    let mut cas_tasks = Vec::new();
+    for endpoint in &endpoints {
+        let client = client.clone();
+        let endpoint_url = endpoint.endpoint.clone();
+        let token = endpoint.token.clone();
+        let node_name = endpoint.node_name.clone();
+        let shared_key_for_task = shared_key.clone();
+        let attempt_key = format!("{}shared/attempt-{}", prefix, endpoint.node_name);
+        let candidate_value = format!("shared-by-{}", endpoint.node_name);
+        cas_tasks.push(tokio::spawn(async move {
+            let mut actions = serde_json::Map::new();
+            actions.insert(
+                shared_key_for_task.clone(),
+                json!({
+                    "action": "update",
+                    "value": candidate_value.as_str()
+                }),
+            );
+            actions.insert(
+                attempt_key.clone(),
+                json!({
+                    "action": "create",
+                    "value": candidate_value.as_str()
+                }),
+            );
+            let result = call_system_config_rpc(
+                &client,
+                endpoint_url.as_str(),
+                token.as_str(),
+                "sys_config_exec_tx",
+                json!({
+                    "main_key": format!("{}:{}", shared_key_for_task, shared_r1),
+                    "actions": actions
+                }),
+            )
+            .await;
+            Ok::<_, String>((node_name, candidate_value, attempt_key, result))
+        }));
+    }
+
+    let mut cas_results = Vec::new();
+    for task in cas_tasks {
+        let record = task
+            .await
+            .map_err(|err| format!("system_config CAS task join failed: {}", err))??;
+        cas_results.push(record);
+    }
+    let winners = cas_results
+        .iter()
+        .filter(|(_, _, _, result)| result.is_ok())
+        .collect::<Vec<_>>();
+    if winners.len() != 1 {
+        return Err(format!(
+            "system_config multi-OOD CAS expected exactly one winner, got {}: {:?}",
+            winners.len(),
+            cas_results
+        ));
+    }
+    for (node_name, _, _, result) in &cas_results {
+        if let Err(err) = result
+            && !err.contains("revision mismatch")
+        {
+            return Err(format!(
+                "system_config CAS loser {} returned unexpected error: {}",
+                node_name, err
+            ));
+        }
+    }
+    let winner_value = winners[0].1.as_str();
+    let winner_attempt_key = winners[0].2.as_str();
+    let final_shared = call_system_config_rpc(
+        &client,
+        endpoints[2].endpoint.as_str(),
+        endpoints[2].token.as_str(),
+        "sys_config_get",
+        json!({"key": shared_key.as_str()}),
+    )
+    .await?;
+    let (_, shared_r2) = system_config_value_and_version(&final_shared)?;
+    if shared_r2 <= shared_r1 {
+        return Err(format!(
+            "system_config shared CAS revision did not advance: before={}, after={}",
+            shared_r1, shared_r2
+        ));
+    }
+    require_system_config_value(&final_shared, winner_value, shared_r2)?;
+    for endpoint in &endpoints {
+        let shared = call_system_config_rpc(
+            &client,
+            endpoint.endpoint.as_str(),
+            endpoint.token.as_str(),
+            "sys_config_get",
+            json!({"key": shared_key.as_str()}),
+        )
+        .await?;
+        require_system_config_value(&shared, winner_value, shared_r2)?;
+    }
+    for (_, candidate_value, attempt_key, result) in &cas_results {
+        let got = call_system_config_rpc(
+            &client,
+            endpoints[0].endpoint.as_str(),
+            endpoints[0].token.as_str(),
+            "sys_config_get",
+            json!({"key": attempt_key.as_str()}),
+        )
+        .await?;
+        if result.is_ok() {
+            require_system_config_value(&got, candidate_value.as_str(), shared_r2)?;
+        } else {
+            require_system_config_null(&got, attempt_key.as_str())?;
+        }
+    }
+
+    let stale_key = format!("{}shared/stale-partial", prefix);
+    let mut stale_actions = serde_json::Map::new();
+    stale_actions.insert(
+        shared_key.clone(),
+        json!({
+            "action": "update",
+            "value": "stale-shared-value"
+        }),
+    );
+    stale_actions.insert(
+        stale_key.clone(),
+        json!({
+            "action": "create",
+            "value": "should-not-exist"
+        }),
+    );
+    let stale_error = expect_system_config_rpc_error(
+        &client,
+        endpoints[1].endpoint.as_str(),
+        endpoints[1].token.as_str(),
+        "sys_config_exec_tx",
+        json!({
+            "main_key": format!("{}:{}", shared_key, shared_r1),
+            "actions": stale_actions
+        }),
+    )
+    .await?;
+    if !stale_error.contains("revision mismatch") {
+        return Err(format!(
+            "system_config stale multi-OOD tx returned unexpected error: {}",
+            stale_error
+        ));
+    }
+    let stale = call_system_config_rpc(
+        &client,
+        endpoints[2].endpoint.as_str(),
+        endpoints[2].token.as_str(),
+        "sys_config_get",
+        json!({"key": stale_key.as_str()}),
+    )
+    .await?;
+    require_system_config_null(&stale, stale_key.as_str())?;
+
+    let delete_key = format!("{}delete-recreate/item", prefix);
+    call_system_config_rpc(
+        &client,
+        endpoints[0].endpoint.as_str(),
+        endpoints[0].token.as_str(),
+        "sys_config_create",
+        json!({"key": delete_key.as_str(), "value": "delete-v1"}),
+    )
+    .await?;
+    let delete_created = call_system_config_rpc(
+        &client,
+        endpoints[1].endpoint.as_str(),
+        endpoints[1].token.as_str(),
+        "sys_config_get",
+        json!({"key": delete_key.as_str()}),
+    )
+    .await?;
+    let (_, delete_r1) = system_config_value_and_version(&delete_created)?;
+    call_system_config_rpc(
+        &client,
+        endpoints[1].endpoint.as_str(),
+        endpoints[1].token.as_str(),
+        "sys_config_delete",
+        json!({"key": delete_key.as_str()}),
+    )
+    .await?;
+    for endpoint in &endpoints {
+        let deleted = call_system_config_rpc(
+            &client,
+            endpoint.endpoint.as_str(),
+            endpoint.token.as_str(),
+            "sys_config_get",
+            json!({"key": delete_key.as_str()}),
+        )
+        .await?;
+        require_system_config_null(&deleted, delete_key.as_str())?;
+    }
+    call_system_config_rpc(
+        &client,
+        endpoints[2].endpoint.as_str(),
+        endpoints[2].token.as_str(),
+        "sys_config_create",
+        json!({"key": delete_key.as_str(), "value": "delete-v2"}),
+    )
+    .await?;
+    let delete_recreated = call_system_config_rpc(
+        &client,
+        endpoints[0].endpoint.as_str(),
+        endpoints[0].token.as_str(),
+        "sys_config_get",
+        json!({"key": delete_key.as_str()}),
+    )
+    .await?;
+    let (_, delete_r3) = system_config_value_and_version(&delete_recreated)?;
+    if delete_r3 <= delete_r1 {
+        return Err(format!(
+            "system_config delete/recreate revision did not advance: before={}, after={}",
+            delete_r1, delete_r3
+        ));
+    }
+    require_system_config_value(&delete_recreated, "delete-v2", delete_r3)?;
+
+    let delete_changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        delete_key.as_str(),
+        delete_r1,
+        8,
+        None,
+    )
+    .await?;
+    if delete_changes.items.len() != 3 {
+        return Err(format!(
+            "system_config delete/recreate changes mismatch: {:?}",
+            delete_changes
+        ));
+    }
+    let delete_tombstone_revision = delete_changes.items[1].mod_revision;
+    require_meta_changes(
+        &delete_changes,
+        &[
+            (delete_r1, &delete_key, "delete-v1", false, delete_r1, 1),
+            (
+                delete_tombstone_revision,
+                &delete_key,
+                "delete-v1",
+                true,
+                delete_r1,
+                0,
+            ),
+            (delete_r3, &delete_key, "delete-v2", false, delete_r3, 1),
+        ],
+    )?;
+
+    let compacted = post_meta_compact_via_admin_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        delete_tombstone_revision,
+    )
+    .await?;
+    if compacted.compacted_revision != delete_tombstone_revision
+        || compacted.current_revision < delete_r3
+    {
+        return Err(format!(
+            "unexpected system_config multi-OOD compaction response: {:?}, expected compacted={}, current>={}",
+            compacted, delete_tombstone_revision, delete_r3
+        ));
+    }
+    expect_meta_query_status_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        Some(delete_key.as_str()),
+        None,
+        Some(delete_r1),
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+    for endpoint in &endpoints {
+        let current = call_system_config_rpc(
+            &client,
+            endpoint.endpoint.as_str(),
+            endpoint.token.as_str(),
+            "sys_config_get",
+            json!({"key": delete_key.as_str()}),
+        )
+        .await?;
+        require_system_config_value(&current, "delete-v2", delete_r3)?;
+    }
+
+    let final_expected_count = created_records.len() + 3;
+    let final_current = query_meta_prefix_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        prefix.as_str(),
+        128,
+    )
+    .await?;
+    if final_current.items.len() != final_expected_count {
+        return Err(format!(
+            "system_config multi-OOD final current count mismatch: expected={}, actual={}, winner_attempt={}, items={:?}",
+            final_expected_count,
+            final_current.items.len(),
+            winner_attempt_key,
+            final_current.items
+        ));
+    }
+
+    let scheduler_dump = call_system_config_rpc(
+        &client,
+        endpoints[0].endpoint.as_str(),
+        endpoints[0].token.as_str(),
+        "dump_configs_for_scheduler",
+        json!({}),
+    )
+    .await?;
+    for (_, key, value, _) in created_records.iter().step_by(items_per_ood) {
+        if scheduler_dump.get(key.as_str()).and_then(Value::as_str) != Some(value.as_str()) {
+            return Err(format!(
+                "scheduler dump missing multi-OOD key {} in {}",
+                key, scheduler_dump
+            ));
+        }
+    }
+    if scheduler_dump
+        .get(stale_key.as_str())
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        return Err(format!(
+            "scheduler dump contains stale partial key {} in {}",
+            stale_key, scheduler_dump
+        ));
+    }
+
+    println!(
+        "[klog-cluster-dv] system_config multi-OOD MVCC ok: leader={}, endpoints={}, created={}, shared_revisions=[{},{}], delete_revisions=[{},{},{}], prefix={}",
+        leader_id,
+        endpoints.len(),
+        created_records.len(),
+        shared_r1,
+        shared_r2,
+        delete_r1,
+        delete_tombstone_revision,
+        delete_r3,
+        prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_system_config_multi_ood_mvcc() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_system_config_multi_ood_mvcc_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_pagination_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -8976,6 +9601,7 @@ async fn run() -> Result<(), String> {
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
         SYSTEM_CONFIG_MVCC_MODE => run_local_gateway_system_config_mvcc().await,
+        SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE => run_local_gateway_system_config_multi_ood_mvcc().await,
         SYSTEM_CONFIG_PAGINATION_MODE => run_local_gateway_system_config_pagination().await,
         SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
         other => {
@@ -8995,6 +9621,7 @@ async fn run() -> Result<(), String> {
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
                 SYSTEM_CONFIG_MVCC_MODE,
+                SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE,
                 SYSTEM_CONFIG_PAGINATION_MODE,
                 SYSTEM_CONFIG_ROLLOUT_MODE,
             ]
