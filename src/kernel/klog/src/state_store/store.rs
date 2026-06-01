@@ -43,6 +43,8 @@ pub struct KLogStateSnapshotData {
     #[serde(default)]
     pub meta_states: Vec<KLogMetaKeyState>,
     #[serde(default)]
+    pub meta_history: Vec<KLogMetaHistoryRecord>,
+    #[serde(default)]
     pub meta_revision: u64,
 }
 
@@ -67,6 +69,62 @@ impl KLogMetaKeyState {
             self.version,
             self.deleted,
         )
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KLogMetaHistoryRecord {
+    pub key: String,
+    pub value: String,
+    pub updated_at: u64,
+    pub updated_by_node_name: String,
+    pub create_revision: u64,
+    pub mod_revision: u64,
+    pub version: u64,
+    pub deleted: bool,
+}
+
+impl KLogMetaHistoryRecord {
+    pub fn from_entry(item: &KLogMetaEntry, deleted: bool) -> Self {
+        Self {
+            key: item.key.clone(),
+            value: item.value.clone(),
+            updated_at: item.updated_at,
+            updated_by_node_name: item.updated_by_node_name.clone(),
+            create_revision: item.effective_create_revision(),
+            mod_revision: item.effective_mod_revision(),
+            version: if deleted { 0 } else { item.effective_version() },
+            deleted,
+        }
+    }
+
+    pub fn from_tombstone(prev: &KLogMetaEntry, state: &KLogMetaKeyState) -> Self {
+        Self {
+            key: state.key.clone(),
+            value: prev.value.clone(),
+            updated_at: prev.updated_at,
+            updated_by_node_name: prev.updated_by_node_name.clone(),
+            create_revision: state.create_revision,
+            mod_revision: state.mod_revision,
+            version: 0,
+            deleted: true,
+        }
+    }
+
+    pub fn to_live_entry(&self) -> Option<KLogMetaEntry> {
+        if self.deleted {
+            return None;
+        }
+
+        let mut item = KLogMetaEntry {
+            key: self.key.clone(),
+            value: self.value.clone(),
+            updated_at: self.updated_at,
+            updated_by_node_name: self.updated_by_node_name.clone(),
+            ..KLogMetaEntry::default()
+        };
+        item.set_mvcc_revision(self.create_revision, self.mod_revision, self.version);
+        Some(item)
     }
 }
 
@@ -126,11 +184,25 @@ pub trait KLogStateStore: Send + Sync {
 
     async fn current_meta_revision(&self, key: &str) -> KResult<Option<u64>>;
 
+    async fn get_meta_at_revision(
+        &self,
+        key: &str,
+        revision: u64,
+    ) -> KResult<Option<KLogMetaEntry>>;
+
     async fn list_meta(
         &self,
         prefix: Option<&str>,
         cursor: Option<&str>,
         limit: usize,
+    ) -> KResult<Vec<KLogMetaEntry>>;
+
+    async fn list_meta_at_revision(
+        &self,
+        prefix: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+        revision: u64,
     ) -> KResult<Vec<KLogMetaEntry>>;
 
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot>;
@@ -400,6 +472,14 @@ impl KLogStateStoreManager {
         self.state_store.current_meta_revision(key).await
     }
 
+    pub async fn get_meta_entry_at_revision(
+        &self,
+        key: &str,
+        revision: u64,
+    ) -> KResult<Option<KLogMetaEntry>> {
+        self.state_store.get_meta_at_revision(key, revision).await
+    }
+
     pub async fn list_meta_entries(
         &self,
         prefix: Option<&str>,
@@ -407,6 +487,18 @@ impl KLogStateStoreManager {
         limit: usize,
     ) -> KResult<Vec<KLogMetaEntry>> {
         self.state_store.list_meta(prefix, cursor, limit).await
+    }
+
+    pub async fn list_meta_entries_at_revision(
+        &self,
+        prefix: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+        revision: u64,
+    ) -> KResult<Vec<KLogMetaEntry>> {
+        self.state_store
+            .list_meta_at_revision(prefix, cursor, limit, revision)
+            .await
     }
 
     pub async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()> {

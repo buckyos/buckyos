@@ -871,6 +871,7 @@ mod tests {
                 prefix: None,
                 limit: None,
                 cursor: None,
+                revision: None,
                 strong_read: None,
             })
             .await

@@ -105,6 +105,7 @@ impl KLogStore {
                 prefix: None,
                 limit: Some(1),
                 cursor: None,
+                revision: None,
                 strong_read: Some(true),
             })
             .await
@@ -123,6 +124,7 @@ impl KLogStore {
                     prefix: Some(prefix.to_string()),
                     limit: Some(self.meta_query_limit),
                     cursor: cursor.clone(),
+                    revision: None,
                     strong_read: Some(true),
                 })
                 .await

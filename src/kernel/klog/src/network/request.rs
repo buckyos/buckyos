@@ -209,6 +209,8 @@ pub struct KLogMetaQueryRequest {
     pub limit: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
     /// When true, require linearizable read on leader before serving query.
     pub strong_read: Option<bool>,
 }

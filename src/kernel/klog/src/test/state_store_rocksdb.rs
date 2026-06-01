@@ -314,6 +314,200 @@ async fn test_rocksdb_meta_delete_recreate_uses_tombstone_revision() -> anyhow::
 }
 
 #[tokio::test]
+async fn test_rocksdb_meta_history_query_by_revision() -> anyhow::Result<()> {
+    let path = unique_test_path("state_store_meta_history.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+    let key_a = "cluster/config/history/a";
+    let key_b = "cluster/config/history/b";
+
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_a.to_string(),
+            value: "a-v1".to_string(),
+            updated_at: 2300,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_b.to_string(),
+            value: "b-v1".to_string(),
+            updated_at: 2301,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_a.to_string(),
+            value: "a-v2".to_string(),
+            updated_at: 2302,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    manager.delete_meta_key(key_b).await?;
+    manager
+        .put_meta_entry(KLogMetaEntry {
+            key: key_b.to_string(),
+            value: "b-v2".to_string(),
+            updated_at: 2303,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+
+    let a_rev1 = manager
+        .get_meta_entry_at_revision(key_a, 1)
+        .await?
+        .expect("key_a should exist at rev 1");
+    assert_eq!(a_rev1.value, "a-v1");
+    assert_eq!(
+        (a_rev1.create_revision, a_rev1.mod_revision, a_rev1.version),
+        (1, 1, 1)
+    );
+
+    let a_rev3 = manager
+        .get_meta_entry_at_revision(key_a, 3)
+        .await?
+        .expect("key_a should exist at rev 3");
+    assert_eq!(a_rev3.value, "a-v2");
+    assert_eq!(
+        (a_rev3.create_revision, a_rev3.mod_revision, a_rev3.version),
+        (1, 3, 2)
+    );
+
+    assert!(
+        manager
+            .get_meta_entry_at_revision(key_b, 4)
+            .await?
+            .is_none()
+    );
+    let b_rev5 = manager
+        .get_meta_entry_at_revision(key_b, 5)
+        .await?
+        .expect("key_b should exist after recreate");
+    assert_eq!(b_rev5.value, "b-v2");
+    assert_eq!(
+        (b_rev5.create_revision, b_rev5.mod_revision, b_rev5.version),
+        (5, 5, 1)
+    );
+
+    let listed_rev2 = manager
+        .list_meta_entries_at_revision(Some("cluster/config/history/"), None, 10, 2)
+        .await?;
+    assert_eq!(
+        listed_rev2
+            .iter()
+            .map(|item| (item.key.as_str(), item.value.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(key_a, "a-v1"), (key_b, "b-v1")]
+    );
+
+    let listed_rev4 = manager
+        .list_meta_entries_at_revision(Some("cluster/config/history/"), None, 10, 4)
+        .await?;
+    assert_eq!(
+        listed_rev4
+            .iter()
+            .map(|item| (item.key.as_str(), item.value.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(key_a, "a-v2")]
+    );
+
+    let listed_after_cursor = manager
+        .list_meta_entries_at_revision(Some("cluster/config/history/"), Some(key_a), 10, 5)
+        .await?;
+    assert_eq!(
+        listed_after_cursor
+            .iter()
+            .map(|item| (item.key.as_str(), item.value.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(key_b, "b-v2")]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_meta_history_survives_enumerate_snapshot() -> anyhow::Result<()> {
+    let src = RocksDbStateStore::open_with_mode(
+        unique_test_path("state_store_meta_history_snapshot_src.rocks"),
+        RocksDbSnapshotMode::Enumerate,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let src = Arc::new(Box::new(src) as Box<dyn KLogStateStore>);
+    let src_mgr = KLogStateStoreManager::new(src).await?;
+    let key = "cluster/config/history/snapshot";
+
+    src_mgr
+        .put_meta_entry(KLogMetaEntry {
+            key: key.to_string(),
+            value: "v1".to_string(),
+            updated_at: 2400,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    src_mgr
+        .put_meta_entry(KLogMetaEntry {
+            key: key.to_string(),
+            value: "v2".to_string(),
+            updated_at: 2401,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+    src_mgr.delete_meta_key(key).await?;
+    src_mgr
+        .put_meta_entry(KLogMetaEntry {
+            key: key.to_string(),
+            value: "v3".to_string(),
+            updated_at: 2402,
+            updated_by_node_name: "node-2".to_string(),
+            ..KLogMetaEntry::default()
+        })
+        .await?;
+
+    let snapshot = src_mgr.build_snapshot().await?;
+    let dst = RocksDbStateStore::open_with_mode(
+        unique_test_path("state_store_meta_history_snapshot_dst.rocks"),
+        RocksDbSnapshotMode::Enumerate,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let dst = Arc::new(Box::new(dst) as Box<dyn KLogStateStore>);
+    let dst_mgr = KLogStateStoreManager::new(dst).await?;
+    dst_mgr.install_snapshot(snapshot).await?;
+
+    let rev1 = dst_mgr
+        .get_meta_entry_at_revision(key, 1)
+        .await?
+        .expect("rev1 must survive snapshot");
+    assert_eq!(rev1.value, "v1");
+    let rev2 = dst_mgr
+        .get_meta_entry_at_revision(key, 2)
+        .await?
+        .expect("rev2 must survive snapshot");
+    assert_eq!(rev2.value, "v2");
+    assert!(dst_mgr.get_meta_entry_at_revision(key, 3).await?.is_none());
+    let rev4 = dst_mgr
+        .get_meta_entry_at_revision(key, 4)
+        .await?
+        .expect("rev4 must survive snapshot");
+    assert_eq!(rev4.value, "v3");
+    assert_eq!(
+        (rev4.create_revision, rev4.mod_revision, rev4.version),
+        (4, 4, 1)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_rocksdb_meta_tombstone_survives_enumerate_snapshot() -> anyhow::Result<()> {
     let src = RocksDbStateStore::open_with_mode(
         unique_test_path("state_store_meta_tombstone_src.rocks"),

@@ -979,6 +979,7 @@ async fn run_workload_phase(
                             prefix: None,
                             limit: Some(1),
                             cursor: None,
+                            revision: None,
                             strong_read: Some(workload.meta_query_strong_read),
                         };
                         client.query_meta(req).await.map(|_| None)

@@ -216,6 +216,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
                 prefix: None,
                 limit: Some(1),
                 cursor: None,
+                revision: None,
                 strong_read: Some(true),
             })
             .await
@@ -241,6 +242,78 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
                 queried.items[0].create_revision,
                 queried.items[0].mod_revision,
                 queried.items[0].version
+            ));
+        }
+
+        let historical_v2 = leader_client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: Some(2),
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("query_meta revision=2 failed: {}", e))?;
+        if historical_v2.items.len() != 1
+            || historical_v2.items[0].value != "v2"
+            || (
+                historical_v2.items[0].revision,
+                historical_v2.items[0].create_revision,
+                historical_v2.items[0].mod_revision,
+                historical_v2.items[0].version,
+            ) != (2, 1, 2, 2)
+        {
+            return Err(format!(
+                "unexpected historical rev2 query: len={}, first={:?}",
+                historical_v2.items.len(),
+                historical_v2.items.first()
+            ));
+        }
+
+        let historical_deleted = leader_client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: Some(4),
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("query_meta revision=4 failed: {}", e))?;
+        if !historical_deleted.items.is_empty() {
+            return Err(format!(
+                "deleted historical revision should be invisible: items={:?}",
+                historical_deleted.items
+            ));
+        }
+
+        let historical_recreated = leader_client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: Some(5),
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("query_meta revision=5 failed: {}", e))?;
+        if historical_recreated.items.len() != 1
+            || historical_recreated.items[0].value != "v4-recreated"
+            || (
+                historical_recreated.items[0].revision,
+                historical_recreated.items[0].create_revision,
+                historical_recreated.items[0].mod_revision,
+                historical_recreated.items[0].version,
+            ) != (5, 5, 5, 1)
+        {
+            return Err(format!(
+                "unexpected historical rev5 query: len={}, first={:?}",
+                historical_recreated.items.len(),
+                historical_recreated.items.first()
             ));
         }
 
@@ -321,6 +394,7 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
                 prefix: None,
                 limit: Some(1),
                 cursor: None,
+                revision: None,
                 strong_read: Some(true),
             })
             .await

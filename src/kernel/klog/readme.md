@@ -79,9 +79,10 @@ Current metadata revision semantics are intentionally MVCC-compatible:
 - `KLogMetaPutResponse`, `KLogMetaQueryResponse`, `KLogMetaTxResponse`, and
   `KLogMetaDeleteResponse` expose explicit MVCC metadata. `revision` is kept as
   a compatibility alias for `mod_revision`.
-- The current phase keeps only current live values and tombstone state.
-  Historical value lookup by revision, watch streams, and compaction are not
-  implemented yet.
+- Historical key and prefix queries can pass `revision` to read the visible
+  live value set as of that global revision. Tombstones hide deleted keys at
+  their delete revision until a later recreate becomes visible.
+- Watch streams and compaction are not implemented yet.
 
 `KLogMetaPutRequest.expected_revision` controls CAS semantics:
 
@@ -144,6 +145,8 @@ Query defaults and constraints:
 - log queries support `start_id`, `end_id`, `desc`, `level`, `source`,
   `attr_key`, and `attr_value`.
 - meta queries support either `key` or `prefix`, but not both.
+- meta queries can pass `revision` to return the visible value set at that
+  historical global revision. Omit `revision` for the current live view.
 
 Default reads are local reads. Use `strong_read=true` when callers need
 linearizable reads, for example system-config read-after-write validation.

@@ -123,6 +123,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - `KLogMetaEntry`, meta put/query/delete, and meta transaction responses now
     expose `create_revision`, `mod_revision`, and `version`; `revision` remains
     a compatibility alias for `mod_revision`.
+- [x] Add first historical MVCC query support for klog metadata.
+  - `KLogMetaQueryRequest.revision` supports key and prefix reads against the
+    visible value set at a previous global revision.
+  - Covered by RocksDB state-store tests and the klog_daemon meta revision
+    client test.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
 - [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.
