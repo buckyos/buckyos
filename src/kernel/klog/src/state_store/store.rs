@@ -96,7 +96,12 @@ pub trait KLogStateStore: Send + Sync {
 
     async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>>;
 
-    async fn list_meta(&self, prefix: Option<&str>, limit: usize) -> KResult<Vec<KLogMetaEntry>>;
+    async fn list_meta(
+        &self,
+        prefix: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> KResult<Vec<KLogMetaEntry>>;
 
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot>;
 
@@ -361,9 +366,10 @@ impl KLogStateStoreManager {
     pub async fn list_meta_entries(
         &self,
         prefix: Option<&str>,
+        cursor: Option<&str>,
         limit: usize,
     ) -> KResult<Vec<KLogMetaEntry>> {
-        self.state_store.list_meta(prefix, limit).await
+        self.state_store.list_meta(prefix, cursor, limit).await
     }
 
     pub async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()> {

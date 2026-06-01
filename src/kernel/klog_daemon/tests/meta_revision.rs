@@ -130,6 +130,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
                 key: Some(key.clone()),
                 prefix: None,
                 limit: Some(1),
+                cursor: None,
                 strong_read: Some(true),
             })
             .await
@@ -222,6 +223,7 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
                 key: Some(key.clone()),
                 prefix: None,
                 limit: Some(1),
+                cursor: None,
                 strong_read: Some(true),
             })
             .await

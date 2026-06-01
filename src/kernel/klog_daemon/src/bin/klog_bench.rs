@@ -978,6 +978,7 @@ async fn run_workload_phase(
                             key: Some(format!("bench/meta/{}", key_idx)),
                             prefix: None,
                             limit: Some(1),
+                            cursor: None,
                             strong_read: Some(workload.meta_query_strong_read),
                         };
                         client.query_meta(req).await.map(|_| None)

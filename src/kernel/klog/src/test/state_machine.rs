@@ -399,7 +399,7 @@ async fn test_state_machine_apply_meta_tx_is_atomic_on_conflict() -> anyhow::Res
 
     let items = context
         .state_store_manager
-        .list_meta_entries(Some("system/config/"), 10)
+        .list_meta_entries(Some("system/config/"), None, 10)
         .await?;
     let keys = items
         .iter()

@@ -24,6 +24,7 @@ const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
 const SYSTEM_CONFIG_ROLLOUT_MODE: &str = "local-gateway-system-config-rollout";
+const SYSTEM_CONFIG_PAGINATION_MODE: &str = "local-gateway-system-config-pagination";
 const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
 const SYSTEM_CONFIG_RPC_SERVICE_PATH: &str = "/kapi/system_config";
 const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
@@ -33,6 +34,7 @@ const ENV_SYSTEM_CONFIG_PORT: &str = "BUCKYOS_SYSTEM_CONFIG_PORT";
 const ENV_SYSTEM_CONFIG_STORE: &str = "BUCKYOS_SYSTEM_CONFIG_STORE";
 const ENV_SYSTEM_CONFIG_KLOG_ENDPOINT: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_ENDPOINT";
 const ENV_SYSTEM_CONFIG_KLOG_NODE_NAME: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_NODE_NAME";
+const ENV_SYSTEM_CONFIG_KLOG_META_QUERY_LIMIT: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_META_QUERY_LIMIT";
 const ENV_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED: &str =
     "BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED";
 const ENV_OOD_SNAPSHOT_MEMBERSHIP_ITEMS: &str = "KLOG_OOD_SNAPSHOT_DV_ITEMS";
@@ -130,6 +132,10 @@ struct MetaDeleteResponse {
 #[derive(Debug, Deserialize)]
 struct MetaQueryResponse {
     items: Vec<MetaEntry>,
+    #[serde(default)]
+    next_cursor: Option<String>,
+    #[serde(default)]
+    has_more: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -614,6 +620,28 @@ async fn query_meta_prefix_via_cluster_inter_route(
     prefix: &str,
     limit: usize,
 ) -> Result<MetaQueryResponse, String> {
+    query_meta_prefix_page_via_cluster_inter_route(
+        client,
+        gateway_addr,
+        route_prefix,
+        node_name,
+        prefix,
+        limit,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn query_meta_prefix_page_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    prefix: &str,
+    limit: usize,
+    cursor: Option<&str>,
+) -> Result<MetaQueryResponse, String> {
     let mut url = Url::parse(
         cluster_route_url(
             gateway_addr,
@@ -630,6 +658,9 @@ async fn query_meta_prefix_via_cluster_inter_route(
         query.append_pair("prefix", prefix);
         query.append_pair("limit", limit.to_string().as_str());
         query.append_pair("strong_read", "true");
+        if let Some(cursor) = cursor {
+            query.append_pair("cursor", cursor);
+        }
     }
 
     let response = client.get(url.clone()).send().await.map_err(|err| {
@@ -1772,8 +1803,18 @@ fn spawn_system_config(
     service_port: u16,
     klog_endpoint: &str,
 ) -> Result<(), String> {
+    spawn_system_config_with_extra_env(harness, system_config_bin, service_port, klog_endpoint, &[])
+}
+
+fn spawn_system_config_with_extra_env(
+    harness: &mut LocalHarness,
+    system_config_bin: &Path,
+    service_port: u16,
+    klog_endpoint: &str,
+    extra_env: &[(&str, &str)],
+) -> Result<(), String> {
     let buckyos_root = harness.root.clone();
-    spawn_system_config_with_options(
+    spawn_system_config_with_options_and_extra_env(
         harness,
         "system-config-klog",
         system_config_bin,
@@ -1782,6 +1823,7 @@ fn spawn_system_config(
         Some(klog_endpoint),
         TEST_DEVICE_NAME,
         false,
+        extra_env,
     )
 }
 
@@ -1795,6 +1837,31 @@ fn spawn_system_config_with_options(
     klog_endpoint: Option<&str>,
     device_name: &str,
     bootstrap_from_sled: bool,
+) -> Result<(), String> {
+    spawn_system_config_with_options_and_extra_env(
+        harness,
+        process_name,
+        system_config_bin,
+        buckyos_root,
+        service_port,
+        klog_endpoint,
+        device_name,
+        bootstrap_from_sled,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_system_config_with_options_and_extra_env(
+    harness: &mut LocalHarness,
+    process_name: &str,
+    system_config_bin: &Path,
+    buckyos_root: &Path,
+    service_port: u16,
+    klog_endpoint: Option<&str>,
+    device_name: &str,
+    bootstrap_from_sled: bool,
+    extra_env: &[(&str, &str)],
 ) -> Result<(), String> {
     fs::create_dir_all(buckyos_root).map_err(|err| {
         format!(
@@ -1820,6 +1887,10 @@ fn spawn_system_config_with_options(
 
     if bootstrap_from_sled {
         command.env(ENV_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED, "true");
+    }
+
+    for (key, value) in extra_env {
+        command.env(key, value);
     }
 
     harness.spawn(process_name, &mut command)
@@ -5895,6 +5966,258 @@ async fn run_local_gateway_system_config_service() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_system_config_pagination_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-system-config-pagination-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, SYSTEM_CONFIG_PAGINATION_MODE, route_prefix, 3)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.rpc, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+
+    let item_count = 45usize;
+    let page_limit = 17usize;
+    let suffix = unique_suffix("syscfg-pagination");
+    let base = format!("users/alice/klog_pagination_dv/{}", suffix);
+    let prefix = format!("{}/", base);
+    let source = nodes
+        .first()
+        .ok_or_else(|| "missing source gateway node".to_string())?;
+    let target = nodes
+        .iter()
+        .find(|node| node.name != source.name)
+        .ok_or_else(|| "missing target gateway node".to_string())?;
+    let source_gateway_addr = gateway_addr(source, ingress_port);
+    let expected_keys = (0..item_count)
+        .map(|idx| format!("{}item-{:04}", prefix, idx))
+        .collect::<Vec<_>>();
+
+    for (idx, key) in expected_keys.iter().enumerate() {
+        let value = format!("value-{:04}", idx);
+        put_meta_via_cluster_inter_route(
+            &client,
+            source_gateway_addr.as_str(),
+            route_prefix,
+            target.name.as_str(),
+            key.as_str(),
+            value.as_str(),
+            Some(0),
+        )
+        .await?;
+    }
+
+    let mut cursor = None;
+    let mut page_sizes = Vec::new();
+    let mut collected_keys = Vec::new();
+    loop {
+        let page = query_meta_prefix_page_via_cluster_inter_route(
+            &client,
+            source_gateway_addr.as_str(),
+            route_prefix,
+            target.name.as_str(),
+            prefix.as_str(),
+            page_limit,
+            cursor.as_deref(),
+        )
+        .await?;
+        if page.items.is_empty() && page.has_more {
+            return Err("meta pagination returned empty page with has_more=true".to_string());
+        }
+        page_sizes.push(page.items.len());
+        collected_keys.extend(page.items.iter().map(|item| item.key.clone()));
+        if !page.has_more {
+            break;
+        }
+        let Some(next_cursor) = page.next_cursor else {
+            return Err("meta pagination missing next_cursor while has_more=true".to_string());
+        };
+        if cursor.as_ref() == Some(&next_cursor) {
+            return Err(format!(
+                "meta pagination cursor did not advance: {}",
+                next_cursor
+            ));
+        }
+        cursor = Some(next_cursor);
+    }
+    if collected_keys != expected_keys {
+        return Err(format!(
+            "meta pagination keys mismatch: expected_len={}, actual_len={}, page_sizes={:?}",
+            expected_keys.len(),
+            collected_keys.len(),
+            page_sizes
+        ));
+    }
+    if page_sizes != vec![17, 17, 11] {
+        return Err(format!(
+            "unexpected meta pagination page sizes: {:?}",
+            page_sizes
+        ));
+    }
+
+    let klog_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        leader.ports.rpc, KLOG_JSON_RPC_SERVICE_PATH
+    );
+    let repo_root = repo_root()?;
+    let buckyos_root = get_buckyos_root();
+    let system_config_bin = resolve_system_config_bin(&repo_root, &buckyos_root)?;
+    let mut used_ports = collect_used_ports(&nodes, ingress_port);
+    let system_config_port = pick_local_port(&mut used_ports)?;
+    let page_limit_env = page_limit.to_string();
+    spawn_system_config_with_extra_env(
+        harness,
+        &system_config_bin,
+        system_config_port,
+        klog_endpoint.as_str(),
+        &[(
+            ENV_SYSTEM_CONFIG_KLOG_META_QUERY_LIMIT,
+            page_limit_env.as_str(),
+        )],
+    )?;
+    wait_tcp("127.0.0.1", system_config_port, Duration::from_secs(15)).await?;
+
+    let endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        system_config_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    let scheduler_token = system_config_jwt(TEST_DEVICE_NAME, "root", "scheduler")?;
+    let listed = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        scheduler_token.as_str(),
+        "sys_config_list",
+        json!({"key": base}),
+    )
+    .await?;
+    let listed = listed
+        .as_array()
+        .ok_or_else(|| format!("system_config paginated list is not array: {}", listed))?;
+    if listed.len() != item_count {
+        return Err(format!(
+            "system_config paginated list length mismatch: expected={}, actual={}, value={}",
+            item_count,
+            listed.len(),
+            Value::Array(listed.clone())
+        ));
+    }
+    for idx in [0usize, 16, 17, 34, 44] {
+        let expected_child = format!("item-{:04}", idx);
+        if !listed
+            .iter()
+            .any(|value| value.as_str() == Some(expected_child.as_str()))
+        {
+            return Err(format!(
+                "system_config paginated list missing child {}: {:?}",
+                expected_child, listed
+            ));
+        }
+    }
+
+    let scheduler_dump = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        scheduler_token.as_str(),
+        "dump_configs_for_scheduler",
+        json!({}),
+    )
+    .await?;
+    for idx in [0usize, 17, 44] {
+        let key = format!("{}item-{:04}", prefix, idx);
+        if scheduler_dump.get(key.as_str()).and_then(Value::as_str)
+            != Some(format!("value-{:04}", idx).as_str())
+        {
+            return Err(format!(
+                "scheduler dump missing paginated key {} in {}",
+                key, scheduler_dump
+            ));
+        }
+    }
+
+    println!(
+        "[klog-cluster-dv] system_config pagination ok: leader={}, endpoint={}, prefix={}, items={}, page_sizes={:?}",
+        leader_id, endpoint, prefix, item_count, page_sizes
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_system_config_pagination() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_system_config_pagination_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_rollout_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -6264,9 +6587,10 @@ async fn run() -> Result<(), String> {
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
+        SYSTEM_CONFIG_PAGINATION_MODE => run_local_gateway_system_config_pagination().await,
         SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
         other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
+            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
             other,
             MULTI_NODE_MODE,
             MEMBERSHIP_MODE,
@@ -6279,6 +6603,7 @@ async fn run() -> Result<(), String> {
             RESTART_RECOVERY_MODE,
             SYSTEM_CONFIG_KV_MODE,
             SYSTEM_CONFIG_SERVICE_MODE,
+            SYSTEM_CONFIG_PAGINATION_MODE,
             SYSTEM_CONFIG_ROLLOUT_MODE
         )),
     }
