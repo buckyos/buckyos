@@ -168,6 +168,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Validates 3-voter gateway cluster routes, atomic meta transactions,
     historical prefix reads, change-feed cursor pagination, explicit
     compaction/compacted-revision errors, and restart persistence.
+- [x] Validate klog MVCC behavior across leader failover.
+  - Covered by `test/klog_mvcc_failover_dv.sh`.
+  - Writes MVCC history, stops the current leader, verifies the remaining voter
+    quorum continues delete/recreate and transaction writes, then compacts and
+    checks compacted-revision errors, post-compaction historical reads, and
+    change-feed records.
 - [x] Validate MVCC snapshot catch-up during OOD membership changes.
   - Covered by `test/klog_mvcc_snapshot_membership_dv.sh`.
   - Forces low snapshot thresholds, writes MVCC history with tombstones and
