@@ -22,6 +22,7 @@ const OOD_SINGLE_TO_TWO_MODE: &str = "local-gateway-ood-single-to-two";
 const OOD_TWO_VOTER_LOSS_MODE: &str = "local-gateway-ood-two-voter-loss";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const MVCC_CLUSTER_MODE: &str = "local-gateway-mvcc-cluster";
+const MVCC_FAILOVER_MODE: &str = "local-gateway-mvcc-failover";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -7126,6 +7127,418 @@ async fn run_local_gateway_mvcc_cluster() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_mvcc_failover_inner(harness: &mut LocalHarness) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-mvcc-failover-dv";
+    let setup = prepare_local_gateway_setup(harness, MVCC_FAILOVER_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let old_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    let source = nodes
+        .iter()
+        .find(|node| node.id != old_leader_id)
+        .ok_or_else(|| format!("missing non-leader source node: leader={}", old_leader_id))?;
+    let target = nodes
+        .iter()
+        .find(|node| node.id != old_leader_id && node.id != source.id)
+        .or_else(|| nodes.iter().find(|node| node.id == old_leader_id))
+        .ok_or_else(|| format!("missing target node: leader={}", old_leader_id))?;
+    let observer = nodes
+        .iter()
+        .find(|node| node.id == old_leader_id)
+        .unwrap_or(target);
+    let source_gateway_addr = gateway_addr(source, ingress_port);
+    let observer_gateway_addr = gateway_addr(observer, ingress_port);
+    let suffix = unique_suffix("mvcc-failover");
+    let prefix = format!("test/klog_mvcc_failover_dv/{}/", suffix);
+    let key_a = format!("{}a", prefix);
+    let key_b = format!("{}b", prefix);
+    let key_c = format!("{}c", prefix);
+    let key_d = format!("{}d", prefix);
+
+    let tx1 = exec_meta_tx_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        BTreeMap::from([
+            (
+                key_a.clone(),
+                meta_tx_put_action(&key_a, "a-v1", target.name.as_str(), Some(0)),
+            ),
+            (
+                key_b.clone(),
+                meta_tx_put_action(&key_b, "b-v1", target.name.as_str(), Some(0)),
+            ),
+        ]),
+    )
+    .await?;
+    let r1 = tx1
+        .revisions
+        .get(&key_a)
+        .and_then(|revision| *revision)
+        .ok_or_else(|| format!("missing failover tx1 revision for {}", key_a))?;
+    if tx1.revisions.get(&key_b).and_then(|revision| *revision) != Some(r1) {
+        return Err(format!(
+            "failover tx1 keys did not share revision: {:?}",
+            tx1
+        ));
+    }
+    require_meta_version(tx1.meta_versions.get(&key_a), r1, r1, 1, false)?;
+    require_meta_version(tx1.meta_versions.get(&key_b), r1, r1, 1, false)?;
+
+    let a_v2 = put_meta_via_cluster_inter_route(
+        &client,
+        observer_gateway_addr.as_str(),
+        route_prefix,
+        source.name.as_str(),
+        key_a.as_str(),
+        "a-v2",
+        Some(r1),
+    )
+    .await?;
+    let r2 = a_v2.mod_revision;
+    if a_v2.create_revision != r1 || a_v2.version != 2 || r2 != r1 + 1 {
+        return Err(format!("unexpected failover a_v2 response: {:?}", a_v2));
+    }
+
+    for node in &nodes {
+        let gateway = gateway_addr(node, ingress_port);
+        let rev1 = query_meta_prefix_page_at_revision_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            16,
+            None,
+            Some(r1),
+        )
+        .await?;
+        require_meta_values(
+            &rev1,
+            &[(&key_a, "a-v1", r1, r1, 1), (&key_b, "b-v1", r1, r1, 1)],
+        )?;
+    }
+
+    let old_leader = nodes
+        .iter()
+        .find(|node| node.id == old_leader_id)
+        .ok_or_else(|| format!("old leader node {} not found", old_leader_id))?;
+    harness.stop(format!("klog-{}", old_leader.name).as_str())?;
+    let alive_nodes = nodes
+        .iter()
+        .filter(|node| node.id != old_leader_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    wait_membership(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let new_leader_id = wait_consistent_leader(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        Some(old_leader_id),
+        Duration::from_secs(70),
+    )
+    .await?;
+    let new_leader = alive_nodes
+        .iter()
+        .find(|node| node.id == new_leader_id)
+        .ok_or_else(|| format!("new leader node {} not found", new_leader_id))?;
+    let failover_writer = alive_nodes
+        .iter()
+        .find(|node| node.id != new_leader_id)
+        .unwrap_or(new_leader);
+    let failover_writer_gateway = gateway_addr(failover_writer, ingress_port);
+    let new_leader_gateway = gateway_addr(new_leader, ingress_port);
+
+    let deleted_b = delete_meta_via_cluster_inter_route(
+        &client,
+        failover_writer_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        key_b.as_str(),
+    )
+    .await?;
+    let delete_version = deleted_b.meta_version.as_ref().ok_or_else(|| {
+        format!(
+            "missing failover key_b delete meta_version: {:?}",
+            deleted_b
+        )
+    })?;
+    require_meta_version(Some(delete_version), r1, r2 + 1, 0, true)?;
+    let r3 = delete_version.mod_revision;
+
+    expect_meta_put_status_via_cluster_inter_route(
+        &client,
+        failover_writer_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        MetaPutRequest {
+            key: key_b.clone(),
+            value: "stale-b".to_string(),
+            node_name: Some(new_leader.name.clone()),
+            expected_revision: Some(r1),
+        },
+        StatusCode::CONFLICT,
+    )
+    .await?;
+
+    let b_v2 = put_meta_via_cluster_inter_route(
+        &client,
+        new_leader_gateway.as_str(),
+        route_prefix,
+        failover_writer.name.as_str(),
+        key_b.as_str(),
+        "b-v2",
+        Some(0),
+    )
+    .await?;
+    let r4 = b_v2.mod_revision;
+    if b_v2.create_revision != r4 || b_v2.version != 1 || r4 != r3 + 1 {
+        return Err(format!("unexpected failover b_v2 response: {:?}", b_v2));
+    }
+
+    let tx5 = exec_meta_tx_via_cluster_inter_route(
+        &client,
+        failover_writer_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        BTreeMap::from([
+            (
+                key_a.clone(),
+                meta_tx_put_action(&key_a, "a-v3", failover_writer.name.as_str(), Some(r2)),
+            ),
+            (
+                key_c.clone(),
+                meta_tx_put_action(&key_c, "c-v1", failover_writer.name.as_str(), Some(0)),
+            ),
+            (
+                key_d.clone(),
+                meta_tx_put_action(&key_d, "d-v1", failover_writer.name.as_str(), Some(0)),
+            ),
+        ]),
+    )
+    .await?;
+    let r5 = tx5
+        .revisions
+        .get(&key_a)
+        .and_then(|revision| *revision)
+        .ok_or_else(|| format!("missing failover tx5 revision for {}", key_a))?;
+    if r5 != r4 + 1 {
+        return Err(format!(
+            "unexpected failover tx5 revision: r4={}, r5={}",
+            r4, r5
+        ));
+    }
+    require_meta_version(tx5.meta_versions.get(&key_a), r1, r5, 3, false)?;
+    require_meta_version(tx5.meta_versions.get(&key_c), r5, r5, 1, false)?;
+    require_meta_version(tx5.meta_versions.get(&key_d), r5, r5, 1, false)?;
+
+    for node in &alive_nodes {
+        let gateway = gateway_addr(node, ingress_port);
+        let rev4 = query_meta_prefix_page_at_revision_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            16,
+            None,
+            Some(r4),
+        )
+        .await?;
+        require_meta_values(
+            &rev4,
+            &[(&key_a, "a-v2", r1, r2, 2), (&key_b, "b-v2", r4, r4, 1)],
+        )?;
+
+        let current = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            16,
+        )
+        .await?;
+        require_meta_values(
+            &current,
+            &[
+                (&key_a, "a-v3", r1, r5, 3),
+                (&key_b, "b-v2", r4, r4, 1),
+                (&key_c, "c-v1", r5, r5, 1),
+                (&key_d, "d-v1", r5, r5, 1),
+            ],
+        )?;
+    }
+
+    let compacted = post_meta_compact_via_admin_route(
+        &client,
+        new_leader_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        r3,
+    )
+    .await?;
+    if compacted.compacted_revision != r3 || compacted.current_revision != r5 {
+        return Err(format!(
+            "unexpected failover compaction response: {:?}, expected compacted={}, current={}",
+            compacted, r3, r5
+        ));
+    }
+
+    expect_meta_query_status_via_cluster_inter_route(
+        &client,
+        failover_writer_gateway.as_str(),
+        route_prefix,
+        failover_writer.name.as_str(),
+        None,
+        Some(prefix.as_str()),
+        Some(r1),
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+    expect_meta_changes_status_via_cluster_inter_route(
+        &client,
+        new_leader_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        prefix.as_str(),
+        r1,
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+
+    for node in &alive_nodes {
+        let gateway = gateway_addr(node, ingress_port);
+        let rev4 = query_meta_prefix_page_at_revision_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            16,
+            None,
+            Some(r4),
+        )
+        .await?;
+        require_meta_values(
+            &rev4,
+            &[(&key_a, "a-v2", r1, r2, 2), (&key_b, "b-v2", r4, r4, 1)],
+        )?;
+    }
+
+    let post_compact_changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        failover_writer_gateway.as_str(),
+        route_prefix,
+        failover_writer.name.as_str(),
+        prefix.as_str(),
+        r4,
+        8,
+        None,
+    )
+    .await?;
+    require_meta_changes(
+        &post_compact_changes,
+        &[
+            (r4, &key_b, "b-v2", false, r4, 1),
+            (r5, &key_a, "a-v3", false, r1, 3),
+            (r5, &key_c, "c-v1", false, r5, 1),
+            (r5, &key_d, "d-v1", false, r5, 1),
+        ],
+    )?;
+
+    println!(
+        "[klog-cluster-dv] MVCC failover ok: old_leader={}, new_leader={}, writer={}, revisions=[{},{},{},{},{}], prefix={}",
+        old_leader_id, new_leader_id, failover_writer.name, r1, r2, r3, r4, r5, prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_mvcc_failover() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_mvcc_failover_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -9597,6 +10010,7 @@ async fn run() -> Result<(), String> {
         OOD_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_ood_snapshot_membership().await,
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         MVCC_CLUSTER_MODE => run_local_gateway_mvcc_cluster().await,
+        MVCC_FAILOVER_MODE => run_local_gateway_mvcc_failover().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -9617,6 +10031,7 @@ async fn run() -> Result<(), String> {
                 OOD_SNAPSHOT_MEMBERSHIP_MODE,
                 RESTART_RECOVERY_MODE,
                 MVCC_CLUSTER_MODE,
+                MVCC_FAILOVER_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
