@@ -180,6 +180,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     guarded `exec_tx` conflict atomicity, delete/recreate revision semantics,
     klog historical reads, change-feed visibility, and explicit compaction
     through the local 3-voter gateway cluster harness.
+- [x] Validate multi-OOD system_config MVCC behavior on the klog backend.
+  - Covered by `test/klog_system_config_multi_ood_mvcc_dv.sh`.
+  - Starts one `system_config` process per OOD, points each at its local klog
+    RPC endpoint, validates parallel creates, cross-OOD reads, guarded CAS
+    conflict atomicity, delete/recreate tombstones, compaction, and scheduler
+    dump visibility.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
 - [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.
