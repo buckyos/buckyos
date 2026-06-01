@@ -1,6 +1,6 @@
 use super::store::{
-    KLogMetaTxResult, KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot,
-    KLogStateSnapshotData, KLogStateStore, REQUEST_DEDUP_WINDOW_MS,
+    KLogMetaKeyState, KLogMetaTxResult, KLogQuery, KLogQueryOrder, KLogStateMachineMeta,
+    KLogStateSnapshot, KLogStateSnapshotData, KLogStateStore, REQUEST_DEDUP_WINDOW_MS,
 };
 use crate::{
     KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxRequest,
@@ -13,7 +13,7 @@ use rocksdb::{
     WriteBatch, WriteOptions,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -22,9 +22,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEY_PREFIX_ENTRY: u8 = b'e';
 const KEY_NEXT_LOG_ID_META: &[u8] = b"m:next_log_id";
+const KEY_META_REVISION: &[u8] = b"m:meta_revision";
 const KEY_STATE_MACHINE_META: &[u8] = b"m:state_machine_meta";
 const KEY_REQUEST_DEDUP_PREFIX: &[u8] = b"m:req:";
 const KEY_DATA_META_PREFIX: &[u8] = b"d:";
+const KEY_DATA_META_STATE_PREFIX: &[u8] = b"r:";
 const CF_LOGS: &str = "logs";
 const CF_META: &str = "meta";
 const CF_INDEX_LEVEL: &str = "idx_level";
@@ -112,11 +114,26 @@ fn data_meta_key(key: &str) -> Vec<u8> {
     out
 }
 
+fn data_meta_state_key(key: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(KEY_DATA_META_STATE_PREFIX.len() + key.len());
+    out.extend_from_slice(KEY_DATA_META_STATE_PREFIX);
+    out.extend_from_slice(key.as_bytes());
+    out
+}
+
 fn decode_data_meta_key(raw: &[u8]) -> Option<&str> {
     if !raw.starts_with(KEY_DATA_META_PREFIX) {
         return None;
     }
     std::str::from_utf8(&raw[KEY_DATA_META_PREFIX.len()..]).ok()
+}
+
+fn decode_data_meta_state_key(raw: &[u8]) -> Option<&str> {
+    if !raw.starts_with(KEY_DATA_META_STATE_PREFIX) {
+        return None;
+    }
+
+    std::str::from_utf8(&raw[KEY_DATA_META_STATE_PREFIX.len()..]).ok()
 }
 
 fn normalize_request_id(request_id: Option<&str>) -> Option<&str> {
@@ -240,6 +257,23 @@ fn decode_meta_entry_with_legacy(raw: &[u8]) -> KResult<KLogMetaEntry> {
         updated_by_node_name: legacy.updated_by.to_string(),
         revision: 1,
     })
+}
+
+fn decode_meta_key_state(raw: &[u8]) -> KResult<KLogMetaKeyState> {
+    let (state, _): (KLogMetaKeyState, usize) =
+        bincode::serde::decode_from_slice(raw, bincode::config::legacy())
+            .map_err(|e| klog_err_with_context("Failed to decode rocksdb data meta state", e))?;
+    Ok(state)
+}
+
+fn legacy_meta_state_from_entry(item: &KLogMetaEntry, deleted: bool) -> KLogMetaKeyState {
+    KLogMetaKeyState {
+        key: item.key.clone(),
+        create_revision: item.revision,
+        mod_revision: item.revision,
+        version: if deleted { 0 } else { item.revision.max(1) },
+        deleted,
+    }
 }
 
 fn now_millis() -> u64 {
@@ -571,6 +605,81 @@ impl RocksDbStateStore {
         build_write_options(self.sync_write)
     }
 
+    fn read_meta_revision(&self) -> KResult<u64> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let value = self
+            .db
+            .get_cf(&meta_cf, KEY_META_REVISION)
+            .map_err(|e| klog_err_with_context("Failed to read rocksdb meta revision", e))?;
+        let Some(raw) = value else {
+            return self.scan_meta_revision();
+        };
+        decode_u64_be(raw.as_ref())
+    }
+
+    fn scan_meta_revision(&self) -> KResult<u64> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let mut max_revision = 0u64;
+        let iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(KEY_DATA_META_PREFIX, Direction::Forward),
+        );
+        for item in iter {
+            let (k, v) =
+                item.map_err(|e| klog_err_with_context("Failed to scan rocksdb data meta", e))?;
+            if !k.as_ref().starts_with(KEY_DATA_META_PREFIX) {
+                break;
+            }
+            let item = decode_meta_entry_with_legacy(v.as_ref())?;
+            max_revision = max_revision.max(item.revision);
+        }
+
+        let iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(KEY_DATA_META_STATE_PREFIX, Direction::Forward),
+        );
+        for item in iter {
+            let (k, v) = item
+                .map_err(|e| klog_err_with_context("Failed to scan rocksdb data meta state", e))?;
+            if !k.as_ref().starts_with(KEY_DATA_META_STATE_PREFIX) {
+                break;
+            }
+            let state = decode_meta_key_state(v.as_ref())?;
+            max_revision = max_revision.max(state.mod_revision);
+        }
+
+        Ok(max_revision)
+    }
+
+    fn read_meta_key_state(&self, key: &str) -> KResult<Option<KLogMetaKeyState>> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let value = self
+            .db
+            .get_cf(&meta_cf, data_meta_state_key(key).as_slice())
+            .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta state", e))?;
+        value
+            .as_ref()
+            .map(|raw| decode_meta_key_state(raw.as_ref()))
+            .transpose()
+    }
+
+    fn encode_meta_key_state(state: &KLogMetaKeyState) -> KResult<Vec<u8>> {
+        bincode::serde::encode_to_vec(state, bincode::config::legacy())
+            .map_err(|e| klog_err_with_context("Failed to encode rocksdb data meta state", e))
+    }
+
     fn read_persisted_next_log_id(&self) -> KResult<Option<u64>> {
         let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
             let msg = format!("Missing column family '{}'", CF_META);
@@ -759,6 +868,41 @@ impl RocksDbStateStore {
         Ok(out)
     }
 
+    fn read_all_meta_states(&self) -> KResult<Vec<KLogMetaKeyState>> {
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+
+        let mut out = Vec::new();
+        let iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(KEY_DATA_META_STATE_PREFIX, Direction::Forward),
+        );
+        for item in iter {
+            let (k, v) =
+                item.map_err(|e| klog_err_with_context("Failed to iterate rocksdb meta state", e))?;
+            if !k.as_ref().starts_with(KEY_DATA_META_STATE_PREFIX) {
+                break;
+            }
+
+            let Some(key) = decode_data_meta_state_key(k.as_ref()) else {
+                continue;
+            };
+            let state = decode_meta_key_state(v.as_ref())?;
+            if state.key != key {
+                warn!(
+                    "RocksDbStateStore meta state key mismatch, key_from_index='{}', key_in_value='{}'",
+                    key, state.key
+                );
+            }
+            out.push(state);
+        }
+        out.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(out)
+    }
+
     fn clear_entries_in_batch(&self, batch: &mut WriteBatch) -> KResult<()> {
         debug!(
             "RocksDbStateStore clear_entries_in_batch start: snapshot_mode={:?}",
@@ -835,6 +979,24 @@ impl RocksDbStateStore {
             batch.delete_cf(&meta_cf, k.as_ref());
             deleted += 1;
         }
+        let iter = self.db.iterator_cf(
+            &meta_cf,
+            IteratorMode::From(KEY_DATA_META_STATE_PREFIX, Direction::Forward),
+        );
+        for item in iter {
+            let (k, _) = item.map_err(|e| {
+                klog_err_with_context(
+                    "Failed to iterate rocksdb while clearing data meta state",
+                    e,
+                )
+            })?;
+            if !k.as_ref().starts_with(KEY_DATA_META_STATE_PREFIX) {
+                break;
+            }
+            batch.delete_cf(&meta_cf, k.as_ref());
+            deleted += 1;
+        }
+        batch.delete_cf(&meta_cf, KEY_META_REVISION);
         debug!(
             "RocksDbStateStore clear_data_meta_in_batch done: deleted={}",
             deleted
@@ -883,12 +1045,16 @@ impl RocksDbStateStore {
         &self,
         entries: Vec<KLogEntry>,
         meta_entries: Vec<KLogMetaEntry>,
+        meta_states: Vec<KLogMetaKeyState>,
+        meta_revision: u64,
     ) -> KResult<()> {
         info!(
-            "RocksDbStateStore replace_with_entries start: snapshot_mode={:?}, incoming_entries={}, incoming_meta_entries={}",
+            "RocksDbStateStore replace_with_entries start: snapshot_mode={:?}, incoming_entries={}, incoming_meta_entries={}, incoming_meta_states={}, incoming_meta_revision={}",
             self.snapshot_mode,
             summarize_entry_ids(&entries),
-            meta_entries.len()
+            meta_entries.len(),
+            meta_states.len(),
+            meta_revision
         );
         let mut batch = WriteBatch::default();
         self.clear_entries_in_batch(&mut batch)?;
@@ -934,20 +1100,40 @@ impl RocksDbStateStore {
         }
         let next_log_id = max_id.saturating_add(1).max(1);
         batch.put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
+        let mut resolved_meta_revision = meta_revision;
+        let mut meta_state_keys = BTreeSet::new();
+        for state in meta_states {
+            resolved_meta_revision = resolved_meta_revision.max(state.mod_revision);
+            meta_state_keys.insert(state.key.clone());
+            let encoded = Self::encode_meta_key_state(&state)?;
+            batch.put_cf(&meta_cf, data_meta_state_key(&state.key), encoded);
+        }
         for item in meta_entries {
+            resolved_meta_revision = resolved_meta_revision.max(item.revision);
             let encoded = bincode::serde::encode_to_vec(&item, bincode::config::legacy())
                 .map_err(|e| klog_err_with_context("Failed to encode data meta entry", e))?;
             let key = data_meta_key(item.key.as_str());
             batch.put_cf(&meta_cf, key, encoded);
+            if !meta_state_keys.contains(&item.key) {
+                let state = legacy_meta_state_from_entry(&item, false);
+                let encoded = Self::encode_meta_key_state(&state)?;
+                batch.put_cf(&meta_cf, data_meta_state_key(&item.key), encoded);
+                meta_state_keys.insert(item.key.clone());
+            }
         }
+        batch.put_cf(
+            &meta_cf,
+            KEY_META_REVISION,
+            resolved_meta_revision.to_be_bytes(),
+        );
 
         let write_opts = self.write_options();
         self.db.write_opt(batch, &write_opts).map_err(|e| {
             klog_err_with_context("Failed to write entries during rocksdb snapshot install", e)
         })?;
         info!(
-            "RocksDbStateStore replace_with_entries completed: snapshot_mode={:?}, next_log_id={}",
-            self.snapshot_mode, next_log_id
+            "RocksDbStateStore replace_with_entries completed: snapshot_mode={:?}, next_log_id={}, meta_revision={}",
+            self.snapshot_mode, next_log_id, resolved_meta_revision
         );
 
         Ok(())
@@ -997,6 +1183,7 @@ impl RocksDbStateStore {
         let mut copied = 0usize;
         let mut copied_dedup = 0usize;
         let mut copied_meta = 0usize;
+        let mut copied_meta_state = 0usize;
         let mut max_id = 0u64;
         for item in source_db.iterator_cf(&source_logs_cf, IteratorMode::Start) {
             let (k, v) = item
@@ -1049,14 +1236,34 @@ impl RocksDbStateStore {
             batch.put_cf(&meta_cf, k.as_ref(), v.as_ref());
             copied_meta += 1;
         }
+        let meta_state_iter = source_db.iterator_cf(
+            &source_meta_cf,
+            IteratorMode::From(KEY_DATA_META_STATE_PREFIX, Direction::Forward),
+        );
+        for item in meta_state_iter {
+            let (k, v) = item.map_err(|e| {
+                klog_err_with_context("Failed to iterate source data meta states", e)
+            })?;
+            if !k.as_ref().starts_with(KEY_DATA_META_STATE_PREFIX) {
+                break;
+            }
+            batch.put_cf(&meta_cf, k.as_ref(), v.as_ref());
+            copied_meta_state += 1;
+        }
+        if let Some(raw) = source_db
+            .get_cf(&source_meta_cf, KEY_META_REVISION)
+            .map_err(|e| klog_err_with_context("Failed to read source meta revision", e))?
+        {
+            batch.put_cf(&meta_cf, KEY_META_REVISION, raw.as_slice());
+        }
 
         let write_opts = self.write_options();
         self.db.write_opt(batch, &write_opts).map_err(|e| {
             klog_err_with_context("Failed to apply checkpoint snapshot into rocksdb", e)
         })?;
         info!(
-            "RocksDbStateStore replace_with_db completed: copied_entries={}, copied_dedup={}, copied_meta={}, next_log_id={}",
-            copied, copied_dedup, copied_meta, next_log_id
+            "RocksDbStateStore replace_with_db completed: copied_entries={}, copied_dedup={}, copied_meta={}, copied_meta_state={}, next_log_id={}",
+            copied, copied_dedup, copied_meta, copied_meta_state, next_log_id
         );
 
         Ok(())
@@ -1534,6 +1741,8 @@ fn decode_snapshot_data(data: &[u8]) -> KResult<KLogStateSnapshotData> {
     Ok(KLogStateSnapshotData {
         entries,
         meta_entries: Vec::new(),
+        meta_states: Vec::new(),
+        meta_revision: 0,
     })
 }
 
@@ -1549,18 +1758,24 @@ impl RocksDbSnapshotStrategy for EnumerateSnapshotStrategy {
         );
         let entries = store.read_all_entries()?;
         let meta_entries = store.read_all_meta_entries()?;
+        let meta_states = store.read_all_meta_states()?;
+        let meta_revision = store.read_meta_revision()?;
         let snapshot_data = KLogStateSnapshotData {
             entries,
             meta_entries,
+            meta_states,
+            meta_revision,
         };
         let data = bincode::serde::encode_to_vec(&snapshot_data, bincode::config::legacy())
             .map_err(|e| {
                 klog_err_with_context("Failed to serialize rocksdb enumerate snapshot", e)
             })?;
         info!(
-            "RocksDb enumerate build_snapshot done: entries={}, meta_entries={}, payload_bytes={}",
+            "RocksDb enumerate build_snapshot done: entries={}, meta_entries={}, meta_states={}, meta_revision={}, payload_bytes={}",
             snapshot_data.entries.len(),
             snapshot_data.meta_entries.len(),
+            snapshot_data.meta_states.len(),
+            snapshot_data.meta_revision,
             data.len()
         );
         Ok(KLogStateSnapshot { data })
@@ -1593,11 +1808,18 @@ impl RocksDbSnapshotStrategy for EnumerateSnapshotStrategy {
         };
 
         info!(
-            "RocksDb enumerate install_snapshot apply: entries={}, meta_entries={}",
+            "RocksDb enumerate install_snapshot apply: entries={}, meta_entries={}, meta_states={}, meta_revision={}",
             summarize_entry_ids(&snapshot_data.entries),
-            snapshot_data.meta_entries.len()
+            snapshot_data.meta_entries.len(),
+            snapshot_data.meta_states.len(),
+            snapshot_data.meta_revision
         );
-        store.replace_with_entries(snapshot_data.entries, snapshot_data.meta_entries)?;
+        store.replace_with_entries(
+            snapshot_data.entries,
+            snapshot_data.meta_entries,
+            snapshot_data.meta_states,
+            snapshot_data.meta_revision,
+        )?;
         Ok(true)
     }
 }
@@ -2109,21 +2331,45 @@ impl KLogStateStore for RocksDbStateStore {
             .db
             .get_cf(&meta_cf, meta_key.as_slice())
             .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta entry", e))?;
-        let next_revision = match prev {
-            Some(raw) => decode_meta_entry_with_legacy(raw.as_ref())?
-                .revision
-                .saturating_add(1),
-            None => 1,
-        };
+        let prev_entry = prev
+            .as_ref()
+            .map(|raw| decode_meta_entry_with_legacy(raw.as_ref()))
+            .transpose()?;
+        let prev_state = self.read_meta_key_state(&item.key)?;
+        let next_revision = self.read_meta_revision()?.saturating_add(1).max(1);
 
         let mut stored = item;
         stored.revision = next_revision;
+        let state = if let Some(prev_entry) = prev_entry.as_ref() {
+            let prev_state =
+                prev_state.unwrap_or_else(|| legacy_meta_state_from_entry(prev_entry, false));
+            KLogMetaKeyState {
+                key: stored.key.clone(),
+                create_revision: prev_state.create_revision,
+                mod_revision: next_revision,
+                version: prev_state.version.saturating_add(1).max(1),
+                deleted: false,
+            }
+        } else {
+            KLogMetaKeyState {
+                key: stored.key.clone(),
+                create_revision: next_revision,
+                mod_revision: next_revision,
+                version: 1,
+                deleted: false,
+            }
+        };
 
         let encoded = bincode::serde::encode_to_vec(&stored, bincode::config::legacy())
             .map_err(|e| klog_err_with_context("Failed to encode rocksdb data meta entry", e))?;
+        let encoded_state = Self::encode_meta_key_state(&state)?;
         let write_opts = self.write_options();
+        let mut batch = WriteBatch::default();
+        batch.put_cf(&meta_cf, meta_key, encoded);
+        batch.put_cf(&meta_cf, data_meta_state_key(&stored.key), encoded_state);
+        batch.put_cf(&meta_cf, KEY_META_REVISION, next_revision.to_be_bytes());
         self.db
-            .put_cf_opt(&meta_cf, meta_key, encoded, &write_opts)
+            .write_opt(batch, &write_opts)
             .map_err(|e| klog_err_with_context("Failed to persist rocksdb data meta entry", e))?;
         Ok(stored)
     }
@@ -2136,6 +2382,7 @@ impl KLogStateStore for RocksDbStateStore {
         })?;
 
         let mut current_entries = BTreeMap::new();
+        let mut current_states = BTreeMap::new();
         for key in tx
             .guard
             .as_ref()
@@ -2154,13 +2401,23 @@ impl KLogStateStore for RocksDbStateStore {
                 .as_ref()
                 .map(|raw| decode_meta_entry_with_legacy(raw.as_ref()))
                 .transpose()?;
+            let state = self.read_meta_key_state(key)?.or_else(|| {
+                entry
+                    .as_ref()
+                    .map(|entry| legacy_meta_state_from_entry(entry, false))
+            });
             current_entries.insert(key.to_string(), entry);
+            current_states.insert(key.to_string(), state);
         }
 
         if let Some(guard) = tx.guard.as_ref() {
             let current_revision = current_entries
                 .get(&guard.key)
                 .and_then(|entry| entry.as_ref().map(|entry| entry.revision));
+            let current_revision = current_states
+                .get(&guard.key)
+                .and_then(|state| state.as_ref().map(|state| state.mod_revision))
+                .or(current_revision);
             let actual_revision = current_revision.unwrap_or(0);
             if actual_revision != guard.expected_revision {
                 return Ok(KLogMetaTxResult::VersionConflict {
@@ -2188,8 +2445,14 @@ impl KLogStateStore for RocksDbStateStore {
             let current_revision = current_entries
                 .get(action_key)
                 .and_then(|entry| entry.as_ref().map(|entry| entry.revision));
+            let current_revision = current_states
+                .get(action_key)
+                .and_then(|state| state.as_ref().map(|state| state.mod_revision))
+                .or(current_revision);
             let matched = if expected_revision == 0 {
-                current_revision.is_none()
+                current_entries
+                    .get(action_key)
+                    .is_none_or(|entry| entry.is_none())
             } else {
                 current_revision == Some(expected_revision)
             };
@@ -2206,6 +2469,38 @@ impl KLogStateStore for RocksDbStateStore {
         let mut guard_touched = false;
         let mut revisions = BTreeMap::new();
         let mut batch = WriteBatch::default();
+        let mut has_mutation = false;
+        for action in tx.actions.values() {
+            match action {
+                KLogMetaTxAction::Put { .. } => {
+                    has_mutation = true;
+                    break;
+                }
+                KLogMetaTxAction::Delete { key, .. } => {
+                    if current_entries
+                        .get(key)
+                        .is_some_and(|entry| entry.is_some())
+                    {
+                        has_mutation = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !has_mutation
+            && let Some(guard_key) = guard_key.as_deref()
+            && current_entries
+                .get(guard_key)
+                .is_some_and(|entry| entry.is_some())
+            && !tx.actions.values().any(|action| action.key() == guard_key)
+        {
+            has_mutation = true;
+        }
+        let tx_revision = if has_mutation {
+            Some(self.read_meta_revision()?.saturating_add(1).max(1))
+        } else {
+            None
+        };
 
         for (action_key, action) in tx.actions.into_iter() {
             if guard_key.as_deref() == Some(action_key.as_str()) {
@@ -2214,21 +2509,68 @@ impl KLogStateStore for RocksDbStateStore {
 
             match action {
                 KLogMetaTxAction::Put { mut item, .. } => {
-                    let next_revision = current_entries
+                    let next_revision = tx_revision.expect("put action must allocate tx revision");
+                    let state = if current_entries
                         .get(&item.key)
-                        .and_then(|entry| entry.as_ref().map(|entry| entry.revision))
-                        .map(|revision| revision.saturating_add(1))
-                        .unwrap_or(1);
+                        .is_some_and(|entry| entry.is_some())
+                    {
+                        let previous = current_states
+                            .get(&item.key)
+                            .cloned()
+                            .flatten()
+                            .or_else(|| {
+                                current_entries
+                                    .get(&item.key)
+                                    .and_then(|entry| entry.as_ref())
+                                    .map(|entry| legacy_meta_state_from_entry(entry, false))
+                            })
+                            .expect("live entry must have a meta state");
+                        KLogMetaKeyState {
+                            key: item.key.clone(),
+                            create_revision: previous.create_revision,
+                            mod_revision: next_revision,
+                            version: previous.version.saturating_add(1).max(1),
+                            deleted: false,
+                        }
+                    } else {
+                        KLogMetaKeyState {
+                            key: item.key.clone(),
+                            create_revision: next_revision,
+                            mod_revision: next_revision,
+                            version: 1,
+                            deleted: false,
+                        }
+                    };
                     item.revision = next_revision;
                     let encoded = bincode::serde::encode_to_vec(&item, bincode::config::legacy())
                         .map_err(|e| {
                         klog_err_with_context("Failed to encode rocksdb data meta entry", e)
                     })?;
+                    let encoded_state = Self::encode_meta_key_state(&state)?;
                     batch.put_cf(&meta_cf, data_meta_key(&item.key), encoded);
+                    batch.put_cf(&meta_cf, data_meta_state_key(&item.key), encoded_state);
                     revisions.insert(item.key, Some(next_revision));
                 }
                 KLogMetaTxAction::Delete { key, .. } => {
-                    batch.delete_cf(&meta_cf, data_meta_key(&key));
+                    if let Some(Some(prev)) = current_entries.get(&key) {
+                        let next_revision =
+                            tx_revision.expect("existing delete must allocate tx revision");
+                        let previous = current_states
+                            .get(&key)
+                            .cloned()
+                            .flatten()
+                            .unwrap_or_else(|| legacy_meta_state_from_entry(prev, false));
+                        let state = KLogMetaKeyState {
+                            key: key.clone(),
+                            create_revision: previous.create_revision,
+                            mod_revision: next_revision,
+                            version: 0,
+                            deleted: true,
+                        };
+                        let encoded_state = Self::encode_meta_key_state(&state)?;
+                        batch.delete_cf(&meta_cf, data_meta_key(&key));
+                        batch.put_cf(&meta_cf, data_meta_state_key(&key), encoded_state);
+                    }
                     revisions.insert(key, None);
                 }
             }
@@ -2238,13 +2580,32 @@ impl KLogStateStore for RocksDbStateStore {
             && !guard_touched
             && let Some(Some(mut item)) = current_entries.remove(&guard.key)
         {
-            item.revision = item.revision.saturating_add(1);
+            let next_revision = tx_revision.expect("guard side effect must allocate tx revision");
+            let previous = current_states
+                .get(&guard.key)
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| legacy_meta_state_from_entry(&item, false));
+            item.revision = next_revision;
+            let state = KLogMetaKeyState {
+                key: guard.key.clone(),
+                create_revision: previous.create_revision,
+                mod_revision: next_revision,
+                version: previous.version.saturating_add(1).max(1),
+                deleted: false,
+            };
             let encoded =
                 bincode::serde::encode_to_vec(&item, bincode::config::legacy()).map_err(|e| {
                     klog_err_with_context("Failed to encode rocksdb data meta entry", e)
                 })?;
+            let encoded_state = Self::encode_meta_key_state(&state)?;
             batch.put_cf(&meta_cf, data_meta_key(&item.key), encoded);
+            batch.put_cf(&meta_cf, data_meta_state_key(&item.key), encoded_state);
             revisions.insert(guard.key, Some(item.revision));
+        }
+
+        if let Some(tx_revision) = tx_revision {
+            batch.put_cf(&meta_cf, KEY_META_REVISION, tx_revision.to_be_bytes());
         }
 
         let write_opts = self.write_options();
@@ -2277,9 +2638,25 @@ impl KLogStateStore for RocksDbStateStore {
             return Ok(None);
         };
         let prev_meta = decode_meta_entry_with_legacy(raw.as_ref())?;
+        let previous_state = self
+            .read_meta_key_state(key)?
+            .unwrap_or_else(|| legacy_meta_state_from_entry(&prev_meta, false));
+        let next_revision = self.read_meta_revision()?.saturating_add(1).max(1);
+        let state = KLogMetaKeyState {
+            key: key.to_string(),
+            create_revision: previous_state.create_revision,
+            mod_revision: next_revision,
+            version: 0,
+            deleted: true,
+        };
+        let encoded_state = Self::encode_meta_key_state(&state)?;
         let write_opts = self.write_options();
+        let mut batch = WriteBatch::default();
+        batch.delete_cf(&meta_cf, meta_key.as_slice());
+        batch.put_cf(&meta_cf, data_meta_state_key(key), encoded_state);
+        batch.put_cf(&meta_cf, KEY_META_REVISION, next_revision.to_be_bytes());
         self.db
-            .delete_cf_opt(&meta_cf, meta_key.as_slice(), &write_opts)
+            .write_opt(batch, &write_opts)
             .map_err(|e| klog_err_with_context("Failed to delete rocksdb data meta entry", e))?;
         Ok(Some(prev_meta))
     }
@@ -2305,6 +2682,32 @@ impl KLogStateStore for RocksDbStateStore {
         };
         let item = decode_meta_entry_with_legacy(raw.as_ref())?;
         Ok(Some(item))
+    }
+
+    async fn current_meta_revision(&self, key: &str) -> KResult<Option<u64>> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Ok(None);
+        }
+
+        if let Some(state) = self.read_meta_key_state(key)? {
+            return Ok(Some(state.mod_revision));
+        }
+
+        let meta_cf = self.db.cf_handle(CF_META).ok_or_else(|| {
+            let msg = format!("Missing column family '{}'", CF_META);
+            error!("{}", msg);
+            klog_err(msg)
+        })?;
+        let Some(raw) = self
+            .db
+            .get_cf(&meta_cf, data_meta_key(key).as_slice())
+            .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta entry", e))?
+        else {
+            return Ok(None);
+        };
+        let item = decode_meta_entry_with_legacy(raw.as_ref())?;
+        Ok(Some(item.revision))
     }
 
     async fn list_meta(

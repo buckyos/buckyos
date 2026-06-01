@@ -2,7 +2,7 @@ mod common;
 
 use common::*;
 use klog::error::KLogErrorCode;
-use klog::network::{KLogMetaPutRequest, KLogMetaQueryRequest};
+use klog::network::{KLogMetaDeleteRequest, KLogMetaPutRequest, KLogMetaQueryRequest};
 use klog::rpc::KLogClient;
 use std::time::Duration;
 
@@ -125,6 +125,54 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             ));
         }
 
+        let deleted = follower_client
+            .delete_meta(KLogMetaDeleteRequest { key: key.clone() })
+            .await
+            .map_err(|e| format!("delete_meta failed: {}", e))?;
+        if !deleted.existed || deleted.prev_meta.as_ref().map(|item| item.revision) != Some(3) {
+            return Err(format!(
+                "unexpected delete response: existed={}, prev_revision={:?}",
+                deleted.existed,
+                deleted.prev_meta.as_ref().map(|item| item.revision)
+            ));
+        }
+
+        let stale_after_delete = follower_client
+            .put_meta(KLogMetaPutRequest {
+                key: key.clone(),
+                value: "v-stale-after-delete".to_string(),
+                node_name: None,
+                expected_revision: Some(3),
+            })
+            .await
+            .expect_err("expected stale revision conflict after delete");
+        if stale_after_delete.error_code != KLogErrorCode::VersionConflict
+            || !stale_after_delete
+                .message
+                .contains("current_revision=Some(4)")
+        {
+            return Err(format!(
+                "unexpected stale-after-delete conflict: code={:?}, message={}",
+                stale_after_delete.error_code, stale_after_delete.message
+            ));
+        }
+
+        let recreated = follower_client
+            .put_meta(KLogMetaPutRequest {
+                key: key.clone(),
+                value: "v4-recreated".to_string(),
+                node_name: None,
+                expected_revision: Some(0),
+            })
+            .await
+            .map_err(|e| format!("recreate put_meta failed: {}", e))?;
+        if recreated.revision != 5 {
+            return Err(format!(
+                "unexpected recreated revision: expected=5, got={}",
+                recreated.revision
+            ));
+        }
+
         let queried = leader_client
             .query_meta(KLogMetaQueryRequest {
                 key: Some(key.clone()),
@@ -141,7 +189,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
                 queried.items.len()
             ));
         }
-        if queried.items[0].value != "v3-non-cas" || queried.items[0].revision != 3 {
+        if queried.items[0].value != "v4-recreated" || queried.items[0].revision != 5 {
             return Err(format!(
                 "unexpected meta value/revision: value={}, revision={}",
                 queried.items[0].value, queried.items[0].revision

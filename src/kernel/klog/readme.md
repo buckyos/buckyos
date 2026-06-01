@@ -57,13 +57,28 @@ BuckyOS/gateway layer. `klog` only enforces protocol and consistency rules.
 - `value`: metadata value, maximum 256 KiB.
 - `updated_at`: milliseconds since Unix epoch.
 - `updated_by_node_name`: writer node name.
-- `revision`: monotonically increasing per key.
+- `revision`: globally increasing metadata `mod_revision`, used as an opaque
+  CAS token.
+
+Current metadata revision semantics are intentionally MVCC-compatible:
+
+- Every committed metadata mutation allocates a global `mod_revision`.
+- All actions in the same `KLogMetaTxRequest` share one `mod_revision`.
+- Deleting an existing key writes a tombstone state. The live value disappears
+  from `get` and `prefix` queries, but the key's latest revision remains
+  available for CAS conflict checks.
+- Recreating a deleted key with `expected_revision=Some(0)` allocates a new
+  `mod_revision`; stale CAS using the pre-delete revision fails with the
+  tombstone revision.
+- The first phase keeps only current live values and tombstone state. Historical
+  value lookup by revision, watch streams, and compaction are not implemented
+  yet.
 
 `KLogMetaPutRequest.expected_revision` controls CAS semantics:
 
 - `None`: unconditional put.
 - `Some(0)`: create only; fails if the key already exists.
-- `Some(n)`: update only when the current revision is `n`.
+- `Some(n)`: update only when the current live or tombstone revision is `n`.
 
 Version conflicts are returned as `KLogErrorCode::VersionConflict` with HTTP
 `409` on HTTP APIs.

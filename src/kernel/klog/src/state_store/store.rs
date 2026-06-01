@@ -40,6 +40,19 @@ pub enum KLogMetaTxResult {
 pub struct KLogStateSnapshotData {
     pub entries: Vec<KLogEntry>,
     pub meta_entries: Vec<KLogMetaEntry>,
+    #[serde(default)]
+    pub meta_states: Vec<KLogMetaKeyState>,
+    #[serde(default)]
+    pub meta_revision: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KLogMetaKeyState {
+    pub key: String,
+    pub create_revision: u64,
+    pub mod_revision: u64,
+    pub version: u64,
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -95,6 +108,8 @@ pub trait KLogStateStore: Send + Sync {
     async fn delete_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>>;
 
     async fn get_meta(&self, key: &str) -> KResult<Option<KLogMetaEntry>>;
+
+    async fn current_meta_revision(&self, key: &str) -> KResult<Option<u64>>;
 
     async fn list_meta(
         &self,
@@ -332,7 +347,10 @@ impl KLogStateStoreManager {
     ) -> KResult<KLogMetaPutResult> {
         if let Some(expected_revision) = expected_revision {
             let current = self.state_store.get_meta(item.key.as_str()).await?;
-            let current_revision = current.as_ref().map(|v| v.revision);
+            let current_revision = self
+                .state_store
+                .current_meta_revision(item.key.as_str())
+                .await?;
             let matched = if expected_revision == 0 {
                 current.is_none()
             } else {
@@ -361,6 +379,10 @@ impl KLogStateStoreManager {
 
     pub async fn get_meta_entry(&self, key: &str) -> KResult<Option<KLogMetaEntry>> {
         self.state_store.get_meta(key).await
+    }
+
+    pub async fn current_meta_revision(&self, key: &str) -> KResult<Option<u64>> {
+        self.state_store.current_meta_revision(key).await
     }
 
     pub async fn list_meta_entries(
