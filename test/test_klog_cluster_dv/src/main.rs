@@ -21,6 +21,7 @@ const OOD_SEED_UNAVAILABLE_JOIN_MODE: &str = "local-gateway-ood-seed-unavailable
 const OOD_SINGLE_TO_TWO_MODE: &str = "local-gateway-ood-single-to-two";
 const OOD_TWO_VOTER_LOSS_MODE: &str = "local-gateway-ood-two-voter-loss";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
+const MVCC_CLUSTER_MODE: &str = "local-gateway-mvcc-cluster";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
 const SYSTEM_CONFIG_ROLLOUT_MODE: &str = "local-gateway-system-config-rollout";
@@ -115,6 +116,12 @@ struct MetaPutRequest {
 struct MetaPutResponse {
     key: String,
     revision: u64,
+    #[serde(default)]
+    create_revision: u64,
+    #[serde(default)]
+    mod_revision: u64,
+    #[serde(default)]
+    version: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,6 +134,8 @@ struct MetaDeleteResponse {
     key: String,
     existed: bool,
     prev_meta: Option<MetaEntry>,
+    #[serde(default)]
+    meta_version: Option<MetaVersion>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,6 +152,70 @@ struct MetaEntry {
     key: String,
     value: String,
     revision: u64,
+    #[serde(default)]
+    create_revision: u64,
+    #[serde(default)]
+    mod_revision: u64,
+    #[serde(default)]
+    version: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaVersion {
+    #[serde(default)]
+    create_revision: u64,
+    #[serde(default)]
+    mod_revision: u64,
+    #[serde(default)]
+    version: u64,
+    #[serde(default)]
+    deleted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaTxResponse {
+    #[serde(default)]
+    revisions: BTreeMap<String, Option<u64>>,
+    #[serde(default)]
+    meta_versions: BTreeMap<String, MetaVersion>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaHistoryRecord {
+    key: String,
+    value: String,
+    create_revision: u64,
+    mod_revision: u64,
+    version: u64,
+    deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MetaChangeCursor {
+    revision: u64,
+    key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaChangesResponse {
+    items: Vec<MetaHistoryRecord>,
+    #[serde(default)]
+    next_cursor: Option<MetaChangeCursor>,
+    #[serde(default)]
+    has_more: bool,
+    current_revision: u64,
+    next_start_revision: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct MetaCompactRequest {
+    revision: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaCompactResponse {
+    compacted_revision: u64,
+    current_revision: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -568,6 +641,25 @@ async fn query_meta_via_cluster_inter_route(
     node_name: &str,
     key: &str,
 ) -> Result<MetaQueryResponse, String> {
+    query_meta_at_revision_via_cluster_inter_route(
+        client,
+        gateway_addr,
+        route_prefix,
+        node_name,
+        key,
+        None,
+    )
+    .await
+}
+
+async fn query_meta_at_revision_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    key: &str,
+    revision: Option<u64>,
+) -> Result<MetaQueryResponse, String> {
     let mut url = Url::parse(
         cluster_route_url(
             gateway_addr,
@@ -584,6 +676,9 @@ async fn query_meta_via_cluster_inter_route(
         query.append_pair("key", key);
         query.append_pair("limit", "1");
         query.append_pair("strong_read", "true");
+        if let Some(revision) = revision {
+            query.append_pair("revision", revision.to_string().as_str());
+        }
     }
 
     let response = client.get(url.clone()).send().await.map_err(|err| {
@@ -642,6 +737,30 @@ async fn query_meta_prefix_page_via_cluster_inter_route(
     limit: usize,
     cursor: Option<&str>,
 ) -> Result<MetaQueryResponse, String> {
+    query_meta_prefix_page_at_revision_via_cluster_inter_route(
+        client,
+        gateway_addr,
+        route_prefix,
+        node_name,
+        prefix,
+        limit,
+        cursor,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn query_meta_prefix_page_at_revision_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    prefix: &str,
+    limit: usize,
+    cursor: Option<&str>,
+    revision: Option<u64>,
+) -> Result<MetaQueryResponse, String> {
     let mut url = Url::parse(
         cluster_route_url(
             gateway_addr,
@@ -660,6 +779,9 @@ async fn query_meta_prefix_page_via_cluster_inter_route(
         query.append_pair("strong_read", "true");
         if let Some(cursor) = cursor {
             query.append_pair("cursor", cursor);
+        }
+        if let Some(revision) = revision {
+            query.append_pair("revision", revision.to_string().as_str());
         }
     }
 
@@ -738,6 +860,283 @@ async fn delete_meta_via_cluster_inter_route(
     })
 }
 
+async fn exec_meta_tx_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    actions: BTreeMap<String, Value>,
+) -> Result<MetaTxResponse, String> {
+    let url = cluster_route_url(gateway_addr, route_prefix, node_name, "inter", "/meta-tx");
+    let body = json!({ "actions": actions });
+
+    let response = client
+        .post(url.as_str())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| {
+            format!(
+                "cluster inter meta-tx request failed: url={}, err={}",
+                url, err
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+        return Err(format!(
+            "cluster inter meta-tx returned non-success status {} from {}: {}",
+            status, url, body
+        ));
+    }
+
+    response.json::<MetaTxResponse>().await.map_err(|err| {
+        format!(
+            "failed to decode cluster inter meta-tx response from {}: {}",
+            url, err
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn query_meta_changes_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    prefix: &str,
+    start_revision: u64,
+    limit: usize,
+    cursor: Option<&MetaChangeCursor>,
+) -> Result<MetaChangesResponse, String> {
+    let mut url = Url::parse(
+        cluster_route_url(
+            gateway_addr,
+            route_prefix,
+            node_name,
+            "inter",
+            "/meta-changes",
+        )
+        .as_str(),
+    )
+    .map_err(|err| format!("failed to build cluster inter meta-changes url: {}", err))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("prefix", prefix);
+        query.append_pair("start_revision", start_revision.to_string().as_str());
+        query.append_pair("limit", limit.to_string().as_str());
+        query.append_pair("include_deleted", "true");
+        query.append_pair("strong_read", "true");
+        if let Some(cursor) = cursor {
+            query.append_pair("cursor_revision", cursor.revision.to_string().as_str());
+            query.append_pair("cursor_key", cursor.key.as_str());
+        }
+    }
+
+    let response = client.get(url.clone()).send().await.map_err(|err| {
+        format!(
+            "cluster inter meta-changes request failed: url={}, err={}",
+            url, err
+        )
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+        return Err(format!(
+            "cluster inter meta-changes returned non-success status {} from {}: {}",
+            status, url, body
+        ));
+    }
+
+    response.json::<MetaChangesResponse>().await.map_err(|err| {
+        format!(
+            "failed to decode cluster inter meta-changes response from {}: {}",
+            url, err
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn expect_meta_query_status_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    key: Option<&str>,
+    prefix: Option<&str>,
+    revision: Option<u64>,
+    expected_status: StatusCode,
+    expected_error_code: Option<&str>,
+) -> Result<(), String> {
+    let mut url = Url::parse(
+        cluster_route_url(
+            gateway_addr,
+            route_prefix,
+            node_name,
+            "inter",
+            "/meta-query",
+        )
+        .as_str(),
+    )
+    .map_err(|err| format!("failed to build cluster inter meta-query url: {}", err))?;
+    {
+        let mut query = url.query_pairs_mut();
+        if let Some(key) = key {
+            query.append_pair("key", key);
+        }
+        if let Some(prefix) = prefix {
+            query.append_pair("prefix", prefix);
+        }
+        if let Some(revision) = revision {
+            query.append_pair("revision", revision.to_string().as_str());
+        }
+        query.append_pair("limit", "16");
+        query.append_pair("strong_read", "true");
+    }
+
+    let response = client.get(url.clone()).send().await.map_err(|err| {
+        format!(
+            "cluster inter meta-query status request failed: url={}, err={}",
+            url, err
+        )
+    })?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+    if status != expected_status {
+        return Err(format!(
+            "cluster inter meta-query expected status {} but got {} from {}: {}",
+            expected_status, status, url, body
+        ));
+    }
+    if let Some(expected_error_code) = expected_error_code {
+        require_error_code(body.as_str(), expected_error_code)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn expect_meta_changes_status_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    prefix: &str,
+    start_revision: u64,
+    expected_status: StatusCode,
+    expected_error_code: Option<&str>,
+) -> Result<(), String> {
+    let mut url = Url::parse(
+        cluster_route_url(
+            gateway_addr,
+            route_prefix,
+            node_name,
+            "inter",
+            "/meta-changes",
+        )
+        .as_str(),
+    )
+    .map_err(|err| format!("failed to build cluster inter meta-changes url: {}", err))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("prefix", prefix);
+        query.append_pair("start_revision", start_revision.to_string().as_str());
+        query.append_pair("limit", "16");
+        query.append_pair("include_deleted", "true");
+        query.append_pair("strong_read", "true");
+    }
+
+    let response = client.get(url.clone()).send().await.map_err(|err| {
+        format!(
+            "cluster inter meta-changes status request failed: url={}, err={}",
+            url, err
+        )
+    })?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+    if status != expected_status {
+        return Err(format!(
+            "cluster inter meta-changes expected status {} but got {} from {}: {}",
+            expected_status, status, url, body
+        ));
+    }
+    if let Some(expected_error_code) = expected_error_code {
+        require_error_code(body.as_str(), expected_error_code)?;
+    }
+    Ok(())
+}
+
+async fn post_meta_compact_via_admin_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    leader_node_name: &str,
+    revision: u64,
+) -> Result<MetaCompactResponse, String> {
+    let url = cluster_route_url(
+        gateway_addr,
+        route_prefix,
+        leader_node_name,
+        "admin",
+        "/meta-compact",
+    );
+    let response = client
+        .post(url.as_str())
+        .json(&MetaCompactRequest { revision })
+        .send()
+        .await
+        .map_err(|err| format!("meta-compact request failed: url={}, err={}", url, err))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+        return Err(format!(
+            "meta-compact returned non-success status {} from {}: {}",
+            status, url, body
+        ));
+    }
+
+    response.json::<MetaCompactResponse>().await.map_err(|err| {
+        format!(
+            "failed to decode meta-compact response from {}: {}",
+            url, err
+        )
+    })
+}
+
+fn require_error_code(body: &str, expected_error_code: &str) -> Result<(), String> {
+    let value = serde_json::from_str::<Value>(body).map_err(|err| {
+        format!(
+            "failed to parse error body as json: body={}, err={}",
+            body, err
+        )
+    })?;
+    let code = value
+        .get("error_code")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("missing error_code in error body: {}", body))?;
+    if code != expected_error_code {
+        return Err(format!(
+            "unexpected error_code: expected={}, actual={}, body={}",
+            expected_error_code, code, body
+        ));
+    }
+    Ok(())
+}
+
 fn require_meta_value(
     response: &MetaQueryResponse,
     key: &str,
@@ -767,6 +1166,137 @@ fn require_meta_keys(response: &MetaQueryResponse, expected_keys: &[&str]) -> Re
         }
     }
     Ok(())
+}
+
+fn require_meta_values(
+    response: &MetaQueryResponse,
+    expected: &[(&str, &str, u64, u64, u64)],
+) -> Result<(), String> {
+    if response.items.len() != expected.len() {
+        return Err(format!(
+            "unexpected meta item count: expected={}, actual={}, items={:?}",
+            expected.len(),
+            response.items.len(),
+            response.items
+        ));
+    }
+
+    for (
+        item,
+        (
+            expected_key,
+            expected_value,
+            expected_create_revision,
+            expected_mod_revision,
+            expected_version,
+        ),
+    ) in response.items.iter().zip(expected.iter())
+    {
+        if item.key != *expected_key
+            || item.value != *expected_value
+            || item.revision != *expected_mod_revision
+            || item.create_revision != *expected_create_revision
+            || item.mod_revision != *expected_mod_revision
+            || item.version != *expected_version
+        {
+            return Err(format!(
+                "unexpected meta item: expected=({}, {}, create={}, mod={}, version={}), actual={:?}",
+                expected_key,
+                expected_value,
+                expected_create_revision,
+                expected_mod_revision,
+                expected_version,
+                item
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_meta_version(
+    version: Option<&MetaVersion>,
+    create_revision: u64,
+    mod_revision: u64,
+    item_version: u64,
+    deleted: bool,
+) -> Result<(), String> {
+    let version = version.ok_or_else(|| "missing meta version".to_string())?;
+    if version.create_revision != create_revision
+        || version.mod_revision != mod_revision
+        || version.version != item_version
+        || version.deleted != deleted
+    {
+        return Err(format!(
+            "unexpected meta version: expected=({}, {}, {}, {}), actual={:?}",
+            create_revision, mod_revision, item_version, deleted, version
+        ));
+    }
+    Ok(())
+}
+
+fn require_meta_changes(
+    response: &MetaChangesResponse,
+    expected: &[(u64, &str, &str, bool, u64, u64)],
+) -> Result<(), String> {
+    if response.items.len() != expected.len() {
+        return Err(format!(
+            "unexpected meta changes count: expected={}, actual={}, items={:?}",
+            expected.len(),
+            response.items.len(),
+            response.items
+        ));
+    }
+
+    for (
+        item,
+        (
+            expected_revision,
+            expected_key,
+            expected_value,
+            expected_deleted,
+            expected_create_revision,
+            expected_version,
+        ),
+    ) in response.items.iter().zip(expected.iter())
+    {
+        if item.mod_revision != *expected_revision
+            || item.key != *expected_key
+            || item.value != *expected_value
+            || item.deleted != *expected_deleted
+            || item.create_revision != *expected_create_revision
+            || item.version != *expected_version
+        {
+            return Err(format!(
+                "unexpected meta change: expected=(mod={}, key={}, value={}, deleted={}, create={}, version={}), actual={:?}",
+                expected_revision,
+                expected_key,
+                expected_value,
+                expected_deleted,
+                expected_create_revision,
+                expected_version,
+                item
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn meta_tx_put_action(
+    key: &str,
+    value: &str,
+    node_name: &str,
+    expected_revision: Option<u64>,
+) -> Value {
+    json!({
+        "action": "put",
+        "item": {
+            "key": key,
+            "value": value,
+            "updated_at": 0_u64,
+            "updated_by_node_name": node_name,
+        },
+        "expected_revision": expected_revision,
+    })
 }
 
 async fn fetch_cluster_state_via_admin_route(
@@ -5311,6 +5841,495 @@ async fn run_local_gateway_restart_recovery() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_mvcc_cluster_inner(harness: &mut LocalHarness) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-mvcc-cluster-dv";
+    let setup = prepare_local_gateway_setup(harness, MVCC_CLUSTER_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .ok_or_else(|| "missing seed node".to_string())?
+        .clone();
+    let mut configs = BTreeMap::new();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_before = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    let source = nodes
+        .first()
+        .ok_or_else(|| "missing source node".to_string())?;
+    let target = nodes
+        .get(1)
+        .ok_or_else(|| "missing target node".to_string())?;
+    let observer = nodes
+        .get(2)
+        .ok_or_else(|| "missing observer node".to_string())?;
+    let source_gateway_addr = gateway_addr(source, ingress_port);
+    let target_gateway_addr = gateway_addr(target, ingress_port);
+    let observer_gateway_addr = gateway_addr(observer, ingress_port);
+    let suffix = unique_suffix("mvcc-cluster");
+    let prefix = format!("test/klog_mvcc_cluster_dv/{}/", suffix);
+    let key_a = format!("{}a", prefix);
+    let key_b = format!("{}b", prefix);
+    let key_c = format!("{}c", prefix);
+    let key_d = format!("{}d", prefix);
+
+    let tx1 = exec_meta_tx_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        BTreeMap::from([
+            (
+                key_a.clone(),
+                meta_tx_put_action(&key_a, "a-v1", target.name.as_str(), Some(0)),
+            ),
+            (
+                key_b.clone(),
+                meta_tx_put_action(&key_b, "b-v1", target.name.as_str(), Some(0)),
+            ),
+        ]),
+    )
+    .await?;
+    let r1 = tx1
+        .revisions
+        .get(&key_a)
+        .and_then(|revision| *revision)
+        .ok_or_else(|| format!("missing tx1 revision for {}", key_a))?;
+    if tx1.revisions.get(&key_b).and_then(|revision| *revision) != Some(r1) {
+        return Err(format!("tx1 keys did not share revision: {:?}", tx1));
+    }
+    require_meta_version(tx1.meta_versions.get(&key_a), r1, r1, 1, false)?;
+    require_meta_version(tx1.meta_versions.get(&key_b), r1, r1, 1, false)?;
+
+    let a_v2 = put_meta_via_cluster_inter_route(
+        &client,
+        observer_gateway_addr.as_str(),
+        route_prefix,
+        source.name.as_str(),
+        key_a.as_str(),
+        "a-v2",
+        Some(r1),
+    )
+    .await?;
+    let r2 = a_v2.mod_revision;
+    if a_v2.create_revision != r1 || a_v2.version != 2 || r2 != r1 + 1 {
+        return Err(format!("unexpected a_v2 MVCC response: {:?}", a_v2));
+    }
+
+    let deleted_b = delete_meta_via_cluster_inter_route(
+        &client,
+        target_gateway_addr.as_str(),
+        route_prefix,
+        observer.name.as_str(),
+        key_b.as_str(),
+    )
+    .await?;
+    if deleted_b.key != key_b
+        || !deleted_b.existed
+        || deleted_b.prev_meta.as_ref().map(|item| item.revision) != Some(r1)
+    {
+        return Err(format!("unexpected key_b delete response: {:?}", deleted_b));
+    }
+    let delete_version = deleted_b
+        .meta_version
+        .as_ref()
+        .ok_or_else(|| format!("missing key_b delete meta_version: {:?}", deleted_b))?;
+    require_meta_version(Some(delete_version), r1, r2 + 1, 0, true)?;
+    let r3 = delete_version.mod_revision;
+
+    expect_meta_put_status_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        MetaPutRequest {
+            key: key_b.clone(),
+            value: "stale-b".to_string(),
+            node_name: Some(target.name.clone()),
+            expected_revision: Some(r1),
+        },
+        StatusCode::CONFLICT,
+    )
+    .await?;
+
+    let b_v2 = put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        observer.name.as_str(),
+        key_b.as_str(),
+        "b-v2",
+        Some(0),
+    )
+    .await?;
+    let r4 = b_v2.mod_revision;
+    if b_v2.create_revision != r4 || b_v2.version != 1 || r4 != r3 + 1 {
+        return Err(format!("unexpected b_v2 MVCC response: {:?}", b_v2));
+    }
+
+    let tx5 = exec_meta_tx_via_cluster_inter_route(
+        &client,
+        observer_gateway_addr.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        BTreeMap::from([
+            (
+                key_a.clone(),
+                meta_tx_put_action(&key_a, "a-v3", target.name.as_str(), Some(r2)),
+            ),
+            (
+                key_c.clone(),
+                meta_tx_put_action(&key_c, "c-v1", target.name.as_str(), Some(0)),
+            ),
+            (
+                key_d.clone(),
+                meta_tx_put_action(&key_d, "d-v1", target.name.as_str(), Some(0)),
+            ),
+        ]),
+    )
+    .await?;
+    let r5 = tx5
+        .revisions
+        .get(&key_a)
+        .and_then(|revision| *revision)
+        .ok_or_else(|| format!("missing tx5 revision for {}", key_a))?;
+    if r5 != r4 + 1 {
+        return Err(format!("unexpected tx5 revision: r4={}, r5={}", r4, r5));
+    }
+    require_meta_version(tx5.meta_versions.get(&key_a), r1, r5, 3, false)?;
+    require_meta_version(tx5.meta_versions.get(&key_c), r5, r5, 1, false)?;
+    require_meta_version(tx5.meta_versions.get(&key_d), r5, r5, 1, false)?;
+
+    for node in &nodes {
+        let gateway = gateway_addr(node, ingress_port);
+        let rev1 = query_meta_prefix_page_at_revision_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            16,
+            None,
+            Some(r1),
+        )
+        .await?;
+        require_meta_values(
+            &rev1,
+            &[(&key_a, "a-v1", r1, r1, 1), (&key_b, "b-v1", r1, r1, 1)],
+        )?;
+
+        let rev3 = query_meta_prefix_page_at_revision_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            16,
+            None,
+            Some(r3),
+        )
+        .await?;
+        require_meta_values(&rev3, &[(&key_a, "a-v2", r1, r2, 2)])?;
+
+        let current = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            16,
+        )
+        .await?;
+        require_meta_values(
+            &current,
+            &[
+                (&key_a, "a-v3", r1, r5, 3),
+                (&key_b, "b-v2", r4, r4, 1),
+                (&key_c, "c-v1", r5, r5, 1),
+                (&key_d, "d-v1", r5, r5, 1),
+            ],
+        )?;
+    }
+
+    let page1 = query_meta_changes_via_cluster_inter_route(
+        &client,
+        observer_gateway_addr.as_str(),
+        route_prefix,
+        source.name.as_str(),
+        prefix.as_str(),
+        r1,
+        4,
+        None,
+    )
+    .await?;
+    if !page1.has_more || page1.next_cursor.is_none() || page1.current_revision < r5 {
+        return Err(format!(
+            "unexpected first changes page metadata: {:?}",
+            page1
+        ));
+    }
+    require_meta_changes(
+        &page1,
+        &[
+            (r1, &key_a, "a-v1", false, r1, 1),
+            (r1, &key_b, "b-v1", false, r1, 1),
+            (r2, &key_a, "a-v2", false, r1, 2),
+            (r3, &key_b, "b-v1", true, r1, 0),
+        ],
+    )?;
+
+    let page2 = query_meta_changes_via_cluster_inter_route(
+        &client,
+        observer_gateway_addr.as_str(),
+        route_prefix,
+        source.name.as_str(),
+        prefix.as_str(),
+        r1,
+        4,
+        page1.next_cursor.as_ref(),
+    )
+    .await?;
+    if page2.has_more || page2.next_start_revision <= r5 {
+        return Err(format!(
+            "unexpected second changes page metadata: {:?}",
+            page2
+        ));
+    }
+    require_meta_changes(
+        &page2,
+        &[
+            (r4, &key_b, "b-v2", false, r4, 1),
+            (r5, &key_a, "a-v3", false, r1, 3),
+            (r5, &key_c, "c-v1", false, r5, 1),
+            (r5, &key_d, "d-v1", false, r5, 1),
+        ],
+    )?;
+
+    let leader_node = nodes
+        .iter()
+        .find(|node| node.id == leader_before)
+        .ok_or_else(|| format!("leader node {} not found", leader_before))?;
+    let leader_gateway_addr = gateway_addr(leader_node, ingress_port);
+    let compacted = post_meta_compact_via_admin_route(
+        &client,
+        leader_gateway_addr.as_str(),
+        route_prefix,
+        leader_node.name.as_str(),
+        r4,
+    )
+    .await?;
+    if compacted.compacted_revision != r4 || compacted.current_revision != r5 {
+        return Err(format!(
+            "unexpected compaction response: {:?}, expected compacted={}, current={}",
+            compacted, r4, r5
+        ));
+    }
+
+    expect_meta_query_status_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        observer.name.as_str(),
+        None,
+        Some(prefix.as_str()),
+        Some(r1),
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+    expect_meta_changes_status_via_cluster_inter_route(
+        &client,
+        target_gateway_addr.as_str(),
+        route_prefix,
+        source.name.as_str(),
+        prefix.as_str(),
+        r1,
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+
+    let post_compact_changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        target_gateway_addr.as_str(),
+        route_prefix,
+        observer.name.as_str(),
+        prefix.as_str(),
+        r4 + 1,
+        8,
+        None,
+    )
+    .await?;
+    require_meta_changes(
+        &post_compact_changes,
+        &[
+            (r5, &key_a, "a-v3", false, r1, 3),
+            (r5, &key_c, "c-v1", false, r5, 1),
+            (r5, &key_d, "d-v1", false, r5, 1),
+        ],
+    )?;
+
+    for node in &nodes {
+        harness.stop(format!("klog-{}", node.name).as_str())?;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    for node in &nodes {
+        let config = configs
+            .get(&node.id)
+            .ok_or_else(|| format!("restart config for node {} not found", node.id))?;
+        spawn_klog(harness, &klog_daemon_bin, config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+    }
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(90),
+    )
+    .await?;
+    let leader_after = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    for node in &nodes {
+        let gateway = gateway_addr(node, ingress_port);
+        let current = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            16,
+        )
+        .await?;
+        require_meta_values(
+            &current,
+            &[
+                (&key_a, "a-v3", r1, r5, 3),
+                (&key_b, "b-v2", r4, r4, 1),
+                (&key_c, "c-v1", r5, r5, 1),
+                (&key_d, "d-v1", r5, r5, 1),
+            ],
+        )?;
+    }
+
+    let restarted_observer_gateway = gateway_addr(observer, ingress_port);
+    expect_meta_query_status_via_cluster_inter_route(
+        &client,
+        restarted_observer_gateway.as_str(),
+        route_prefix,
+        observer.name.as_str(),
+        Some(key_a.as_str()),
+        None,
+        Some(r4),
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+    let after_restart_changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        restarted_observer_gateway.as_str(),
+        route_prefix,
+        observer.name.as_str(),
+        prefix.as_str(),
+        r5,
+        8,
+        None,
+    )
+    .await?;
+    require_meta_changes(
+        &after_restart_changes,
+        &[
+            (r5, &key_a, "a-v3", false, r1, 3),
+            (r5, &key_c, "c-v1", false, r5, 1),
+            (r5, &key_d, "d-v1", false, r5, 1),
+        ],
+    )?;
+
+    println!(
+        "[klog-cluster-dv] mvcc cluster ok: leader_before={}, leader_after={}, revisions=[{},{},{},{},{}], prefix={}",
+        leader_before, leader_after, r1, r2, r3, r4, r5, prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_mvcc_cluster() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_mvcc_cluster_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -6585,27 +7604,35 @@ async fn run() -> Result<(), String> {
         OOD_TWO_VOTER_LOSS_MODE => run_local_gateway_ood_two_voter_loss().await,
         OOD_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_ood_snapshot_membership().await,
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
+        MVCC_CLUSTER_MODE => run_local_gateway_mvcc_cluster().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
         SYSTEM_CONFIG_PAGINATION_MODE => run_local_gateway_system_config_pagination().await,
         SYSTEM_CONFIG_ROLLOUT_MODE => run_local_gateway_system_config_rollout().await,
-        other => Err(format!(
-            "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}'",
-            other,
-            MULTI_NODE_MODE,
-            MEMBERSHIP_MODE,
-            OOD_MEMBERSHIP_MODE,
-            OOD_LEADER_FAILOVER_SHRINK_MODE,
-            OOD_SEED_UNAVAILABLE_JOIN_MODE,
-            OOD_SINGLE_TO_TWO_MODE,
-            OOD_TWO_VOTER_LOSS_MODE,
-            OOD_SNAPSHOT_MEMBERSHIP_MODE,
-            RESTART_RECOVERY_MODE,
-            SYSTEM_CONFIG_KV_MODE,
-            SYSTEM_CONFIG_SERVICE_MODE,
-            SYSTEM_CONFIG_PAGINATION_MODE,
-            SYSTEM_CONFIG_ROLLOUT_MODE
-        )),
+        other => {
+            let supported = [
+                "",
+                MULTI_NODE_MODE,
+                MEMBERSHIP_MODE,
+                OOD_MEMBERSHIP_MODE,
+                OOD_LEADER_FAILOVER_SHRINK_MODE,
+                OOD_SEED_UNAVAILABLE_JOIN_MODE,
+                OOD_SINGLE_TO_TWO_MODE,
+                OOD_TWO_VOTER_LOSS_MODE,
+                OOD_SNAPSHOT_MEMBERSHIP_MODE,
+                RESTART_RECOVERY_MODE,
+                MVCC_CLUSTER_MODE,
+                SYSTEM_CONFIG_KV_MODE,
+                SYSTEM_CONFIG_SERVICE_MODE,
+                SYSTEM_CONFIG_PAGINATION_MODE,
+                SYSTEM_CONFIG_ROLLOUT_MODE,
+            ]
+            .join("', '");
+            Err(format!(
+                "unsupported KLOG_CLUSTER_DV_MODE='{}'; supported values: '{}'",
+                other, supported
+            ))
+        }
     }
 }
 

@@ -586,7 +586,36 @@ async fn test_state_machine_apply_meta_tx_is_atomic_on_conflict() -> anyhow::Res
             }
         }
     ));
-    assert!(matches!(responses[1], KLogResponse::MetaTxOk { .. }));
+    let KLogResponse::MetaTxOk { response } = &responses[1] else {
+        panic!("unexpected meta tx response: {:?}", responses[1]);
+    };
+    assert_eq!(
+        response.meta_versions.get("system/config/a").map(|v| (
+            v.create_revision,
+            v.mod_revision,
+            v.version,
+            v.deleted
+        )),
+        Some((2, 2, 1, false))
+    );
+    assert_eq!(
+        response.meta_versions.get("system/config/b").map(|v| (
+            v.create_revision,
+            v.mod_revision,
+            v.version,
+            v.deleted
+        )),
+        Some((2, 2, 1, false))
+    );
+    assert_eq!(
+        response.meta_versions.get("system/config/guard").map(|v| (
+            v.create_revision,
+            v.mod_revision,
+            v.version,
+            v.deleted
+        )),
+        Some((1, 2, 2, false))
+    );
     assert!(matches!(
         &responses[2],
         KLogResponse::MetaTxConflict {

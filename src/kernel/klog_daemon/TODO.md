@@ -43,11 +43,21 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Manual compaction and compacted-revision errors are implemented.
   - Long-running deployments still need an explicit retention policy and
     trigger strategy before watch APIs are treated as production interfaces.
+- [ ] Add production watch lifecycle semantics.
+  - The first change-feed API is active polling with cursor resume.
+  - A complete MVCC watch model still needs client resume rules, watch
+    cancellation behavior, backpressure limits, observability, and clear
+    handling for watches that fall behind the compacted revision.
 - [ ] Consider push/stream watch APIs only if active polling becomes insufficient.
   - The first watch-compatible interface is short long-poll over
     `/klog/data/meta-changes` and JSON-RPC `klog.meta.changes`.
   - SSE/WebSocket/gRPC streaming remains deferred until gateway behavior,
     cancellation, backpressure, and operational demand are clear.
+- [ ] Add high-level system_config MVCC regression coverage.
+  - klog store/state-machine tests cover the low-level MVCC matrix first.
+  - A later BuckyOS-level DV should validate `system_config` CAS,
+    delete/recreate, prefix pagination, change-feed resume, and explicit
+    compaction through the real klog backend.
 
 ## P3: Deferred / Not Planned Now
 
@@ -159,6 +169,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     returns compacted-revision errors through HTTP/JSON-RPC query paths.
   - Covered by klog state-machine/RocksDB state-store tests and the
     klog_daemon meta compaction client test.
+- [x] Validate klog MVCC behavior through a local gateway cluster DV.
+  - Covered by `test/klog_mvcc_cluster_dv.sh`.
+  - Validates 3-voter gateway cluster routes, atomic meta transactions,
+    historical prefix reads, change-feed cursor pagination, explicit
+    compaction/compacted-revision errors, and restart persistence.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
 - [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.
