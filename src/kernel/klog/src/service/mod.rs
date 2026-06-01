@@ -482,7 +482,7 @@ impl KLogWriteService {
             // Meta write audit fields are owned by the raft service, not client input.
             updated_at: now_millis(),
             updated_by_node_name: origin_node_name.clone(),
-            revision: 0,
+            ..KLogMetaEntry::default()
         };
         info!(
             "{} meta put request: trace_id={}, key={}, value_len={}, updated_at={}, updated_by_node_name={}, expected_revision={:?}, local_raft_node_id={}, local_node_name={}, current_leader={:?}, forward_hops={}, forwarded_by={}",
@@ -509,12 +509,16 @@ impl KLogWriteService {
             .await
         {
             Ok(resp) => match resp.data {
-                KLogResponse::MetaPutOk { key, revision } => {
+                KLogResponse::MetaPutOk { item } => {
                     info!(
-                        "{} meta put committed: key={}, revision={}",
-                        self.service_name, key, revision
+                        "{} meta put committed: key={}, mod_revision={}, create_revision={}, version={}",
+                        self.service_name,
+                        item.key,
+                        item.effective_mod_revision(),
+                        item.effective_create_revision(),
+                        item.effective_version()
                     );
-                    Ok(KLogMetaPutResponse { key, revision })
+                    Ok(KLogMetaPutResponse::from_entry(&item))
                 }
                 KLogResponse::MetaPutConflict {
                     key,
@@ -830,12 +834,12 @@ impl KLogWriteService {
             .await
         {
             Ok(resp) => match resp.data {
-                KLogResponse::MetaTxOk { revisions } => {
+                KLogResponse::MetaTxOk { response } => {
                     info!(
-                        "{} meta tx committed: revisions={:?}",
-                        self.service_name, revisions
+                        "{} meta tx committed: revisions={:?}, meta_versions={:?}",
+                        self.service_name, response.revisions, response.meta_versions
                     );
-                    Ok(KLogMetaTxResponse { revisions })
+                    Ok(response)
                 }
                 KLogResponse::MetaTxConflict {
                     key,
@@ -1042,18 +1046,23 @@ impl KLogWriteService {
                     key,
                     existed,
                     prev_meta,
+                    meta_version,
                 } => {
                     info!(
-                        "{} meta delete committed: key={}, existed={}, prev_meta_revision={:?}",
+                        "{} meta delete committed: key={}, existed={}, prev_meta_revision={:?}, delete_meta_version={:?}",
                         self.service_name,
                         key,
                         existed,
-                        prev_meta.as_ref().map(|v| v.revision)
+                        prev_meta
+                            .as_ref()
+                            .map(KLogMetaEntry::effective_mod_revision),
+                        meta_version
                     );
                     Ok(KLogMetaDeleteResponse {
                         key,
                         existed,
                         prev_meta,
+                        meta_version,
                     })
                 }
                 KLogResponse::Err(err_msg) => {

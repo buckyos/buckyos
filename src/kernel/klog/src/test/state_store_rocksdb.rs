@@ -114,7 +114,7 @@ async fn test_rocksdb_meta_persists_after_reopen() -> anyhow::Result<()> {
             value: "64".to_string(),
             updated_at: 1000,
             updated_by_node_name: "node-1".to_string(),
-            revision: 0,
+            ..KLogMetaEntry::default()
         })
         .await?;
     drop(manager);
@@ -137,7 +137,7 @@ async fn test_rocksdb_meta_persists_after_reopen() -> anyhow::Result<()> {
             value: "128".to_string(),
             updated_at: 1001,
             updated_by_node_name: "node-1".to_string(),
-            revision: 0,
+            ..KLogMetaEntry::default()
         })
         .await?;
     assert_eq!(second.revision, 2);
@@ -172,7 +172,7 @@ async fn test_rocksdb_meta_list_uses_cursor() -> anyhow::Result<()> {
                 value: key.to_string(),
                 updated_at: 1000,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             })
             .await?;
     }
@@ -214,7 +214,7 @@ async fn test_rocksdb_meta_snapshot_roundtrip() -> anyhow::Result<()> {
             value: "v1".to_string(),
             updated_at: 2000,
             updated_by_node_name: "node-2".to_string(),
-            revision: 0,
+            ..KLogMetaEntry::default()
         })
         .await?;
     let src_snapshot = src_mgr.build_snapshot().await?;
@@ -255,7 +255,7 @@ async fn test_rocksdb_meta_delete_recreate_uses_tombstone_revision() -> anyhow::
                 value: "v1".to_string(),
                 updated_at: 2100,
                 updated_by_node_name: "node-2".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             Some(0),
         )
@@ -280,7 +280,7 @@ async fn test_rocksdb_meta_delete_recreate_uses_tombstone_revision() -> anyhow::
                 value: "stale".to_string(),
                 updated_at: 2101,
                 updated_by_node_name: "node-2".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             Some(1),
         )
@@ -300,7 +300,7 @@ async fn test_rocksdb_meta_delete_recreate_uses_tombstone_revision() -> anyhow::
                 value: "v2".to_string(),
                 updated_at: 2102,
                 updated_by_node_name: "node-2".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             Some(0),
         )
@@ -330,7 +330,7 @@ async fn test_rocksdb_meta_tombstone_survives_enumerate_snapshot() -> anyhow::Re
             value: "v1".to_string(),
             updated_at: 2200,
             updated_by_node_name: "node-2".to_string(),
-            revision: 0,
+            ..KLogMetaEntry::default()
         })
         .await?;
     src_mgr.delete_meta_key(key).await?;
@@ -353,7 +353,7 @@ async fn test_rocksdb_meta_tombstone_survives_enumerate_snapshot() -> anyhow::Re
                 value: "stale".to_string(),
                 updated_at: 2201,
                 updated_by_node_name: "node-2".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             Some(1),
         )
@@ -373,7 +373,7 @@ async fn test_rocksdb_meta_tombstone_survives_enumerate_snapshot() -> anyhow::Re
                 value: "v2".to_string(),
                 updated_at: 2202,
                 updated_by_node_name: "node-2".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             Some(0),
         )

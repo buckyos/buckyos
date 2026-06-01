@@ -1,6 +1,6 @@
 use crate::{
-    KLogEntry, KLogId, KLogLevel, KLogMetaEntry, KLogMetaTxRequest, KLogMetaTxResponse, KNode,
-    KNodeId, KResult,
+    KLogEntry, KLogId, KLogLevel, KLogMetaEntry, KLogMetaTxRequest, KLogMetaTxResponse,
+    KLogMetaVersion, KNode, KNodeId, KResult,
 };
 use openraft::StoredMembership;
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,21 @@ pub struct KLogMetaKeyState {
     pub mod_revision: u64,
     pub version: u64,
     pub deleted: bool,
+}
+
+impl KLogMetaKeyState {
+    pub fn apply_to_entry(&self, item: &mut KLogMetaEntry) {
+        item.set_mvcc_revision(self.create_revision, self.mod_revision, self.version);
+    }
+
+    pub fn meta_version(&self) -> KLogMetaVersion {
+        KLogMetaVersion::new(
+            self.create_revision,
+            self.mod_revision,
+            self.version,
+            self.deleted,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

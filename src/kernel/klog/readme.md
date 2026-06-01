@@ -59,6 +59,12 @@ BuckyOS/gateway layer. `klog` only enforces protocol and consistency rules.
 - `updated_by_node_name`: writer node name.
 - `revision`: globally increasing metadata `mod_revision`, used as an opaque
   CAS token.
+- `create_revision`: global revision at which the current live generation was
+  created.
+- `mod_revision`: global revision at which the current live value was last
+  modified.
+- `version`: number of live updates since `create_revision`; recreate after
+  delete starts a new generation with version 1.
 
 Current metadata revision semantics are intentionally MVCC-compatible:
 
@@ -70,9 +76,12 @@ Current metadata revision semantics are intentionally MVCC-compatible:
 - Recreating a deleted key with `expected_revision=Some(0)` allocates a new
   `mod_revision`; stale CAS using the pre-delete revision fails with the
   tombstone revision.
-- The first phase keeps only current live values and tombstone state. Historical
-  value lookup by revision, watch streams, and compaction are not implemented
-  yet.
+- `KLogMetaPutResponse`, `KLogMetaQueryResponse`, `KLogMetaTxResponse`, and
+  `KLogMetaDeleteResponse` expose explicit MVCC metadata. `revision` is kept as
+  a compatibility alias for `mod_revision`.
+- The current phase keeps only current live values and tombstone state.
+  Historical value lookup by revision, watch streams, and compaction are not
+  implemented yet.
 
 `KLogMetaPutRequest.expected_revision` controls CAS semantics:
 

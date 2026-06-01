@@ -762,6 +762,9 @@ mod tests {
                             KLogMetaPutResponse {
                                 key: params.key,
                                 revision: 7,
+                                create_revision: 3,
+                                mod_revision: 7,
+                                version: 4,
                             },
                         );
                         (StatusCode::OK, Json(response))
@@ -779,6 +782,9 @@ mod tests {
                                     updated_at: 1234,
                                     updated_by_node_name: "node-1".to_string(),
                                     revision: 7,
+                                    create_revision: 3,
+                                    mod_revision: 7,
+                                    version: 4,
                                 }],
                                 next_cursor: None,
                                 has_more: false,
@@ -800,7 +806,11 @@ mod tests {
                                     updated_at: 1234,
                                     updated_by_node_name: "node-1".to_string(),
                                     revision: 7,
+                                    create_revision: 3,
+                                    mod_revision: 7,
+                                    version: 4,
                                 }),
+                                meta_version: Some(crate::KLogMetaVersion::new(3, 8, 0, true)),
                             },
                         );
                         (StatusCode::OK, Json(response))
@@ -815,6 +825,10 @@ mod tests {
                                 revisions: BTreeMap::from([(
                                     "cluster/config/tx".to_string(),
                                     Some(1),
+                                )]),
+                                meta_versions: BTreeMap::from([(
+                                    "cluster/config/tx".to_string(),
+                                    crate::KLogMetaVersion::new(1, 1, 1, false),
                                 )]),
                             },
                         );
@@ -847,6 +861,9 @@ mod tests {
             .map_err(|e| anyhow::anyhow!("put_meta failed: {}", e))?;
         assert_eq!(put.key, "cluster/config/epoch");
         assert_eq!(put.revision, 7);
+        assert_eq!(put.create_revision, 3);
+        assert_eq!(put.mod_revision, 7);
+        assert_eq!(put.version, 4);
 
         let query = client
             .query_meta(KLogMetaQueryRequest {
@@ -860,6 +877,9 @@ mod tests {
             .map_err(|e| anyhow::anyhow!("query_meta failed: {}", e))?;
         assert_eq!(query.items.len(), 1);
         assert_eq!(query.items[0].value, "42");
+        assert_eq!(query.items[0].create_revision, 3);
+        assert_eq!(query.items[0].mod_revision, 7);
+        assert_eq!(query.items[0].version, 4);
 
         let del = client
             .delete_meta(KLogMetaDeleteRequest {
@@ -869,6 +889,15 @@ mod tests {
             .map_err(|e| anyhow::anyhow!("delete_meta failed: {}", e))?;
         assert!(del.existed);
         assert_eq!(del.prev_meta.as_ref().map(|v| v.revision), Some(7));
+        assert_eq!(
+            del.meta_version.as_ref().map(|v| (
+                v.create_revision,
+                v.mod_revision,
+                v.version,
+                v.deleted
+            )),
+            Some((3, 8, 0, true))
+        );
 
         let mut actions = BTreeMap::new();
         actions.insert(
@@ -879,7 +908,7 @@ mod tests {
                     value: "tx".to_string(),
                     updated_at: 1235,
                     updated_by_node_name: "node-1".to_string(),
-                    revision: 0,
+                    ..crate::KLogMetaEntry::default()
                 },
                 expected_revision: Some(0),
             },
@@ -892,6 +921,10 @@ mod tests {
             .await
             .map_err(|e| anyhow::anyhow!("exec_meta_tx failed: {}", e))?;
         assert_eq!(tx.revisions.get("cluster/config/tx"), Some(&Some(1)));
+        assert_eq!(
+            tx.meta_versions.get("cluster/config/tx"),
+            Some(&crate::KLogMetaVersion::new(1, 1, 1, false))
+        );
         Ok(())
     }
 
