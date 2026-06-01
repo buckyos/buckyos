@@ -48,6 +48,48 @@ pub struct KLogStateSnapshotData {
     pub meta_revision: u64,
 }
 
+/// Stable cursor for revision-ordered metadata change feeds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KLogMetaChangeCursor {
+    pub revision: u64,
+    pub key: String,
+}
+
+/// Query metadata changes ordered by `(mod_revision, key)`.
+///
+/// When both `key` and `prefix` are absent, the query scans all metadata keys.
+/// `start_revision` and `end_revision` are inclusive. `cursor` is exclusive and
+/// is intended for pagination over a previously returned page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KLogMetaChangeQuery {
+    pub start_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<KLogMetaChangeCursor>,
+    pub limit: usize,
+    pub include_deleted: bool,
+}
+
+impl Default for KLogMetaChangeQuery {
+    fn default() -> Self {
+        Self {
+            start_revision: 1,
+            end_revision: None,
+            key: None,
+            prefix: None,
+            cursor: None,
+            limit: 100,
+            include_deleted: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KLogMetaKeyState {
     pub key: String,
@@ -125,6 +167,13 @@ impl KLogMetaHistoryRecord {
         };
         item.set_mvcc_revision(self.create_revision, self.mod_revision, self.version);
         Some(item)
+    }
+
+    pub fn change_cursor(&self) -> KLogMetaChangeCursor {
+        KLogMetaChangeCursor {
+            revision: self.mod_revision,
+            key: self.key.clone(),
+        }
     }
 }
 
@@ -204,6 +253,11 @@ pub trait KLogStateStore: Send + Sync {
         limit: usize,
         revision: u64,
     ) -> KResult<Vec<KLogMetaEntry>>;
+
+    async fn list_meta_changes(
+        &self,
+        query: KLogMetaChangeQuery,
+    ) -> KResult<Vec<KLogMetaHistoryRecord>>;
 
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot>;
 
@@ -499,6 +553,13 @@ impl KLogStateStoreManager {
         self.state_store
             .list_meta_at_revision(prefix, cursor, limit, revision)
             .await
+    }
+
+    pub async fn list_meta_changes(
+        &self,
+        query: KLogMetaChangeQuery,
+    ) -> KResult<Vec<KLogMetaHistoryRecord>> {
+        self.state_store.list_meta_changes(query).await
     }
 
     pub async fn install_snapshot(&self, snapshot: KLogStateSnapshot) -> KResult<()> {

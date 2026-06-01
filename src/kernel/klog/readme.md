@@ -82,6 +82,10 @@ Current metadata revision semantics are intentionally MVCC-compatible:
 - Historical key and prefix queries can pass `revision` to read the visible
   live value set as of that global revision. Tombstones hide deleted keys at
   their delete revision until a later recreate becomes visible.
+- The storage layer also maintains a revision-major metadata change index
+  ordered by `(mod_revision, key)`. It supports bounded change-feed scans with
+  an exclusive cursor and optional key/prefix filters, which is the data-layer
+  prerequisite for etcd-style watch APIs.
 - Watch streams and compaction are not implemented yet.
 
 `KLogMetaPutRequest.expected_revision` controls CAS semantics:

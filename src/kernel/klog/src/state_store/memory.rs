@@ -1,6 +1,6 @@
 use super::store::{
-    KLogMetaHistoryRecord, KLogMetaKeyState, KLogMetaTxResult, KLogQuery, KLogQueryOrder,
-    KLogStateMachineMeta, KLogStateSnapshot, KLogStateSnapshotData, KLogStateStore,
+    KLogMetaChangeQuery, KLogMetaHistoryRecord, KLogMetaKeyState, KLogMetaTxResult, KLogQuery,
+    KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateSnapshotData, KLogStateStore,
     REQUEST_DEDUP_MAX_ITEMS, REQUEST_DEDUP_WINDOW_MS,
 };
 use crate::{
@@ -91,6 +91,7 @@ struct MemoryMetaState {
     entries: HashMap<String, KLogMetaEntry>,
     states: HashMap<String, KLogMetaKeyState>,
     history: BTreeMap<(String, u64), KLogMetaHistoryRecord>,
+    changes: BTreeMap<(u64, String), KLogMetaHistoryRecord>,
     revision: u64,
 }
 
@@ -120,8 +121,10 @@ impl MemoryMetaState {
 
     fn insert_history(&mut self, record: KLogMetaHistoryRecord) {
         self.revision = self.revision.max(record.mod_revision);
-        self.history
-            .insert((record.key.clone(), record.mod_revision), record);
+        let history_key = (record.key.clone(), record.mod_revision);
+        let change_key = (record.mod_revision, record.key.clone());
+        self.history.insert(history_key, record.clone());
+        self.changes.insert(change_key, record);
     }
 
     fn get_history_at_revision(&self, key: &str, revision: u64) -> Option<KLogMetaHistoryRecord> {
@@ -156,6 +159,60 @@ impl MemoryMetaState {
             latest.insert(record.key.clone(), record.clone());
         }
         latest
+    }
+
+    fn list_changes(&self, query: &KLogMetaChangeQuery) -> Vec<KLogMetaHistoryRecord> {
+        if query.limit == 0 {
+            return Vec::new();
+        }
+
+        let key_filter = query
+            .key
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let prefix_filter = query
+            .prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let mut out = Vec::with_capacity(query.limit.min(self.changes.len()));
+        for record in self.changes.values() {
+            if record.mod_revision < query.start_revision {
+                continue;
+            }
+            if let Some(end_revision) = query.end_revision
+                && record.mod_revision > end_revision
+            {
+                break;
+            }
+            if let Some(cursor) = query.cursor.as_ref()
+                && (record.mod_revision < cursor.revision
+                    || (record.mod_revision == cursor.revision
+                        && record.key.as_str() <= cursor.key.as_str()))
+            {
+                continue;
+            }
+            if let Some(key) = key_filter
+                && record.key != key
+            {
+                continue;
+            }
+            if let Some(prefix) = prefix_filter
+                && !record.key.starts_with(prefix)
+            {
+                continue;
+            }
+            if !query.include_deleted && record.deleted {
+                continue;
+            }
+
+            out.push(record.clone());
+            if out.len() >= query.limit {
+                break;
+            }
+        }
+        out
     }
 }
 
@@ -581,6 +638,22 @@ impl KLogStateStore for MemoryStateStore {
         Ok(out)
     }
 
+    async fn list_meta_changes(
+        &self,
+        query: KLogMetaChangeQuery,
+    ) -> KResult<Vec<KLogMetaHistoryRecord>> {
+        if query.key.as_ref().is_some_and(|v| !v.trim().is_empty())
+            && query.prefix.as_ref().is_some_and(|v| !v.trim().is_empty())
+        {
+            let msg = "meta change query can not set key and prefix together";
+            error!("{}", msg);
+            return Err(KLogError::InvalidFormat(msg.to_string()));
+        }
+
+        let metas = self.metas.lock().await;
+        Ok(metas.list_changes(&query))
+    }
+
     async fn build_snapshot(&self) -> KResult<KLogStateSnapshot> {
         let logs = self.logs.lock().await;
         let metas = self.metas.lock().await;
@@ -618,6 +691,7 @@ impl KLogStateStore for MemoryStateStore {
                 .map(|state| (state.key.clone(), state))
                 .collect(),
             history: BTreeMap::new(),
+            changes: BTreeMap::new(),
             revision: snapshot_data.meta_revision,
         };
         for item in snapshot_data.meta_entries {
