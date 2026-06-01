@@ -155,6 +155,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     scans and short long-poll active querying with `wait_timeout_ms`.
   - The API returns change records, `current_revision`, `next_start_revision`,
     and an exclusive `(revision, key)` cursor when more matching changes remain.
+- [x] Validate metadata change-feed long-poll semantics through gateway DV.
+  - Covered by `test/klog_mvcc_change_feed_dv.sh`.
+  - Validates empty `wait_timeout_ms` waits, wait-until-write wakeup,
+    cursor resume, compacted cursor/start revision returning `COMPACTED`, and
+    post-compaction change-feed continuation.
 - [x] Add explicit MVCC metadata compaction.
   - `/klog/admin/meta-compact` submits a Raft state-machine command and
     persists `meta_compacted_revision`.
