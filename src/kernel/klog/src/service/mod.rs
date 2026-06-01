@@ -1,11 +1,13 @@
 use crate::error::{KLogErrorCode, KLogServiceError, normalize_trace_id};
 use crate::network::{
     KDataClient, KLOG_FORWARD_HOPS_HEADER, KLOG_FORWARDED_BY_HEADER, KLOG_TRACE_ID_HEADER,
-    KLogAppendRequest, KLogAppendResponse, KLogMetaDeleteRequest, KLogMetaDeleteResponse,
-    KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest, KLogMetaQueryResponse,
-    KLogQueryRequest, KLogQueryResponse,
+    KLogAppendRequest, KLogAppendResponse, KLogMetaChangesRequest, KLogMetaChangesResponse,
+    KLogMetaDeleteRequest, KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse,
+    KLogMetaQueryRequest, KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
 };
-use crate::state_store::{KLogQuery, KLogQueryOrder, KLogStateStoreManagerRef};
+use crate::state_store::{
+    KLogMetaChangeCursor, KLogMetaChangeQuery, KLogQuery, KLogQueryOrder, KLogStateStoreManagerRef,
+};
 use crate::{
     KClusterTransportConfig, KClusterTransportMode, KLogEntry, KLogLevel, KLogMetaEntry,
     KLogMetaTxAction, KLogMetaTxRequest, KLogMetaTxResponse, KLogRequest, KLogResponse, KNode,
@@ -13,6 +15,7 @@ use crate::{
 };
 use axum::http::{HeaderMap, StatusCode};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::time::{Duration, Instant, sleep};
 
 pub const DATA_QUERY_DEFAULT_LIMIT: usize = 200;
 pub const DATA_QUERY_MAX_LIMIT: usize = 2_000;
@@ -24,6 +27,8 @@ pub const META_KEY_MAX_BYTES: usize = 256;
 pub const META_VALUE_MAX_BYTES: usize = 256 * 1024;
 pub const META_QUERY_DEFAULT_LIMIT: usize = 200;
 pub const META_QUERY_MAX_LIMIT: usize = 2_000;
+pub const META_CHANGES_MAX_WAIT_MS: u64 = 2_000;
+pub const META_CHANGES_POLL_INTERVAL_MS: u64 = 100;
 pub const META_RW_MAX_FORWARD_HOPS: u32 = 2;
 pub type KServiceResult<T> = Result<T, KLogServiceError>;
 
@@ -1881,6 +1886,422 @@ impl KLogQueryService {
             next_cursor,
             has_more,
         })
+    }
+
+    pub async fn query_meta_changes(
+        &self,
+        headers: &HeaderMap,
+        query: KLogMetaChangesRequest,
+    ) -> KServiceResult<KLogMetaChangesResponse> {
+        let trace_id = self.resolve_trace_id(headers);
+        let strong_read = query.strong_read.unwrap_or(false);
+        let forward_hops = self
+            .parse_forward_hops(headers, "meta changes")
+            .map_err(|msg| {
+                error!("{}", msg);
+                self.service_error(
+                    StatusCode::BAD_REQUEST,
+                    KLogErrorCode::InvalidArgument,
+                    msg,
+                    &trace_id,
+                )
+            })?;
+        let forwarded_by = headers
+            .get(KLOG_FORWARDED_BY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
+
+        let start_revision = query.start_revision.unwrap_or(1);
+        if start_revision == 0 {
+            let msg = format!(
+                "{} meta changes invalid start_revision: must be greater than 0",
+                self.service_name
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+        if let Some(end_revision) = query.end_revision
+            && (end_revision == 0 || end_revision < start_revision)
+        {
+            let msg = format!(
+                "{} meta changes invalid end_revision: start_revision={}, end_revision={}",
+                self.service_name, start_revision, end_revision
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+
+        let key = query
+            .key
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+        let prefix = query
+            .prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+        if key.is_some() && prefix.is_some() {
+            let msg = format!(
+                "{} meta changes invalid params: key and prefix can not be set together",
+                self.service_name
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+        if let Some(key) = key.as_ref()
+            && key.len() > META_KEY_MAX_BYTES
+        {
+            let msg = format!(
+                "{} meta changes invalid key length: key_bytes={}, max_bytes={}",
+                self.service_name,
+                key.len(),
+                META_KEY_MAX_BYTES
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+        if let Some(prefix) = prefix.as_ref()
+            && prefix.len() > META_KEY_MAX_BYTES
+        {
+            let msg = format!(
+                "{} meta changes invalid prefix length: prefix_bytes={}, max_bytes={}",
+                self.service_name,
+                prefix.len(),
+                META_KEY_MAX_BYTES
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+
+        let cursor = match (query.cursor_revision, query.cursor_key.as_deref()) {
+            (None, None) => None,
+            (Some(revision), Some(key)) => {
+                let key = key.trim();
+                if revision == 0 || key.is_empty() || key.len() > META_KEY_MAX_BYTES {
+                    let msg = format!(
+                        "{} meta changes invalid cursor: revision={}, key_bytes={}, max_key_bytes={}",
+                        self.service_name,
+                        revision,
+                        key.len(),
+                        META_KEY_MAX_BYTES
+                    );
+                    error!("{}", msg);
+                    return Err(self.service_error(
+                        StatusCode::BAD_REQUEST,
+                        KLogErrorCode::InvalidArgument,
+                        msg,
+                        &trace_id,
+                    ));
+                }
+                Some(KLogMetaChangeCursor {
+                    revision,
+                    key: key.to_string(),
+                })
+            }
+            _ => {
+                let msg = format!(
+                    "{} meta changes invalid cursor: cursor_revision and cursor_key must be set together",
+                    self.service_name
+                );
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::BAD_REQUEST,
+                    KLogErrorCode::InvalidArgument,
+                    msg,
+                    &trace_id,
+                ));
+            }
+        };
+
+        let limit = query.limit.unwrap_or(META_QUERY_DEFAULT_LIMIT);
+        if limit == 0 || limit > META_QUERY_MAX_LIMIT {
+            let msg = format!(
+                "{} meta changes invalid limit: limit={}, allowed=1..={}",
+                self.service_name, limit, META_QUERY_MAX_LIMIT
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+        let wait_timeout_ms = query.wait_timeout_ms.unwrap_or(0);
+        if wait_timeout_ms > META_CHANGES_MAX_WAIT_MS {
+            let msg = format!(
+                "{} meta changes invalid wait_timeout_ms: timeout_ms={}, max_timeout_ms={}",
+                self.service_name, wait_timeout_ms, META_CHANGES_MAX_WAIT_MS
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+        if wait_timeout_ms > 0 && query.end_revision.is_some() {
+            let msg = format!(
+                "{} meta changes invalid params: wait_timeout_ms can not be used with end_revision",
+                self.service_name
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+        let include_deleted = query.include_deleted.unwrap_or(true);
+
+        if strong_read {
+            if forward_hops > META_RW_MAX_FORWARD_HOPS {
+                let msg = format!(
+                    "{} meta changes rejected: too many forward hops, hops={}, max_hops={}, forwarded_by={}",
+                    self.service_name, forward_hops, META_RW_MAX_FORWARD_HOPS, forwarded_by
+                );
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::BAD_GATEWAY,
+                    KLogErrorCode::LeaderUnavailable,
+                    msg,
+                    &trace_id,
+                ));
+            }
+
+            let metrics = self.raft.metrics().borrow().clone();
+            let local_node_id = metrics.id;
+            if let Err(err) = self.raft.ensure_linearizable().await {
+                if let Some(forward) = err.forward_to_leader::<KNode>() {
+                    if forward_hops >= META_RW_MAX_FORWARD_HOPS {
+                        let msg = format!(
+                            "{} meta changes forward aborted due to hop limit: local_node_id={}, leader_id={:?}, leader_node={:?}, hops={}, max_hops={}",
+                            self.service_name,
+                            local_node_id,
+                            forward.leader_id,
+                            forward.leader_node,
+                            forward_hops,
+                            META_RW_MAX_FORWARD_HOPS
+                        );
+                        error!("{}", msg);
+                        return Err(self.service_error(
+                            StatusCode::BAD_GATEWAY,
+                            KLogErrorCode::LeaderUnavailable,
+                            msg,
+                            &trace_id,
+                        ));
+                    }
+
+                    let leader_node = forward.leader_node.clone().or_else(|| {
+                        forward.leader_id.and_then(|leader_id| {
+                            metrics
+                                .membership_config
+                                .nodes()
+                                .find_map(|(id, node)| (*id == leader_id).then_some(node.clone()))
+                        })
+                    });
+                    let Some(leader_node) = leader_node else {
+                        let msg = format!(
+                            "{} meta changes can not resolve leader node for forwarding: local_node_id={}, leader_id={:?}",
+                            self.service_name, local_node_id, forward.leader_id
+                        );
+                        warn!("{}", msg);
+                        return Err(self
+                            .service_error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                KLogErrorCode::LeaderUnavailable,
+                                msg,
+                                &trace_id,
+                            )
+                            .with_leader_hint(forward.leader_node.clone()));
+                    };
+
+                    let target_hops = forward_hops + 1;
+                    warn!(
+                        "{} meta changes forwarding to leader: local_node_id={}, leader_id={}, leader_addr={}:{}, hops={} -> {}",
+                        self.service_name,
+                        local_node_id,
+                        leader_node.id,
+                        leader_node.addr,
+                        leader_node.port,
+                        forward_hops,
+                        target_hops
+                    );
+                    return self
+                        .data_client
+                        .query_meta_changes_to_node(
+                            &leader_node,
+                            &query,
+                            target_hops,
+                            local_node_id,
+                            &trace_id,
+                        )
+                        .await
+                        .map_err(|forward_err| {
+                            let msg = format!(
+                                "{} meta changes forward failed: local_node_id={}, leader_id={}, err={}",
+                                self.service_name, local_node_id, leader_node.id, forward_err
+                            );
+                            with_forward_error_context(forward_err, msg, leader_node.clone())
+                        });
+                }
+                let msg = format!(
+                    "{} meta changes strong_read failed to ensure linearizable read: {}",
+                    self.service_name, err
+                );
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    &trace_id,
+                ));
+            }
+        }
+
+        info!(
+            "{} meta changes request: trace_id={}, strong_read={}, start_revision={}, end_revision={:?}, key={:?}, prefix={:?}, cursor={:?}, limit={}, include_deleted={}, wait_timeout_ms={}, forward_hops={}, forwarded_by={}",
+            self.service_name,
+            trace_id,
+            strong_read,
+            start_revision,
+            query.end_revision,
+            key,
+            prefix,
+            cursor,
+            limit,
+            include_deleted,
+            wait_timeout_ms,
+            forward_hops,
+            forwarded_by
+        );
+
+        let deadline =
+            (wait_timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(wait_timeout_ms));
+        loop {
+            let current_revision = self
+                .state_store_manager
+                .meta_revision()
+                .await
+                .map_err(|e| {
+                    let msg = format!(
+                        "{} meta changes read current revision failed: {}",
+                        self.service_name, e
+                    );
+                    error!("{}", msg);
+                    self.service_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        KLogErrorCode::Internal,
+                        msg,
+                        &trace_id,
+                    )
+                })?;
+
+            let effective_end_revision = query
+                .end_revision
+                .map(|end_revision| end_revision.min(current_revision))
+                .or(Some(current_revision))
+                .filter(|end_revision| *end_revision >= start_revision);
+            let mut items = if let Some(end_revision) = effective_end_revision {
+                self.state_store_manager
+                    .list_meta_changes(KLogMetaChangeQuery {
+                        start_revision,
+                        end_revision: Some(end_revision),
+                        key: key.clone(),
+                        prefix: prefix.clone(),
+                        cursor: cursor.clone(),
+                        limit: limit.saturating_add(1),
+                        include_deleted,
+                    })
+                    .await
+            } else {
+                Ok(Vec::new())
+            }
+            .map_err(|e| {
+                let msg = format!("{} meta changes list failed: {}", self.service_name, e);
+                error!("{}", msg);
+                self.service_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    KLogErrorCode::Internal,
+                    msg,
+                    &trace_id,
+                )
+            })?;
+
+            let should_return = !items.is_empty()
+                || wait_timeout_ms == 0
+                || deadline.is_some_and(|deadline| Instant::now() >= deadline);
+            if should_return {
+                let mut has_more = false;
+                let mut next_cursor = None;
+                if items.len() > limit {
+                    has_more = true;
+                    items.truncate(limit);
+                    next_cursor = items.last().map(|item| item.change_cursor());
+                }
+                let next_start_revision = if has_more {
+                    start_revision
+                } else if let Some(end_revision) = query.end_revision {
+                    end_revision
+                        .min(current_revision)
+                        .saturating_add(1)
+                        .max(start_revision)
+                } else if current_revision >= start_revision {
+                    current_revision.saturating_add(1)
+                } else {
+                    start_revision
+                };
+
+                info!(
+                    "{} meta changes response: items={}, has_more={}, next_cursor={:?}, current_revision={}, next_start_revision={}",
+                    self.service_name,
+                    items.len(),
+                    has_more,
+                    next_cursor,
+                    current_revision,
+                    next_start_revision
+                );
+                return Ok(KLogMetaChangesResponse {
+                    items,
+                    next_cursor,
+                    has_more,
+                    current_revision,
+                    next_start_revision,
+                });
+            }
+
+            sleep(Duration::from_millis(META_CHANGES_POLL_INTERVAL_MS)).await;
+        }
     }
 
     fn parse_forward_hops(&self, headers: &HeaderMap, op: &str) -> Result<u32, String> {

@@ -1,17 +1,18 @@
 use super::{
     KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_JSON_RPC_VERSION,
-    KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE,
-    KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLOG_RPC_METHOD_META_TX,
-    KLogJsonRpcRequest, KLogJsonRpcResponse,
+    KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_CHANGES,
+    KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY,
+    KLOG_RPC_METHOD_META_TX, KLogJsonRpcRequest, KLogJsonRpcResponse,
 };
 use crate::error::{
     KLogErrorCode, KLogErrorEnvelope, generate_trace_id, map_http_status_to_error_code,
     map_json_rpc_error_code_to_klog_error_code, parse_error_envelope_json,
 };
 use crate::network::{
-    KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaDeleteRequest,
-    KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest,
-    KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
+    KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaChangesRequest,
+    KLogMetaChangesResponse, KLogMetaDeleteRequest, KLogMetaDeleteResponse, KLogMetaPutRequest,
+    KLogMetaPutResponse, KLogMetaQueryRequest, KLogMetaQueryResponse, KLogQueryRequest,
+    KLogQueryResponse,
 };
 use crate::{KLogMetaTxRequest, KLogMetaTxResponse, KNode};
 use reqwest::StatusCode;
@@ -237,6 +238,22 @@ impl KLogClient {
         self.call_with_trace(KLOG_RPC_METHOD_META_QUERY, &req).await
     }
 
+    pub async fn query_meta_changes(
+        &self,
+        req: KLogMetaChangesRequest,
+    ) -> Result<KLogMetaChangesResponse, KLogClientError> {
+        let (resp, _) = self.query_meta_changes_with_trace(req).await?;
+        Ok(resp)
+    }
+
+    pub async fn query_meta_changes_with_trace(
+        &self,
+        req: KLogMetaChangesRequest,
+    ) -> Result<(KLogMetaChangesResponse, KLogCallTrace), KLogClientError> {
+        self.call_with_trace(KLOG_RPC_METHOD_META_CHANGES, &req)
+            .await
+    }
+
     async fn call_with_trace<Req, Resp>(
         &self,
         method: &str,
@@ -426,17 +443,18 @@ mod tests {
     use crate::KLogEntry;
     use crate::error::KLogErrorCode;
     use crate::network::{
-        KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaDeleteRequest,
-        KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest,
-        KLogMetaQueryResponse, KLogMetaTxAction, KLogMetaTxRequest, KLogMetaTxResponse,
-        KLogQueryRequest, KLogQueryResponse,
+        KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaChangesRequest,
+        KLogMetaChangesResponse, KLogMetaDeleteRequest, KLogMetaDeleteResponse, KLogMetaPutRequest,
+        KLogMetaPutResponse, KLogMetaQueryRequest, KLogMetaQueryResponse, KLogMetaTxAction,
+        KLogMetaTxRequest, KLogMetaTxResponse, KLogQueryRequest, KLogQueryResponse,
     };
     use crate::rpc::{
         KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND,
-        KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE,
-        KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY, KLOG_RPC_METHOD_META_TX,
-        KLogJsonRpcRequest, KLogJsonRpcResponse,
+        KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_CHANGES,
+        KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY,
+        KLOG_RPC_METHOD_META_TX, KLogJsonRpcRequest, KLogJsonRpcResponse,
     };
+    use crate::state_store::{KLogMetaChangeCursor, KLogMetaHistoryRecord};
     use axum::Router;
     use axum::extract::Json;
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -792,6 +810,35 @@ mod tests {
                         );
                         (StatusCode::OK, Json(response))
                     }
+                    KLOG_RPC_METHOD_META_CHANGES => {
+                        let params: KLogMetaChangesRequest =
+                            serde_json::from_value(request.params).expect("meta changes params");
+                        assert_eq!(params.start_revision, Some(7));
+                        assert_eq!(params.prefix.as_deref(), Some("cluster/config/"));
+                        let response = KLogJsonRpcResponse::success(
+                            request.id,
+                            KLogMetaChangesResponse {
+                                items: vec![KLogMetaHistoryRecord {
+                                    key: "cluster/config/epoch".to_string(),
+                                    value: "42".to_string(),
+                                    updated_at: 1234,
+                                    updated_by_node_name: "node-1".to_string(),
+                                    create_revision: 3,
+                                    mod_revision: 7,
+                                    version: 4,
+                                    deleted: false,
+                                }],
+                                next_cursor: Some(KLogMetaChangeCursor {
+                                    revision: 7,
+                                    key: "cluster/config/epoch".to_string(),
+                                }),
+                                has_more: true,
+                                current_revision: 9,
+                                next_start_revision: 7,
+                            },
+                        );
+                        (StatusCode::OK, Json(response))
+                    }
                     KLOG_RPC_METHOD_META_DELETE => {
                         let params: KLogMetaDeleteRequest =
                             serde_json::from_value(request.params).expect("meta delete params");
@@ -881,6 +928,23 @@ mod tests {
         assert_eq!(query.items[0].create_revision, 3);
         assert_eq!(query.items[0].mod_revision, 7);
         assert_eq!(query.items[0].version, 4);
+
+        let changes = client
+            .query_meta_changes(KLogMetaChangesRequest {
+                start_revision: Some(7),
+                prefix: Some("cluster/config/".to_string()),
+                limit: Some(1),
+                include_deleted: Some(true),
+                ..KLogMetaChangesRequest::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("query_meta_changes failed: {}", e))?;
+        assert_eq!(changes.items.len(), 1);
+        assert_eq!(changes.items[0].key, "cluster/config/epoch");
+        assert_eq!(changes.items[0].mod_revision, 7);
+        assert!(changes.has_more);
+        assert_eq!(changes.current_revision, 9);
+        assert_eq!(changes.next_start_revision, 7);
 
         let del = client
             .delete_meta(KLogMetaDeleteRequest {

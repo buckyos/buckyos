@@ -86,7 +86,10 @@ Current metadata revision semantics are intentionally MVCC-compatible:
   ordered by `(mod_revision, key)`. It supports bounded change-feed scans with
   an exclusive cursor and optional key/prefix filters, which is the data-layer
   prerequisite for etcd-style watch APIs.
-- Watch streams and compaction are not implemented yet.
+- `meta-changes` exposes the first watch-compatible API as active polling:
+  callers can issue one-shot scans or set `wait_timeout_ms` for short
+  long-poll behavior. Streaming push APIs and compaction are not implemented
+  yet.
 
 `KLogMetaPutRequest.expected_revision` controls CAS semantics:
 
@@ -139,6 +142,7 @@ local RPC server.
 | `POST` | `/klog/data/meta-delete` | `KLogMetaDeleteRequest` JSON body | `KLogMetaDeleteResponse` |
 | `POST` | `/klog/data/meta-tx` | `KLogMetaTxRequest` JSON body | `KLogMetaTxResponse` |
 | `GET` | `/klog/data/meta-query` | `KLogMetaQueryRequest` query params | `KLogMetaQueryResponse` |
+| `GET` | `/klog/data/meta-changes` | `KLogMetaChangesRequest` query params | `KLogMetaChangesResponse` |
 
 Query defaults and constraints:
 
@@ -151,6 +155,10 @@ Query defaults and constraints:
 - meta queries support either `key` or `prefix`, but not both.
 - meta queries can pass `revision` to return the visible value set at that
   historical global revision. Omit `revision` for the current live view.
+- meta changes support `start_revision`, optional `end_revision`, optional
+  `key` or `prefix`, flat cursor fields `cursor_revision` and `cursor_key`,
+  `include_deleted`, and `wait_timeout_ms`. `wait_timeout_ms` is capped by the
+  server and is intended for short long-poll loops, not permanent streams.
 
 Default reads are local reads. Use `strong_read=true` when callers need
 linearizable reads, for example system-config read-after-write validation.
@@ -170,6 +178,7 @@ Supported method names:
 - `klog.meta.delete`
 - `klog.meta.tx`
 - `klog.meta.query`
+- `klog.meta.changes`
 
 Legacy aliases are still accepted for log operations:
 
