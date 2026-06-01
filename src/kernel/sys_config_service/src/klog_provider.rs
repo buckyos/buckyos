@@ -23,21 +23,27 @@ const ENV_KLOG_ENDPOINT: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_ENDPOINT";
 // is unavailable. Set this only when tests or diagnostics need a fixed writer id.
 const ENV_KLOG_NODE_NAME: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_NODE_NAME";
 
+// Optional. Page size for klog prefix list requests.
+// Default: 2000, matching the current klog meta query max limit.
+const ENV_KLOG_META_QUERY_LIMIT: &str = "BUCKYOS_SYSTEM_CONFIG_KLOG_META_QUERY_LIMIT";
+
 // Optional. Injected by node-daemon for kernel services. It contains the local
 // DeviceConfig JSON; this provider uses its `name` field as the BuckyOS node id.
 const ENV_THIS_DEVICE: &str = "BUCKYOS_THIS_DEVICE";
 
 const INTERNAL_META_PREFIX: &str = "__meta/";
-const META_QUERY_LIMIT: usize = 2_000;
+const DEFAULT_META_QUERY_LIMIT: usize = 2_000;
 
 pub struct KLogStore {
     client: KLogClient,
     node_name: String,
+    meta_query_limit: usize,
 }
 
 impl KLogStore {
     pub fn new_from_env() -> Self {
         let node_name = resolve_node_name_from_env();
+        let meta_query_limit = resolve_meta_query_limit_from_env();
         let client = std::env::var(ENV_KLOG_ENDPOINT)
             .ok()
             .map(|v| v.trim().to_string())
@@ -45,7 +51,11 @@ impl KLogStore {
             .map(|endpoint| KLogClient::new(endpoint, node_name.clone()))
             .unwrap_or_else(|| KLogClient::local_default(node_name.clone()));
 
-        Self { client, node_name }
+        Self {
+            client,
+            node_name,
+            meta_query_limit,
+        }
     }
 
     fn now_ms() -> u64 {
@@ -94,6 +104,7 @@ impl KLogStore {
                 key: Some(key.to_string()),
                 prefix: None,
                 limit: Some(1),
+                cursor: None,
                 strong_read: Some(true),
             })
             .await
@@ -102,25 +113,48 @@ impl KLogStore {
     }
 
     async fn list_meta(&self, prefix: &str) -> Result<KLogMetaQueryResponse> {
-        let resp = self
-            .client
-            .query_meta(KLogMetaQueryRequest {
-                key: None,
-                prefix: Some(prefix.to_string()),
-                limit: Some(META_QUERY_LIMIT),
-                strong_read: Some(true),
-            })
-            .await
-            .map_err(Self::map_error)?;
-        if resp.items.len() >= META_QUERY_LIMIT {
-            let msg = format!(
-                "KLogStore list prefix may be truncated: prefix={}, limit={}",
-                prefix, META_QUERY_LIMIT
-            );
-            error!("{}", msg);
-            return Err(KVStoreErrors::InternalError(msg));
+        let mut items = Vec::new();
+        let mut cursor = None;
+        loop {
+            let resp = self
+                .client
+                .query_meta(KLogMetaQueryRequest {
+                    key: None,
+                    prefix: Some(prefix.to_string()),
+                    limit: Some(self.meta_query_limit),
+                    cursor: cursor.clone(),
+                    strong_read: Some(true),
+                })
+                .await
+                .map_err(Self::map_error)?;
+            items.extend(resp.items);
+            if !resp.has_more {
+                return Ok(KLogMetaQueryResponse {
+                    items,
+                    next_cursor: None,
+                    has_more: false,
+                });
+            }
+
+            let Some(next_cursor) = resp.next_cursor else {
+                let msg = format!(
+                    "KLogStore list prefix missing next_cursor: prefix={}, loaded={}",
+                    prefix,
+                    items.len()
+                );
+                error!("{}", msg);
+                return Err(KVStoreErrors::InternalError(msg));
+            };
+            if cursor.as_ref() == Some(&next_cursor) {
+                let msg = format!(
+                    "KLogStore list prefix cursor did not advance: prefix={}, cursor={}",
+                    prefix, next_cursor
+                );
+                error!("{}", msg);
+                return Err(KVStoreErrors::InternalError(msg));
+            }
+            cursor = Some(next_cursor);
         }
-        Ok(resp)
     }
 
     async fn put_with_expected(
@@ -375,6 +409,27 @@ fn resolve_node_name_from_env() -> String {
     )
 }
 
+fn resolve_meta_query_limit_from_env() -> usize {
+    resolve_meta_query_limit(std::env::var(ENV_KLOG_META_QUERY_LIMIT).ok())
+}
+
+fn resolve_meta_query_limit(raw: Option<String>) -> usize {
+    let Some(raw) = normalize_non_empty(raw) else {
+        return DEFAULT_META_QUERY_LIMIT;
+    };
+
+    match raw.parse::<usize>() {
+        Ok(value) if value > 0 && value <= DEFAULT_META_QUERY_LIMIT => value,
+        _ => {
+            warn!(
+                "Invalid {}, fallback meta_query_limit={}: {}",
+                ENV_KLOG_META_QUERY_LIMIT, DEFAULT_META_QUERY_LIMIT, raw
+            );
+            DEFAULT_META_QUERY_LIMIT
+        }
+    }
+}
+
 fn resolve_node_name(explicit_node_name: Option<String>, device_doc: Option<String>) -> String {
     if let Some(node_name) = normalize_non_empty(explicit_node_name) {
         return node_name;
@@ -506,6 +561,28 @@ mod tests {
         assert_eq!(
             resolve_node_name(None, Some(r#"{"id":"device"}"#.to_string())),
             DEFAULT_KLOG_NODE_NAME
+        );
+    }
+
+    #[test]
+    fn resolve_meta_query_limit_from_env_default_without_env() {
+        assert_eq!(resolve_meta_query_limit(None), DEFAULT_META_QUERY_LIMIT);
+    }
+
+    #[test]
+    fn resolve_meta_query_limit_from_env_accepts_valid_value() {
+        assert_eq!(resolve_meta_query_limit(Some("17".to_string())), 17);
+    }
+
+    #[test]
+    fn resolve_meta_query_limit_from_env_rejects_invalid_value() {
+        assert_eq!(
+            resolve_meta_query_limit(Some("0".to_string())),
+            DEFAULT_META_QUERY_LIMIT
+        );
+        assert_eq!(
+            resolve_meta_query_limit(Some((DEFAULT_META_QUERY_LIMIT + 1).to_string())),
+            DEFAULT_META_QUERY_LIMIT
         );
     }
 }

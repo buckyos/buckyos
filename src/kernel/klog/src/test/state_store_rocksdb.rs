@@ -142,11 +142,61 @@ async fn test_rocksdb_meta_persists_after_reopen() -> anyhow::Result<()> {
     assert_eq!(second.revision, 2);
 
     let listed = manager
-        .list_meta_entries(Some("cluster/config"), 10)
+        .list_meta_entries(Some("cluster/config"), None, 10)
         .await?;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].key, "cluster/config/max_clients");
     assert_eq!(listed[0].revision, 2);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_meta_list_uses_cursor() -> anyhow::Result<()> {
+    let path = unique_test_path("state_store_meta_cursor.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+
+    for key in [
+        "cluster/config/a",
+        "cluster/config/b",
+        "cluster/config/c",
+        "cluster/other/d",
+    ] {
+        manager
+            .put_meta_entry(KLogMetaEntry {
+                key: key.to_string(),
+                value: key.to_string(),
+                updated_at: 1000,
+                updated_by_node_name: "node-1".to_string(),
+                revision: 0,
+            })
+            .await?;
+    }
+
+    let first = manager
+        .list_meta_entries(Some("cluster/config/"), None, 2)
+        .await?;
+    assert_eq!(
+        first
+            .iter()
+            .map(|item| item.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cluster/config/a", "cluster/config/b"]
+    );
+
+    let second = manager
+        .list_meta_entries(Some("cluster/config/"), Some("cluster/config/b"), 2)
+        .await?;
+    assert_eq!(
+        second
+            .iter()
+            .map(|item| item.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cluster/config/c"]
+    );
 
     Ok(())
 }

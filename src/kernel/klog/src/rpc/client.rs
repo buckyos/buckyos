@@ -780,6 +780,8 @@ mod tests {
                                     updated_by_node_name: "node-1".to_string(),
                                     revision: 7,
                                 }],
+                                next_cursor: None,
+                                has_more: false,
                             },
                         );
                         (StatusCode::OK, Json(response))
@@ -851,6 +853,7 @@ mod tests {
                 key: Some("cluster/config/epoch".to_string()),
                 prefix: None,
                 limit: None,
+                cursor: None,
                 strong_read: None,
             })
             .await

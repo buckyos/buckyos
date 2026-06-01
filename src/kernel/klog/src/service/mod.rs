@@ -1555,9 +1555,28 @@ impl KLogQueryService {
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(|v| v.to_string());
+        let cursor = query
+            .cursor
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
         if key.is_some() && prefix.is_some() {
             let msg = format!(
                 "{} meta query invalid params: key and prefix can not be set together",
+                self.service_name
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
+        if key.is_some() && cursor.is_some() {
+            let msg = format!(
+                "{} meta query invalid params: cursor can not be used with key query",
                 self.service_name
             );
             error!("{}", msg);
@@ -1584,6 +1603,38 @@ impl KLogQueryService {
                 msg,
                 &trace_id,
             ));
+        }
+        if let Some(cursor) = cursor.as_ref() {
+            if cursor.len() > META_KEY_MAX_BYTES {
+                let msg = format!(
+                    "{} meta query invalid cursor length: cursor_bytes={}, max_bytes={}",
+                    self.service_name,
+                    cursor.len(),
+                    META_KEY_MAX_BYTES
+                );
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::BAD_REQUEST,
+                    KLogErrorCode::InvalidArgument,
+                    msg,
+                    &trace_id,
+                ));
+            }
+            if let Some(prefix) = prefix.as_ref()
+                && !cursor.starts_with(prefix)
+            {
+                let msg = format!(
+                    "{} meta query invalid cursor: cursor must start with prefix",
+                    self.service_name
+                );
+                error!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::BAD_REQUEST,
+                    KLogErrorCode::InvalidArgument,
+                    msg,
+                    &trace_id,
+                ));
+            }
         }
 
         if strong_read {
@@ -1678,6 +1729,7 @@ impl KLogQueryService {
                                     key: key.clone(),
                                     prefix: prefix.clone(),
                                     limit: query.limit,
+                                    cursor: cursor.clone(),
                                     strong_read: query.strong_read,
                                 },
                                 target_hops,
@@ -1724,17 +1776,20 @@ impl KLogQueryService {
         }
 
         info!(
-            "{} meta query request: trace_id={}, strong_read={}, key={:?}, prefix={:?}, limit={}, forward_hops={}, forwarded_by={}",
+            "{} meta query request: trace_id={}, strong_read={}, key={:?}, prefix={:?}, cursor={:?}, limit={}, forward_hops={}, forwarded_by={}",
             self.service_name,
             trace_id,
             strong_read,
             key,
             prefix,
+            cursor,
             limit,
             forward_hops,
             forwarded_by
         );
 
+        let mut has_more = false;
+        let mut next_cursor = None;
         let items = if let Some(key) = key.as_deref() {
             let item = self
                 .state_store_manager
@@ -1752,8 +1807,13 @@ impl KLogQueryService {
                 })?;
             item.into_iter().collect::<Vec<_>>()
         } else {
-            self.state_store_manager
-                .list_meta_entries(prefix.as_deref(), limit)
+            let mut items = self
+                .state_store_manager
+                .list_meta_entries(
+                    prefix.as_deref(),
+                    cursor.as_deref(),
+                    limit.saturating_add(1),
+                )
                 .await
                 .map_err(|e| {
                     let msg = format!("{} meta query list failed: {}", self.service_name, e);
@@ -1764,14 +1824,26 @@ impl KLogQueryService {
                         msg,
                         &trace_id,
                     )
-                })?
+                })?;
+            if items.len() > limit {
+                has_more = true;
+                items.truncate(limit);
+                next_cursor = items.last().map(|item| item.key.clone());
+            }
+            items
         };
         info!(
-            "{} meta query response: items={}",
+            "{} meta query response: items={}, has_more={}, next_cursor={:?}",
             self.service_name,
-            items.len()
+            items.len(),
+            has_more,
+            next_cursor
         );
-        Ok(KLogMetaQueryResponse { items })
+        Ok(KLogMetaQueryResponse {
+            items,
+            next_cursor,
+            has_more,
+        })
     }
 
     fn parse_forward_hops(&self, headers: &HeaderMap, op: &str) -> Result<u32, String> {

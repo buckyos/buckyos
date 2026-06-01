@@ -315,7 +315,12 @@ impl KLogStateStore for MemoryStateStore {
         Ok(metas.get(key).cloned())
     }
 
-    async fn list_meta(&self, prefix: Option<&str>, limit: usize) -> KResult<Vec<KLogMetaEntry>> {
+    async fn list_meta(
+        &self,
+        prefix: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> KResult<Vec<KLogMetaEntry>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -325,10 +330,16 @@ impl KLogStateStore for MemoryStateStore {
         keys.sort();
 
         let normalized_prefix = prefix.map(str::trim).filter(|v| !v.is_empty());
+        let normalized_cursor = cursor.map(str::trim).filter(|v| !v.is_empty());
         let mut out = Vec::with_capacity(limit.min(keys.len()));
         for key in keys {
             if let Some(prefix) = normalized_prefix
                 && !key.starts_with(prefix)
+            {
+                continue;
+            }
+            if let Some(cursor) = normalized_cursor
+                && key.as_str() <= cursor
             {
                 continue;
             }

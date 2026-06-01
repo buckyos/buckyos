@@ -183,6 +183,8 @@ pub struct KLogMetaQueryRequest {
     pub key: Option<String>,
     pub prefix: Option<String>,
     pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
     /// When true, require linearizable read on leader before serving query.
     pub strong_read: Option<bool>,
 }
@@ -190,6 +192,10 @@ pub struct KLogMetaQueryRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KLogMetaQueryResponse {
     pub items: Vec<KLogMetaEntry>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

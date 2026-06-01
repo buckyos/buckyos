@@ -2307,7 +2307,12 @@ impl KLogStateStore for RocksDbStateStore {
         Ok(Some(item))
     }
 
-    async fn list_meta(&self, prefix: Option<&str>, limit: usize) -> KResult<Vec<KLogMetaEntry>> {
+    async fn list_meta(
+        &self,
+        prefix: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> KResult<Vec<KLogMetaEntry>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -2318,7 +2323,9 @@ impl KLogStateStore for RocksDbStateStore {
             klog_err(msg)
         })?;
         let normalized_prefix = prefix.map(str::trim).filter(|v| !v.is_empty());
-        let seek_key = normalized_prefix
+        let normalized_cursor = cursor.map(str::trim).filter(|v| !v.is_empty());
+        let seek_key = normalized_cursor
+            .or(normalized_prefix)
             .map(data_meta_key)
             .unwrap_or_else(|| KEY_DATA_META_PREFIX.to_vec());
 
@@ -2338,6 +2345,11 @@ impl KLogStateStore for RocksDbStateStore {
             };
             if let Some(prefix) = normalized_prefix
                 && !key.starts_with(prefix)
+            {
+                break;
+            }
+            if let Some(cursor) = normalized_cursor
+                && key <= cursor
             {
                 continue;
             }

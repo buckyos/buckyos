@@ -136,6 +136,7 @@ async fn test_three_voter_full_restart_recovers_membership_leader_and_writes() -
                 key: Some(meta_key.clone()),
                 prefix: None,
                 limit: Some(1),
+                cursor: None,
                 strong_read: Some(true),
             })
             .await

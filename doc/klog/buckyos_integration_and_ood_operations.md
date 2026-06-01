@@ -248,6 +248,7 @@ uv run test/run.py -p klog_membership_dv
 uv run test/run.py -p klog_restart_recovery_dv
 uv run test/run.py -p klog_system_config_kv_dv
 uv run test/run.py -p klog_system_config_service_dv
+uv run test/run.py -p klog_system_config_pagination_dv
 uv run test/run.py -p klog_system_config_rollout_dv
 uv run test/run.py -p klog_ood_membership_dv
 uv run test/run.py -p klog_ood_snapshot_membership_dv
