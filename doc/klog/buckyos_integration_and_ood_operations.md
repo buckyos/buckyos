@@ -35,7 +35,7 @@ BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true
 2. 强读默认通过 leader 或 follower 转发保证 linearizable 语义。
 3. `exec_tx` 通过 klog meta transaction 承载多 key 原子写入和 optimistic guard。
 4. prefix list 已支持 cursor/pagination，system_config klog provider 会自动翻页。
-5. meta revision 已按全局 `mod_revision` + tombstone 方向实现第一阶段：delete 后 recreate 不会复用旧 revision，stale CAS 会被 tombstone revision 拦截。后续完整 MVCC 仍需要补历史版本查询、watch 和 compaction。
+5. meta revision 已按全局 `mod_revision` + tombstone 方向实现，并在 API 层暴露 `create_revision`、`mod_revision`、`version`；`revision` 仅作为兼容别名。delete 后 recreate 不会复用旧 revision，stale CAS 会被 tombstone revision 拦截。后续完整 MVCC 仍需要补历史版本查询、watch 和 compaction。
 
 ### scheduler
 

@@ -4,7 +4,9 @@ use crate::state_store::KLogStateStoreManagerRef;
 use crate::state_store::{
     KLogMetaPutResult, KLogMetaTxResult, KLogStateMachineMeta, KLogStateSnapshot,
 };
-use crate::{KLogId, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult};
+use crate::{
+    KLogId, KLogMetaEntry, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult,
+};
 use openraft::{
     Entry, EntryPayload, OptionalSend, RaftSnapshotBuilder, SnapshotMeta, StoredMembership,
     storage::RaftStateMachine,
@@ -129,13 +131,13 @@ impl KLogStateMachine {
                 {
                     Ok(KLogMetaPutResult::Stored(stored)) => {
                         debug!(
-                            "StateMachine put-meta request committed: key={}, revision={}",
-                            key, stored.revision
-                        );
-                        KLogResponse::MetaPutOk {
+                            "StateMachine put-meta request committed: key={}, mod_revision={}, create_revision={}, version={}",
                             key,
-                            revision: stored.revision,
-                        }
+                            stored.effective_mod_revision(),
+                            stored.effective_create_revision(),
+                            stored.effective_version()
+                        );
+                        KLogResponse::MetaPutOk { item: stored }
                     }
                     Ok(KLogMetaPutResult::VersionConflict {
                         expected_revision,
@@ -162,16 +164,46 @@ impl KLogStateMachine {
                 match self.state_store.delete_meta_key(&key).await {
                     Ok(prev_meta) => {
                         let existed = prev_meta.is_some();
+                        let meta_version = if existed {
+                            match self.state_store.current_meta_revision(&key).await {
+                                Ok(Some(mod_revision)) => {
+                                    let create_revision = prev_meta
+                                        .as_ref()
+                                        .map(KLogMetaEntry::effective_create_revision)
+                                        .unwrap_or(mod_revision);
+                                    Some(crate::KLogMetaVersion::new(
+                                        create_revision,
+                                        mod_revision,
+                                        0,
+                                        true,
+                                    ))
+                                }
+                                Ok(None) => None,
+                                Err(err) => {
+                                    error!(
+                                        "StateMachine delete-meta revision lookup failed: key={}, err={}",
+                                        key, err
+                                    );
+                                    return KLogResponse::Err(err.to_string());
+                                }
+                            }
+                        } else {
+                            None
+                        };
                         debug!(
-                            "StateMachine delete-meta request committed: key={}, existed={}, prev_meta_revision={:?}",
+                            "StateMachine delete-meta request committed: key={}, existed={}, prev_meta_revision={:?}, meta_version={:?}",
                             key,
                             existed,
-                            prev_meta.as_ref().map(|v| v.revision)
+                            prev_meta
+                                .as_ref()
+                                .map(KLogMetaEntry::effective_mod_revision),
+                            meta_version
                         );
                         KLogResponse::MetaDeleteOk {
                             key,
                             existed,
                             prev_meta,
+                            meta_version,
                         }
                     }
                     Err(err) => {
@@ -189,12 +221,10 @@ impl KLogStateMachine {
                 match self.state_store.exec_meta_tx(tx).await {
                     Ok(KLogMetaTxResult::Committed(resp)) => {
                         debug!(
-                            "StateMachine meta-tx request committed: revisions={:?}",
-                            resp.revisions
+                            "StateMachine meta-tx request committed: revisions={:?}, meta_versions={:?}",
+                            resp.revisions, resp.meta_versions
                         );
-                        KLogResponse::MetaTxOk {
-                            revisions: resp.revisions,
-                        }
+                        KLogResponse::MetaTxOk { response: resp }
                     }
                     Ok(KLogMetaTxResult::VersionConflict {
                         key,

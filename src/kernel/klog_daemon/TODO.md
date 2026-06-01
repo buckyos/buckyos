@@ -119,6 +119,10 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     state, and delete/recreate does not reset the CAS revision.
   - Covered by klog state-store, state-machine, and klog_daemon meta revision
     tests.
+- [x] Expose explicit MVCC metadata on klog meta APIs.
+  - `KLogMetaEntry`, meta put/query/delete, and meta transaction responses now
+    expose `create_revision`, `mod_revision`, and `version`; `revision` remains
+    a compatibility alias for `mod_revision`.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
 - [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.

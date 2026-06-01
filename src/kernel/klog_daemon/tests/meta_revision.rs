@@ -52,10 +52,12 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             })
             .await
             .map_err(|e| format!("create-if-absent put_meta failed: {}", e))?;
-        if created.revision != 1 {
+        if (created.revision, created.create_revision, created.mod_revision, created.version)
+            != (1, 1, 1, 1)
+        {
             return Err(format!(
-                "unexpected create revision: expected=1, got={}",
-                created.revision
+                "unexpected create revision fields: revision={}, create_revision={}, mod_revision={}, version={}",
+                created.revision, created.create_revision, created.mod_revision, created.version
             ));
         }
 
@@ -85,10 +87,12 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             })
             .await
             .map_err(|e| format!("cas put_meta(expected=1) failed: {}", e))?;
-        if updated.revision != 2 {
+        if (updated.revision, updated.create_revision, updated.mod_revision, updated.version)
+            != (2, 1, 2, 2)
+        {
             return Err(format!(
-                "unexpected cas update revision: expected=2, got={}",
-                updated.revision
+                "unexpected cas update revision fields: revision={}, create_revision={}, mod_revision={}, version={}",
+                updated.revision, updated.create_revision, updated.mod_revision, updated.version
             ));
         }
 
@@ -118,10 +122,12 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             })
             .await
             .map_err(|e| format!("non-cas put_meta failed: {}", e))?;
-        if non_cas.revision != 3 {
+        if (non_cas.revision, non_cas.create_revision, non_cas.mod_revision, non_cas.version)
+            != (3, 1, 3, 3)
+        {
             return Err(format!(
-                "unexpected non-cas revision: expected=3, got={}",
-                non_cas.revision
+                "unexpected non-cas revision fields: revision={}, create_revision={}, mod_revision={}, version={}",
+                non_cas.revision, non_cas.create_revision, non_cas.mod_revision, non_cas.version
             ));
         }
 
@@ -129,11 +135,33 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .delete_meta(KLogMetaDeleteRequest { key: key.clone() })
             .await
             .map_err(|e| format!("delete_meta failed: {}", e))?;
-        if !deleted.existed || deleted.prev_meta.as_ref().map(|item| item.revision) != Some(3) {
+        let deleted_version = deleted
+            .meta_version
+            .as_ref()
+            .map(|v| (v.revision, v.create_revision, v.mod_revision, v.version, v.deleted));
+        if !deleted.existed
+            || deleted.prev_meta.as_ref().map(|item| {
+                (
+                    item.revision,
+                    item.create_revision,
+                    item.mod_revision,
+                    item.version,
+                )
+            }) != Some((3, 1, 3, 3))
+            || deleted_version != Some((4, 1, 4, 0, true))
+        {
             return Err(format!(
-                "unexpected delete response: existed={}, prev_revision={:?}",
+                "unexpected delete response: existed={}, prev_revision={:?}, delete_meta_version={:?}",
                 deleted.existed,
-                deleted.prev_meta.as_ref().map(|item| item.revision)
+                deleted.prev_meta.as_ref().map(|item| {
+                    (
+                        item.revision,
+                        item.create_revision,
+                        item.mod_revision,
+                        item.version,
+                    )
+                }),
+                deleted_version
             ));
         }
 
@@ -166,10 +194,19 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             })
             .await
             .map_err(|e| format!("recreate put_meta failed: {}", e))?;
-        if recreated.revision != 5 {
+        if (
+            recreated.revision,
+            recreated.create_revision,
+            recreated.mod_revision,
+            recreated.version,
+        ) != (5, 5, 5, 1)
+        {
             return Err(format!(
-                "unexpected recreated revision: expected=5, got={}",
-                recreated.revision
+                "unexpected recreated revision fields: revision={}, create_revision={}, mod_revision={}, version={}",
+                recreated.revision,
+                recreated.create_revision,
+                recreated.mod_revision,
+                recreated.version
             ));
         }
 
@@ -189,10 +226,21 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
                 queried.items.len()
             ));
         }
-        if queried.items[0].value != "v4-recreated" || queried.items[0].revision != 5 {
+        if queried.items[0].value != "v4-recreated"
+            || (
+                queried.items[0].revision,
+                queried.items[0].create_revision,
+                queried.items[0].mod_revision,
+                queried.items[0].version,
+            ) != (5, 5, 5, 1)
+        {
             return Err(format!(
-                "unexpected meta value/revision: value={}, revision={}",
-                queried.items[0].value, queried.items[0].revision
+                "unexpected meta value/revision fields: value={}, revision={}, create_revision={}, mod_revision={}, version={}",
+                queried.items[0].value,
+                queried.items[0].revision,
+                queried.items[0].create_revision,
+                queried.items[0].mod_revision,
+                queried.items[0].version
             ));
         }
 
@@ -237,10 +285,11 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
             })
             .await
             .map_err(|e| format!("put_meta before failover failed: {}", e))?;
-        if first.revision != 1 {
+        if (first.revision, first.create_revision, first.mod_revision, first.version) != (1, 1, 1, 1)
+        {
             return Err(format!(
-                "unexpected revision before failover: expected=1, got={}",
-                first.revision
+                "unexpected revision before failover: revision={}, create_revision={}, mod_revision={}, version={}",
+                first.revision, first.create_revision, first.mod_revision, first.version
             ));
         }
 
@@ -282,10 +331,21 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
                 queried.items.len()
             ));
         }
-        if queried.items[0].value != "before-failover" || queried.items[0].revision != 1 {
+        if queried.items[0].value != "before-failover"
+            || (
+                queried.items[0].revision,
+                queried.items[0].create_revision,
+                queried.items[0].mod_revision,
+                queried.items[0].version,
+            ) != (1, 1, 1, 1)
+        {
             return Err(format!(
-                "unexpected meta after failover: value={}, revision={}",
-                queried.items[0].value, queried.items[0].revision
+                "unexpected meta after failover: value={}, revision={}, create_revision={}, mod_revision={}, version={}",
+                queried.items[0].value,
+                queried.items[0].revision,
+                queried.items[0].create_revision,
+                queried.items[0].mod_revision,
+                queried.items[0].version
             ));
         }
 
@@ -298,10 +358,12 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
             })
             .await
             .map_err(|e| format!("put_meta after failover failed: {}", e))?;
-        if second.revision != 2 {
+        if (second.revision, second.create_revision, second.mod_revision, second.version)
+            != (2, 1, 2, 2)
+        {
             return Err(format!(
-                "unexpected revision after failover update: expected=2, got={}",
-                second.revision
+                "unexpected revision after failover update: revision={}, create_revision={}, mod_revision={}, version={}",
+                second.revision, second.create_revision, second.mod_revision, second.version
             ));
         }
 

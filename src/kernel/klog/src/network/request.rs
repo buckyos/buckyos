@@ -1,4 +1,7 @@
-use crate::{KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KNode, KNodeId, KResult, KTypeConfig};
+use crate::{
+    KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KLogMetaVersion, KNode, KNodeId, KResult,
+    KTypeConfig,
+};
 use openraft::error::PayloadTooLarge;
 use openraft::error::{InstallSnapshotError, RaftError};
 use openraft::network::RPCTypes;
@@ -163,7 +166,26 @@ pub struct KLogMetaPutRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KLogMetaPutResponse {
     pub key: String,
+    /// Backward-compatible alias for `mod_revision`.
     pub revision: u64,
+    #[serde(default)]
+    pub create_revision: u64,
+    #[serde(default)]
+    pub mod_revision: u64,
+    #[serde(default)]
+    pub version: u64,
+}
+
+impl KLogMetaPutResponse {
+    pub fn from_entry(item: &KLogMetaEntry) -> Self {
+        Self {
+            key: item.key.clone(),
+            revision: item.effective_mod_revision(),
+            create_revision: item.effective_create_revision(),
+            mod_revision: item.effective_mod_revision(),
+            version: item.effective_version(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -176,6 +198,8 @@ pub struct KLogMetaDeleteResponse {
     pub key: String,
     pub existed: bool,
     pub prev_meta: Option<KLogMetaEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_version: Option<KLogMetaVersion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

@@ -71,7 +71,7 @@ impl KLogStore {
             value,
             updated_at: Self::now_ms(),
             updated_by_node_name: self.node_name.clone(),
-            revision: 0,
+            ..KLogMetaEntry::default()
         }
     }
 
@@ -189,7 +189,8 @@ impl KLogStore {
         let Some(item) = self.query_meta(key).await? else {
             return Err(KVStoreErrors::KeyNotFound(key.to_string()));
         };
-        Ok((item.value, item.revision))
+        let revision = item.effective_mod_revision();
+        Ok((item.value, revision))
     }
 }
 
@@ -211,9 +212,10 @@ impl KVStoreProvider for KLogStore {
             "KLogStore Get key:[{}] value length:[{}] revision:[{}]",
             key,
             item.value.len(),
-            item.revision
+            item.effective_mod_revision()
         );
-        Ok(Some((item.value, item.revision)))
+        let revision = item.effective_mod_revision();
+        Ok(Some((item.value, revision)))
     }
 
     async fn set(&self, key: String, value: String) -> Result<()> {

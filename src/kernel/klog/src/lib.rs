@@ -56,14 +56,97 @@ pub struct KLogEntry {
     pub message: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct KLogMetaEntry {
     pub key: String,
     pub value: String,
     pub updated_at: u64,
     pub updated_by_node_name: String,
+    /// Backward-compatible alias for `mod_revision`.
     #[serde(default)]
     pub revision: u64,
+    #[serde(default)]
+    pub create_revision: u64,
+    #[serde(default)]
+    pub mod_revision: u64,
+    #[serde(default)]
+    pub version: u64,
+}
+
+impl KLogMetaEntry {
+    pub fn set_mvcc_revision(&mut self, create_revision: u64, mod_revision: u64, version: u64) {
+        self.revision = mod_revision;
+        self.create_revision = create_revision;
+        self.mod_revision = mod_revision;
+        self.version = version;
+    }
+
+    pub fn effective_mod_revision(&self) -> u64 {
+        if self.mod_revision != 0 {
+            self.mod_revision
+        } else {
+            self.revision
+        }
+    }
+
+    pub fn effective_create_revision(&self) -> u64 {
+        if self.create_revision != 0 {
+            self.create_revision
+        } else {
+            self.effective_mod_revision()
+        }
+    }
+
+    pub fn effective_version(&self) -> u64 {
+        if self.version != 0 {
+            self.version
+        } else {
+            self.effective_mod_revision().max(1)
+        }
+    }
+
+    pub fn normalize_mvcc_revision(&mut self) {
+        let mod_revision = self.effective_mod_revision();
+        let create_revision = self.effective_create_revision();
+        let version = self.effective_version();
+        self.set_mvcc_revision(create_revision, mod_revision, version);
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct KLogMetaVersion {
+    /// Backward-compatible alias for `mod_revision`.
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub create_revision: u64,
+    #[serde(default)]
+    pub mod_revision: u64,
+    #[serde(default)]
+    pub version: u64,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+impl KLogMetaVersion {
+    pub fn new(create_revision: u64, mod_revision: u64, version: u64, deleted: bool) -> Self {
+        Self {
+            revision: mod_revision,
+            create_revision,
+            mod_revision,
+            version,
+            deleted,
+        }
+    }
+
+    pub fn from_entry(item: &KLogMetaEntry) -> Self {
+        Self::new(
+            item.effective_create_revision(),
+            item.effective_mod_revision(),
+            item.effective_version(),
+            false,
+        )
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -220,7 +303,10 @@ pub struct KLogMetaTxRequest {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct KLogMetaTxResponse {
+    /// Backward-compatible map: live put/update returns `Some(mod_revision)`, delete returns `None`.
     pub revisions: BTreeMap<String, Option<u64>>,
+    #[serde(default)]
+    pub meta_versions: BTreeMap<String, KLogMetaVersion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,8 +334,7 @@ pub enum KLogResponse {
         id: u64,
     },
     MetaPutOk {
-        key: String,
-        revision: u64,
+        item: KLogMetaEntry,
     },
     MetaPutConflict {
         key: String,
@@ -260,9 +345,10 @@ pub enum KLogResponse {
         key: String,
         existed: bool,
         prev_meta: Option<KLogMetaEntry>,
+        meta_version: Option<KLogMetaVersion>,
     },
     MetaTxOk {
-        revisions: BTreeMap<String, Option<u64>>,
+        response: KLogMetaTxResponse,
     },
     MetaTxConflict {
         key: String,
@@ -372,7 +458,7 @@ mod meta_tx_action_tests {
                 value: "{}".to_string(),
                 updated_at: 1,
                 updated_by_node_name: "ood1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(0),
         };

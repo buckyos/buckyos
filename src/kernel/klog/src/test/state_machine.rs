@@ -198,7 +198,7 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
                 value: "42".to_string(),
                 updated_at: 5000,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: None,
         }),
@@ -214,7 +214,15 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
     assert_eq!(responses.len(), 2);
     assert!(matches!(
         responses[0],
-        KLogResponse::MetaPutOk { revision: 1, .. }
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 1,
+                create_revision: 1,
+                mod_revision: 1,
+                version: 1,
+                ..
+            }
+        }
     ));
     assert!(matches!(
         responses[1],
@@ -242,7 +250,7 @@ async fn test_state_machine_meta_delete_tombstone_blocks_stale_cas() -> anyhow::
                 value: "v1".to_string(),
                 updated_at: 5100,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(0),
         }),
@@ -259,7 +267,7 @@ async fn test_state_machine_meta_delete_tombstone_blocks_stale_cas() -> anyhow::
                 value: "stale".to_string(),
                 updated_at: 5101,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(1),
         }),
@@ -272,7 +280,7 @@ async fn test_state_machine_meta_delete_tombstone_blocks_stale_cas() -> anyhow::
                 value: "v2".to_string(),
                 updated_at: 5102,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(0),
         }),
@@ -282,7 +290,15 @@ async fn test_state_machine_meta_delete_tombstone_blocks_stale_cas() -> anyhow::
     assert_eq!(responses.len(), 4);
     assert!(matches!(
         responses[0],
-        KLogResponse::MetaPutOk { revision: 1, .. }
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 1,
+                create_revision: 1,
+                mod_revision: 1,
+                version: 1,
+                ..
+            }
+        }
     ));
     assert!(matches!(
         responses[1],
@@ -302,7 +318,15 @@ async fn test_state_machine_meta_delete_tombstone_blocks_stale_cas() -> anyhow::
     ));
     assert!(matches!(
         responses[3],
-        KLogResponse::MetaPutOk { revision: 3, .. }
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 3,
+                create_revision: 3,
+                mod_revision: 3,
+                version: 1,
+                ..
+            }
+        }
     ));
 
     Ok(())
@@ -321,7 +345,7 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
                 value: "alpha".to_string(),
                 updated_at: 6000,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(0),
         }),
@@ -334,7 +358,7 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
                 value: "beta".to_string(),
                 updated_at: 6001,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(1),
         }),
@@ -347,7 +371,7 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
                 value: "gamma".to_string(),
                 updated_at: 6002,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(1),
         }),
@@ -357,11 +381,27 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
     assert_eq!(responses.len(), 3);
     assert!(matches!(
         responses[0],
-        KLogResponse::MetaPutOk { revision: 1, .. }
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 1,
+                create_revision: 1,
+                mod_revision: 1,
+                version: 1,
+                ..
+            }
+        }
     ));
     assert!(matches!(
         responses[1],
-        KLogResponse::MetaPutOk { revision: 2, .. }
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 2,
+                create_revision: 1,
+                mod_revision: 2,
+                version: 2,
+                ..
+            }
+        }
     ));
     assert!(matches!(
         responses[2],
@@ -388,7 +428,7 @@ async fn test_state_machine_apply_meta_tx_is_atomic_on_conflict() -> anyhow::Res
                 value: "v1".to_string(),
                 updated_at: 7000,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(0),
         }),
@@ -403,7 +443,7 @@ async fn test_state_machine_apply_meta_tx_is_atomic_on_conflict() -> anyhow::Res
                 value: "a1".to_string(),
                 updated_at: 7001,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(0),
         },
@@ -416,7 +456,7 @@ async fn test_state_machine_apply_meta_tx_is_atomic_on_conflict() -> anyhow::Res
                 value: "b1".to_string(),
                 updated_at: 7001,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(0),
         },
@@ -443,7 +483,7 @@ async fn test_state_machine_apply_meta_tx_is_atomic_on_conflict() -> anyhow::Res
                 value: "c1".to_string(),
                 updated_at: 7002,
                 updated_by_node_name: "node-1".to_string(),
-                revision: 0,
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(0),
         },
@@ -465,7 +505,15 @@ async fn test_state_machine_apply_meta_tx_is_atomic_on_conflict() -> anyhow::Res
     assert_eq!(responses.len(), 3);
     assert!(matches!(
         responses[0],
-        KLogResponse::MetaPutOk { revision: 1, .. }
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 1,
+                create_revision: 1,
+                mod_revision: 1,
+                version: 1,
+                ..
+            }
+        }
     ));
     assert!(matches!(responses[1], KLogResponse::MetaTxOk { .. }));
     assert!(matches!(

@@ -5,7 +5,7 @@ use super::store::{
 };
 use crate::{
     KLogEntry, KLogError, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxRequest, KLogMetaTxResponse,
-    KResult,
+    KLogMetaVersion, KResult,
 };
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
@@ -100,10 +100,14 @@ impl MemoryMetaState {
     }
 
     fn current_revision(&self, key: &str) -> Option<u64> {
-        self.entries
+        self.states
             .get(key)
-            .map(|item| item.revision)
-            .or_else(|| self.states.get(key).map(|state| state.mod_revision))
+            .map(|state| state.mod_revision)
+            .or_else(|| {
+                self.entries
+                    .get(key)
+                    .map(KLogMetaEntry::effective_mod_revision)
+            })
     }
 
     fn state_for_entry(&self, item: &KLogMetaEntry) -> KLogMetaKeyState {
@@ -244,7 +248,6 @@ impl KLogStateStore for MemoryStateStore {
         let key = item.key.clone();
         let next_revision = metas.next_revision();
         let mut stored = item;
-        stored.revision = next_revision;
         let state = if let Some(existing) = metas.entries.get(&key) {
             let previous = metas.state_for_entry(existing);
             KLogMetaKeyState {
@@ -263,6 +266,7 @@ impl KLogStateStore for MemoryStateStore {
                 deleted: false,
             }
         };
+        state.apply_to_entry(&mut stored);
         metas.states.insert(key.clone(), state);
         metas.entries.insert(key, stored.clone());
         Ok(stored)
@@ -315,6 +319,7 @@ impl KLogStateStore for MemoryStateStore {
         let guard_key = tx.guard.as_ref().map(|guard| guard.key.clone());
         let mut guard_touched = false;
         let mut revisions = BTreeMap::new();
+        let mut meta_versions = BTreeMap::new();
         let mut has_mutation = false;
         for action in tx.actions.values() {
             match action {
@@ -369,8 +374,9 @@ impl KLogStateStore for MemoryStateStore {
                             deleted: false,
                         }
                     };
-                    item.revision = next_revision;
-                    revisions.insert(item.key.clone(), Some(next_revision));
+                    state.apply_to_entry(&mut item);
+                    revisions.insert(item.key.clone(), Some(item.effective_mod_revision()));
+                    meta_versions.insert(item.key.clone(), KLogMetaVersion::from_entry(&item));
                     metas.states.insert(item.key.clone(), state);
                     metas.entries.insert(item.key.clone(), item);
                 }
@@ -389,6 +395,10 @@ impl KLogStateStore for MemoryStateStore {
                                 deleted: true,
                             },
                         );
+                        meta_versions.insert(
+                            key.clone(),
+                            KLogMetaVersion::new(previous.create_revision, next_revision, 0, true),
+                        );
                     }
                     revisions.insert(key, None);
                 }
@@ -401,23 +411,23 @@ impl KLogStateStore for MemoryStateStore {
         {
             let next_revision = tx_revision.expect("guard side effect must allocate tx revision");
             let previous = metas.state_for_entry(&item);
-            item.revision = next_revision;
-            metas.states.insert(
-                guard.key.clone(),
-                KLogMetaKeyState {
-                    key: guard.key.clone(),
-                    create_revision: previous.create_revision,
-                    mod_revision: next_revision,
-                    version: previous.version.saturating_add(1).max(1),
-                    deleted: false,
-                },
-            );
-            revisions.insert(guard.key, Some(item.revision));
+            let state = KLogMetaKeyState {
+                key: guard.key.clone(),
+                create_revision: previous.create_revision,
+                mod_revision: next_revision,
+                version: previous.version.saturating_add(1).max(1),
+                deleted: false,
+            };
+            state.apply_to_entry(&mut item);
+            metas.states.insert(guard.key.clone(), state);
+            revisions.insert(guard.key.clone(), Some(item.effective_mod_revision()));
+            meta_versions.insert(guard.key, KLogMetaVersion::from_entry(&item));
             metas.entries.insert(item.key.clone(), item);
         }
 
         Ok(KLogMetaTxResult::Committed(KLogMetaTxResponse {
             revisions,
+            meta_versions,
         }))
     }
 
@@ -527,11 +537,14 @@ impl KLogStateStore for MemoryStateStore {
             revision: snapshot_data.meta_revision,
         };
         for item in snapshot_data.meta_entries {
-            metas.revision = metas.revision.max(item.revision);
+            metas.revision = metas.revision.max(item.effective_mod_revision());
             metas
                 .states
                 .entry(item.key.clone())
                 .or_insert_with(|| legacy_meta_state_from_entry(&item, false));
+            let mut item = item;
+            let state = metas.state_for_entry(&item);
+            state.apply_to_entry(&mut item);
             metas.entries.insert(item.key.clone(), item);
         }
         for state in metas.states.values() {
@@ -626,9 +639,9 @@ fn decode_snapshot_data(data: &[u8]) -> KResult<KLogStateSnapshotData> {
 fn legacy_meta_state_from_entry(item: &KLogMetaEntry, deleted: bool) -> KLogMetaKeyState {
     KLogMetaKeyState {
         key: item.key.clone(),
-        create_revision: item.revision,
-        mod_revision: item.revision,
-        version: if deleted { 0 } else { item.revision.max(1) },
+        create_revision: item.effective_create_revision(),
+        mod_revision: item.effective_mod_revision(),
+        version: if deleted { 0 } else { item.effective_version() },
         deleted,
     }
 }

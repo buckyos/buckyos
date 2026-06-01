@@ -4,7 +4,7 @@ use super::store::{
 };
 use crate::{
     KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxRequest,
-    KLogMetaTxResponse, KResult,
+    KLogMetaTxResponse, KLogMetaVersion, KResult,
 };
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 use rocksdb::checkpoint::Checkpoint;
@@ -49,6 +49,15 @@ struct LegacyKLogMetaEntryV0 {
     value: String,
     updated_at: u64,
     updated_by: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyKLogMetaEntryV1 {
+    key: String,
+    value: String,
+    updated_at: u64,
+    updated_by_node_name: String,
+    revision: u64,
 }
 
 fn entry_key(id: u64) -> [u8; 9] {
@@ -243,20 +252,39 @@ fn entry_matches_query(entry: &KLogEntry, query: &KLogQuery) -> bool {
 fn decode_meta_entry_with_legacy(raw: &[u8]) -> KResult<KLogMetaEntry> {
     let decoded_v1: Result<(KLogMetaEntry, usize), _> =
         bincode::serde::decode_from_slice(raw, bincode::config::legacy());
-    if let Ok((item, _)) = decoded_v1 {
+    if let Ok((mut item, _)) = decoded_v1 {
+        item.normalize_mvcc_revision();
+        return Ok(item);
+    }
+
+    let decoded_legacy_v1: Result<(LegacyKLogMetaEntryV1, usize), _> =
+        bincode::serde::decode_from_slice(raw, bincode::config::legacy());
+    if let Ok((legacy, _)) = decoded_legacy_v1 {
+        let mut item = KLogMetaEntry {
+            key: legacy.key,
+            value: legacy.value,
+            updated_at: legacy.updated_at,
+            updated_by_node_name: legacy.updated_by_node_name,
+            revision: legacy.revision,
+            ..KLogMetaEntry::default()
+        };
+        item.normalize_mvcc_revision();
         return Ok(item);
     }
 
     let (legacy, _): (LegacyKLogMetaEntryV0, usize) =
         bincode::serde::decode_from_slice(raw, bincode::config::legacy())
             .map_err(|e| klog_err_with_context("Failed to decode rocksdb data meta entry", e))?;
-    Ok(KLogMetaEntry {
+    let mut item = KLogMetaEntry {
         key: legacy.key,
         value: legacy.value,
         updated_at: legacy.updated_at,
         updated_by_node_name: legacy.updated_by.to_string(),
         revision: 1,
-    })
+        ..KLogMetaEntry::default()
+    };
+    item.normalize_mvcc_revision();
+    Ok(item)
 }
 
 fn decode_meta_key_state(raw: &[u8]) -> KResult<KLogMetaKeyState> {
@@ -269,9 +297,9 @@ fn decode_meta_key_state(raw: &[u8]) -> KResult<KLogMetaKeyState> {
 fn legacy_meta_state_from_entry(item: &KLogMetaEntry, deleted: bool) -> KLogMetaKeyState {
     KLogMetaKeyState {
         key: item.key.clone(),
-        create_revision: item.revision,
-        mod_revision: item.revision,
-        version: if deleted { 0 } else { item.revision.max(1) },
+        create_revision: item.effective_create_revision(),
+        mod_revision: item.effective_mod_revision(),
+        version: if deleted { 0 } else { item.effective_version() },
         deleted,
     }
 }
@@ -639,7 +667,7 @@ impl RocksDbStateStore {
                 break;
             }
             let item = decode_meta_entry_with_legacy(v.as_ref())?;
-            max_revision = max_revision.max(item.revision);
+            max_revision = max_revision.max(item.effective_mod_revision());
         }
 
         let iter = self.db.iterator_cf(
@@ -855,12 +883,15 @@ impl RocksDbStateStore {
             let Some(key) = decode_data_meta_key(k.as_ref()) else {
                 continue;
             };
-            let entry = decode_meta_entry_with_legacy(v.as_ref())?;
+            let mut entry = decode_meta_entry_with_legacy(v.as_ref())?;
             if entry.key != key {
                 warn!(
                     "RocksDbStateStore meta key mismatch, key_from_index='{}', key_in_value='{}'",
                     key, entry.key
                 );
+            }
+            if let Some(state) = self.read_meta_key_state(&entry.key)? {
+                state.apply_to_entry(&mut entry);
             }
             out.push(entry);
         }
@@ -1102,14 +1133,24 @@ impl RocksDbStateStore {
         batch.put_cf(&meta_cf, KEY_NEXT_LOG_ID_META, next_log_id.to_be_bytes());
         let mut resolved_meta_revision = meta_revision;
         let mut meta_state_keys = BTreeSet::new();
-        for state in meta_states {
+        let meta_states_by_key = meta_states
+            .into_iter()
+            .map(|state| (state.key.clone(), state))
+            .collect::<BTreeMap<_, _>>();
+        for state in meta_states_by_key.values() {
             resolved_meta_revision = resolved_meta_revision.max(state.mod_revision);
             meta_state_keys.insert(state.key.clone());
-            let encoded = Self::encode_meta_key_state(&state)?;
+            let encoded = Self::encode_meta_key_state(state)?;
             batch.put_cf(&meta_cf, data_meta_state_key(&state.key), encoded);
         }
         for item in meta_entries {
-            resolved_meta_revision = resolved_meta_revision.max(item.revision);
+            let mut item = item;
+            resolved_meta_revision = resolved_meta_revision.max(item.effective_mod_revision());
+            if let Some(state) = meta_states_by_key.get(&item.key) {
+                state.apply_to_entry(&mut item);
+            } else {
+                item.normalize_mvcc_revision();
+            }
             let encoded = bincode::serde::encode_to_vec(&item, bincode::config::legacy())
                 .map_err(|e| klog_err_with_context("Failed to encode data meta entry", e))?;
             let key = data_meta_key(item.key.as_str());
@@ -2339,7 +2380,6 @@ impl KLogStateStore for RocksDbStateStore {
         let next_revision = self.read_meta_revision()?.saturating_add(1).max(1);
 
         let mut stored = item;
-        stored.revision = next_revision;
         let state = if let Some(prev_entry) = prev_entry.as_ref() {
             let prev_state =
                 prev_state.unwrap_or_else(|| legacy_meta_state_from_entry(prev_entry, false));
@@ -2359,6 +2399,7 @@ impl KLogStateStore for RocksDbStateStore {
                 deleted: false,
             }
         };
+        state.apply_to_entry(&mut stored);
 
         let encoded = bincode::serde::encode_to_vec(&stored, bincode::config::legacy())
             .map_err(|e| klog_err_with_context("Failed to encode rocksdb data meta entry", e))?;
@@ -2397,7 +2438,7 @@ impl KLogStateStore for RocksDbStateStore {
                 .db
                 .get_cf(&meta_cf, data_meta_key(key).as_slice())
                 .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta entry", e))?;
-            let entry = raw
+            let mut entry = raw
                 .as_ref()
                 .map(|raw| decode_meta_entry_with_legacy(raw.as_ref()))
                 .transpose()?;
@@ -2406,6 +2447,9 @@ impl KLogStateStore for RocksDbStateStore {
                     .as_ref()
                     .map(|entry| legacy_meta_state_from_entry(entry, false))
             });
+            if let (Some(entry), Some(state)) = (entry.as_mut(), state.as_ref()) {
+                state.apply_to_entry(entry);
+            }
             current_entries.insert(key.to_string(), entry);
             current_states.insert(key.to_string(), state);
         }
@@ -2468,6 +2512,7 @@ impl KLogStateStore for RocksDbStateStore {
         let guard_key = tx.guard.as_ref().map(|guard| guard.key.clone());
         let mut guard_touched = false;
         let mut revisions = BTreeMap::new();
+        let mut meta_versions = BTreeMap::new();
         let mut batch = WriteBatch::default();
         let mut has_mutation = false;
         for action in tx.actions.values() {
@@ -2541,7 +2586,7 @@ impl KLogStateStore for RocksDbStateStore {
                             deleted: false,
                         }
                     };
-                    item.revision = next_revision;
+                    state.apply_to_entry(&mut item);
                     let encoded = bincode::serde::encode_to_vec(&item, bincode::config::legacy())
                         .map_err(|e| {
                         klog_err_with_context("Failed to encode rocksdb data meta entry", e)
@@ -2549,7 +2594,8 @@ impl KLogStateStore for RocksDbStateStore {
                     let encoded_state = Self::encode_meta_key_state(&state)?;
                     batch.put_cf(&meta_cf, data_meta_key(&item.key), encoded);
                     batch.put_cf(&meta_cf, data_meta_state_key(&item.key), encoded_state);
-                    revisions.insert(item.key, Some(next_revision));
+                    revisions.insert(item.key.clone(), Some(item.effective_mod_revision()));
+                    meta_versions.insert(item.key.clone(), KLogMetaVersion::from_entry(&item));
                 }
                 KLogMetaTxAction::Delete { key, .. } => {
                     if let Some(Some(prev)) = current_entries.get(&key) {
@@ -2570,6 +2616,10 @@ impl KLogStateStore for RocksDbStateStore {
                         let encoded_state = Self::encode_meta_key_state(&state)?;
                         batch.delete_cf(&meta_cf, data_meta_key(&key));
                         batch.put_cf(&meta_cf, data_meta_state_key(&key), encoded_state);
+                        meta_versions.insert(
+                            key.clone(),
+                            KLogMetaVersion::new(previous.create_revision, next_revision, 0, true),
+                        );
                     }
                     revisions.insert(key, None);
                 }
@@ -2586,7 +2636,6 @@ impl KLogStateStore for RocksDbStateStore {
                 .cloned()
                 .flatten()
                 .unwrap_or_else(|| legacy_meta_state_from_entry(&item, false));
-            item.revision = next_revision;
             let state = KLogMetaKeyState {
                 key: guard.key.clone(),
                 create_revision: previous.create_revision,
@@ -2594,6 +2643,7 @@ impl KLogStateStore for RocksDbStateStore {
                 version: previous.version.saturating_add(1).max(1),
                 deleted: false,
             };
+            state.apply_to_entry(&mut item);
             let encoded =
                 bincode::serde::encode_to_vec(&item, bincode::config::legacy()).map_err(|e| {
                     klog_err_with_context("Failed to encode rocksdb data meta entry", e)
@@ -2601,7 +2651,8 @@ impl KLogStateStore for RocksDbStateStore {
             let encoded_state = Self::encode_meta_key_state(&state)?;
             batch.put_cf(&meta_cf, data_meta_key(&item.key), encoded);
             batch.put_cf(&meta_cf, data_meta_state_key(&item.key), encoded_state);
-            revisions.insert(guard.key, Some(item.revision));
+            revisions.insert(guard.key.clone(), Some(item.effective_mod_revision()));
+            meta_versions.insert(guard.key, KLogMetaVersion::from_entry(&item));
         }
 
         if let Some(tx_revision) = tx_revision {
@@ -2615,6 +2666,7 @@ impl KLogStateStore for RocksDbStateStore {
 
         Ok(KLogMetaTxResult::Committed(KLogMetaTxResponse {
             revisions,
+            meta_versions,
         }))
     }
 
@@ -2637,10 +2689,11 @@ impl KLogStateStore for RocksDbStateStore {
         else {
             return Ok(None);
         };
-        let prev_meta = decode_meta_entry_with_legacy(raw.as_ref())?;
+        let mut prev_meta = decode_meta_entry_with_legacy(raw.as_ref())?;
         let previous_state = self
             .read_meta_key_state(key)?
             .unwrap_or_else(|| legacy_meta_state_from_entry(&prev_meta, false));
+        previous_state.apply_to_entry(&mut prev_meta);
         let next_revision = self.read_meta_revision()?.saturating_add(1).max(1);
         let state = KLogMetaKeyState {
             key: key.to_string(),
@@ -2680,7 +2733,10 @@ impl KLogStateStore for RocksDbStateStore {
         else {
             return Ok(None);
         };
-        let item = decode_meta_entry_with_legacy(raw.as_ref())?;
+        let mut item = decode_meta_entry_with_legacy(raw.as_ref())?;
+        if let Some(state) = self.read_meta_key_state(key)? {
+            state.apply_to_entry(&mut item);
+        }
         Ok(Some(item))
     }
 
@@ -2707,7 +2763,7 @@ impl KLogStateStore for RocksDbStateStore {
             return Ok(None);
         };
         let item = decode_meta_entry_with_legacy(raw.as_ref())?;
-        Ok(Some(item.revision))
+        Ok(Some(item.effective_mod_revision()))
     }
 
     async fn list_meta(
@@ -2756,7 +2812,10 @@ impl KLogStateStore for RocksDbStateStore {
             {
                 continue;
             }
-            let item = decode_meta_entry_with_legacy(v.as_ref())?;
+            let mut item = decode_meta_entry_with_legacy(v.as_ref())?;
+            if let Some(state) = self.read_meta_key_state(&item.key)? {
+                state.apply_to_entry(&mut item);
+            }
             out.push(item);
             if out.len() >= limit {
                 break;
