@@ -1645,6 +1645,19 @@ impl KLogQueryService {
                 ));
             }
         }
+        if query.revision == Some(0) {
+            let msg = format!(
+                "{} meta query invalid revision: revision must be greater than 0",
+                self.service_name
+            );
+            error!("{}", msg);
+            return Err(self.service_error(
+                StatusCode::BAD_REQUEST,
+                KLogErrorCode::InvalidArgument,
+                msg,
+                &trace_id,
+            ));
+        }
 
         if strong_read {
             if forward_hops > META_RW_MAX_FORWARD_HOPS {
@@ -1739,6 +1752,7 @@ impl KLogQueryService {
                                     prefix: prefix.clone(),
                                     limit: query.limit,
                                     cursor: cursor.clone(),
+                                    revision: query.revision,
                                     strong_read: query.strong_read,
                                 },
                                 target_hops,
@@ -1785,13 +1799,14 @@ impl KLogQueryService {
         }
 
         info!(
-            "{} meta query request: trace_id={}, strong_read={}, key={:?}, prefix={:?}, cursor={:?}, limit={}, forward_hops={}, forwarded_by={}",
+            "{} meta query request: trace_id={}, strong_read={}, key={:?}, prefix={:?}, cursor={:?}, revision={:?}, limit={}, forward_hops={}, forwarded_by={}",
             self.service_name,
             trace_id,
             strong_read,
             key,
             prefix,
             cursor,
+            query.revision,
             limit,
             forward_hops,
             forwarded_by
@@ -1800,40 +1815,53 @@ impl KLogQueryService {
         let mut has_more = false;
         let mut next_cursor = None;
         let items = if let Some(key) = key.as_deref() {
-            let item = self
-                .state_store_manager
-                .get_meta_entry(key)
-                .await
-                .map_err(|e| {
-                    let msg = format!("{} meta query get failed: {}", self.service_name, e);
-                    error!("{}", msg);
-                    self.service_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        KLogErrorCode::Internal,
-                        msg,
-                        &trace_id,
-                    )
-                })?;
+            let item = if let Some(revision) = query.revision {
+                self.state_store_manager
+                    .get_meta_entry_at_revision(key, revision)
+                    .await
+            } else {
+                self.state_store_manager.get_meta_entry(key).await
+            }
+            .map_err(|e| {
+                let msg = format!("{} meta query get failed: {}", self.service_name, e);
+                error!("{}", msg);
+                self.service_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    KLogErrorCode::Internal,
+                    msg,
+                    &trace_id,
+                )
+            })?;
             item.into_iter().collect::<Vec<_>>()
         } else {
-            let mut items = self
-                .state_store_manager
-                .list_meta_entries(
-                    prefix.as_deref(),
-                    cursor.as_deref(),
-                    limit.saturating_add(1),
-                )
-                .await
-                .map_err(|e| {
-                    let msg = format!("{} meta query list failed: {}", self.service_name, e);
-                    error!("{}", msg);
-                    self.service_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        KLogErrorCode::Internal,
-                        msg,
-                        &trace_id,
+            let mut items = if let Some(revision) = query.revision {
+                self.state_store_manager
+                    .list_meta_entries_at_revision(
+                        prefix.as_deref(),
+                        cursor.as_deref(),
+                        limit.saturating_add(1),
+                        revision,
                     )
-                })?;
+                    .await
+            } else {
+                self.state_store_manager
+                    .list_meta_entries(
+                        prefix.as_deref(),
+                        cursor.as_deref(),
+                        limit.saturating_add(1),
+                    )
+                    .await
+            }
+            .map_err(|e| {
+                let msg = format!("{} meta query list failed: {}", self.service_name, e);
+                error!("{}", msg);
+                self.service_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    KLogErrorCode::Internal,
+                    msg,
+                    &trace_id,
+                )
+            })?;
             if items.len() > limit {
                 has_more = true;
                 items.truncate(limit);
