@@ -895,6 +895,7 @@ impl KRpcServer {
             KLogErrorCode::InvalidArgument
                 | KLogErrorCode::PayloadTooLarge
                 | KLogErrorCode::VersionConflict
+                | KLogErrorCode::Compacted
         ) {
             KLOG_RPC_ERR_INVALID_PARAMS
         } else if matches!(

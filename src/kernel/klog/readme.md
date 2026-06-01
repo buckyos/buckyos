@@ -88,8 +88,12 @@ Current metadata revision semantics are intentionally MVCC-compatible:
   prerequisite for etcd-style watch APIs.
 - `meta-changes` exposes the first watch-compatible API as active polling:
   callers can issue one-shot scans or set `wait_timeout_ms` for short
-  long-poll behavior. Streaming push APIs and compaction are not implemented
-  yet.
+  long-poll behavior. Streaming push APIs are not implemented yet.
+- Manual metadata compaction is available through the admin plane. Compaction
+  records a persisted compacted revision, keeps one key-major baseline record
+  per key at or before that revision, and drops old revision-major change-feed
+  index entries. Historical reads and `meta-changes` resumes at compacted
+  revisions fail with `KLogErrorCode::Compacted` / HTTP `410`.
 
 `KLogMetaPutRequest.expected_revision` controls CAS semantics:
 
@@ -155,10 +159,12 @@ Query defaults and constraints:
 - meta queries support either `key` or `prefix`, but not both.
 - meta queries can pass `revision` to return the visible value set at that
   historical global revision. Omit `revision` for the current live view.
+  Querying a compacted revision returns HTTP `410`.
 - meta changes support `start_revision`, optional `end_revision`, optional
   `key` or `prefix`, flat cursor fields `cursor_revision` and `cursor_key`,
   `include_deleted`, and `wait_timeout_ms`. `wait_timeout_ms` is capped by the
   server and is intended for short long-poll loops, not permanent streams.
+  Resuming from a compacted revision returns HTTP `410`.
 
 Default reads are local reads. Use `strong_read=true` when callers need
 linearizable reads, for example system-config read-after-write validation.
@@ -213,9 +219,14 @@ Admin APIs are cluster membership primitives:
 | `POST` | `/klog/admin/remove-learner` | `node_id` |
 | `POST` | `/klog/admin/change-membership` | `voters`, optional `retain` |
 | `GET` | `/klog/admin/cluster-state` | none |
+| `POST` | `/klog/admin/meta-compact` | `KLogMetaCompactRequest` JSON body |
 
 `cluster-state` returns `KLogClusterStateResponse`, including cluster identity,
 server state, leader id, voters, learners, and node descriptors.
+
+`meta-compact` is an explicit maintenance operation. It is submitted as a Raft
+write command, so all voters and learners converge on the same compacted
+revision. Automatic compaction policy is intentionally deferred.
 
 Production exposure is intentionally not decided in this crate. BuckyOS should
 keep admin routes behind local gateway/internal ACLs; see the daemon deployment

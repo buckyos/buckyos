@@ -67,6 +67,7 @@ pub enum KLogAdminRequestType {
     RemoveLearner,
     ChangeMembership,
     ClusterState,
+    MetaCompact,
 }
 
 impl KLogAdminRequestType {
@@ -76,6 +77,7 @@ impl KLogAdminRequestType {
             KLogAdminRequestType::RemoveLearner => "remove-learner",
             KLogAdminRequestType::ChangeMembership => "change-membership",
             KLogAdminRequestType::ClusterState => "cluster-state",
+            KLogAdminRequestType::MetaCompact => "meta-compact",
         }
     }
 
@@ -261,6 +263,17 @@ pub struct KLogMetaChangesResponse {
     pub has_more: bool,
     pub current_revision: u64,
     pub next_start_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaCompactRequest {
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaCompactResponse {
+    pub compacted_revision: u64,
+    pub current_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -630,6 +643,10 @@ mod tests {
         assert_eq!(
             KLogAdminRequestType::ClusterState.klog_path(),
             "/klog/admin/cluster-state"
+        );
+        assert_eq!(
+            KLogAdminRequestType::MetaCompact.klog_path(),
+            "/klog/admin/meta-compact"
         );
     }
 

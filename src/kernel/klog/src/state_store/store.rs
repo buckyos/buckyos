@@ -46,6 +46,8 @@ pub struct KLogStateSnapshotData {
     pub meta_history: Vec<KLogMetaHistoryRecord>,
     #[serde(default)]
     pub meta_revision: u64,
+    #[serde(default)]
+    pub meta_compacted_revision: u64,
 }
 
 /// Stable cursor for revision-ordered metadata change feeds.
@@ -234,6 +236,10 @@ pub trait KLogStateStore: Send + Sync {
     async fn current_meta_revision(&self, key: &str) -> KResult<Option<u64>>;
 
     async fn meta_revision(&self) -> KResult<u64>;
+
+    async fn meta_compacted_revision(&self) -> KResult<u64>;
+
+    async fn compact_meta(&self, revision: u64) -> KResult<u64>;
 
     async fn get_meta_at_revision(
         &self,
@@ -530,6 +536,14 @@ impl KLogStateStoreManager {
 
     pub async fn meta_revision(&self) -> KResult<u64> {
         self.state_store.meta_revision().await
+    }
+
+    pub async fn meta_compacted_revision(&self) -> KResult<u64> {
+        self.state_store.meta_compacted_revision().await
+    }
+
+    pub async fn compact_meta(&self, revision: u64) -> KResult<u64> {
+        self.state_store.compact_meta(revision).await
     }
 
     pub async fn get_meta_entry_at_revision(

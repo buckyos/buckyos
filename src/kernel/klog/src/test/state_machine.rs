@@ -237,6 +237,77 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn test_state_machine_applies_meta_compaction() -> anyhow::Result<()> {
+    let context = TestMemoryContext::new().await;
+    let manager = context.state_store_manager.clone();
+    let mut sm = context.state_machine;
+
+    let put_a_v1 = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 1),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/compact/a".to_string(),
+                value: "a-v1".to_string(),
+                updated_at: 5200,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: None,
+        }),
+    };
+    let put_b_v1 = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 2),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/compact/b".to_string(),
+                value: "b-v1".to_string(),
+                updated_at: 5201,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: None,
+        }),
+    };
+    let put_b_v2 = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 3),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/compact/b".to_string(),
+                value: "b-v2".to_string(),
+                updated_at: 5202,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: None,
+        }),
+    };
+    let compact = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 4),
+        payload: EntryPayload::Normal(KLogRequest::CompactMeta { revision: 2 }),
+    };
+
+    let responses = sm
+        .apply(vec![put_a_v1, put_b_v1, put_b_v2, compact])
+        .await?;
+    assert_eq!(responses.len(), 4);
+    assert!(matches!(
+        responses[3],
+        KLogResponse::MetaCompactOk {
+            compacted_revision: 2,
+            current_revision: 3,
+        }
+    ));
+    assert_eq!(manager.meta_compacted_revision().await?, 2);
+    let a_at_rev3 = manager
+        .get_meta_entry_at_revision("cluster/config/compact/a", 3)
+        .await?
+        .expect("baseline before compaction should be retained");
+    assert_eq!(a_at_rev3.value, "a-v1");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_state_machine_meta_delete_tombstone_blocks_stale_cas() -> anyhow::Result<()> {
     let context = TestMemoryContext::new().await;
     let mut sm = context.state_machine;

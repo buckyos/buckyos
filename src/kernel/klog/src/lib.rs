@@ -324,6 +324,9 @@ pub enum KLogRequest {
     ExecMetaTx {
         tx: KLogMetaTxRequest,
     },
+    CompactMeta {
+        revision: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -354,6 +357,14 @@ pub enum KLogResponse {
         key: String,
         expected_revision: u64,
         current_revision: Option<u64>,
+    },
+    MetaCompactOk {
+        compacted_revision: u64,
+        current_revision: u64,
+    },
+    MetaCompactRejected {
+        revision: u64,
+        current_revision: u64,
     },
     Err(String),
 }

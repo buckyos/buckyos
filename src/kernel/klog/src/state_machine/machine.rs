@@ -247,6 +247,48 @@ impl KLogStateMachine {
                     }
                 }
             }
+            KLogRequest::CompactMeta { revision } => {
+                debug!(
+                    "StateMachine process meta-compact request: revision={}",
+                    revision
+                );
+                let current_revision = match self.state_store.meta_revision().await {
+                    Ok(current_revision) => current_revision,
+                    Err(err) => {
+                        error!(
+                            "StateMachine meta-compact current revision lookup failed: {}",
+                            err
+                        );
+                        return KLogResponse::Err(err.to_string());
+                    }
+                };
+                if revision == 0 || revision > current_revision {
+                    warn!(
+                        "StateMachine meta-compact rejected: revision={}, current_revision={}",
+                        revision, current_revision
+                    );
+                    return KLogResponse::MetaCompactRejected {
+                        revision,
+                        current_revision,
+                    };
+                }
+                match self.state_store.compact_meta(revision).await {
+                    Ok(compacted_revision) => {
+                        debug!(
+                            "StateMachine meta-compact request committed: compacted_revision={}, current_revision={}",
+                            compacted_revision, current_revision
+                        );
+                        KLogResponse::MetaCompactOk {
+                            compacted_revision,
+                            current_revision,
+                        }
+                    }
+                    Err(err) => {
+                        error!("StateMachine meta-compact request failed: {}", err);
+                        KLogResponse::Err(err.to_string())
+                    }
+                }
+            }
         }
     }
 }
