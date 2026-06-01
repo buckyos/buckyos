@@ -168,6 +168,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Validates 3-voter gateway cluster routes, atomic meta transactions,
     historical prefix reads, change-feed cursor pagination, explicit
     compaction/compacted-revision errors, and restart persistence.
+- [x] Validate MVCC snapshot catch-up during OOD membership changes.
+  - Covered by `test/klog_mvcc_snapshot_membership_dv.sh`.
+  - Forces low snapshot thresholds, writes MVCC history with tombstones and
+    delete/recreate, compacts metadata, adds a new OOD as learner, verifies the
+    learner catches up through snapshot with compacted-revision semantics,
+    promotes it to voter, writes post-promote MVCC data, then demotes/removes it.
 - [x] Validate high-level system_config MVCC behavior on the klog backend.
   - Covered by `test/klog_system_config_mvcc_dv.sh`.
   - Validates real `/kapi/system_config` create/set/set-by-json-path/delete,
