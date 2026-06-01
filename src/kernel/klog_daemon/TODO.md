@@ -114,6 +114,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - `KLogMetaTxRequest` supports multi-key put/delete actions plus an optional
     optimistic guard revision.
   - Covered by klog state-machine and JSON-RPC client tests.
+- [x] Add first-stage MVCC-compatible meta revision semantics.
+  - Meta writes now allocate a global `mod_revision`; delete writes tombstone
+    state, and delete/recreate does not reset the CAS revision.
+  - Covered by klog state-store, state-machine, and klog_daemon meta revision
+    tests.
 - [x] Integrate BuckyOS OOD-voter deployment source.
   - Scheduler derives klog voters from `boot/config.oods` when `deployment.mode = "ood_voters"`.
 - [x] Replace the placeholder `src/kernel/klog/readme.md` with protocol/API documentation.

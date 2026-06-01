@@ -34,8 +34,8 @@ BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true
 1. `get/set/create/delete/list/exec_tx` 映射到 klog meta KV。
 2. 强读默认通过 leader 或 follower 转发保证 linearizable 语义。
 3. `exec_tx` 通过 klog meta transaction 承载多 key 原子写入和 optimistic guard。
-4. prefix list 当前有固定 limit，超限会 fail-fast，长期需要 cursor/pagination。
-5. delete 后 recreate 的 revision 语义与 sled tombstone 不完全相同，若上层依赖 tombstone/CAS-after-delete，需要单独设计。
+4. prefix list 已支持 cursor/pagination，system_config klog provider 会自动翻页。
+5. meta revision 已按全局 `mod_revision` + tombstone 方向实现第一阶段：delete 后 recreate 不会复用旧 revision，stale CAS 会被 tombstone revision 拦截。后续完整 MVCC 仍需要补历史版本查询、watch 和 compaction。
 
 ### scheduler
 
@@ -274,5 +274,5 @@ uv run test/run.py -p klog_ood_two_voter_loss_dv
 4. 删除 OOD 是否必须人工确认，哪些拓扑允许自动 shrink。
 5. 是否需要 transfer-leader admin API。
 6. admin plane 的 BuckyOS token/RBAC 校验放在 gateway 还是 klog admin handler 前置层。
-7. system_config prefix list 的 pagination/cursor 设计。
+7. 完整 MVCC 的历史版本查询、watch 语义和 compaction 边界。
 8. `2 voters` 家庭小集群是否默认推荐 `1 voter + 1 learner`，以及 UI/产品上如何表达可用性边界。

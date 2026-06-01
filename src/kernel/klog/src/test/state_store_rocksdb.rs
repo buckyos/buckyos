@@ -1,7 +1,8 @@
 use super::common::{decode_entry_ids, sample_membership, sample_state_entries, unique_test_path};
 use crate::state_store::{
-    KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot, KLogStateStore,
-    KLogStateStoreManager, MemoryStateStore, RocksDbSnapshotMode, RocksDbStateStore,
+    KLogMetaPutResult, KLogQuery, KLogQueryOrder, KLogStateMachineMeta, KLogStateSnapshot,
+    KLogStateStore, KLogStateStoreManager, MemoryStateStore, RocksDbSnapshotMode,
+    RocksDbStateStore,
 };
 use crate::{KLogEntry, KLogLevel, KLogMetaEntry};
 use openraft::{CommittedLeaderId, LogId};
@@ -234,6 +235,153 @@ async fn test_rocksdb_meta_snapshot_roundtrip() -> anyhow::Result<()> {
     assert_eq!(item.value, "v1");
     assert_eq!(item.updated_by_node_name, "node-2");
     assert_eq!(item.revision, 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_meta_delete_recreate_uses_tombstone_revision() -> anyhow::Result<()> {
+    let path = unique_test_path("state_store_meta_tombstone.rocks");
+    let rocks = RocksDbStateStore::open_with_mode(&path, RocksDbSnapshotMode::Enumerate)
+        .map_err(anyhow::Error::msg)?;
+    let state_store = Arc::new(Box::new(rocks) as Box<dyn KLogStateStore>);
+    let manager = KLogStateStoreManager::new(state_store).await?;
+    let key = "cluster/config/tombstone";
+
+    let created = manager
+        .put_meta_entry_with_expected_revision(
+            KLogMetaEntry {
+                key: key.to_string(),
+                value: "v1".to_string(),
+                updated_at: 2100,
+                updated_by_node_name: "node-2".to_string(),
+                revision: 0,
+            },
+            Some(0),
+        )
+        .await?;
+    assert!(matches!(
+        created,
+        KLogMetaPutResult::Stored(KLogMetaEntry { revision: 1, .. })
+    ));
+
+    let prev = manager
+        .delete_meta_key(key)
+        .await?
+        .expect("delete should return previous entry");
+    assert_eq!(prev.revision, 1);
+    assert_eq!(manager.current_meta_revision(key).await?, Some(2));
+    assert!(manager.get_meta_entry(key).await?.is_none());
+
+    let stale = manager
+        .put_meta_entry_with_expected_revision(
+            KLogMetaEntry {
+                key: key.to_string(),
+                value: "stale".to_string(),
+                updated_at: 2101,
+                updated_by_node_name: "node-2".to_string(),
+                revision: 0,
+            },
+            Some(1),
+        )
+        .await?;
+    assert!(matches!(
+        stale,
+        KLogMetaPutResult::VersionConflict {
+            expected_revision: 1,
+            current_revision: Some(2)
+        }
+    ));
+
+    let recreated = manager
+        .put_meta_entry_with_expected_revision(
+            KLogMetaEntry {
+                key: key.to_string(),
+                value: "v2".to_string(),
+                updated_at: 2102,
+                updated_by_node_name: "node-2".to_string(),
+                revision: 0,
+            },
+            Some(0),
+        )
+        .await?;
+    assert!(matches!(
+        recreated,
+        KLogMetaPutResult::Stored(KLogMetaEntry { revision: 3, .. })
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rocksdb_meta_tombstone_survives_enumerate_snapshot() -> anyhow::Result<()> {
+    let src = RocksDbStateStore::open_with_mode(
+        unique_test_path("state_store_meta_tombstone_src.rocks"),
+        RocksDbSnapshotMode::Enumerate,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let src = Arc::new(Box::new(src) as Box<dyn KLogStateStore>);
+    let src_mgr = KLogStateStoreManager::new(src).await?;
+    let key = "cluster/config/tombstone_snapshot";
+
+    src_mgr
+        .put_meta_entry(KLogMetaEntry {
+            key: key.to_string(),
+            value: "v1".to_string(),
+            updated_at: 2200,
+            updated_by_node_name: "node-2".to_string(),
+            revision: 0,
+        })
+        .await?;
+    src_mgr.delete_meta_key(key).await?;
+    let snapshot = src_mgr.build_snapshot().await?;
+
+    let dst = RocksDbStateStore::open_with_mode(
+        unique_test_path("state_store_meta_tombstone_dst.rocks"),
+        RocksDbSnapshotMode::Enumerate,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let dst = Arc::new(Box::new(dst) as Box<dyn KLogStateStore>);
+    let dst_mgr = KLogStateStoreManager::new(dst).await?;
+    dst_mgr.install_snapshot(snapshot).await?;
+
+    assert_eq!(dst_mgr.current_meta_revision(key).await?, Some(2));
+    let stale = dst_mgr
+        .put_meta_entry_with_expected_revision(
+            KLogMetaEntry {
+                key: key.to_string(),
+                value: "stale".to_string(),
+                updated_at: 2201,
+                updated_by_node_name: "node-2".to_string(),
+                revision: 0,
+            },
+            Some(1),
+        )
+        .await?;
+    assert!(matches!(
+        stale,
+        KLogMetaPutResult::VersionConflict {
+            expected_revision: 1,
+            current_revision: Some(2)
+        }
+    ));
+
+    let recreated = dst_mgr
+        .put_meta_entry_with_expected_revision(
+            KLogMetaEntry {
+                key: key.to_string(),
+                value: "v2".to_string(),
+                updated_at: 2202,
+                updated_by_node_name: "node-2".to_string(),
+                revision: 0,
+            },
+            Some(0),
+        )
+        .await?;
+    assert!(matches!(
+        recreated,
+        KLogMetaPutResult::Stored(KLogMetaEntry { revision: 3, .. })
+    ));
 
     Ok(())
 }

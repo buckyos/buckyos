@@ -229,6 +229,86 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn test_state_machine_meta_delete_tombstone_blocks_stale_cas() -> anyhow::Result<()> {
+    let context = TestMemoryContext::new().await;
+    let mut sm = context.state_machine;
+
+    let key = "cluster/config/aba".to_string();
+    let create = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 1),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: key.clone(),
+                value: "v1".to_string(),
+                updated_at: 5100,
+                updated_by_node_name: "node-1".to_string(),
+                revision: 0,
+            },
+            expected_revision: Some(0),
+        }),
+    };
+    let delete = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 2),
+        payload: EntryPayload::Normal(KLogRequest::DeleteMeta { key: key.clone() }),
+    };
+    let stale = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 3),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: key.clone(),
+                value: "stale".to_string(),
+                updated_at: 5101,
+                updated_by_node_name: "node-1".to_string(),
+                revision: 0,
+            },
+            expected_revision: Some(1),
+        }),
+    };
+    let recreate = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 4),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key,
+                value: "v2".to_string(),
+                updated_at: 5102,
+                updated_by_node_name: "node-1".to_string(),
+                revision: 0,
+            },
+            expected_revision: Some(0),
+        }),
+    };
+
+    let responses = sm.apply(vec![create, delete, stale, recreate]).await?;
+    assert_eq!(responses.len(), 4);
+    assert!(matches!(
+        responses[0],
+        KLogResponse::MetaPutOk { revision: 1, .. }
+    ));
+    assert!(matches!(
+        responses[1],
+        KLogResponse::MetaDeleteOk {
+            existed: true,
+            prev_meta: Some(KLogMetaEntry { revision: 1, .. }),
+            ..
+        }
+    ));
+    assert!(matches!(
+        responses[2],
+        KLogResponse::MetaPutConflict {
+            expected_revision: 1,
+            current_revision: Some(2),
+            ..
+        }
+    ));
+    assert!(matches!(
+        responses[3],
+        KLogResponse::MetaPutOk { revision: 3, .. }
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result<()> {
     let context = TestMemoryContext::new().await;
     let mut sm = context.state_machine;
