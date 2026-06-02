@@ -25,6 +25,7 @@ const MVCC_CLUSTER_MODE: &str = "local-gateway-mvcc-cluster";
 const MVCC_CHANGE_FEED_MODE: &str = "local-gateway-mvcc-change-feed";
 const MVCC_CHANGE_FEED_STRESS_MODE: &str = "local-gateway-mvcc-change-feed-stress";
 const MVCC_FAILOVER_MODE: &str = "local-gateway-mvcc-failover";
+const MVCC_AUTO_COMPACT_FAILOVER_MODE: &str = "local-gateway-mvcc-auto-compact-failover";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -1072,6 +1073,46 @@ async fn expect_meta_query_status_via_cluster_inter_route(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn wait_meta_query_compacted_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    key: Option<&str>,
+    prefix: Option<&str>,
+    revision: u64,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match expect_meta_query_status_via_cluster_inter_route(
+            client,
+            gateway_addr,
+            route_prefix,
+            node_name,
+            key,
+            prefix,
+            Some(revision),
+            StatusCode::GONE,
+            Some("COMPACTED"),
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "timeout waiting meta query compacted at revision {}; last={}",
+                        revision, err
+                    ));
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn expect_meta_changes_status_via_cluster_inter_route(
     client: &reqwest::Client,
     gateway_addr: &str,
@@ -1440,6 +1481,45 @@ fn require_expected_meta_changes(
         {
             return Err(format!(
                 "unexpected stress meta change: expected={:?}, actual={:?}",
+                expected, item
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_expected_current_meta_values(
+    response: &MetaQueryResponse,
+    expected: &[ExpectedMetaChange],
+) -> Result<(), String> {
+    if response.items.len() != expected.len() {
+        return Err(format!(
+            "unexpected current meta count: expected={}, actual={}, items={:?}",
+            expected.len(),
+            response.items.len(),
+            response.items
+        ));
+    }
+
+    for expected in expected {
+        let item = response
+            .items
+            .iter()
+            .find(|item| item.key == expected.key)
+            .ok_or_else(|| {
+                format!(
+                    "missing expected current meta key {} in items={:?}",
+                    expected.key, response.items
+                )
+            })?;
+        if item.value != expected.value
+            || item.revision != expected.revision
+            || item.create_revision != expected.create_revision
+            || item.mod_revision != expected.revision
+            || item.version != expected.version
+        {
+            return Err(format!(
+                "unexpected current meta item: expected={:?}, actual={:?}",
                 expected, item
             ));
         }
@@ -1905,6 +1985,13 @@ struct KLogRaftPatch<'a> {
     purge_batch_size: Option<u64>,
 }
 
+#[derive(Clone, Copy)]
+struct KLogMetaCompactionPatch {
+    retention_revisions: u64,
+    check_interval_ms: u64,
+    min_compact_gap: u64,
+}
+
 struct GatewayRuntimeOptions<'a> {
     all_nodes: &'a [LocalNodeDef],
     ingress_port: u16,
@@ -2276,6 +2363,46 @@ fn write_klog_config(
     options: &KLogConfigOptions<'_>,
 ) -> Result<PathBuf, String> {
     write_klog_config_with_raft_patch(harness, node, options, KLogRaftPatch::default())
+}
+
+fn write_klog_config_with_meta_compaction(
+    harness: &LocalHarness,
+    node: &LocalNodeDef,
+    options: &KLogConfigOptions<'_>,
+    meta_compaction: KLogMetaCompactionPatch,
+) -> Result<PathBuf, String> {
+    let config_path = write_klog_config(harness, node, options)?;
+    let mut content = fs::read_to_string(&config_path).map_err(|err| {
+        format!(
+            "failed to read klog config {} before meta compaction patch: {}",
+            config_path.display(),
+            err
+        )
+    })?;
+    content.push_str(
+        format!(
+            r#"
+[meta_compaction]
+enabled = true
+policy = "revision_count"
+retention_revisions = {}
+check_interval_ms = {}
+min_compact_gap = {}
+"#,
+            meta_compaction.retention_revisions,
+            meta_compaction.check_interval_ms,
+            meta_compaction.min_compact_gap
+        )
+        .as_str(),
+    );
+    fs::write(&config_path, content).map_err(|err| {
+        format!(
+            "failed to write klog config {} after meta compaction patch: {}",
+            config_path.display(),
+            err
+        )
+    })?;
+    Ok(config_path)
 }
 
 fn write_klog_config_with_join_targets(
@@ -8638,6 +8765,304 @@ async fn run_local_gateway_mvcc_failover() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_mvcc_auto_compact_failover_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-mvcc-auto-compact-failover-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, MVCC_AUTO_COMPACT_FAILOVER_MODE, route_prefix, 3)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let meta_compaction = KLogMetaCompactionPatch {
+        retention_revisions: 6,
+        check_interval_ms: 200,
+        min_compact_gap: 2,
+    };
+
+    for node in &nodes {
+        let config =
+            write_klog_config_with_meta_compaction(harness, node, &voter_config, meta_compaction)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let initial_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    let suffix = unique_suffix("mvcc-auto-compact-failover");
+    let prefix = format!("test/klog_mvcc_auto_compact_failover_dv/{}/", suffix);
+    let mut expected_current = Vec::new();
+    let phase1_count = 14usize;
+    for index in 0..phase1_count {
+        let source = &nodes[index % nodes.len()];
+        let target = &nodes[(index + 1) % nodes.len()];
+        let key = format!("{}phase1-{:03}", prefix, index);
+        let value = format!("phase1-value-{:03}", index);
+        let stored = put_meta_via_cluster_inter_route(
+            &client,
+            gateway_addr(source, ingress_port).as_str(),
+            route_prefix,
+            target.name.as_str(),
+            key.as_str(),
+            value.as_str(),
+            Some(0),
+        )
+        .await?;
+        if stored.create_revision != stored.mod_revision || stored.version != 1 {
+            return Err(format!(
+                "unexpected auto-compact phase1 put response: {:?}",
+                stored
+            ));
+        }
+        expected_current.push(ExpectedMetaChange {
+            revision: stored.mod_revision,
+            key,
+            value,
+            deleted: false,
+            create_revision: stored.create_revision,
+            version: stored.version,
+        });
+    }
+    let first_revision = expected_current
+        .first()
+        .ok_or_else(|| "missing auto-compact first revision".to_string())?
+        .revision;
+    let phase1_last = expected_current
+        .last()
+        .cloned()
+        .ok_or_else(|| "missing auto-compact phase1 last revision".to_string())?;
+
+    let observer = nodes
+        .iter()
+        .find(|node| node.id != initial_leader_id)
+        .unwrap_or(&nodes[0]);
+    wait_meta_query_compacted_via_cluster_inter_route(
+        &client,
+        gateway_addr(observer, ingress_port).as_str(),
+        route_prefix,
+        observer.name.as_str(),
+        Some(expected_current[0].key.as_str()),
+        None,
+        first_revision,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    let old_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(20),
+    )
+    .await?;
+    let old_leader = nodes
+        .iter()
+        .find(|node| node.id == old_leader_id)
+        .ok_or_else(|| format!("old leader node {} not found", old_leader_id))?;
+    harness.stop(format!("klog-{}", old_leader.name).as_str())?;
+    let alive_nodes = nodes
+        .iter()
+        .filter(|node| node.id != old_leader_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    wait_membership(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let new_leader_id = wait_consistent_leader(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        Some(old_leader_id),
+        Duration::from_secs(70),
+    )
+    .await?;
+
+    let phase2_count = 14usize;
+    for index in 0..phase2_count {
+        let source = &alive_nodes[index % alive_nodes.len()];
+        let target = &alive_nodes[(index + 1) % alive_nodes.len()];
+        let key = format!("{}phase2-{:03}", prefix, index);
+        let value = format!("phase2-value-{:03}", index);
+        let stored = put_meta_via_cluster_inter_route(
+            &client,
+            gateway_addr(source, ingress_port).as_str(),
+            route_prefix,
+            target.name.as_str(),
+            key.as_str(),
+            value.as_str(),
+            Some(0),
+        )
+        .await?;
+        if stored.create_revision != stored.mod_revision || stored.version != 1 {
+            return Err(format!(
+                "unexpected auto-compact phase2 put response: {:?}",
+                stored
+            ));
+        }
+        expected_current.push(ExpectedMetaChange {
+            revision: stored.mod_revision,
+            key,
+            value,
+            deleted: false,
+            create_revision: stored.create_revision,
+            version: stored.version,
+        });
+    }
+
+    let alive_observer = alive_nodes
+        .iter()
+        .find(|node| node.id != new_leader_id)
+        .unwrap_or(&alive_nodes[0]);
+    wait_meta_query_compacted_via_cluster_inter_route(
+        &client,
+        gateway_addr(alive_observer, ingress_port).as_str(),
+        route_prefix,
+        alive_observer.name.as_str(),
+        Some(phase1_last.key.as_str()),
+        None,
+        phase1_last.revision,
+        Duration::from_secs(40),
+    )
+    .await?;
+    expect_meta_changes_status_via_cluster_inter_route(
+        &client,
+        gateway_addr(alive_observer, ingress_port).as_str(),
+        route_prefix,
+        alive_observer.name.as_str(),
+        prefix.as_str(),
+        phase1_last.revision,
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+
+    for node in &alive_nodes {
+        let current = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            expected_current.len() + 8,
+        )
+        .await?;
+        require_expected_current_meta_values(&current, expected_current.as_slice())?;
+    }
+
+    let latest = expected_current
+        .last()
+        .ok_or_else(|| "missing auto-compact latest revision".to_string())?;
+    let post_compact_changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        gateway_addr(alive_observer, ingress_port).as_str(),
+        route_prefix,
+        alive_observer.name.as_str(),
+        prefix.as_str(),
+        latest.revision,
+        8,
+        None,
+    )
+    .await?;
+    require_meta_changes(
+        &post_compact_changes,
+        &[(
+            latest.revision,
+            latest.key.as_str(),
+            latest.value.as_str(),
+            false,
+            latest.create_revision,
+            latest.version,
+        )],
+    )?;
+
+    println!(
+        "[klog-cluster-dv] MVCC auto-compact failover ok: initial_leader={}, stopped_leader={}, new_leader={}, first_revision={}, phase1_last_revision={}, latest_revision={}, keys={}, prefix={}",
+        initial_leader_id,
+        old_leader_id,
+        new_leader_id,
+        first_revision,
+        phase1_last.revision,
+        latest.revision,
+        expected_current.len(),
+        prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_mvcc_auto_compact_failover() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_mvcc_auto_compact_failover_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -11112,6 +11537,7 @@ async fn run() -> Result<(), String> {
         MVCC_CHANGE_FEED_MODE => run_local_gateway_mvcc_change_feed().await,
         MVCC_CHANGE_FEED_STRESS_MODE => run_local_gateway_mvcc_change_feed_stress().await,
         MVCC_FAILOVER_MODE => run_local_gateway_mvcc_failover().await,
+        MVCC_AUTO_COMPACT_FAILOVER_MODE => run_local_gateway_mvcc_auto_compact_failover().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -11135,6 +11561,7 @@ async fn run() -> Result<(), String> {
                 MVCC_CHANGE_FEED_MODE,
                 MVCC_CHANGE_FEED_STRESS_MODE,
                 MVCC_FAILOVER_MODE,
+                MVCC_AUTO_COMPACT_FAILOVER_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
