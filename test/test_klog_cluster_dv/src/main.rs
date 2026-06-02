@@ -39,6 +39,7 @@ const RAFT_SNAPSHOT_INSTALL_CRASH_MODE: &str = "local-gateway-raft-snapshot-inst
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
+const SYSTEM_CONFIG_LEADER_FAILOVER_MODE: &str = "local-gateway-system-config-leader-failover";
 const SYSTEM_CONFIG_ROLLOUT_MODE: &str = "local-gateway-system-config-rollout";
 const SYSTEM_CONFIG_PAGINATION_MODE: &str = "local-gateway-system-config-pagination";
 const SYSTEM_CONFIG_MVCC_MODE: &str = "local-gateway-system-config-mvcc";
@@ -2947,6 +2948,51 @@ async fn expect_system_config_rpc_error(
         )),
         Err(err) => Ok(err),
     }
+}
+
+async fn wait_system_config_rpc_success(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match call_system_config_rpc(client, endpoint, token, method, params.clone()).await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "timeout waiting system_config rpc {} success; last={}",
+                        method, err
+                    ));
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn require_system_config_klog_failover_error(err: &str) -> Result<(), String> {
+    let lower = err.to_ascii_lowercase();
+    let expected = [
+        "klog",
+        "unavailable",
+        "timeout",
+        "network",
+        "leader",
+        "connection",
+        "failed",
+    ];
+    if expected.iter().any(|needle| lower.contains(needle)) {
+        return Ok(());
+    }
+    Err(format!(
+        "system_config failover error did not look like klog/rpc transient failure: {}",
+        err
+    ))
 }
 
 fn require_system_config_value(
@@ -13130,6 +13176,377 @@ async fn run_local_gateway_system_config_service() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_system_config_leader_failover_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-system-config-leader-failover-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, SYSTEM_CONFIG_LEADER_FAILOVER_MODE, route_prefix, 3)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing system_config failover seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let mut configs = BTreeMap::new();
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.rpc, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let old_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let old_leader = nodes
+        .iter()
+        .find(|node| node.id == old_leader_id)
+        .cloned()
+        .ok_or_else(|| format!("system_config failover leader {} not found", old_leader_id))?;
+    let endpoint_node = nodes
+        .iter()
+        .find(|node| node.id != old_leader_id)
+        .cloned()
+        .ok_or_else(|| "missing non-leader klog RPC endpoint node".to_string())?;
+    let survivors = nodes
+        .iter()
+        .filter(|node| node.id != old_leader_id)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let klog_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        endpoint_node.ports.rpc, KLOG_JSON_RPC_SERVICE_PATH
+    );
+    let repo_root = repo_root()?;
+    let buckyos_root = get_buckyos_root();
+    let system_config_bin = resolve_system_config_bin(&repo_root, &buckyos_root)?;
+    let mut used_ports = collect_used_ports(&nodes, ingress_port);
+    let system_config_port = pick_local_port(&mut used_ports)?;
+    spawn_system_config(
+        harness,
+        &system_config_bin,
+        system_config_port,
+        klog_endpoint.as_str(),
+    )?;
+    wait_tcp("127.0.0.1", system_config_port, Duration::from_secs(15)).await?;
+
+    let endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        system_config_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    let token = system_config_jwt(TEST_DEVICE_NAME, "root", "scheduler")?;
+    let suffix = unique_suffix("syscfg-leader-failover");
+    let base = format!("users/alice/klog_leader_failover_dv/{}", suffix);
+    let prefix = format!("{}/", base);
+    let profile_key = format!("{}profile", prefix);
+    let tx_key = format!("{}tx/key", prefix);
+    let profile_v1 = "profile-before-failover-v1";
+    let profile_v2 = "profile-before-failover-v2";
+    let profile_during_failover = "profile-during-failover";
+    let profile_v3 = "profile-after-failover-v3";
+    let profile_v4 = "profile-after-rejoin-v4";
+
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_create",
+        json!({"key": profile_key.as_str(), "value": profile_v1}),
+    )
+    .await?;
+    let created = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+    )
+    .await?;
+    let (_, r1) = system_config_value_and_version(&created)?;
+    require_system_config_value(&created, profile_v1, r1)?;
+
+    call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_set",
+        json!({"key": profile_key.as_str(), "value": profile_v2}),
+    )
+    .await?;
+    let before_failover = call_system_config_rpc(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+    )
+    .await?;
+    let (_, r2) = system_config_value_and_version(&before_failover)?;
+    if r2 <= r1 {
+        return Err(format!(
+            "system_config pre-failover set revision did not advance: r1={}, r2={}",
+            r1, r2
+        ));
+    }
+    require_system_config_value(&before_failover, profile_v2, r2)?;
+
+    harness.stop(format!("klog-{}", old_leader.name).as_str())?;
+    let failover_err = expect_system_config_rpc_error(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_set",
+        json!({"key": profile_key.as_str(), "value": profile_during_failover}),
+    )
+    .await?;
+    require_system_config_klog_failover_error(failover_err.as_str())?;
+
+    let new_leader_id = wait_consistent_leader(
+        &client,
+        &survivors,
+        ingress_port,
+        route_prefix,
+        Some(old_leader_id),
+        Duration::from_secs(90),
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &survivors,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let after_failed_write = wait_system_config_rpc_success(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+        Duration::from_secs(40),
+    )
+    .await?;
+    require_system_config_value(&after_failed_write, profile_v2, r2)?;
+
+    wait_system_config_rpc_success(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_set",
+        json!({"key": profile_key.as_str(), "value": profile_v3}),
+        Duration::from_secs(40),
+    )
+    .await?;
+    let after_retry = wait_system_config_rpc_success(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+        Duration::from_secs(40),
+    )
+    .await?;
+    let (_, r3) = system_config_value_and_version(&after_retry)?;
+    if r3 <= r2 {
+        return Err(format!(
+            "system_config post-failover retry revision did not advance: r2={}, r3={}",
+            r2, r3
+        ));
+    }
+    require_system_config_value(&after_retry, profile_v3, r3)?;
+
+    let mut tx_actions = serde_json::Map::new();
+    tx_actions.insert(
+        profile_key.clone(),
+        json!({
+            "action": "update",
+            "value": profile_v4
+        }),
+    );
+    tx_actions.insert(
+        tx_key.clone(),
+        json!({
+            "action": "create",
+            "value": "tx-after-failover"
+        }),
+    );
+    wait_system_config_rpc_success(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_exec_tx",
+        json!({
+            "main_key": format!("{}:{}", profile_key, r3),
+            "actions": tx_actions
+        }),
+        Duration::from_secs(40),
+    )
+    .await?;
+    let after_tx = wait_system_config_rpc_success(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+        Duration::from_secs(40),
+    )
+    .await?;
+    let (_, r4) = system_config_value_and_version(&after_tx)?;
+    if r4 <= r3 {
+        return Err(format!(
+            "system_config post-failover tx revision did not advance: r3={}, r4={}",
+            r3, r4
+        ));
+    }
+    require_system_config_value(&after_tx, profile_v4, r4)?;
+    let tx_after_failover = wait_system_config_rpc_success(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": tx_key.as_str()}),
+        Duration::from_secs(40),
+    )
+    .await?;
+    require_system_config_value(&tx_after_failover, "tx-after-failover", r4)?;
+
+    let old_leader_config = configs
+        .get(&old_leader.id)
+        .ok_or_else(|| format!("missing old leader config {}", old_leader.id))?;
+    spawn_klog(harness, &klog_daemon_bin, old_leader_config, &old_leader)?;
+    wait_tcp("127.0.0.1", old_leader.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", old_leader.ports.rpc, Duration::from_secs(12)).await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(120),
+    )
+    .await?;
+    let final_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(80),
+    )
+    .await?;
+    let after_rejoin = wait_system_config_rpc_success(
+        &client,
+        endpoint.as_str(),
+        token.as_str(),
+        "sys_config_get",
+        json!({"key": profile_key.as_str()}),
+        Duration::from_secs(40),
+    )
+    .await?;
+    require_system_config_value(&after_rejoin, profile_v4, r4)?;
+
+    for node in &nodes {
+        let response = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            8,
+        )
+        .await?;
+        require_meta_selected_values(
+            &response,
+            &[
+                (profile_key.as_str(), profile_v4, r1, r4, 4),
+                (tx_key.as_str(), "tx-after-failover", r4, r4, 1),
+            ],
+        )?;
+    }
+
+    println!(
+        "[klog-cluster-dv] system_config leader failover ok: old_leader={}, new_leader={}, final_leader={}, endpoint_node={}, endpoint={}, failover_error_len={}, revisions=[{},{},{},{}], prefix={}",
+        old_leader_id,
+        new_leader_id,
+        final_leader_id,
+        endpoint_node.id,
+        endpoint,
+        failover_err.len(),
+        r1,
+        r2,
+        r3,
+        r4,
+        prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_system_config_leader_failover() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_system_config_leader_failover_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_mvcc_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -14966,6 +15383,9 @@ async fn run() -> Result<(), String> {
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
+        SYSTEM_CONFIG_LEADER_FAILOVER_MODE => {
+            run_local_gateway_system_config_leader_failover().await
+        }
         SYSTEM_CONFIG_MVCC_MODE => run_local_gateway_system_config_mvcc().await,
         SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE => run_local_gateway_system_config_multi_ood_mvcc().await,
         SYSTEM_CONFIG_PAGINATION_MODE => run_local_gateway_system_config_pagination().await,
@@ -14999,6 +15419,7 @@ async fn run() -> Result<(), String> {
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
+                SYSTEM_CONFIG_LEADER_FAILOVER_MODE,
                 SYSTEM_CONFIG_MVCC_MODE,
                 SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE,
                 SYSTEM_CONFIG_PAGINATION_MODE,

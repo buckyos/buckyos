@@ -151,9 +151,12 @@ BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true
 
 ```bash
 uv run test/run.py -p klog_system_config_rollout_dv
+uv run test/run.py -p klog_system_config_leader_failover_dv
 ```
 
 该用例会启动 3 节点 klog 集群、两个隔离的 `system_config` 实例，并验证只有 bootstrap OOD 的 sled 数据会迁移；非 bootstrap OOD 的本地 sled 残留不会进入 klog。
+
+`klog_system_config_leader_failover_dv` 会启动真实 `/kapi/system_config` 服务并使用 klog backend。测试把 `system_config` 指向一个非 leader klog RPC endpoint，kill 当前 klog leader 后验证写入期间的 transient kRPC 错误语义；随后等待新 leader，使用同一 `system_config` endpoint 重试读写，最后重启旧 leader 并确认 klog-backed keys 追平。
 
 ## 9. MVCC auto compaction
 
