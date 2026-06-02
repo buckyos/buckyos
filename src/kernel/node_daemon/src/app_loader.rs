@@ -995,6 +995,8 @@ impl AppLoader {
             .check_docker_volume_exists(DEFAULT_EXTTOOL_VOLUME_NAME)
             .await?
         {
+            self.ensure_worker_tool_mountpoints(&image_name, app_type_label)
+                .await?;
             args.push("-v".to_string());
             args.push(format!(
                 "{}:{}:ro",
@@ -1006,6 +1008,7 @@ impl AppLoader {
                 DEFAULT_EXTTOOL_VOLUME_NAME, container_name
             );
         }
+        append_worker_tool_tmpfs(&mut args, app_type_label, &self.app_id);
 
         // Bind mounts (pkg source ro, logs, storage, data, declared mounts).
         for (container_path, host_path, permission) in mounts {
@@ -1065,6 +1068,40 @@ impl AppLoader {
             "worker container {} started (image={}, app_type={})",
             container_name, image_name, app_type_label
         );
+        Ok(())
+    }
+
+    async fn ensure_worker_tool_mountpoints(
+        &self,
+        image_name: &str,
+        app_type_label: &str,
+    ) -> Result<()> {
+        let mut mkdir_paths = vec![format!("{}/bin", WORKER_CONTAINER_EXTTOOL_ROOT)];
+        if app_type_label == "agent" {
+            mkdir_paths.push(format!(
+                "{}/{}",
+                WORKER_CONTAINER_EXTTOOL_ROOT,
+                sanitize_container_path_segment(&self.app_id)
+            ));
+        }
+
+        let mut args = vec![
+            "run".to_string(),
+            "--rm".to_string(),
+            "-v".to_string(),
+            format!(
+                "{}:{}:rw",
+                DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
+            ),
+            "--entrypoint".to_string(),
+            "mkdir".to_string(),
+            image_name.to_string(),
+            "-p".to_string(),
+        ];
+        args.extend(mkdir_paths);
+
+        let output = run_command("docker", &args, None, None).await?;
+        ensure_success("docker run (prepare worker tool mountpoints)", &output)?;
         Ok(())
     }
 
@@ -2230,6 +2267,7 @@ impl AppLoader {
             "{}:{}:ro",
             DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
         ));
+        append_worker_tool_tmpfs(&mut docker_run_args, app_type_label, &self.app_id);
         docker_run_args.push("-v".to_string());
         docker_run_args.push(format!("<app_pkg>:{}:ro", WORKER_CONTAINER_PKG_SOURCE_ROOT));
         docker_run_args.push("-v".to_string());
@@ -2944,4 +2982,35 @@ fn command_arg_value<'a>(cmd: &'a [String], key: &str) -> Option<&'a str> {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn append_worker_tool_tmpfs(args: &mut Vec<String>, app_type_label: &str, app_id: &str) {
+    args.push("--tmpfs".to_string());
+    args.push(format!(
+        "{}/bin:rw,exec,nosuid,nodev,size=64m",
+        WORKER_CONTAINER_EXTTOOL_ROOT
+    ));
+    if app_type_label == "agent" {
+        args.push("--tmpfs".to_string());
+        args.push(format!(
+            "{}/{}:rw,exec,nosuid,nodev,size=64m",
+            WORKER_CONTAINER_EXTTOOL_ROOT,
+            sanitize_container_path_segment(app_id)
+        ));
+    }
+}
+
+fn sanitize_container_path_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
 }

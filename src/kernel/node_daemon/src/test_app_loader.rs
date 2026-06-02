@@ -530,6 +530,14 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .any(|arg| arg == "buckyos-exttool:/opt/buckyos/tools:ro"));
     assert!(start.commands[1]
         .args
+        .iter()
+        .any(|arg| arg == "/opt/buckyos/tools/bin:rw,exec,nosuid,nodev,size=64m"));
+    assert!(start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg == "/opt/buckyos/tools/jarvis:rw,exec,nosuid,nodev,size=64m"));
+    assert!(start.commands[1]
+        .args
         .contains(&"BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools".to_string()));
     assert!(start.commands[1]
         .args
@@ -654,6 +662,14 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
         .args
         .iter()
         .any(|a| a == "buckyos-exttool:/opt/buckyos/tools:ro"));
+    assert!(preview.commands[1]
+        .args
+        .iter()
+        .any(|a| a == "/opt/buckyos/tools/bin:rw,exec,nosuid,nodev,size=64m"));
+    assert!(!preview.commands[1]
+        .args
+        .iter()
+        .any(|a| a == "/opt/buckyos/tools/desktop-tool:rw,exec,nosuid,nodev,size=64m"));
     assert!(preview.commands[1]
         .args
         .iter()

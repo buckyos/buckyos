@@ -329,6 +329,15 @@ impl AIAgent {
         paths::sanitize_path_segment(raw)
     }
 
+    fn agent_tool_mount_id(&self) -> String {
+        std::env::var("BUCKYOS_APP_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| paths::sanitize_path_segment(&value))
+            .unwrap_or_else(|| self.agent_id())
+    }
+
     /// Build a Session Exec Bin renderer for `behavior_name`. Returns
     /// `Some(renderer)` whenever we have *any* lower-layer state to manage
     /// (Agent tools to sync or a tool plan to enforce). The renderer is
@@ -1439,7 +1448,7 @@ impl AIAgent {
                     .unwrap_or(0);
             }
         }
-        let agent_id = self.agent_id();
+        let agent_id = self.agent_tool_mount_id();
         let bin_renderer = self.build_session_bin_renderer(&agent_id, &session_id, &behavior_name);
         let appclient_session_token = resolve_appclient_session_token().await?;
 
