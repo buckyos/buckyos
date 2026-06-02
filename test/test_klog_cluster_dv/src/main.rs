@@ -28,6 +28,8 @@ const MVCC_FAILOVER_MODE: &str = "local-gateway-mvcc-failover";
 const MVCC_AUTO_COMPACT_FAILOVER_MODE: &str = "local-gateway-mvcc-auto-compact-failover";
 const MVCC_CRASH_RECOVERY_MODE: &str = "local-gateway-mvcc-crash-recovery";
 const RAFT_OLD_LEADER_REJOIN_MODE: &str = "local-gateway-raft-old-leader-rejoin";
+const RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE: &str =
+    "local-gateway-raft-follower-lag-snapshot-install";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -3416,10 +3418,10 @@ async fn write_log_and_meta_witness(
         Some(0),
     )
     .await?;
-    if meta.revision != 1 {
+    if meta.create_revision != meta.mod_revision || meta.version != 1 {
         return Err(format!(
-            "unexpected meta revision for {}: expected=1, got={}",
-            scenario, meta.revision
+            "unexpected meta version for {}: create_revision={}, mod_revision={}, version={}",
+            scenario, meta.create_revision, meta.mod_revision, meta.version
         ));
     }
 
@@ -3428,7 +3430,7 @@ async fn write_log_and_meta_witness(
         log_source: source,
         meta_key,
         meta_value,
-        meta_revision: meta.revision,
+        meta_revision: meta.mod_revision,
     };
     verify_log_and_meta_witness_on_nodes(
         client,
@@ -3500,10 +3502,10 @@ async fn require_log_and_meta_roundtrip(
         Some(0),
     )
     .await?;
-    if meta.revision != 1 {
+    if meta.create_revision != meta.mod_revision || meta.version != 1 {
         return Err(format!(
-            "unexpected meta revision for {}: expected=1, got={}",
-            scenario, meta.revision
+            "unexpected meta version for {}: create_revision={}, mod_revision={}, version={}",
+            scenario, meta.create_revision, meta.mod_revision, meta.version
         ));
     }
     let queried = query_meta_via_cluster_inter_route(
@@ -3514,7 +3516,12 @@ async fn require_log_and_meta_roundtrip(
         meta_key.as_str(),
     )
     .await?;
-    require_meta_value(&queried, meta_key.as_str(), meta_value.as_str(), 1)?;
+    require_meta_value(
+        &queried,
+        meta_key.as_str(),
+        meta_value.as_str(),
+        meta.mod_revision,
+    )?;
 
     println!(
         "[klog-cluster-dv] ood membership roundtrip ok: scenario={}, log_id={}, source_gateway={}, target_node={}",
@@ -3528,7 +3535,7 @@ struct SnapshotBulkWitness {
     meta_prefix: String,
     expected_meta_count: usize,
     log_checks: Vec<u64>,
-    meta_checks: Vec<(String, String)>,
+    meta_checks: Vec<(String, String, u64)>,
 }
 
 fn fixed_payload(label: &str, index: usize, min_bytes: usize) -> String {
@@ -3600,16 +3607,16 @@ async fn write_snapshot_bulk_data(
             Some(0),
         )
         .await?;
-        if meta.revision != 1 {
+        if meta.create_revision != meta.mod_revision || meta.version != 1 {
             return Err(format!(
-                "unexpected snapshot bulk meta revision: key={}, expected=1, actual={}",
-                meta_key, meta.revision
+                "unexpected snapshot bulk meta version: key={}, create_revision={}, mod_revision={}, version={}",
+                meta_key, meta.create_revision, meta.mod_revision, meta.version
             ));
         }
 
         if checkpoints.contains(&index) {
             log_checks.push(append.id);
-            meta_checks.push((meta_key, meta_value));
+            meta_checks.push((meta_key, meta_value, meta.mod_revision));
         }
 
         if index > 0 && index % 50 == 0 {
@@ -3662,7 +3669,7 @@ async fn verify_snapshot_bulk_witness(
     .await?;
 
     for node in nodes {
-        for (key, value) in &witness.meta_checks {
+        for (key, value, revision) in &witness.meta_checks {
             let response = query_meta_via_cluster_inter_route(
                 client,
                 gateway_addr(node, ingress_port).as_str(),
@@ -3671,7 +3678,7 @@ async fn verify_snapshot_bulk_witness(
                 key.as_str(),
             )
             .await?;
-            require_meta_value(&response, key.as_str(), value.as_str(), 1)?;
+            require_meta_value(&response, key.as_str(), value.as_str(), *revision)?;
         }
     }
 
@@ -9910,6 +9917,271 @@ async fn run_local_gateway_raft_old_leader_rejoin() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_raft_follower_lag_snapshot_install_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-raft-follower-lag-snapshot-dv";
+    let setup = prepare_local_gateway_setup(
+        harness,
+        RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE,
+        route_prefix,
+        3,
+    )
+    .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let raft_patch = ood_snapshot_membership_raft_patch();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let mut configs = BTreeMap::new();
+    for node in &nodes {
+        let config = write_klog_config_with_raft_patch(harness, node, &voter_config, raft_patch)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog_with_log_level(harness, &klog_daemon_bin, &config, node, "info")?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let initial_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let lagged_follower = nodes
+        .iter()
+        .find(|node| node.id != initial_leader_id && node.id != seed.id)
+        .or_else(|| nodes.iter().find(|node| node.id != initial_leader_id))
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "failed to pick lagged follower: leader={}",
+                initial_leader_id
+            )
+        })?;
+    let alive_nodes = nodes
+        .iter()
+        .filter(|node| node.id != lagged_follower.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let writer = alive_nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing writer node after picking lagged follower".to_string())?;
+    let target = alive_nodes
+        .iter()
+        .find(|node| node.id != writer.id)
+        .cloned()
+        .unwrap_or_else(|| writer.clone());
+
+    let baseline = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &writer,
+        &target,
+        &nodes,
+        "raft-follower-lag-before-stop",
+    )
+    .await?;
+
+    harness.stop(format!("klog-{}", lagged_follower.name).as_str())?;
+    wait_membership(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let active_leader_id = wait_consistent_leader(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+
+    let bulk = write_snapshot_bulk_data(
+        &client,
+        ingress_port,
+        route_prefix,
+        &writer,
+        &target,
+        "raft-follower-lag-snapshot-install",
+        DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_ITEMS,
+        DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_VALUE_BYTES,
+    )
+    .await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &alive_nodes,
+        &bulk,
+        Duration::from_secs(60),
+    )
+    .await?;
+    let snapshot_leader_id = wait_consistent_leader(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let snapshot_leader = alive_nodes
+        .iter()
+        .find(|node| node.id == snapshot_leader_id)
+        .ok_or_else(|| format!("snapshot leader node {} not found", snapshot_leader_id))?;
+    let leader_snapshot_files =
+        wait_snapshot_file_count(harness, snapshot_leader, 1, Duration::from_secs(90)).await?;
+
+    let lagged_config = configs
+        .get(&lagged_follower.id)
+        .ok_or_else(|| format!("missing config for lagged follower {}", lagged_follower.id))?;
+    spawn_klog_with_log_level(
+        harness,
+        &klog_daemon_bin,
+        lagged_config,
+        &lagged_follower,
+        "info",
+    )?;
+    wait_tcp(
+        "127.0.0.1",
+        lagged_follower.ports.admin,
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(120),
+    )
+    .await?;
+    wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(80),
+    )
+    .await?;
+    let follower_snapshot_files =
+        wait_snapshot_file_count(harness, &lagged_follower, 1, Duration::from_secs(120)).await?;
+
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &baseline,
+        Duration::from_secs(60),
+    )
+    .await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &nodes,
+        &bulk,
+        Duration::from_secs(90),
+    )
+    .await?;
+
+    let recovered_write = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &lagged_follower,
+        snapshot_leader,
+        &nodes,
+        "raft-follower-lag-after-recovery",
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] raft follower lag snapshot install ok: initial_leader={}, active_leader={}, snapshot_leader={}, lagged_follower={}, leader_snapshots={}, follower_snapshots={}, bulk_items={}, recovered_log_id={}, prefix={}",
+        initial_leader_id,
+        active_leader_id,
+        snapshot_leader_id,
+        lagged_follower.id,
+        leader_snapshot_files,
+        follower_snapshot_files,
+        bulk.expected_meta_count,
+        recovered_write.log_id,
+        bulk.meta_prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_raft_follower_lag_snapshot_install() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_raft_follower_lag_snapshot_install_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -12387,6 +12659,9 @@ async fn run() -> Result<(), String> {
         MVCC_AUTO_COMPACT_FAILOVER_MODE => run_local_gateway_mvcc_auto_compact_failover().await,
         MVCC_CRASH_RECOVERY_MODE => run_local_gateway_mvcc_crash_recovery().await,
         RAFT_OLD_LEADER_REJOIN_MODE => run_local_gateway_raft_old_leader_rejoin().await,
+        RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE => {
+            run_local_gateway_raft_follower_lag_snapshot_install().await
+        }
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -12413,6 +12688,7 @@ async fn run() -> Result<(), String> {
                 MVCC_AUTO_COMPACT_FAILOVER_MODE,
                 MVCC_CRASH_RECOVERY_MODE,
                 RAFT_OLD_LEADER_REJOIN_MODE,
+                RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,

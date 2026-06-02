@@ -406,14 +406,7 @@ impl RaftStateMachine<KTypeConfig> for KLogStateMachine {
             return Ok(None);
         }
 
-        let (path, snapshot) = ret.unwrap();
-        let file = tokio::fs::File::open(&path).await.map_err(|err| {
-            let msg = format!("Failed to open snapshot file: {:?}, {}", path, err);
-            error!("{}", msg);
-            StorageError::IO {
-                source: StorageIOError::read(&err),
-            }
-        })?;
+        let (_path, snapshot, file) = ret.unwrap();
 
         let snapshot = KSnapshot {
             meta: snapshot.meta,
