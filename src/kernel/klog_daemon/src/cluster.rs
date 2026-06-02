@@ -167,6 +167,10 @@ async fn try_join_once(
                     ));
                 }
                 Err(err) => {
+                    warn!(
+                        "Auto-join admin target failed: seed_target='{}', admin_target='{}', node_id={}, err={}",
+                        target, admin_target, cfg.node_id, err
+                    );
                     errors.push(format!(
                         "seed_target='{}', admin_target='{}': {}",
                         target, admin_target, err
