@@ -238,6 +238,7 @@ uv run test/run.py -p klog_ood_single_to_two_dv
 uv run test/run.py -p klog_ood_two_voter_loss_dv
 uv run test/run.py -p klog_raft_quorum_loss_recovery_dv
 uv run test/run.py -p klog_raft_membership_change_rejoin_dv
+uv run test/run.py -p klog_raft_concurrent_membership_dv
 ```
 
 `klog_ood_single_to_two_dv` 覆盖 `1 voter -> add learner -> promote to 2 voters`，验证加入前数据能同步到 learner，promote 后两个 voter 继续强读写。`klog_ood_two_voter_loss_dv` 覆盖 `2 voters -> 当前 leader 被动停止`，验证剩余单 voter 不能选主，也不能继续处理强读或写入；这是预期的 quorum 安全边界。
@@ -245,6 +246,8 @@ uv run test/run.py -p klog_raft_membership_change_rejoin_dv
 `klog_raft_quorum_loss_recovery_dv` 覆盖 `3 voters -> 停 2 个 follower -> 单 survivor 无 quorum`，验证单 survivor 的写入和强读都会失败，且无 quorum 期间发起的 meta 写不会在 quorum 恢复后 later apply；随后恢复 1 个节点验证 quorum 恢复后读写成功，再恢复第三个节点并确认追平。当前写服务在本地 leader 创建 Raft proposal 前会检查最近的 quorum ack，新鲜度不足时直接返回 unavailable，避免客户端侧失败的写请求在恢复 quorum 后被提交。
 
 `klog_raft_membership_change_rejoin_dv` 覆盖 `3 voters -> 停止一个非 leader voter -> change-membership shrink 到剩余 2 voters -> 重启被移除节点`，验证旧 voter 重启后不能以旧 membership 影响活跃集群；随后通过 admin add learner 和 promote 重新加入，并确认加入前后的 log/meta witness 全部追平。
+
+`klog_raft_concurrent_membership_dv` 覆盖同一 leader 上并发执行两个 add-learner admin 请求，验证 membership mutation in-flight 时第二个请求明确返回 `409 Conflict`，最终只有一个 learner 进入 membership，promote 后集群继续通过 gateway 完成 log/meta 强读写。
 
 ## 10. 常见误配
 

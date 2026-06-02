@@ -32,6 +32,7 @@ const RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE: &str =
     "local-gateway-raft-follower-lag-snapshot-install";
 const RAFT_QUORUM_LOSS_RECOVERY_MODE: &str = "local-gateway-raft-quorum-loss-recovery";
 const RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE: &str = "local-gateway-raft-membership-change-rejoin";
+const RAFT_CONCURRENT_MEMBERSHIP_MODE: &str = "local-gateway-raft-concurrent-membership";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -1598,6 +1599,45 @@ async fn post_add_learner_via_admin_route(
     learner: &LocalNodeDef,
     blocking: bool,
 ) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let (status, body) = post_add_learner_via_admin_route_status(
+            client,
+            gateway_addr,
+            route_prefix,
+            leader_node_name,
+            learner,
+            blocking,
+        )
+        .await?;
+        if status.is_success() {
+            return Ok(());
+        }
+        if is_membership_change_in_progress(status, body.as_str())
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        Err(format!(
+            "add-learner returned {} from leader {}: {}",
+            status, leader_node_name, body
+        ))?;
+    }
+}
+
+fn is_membership_change_in_progress(status: reqwest::StatusCode, body: &str) -> bool {
+    status == StatusCode::CONFLICT && body.contains("membership change already in progress")
+}
+
+async fn post_add_learner_via_admin_route_status(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    leader_node_name: &str,
+    learner: &LocalNodeDef,
+    blocking: bool,
+) -> Result<(reqwest::StatusCode, String), String> {
     let mut url = Url::parse(
         cluster_route_url(
             gateway_addr,
@@ -1631,14 +1671,7 @@ async fn post_add_learner_via_admin_route(
         .text()
         .await
         .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
-    if status.is_success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "add-learner returned {} from {}: {}",
-            status, url, body
-        ))
-    }
+    Ok((status, body))
 }
 
 async fn post_remove_learner_via_admin_route(
@@ -10925,6 +10958,278 @@ async fn run_local_gateway_raft_membership_change_rejoin() -> Result<(), String>
     result
 }
 
+async fn run_local_gateway_raft_concurrent_membership_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-raft-concurrent-membership-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, RAFT_CONCURRENT_MEMBERSHIP_MODE, route_prefix, 5)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let base_voters = nodes.iter().take(3).cloned().collect::<Vec<_>>();
+    let candidate_a = nodes
+        .get(3)
+        .cloned()
+        .ok_or_else(|| "missing concurrent membership candidate A".to_string())?;
+    let candidate_b = nodes
+        .get(4)
+        .cloned()
+        .ok_or_else(|| "missing concurrent membership candidate B".to_string())?;
+    let seed = base_voters
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing concurrent membership seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    for node in &base_voters {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let candidate_config_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "learner",
+    };
+    for candidate in [&candidate_a, &candidate_b] {
+        let config = write_klog_config(harness, candidate, &candidate_config_options)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, candidate)?;
+        wait_tcp("127.0.0.1", candidate.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", candidate.ports.inter, Duration::from_secs(12)).await?;
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let before_concurrent = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &base_voters[0],
+        &base_voters[1],
+        &base_voters,
+        "raft-concurrent-membership-before",
+    )
+    .await?;
+
+    let leader_id = wait_consistent_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = base_voters
+        .iter()
+        .find(|node| node.id == leader_id)
+        .cloned()
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+    let leader_gateway = gateway_addr(&leader, ingress_port);
+    let add_a = post_add_learner_via_admin_route_status(
+        &client,
+        leader_gateway.as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        &candidate_a,
+        true,
+    );
+    let add_b = post_add_learner_via_admin_route_status(
+        &client,
+        leader_gateway.as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        &candidate_b,
+        true,
+    );
+    let ((status_a, body_a), (status_b, body_b)) = tokio::try_join!(add_a, add_b)?;
+    let mut successes = Vec::new();
+    let mut failures = Vec::new();
+    for (candidate, status, body) in [
+        (candidate_a.clone(), status_a, body_a),
+        (candidate_b.clone(), status_b, body_b),
+    ] {
+        if status.is_success() {
+            successes.push((candidate, body));
+        } else {
+            failures.push((candidate, status, body));
+        }
+    }
+    if successes.len() != 1 || failures.len() != 1 {
+        return Err(format!(
+            "expected exactly one concurrent add-learner success and one failure, successes={}, failures={}",
+            successes.len(),
+            failures.len()
+        ));
+    }
+    let (added_ood, add_success_body) = successes
+        .pop()
+        .ok_or_else(|| "missing successful concurrent add-learner result".to_string())?;
+    let (rejected_ood, rejected_status, rejected_body) = failures
+        .pop()
+        .ok_or_else(|| "missing rejected concurrent add-learner result".to_string())?;
+    if rejected_status != StatusCode::CONFLICT {
+        return Err(format!(
+            "concurrent add-learner for {} expected 409 Conflict, got status={}, body={}",
+            rejected_ood.name, rejected_status, rejected_body
+        ));
+    }
+    if !rejected_body.contains("membership change already in progress")
+        && !rejected_body.contains("undergoing a configuration change")
+    {
+        return Err(format!(
+            "concurrent add-learner rejection body missing conflict marker: node={}, body={}",
+            rejected_ood.name, rejected_body
+        ));
+    }
+
+    let mut member_nodes = base_voters.clone();
+    member_nodes.push(added_ood.clone());
+    let learner_ids = [added_ood.id];
+    wait_membership(
+        &client,
+        &member_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &learner_ids,
+        Duration::from_secs(80),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_membership(
+        &client,
+        &member_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &learner_ids,
+        Duration::from_secs(20),
+    )
+    .await?;
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &member_nodes,
+        ingress_port,
+        route_prefix,
+        &before_concurrent,
+        Duration::from_secs(50),
+    )
+    .await?;
+
+    let mut promoted_voters = vec![1, 2, 3, added_ood.id];
+    promoted_voters.sort_unstable();
+    let promote_leader_id = change_voters_via_current_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        promoted_voters.as_slice(),
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &member_nodes,
+        ingress_port,
+        route_prefix,
+        promoted_voters.as_slice(),
+        &[],
+        Duration::from_secs(80),
+    )
+    .await?;
+    let after_promote = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &added_ood,
+        &base_voters[0],
+        &member_nodes,
+        "raft-concurrent-membership-after-promote",
+    )
+    .await?;
+    for witness in [&before_concurrent, &after_promote] {
+        verify_log_and_meta_witness_on_nodes(
+            &client,
+            &member_nodes,
+            ingress_port,
+            route_prefix,
+            witness,
+            Duration::from_secs(50),
+        )
+        .await?;
+    }
+
+    println!(
+        "[klog-cluster-dv] raft concurrent membership ok: leader={}, added={}, rejected={}, rejected_status={}, promote_leader={}, voters={:?}, success_body_len={}, rejected_body_len={}, log_ids=[{},{}]",
+        leader_id,
+        added_ood.id,
+        rejected_ood.id,
+        rejected_status,
+        promote_leader_id,
+        promoted_voters,
+        add_success_body.len(),
+        rejected_body.len(),
+        before_concurrent.log_id,
+        after_promote.log_id
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_raft_concurrent_membership() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_raft_concurrent_membership_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -13409,6 +13714,7 @@ async fn run() -> Result<(), String> {
         RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE => {
             run_local_gateway_raft_membership_change_rejoin().await
         }
+        RAFT_CONCURRENT_MEMBERSHIP_MODE => run_local_gateway_raft_concurrent_membership().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -13438,6 +13744,7 @@ async fn run() -> Result<(), String> {
                 RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE,
                 RAFT_QUORUM_LOSS_RECOVERY_MODE,
                 RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE,
+                RAFT_CONCURRENT_MEMBERSHIP_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
