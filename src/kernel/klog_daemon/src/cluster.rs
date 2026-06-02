@@ -11,6 +11,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 const CONFIG_CHANGE_CONFLICT_MARKER: &str = "undergoing a configuration change";
+const AUTO_JOIN_REFUSED_LOCAL_STATE_MARKER: &str =
+    "auto-join refused by local persisted membership";
 
 pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftRef) {
     if cfg.auto_bootstrap {
@@ -50,11 +52,12 @@ pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftR
     }
 }
 
-pub fn spawn_auto_join_task(cfg: &KLogRuntimeConfig) -> Option<JoinHandle<()>> {
+pub fn spawn_auto_join_task(cfg: &KLogRuntimeConfig, raft: &KRaftRef) -> Option<JoinHandle<()>> {
     if !cfg.auto_bootstrap && !cfg.join_targets.is_empty() {
         let join_cfg = cfg.clone();
+        let join_raft = raft.clone();
         Some(tokio::spawn(async move {
-            run_auto_join_loop(join_cfg).await;
+            run_auto_join_loop(join_cfg, join_raft).await;
         }))
     } else {
         if !cfg.auto_bootstrap {
@@ -66,7 +69,7 @@ pub fn spawn_auto_join_task(cfg: &KLogRuntimeConfig) -> Option<JoinHandle<()>> {
     }
 }
 
-async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
+async fn run_auto_join_loop(cfg: KLogRuntimeConfig, raft: KRaftRef) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(cfg.join_retry.request_timeout_ms))
         .build();
@@ -89,7 +92,7 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
         }
         attempts += 1;
 
-        match try_join_once(&client, &cfg).await {
+        match try_join_once(&client, &cfg, &raft).await {
             Ok(msg) => {
                 info!(
                     "Auto-join succeeded: node_id={}, attempt={}, join_target_role={}, {}",
@@ -98,6 +101,13 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
                 return;
             }
             Err(e) => {
+                if e.contains(AUTO_JOIN_REFUSED_LOCAL_STATE_MARKER) {
+                    warn!(
+                        "Auto-join stopped because local persisted membership requires explicit admin rejoin: node_id={}, err={}",
+                        cfg.node_id, e
+                    );
+                    return;
+                }
                 let sleep_ms = compute_retry_delay_ms(&cfg.join_retry, attempts, &e);
                 warn!(
                     "Auto-join attempt failed: node_id={}, attempt={}, join_target_role={}, err={}, next_retry_in_ms={}",
@@ -112,6 +122,7 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
 async fn try_join_once(
     client: &reqwest::Client,
     cfg: &KLogRuntimeConfig,
+    raft: &KRaftRef,
 ) -> Result<String, String> {
     let cluster_state_path = KLogAdminRequestType::ClusterState.klog_path();
     let mut errors = Vec::new();
@@ -148,7 +159,7 @@ async fn try_join_once(
         dedup_targets(&mut admin_targets);
 
         for admin_target in admin_targets {
-            match join_and_promote_once(client, cfg, &admin_target).await {
+            match join_and_promote_once(client, cfg, raft, &admin_target).await {
                 Ok(msg) => {
                     return Ok(format!(
                         "seed_target='{}', admin_target='{}', {}",
@@ -203,6 +214,7 @@ fn apply_jitter(base_ms: u64, jitter_ratio: f64) -> u64 {
 async fn join_and_promote_once(
     client: &reqwest::Client,
     cfg: &KLogRuntimeConfig,
+    raft: &KRaftRef,
     admin_target: &str,
 ) -> Result<String, String> {
     let cluster_state_path = KLogAdminRequestType::ClusterState.klog_path();
@@ -234,6 +246,7 @@ async fn join_and_promote_once(
             cfg.node_id, state_before.voters
         ));
     }
+    ensure_auto_join_allowed_by_local_state(cfg, raft, &state_before, admin_target)?;
 
     if !state_before.learners.contains(&cfg.node_id) {
         let advertised_rpc_port = if cfg.enable_rpc_server {
@@ -411,6 +424,56 @@ fn build_promote_voters_csv(existing_voters: &[u64], node_id: u64) -> String {
         .join(",")
 }
 
+fn ensure_auto_join_allowed_by_local_state(
+    cfg: &KLogRuntimeConfig,
+    raft: &KRaftRef,
+    remote_state: &KLogClusterStateResponse,
+    admin_target: &str,
+) -> Result<(), String> {
+    let (local_voters, local_learners) = local_membership_ids(raft);
+    if should_block_auto_join_from_local_membership(
+        &local_voters,
+        &local_learners,
+        remote_state,
+        cfg.node_id,
+    ) {
+        let msg = format!(
+            "{}: local raft state is initialized but remote membership does not contain this node: node_id={}, admin_target={}, local_voters={:?}, local_learners={:?}, remote_voters={:?}, remote_learners={:?}",
+            AUTO_JOIN_REFUSED_LOCAL_STATE_MARKER,
+            cfg.node_id,
+            admin_target,
+            local_voters,
+            local_learners,
+            remote_state.voters,
+            remote_state.learners
+        );
+        warn!("{}", msg);
+        return Err(msg);
+    }
+    Ok(())
+}
+
+fn local_membership_ids(raft: &KRaftRef) -> (Vec<u64>, Vec<u64>) {
+    let metrics = raft.metrics();
+    let metrics = metrics.borrow().clone();
+    let membership = metrics.membership_config.membership();
+    let voters = membership.voter_ids().collect::<Vec<_>>();
+    let learners = membership.learner_ids().collect::<Vec<_>>();
+    (voters, learners)
+}
+
+fn should_block_auto_join_from_local_membership(
+    local_voters: &[u64],
+    local_learners: &[u64],
+    remote_state: &KLogClusterStateResponse,
+    node_id: u64,
+) -> bool {
+    let local_initialized = !local_voters.is_empty() || !local_learners.is_empty();
+    let remote_contains_node =
+        remote_state.voters.contains(&node_id) || remote_state.learners.contains(&node_id);
+    local_initialized && !remote_contains_node
+}
+
 fn ensure_cluster_identity_matches(
     cfg: &KLogRuntimeConfig,
     state: &KLogClusterStateResponse,
@@ -536,7 +599,7 @@ fn build_admin_url(target: &str, path: &str) -> Result<reqwest::Url, String> {
 mod tests {
     use super::{
         admin_target_from_node, build_admin_url, build_promote_voters_csv, dedup_targets,
-        ensure_cluster_identity_matches,
+        ensure_cluster_identity_matches, should_block_auto_join_from_local_membership,
     };
     use crate::config::{
         KLogJoinRetryConfig, KLogJoinTargetRole, KLogRaftConfig, KLogRuntimeConfig,
@@ -714,5 +777,47 @@ mod tests {
         let state = sample_state("renamed_cluster", "cluster_a_id");
         ensure_cluster_identity_matches(&cfg, &state, "127.0.0.1:21001", "test")
             .expect("name mismatch should be allowed when cluster_id matches");
+    }
+
+    #[test]
+    fn test_auto_join_blocks_initialized_removed_node() {
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.voters = vec![1, 3];
+        state.learners = vec![];
+
+        assert!(should_block_auto_join_from_local_membership(
+            &[1, 2, 3],
+            &[],
+            &state,
+            2
+        ));
+    }
+
+    #[test]
+    fn test_auto_join_allows_fresh_node() {
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.voters = vec![1, 3];
+        state.learners = vec![];
+
+        assert!(!should_block_auto_join_from_local_membership(
+            &[],
+            &[],
+            &state,
+            2
+        ));
+    }
+
+    #[test]
+    fn test_auto_join_allows_existing_learner_resume() {
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.voters = vec![1, 3];
+        state.learners = vec![2];
+
+        assert!(!should_block_auto_join_from_local_membership(
+            &[1, 2, 3],
+            &[],
+            &state,
+            2
+        ));
     }
 }

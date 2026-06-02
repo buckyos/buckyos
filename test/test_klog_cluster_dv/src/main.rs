@@ -31,6 +31,7 @@ const RAFT_OLD_LEADER_REJOIN_MODE: &str = "local-gateway-raft-old-leader-rejoin"
 const RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE: &str =
     "local-gateway-raft-follower-lag-snapshot-install";
 const RAFT_QUORUM_LOSS_RECOVERY_MODE: &str = "local-gateway-raft-quorum-loss-recovery";
+const RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE: &str = "local-gateway-raft-membership-change-rejoin";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -10574,6 +10575,356 @@ async fn run_local_gateway_raft_quorum_loss_recovery() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_raft_membership_change_rejoin_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-raft-membership-change-rejoin-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE, route_prefix, 3)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let mut configs = BTreeMap::new();
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let initial_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let removed_node = nodes
+        .iter()
+        .find(|node| node.id != initial_leader_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "failed to choose non-leader voter, leader={}",
+                initial_leader_id
+            )
+        })?;
+    let active_nodes = nodes
+        .iter()
+        .filter(|node| node.id != removed_node.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    if active_nodes.len() != 2 {
+        return Err(format!(
+            "expected two active voters after picking removed node, got {}",
+            active_nodes.len()
+        ));
+    }
+    let active_voters = active_nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+
+    let before_remove = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &active_nodes[0],
+        &removed_node,
+        &nodes,
+        "raft-membership-rejoin-before-remove",
+    )
+    .await?;
+
+    harness.stop(format!("klog-{}", removed_node.name).as_str())?;
+    let shrink_leader_id = change_voters_via_current_leader(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        active_voters.as_slice(),
+        false,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        active_voters.as_slice(),
+        &[],
+        Duration::from_secs(80),
+    )
+    .await?;
+    let active_leader_id = wait_consistent_leader(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let active_leader = active_nodes
+        .iter()
+        .find(|node| node.id == active_leader_id)
+        .cloned()
+        .ok_or_else(|| format!("active leader node {} not found", active_leader_id))?;
+    let active_writer = active_nodes
+        .iter()
+        .find(|node| node.id != active_leader_id)
+        .cloned()
+        .unwrap_or_else(|| active_leader.clone());
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        &before_remove,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let after_shrink = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &active_writer,
+        &active_leader,
+        &active_nodes,
+        "raft-membership-rejoin-after-shrink",
+    )
+    .await?;
+
+    let removed_config = configs
+        .get(&removed_node.id)
+        .ok_or_else(|| format!("missing config for removed node {}", removed_node.id))?;
+    spawn_klog(harness, &klog_daemon_bin, removed_config, &removed_node)?;
+    wait_tcp(
+        "127.0.0.1",
+        removed_node.ports.admin,
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_tcp(
+        "127.0.0.1",
+        removed_node.ports.inter,
+        Duration::from_secs(12),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    wait_membership(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        active_voters.as_slice(),
+        &[],
+        Duration::from_secs(30),
+    )
+    .await?;
+    let (stale_status, stale_body) = post_change_membership_via_admin_route(
+        &client,
+        gateway_addr(&removed_node, ingress_port).as_str(),
+        route_prefix,
+        removed_node.name.as_str(),
+        &[1, 2, 3],
+        true,
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    wait_membership(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        active_voters.as_slice(),
+        &[],
+        Duration::from_secs(30),
+    )
+    .await?;
+    let after_stale_restart = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &active_writer,
+        &active_leader,
+        &active_nodes,
+        "raft-membership-rejoin-after-stale-restart",
+    )
+    .await?;
+
+    post_add_learner_via_admin_route(
+        &client,
+        gateway_addr(&active_leader, ingress_port).as_str(),
+        route_prefix,
+        active_leader.name.as_str(),
+        &removed_node,
+        true,
+    )
+    .await?;
+    let learner_ids = [removed_node.id];
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        active_voters.as_slice(),
+        &learner_ids,
+        Duration::from_secs(90),
+    )
+    .await?;
+    for witness in [&before_remove, &after_shrink, &after_stale_restart] {
+        verify_log_and_meta_witness_on_nodes(
+            &client,
+            &nodes,
+            ingress_port,
+            route_prefix,
+            witness,
+            Duration::from_secs(60),
+        )
+        .await?;
+    }
+
+    let mut promoted_voters = active_voters.clone();
+    promoted_voters.push(removed_node.id);
+    promoted_voters.sort_unstable();
+    let promote_leader_id = change_voters_via_current_leader(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        promoted_voters.as_slice(),
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        promoted_voters.as_slice(),
+        &[],
+        Duration::from_secs(90),
+    )
+    .await?;
+    let final_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(70),
+    )
+    .await?;
+    let final_leader = nodes
+        .iter()
+        .find(|node| node.id == final_leader_id)
+        .cloned()
+        .ok_or_else(|| format!("final leader node {} not found", final_leader_id))?;
+    let final_write = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &removed_node,
+        &final_leader,
+        &nodes,
+        "raft-membership-rejoin-after-promote",
+    )
+    .await?;
+    for witness in [
+        &before_remove,
+        &after_shrink,
+        &after_stale_restart,
+        &final_write,
+    ] {
+        verify_log_and_meta_witness_on_nodes(
+            &client,
+            &nodes,
+            ingress_port,
+            route_prefix,
+            witness,
+            Duration::from_secs(60),
+        )
+        .await?;
+    }
+
+    println!(
+        "[klog-cluster-dv] raft membership change rejoin ok: initial_leader={}, removed_node={}, shrink_leader={}, active_leader={}, stale_admin_status={}, stale_admin_body_len={}, promote_leader={}, final_leader={}, active_voters={:?}, promoted_voters={:?}, log_ids=[{},{},{},{}]",
+        initial_leader_id,
+        removed_node.id,
+        shrink_leader_id,
+        active_leader_id,
+        stale_status,
+        stale_body.len(),
+        promote_leader_id,
+        final_leader_id,
+        active_voters,
+        promoted_voters,
+        before_remove.log_id,
+        after_shrink.log_id,
+        after_stale_restart.log_id,
+        final_write.log_id
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_raft_membership_change_rejoin() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_raft_membership_change_rejoin_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -13055,6 +13406,9 @@ async fn run() -> Result<(), String> {
             run_local_gateway_raft_follower_lag_snapshot_install().await
         }
         RAFT_QUORUM_LOSS_RECOVERY_MODE => run_local_gateway_raft_quorum_loss_recovery().await,
+        RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE => {
+            run_local_gateway_raft_membership_change_rejoin().await
+        }
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -13083,6 +13437,7 @@ async fn run() -> Result<(), String> {
                 RAFT_OLD_LEADER_REJOIN_MODE,
                 RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE,
                 RAFT_QUORUM_LOSS_RECOVERY_MODE,
+                RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
