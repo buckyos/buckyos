@@ -26,6 +26,7 @@ const MVCC_CHANGE_FEED_MODE: &str = "local-gateway-mvcc-change-feed";
 const MVCC_CHANGE_FEED_STRESS_MODE: &str = "local-gateway-mvcc-change-feed-stress";
 const MVCC_FAILOVER_MODE: &str = "local-gateway-mvcc-failover";
 const MVCC_AUTO_COMPACT_FAILOVER_MODE: &str = "local-gateway-mvcc-auto-compact-failover";
+const MVCC_CRASH_RECOVERY_MODE: &str = "local-gateway-mvcc-crash-recovery";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -9063,6 +9064,485 @@ async fn run_local_gateway_mvcc_auto_compact_failover() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_mvcc_crash_recovery_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-mvcc-crash-recovery-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, MVCC_CRASH_RECOVERY_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let mut configs = BTreeMap::new();
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_before_crash = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    let suffix = unique_suffix("mvcc-crash-recovery");
+    let prefix = format!("test/klog_mvcc_crash_recovery_dv/{}/", suffix);
+    let key_a = format!("{}a", prefix);
+    let key_b = format!("{}b", prefix);
+    let key_c = format!("{}c", prefix);
+    let key_d = format!("{}d", prefix);
+    let key_e = format!("{}e", prefix);
+    let source = nodes
+        .iter()
+        .find(|node| node.id != leader_before_crash)
+        .unwrap_or(&nodes[0]);
+    let target = nodes
+        .iter()
+        .find(|node| node.id != source.id)
+        .unwrap_or(source);
+    let source_gateway = gateway_addr(source, ingress_port);
+
+    let a_v1 = put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        key_a.as_str(),
+        "a-v1",
+        Some(0),
+    )
+    .await?;
+    let r1 = a_v1.mod_revision;
+    if a_v1.create_revision != r1 || a_v1.version != 1 {
+        return Err(format!("unexpected crash recovery a_v1: {:?}", a_v1));
+    }
+
+    let b_v1 = put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        key_b.as_str(),
+        "b-v1",
+        Some(0),
+    )
+    .await?;
+    let r2 = b_v1.mod_revision;
+    if b_v1.create_revision != r2 || b_v1.version != 1 || r2 != r1 + 1 {
+        return Err(format!("unexpected crash recovery b_v1: {:?}", b_v1));
+    }
+
+    let a_v2 = put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        key_a.as_str(),
+        "a-v2",
+        Some(r1),
+    )
+    .await?;
+    let r3 = a_v2.mod_revision;
+    if a_v2.create_revision != r1 || a_v2.version != 2 || r3 != r2 + 1 {
+        return Err(format!("unexpected crash recovery a_v2: {:?}", a_v2));
+    }
+
+    let b_deleted = delete_meta_via_cluster_inter_route(
+        &client,
+        source_gateway.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        key_b.as_str(),
+    )
+    .await?;
+    let b_delete_version = b_deleted.meta_version.as_ref().ok_or_else(|| {
+        format!(
+            "missing crash recovery b delete meta_version: {:?}",
+            b_deleted
+        )
+    })?;
+    require_meta_version(Some(b_delete_version), r2, r3 + 1, 0, true)?;
+    let r4 = b_delete_version.mod_revision;
+
+    let b_v2 = put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        key_b.as_str(),
+        "b-v2",
+        Some(0),
+    )
+    .await?;
+    let r5 = b_v2.mod_revision;
+    if b_v2.create_revision != r5 || b_v2.version != 1 || r5 != r4 + 1 {
+        return Err(format!("unexpected crash recovery b_v2: {:?}", b_v2));
+    }
+
+    let tx6 = exec_meta_tx_via_cluster_inter_route(
+        &client,
+        source_gateway.as_str(),
+        route_prefix,
+        target.name.as_str(),
+        BTreeMap::from([
+            (
+                key_c.clone(),
+                meta_tx_put_action(&key_c, "c-v1", target.name.as_str(), Some(0)),
+            ),
+            (
+                key_d.clone(),
+                meta_tx_put_action(&key_d, "d-v1", target.name.as_str(), Some(0)),
+            ),
+        ]),
+    )
+    .await?;
+    let r6 = tx6
+        .revisions
+        .get(&key_c)
+        .and_then(|revision| *revision)
+        .ok_or_else(|| format!("missing crash recovery tx6 revision for {}", key_c))?;
+    if tx6.revisions.get(&key_d).and_then(|revision| *revision) != Some(r6) || r6 != r5 + 1 {
+        return Err(format!("unexpected crash recovery tx6 response: {:?}", tx6));
+    }
+    require_meta_version(tx6.meta_versions.get(&key_c), r6, r6, 1, false)?;
+    require_meta_version(tx6.meta_versions.get(&key_d), r6, r6, 1, false)?;
+
+    let leader = nodes
+        .iter()
+        .find(|node| node.id == leader_before_crash)
+        .ok_or_else(|| format!("leader node {} not found", leader_before_crash))?;
+    let leader_gateway = gateway_addr(leader, ingress_port);
+    let compacted = post_meta_compact_via_admin_route(
+        &client,
+        leader_gateway.as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        r4,
+    )
+    .await?;
+    if compacted.compacted_revision != r4 || compacted.current_revision != r6 {
+        return Err(format!(
+            "unexpected crash recovery compaction response: {:?}, expected compacted={}, current={}",
+            compacted, r4, r6
+        ));
+    }
+    for node in &nodes {
+        expect_meta_query_status_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            Some(key_a.as_str()),
+            None,
+            Some(r1),
+            StatusCode::GONE,
+            Some("COMPACTED"),
+        )
+        .await?;
+    }
+
+    harness.stop(format!("klog-{}", leader.name).as_str())?;
+    let alive_nodes = nodes
+        .iter()
+        .filter(|node| node.id != leader_before_crash)
+        .cloned()
+        .collect::<Vec<_>>();
+    wait_membership(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let new_leader_id = wait_consistent_leader(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        Some(leader_before_crash),
+        Duration::from_secs(70),
+    )
+    .await?;
+    let failover_writer = alive_nodes
+        .iter()
+        .find(|node| node.id != new_leader_id)
+        .unwrap_or(&alive_nodes[0]);
+    let new_leader = alive_nodes
+        .iter()
+        .find(|node| node.id == new_leader_id)
+        .ok_or_else(|| format!("new leader node {} not found", new_leader_id))?;
+    let failover_gateway = gateway_addr(failover_writer, ingress_port);
+
+    let a_v3 = put_meta_via_cluster_inter_route(
+        &client,
+        failover_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        key_a.as_str(),
+        "a-v3",
+        Some(r3),
+    )
+    .await?;
+    let r7 = a_v3.mod_revision;
+    if a_v3.create_revision != r1 || a_v3.version != 3 || r7 != r6 + 1 {
+        return Err(format!("unexpected crash recovery a_v3: {:?}", a_v3));
+    }
+
+    let c_deleted = delete_meta_via_cluster_inter_route(
+        &client,
+        failover_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        key_c.as_str(),
+    )
+    .await?;
+    let c_delete_version = c_deleted.meta_version.as_ref().ok_or_else(|| {
+        format!(
+            "missing crash recovery c delete meta_version: {:?}",
+            c_deleted
+        )
+    })?;
+    require_meta_version(Some(c_delete_version), r6, r7 + 1, 0, true)?;
+    let r8 = c_delete_version.mod_revision;
+
+    let c_v2 = put_meta_via_cluster_inter_route(
+        &client,
+        failover_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        key_c.as_str(),
+        "c-v2",
+        Some(0),
+    )
+    .await?;
+    let r9 = c_v2.mod_revision;
+    if c_v2.create_revision != r9 || c_v2.version != 1 || r9 != r8 + 1 {
+        return Err(format!("unexpected crash recovery c_v2: {:?}", c_v2));
+    }
+
+    let e_v1 = put_meta_via_cluster_inter_route(
+        &client,
+        failover_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        key_e.as_str(),
+        "e-v1",
+        Some(0),
+    )
+    .await?;
+    let r10 = e_v1.mod_revision;
+    if e_v1.create_revision != r10 || e_v1.version != 1 || r10 != r9 + 1 {
+        return Err(format!("unexpected crash recovery e_v1: {:?}", e_v1));
+    }
+
+    let old_leader_config = configs
+        .get(&leader_before_crash)
+        .ok_or_else(|| format!("missing config for old leader {}", leader_before_crash))?;
+    spawn_klog(harness, &klog_daemon_bin, old_leader_config, leader)?;
+    wait_tcp("127.0.0.1", leader.ports.admin, Duration::from_secs(12)).await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(90),
+    )
+    .await?;
+    let leader_after_recovery = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(80),
+    )
+    .await?;
+
+    wait_meta_prefix_count_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        prefix.as_str(),
+        5,
+        Duration::from_secs(60),
+    )
+    .await?;
+    let expected_current = vec![
+        ExpectedMetaChange {
+            revision: r7,
+            key: key_a.clone(),
+            value: "a-v3".to_string(),
+            deleted: false,
+            create_revision: r1,
+            version: 3,
+        },
+        ExpectedMetaChange {
+            revision: r5,
+            key: key_b.clone(),
+            value: "b-v2".to_string(),
+            deleted: false,
+            create_revision: r5,
+            version: 1,
+        },
+        ExpectedMetaChange {
+            revision: r9,
+            key: key_c.clone(),
+            value: "c-v2".to_string(),
+            deleted: false,
+            create_revision: r9,
+            version: 1,
+        },
+        ExpectedMetaChange {
+            revision: r6,
+            key: key_d.clone(),
+            value: "d-v1".to_string(),
+            deleted: false,
+            create_revision: r6,
+            version: 1,
+        },
+        ExpectedMetaChange {
+            revision: r10,
+            key: key_e.clone(),
+            value: "e-v1".to_string(),
+            deleted: false,
+            create_revision: r10,
+            version: 1,
+        },
+    ];
+    for node in &nodes {
+        let current = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            16,
+        )
+        .await?;
+        require_expected_current_meta_values(&current, expected_current.as_slice())?;
+        expect_meta_query_status_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            Some(key_a.as_str()),
+            None,
+            Some(r4),
+            StatusCode::GONE,
+            Some("COMPACTED"),
+        )
+        .await?;
+        expect_meta_changes_status_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            r1,
+            StatusCode::GONE,
+            Some("COMPACTED"),
+        )
+        .await?;
+    }
+
+    let changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        gateway_addr(leader, ingress_port).as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        prefix.as_str(),
+        r5,
+        16,
+        None,
+    )
+    .await?;
+    require_meta_changes(
+        &changes,
+        &[
+            (r5, &key_b, "b-v2", false, r5, 1),
+            (r6, &key_c, "c-v1", false, r6, 1),
+            (r6, &key_d, "d-v1", false, r6, 1),
+            (r7, &key_a, "a-v3", false, r1, 3),
+            (r8, &key_c, "c-v1", true, r6, 0),
+            (r9, &key_c, "c-v2", false, r9, 1),
+            (r10, &key_e, "e-v1", false, r10, 1),
+        ],
+    )?;
+
+    println!(
+        "[klog-cluster-dv] MVCC crash recovery ok: crashed_leader={}, failover_leader={}, recovered_leader={}, compacted_revision={}, latest_revision={}, prefix={}",
+        leader_before_crash, new_leader_id, leader_after_recovery, r4, r10, prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_mvcc_crash_recovery() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_mvcc_crash_recovery_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -11538,6 +12018,7 @@ async fn run() -> Result<(), String> {
         MVCC_CHANGE_FEED_STRESS_MODE => run_local_gateway_mvcc_change_feed_stress().await,
         MVCC_FAILOVER_MODE => run_local_gateway_mvcc_failover().await,
         MVCC_AUTO_COMPACT_FAILOVER_MODE => run_local_gateway_mvcc_auto_compact_failover().await,
+        MVCC_CRASH_RECOVERY_MODE => run_local_gateway_mvcc_crash_recovery().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -11562,6 +12043,7 @@ async fn run() -> Result<(), String> {
                 MVCC_CHANGE_FEED_STRESS_MODE,
                 MVCC_FAILOVER_MODE,
                 MVCC_AUTO_COMPACT_FAILOVER_MODE,
+                MVCC_CRASH_RECOVERY_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
