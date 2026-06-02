@@ -27,6 +27,7 @@ const MVCC_CHANGE_FEED_STRESS_MODE: &str = "local-gateway-mvcc-change-feed-stres
 const MVCC_FAILOVER_MODE: &str = "local-gateway-mvcc-failover";
 const MVCC_AUTO_COMPACT_FAILOVER_MODE: &str = "local-gateway-mvcc-auto-compact-failover";
 const MVCC_CRASH_RECOVERY_MODE: &str = "local-gateway-mvcc-crash-recovery";
+const RAFT_OLD_LEADER_REJOIN_MODE: &str = "local-gateway-raft-old-leader-rejoin";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -9543,6 +9544,372 @@ async fn run_local_gateway_mvcc_crash_recovery() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_raft_old_leader_rejoin_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-raft-old-leader-rejoin-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, RAFT_OLD_LEADER_REJOIN_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let mut configs = BTreeMap::new();
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let old_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let old_leader = nodes
+        .iter()
+        .find(|node| node.id == old_leader_id)
+        .ok_or_else(|| format!("old leader node {} not found", old_leader_id))?;
+    let pre_writer = nodes
+        .iter()
+        .find(|node| node.id != old_leader_id)
+        .unwrap_or(old_leader);
+    let old_leader_gateway = gateway_addr(old_leader, ingress_port);
+    let pre_writer_gateway = gateway_addr(pre_writer, ingress_port);
+    let suffix = unique_suffix("raft-old-leader-rejoin");
+    let log_source = format!("test/klog_raft_old_leader_rejoin_dv/log/{}", suffix);
+    let prefix = format!("test/klog_raft_old_leader_rejoin_dv/{}/", suffix);
+    let key_a = format!("{}a", prefix);
+    let key_b = format!("{}b", prefix);
+
+    let before_log = append_via_cluster_inter_route(
+        &client,
+        pre_writer_gateway.as_str(),
+        route_prefix,
+        old_leader.name.as_str(),
+        log_source.as_str(),
+        "old leader rejoin write before crash",
+    )
+    .await?;
+    wait_log_visible_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        before_log.id,
+        log_source.as_str(),
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let a_v1 = put_meta_via_cluster_inter_route(
+        &client,
+        pre_writer_gateway.as_str(),
+        route_prefix,
+        old_leader.name.as_str(),
+        key_a.as_str(),
+        "a-before-crash",
+        Some(0),
+    )
+    .await?;
+    let r1 = a_v1.mod_revision;
+    if a_v1.create_revision != r1 || a_v1.version != 1 {
+        return Err(format!("unexpected old-leader-rejoin a_v1: {:?}", a_v1));
+    }
+
+    harness.stop(format!("klog-{}", old_leader.name).as_str())?;
+    let alive_nodes = nodes
+        .iter()
+        .filter(|node| node.id != old_leader_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    wait_membership(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let new_leader_id = wait_consistent_leader(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        Some(old_leader_id),
+        Duration::from_secs(70),
+    )
+    .await?;
+    let new_leader = alive_nodes
+        .iter()
+        .find(|node| node.id == new_leader_id)
+        .ok_or_else(|| format!("new leader node {} not found", new_leader_id))?;
+    let failover_writer = alive_nodes
+        .iter()
+        .find(|node| node.id != new_leader_id)
+        .unwrap_or(new_leader);
+    let failover_writer_gateway = gateway_addr(failover_writer, ingress_port);
+
+    let after_log = append_via_cluster_inter_route(
+        &client,
+        failover_writer_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        log_source.as_str(),
+        "old leader rejoin write after crash",
+    )
+    .await?;
+    if after_log.id <= before_log.id {
+        return Err(format!(
+            "log id did not advance after leader crash: before={}, after={}",
+            before_log.id, after_log.id
+        ));
+    }
+    wait_log_visible_on_nodes(
+        &client,
+        &alive_nodes,
+        ingress_port,
+        route_prefix,
+        after_log.id,
+        log_source.as_str(),
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let a_v2 = put_meta_via_cluster_inter_route(
+        &client,
+        failover_writer_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        key_a.as_str(),
+        "a-after-crash",
+        Some(r1),
+    )
+    .await?;
+    let r2 = a_v2.mod_revision;
+    if a_v2.create_revision != r1 || a_v2.version != 2 || r2 != r1 + 1 {
+        return Err(format!("unexpected old-leader-rejoin a_v2: {:?}", a_v2));
+    }
+    let b_v1 = put_meta_via_cluster_inter_route(
+        &client,
+        failover_writer_gateway.as_str(),
+        route_prefix,
+        new_leader.name.as_str(),
+        key_b.as_str(),
+        "b-after-crash",
+        Some(0),
+    )
+    .await?;
+    let r3 = b_v1.mod_revision;
+    if b_v1.create_revision != r3 || b_v1.version != 1 || r3 != r2 + 1 {
+        return Err(format!("unexpected old-leader-rejoin b_v1: {:?}", b_v1));
+    }
+
+    let old_leader_config = configs
+        .get(&old_leader_id)
+        .ok_or_else(|| format!("missing config for old leader {}", old_leader_id))?;
+    spawn_klog(harness, &klog_daemon_bin, old_leader_config, old_leader)?;
+    wait_tcp("127.0.0.1", old_leader.ports.admin, Duration::from_secs(12)).await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(90),
+    )
+    .await?;
+    let leader_after_rejoin = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(80),
+    )
+    .await?;
+
+    wait_log_visible_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        before_log.id,
+        log_source.as_str(),
+        Duration::from_secs(45),
+    )
+    .await?;
+    wait_log_visible_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        after_log.id,
+        log_source.as_str(),
+        Duration::from_secs(45),
+    )
+    .await?;
+
+    for node in &nodes {
+        let gateway = gateway_addr(node, ingress_port);
+        let current = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            8,
+        )
+        .await?;
+        require_meta_values(
+            &current,
+            &[
+                (&key_a, "a-after-crash", r1, r2, 2),
+                (&key_b, "b-after-crash", r3, r3, 1),
+            ],
+        )?;
+    }
+
+    expect_meta_put_status_via_cluster_inter_route(
+        &client,
+        old_leader_gateway.as_str(),
+        route_prefix,
+        old_leader.name.as_str(),
+        MetaPutRequest {
+            key: key_a.clone(),
+            value: "stale-old-leader-write".to_string(),
+            node_name: Some(old_leader.name.clone()),
+            expected_revision: Some(r1),
+        },
+        StatusCode::CONFLICT,
+    )
+    .await?;
+
+    let a_v3 = put_meta_via_cluster_inter_route(
+        &client,
+        old_leader_gateway.as_str(),
+        route_prefix,
+        old_leader.name.as_str(),
+        key_a.as_str(),
+        "a-after-rejoin",
+        Some(r2),
+    )
+    .await?;
+    let r4 = a_v3.mod_revision;
+    if a_v3.create_revision != r1 || a_v3.version != 3 || r4 != r3 + 1 {
+        return Err(format!("unexpected old-leader-rejoin a_v3: {:?}", a_v3));
+    }
+    wait_meta_value_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        key_a.as_str(),
+        "a-after-rejoin",
+        r4,
+        Duration::from_secs(45),
+    )
+    .await?;
+
+    let changes = query_meta_changes_via_cluster_inter_route(
+        &client,
+        old_leader_gateway.as_str(),
+        route_prefix,
+        old_leader.name.as_str(),
+        prefix.as_str(),
+        r1,
+        8,
+        None,
+    )
+    .await?;
+    require_meta_changes(
+        &changes,
+        &[
+            (r1, &key_a, "a-before-crash", false, r1, 1),
+            (r2, &key_a, "a-after-crash", false, r1, 2),
+            (r3, &key_b, "b-after-crash", false, r3, 1),
+            (r4, &key_a, "a-after-rejoin", false, r1, 3),
+        ],
+    )?;
+
+    println!(
+        "[klog-cluster-dv] raft old leader rejoin ok: old_leader={}, new_leader={}, leader_after_rejoin={}, log_ids=[{},{}], revisions=[{},{},{},{}], prefix={}",
+        old_leader_id,
+        new_leader_id,
+        leader_after_rejoin,
+        before_log.id,
+        after_log.id,
+        r1,
+        r2,
+        r3,
+        r4,
+        prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_raft_old_leader_rejoin() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_raft_old_leader_rejoin_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -12019,6 +12386,7 @@ async fn run() -> Result<(), String> {
         MVCC_FAILOVER_MODE => run_local_gateway_mvcc_failover().await,
         MVCC_AUTO_COMPACT_FAILOVER_MODE => run_local_gateway_mvcc_auto_compact_failover().await,
         MVCC_CRASH_RECOVERY_MODE => run_local_gateway_mvcc_crash_recovery().await,
+        RAFT_OLD_LEADER_REJOIN_MODE => run_local_gateway_raft_old_leader_rejoin().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -12044,6 +12412,7 @@ async fn run() -> Result<(), String> {
                 MVCC_FAILOVER_MODE,
                 MVCC_AUTO_COMPACT_FAILOVER_MODE,
                 MVCC_CRASH_RECOVERY_MODE,
+                RAFT_OLD_LEADER_REJOIN_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
