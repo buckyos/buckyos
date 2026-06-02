@@ -673,6 +673,7 @@ mod tests {
             cluster_network: KClusterTransportConfig::default(),
             admin_local_only: true,
             rpc: Default::default(),
+            meta_compaction: Default::default(),
         }
     }
 

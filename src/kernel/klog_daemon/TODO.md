@@ -39,10 +39,6 @@ This file tracks current implementation gaps after the BuckyOS integration work.
 
 ## P2: MVCC / Watch API
 
-- [ ] Add automatic MVCC compaction policy.
-  - Manual compaction and compacted-revision errors are implemented.
-  - Long-running deployments still need an explicit retention policy and
-    trigger strategy before watch APIs are treated as production interfaces.
 - [ ] Add production watch lifecycle semantics.
   - The first change-feed API is active polling with cursor resume.
   - A complete MVCC watch model still needs client resume rules, watch
@@ -174,6 +170,14 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     returns compacted-revision errors through HTTP/JSON-RPC query paths.
   - Covered by klog state-machine/RocksDB state-store tests and the
     klog_daemon meta compaction client test.
+- [x] Add automatic MVCC metadata compaction policy.
+  - `klog_daemon` supports optional leader-only `revision_count` auto
+    compaction through `meta_compaction` config and `KLOG_META_COMPACTION_*`
+    environment variables.
+  - Auto compaction submits the same Raft `CompactMeta` write command used by
+    explicit admin compaction, so followers and learners converge through the
+    state machine.
+  - Covered by `test_single_node_auto_meta_compaction_triggers`.
 - [x] Validate klog MVCC behavior through a local gateway cluster DV.
   - Covered by `test/klog_mvcc_cluster_dv.sh`.
   - Validates 3-voter gateway cluster routes, atomic meta transactions,

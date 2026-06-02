@@ -89,11 +89,13 @@ Current metadata revision semantics are intentionally MVCC-compatible:
 - `meta-changes` exposes the first watch-compatible API as active polling:
   callers can issue one-shot scans or set `wait_timeout_ms` for short
   long-poll behavior. Streaming push APIs are not implemented yet.
-- Manual metadata compaction is available through the admin plane. Compaction
-  records a persisted compacted revision, keeps one key-major baseline record
-  per key at or before that revision, and drops old revision-major change-feed
-  index entries. Historical reads and `meta-changes` resumes at compacted
-  revisions fail with `KLogErrorCode::Compacted` / HTTP `410`.
+- Metadata compaction records a persisted compacted revision, keeps one
+  key-major baseline record per key at or before that revision, and drops old
+  revision-major change-feed index entries. Historical reads and
+  `meta-changes` resumes at compacted revisions fail with
+  `KLogErrorCode::Compacted` / HTTP `410`. The admin plane exposes explicit
+  compaction; `klog_daemon` can also trigger automatic revision-count
+  compaction when enabled in daemon config.
 
 `KLogMetaPutRequest.expected_revision` controls CAS semantics:
 
@@ -226,7 +228,7 @@ server state, leader id, voters, learners, and node descriptors.
 
 `meta-compact` is an explicit maintenance operation. It is submitted as a Raft
 write command, so all voters and learners converge on the same compacted
-revision. Automatic compaction policy is intentionally deferred.
+revision. `klog_daemon` automatic compaction uses the same Raft command path.
 
 Production exposure is intentionally not decided in this crate. BuckyOS should
 keep admin routes behind local gateway/internal ACLs; see the daemon deployment
