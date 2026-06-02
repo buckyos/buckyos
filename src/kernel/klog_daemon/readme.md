@@ -190,6 +190,14 @@ KLOG_META_COMPACTION_MIN_COMPACT_GAP=10000
 
 启用后，落后于 compacted revision 的 historical query / change-feed resume 会返回 `COMPACTED`，调用方需要按当前状态重新建立 cursor。
 
+MVCC compaction 与 snapshot 安装并发覆盖入口：
+
+```bash
+uv run test/run.py -p klog_mvcc_compact_during_snapshot_dv
+```
+
+该用例会先写入包含 update/delete/recreate 的 MVCC history，让 3 voter 集群生成 snapshot；随后新增 learner，在观察到 learner 本地 `snapshot.temp` 已收到数据后由 leader 执行显式 `meta-compact`。最终验证 learner 和已有 voter 对 compacted revision、保留的历史读、post-compaction change-feed 以及后续 gateway 写入保持一致。
+
 ## 10. OOD membership DV
 
 BuckyOS 多 OOD 场景下，klog OOD voter 的增删本质上对应 OpenRaft membership 变更。当前本地 DV 覆盖入口：

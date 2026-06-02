@@ -228,6 +228,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     delete/recreate, compacts metadata, adds a new OOD as learner, verifies the
     learner catches up through snapshot with compacted-revision semantics,
     promotes it to voter, writes post-promote MVCC data, then demotes/removes it.
+- [x] Validate explicit MVCC compaction while a learner is installing snapshot.
+  - Covered by `test/klog_mvcc_compact_during_snapshot_dv.sh`.
+  - Adds a learner with snapshot-sized MVCC history, observes non-empty
+    `snapshot.temp`, then compacts on the leader and verifies the learner
+    converges on compacted-revision errors, retained historical reads,
+    change-feed continuation, and post-recovery gateway writes.
 - [x] Validate high-level system_config MVCC behavior on the klog backend.
   - Covered by `test/klog_system_config_mvcc_dv.sh`.
   - Validates real `/kapi/system_config` create/set/set-by-json-path/delete,
