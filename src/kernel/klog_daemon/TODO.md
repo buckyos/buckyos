@@ -151,6 +151,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Covered by `test/klog_system_config_service_dv.sh`.
   - Validates `create/get/set/set_by_json_path/append/list/delete/exec_tx` and
     `dump_configs_for_scheduler` through `/kapi/system_config`.
+- [x] Validate real system_config klog backend across klog leader failover.
+  - Covered by `test/klog_system_config_leader_failover_dv.sh`.
+  - Points `system_config` at a non-leader klog RPC endpoint, kills the current
+    klog leader during a write, validates the transient kRPC error path, then
+    retries reads/writes after new leader election and verifies old-leader
+    rejoin catches up the klog-backed keys.
 - [x] Validate local multi-OOD system_config klog rollout rule.
   - Covered by `test/klog_system_config_rollout_dv.sh`.
   - Validates that only the bootstrap OOD copies sled data into klog and that a
