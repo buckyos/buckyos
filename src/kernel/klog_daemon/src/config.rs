@@ -7,31 +7,35 @@ use crate::constants::{
     DEFAULT_JOIN_RETRY_MAX_ATTEMPTS, DEFAULT_JOIN_RETRY_MAX_INTERVAL_MS,
     DEFAULT_JOIN_RETRY_MULTIPLIER, DEFAULT_JOIN_RETRY_REQUEST_TIMEOUT_MS,
     DEFAULT_JOIN_RETRY_SHUFFLE_TARGETS, DEFAULT_JOIN_RETRY_STRATEGY, DEFAULT_LISTEN_HOST,
-    DEFAULT_RAFT_ELECTION_TIMEOUT_MAX_MS, DEFAULT_RAFT_ELECTION_TIMEOUT_MIN_MS,
-    DEFAULT_RAFT_HEARTBEAT_INTERVAL_MS, DEFAULT_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS,
-    DEFAULT_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP, DEFAULT_RAFT_MAX_PAYLOAD_ENTRIES, DEFAULT_RAFT_PORT,
-    DEFAULT_RAFT_PURGE_BATCH_SIZE, DEFAULT_RAFT_REPLICATION_LAG_THRESHOLD,
-    DEFAULT_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES, DEFAULT_RAFT_SNAPSHOT_POLICY,
-    DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT, DEFAULT_RPC_LISTEN_HOST,
-    DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS, DEFAULT_STATE_STORE_SYNC_WRITE,
-    ENV_ADMIN_ADVERTISE_PORT, ENV_ADMIN_LISTEN_ADDR, ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR,
-    ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_NODE_NAME, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP,
-    ENV_CLUSTER_GATEWAY_ADDR, ENV_CLUSTER_GATEWAY_ROUTE_PREFIX, ENV_CLUSTER_ID, ENV_CLUSTER_NAME,
-    ENV_CLUSTER_NETWORK_MODE, ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER,
-    ENV_INTER_NODE_LISTEN_ADDR, ENV_JOIN_BLOCKING,
-    ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS, ENV_JOIN_RETRY_INITIAL_INTERVAL_MS,
-    ENV_JOIN_RETRY_JITTER_RATIO, ENV_JOIN_RETRY_MAX_ATTEMPTS, ENV_JOIN_RETRY_MAX_INTERVAL_MS,
-    ENV_JOIN_RETRY_MULTIPLIER, ENV_JOIN_RETRY_REQUEST_TIMEOUT_MS, ENV_JOIN_RETRY_SHUFFLE_TARGETS,
-    ENV_JOIN_RETRY_STRATEGY, ENV_JOIN_TARGET_ROLE, ENV_JOIN_TARGETS, ENV_LISTEN_ADDR, ENV_NODE_ID,
-    ENV_RAFT_ELECTION_TIMEOUT_MAX_MS, ENV_RAFT_ELECTION_TIMEOUT_MIN_MS,
-    ENV_RAFT_HEARTBEAT_INTERVAL_MS, ENV_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS,
-    ENV_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP, ENV_RAFT_MAX_PAYLOAD_ENTRIES, ENV_RAFT_PURGE_BATCH_SIZE,
-    ENV_RAFT_REPLICATION_LAG_THRESHOLD, ENV_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES,
-    ENV_RAFT_SNAPSHOT_POLICY, ENV_RPC_ADVERTISE_PORT, ENV_RPC_APPEND_BODY_LIMIT_BYTES,
-    ENV_RPC_APPEND_CONCURRENCY, ENV_RPC_APPEND_TIMEOUT_MS, ENV_RPC_JSONRPC_BODY_LIMIT_BYTES,
-    ENV_RPC_JSONRPC_CONCURRENCY, ENV_RPC_JSONRPC_TIMEOUT_MS, ENV_RPC_LISTEN_ADDR,
-    ENV_RPC_QUERY_BODY_LIMIT_BYTES, ENV_RPC_QUERY_CONCURRENCY, ENV_RPC_QUERY_TIMEOUT_MS,
-    ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
+    DEFAULT_META_COMPACTION_CHECK_INTERVAL_MS, DEFAULT_META_COMPACTION_ENABLED,
+    DEFAULT_META_COMPACTION_MIN_COMPACT_GAP, DEFAULT_META_COMPACTION_POLICY,
+    DEFAULT_META_COMPACTION_RETENTION_REVISIONS, DEFAULT_RAFT_ELECTION_TIMEOUT_MAX_MS,
+    DEFAULT_RAFT_ELECTION_TIMEOUT_MIN_MS, DEFAULT_RAFT_HEARTBEAT_INTERVAL_MS,
+    DEFAULT_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS, DEFAULT_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP,
+    DEFAULT_RAFT_MAX_PAYLOAD_ENTRIES, DEFAULT_RAFT_PORT, DEFAULT_RAFT_PURGE_BATCH_SIZE,
+    DEFAULT_RAFT_REPLICATION_LAG_THRESHOLD, DEFAULT_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES,
+    DEFAULT_RAFT_SNAPSHOT_POLICY, DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT,
+    DEFAULT_RPC_LISTEN_HOST, DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS,
+    DEFAULT_STATE_STORE_SYNC_WRITE, ENV_ADMIN_ADVERTISE_PORT, ENV_ADMIN_LISTEN_ADDR,
+    ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR, ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_NODE_NAME,
+    ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_GATEWAY_ADDR,
+    ENV_CLUSTER_GATEWAY_ROUTE_PREFIX, ENV_CLUSTER_ID, ENV_CLUSTER_NAME, ENV_CLUSTER_NETWORK_MODE,
+    ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER, ENV_INTER_NODE_LISTEN_ADDR,
+    ENV_JOIN_BLOCKING, ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
+    ENV_JOIN_RETRY_INITIAL_INTERVAL_MS, ENV_JOIN_RETRY_JITTER_RATIO, ENV_JOIN_RETRY_MAX_ATTEMPTS,
+    ENV_JOIN_RETRY_MAX_INTERVAL_MS, ENV_JOIN_RETRY_MULTIPLIER, ENV_JOIN_RETRY_REQUEST_TIMEOUT_MS,
+    ENV_JOIN_RETRY_SHUFFLE_TARGETS, ENV_JOIN_RETRY_STRATEGY, ENV_JOIN_TARGET_ROLE,
+    ENV_JOIN_TARGETS, ENV_LISTEN_ADDR, ENV_META_COMPACTION_CHECK_INTERVAL_MS,
+    ENV_META_COMPACTION_ENABLED, ENV_META_COMPACTION_MIN_COMPACT_GAP, ENV_META_COMPACTION_POLICY,
+    ENV_META_COMPACTION_RETENTION_REVISIONS, ENV_NODE_ID, ENV_RAFT_ELECTION_TIMEOUT_MAX_MS,
+    ENV_RAFT_ELECTION_TIMEOUT_MIN_MS, ENV_RAFT_HEARTBEAT_INTERVAL_MS,
+    ENV_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS, ENV_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP,
+    ENV_RAFT_MAX_PAYLOAD_ENTRIES, ENV_RAFT_PURGE_BATCH_SIZE, ENV_RAFT_REPLICATION_LAG_THRESHOLD,
+    ENV_RAFT_SNAPSHOT_MAX_CHUNK_SIZE_BYTES, ENV_RAFT_SNAPSHOT_POLICY, ENV_RPC_ADVERTISE_PORT,
+    ENV_RPC_APPEND_BODY_LIMIT_BYTES, ENV_RPC_APPEND_CONCURRENCY, ENV_RPC_APPEND_TIMEOUT_MS,
+    ENV_RPC_JSONRPC_BODY_LIMIT_BYTES, ENV_RPC_JSONRPC_CONCURRENCY, ENV_RPC_JSONRPC_TIMEOUT_MS,
+    ENV_RPC_LISTEN_ADDR, ENV_RPC_QUERY_BODY_LIMIT_BYTES, ENV_RPC_QUERY_CONCURRENCY,
+    ENV_RPC_QUERY_TIMEOUT_MS, ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
 };
 use buckyos_api::KLogDeploymentSettings;
 use buckyos_kit::get_buckyos_service_data_dir;
@@ -296,6 +300,70 @@ impl Default for KLogJoinRetryConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KLogMetaCompactionPolicy {
+    RevisionCount,
+}
+
+impl KLogMetaCompactionPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RevisionCount => "revision_count",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "revision_count" => Ok(Self::RevisionCount),
+            _ => Err("expected revision_count".to_string()),
+        }
+    }
+}
+
+impl Default for KLogMetaCompactionPolicy {
+    fn default() -> Self {
+        Self::parse(DEFAULT_META_COMPACTION_POLICY)
+            .expect("DEFAULT_META_COMPACTION_POLICY must be valid")
+    }
+}
+
+impl std::fmt::Display for KLogMetaCompactionPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaCompactionConfig {
+    /// Whether the daemon periodically submits metadata compaction commands.
+    pub enabled: bool,
+
+    /// Compaction policy. The first implementation supports revision-count retention.
+    pub policy: KLogMetaCompactionPolicy,
+
+    /// Number of newest global metadata revisions to retain.
+    pub retention_revisions: u64,
+
+    /// Periodic leader-side check interval in milliseconds.
+    pub check_interval_ms: u64,
+
+    /// Minimum target advance from the current compacted revision before a write is submitted.
+    pub min_compact_gap: u64,
+}
+
+impl Default for KLogMetaCompactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: DEFAULT_META_COMPACTION_ENABLED,
+            policy: KLogMetaCompactionPolicy::default(),
+            retention_revisions: DEFAULT_META_COMPACTION_RETENTION_REVISIONS,
+            check_interval_ms: DEFAULT_META_COMPACTION_CHECK_INTERVAL_MS,
+            min_compact_gap: DEFAULT_META_COMPACTION_MIN_COMPACT_GAP,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KLogRuntimeConfig {
     /// Raft node id in current cluster, must be greater than 0.
@@ -372,6 +440,9 @@ pub struct KLogRuntimeConfig {
 
     /// Route-level RPC policies for append/query/jsonrpc.
     pub rpc: KLogRpcConfig,
+
+    /// Automatic MVCC metadata compaction policy.
+    pub meta_compaction: KLogMetaCompactionConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -563,6 +634,25 @@ pub struct KLogRpcConfigPatch {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct KLogMetaCompactionConfigPatch {
+    /// Optional switch for automatic MVCC metadata compaction.
+    pub enabled: Option<bool>,
+
+    /// Optional compaction policy.
+    pub policy: Option<KLogMetaCompactionPolicy>,
+
+    /// Optional retained latest metadata revisions.
+    pub retention_revisions: Option<u64>,
+
+    /// Optional check interval in milliseconds.
+    pub check_interval_ms: Option<u64>,
+
+    /// Optional minimum compacted-revision advance before submitting a compact command.
+    pub min_compact_gap: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KLogRuntimeConfigPatch {
     /// BuckyOS deployment policy; consumed by scheduler and accepted here for shared settings.
     pub deployment: Option<KLogDeploymentSettings>,
@@ -590,6 +680,9 @@ pub struct KLogRuntimeConfigPatch {
 
     /// Optional grouped rpc policy section.
     pub rpc: Option<KLogRpcConfigPatch>,
+
+    /// Optional grouped automatic MVCC metadata compaction section.
+    pub meta_compaction: Option<KLogMetaCompactionConfigPatch>,
 
     /// Required node id; can also come from env.
     pub node_id: Option<KNodeId>,
@@ -705,6 +798,13 @@ impl KLogRuntimeConfig {
                     concurrency: parse_env_usize(ENV_RPC_JSONRPC_CONCURRENCY)?,
                 }),
             }),
+            meta_compaction: Some(KLogMetaCompactionConfigPatch {
+                enabled: parse_env_bool(ENV_META_COMPACTION_ENABLED)?,
+                policy: parse_env_meta_compaction_policy(ENV_META_COMPACTION_POLICY)?,
+                retention_revisions: parse_env_u64(ENV_META_COMPACTION_RETENTION_REVISIONS)?,
+                check_interval_ms: parse_env_u64(ENV_META_COMPACTION_CHECK_INTERVAL_MS)?,
+                min_compact_gap: parse_env_u64(ENV_META_COMPACTION_MIN_COMPACT_GAP)?,
+            }),
             ..Default::default()
         };
 
@@ -756,6 +856,7 @@ impl KLogRuntimeConfig {
             cluster_network,
             admin,
             rpc,
+            meta_compaction,
             node_id,
         } = patch;
 
@@ -767,6 +868,7 @@ impl KLogRuntimeConfig {
         let cluster_network = cluster_network.unwrap_or_default();
         let admin = admin.unwrap_or_default();
         let rpc = rpc.unwrap_or_default();
+        let meta_compaction = meta_compaction.unwrap_or_default();
 
         let node_id = match node_id {
             Some(v) => v,
@@ -818,6 +920,7 @@ impl KLogRuntimeConfig {
         let join_retry_cfg = merge_join_retry_config(join.retry.unwrap_or_default())?;
         let raft_cfg = merge_raft_config(raft)?;
         let cluster_network_cfg = merge_cluster_network_config(cluster_network)?;
+        let meta_compaction_cfg = merge_meta_compaction_config(meta_compaction)?;
         let listen_addr = network.listen_addr.unwrap_or_else(default_listen_addr);
         let inter_node_listen_addr = network
             .inter_node_listen_addr
@@ -924,6 +1027,7 @@ impl KLogRuntimeConfig {
             cluster_network: cluster_network_cfg,
             admin_local_only: admin.local_only.unwrap_or(DEFAULT_ADMIN_LOCAL_ONLY),
             rpc: rpc_cfg,
+            meta_compaction: meta_compaction_cfg,
         })
     }
 }
@@ -957,6 +1061,46 @@ fn merge_rpc_config(patch: KLogRpcConfigPatch) -> Result<KLogRpcConfig, String> 
         query,
         jsonrpc,
     })
+}
+
+fn merge_meta_compaction_config(
+    patch: KLogMetaCompactionConfigPatch,
+) -> Result<KLogMetaCompactionConfig, String> {
+    let cfg = KLogMetaCompactionConfig {
+        enabled: patch.enabled.unwrap_or(DEFAULT_META_COMPACTION_ENABLED),
+        policy: patch.policy.unwrap_or_default(),
+        retention_revisions: patch
+            .retention_revisions
+            .unwrap_or(DEFAULT_META_COMPACTION_RETENTION_REVISIONS),
+        check_interval_ms: patch
+            .check_interval_ms
+            .unwrap_or(DEFAULT_META_COMPACTION_CHECK_INTERVAL_MS),
+        min_compact_gap: patch
+            .min_compact_gap
+            .unwrap_or(DEFAULT_META_COMPACTION_MIN_COMPACT_GAP),
+    };
+
+    if cfg.retention_revisions == 0 {
+        let msg = "Invalid meta_compaction.retention_revisions=0: retention_revisions must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.check_interval_ms == 0 {
+        let msg =
+            "Invalid meta_compaction.check_interval_ms=0: check_interval_ms must be greater than 0"
+                .to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.min_compact_gap == 0 {
+        let msg =
+            "Invalid meta_compaction.min_compact_gap=0: min_compact_gap must be greater than 0"
+                .to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    Ok(cfg)
 }
 
 fn merge_cluster_network_config(
@@ -1374,6 +1518,15 @@ fn parse_env_join_retry_strategy(key: &str) -> Result<Option<KLogJoinRetryStrate
     }
 }
 
+fn parse_env_meta_compaction_policy(key: &str) -> Result<Option<KLogMetaCompactionPolicy>, String> {
+    match parse_env_string(key)? {
+        Some(v) => KLogMetaCompactionPolicy::parse(&v)
+            .map(Some)
+            .map_err(|e| format!("Invalid {}='{}': {}", key, v, e)),
+        None => Ok(None),
+    }
+}
+
 fn parse_env_cluster_transport_mode(key: &str) -> Result<Option<KClusterTransportMode>, String> {
     match parse_env_string(key)? {
         Some(v) => KClusterTransportMode::parse(&v)
@@ -1473,6 +1626,13 @@ concurrency = 96
 timeout_ms = 3300
 body_limit_bytes = 1048576
 concurrency = 128
+
+[meta_compaction]
+enabled = true
+policy = "revision_count"
+retention_revisions = 4096
+check_interval_ms = 15000
+min_compact_gap = 256
 "#;
         std::fs::write(&file, content).expect("write file");
 
@@ -1528,6 +1688,14 @@ concurrency = 128
         assert_eq!(cfg.rpc.jsonrpc.timeout_ms, 3300);
         assert_eq!(cfg.rpc.jsonrpc.body_limit_bytes, 1048576);
         assert_eq!(cfg.rpc.jsonrpc.concurrency, 128);
+        assert!(cfg.meta_compaction.enabled);
+        assert_eq!(
+            cfg.meta_compaction.policy,
+            KLogMetaCompactionPolicy::RevisionCount
+        );
+        assert_eq!(cfg.meta_compaction.retention_revisions, 4096);
+        assert_eq!(cfg.meta_compaction.check_interval_ms, 15000);
+        assert_eq!(cfg.meta_compaction.min_compact_gap, 256);
 
         let _ = std::fs::remove_file(&file);
     }
@@ -1669,6 +1837,23 @@ id = "cluster_partial_id"
             DEFAULT_RPC_BODY_LIMIT_BYTES
         );
         assert_eq!(cfg.rpc.jsonrpc.concurrency, DEFAULT_RPC_CONCURRENCY_LIMIT);
+        assert_eq!(cfg.meta_compaction.enabled, DEFAULT_META_COMPACTION_ENABLED);
+        assert_eq!(
+            cfg.meta_compaction.policy.as_str(),
+            DEFAULT_META_COMPACTION_POLICY
+        );
+        assert_eq!(
+            cfg.meta_compaction.retention_revisions,
+            DEFAULT_META_COMPACTION_RETENTION_REVISIONS
+        );
+        assert_eq!(
+            cfg.meta_compaction.check_interval_ms,
+            DEFAULT_META_COMPACTION_CHECK_INTERVAL_MS
+        );
+        assert_eq!(
+            cfg.meta_compaction.min_compact_gap,
+            DEFAULT_META_COMPACTION_MIN_COMPACT_GAP
+        );
 
         let _ = std::fs::remove_file(&file);
     }
@@ -1880,6 +2065,13 @@ id = "cluster_admin_conflict_id"
             admin: Some(KLogAdminConfigPatch {
                 local_only: Some(false),
             }),
+            meta_compaction: Some(KLogMetaCompactionConfigPatch {
+                enabled: Some(true),
+                policy: Some(KLogMetaCompactionPolicy::RevisionCount),
+                retention_revisions: Some(2048),
+                check_interval_ms: Some(12000),
+                min_compact_gap: Some(128),
+            }),
             node_id: Some(3),
             ..Default::default()
         };
@@ -1930,6 +2122,10 @@ id = "cluster_admin_conflict_id"
         assert_eq!(cfg.rpc.append.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
         assert_eq!(cfg.rpc.query.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
         assert_eq!(cfg.rpc.jsonrpc.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+        assert!(cfg.meta_compaction.enabled);
+        assert_eq!(cfg.meta_compaction.retention_revisions, 2048);
+        assert_eq!(cfg.meta_compaction.check_interval_ms, 12000);
+        assert_eq!(cfg.meta_compaction.min_compact_gap, 128);
     }
 
     #[test]
@@ -1957,6 +2153,29 @@ concurrency = 0
         let err =
             KLogRuntimeConfig::from_file(&file).expect_err("rpc.append.concurrency=0 must fail");
         assert!(err.contains("rpc.append concurrency=0"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn test_from_file_meta_compaction_invalid_zero_rejected() {
+        let file = unique_test_file("meta_compaction_invalid_zero");
+        let content = r#"
+node_id = 7
+
+[cluster]
+name = "cluster_meta_compaction_invalid"
+id = "cluster_meta_compaction_invalid_id"
+
+[meta_compaction]
+enabled = true
+retention_revisions = 0
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err = KLogRuntimeConfig::from_file(&file)
+            .expect_err("meta_compaction.retention_revisions=0 must fail");
+        assert!(err.contains("meta_compaction.retention_revisions=0"));
 
         let _ = std::fs::remove_file(&file);
     }

@@ -3,6 +3,7 @@ mod config;
 mod constants;
 mod lifecycle;
 mod logging;
+mod meta_compaction;
 
 use buckyos_api::{
     BuckyOSRuntime, BuckyOSRuntimeType, KLOG_CLUSTER_ADMIN_PORT, KLOG_CLUSTER_INTER_PORT,
@@ -25,6 +26,7 @@ use klog::{KClusterTransportConfig, KClusterTransportMode};
 use lifecycle::run_server_lifecycle;
 use log::{error, info, warn};
 use logging::init_logging;
+use meta_compaction::spawn_auto_meta_compaction_task;
 use std::env;
 use std::sync::Arc;
 
@@ -248,15 +250,14 @@ fn apply_buckyos_runtime_defaults(
 }
 
 fn derive_buckyos_raft_node_id(runtime: &BuckyOSRuntime, node_name: &str) -> Result<u64, String> {
-    if let Some(zone_config) = runtime.zone_config.as_ref() {
-        if let Some(index) = zone_config
+    if let Some(zone_config) = runtime.zone_config.as_ref()
+        && let Some(index) = zone_config
             .oods
             .iter()
             .filter(|ood| ood.node_type.is_ood())
             .position(|ood| ood.name == node_name)
-        {
-            return Ok((index + 1) as u64);
-        }
+    {
+        return Ok((index + 1) as u64);
     }
 
     derive_raft_node_id_from_node_name(node_name)
@@ -554,7 +555,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, advertise_node_name(BuckyOS node name)={:?}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, cluster_network_mode={}, cluster_gateway_addr={}, cluster_gateway_route_prefix={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
+        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, advertise_node_name(BuckyOS node name)={:?}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, cluster_network_mode={}, cluster_gateway_addr={}, cluster_gateway_route_prefix={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), meta_compaction(enabled={}, policy={}, retention_revisions={}, check_interval_ms={}, min_compact_gap={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
         cfg.node_id,
         cfg.listen_addr,
         cfg.inter_node_listen_addr,
@@ -597,6 +598,11 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         cfg.raft.snapshot_max_chunk_size_bytes,
         cfg.raft.max_in_snapshot_log_to_keep,
         cfg.raft.purge_batch_size,
+        cfg.meta_compaction.enabled,
+        cfg.meta_compaction.policy,
+        cfg.meta_compaction.retention_revisions,
+        cfg.meta_compaction.check_interval_ms,
+        cfg.meta_compaction.min_compact_gap,
         cfg.admin_local_only,
         cfg.rpc.append.timeout_ms,
         cfg.rpc.append.body_limit_bytes,
@@ -687,6 +693,8 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
 
     initialize_cluster_if_needed(&cfg, &raft).await;
     let join_task = spawn_auto_join_task(&cfg);
+    let meta_compaction_task =
+        spawn_auto_meta_compaction_task(&cfg, &raft, state_store_manager.clone());
 
     let network_server = KNetworkServer::new(cfg.listen_addr.clone(), raft.clone())
         .with_inter_node_addr(cfg.inter_node_listen_addr.clone())
@@ -715,5 +723,5 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         None
     };
 
-    run_server_lifecycle(network_server, rpc_server, join_task).await
+    run_server_lifecycle(network_server, rpc_server, join_task, meta_compaction_task).await
 }

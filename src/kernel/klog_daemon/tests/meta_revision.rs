@@ -606,3 +606,100 @@ async fn test_three_node_meta_compaction_rejects_compacted_revision() -> Result<
     }
     result
 }
+
+#[tokio::test]
+async fn test_single_node_auto_meta_compaction_triggers() -> Result<(), String> {
+    if !can_bind_localhost() {
+        eprintln!("skip auto meta compaction test: localhost bind is not available");
+        return Ok(());
+    }
+
+    let ports = choose_unique_ports(1)?;
+    let port = ports[0];
+    let cluster_name = format!("klog_auto_meta_compaction_{}", port);
+    let options = TestNodeSpawnOptions {
+        meta_compaction: Some(TestMetaCompactionOptions {
+            enabled: true,
+            retention_revisions: 4,
+            check_interval_ms: 100,
+            min_compact_gap: 2,
+        }),
+        ..TestNodeSpawnOptions::default()
+    };
+    let mut node =
+        spawn_node_with_options(1, port, &cluster_name, true, &[], "voter", &options).await?;
+
+    let result = async {
+        wait_single_node_leader(port, 1, Duration::from_secs(20)).await?;
+        let client = client_for_rpc_port(node.rpc_port, 9031);
+        let key = format!("cluster/meta/auto-compact/{}", port);
+
+        for rev in 1..=12 {
+            client
+                .put_meta(KLogMetaPutRequest {
+                    key: key.clone(),
+                    value: format!("v{}", rev),
+                    node_name: None,
+                    expected_revision: None,
+                })
+                .await
+                .map_err(|e| format!("put_meta rev={} failed: {}", rev, e))?;
+        }
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            match client
+                .query_meta(KLogMetaQueryRequest {
+                    key: Some(key.clone()),
+                    prefix: None,
+                    limit: Some(1),
+                    cursor: None,
+                    revision: Some(1),
+                    strong_read: Some(true),
+                })
+                .await
+            {
+                Ok(value) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "auto meta compaction did not compact revision=1 before timeout: {:?}",
+                            value
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(err) if err.error_code == KLogErrorCode::Compacted => break,
+                Err(err) => {
+                    return Err(format!(
+                        "unexpected query_meta revision=1 error while waiting auto compaction: {}",
+                        err
+                    ));
+                }
+            }
+        }
+
+        let live = client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: None,
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("live query after auto compaction failed: {}", e))?;
+        if live.items.len() != 1 || live.items[0].value != "v12" {
+            return Err(format!(
+                "unexpected live query after auto compaction: {:?}",
+                live
+            ));
+        }
+
+        Ok(())
+    }
+    .await;
+
+    node.stop().await;
+    result
+}

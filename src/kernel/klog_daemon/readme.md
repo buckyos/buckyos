@@ -155,7 +155,42 @@ uv run test/run.py -p klog_system_config_rollout_dv
 
 该用例会启动 3 节点 klog 集群、两个隔离的 `system_config` 实例，并验证只有 bootstrap OOD 的 sled 数据会迁移；非 bootstrap OOD 的本地 sled 残留不会进入 klog。
 
-## 9. OOD membership DV
+## 9. MVCC auto compaction
+
+`klog_daemon` 支持首版自动 MVCC metadata compaction，默认关闭。启用后，只有当前 Raft leader 会定期检查本地 `meta_revision` 和 `meta_compacted_revision`，并通过 Raft `CompactMeta` 写命令提交 compact，因此所有 voter/learner 仍通过状态机一致收敛。
+
+当前支持的策略是 `revision_count`：保留最新 `retention_revisions` 个全局 meta revisions。示例：
+
+```toml
+[meta_compaction]
+enabled = true
+policy = "revision_count"
+retention_revisions = 100000
+check_interval_ms = 300000
+min_compact_gap = 10000
+```
+
+环境变量等价入口：
+
+```bash
+KLOG_META_COMPACTION_ENABLED=true
+KLOG_META_COMPACTION_POLICY=revision_count
+KLOG_META_COMPACTION_RETENTION_REVISIONS=100000
+KLOG_META_COMPACTION_CHECK_INTERVAL_MS=300000
+KLOG_META_COMPACTION_MIN_COMPACT_GAP=10000
+```
+
+字段含义：
+
+- `enabled`：是否启用自动 compaction，默认 `false`。
+- `policy`：当前只支持 `revision_count`。
+- `retention_revisions`：保留最新多少个全局 meta revisions。
+- `check_interval_ms`：leader 定期检查间隔。
+- `min_compact_gap`：目标 compact revision 相比当前 compacted revision 至少前进多少才提交 Raft 写入，避免频繁小步 compact。
+
+启用后，落后于 compacted revision 的 historical query / change-feed resume 会返回 `COMPACTED`，调用方需要按当前状态重新建立 cursor。
+
+## 10. OOD membership DV
 
 BuckyOS 多 OOD 场景下，klog OOD voter 的增删本质上对应 OpenRaft membership 变更。当前本地 DV 覆盖入口：
 

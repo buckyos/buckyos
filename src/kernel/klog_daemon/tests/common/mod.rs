@@ -56,6 +56,14 @@ pub struct TestRaftTiming {
     pub install_snapshot_timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TestMetaCompactionOptions {
+    pub enabled: bool,
+    pub retention_revisions: u64,
+    pub check_interval_ms: u64,
+    pub min_compact_gap: u64,
+}
+
 pub struct TestNode {
     pub node_id: u64,
     pub port: u16,
@@ -78,6 +86,7 @@ pub struct TestNodeSpawnOptions {
     pub cluster_network_mode: KClusterTransportMode,
     pub cluster_gateway_addr: String,
     pub cluster_gateway_route_prefix: String,
+    pub meta_compaction: Option<TestMetaCompactionOptions>,
 }
 
 impl Default for TestNodeSpawnOptions {
@@ -92,6 +101,7 @@ impl Default for TestNodeSpawnOptions {
             cluster_network_mode: KClusterTransportMode::Direct,
             cluster_gateway_addr: "127.0.0.1:3180".to_string(),
             cluster_gateway_route_prefix: "/.cluster/klog".to_string(),
+            meta_compaction: None,
         }
     }
 }
@@ -679,6 +689,22 @@ install_snapshot_timeout_ms = {}
             )
         })
         .unwrap_or_default();
+    let meta_compaction_section = options
+        .meta_compaction
+        .map(|cfg| {
+            format!(
+                r#"
+[meta_compaction]
+enabled = {}
+policy = "revision_count"
+retention_revisions = {}
+check_interval_ms = {}
+min_compact_gap = {}
+"#,
+                cfg.enabled, cfg.retention_revisions, cfg.check_interval_ms, cfg.min_compact_gap
+            )
+        })
+        .unwrap_or_default();
 
     let content = format!(
         r#"
@@ -726,6 +752,7 @@ max_attempts = 0
 request_timeout_ms = 2000
 shuffle_targets_each_round = false
 config_change_conflict_extra_backoff_ms = 0
+{meta_compaction_section}
 "#,
         node_id = node_id,
         port = port,
@@ -747,6 +774,7 @@ config_change_conflict_extra_backoff_ms = 0
         cluster_gateway_route_prefix = options.cluster_gateway_route_prefix.as_str(),
         join_targets = make_targets_toml(join_targets),
         target_role = target_role,
+        meta_compaction_section = meta_compaction_section,
     );
 
     std::fs::write(path, content)

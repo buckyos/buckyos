@@ -35,7 +35,7 @@ BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true
 2. 强读默认通过 leader 或 follower 转发保证 linearizable 语义。
 3. `exec_tx` 通过 klog meta transaction 承载多 key 原子写入和 optimistic guard。
 4. prefix list 已支持 cursor/pagination，system_config klog provider 会自动翻页。
-5. meta revision 已按全局 `mod_revision` + tombstone 方向实现，并在 API 层暴露 `create_revision`、`mod_revision`、`version`；`revision` 仅作为兼容别名。delete 后 recreate 不会复用旧 revision，stale CAS 会被 tombstone revision 拦截。`meta-query` 已支持按 `revision` 查询历史可见值集合，后续完整 MVCC 仍需要补 watch 和 compaction。
+5. meta revision 已按全局 `mod_revision` + tombstone 方向实现，并在 API 层暴露 `create_revision`、`mod_revision`、`version`；`revision` 仅作为兼容别名。delete 后 recreate 不会复用旧 revision，stale CAS 会被 tombstone revision 拦截。`meta-query` 已支持按 `revision` 查询历史可见值集合，`meta-changes` 已支持 active polling/short long-poll，compaction 已支持显式 admin 操作和可选 revision-count auto compaction。
 
 ### scheduler
 
@@ -274,5 +274,5 @@ uv run test/run.py -p klog_ood_two_voter_loss_dv
 4. 删除 OOD 是否必须人工确认，哪些拓扑允许自动 shrink。
 5. 是否需要 transfer-leader admin API。
 6. admin plane 的 BuckyOS token/RBAC 校验放在 gateway 还是 klog admin handler 前置层。
-7. 完整 MVCC 的 watch 语义和 compaction 边界。
+7. 生产级 MVCC watch 生命周期、client resume 规则、backpressure 和 auto compaction 默认策略。
 8. `2 voters` 家庭小集群是否默认推荐 `1 voter + 1 learner`，以及 UI/产品上如何表达可用性边界。
