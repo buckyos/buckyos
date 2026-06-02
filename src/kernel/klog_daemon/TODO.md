@@ -160,6 +160,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Validates empty `wait_timeout_ms` waits, wait-until-write wakeup,
     cursor resume, compacted cursor/start revision returning `COMPACTED`, and
     post-compaction change-feed continuation.
+- [x] Validate large revision change-feed pagination under stress.
+  - Covered by `test/klog_mvcc_change_feed_stress_dv.sh`.
+  - Configurable by key count, concurrency, update rounds, page size, and
+    round delay; validates many revision-major pages, delete/recreate
+    tombstones, compaction, compacted cursor resume, post-compaction resume,
+    and current-state consistency across all gateway nodes.
 - [x] Add explicit MVCC metadata compaction.
   - `/klog/admin/meta-compact` submits a Raft state-machine command and
     persists `meta_compacted_revision`.

@@ -23,6 +23,7 @@ const OOD_TWO_VOTER_LOSS_MODE: &str = "local-gateway-ood-two-voter-loss";
 const RESTART_RECOVERY_MODE: &str = "local-gateway-restart-recovery";
 const MVCC_CLUSTER_MODE: &str = "local-gateway-mvcc-cluster";
 const MVCC_CHANGE_FEED_MODE: &str = "local-gateway-mvcc-change-feed";
+const MVCC_CHANGE_FEED_STRESS_MODE: &str = "local-gateway-mvcc-change-feed-stress";
 const MVCC_FAILOVER_MODE: &str = "local-gateway-mvcc-failover";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
@@ -46,9 +47,20 @@ const ENV_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED: &str =
 const ENV_OOD_SNAPSHOT_MEMBERSHIP_ITEMS: &str = "KLOG_OOD_SNAPSHOT_DV_ITEMS";
 const ENV_OOD_SNAPSHOT_MEMBERSHIP_VALUE_BYTES: &str = "KLOG_OOD_SNAPSHOT_DV_VALUE_BYTES";
 const ENV_MVCC_SNAPSHOT_MEMBERSHIP_KEYS: &str = "KLOG_MVCC_SNAPSHOT_DV_KEYS";
+const ENV_MVCC_CHANGE_FEED_STRESS_KEYS: &str = "KLOG_MVCC_CHANGE_FEED_STRESS_KEYS";
+const ENV_MVCC_CHANGE_FEED_STRESS_CONCURRENCY: &str = "KLOG_MVCC_CHANGE_FEED_STRESS_CONCURRENCY";
+const ENV_MVCC_CHANGE_FEED_STRESS_ROUNDS: &str = "KLOG_MVCC_CHANGE_FEED_STRESS_ROUNDS";
+const ENV_MVCC_CHANGE_FEED_STRESS_PAGE_LIMIT: &str = "KLOG_MVCC_CHANGE_FEED_STRESS_PAGE_LIMIT";
+const ENV_MVCC_CHANGE_FEED_STRESS_ROUND_DELAY_MS: &str =
+    "KLOG_MVCC_CHANGE_FEED_STRESS_ROUND_DELAY_MS";
 const DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_ITEMS: usize = 300;
 const DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_VALUE_BYTES: usize = 512;
 const DEFAULT_MVCC_SNAPSHOT_MEMBERSHIP_KEYS: usize = 60;
+const DEFAULT_MVCC_CHANGE_FEED_STRESS_KEYS: usize = 48;
+const DEFAULT_MVCC_CHANGE_FEED_STRESS_CONCURRENCY: usize = 4;
+const DEFAULT_MVCC_CHANGE_FEED_STRESS_ROUNDS: usize = 3;
+const DEFAULT_MVCC_CHANGE_FEED_STRESS_PAGE_LIMIT: usize = 17;
+const DEFAULT_MVCC_CHANGE_FEED_STRESS_ROUND_DELAY_MS: usize = 25;
 const TEST_DEVICE_NAME: &str = "ood1";
 const TEST_DEVICE_PUBLIC_KEY_X: &str = "vZ2kEJdazmmmmxTYIuVPCt0gGgMOnBP6mMrQmqminB0";
 const TEST_DEVICE_PRIVATE_KEY_PEM: &str = r#"
@@ -187,7 +199,7 @@ struct MetaTxResponse {
     meta_versions: BTreeMap<String, MetaVersion>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct MetaHistoryRecord {
     key: String,
     value: String,
@@ -197,7 +209,7 @@ struct MetaHistoryRecord {
     deleted: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct MetaChangeCursor {
     revision: u64,
     key: String,
@@ -1389,6 +1401,46 @@ fn require_meta_changes(
                 expected_create_revision,
                 expected_version,
                 item
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct ExpectedMetaChange {
+    revision: u64,
+    key: String,
+    value: String,
+    deleted: bool,
+    create_revision: u64,
+    version: u64,
+}
+
+fn require_expected_meta_changes(
+    items: &[MetaHistoryRecord],
+    expected: &[ExpectedMetaChange],
+) -> Result<(), String> {
+    if items.len() != expected.len() {
+        return Err(format!(
+            "unexpected stress meta changes count: expected={}, actual={}, items={:?}",
+            expected.len(),
+            items.len(),
+            items
+        ));
+    }
+
+    for (item, expected) in items.iter().zip(expected.iter()) {
+        if item.mod_revision != expected.revision
+            || item.key != expected.key
+            || item.value != expected.value
+            || item.deleted != expected.deleted
+            || item.create_revision != expected.create_revision
+            || item.version != expected.version
+        {
+            return Err(format!(
+                "unexpected stress meta change: expected={:?}, actual={:?}",
+                expected, item
             ));
         }
     }
@@ -7570,6 +7622,610 @@ async fn run_local_gateway_mvcc_change_feed() -> Result<(), String> {
     result
 }
 
+#[derive(Debug, Clone)]
+struct StressKeyState {
+    key: String,
+    value: String,
+    create_revision: u64,
+    mod_revision: u64,
+    version: u64,
+}
+
+async fn run_local_gateway_mvcc_change_feed_stress_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let key_count = parse_env_usize(
+        ENV_MVCC_CHANGE_FEED_STRESS_KEYS,
+        DEFAULT_MVCC_CHANGE_FEED_STRESS_KEYS,
+    )?;
+    let concurrency = parse_env_usize(
+        ENV_MVCC_CHANGE_FEED_STRESS_CONCURRENCY,
+        DEFAULT_MVCC_CHANGE_FEED_STRESS_CONCURRENCY,
+    )?;
+    let rounds = parse_env_usize(
+        ENV_MVCC_CHANGE_FEED_STRESS_ROUNDS,
+        DEFAULT_MVCC_CHANGE_FEED_STRESS_ROUNDS,
+    )?;
+    let page_limit = parse_env_usize(
+        ENV_MVCC_CHANGE_FEED_STRESS_PAGE_LIMIT,
+        DEFAULT_MVCC_CHANGE_FEED_STRESS_PAGE_LIMIT,
+    )?;
+    let round_delay_ms = parse_env_usize(
+        ENV_MVCC_CHANGE_FEED_STRESS_ROUND_DELAY_MS,
+        DEFAULT_MVCC_CHANGE_FEED_STRESS_ROUND_DELAY_MS,
+    )?;
+    if key_count < 8 {
+        return Err(format!(
+            "{} must be at least 8, got {}",
+            ENV_MVCC_CHANGE_FEED_STRESS_KEYS, key_count
+        ));
+    }
+    if concurrency == 0 {
+        return Err(format!(
+            "{} must be greater than 0",
+            ENV_MVCC_CHANGE_FEED_STRESS_CONCURRENCY
+        ));
+    }
+    if rounds == 0 {
+        return Err(format!(
+            "{} must be greater than 0",
+            ENV_MVCC_CHANGE_FEED_STRESS_ROUNDS
+        ));
+    }
+    if page_limit < 2 {
+        return Err(format!(
+            "{} must be at least 2, got {}",
+            ENV_MVCC_CHANGE_FEED_STRESS_PAGE_LIMIT, page_limit
+        ));
+    }
+
+    let route_prefix = "/.cluster/klog-it-mvcc-change-feed-stress-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, MVCC_CHANGE_FEED_STRESS_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let leader = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+    let suffix = unique_suffix("mvcc-change-feed-stress");
+    let prefix = format!("test/klog_mvcc_change_feed_stress_dv/{}/", suffix);
+    let stress_started = std::time::Instant::now();
+
+    let mut expected_changes = Vec::new();
+    let mut states: Vec<Option<StressKeyState>> = vec![None; key_count];
+    for batch_start in (0..key_count).step_by(concurrency) {
+        let batch_end = (batch_start + concurrency).min(key_count);
+        let mut tasks = Vec::new();
+        for index in batch_start..batch_end {
+            let client = client.clone();
+            let source = nodes[index % nodes.len()].clone();
+            let target = nodes[(index + 1) % nodes.len()].clone();
+            let gateway_addr = gateway_addr(&source, ingress_port);
+            let route_prefix = route_prefix.to_string();
+            let key = format!("{}key-{:04}", prefix, index);
+            let value = format!("create-{:04}", index);
+            tasks.push(tokio::spawn(async move {
+                let stored = put_meta_via_cluster_inter_route(
+                    &client,
+                    gateway_addr.as_str(),
+                    route_prefix.as_str(),
+                    target.name.as_str(),
+                    key.as_str(),
+                    value.as_str(),
+                    Some(0),
+                )
+                .await?;
+                Ok::<_, String>((index, key, value, stored))
+            }));
+        }
+
+        for task in tasks {
+            let (index, key, value, stored) = task
+                .await
+                .map_err(|err| format!("stress create task join failed: {}", err))??;
+            if stored.create_revision != stored.mod_revision || stored.version != 1 {
+                return Err(format!("unexpected stress create response: {:?}", stored));
+            }
+            expected_changes.push(ExpectedMetaChange {
+                revision: stored.mod_revision,
+                key: key.clone(),
+                value: value.clone(),
+                deleted: false,
+                create_revision: stored.create_revision,
+                version: stored.version,
+            });
+            states[index] = Some(StressKeyState {
+                key,
+                value,
+                create_revision: stored.create_revision,
+                mod_revision: stored.mod_revision,
+                version: stored.version,
+            });
+        }
+    }
+    let mut states = states
+        .into_iter()
+        .map(|state| state.ok_or_else(|| "missing stress key state after create".to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let first_revision = expected_changes
+        .iter()
+        .map(|change| change.revision)
+        .min()
+        .ok_or_else(|| "missing first stress revision".to_string())?;
+
+    for round in 1..=rounds {
+        for batch_start in (0..key_count).step_by(concurrency) {
+            let batch_end = (batch_start + concurrency).min(key_count);
+            let mut tasks = Vec::new();
+            for (index, state) in states
+                .iter()
+                .enumerate()
+                .skip(batch_start)
+                .take(batch_end - batch_start)
+            {
+                let client = client.clone();
+                let source = nodes[(index + round) % nodes.len()].clone();
+                let target = nodes[(index + round + 1) % nodes.len()].clone();
+                let gateway_addr = gateway_addr(&source, ingress_port);
+                let route_prefix = route_prefix.to_string();
+                let key = state.key.clone();
+                let value = format!("round-{:02}-key-{:04}", round, index);
+                let expected_revision = state.mod_revision;
+                tasks.push(tokio::spawn(async move {
+                    let stored = put_meta_via_cluster_inter_route(
+                        &client,
+                        gateway_addr.as_str(),
+                        route_prefix.as_str(),
+                        target.name.as_str(),
+                        key.as_str(),
+                        value.as_str(),
+                        Some(expected_revision),
+                    )
+                    .await?;
+                    Ok::<_, String>((index, value, stored))
+                }));
+            }
+
+            for task in tasks {
+                let (index, value, stored) = task
+                    .await
+                    .map_err(|err| format!("stress update task join failed: {}", err))??;
+                let state = states
+                    .get_mut(index)
+                    .ok_or_else(|| format!("missing stress state for update index {}", index))?;
+                if stored.create_revision != state.create_revision
+                    || stored.version != state.version + 1
+                {
+                    return Err(format!(
+                        "unexpected stress update response: state={:?}, stored={:?}",
+                        state, stored
+                    ));
+                }
+                state.value = value.clone();
+                state.mod_revision = stored.mod_revision;
+                state.version = stored.version;
+                expected_changes.push(ExpectedMetaChange {
+                    revision: stored.mod_revision,
+                    key: state.key.clone(),
+                    value,
+                    deleted: false,
+                    create_revision: state.create_revision,
+                    version: state.version,
+                });
+            }
+        }
+
+        if round_delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(round_delay_ms as u64)).await;
+        }
+    }
+
+    let delete_count = (key_count / 4).max(2);
+    for batch_start in (0..delete_count).step_by(concurrency) {
+        let batch_end = (batch_start + concurrency).min(delete_count);
+        let mut tasks = Vec::new();
+        for (index, state) in states
+            .iter()
+            .enumerate()
+            .take(delete_count)
+            .skip(batch_start)
+            .take(batch_end - batch_start)
+        {
+            let client = client.clone();
+            let source = nodes[(index + rounds + 1) % nodes.len()].clone();
+            let target = nodes[(index + rounds + 2) % nodes.len()].clone();
+            let gateway_addr = gateway_addr(&source, ingress_port);
+            let route_prefix = route_prefix.to_string();
+            let key = state.key.clone();
+            tasks.push(tokio::spawn(async move {
+                let deleted = delete_meta_via_cluster_inter_route(
+                    &client,
+                    gateway_addr.as_str(),
+                    route_prefix.as_str(),
+                    target.name.as_str(),
+                    key.as_str(),
+                )
+                .await?;
+                Ok::<_, String>((index, deleted))
+            }));
+        }
+
+        for task in tasks {
+            let (index, deleted) = task
+                .await
+                .map_err(|err| format!("stress delete task join failed: {}", err))??;
+            let state = states
+                .get(index)
+                .ok_or_else(|| format!("missing stress state for delete index {}", index))?;
+            let version = deleted
+                .meta_version
+                .as_ref()
+                .ok_or_else(|| format!("missing stress delete meta_version: {:?}", deleted))?;
+            require_meta_version(
+                Some(version),
+                state.create_revision,
+                version.mod_revision,
+                0,
+                true,
+            )?;
+            expected_changes.push(ExpectedMetaChange {
+                revision: version.mod_revision,
+                key: state.key.clone(),
+                value: state.value.clone(),
+                deleted: true,
+                create_revision: state.create_revision,
+                version: 0,
+            });
+        }
+    }
+
+    for batch_start in (0..delete_count).step_by(concurrency) {
+        let batch_end = (batch_start + concurrency).min(delete_count);
+        let mut tasks = Vec::new();
+        for (index, state) in states
+            .iter()
+            .enumerate()
+            .take(delete_count)
+            .skip(batch_start)
+            .take(batch_end - batch_start)
+        {
+            let client = client.clone();
+            let source = nodes[(index + rounds + 2) % nodes.len()].clone();
+            let target = nodes[(index + rounds) % nodes.len()].clone();
+            let gateway_addr = gateway_addr(&source, ingress_port);
+            let route_prefix = route_prefix.to_string();
+            let key = state.key.clone();
+            let value = format!("recreate-key-{:04}", index);
+            tasks.push(tokio::spawn(async move {
+                let stored = put_meta_via_cluster_inter_route(
+                    &client,
+                    gateway_addr.as_str(),
+                    route_prefix.as_str(),
+                    target.name.as_str(),
+                    key.as_str(),
+                    value.as_str(),
+                    Some(0),
+                )
+                .await?;
+                Ok::<_, String>((index, value, stored))
+            }));
+        }
+
+        for task in tasks {
+            let (index, value, stored) = task
+                .await
+                .map_err(|err| format!("stress recreate task join failed: {}", err))??;
+            if stored.create_revision != stored.mod_revision || stored.version != 1 {
+                return Err(format!("unexpected stress recreate response: {:?}", stored));
+            }
+            let state = states
+                .get_mut(index)
+                .ok_or_else(|| format!("missing stress state for recreate index {}", index))?;
+            state.value = value.clone();
+            state.create_revision = stored.create_revision;
+            state.mod_revision = stored.mod_revision;
+            state.version = stored.version;
+            expected_changes.push(ExpectedMetaChange {
+                revision: stored.mod_revision,
+                key: state.key.clone(),
+                value,
+                deleted: false,
+                create_revision: state.create_revision,
+                version: state.version,
+            });
+        }
+    }
+
+    expected_changes.sort_by(|left, right| {
+        left.revision
+            .cmp(&right.revision)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+
+    let source = nodes
+        .first()
+        .ok_or_else(|| "missing stress source node".to_string())?;
+    let target = nodes
+        .get(1)
+        .ok_or_else(|| "missing stress target node".to_string())?;
+    let source_gateway_addr = gateway_addr(source, ingress_port);
+    let target_gateway_addr = gateway_addr(target, ingress_port);
+    let mut cursor = None;
+    let mut page_sizes = Vec::new();
+    let mut collected = Vec::with_capacity(expected_changes.len());
+    loop {
+        let page = query_meta_changes_via_cluster_inter_route(
+            &client,
+            source_gateway_addr.as_str(),
+            route_prefix,
+            target.name.as_str(),
+            prefix.as_str(),
+            first_revision,
+            page_limit,
+            cursor.as_ref(),
+        )
+        .await?;
+        if page.items.is_empty() && page.has_more {
+            return Err(format!(
+                "stress change-feed returned empty page with has_more=true: {:?}",
+                page
+            ));
+        }
+        page_sizes.push(page.items.len());
+        collected.extend(page.items.iter().cloned());
+        if !page.has_more {
+            if page.next_start_revision
+                <= expected_changes
+                    .last()
+                    .ok_or_else(|| "missing last expected change".to_string())?
+                    .revision
+            {
+                return Err(format!(
+                    "stress change-feed next_start_revision did not advance: page={:?}",
+                    page
+                ));
+            }
+            break;
+        }
+        let next_cursor = page
+            .next_cursor
+            .ok_or_else(|| "stress change-feed missing next_cursor".to_string())?;
+        if cursor.as_ref() == Some(&next_cursor) {
+            return Err(format!(
+                "stress change-feed cursor did not advance: {:?}",
+                next_cursor
+            ));
+        }
+        cursor = Some(next_cursor);
+        if page_sizes.len() > expected_changes.len() + 2 {
+            return Err(format!(
+                "stress change-feed pagination exceeded expected pages: sizes={:?}",
+                page_sizes
+            ));
+        }
+    }
+    require_expected_meta_changes(&collected, &expected_changes)?;
+
+    let cursor_page = query_meta_changes_via_cluster_inter_route(
+        &client,
+        target_gateway_addr.as_str(),
+        route_prefix,
+        source.name.as_str(),
+        prefix.as_str(),
+        first_revision,
+        page_limit,
+        None,
+    )
+    .await?;
+    if !cursor_page.has_more {
+        return Err(format!(
+            "stress change-feed first cursor page unexpectedly has no more pages: {:?}",
+            cursor_page
+        ));
+    }
+    let compact_cursor = cursor_page
+        .next_cursor
+        .clone()
+        .ok_or_else(|| "stress change-feed first page missing cursor".to_string())?;
+    let compact_revision = compact_cursor.revision;
+    let compacted = post_meta_compact_via_admin_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        leader.name.as_str(),
+        compact_revision,
+    )
+    .await?;
+    let last_revision = expected_changes
+        .last()
+        .ok_or_else(|| "missing last stress revision".to_string())?
+        .revision;
+    if compacted.compacted_revision != compact_revision
+        || compacted.current_revision < last_revision
+    {
+        return Err(format!(
+            "unexpected stress compaction response: {:?}, compact_revision={}, last_revision={}",
+            compacted, compact_revision, last_revision
+        ));
+    }
+    expect_meta_changes_status_with_options_via_cluster_inter_route(
+        &client,
+        target_gateway_addr.as_str(),
+        route_prefix,
+        source.name.as_str(),
+        prefix.as_str(),
+        first_revision,
+        Some(&compact_cursor),
+        Some(500),
+        StatusCode::GONE,
+        Some("COMPACTED"),
+    )
+    .await?;
+
+    let expected_after_compact = expected_changes
+        .iter()
+        .filter(|change| change.revision > compact_revision)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut post_compact_cursor = None;
+    let mut post_compact_collected = Vec::with_capacity(expected_after_compact.len());
+    loop {
+        let page = query_meta_changes_with_wait_via_cluster_inter_route(
+            &client,
+            source_gateway_addr.as_str(),
+            route_prefix,
+            target.name.as_str(),
+            prefix.as_str(),
+            compact_revision + 1,
+            page_limit,
+            post_compact_cursor.as_ref(),
+            Some(500),
+        )
+        .await?;
+        post_compact_collected.extend(page.items.iter().cloned());
+        if !page.has_more {
+            break;
+        }
+        post_compact_cursor = page.next_cursor;
+        if post_compact_cursor.is_none() {
+            return Err("stress post-compact page missing cursor".to_string());
+        }
+    }
+    require_expected_meta_changes(&post_compact_collected, &expected_after_compact)?;
+
+    for node in &nodes {
+        let gateway = gateway_addr(node, ingress_port);
+        let current = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway.as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            key_count + 8,
+        )
+        .await?;
+        if current.items.len() != key_count {
+            return Err(format!(
+                "stress current key count mismatch on {}: expected={}, actual={}, items={:?}",
+                node.name,
+                key_count,
+                current.items.len(),
+                current.items
+            ));
+        }
+        let samples = [
+            0usize,
+            delete_count.saturating_sub(1),
+            delete_count,
+            key_count / 2,
+            key_count - 1,
+        ];
+        let mut expected_samples = Vec::new();
+        for index in samples {
+            let state = states
+                .get(index)
+                .ok_or_else(|| format!("missing stress sample state {}", index))?;
+            expected_samples.push((
+                state.key.as_str(),
+                state.value.as_str(),
+                state.create_revision,
+                state.mod_revision,
+                state.version,
+            ));
+        }
+        require_meta_selected_values(&current, expected_samples.as_slice())?;
+    }
+
+    println!(
+        "[klog-cluster-dv] MVCC change-feed stress ok: leader={}, keys={}, concurrency={}, rounds={}, delete_recreate={}, changes={}, pages={:?}, compact_revision={}, post_compact_changes={}, elapsed_ms={}, prefix={}",
+        leader_id,
+        key_count,
+        concurrency,
+        rounds,
+        delete_count,
+        expected_changes.len(),
+        page_sizes,
+        compact_revision,
+        expected_after_compact.len(),
+        stress_started.elapsed().as_millis(),
+        prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_mvcc_change_feed_stress() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_mvcc_change_feed_stress_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_mvcc_failover_inner(harness: &mut LocalHarness) -> Result<(), String> {
     let route_prefix = "/.cluster/klog-it-mvcc-failover-dv";
     let setup = prepare_local_gateway_setup(harness, MVCC_FAILOVER_MODE, route_prefix, 3).await?;
@@ -10454,6 +11110,7 @@ async fn run() -> Result<(), String> {
         RESTART_RECOVERY_MODE => run_local_gateway_restart_recovery().await,
         MVCC_CLUSTER_MODE => run_local_gateway_mvcc_cluster().await,
         MVCC_CHANGE_FEED_MODE => run_local_gateway_mvcc_change_feed().await,
+        MVCC_CHANGE_FEED_STRESS_MODE => run_local_gateway_mvcc_change_feed_stress().await,
         MVCC_FAILOVER_MODE => run_local_gateway_mvcc_failover().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
@@ -10476,6 +11133,7 @@ async fn run() -> Result<(), String> {
                 RESTART_RECOVERY_MODE,
                 MVCC_CLUSTER_MODE,
                 MVCC_CHANGE_FEED_MODE,
+                MVCC_CHANGE_FEED_STRESS_MODE,
                 MVCC_FAILOVER_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
