@@ -25,6 +25,8 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tower::BoxError;
 use tower::ServiceBuilder;
@@ -43,6 +45,7 @@ const ADMIN_RPC_CONCURRENCY_LIMIT: usize = 32;
 const CONTROL_RPC_TIMEOUT_MS: u64 = 3_000;
 const SNAPSHOT_RPC_TIMEOUT_MS: u64 = 30_000;
 const ADMIN_RPC_TIMEOUT_MS: u64 = 5_000;
+const CONFIG_CHANGE_CONFLICT_MARKER: &str = "undergoing a configuration change";
 
 fn normalize_cluster_proxy_route_prefix(prefix: &str) -> Result<String, String> {
     let trimmed = prefix.trim();
@@ -139,9 +142,20 @@ struct KNetworkServerState {
     raft: KRaftRef,
     write_service: Option<KLogWriteService>,
     query_service: Option<KLogQueryService>,
+    membership_change_inflight: Arc<AtomicBool>,
     admin_local_only: bool,
     cluster_name: String,
     cluster_id: String,
+}
+
+struct MembershipChangeGuard {
+    inflight: Arc<AtomicBool>,
+}
+
+impl Drop for MembershipChangeGuard {
+    fn drop(&mut self) {
+        self.inflight.store(false, Ordering::Release);
+    }
 }
 
 pub struct KNetworkServer {
@@ -245,6 +259,7 @@ impl KNetworkServer {
                 KLogQueryService::new("KNetworkServer", self.raft.clone(), state_store_manager)
                     .with_transport_config(self.transport.clone())
             }),
+            membership_change_inflight: Arc::new(AtomicBool::new(false)),
             admin_local_only: self.admin_local_only,
             cluster_name: self.cluster_name.clone(),
             cluster_id: self.cluster_id.clone(),
@@ -953,6 +968,11 @@ impl KNetworkServer {
             blocking
         );
 
+        let _membership_guard =
+            match Self::try_acquire_membership_change_guard(&state, "add-learner") {
+                Ok(guard) => guard,
+                Err(resp) => return resp,
+            };
         match state.raft.add_learner(query.node_id, node, blocking).await {
             Ok(resp) => {
                 let msg = format!(
@@ -1008,6 +1028,11 @@ impl KNetworkServer {
             return Self::error_response(StatusCode::CONFLICT, msg);
         }
 
+        let _membership_guard =
+            match Self::try_acquire_membership_change_guard(&state, "change-membership") {
+                Ok(guard) => guard,
+                Err(resp) => return resp,
+            };
         match state
             .raft
             .change_membership(voter_ids.clone(), retain)
@@ -1040,6 +1065,11 @@ impl KNetworkServer {
             "KNetworkServer admin remove-learner request: node_id={}",
             query.node_id
         );
+        let _membership_guard =
+            match Self::try_acquire_membership_change_guard(&state, "remove-learner") {
+                Ok(guard) => guard,
+                Err(resp) => return resp,
+            };
         let mut remove_nodes = BTreeSet::new();
         remove_nodes.insert(query.node_id);
 
@@ -1258,8 +1288,36 @@ impl KNetworkServer {
         }
 
         let msg = format!("KNetworkServer admin {} failed: {}", action, err);
+        if msg.contains(CONFIG_CHANGE_CONFLICT_MARKER) {
+            warn!("{}", msg);
+            return Self::error_response(StatusCode::CONFLICT, msg);
+        }
         error!("{}", msg);
         Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+    }
+
+    fn try_acquire_membership_change_guard(
+        state: &KNetworkServerState,
+        action: &str,
+    ) -> Result<MembershipChangeGuard, Response> {
+        match state.membership_change_inflight.compare_exchange(
+            false,
+            true,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => Ok(MembershipChangeGuard {
+                inflight: state.membership_change_inflight.clone(),
+            }),
+            Err(_) => {
+                let msg = format!(
+                    "KNetworkServer admin {} rejected: membership change already in progress",
+                    action
+                );
+                warn!("{}", msg);
+                Err(Self::error_response(StatusCode::CONFLICT, msg))
+            }
+        }
     }
 
     fn reject_non_loopback_admin_access(

@@ -127,6 +127,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     to remaining 2 voters -> removed node restarts with old local state` does
     not alter the active cluster membership, then add learner/promote catches up
     and restores the 3-voter set.
+- [x] Validate concurrent membership admin mutation conflict handling.
+  - Covered by `test/klog_raft_concurrent_membership_dv.sh`.
+  - Validates two concurrent add-learner requests on the same leader produce
+    exactly one success and one `409 Conflict`, then promotes the accepted
+    learner and verifies gateway log/meta consistency.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
 - [x] Validate klog meta KV semantics needed by system_config replacement.
