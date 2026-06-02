@@ -51,6 +51,18 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     cancellation, backpressure, and operational demand are clear.
 ## P3: Deferred / Not Planned Now
 
+- [ ] Make Raft snapshot file retention configurable.
+  - Current state: klog keeps the newest 3 snapshot files to avoid deleting a
+    snapshot that is still being streamed by `install-snapshot`.
+  - This slightly increases disk usage versus retaining only the latest
+    snapshot. If production deployments need tighter disk control, expose the
+    retain count as a klog daemon/storage config field.
+- [ ] Make the local-leader write quorum freshness window configurable if needed.
+  - Current state: data/meta writes submitted to the local leader require a
+    fresh quorum ack before creating a Raft proposal, so failed writes during
+    quorum loss do not later apply after quorum recovery.
+  - The first implementation uses a fixed conservative freshness window. Keep
+    it fixed unless production telemetry shows it needs per-deployment tuning.
 - [ ] Consider Scheme 2 read optimization only if strong-read traffic shows leader bottleneck.
   - Scheme 1 remains the default: leader performs the linearizable barrier and follower/learner requests forward to the leader.
   - Scheme 2 would let followers perform ReadIndex/barrier and return local reads.

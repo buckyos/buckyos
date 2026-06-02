@@ -30,6 +30,7 @@ const MVCC_CRASH_RECOVERY_MODE: &str = "local-gateway-mvcc-crash-recovery";
 const RAFT_OLD_LEADER_REJOIN_MODE: &str = "local-gateway-raft-old-leader-rejoin";
 const RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE: &str =
     "local-gateway-raft-follower-lag-snapshot-install";
+const RAFT_QUORUM_LOSS_RECOVERY_MODE: &str = "local-gateway-raft-quorum-loss-recovery";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -10182,6 +10183,397 @@ async fn run_local_gateway_raft_follower_lag_snapshot_install() -> Result<(), St
     result
 }
 
+async fn run_local_gateway_raft_quorum_loss_recovery_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-raft-quorum-loss-recovery-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, RAFT_QUORUM_LOSS_RECOVERY_MODE, route_prefix, 3)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let mut configs = BTreeMap::new();
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let survivor = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .cloned()
+        .ok_or_else(|| format!("leader node {} not found", leader_id))?;
+    let stopped_nodes = nodes
+        .iter()
+        .filter(|node| node.id != leader_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    if stopped_nodes.len() != 2 {
+        return Err(format!(
+            "expected two followers to stop, got {}",
+            stopped_nodes.len()
+        ));
+    }
+    let baseline = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &stopped_nodes[0],
+        &survivor,
+        &nodes,
+        "raft-quorum-loss-before-loss",
+    )
+    .await?;
+
+    for node in &stopped_nodes {
+        harness.stop(format!("klog-{}", node.name).as_str())?;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let survivor_gateway = gateway_addr(&survivor, ingress_port);
+    if append_via_cluster_inter_route(
+        &client,
+        survivor_gateway.as_str(),
+        route_prefix,
+        survivor.name.as_str(),
+        "test/raft-quorum-loss/unavailable-log",
+        "write should fail without quorum",
+    )
+    .await
+    .is_ok()
+    {
+        return Err(format!(
+            "single survivor {} unexpectedly accepted append without quorum",
+            survivor.id
+        ));
+    }
+
+    if query_via_cluster_inter_route(
+        &client,
+        survivor_gateway.as_str(),
+        route_prefix,
+        survivor.name.as_str(),
+        baseline.log_id,
+        baseline.log_source.as_str(),
+    )
+    .await
+    .is_ok()
+    {
+        return Err(format!(
+            "single survivor {} unexpectedly served strong read without quorum",
+            survivor.id
+        ));
+    }
+
+    let suffix = unique_suffix("raft-quorum-loss-recovery");
+    let prefix = format!("test/klog_raft_quorum_loss_recovery_dv/{}/", suffix);
+    let doomed_key = format!("{}doomed", prefix);
+    if put_meta_via_cluster_inter_route(
+        &client,
+        survivor_gateway.as_str(),
+        route_prefix,
+        survivor.name.as_str(),
+        doomed_key.as_str(),
+        "should-not-commit-without-quorum",
+        Some(0),
+    )
+    .await
+    .is_ok()
+    {
+        return Err(format!(
+            "single survivor {} unexpectedly accepted meta put without quorum",
+            survivor.id
+        ));
+    }
+
+    let first_restored = stopped_nodes[0].clone();
+    let first_restored_config = configs
+        .get(&first_restored.id)
+        .ok_or_else(|| format!("missing config for restored node {}", first_restored.id))?;
+    spawn_klog(
+        harness,
+        &klog_daemon_bin,
+        first_restored_config,
+        &first_restored,
+    )?;
+    wait_tcp(
+        "127.0.0.1",
+        first_restored.ports.admin,
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_tcp(
+        "127.0.0.1",
+        first_restored.ports.inter,
+        Duration::from_secs(12),
+    )
+    .await?;
+    let quorum_nodes = vec![survivor.clone(), first_restored.clone()];
+    wait_membership(
+        &client,
+        &quorum_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(80),
+    )
+    .await?;
+    let quorum_leader_id = wait_consistent_leader(
+        &client,
+        &quorum_nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(80),
+    )
+    .await?;
+    let quorum_leader = quorum_nodes
+        .iter()
+        .find(|node| node.id == quorum_leader_id)
+        .cloned()
+        .ok_or_else(|| format!("quorum leader node {} not found", quorum_leader_id))?;
+    let quorum_writer = quorum_nodes
+        .iter()
+        .find(|node| node.id != quorum_leader_id)
+        .cloned()
+        .unwrap_or_else(|| quorum_leader.clone());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let pre_recovery_query = query_meta_via_cluster_inter_route(
+        &client,
+        gateway_addr(&quorum_writer, ingress_port).as_str(),
+        route_prefix,
+        quorum_leader.name.as_str(),
+        doomed_key.as_str(),
+    )
+    .await?;
+    if !pre_recovery_query.items.is_empty() {
+        return Err(format!(
+            "no-quorum meta write was applied after quorum recovery: key={}, items={:?}",
+            doomed_key, pre_recovery_query.items
+        ));
+    }
+
+    let recovered_meta = put_meta_via_cluster_inter_route(
+        &client,
+        gateway_addr(&quorum_writer, ingress_port).as_str(),
+        route_prefix,
+        quorum_leader.name.as_str(),
+        doomed_key.as_str(),
+        "committed-after-quorum-recovery",
+        Some(0),
+    )
+    .await?;
+    if recovered_meta.create_revision != recovered_meta.mod_revision || recovered_meta.version != 1
+    {
+        return Err(format!(
+            "unexpected recovered quorum meta version: {:?}",
+            recovered_meta
+        ));
+    }
+    wait_meta_value_on_nodes(
+        &client,
+        &quorum_nodes,
+        ingress_port,
+        route_prefix,
+        doomed_key.as_str(),
+        "committed-after-quorum-recovery",
+        recovered_meta.mod_revision,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &quorum_nodes,
+        ingress_port,
+        route_prefix,
+        &baseline,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let after_quorum = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &quorum_writer,
+        &quorum_leader,
+        &quorum_nodes,
+        "raft-quorum-loss-after-one-restore",
+    )
+    .await?;
+
+    let second_restored = stopped_nodes[1].clone();
+    let second_restored_config = configs
+        .get(&second_restored.id)
+        .ok_or_else(|| format!("missing config for restored node {}", second_restored.id))?;
+    spawn_klog(
+        harness,
+        &klog_daemon_bin,
+        second_restored_config,
+        &second_restored,
+    )?;
+    wait_tcp(
+        "127.0.0.1",
+        second_restored.ports.admin,
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_tcp(
+        "127.0.0.1",
+        second_restored.ports.inter,
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(100),
+    )
+    .await?;
+    let final_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(80),
+    )
+    .await?;
+    let final_leader = nodes
+        .iter()
+        .find(|node| node.id == final_leader_id)
+        .cloned()
+        .ok_or_else(|| format!("final leader node {} not found", final_leader_id))?;
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &baseline,
+        Duration::from_secs(50),
+    )
+    .await?;
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &after_quorum,
+        Duration::from_secs(50),
+    )
+    .await?;
+    wait_meta_value_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        doomed_key.as_str(),
+        "committed-after-quorum-recovery",
+        recovered_meta.mod_revision,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let final_write = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &second_restored,
+        &final_leader,
+        &nodes,
+        "raft-quorum-loss-after-all-recovered",
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] raft quorum loss recovery ok: survivor={}, stopped=[{},{}], quorum_leader={}, final_leader={}, baseline_log_id={}, recovered_log_id={}, final_log_id={}, recovered_revision={}, prefix={}",
+        survivor.id,
+        stopped_nodes[0].id,
+        stopped_nodes[1].id,
+        quorum_leader_id,
+        final_leader_id,
+        baseline.log_id,
+        after_quorum.log_id,
+        final_write.log_id,
+        recovered_meta.mod_revision,
+        prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_raft_quorum_loss_recovery() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_raft_quorum_loss_recovery_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -12662,6 +13054,7 @@ async fn run() -> Result<(), String> {
         RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE => {
             run_local_gateway_raft_follower_lag_snapshot_install().await
         }
+        RAFT_QUORUM_LOSS_RECOVERY_MODE => run_local_gateway_raft_quorum_loss_recovery().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -12689,6 +13082,7 @@ async fn run() -> Result<(), String> {
                 MVCC_CRASH_RECOVERY_MODE,
                 RAFT_OLD_LEADER_REJOIN_MODE,
                 RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE,
+                RAFT_QUORUM_LOSS_RECOVERY_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,

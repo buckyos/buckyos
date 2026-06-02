@@ -221,6 +221,8 @@ KLOG_OOD_SNAPSHOT_DV_VALUE_BYTES=1024 \
 uv run test/run.py -p klog_ood_snapshot_membership_dv
 ```
 
+当前 klog 会固定保留最近 3 个 snapshot 文件，避免 `install-snapshot` streaming 过程中旧 snapshot 被 cleanup 删除。这会比只保留最新 snapshot 增加少量磁盘占用；如果生产部署需要更严格的磁盘控制，后续应把 retain count 纳入 klog daemon/storage 配置。
+
 leader 被动掉线后的 3 OOD 缩容覆盖入口：
 
 ```bash
@@ -234,9 +236,12 @@ uv run test/run.py -p klog_ood_leader_failover_shrink_dv
 ```bash
 uv run test/run.py -p klog_ood_single_to_two_dv
 uv run test/run.py -p klog_ood_two_voter_loss_dv
+uv run test/run.py -p klog_raft_quorum_loss_recovery_dv
 ```
 
 `klog_ood_single_to_two_dv` 覆盖 `1 voter -> add learner -> promote to 2 voters`，验证加入前数据能同步到 learner，promote 后两个 voter 继续强读写。`klog_ood_two_voter_loss_dv` 覆盖 `2 voters -> 当前 leader 被动停止`，验证剩余单 voter 不能选主，也不能继续处理强读或写入；这是预期的 quorum 安全边界。
+
+`klog_raft_quorum_loss_recovery_dv` 覆盖 `3 voters -> 停 2 个 follower -> 单 survivor 无 quorum`，验证单 survivor 的写入和强读都会失败，且无 quorum 期间发起的 meta 写不会在 quorum 恢复后 later apply；随后恢复 1 个节点验证 quorum 恢复后读写成功，再恢复第三个节点并确认追平。当前写服务在本地 leader 创建 Raft proposal 前会检查最近的 quorum ack，新鲜度不足时直接返回 unavailable，避免客户端侧失败的写请求在恢复 quorum 后被提交。
 
 ## 10. 常见误配
 
