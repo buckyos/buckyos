@@ -30,6 +30,9 @@ pub const META_QUERY_MAX_LIMIT: usize = 2_000;
 pub const META_CHANGES_MAX_WAIT_MS: u64 = 2_000;
 pub const META_CHANGES_POLL_INTERVAL_MS: u64 = 100;
 pub const META_RW_MAX_FORWARD_HOPS: u32 = 2;
+const WRITE_QUORUM_ACK_MAX_AGE_MS: u64 = 1_000;
+const WRITE_QUORUM_ACK_WAIT_MS: u64 = 300;
+const WRITE_QUORUM_ACK_POLL_MS: u64 = 50;
 pub type KServiceResult<T> = Result<T, KLogServiceError>;
 
 fn with_forward_error_context(
@@ -97,6 +100,55 @@ impl KLogWriteService {
     pub fn with_transport_config(mut self, transport: KClusterTransportConfig) -> Self {
         self.data_client = self.data_client.with_transport_config(transport);
         self
+    }
+
+    async fn ensure_fresh_quorum_for_local_leader(
+        &self,
+        operation: &str,
+        context: &str,
+        trace_id: &str,
+    ) -> KServiceResult<()> {
+        let deadline = Instant::now() + Duration::from_millis(WRITE_QUORUM_ACK_WAIT_MS);
+        loop {
+            let metrics = self.raft.metrics().borrow().clone();
+            if !metrics.state.is_leader() {
+                return Ok(());
+            }
+
+            let voter_count = metrics.membership_config.voter_ids().count();
+            if voter_count <= 1 {
+                return Ok(());
+            }
+
+            if let Some(age_ms) = metrics.millis_since_quorum_ack
+                && age_ms <= WRITE_QUORUM_ACK_MAX_AGE_MS
+            {
+                return Ok(());
+            }
+
+            if Instant::now() >= deadline {
+                let msg = format!(
+                    "{} {} rejected: local leader has no fresh quorum ack, {}, local_node_id={}, current_leader={:?}, voters={}, millis_since_quorum_ack={:?}, max_age_ms={}",
+                    self.service_name,
+                    operation,
+                    context,
+                    metrics.id,
+                    metrics.current_leader,
+                    voter_count,
+                    metrics.millis_since_quorum_ack,
+                    WRITE_QUORUM_ACK_MAX_AGE_MS
+                );
+                warn!("{}", msg);
+                return Err(self.service_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    KLogErrorCode::Unavailable,
+                    msg,
+                    trace_id,
+                ));
+            }
+
+            sleep(Duration::from_millis(WRITE_QUORUM_ACK_POLL_MS)).await;
+        }
     }
 
     pub async fn append(
@@ -251,6 +303,10 @@ impl KLogWriteService {
             forward_hops,
             forwarded_by
         );
+
+        let quorum_context = format!("requested_id={}", requested_id);
+        self.ensure_fresh_quorum_for_local_leader("data append", &quorum_context, &trace_id)
+            .await?;
 
         match self
             .raft
@@ -504,6 +560,10 @@ impl KLogWriteService {
             forward_hops,
             forwarded_by
         );
+
+        let quorum_context = format!("key={}", item.key);
+        self.ensure_fresh_quorum_for_local_leader("meta put", &quorum_context, &trace_id)
+            .await?;
 
         match self
             .raft
@@ -833,6 +893,10 @@ impl KLogWriteService {
             forwarded_by
         );
 
+        let quorum_context = format!("actions={}", req.actions.len());
+        self.ensure_fresh_quorum_for_local_leader("meta tx", &quorum_context, &trace_id)
+            .await?;
+
         match self
             .raft
             .client_write(KLogRequest::ExecMetaTx { tx: req.clone() })
@@ -1041,6 +1105,10 @@ impl KLogWriteService {
             forward_hops,
             forwarded_by
         );
+        let quorum_context = format!("key={}", key);
+        self.ensure_fresh_quorum_for_local_leader("meta delete", &quorum_context, &trace_id)
+            .await?;
+
         match self
             .raft
             .client_write(KLogRequest::DeleteMeta { key: key.clone() })
