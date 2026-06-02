@@ -132,6 +132,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Validates two concurrent add-learner requests on the same leader produce
     exactly one success and one `409 Conflict`, then promotes the accepted
     learner and verifies gateway log/meta consistency.
+- [x] Validate auto-join retry idempotency after add-learner client timeout.
+  - Covered by `test/klog_raft_join_retry_idempotency_dv.sh`.
+  - Validates blocking add-learner can commit after the auto-join HTTP client
+    times out, the retry observes the node as an existing learner, does not
+    duplicate membership, and does not promote when `target_role=learner`.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
 - [x] Validate klog meta KV semantics needed by system_config replacement.

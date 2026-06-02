@@ -33,6 +33,7 @@ const RAFT_FOLLOWER_LAG_SNAPSHOT_INSTALL_MODE: &str =
 const RAFT_QUORUM_LOSS_RECOVERY_MODE: &str = "local-gateway-raft-quorum-loss-recovery";
 const RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE: &str = "local-gateway-raft-membership-change-rejoin";
 const RAFT_CONCURRENT_MEMBERSHIP_MODE: &str = "local-gateway-raft-concurrent-membership";
+const RAFT_JOIN_RETRY_IDEMPOTENCY_MODE: &str = "local-gateway-raft-join-retry-idempotency";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -2031,6 +2032,14 @@ struct KLogMetaCompactionPatch {
     min_compact_gap: u64,
 }
 
+#[derive(Clone, Copy)]
+struct KLogJoinRetryPatch {
+    initial_interval_ms: u64,
+    max_interval_ms: u64,
+    max_attempts: u64,
+    request_timeout_ms: u64,
+}
+
 struct GatewayRuntimeOptions<'a> {
     all_nodes: &'a [LocalNodeDef],
     ingress_port: u16,
@@ -2457,6 +2466,53 @@ fn write_klog_config_with_join_targets(
         KLogRaftPatch::default(),
         Some(join_targets),
     )
+}
+
+fn write_klog_config_with_join_targets_and_retry_patch(
+    harness: &LocalHarness,
+    node: &LocalNodeDef,
+    options: &KLogConfigOptions<'_>,
+    join_targets: &[String],
+    retry_patch: KLogJoinRetryPatch,
+    raft_patch: KLogRaftPatch<'_>,
+) -> Result<PathBuf, String> {
+    let config_path =
+        write_klog_config_inner(harness, node, options, raft_patch, Some(join_targets))?;
+    let mut content = fs::read_to_string(&config_path).map_err(|err| {
+        format!(
+            "failed to read klog config {} before join retry patch: {}",
+            config_path.display(),
+            err
+        )
+    })?;
+    for (from, to) in [
+        (
+            "initial_interval_ms = 500",
+            format!("initial_interval_ms = {}", retry_patch.initial_interval_ms),
+        ),
+        (
+            "max_interval_ms = 500",
+            format!("max_interval_ms = {}", retry_patch.max_interval_ms),
+        ),
+        (
+            "max_attempts = 0",
+            format!("max_attempts = {}", retry_patch.max_attempts),
+        ),
+        (
+            "request_timeout_ms = 2000",
+            format!("request_timeout_ms = {}", retry_patch.request_timeout_ms),
+        ),
+    ] {
+        content = content.replace(from, to.as_str());
+    }
+    fs::write(&config_path, content).map_err(|err| {
+        format!(
+            "failed to write klog config {} after join retry patch: {}",
+            config_path.display(),
+            err
+        )
+    })?;
+    Ok(config_path)
 }
 
 fn render_toml_string(value: &str) -> String {
@@ -3205,6 +3261,38 @@ fn klog_snapshot_dir(harness: &LocalHarness, node: &LocalNodeDef) -> PathBuf {
         .root
         .join(format!("klog-data-{}", node.name))
         .join("snapshots")
+}
+
+fn klog_out_log_path(harness: &LocalHarness, node: &LocalNodeDef) -> PathBuf {
+    harness
+        .root
+        .join("logs")
+        .join(format!("klog-{}.out.log", node.name))
+}
+
+async fn wait_klog_out_log_contains(
+    harness: &LocalHarness,
+    node: &LocalNodeDef,
+    patterns: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let path = klog_out_log_path(harness, node);
+    loop {
+        let content = fs::read_to_string(&path).unwrap_or_default();
+        if patterns.iter().all(|pattern| content.contains(pattern)) {
+            return Ok(content);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timeout waiting klog log {} to contain {:?}; content_len={}",
+                path.display(),
+                patterns,
+                content.len()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 fn snapshot_file_count(harness: &LocalHarness, node: &LocalNodeDef) -> Result<usize, String> {
@@ -11230,6 +11318,229 @@ async fn run_local_gateway_raft_concurrent_membership() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_raft_join_retry_idempotency_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-raft-join-retry-idempotency-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, RAFT_JOIN_RETRY_IDEMPOTENCY_MODE, route_prefix, 4)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let base_voters = nodes.iter().take(3).cloned().collect::<Vec<_>>();
+    let added_ood = nodes
+        .get(3)
+        .cloned()
+        .ok_or_else(|| "missing join retry learner node".to_string())?;
+    let seed = base_voters
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing join retry seed node".to_string())?;
+    let raft_patch = ood_snapshot_membership_raft_patch();
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    for node in &base_voters {
+        let config = write_klog_config_with_raft_patch(harness, node, &voter_config, raft_patch)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    let pre_join_witness = write_snapshot_bulk_data(
+        &client,
+        ingress_port,
+        route_prefix,
+        &base_voters[0],
+        &base_voters[1],
+        "join-retry-idempotency-prejoin",
+        220,
+        1024,
+    )
+    .await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &base_voters,
+        &pre_join_witness,
+        Duration::from_secs(50),
+    )
+    .await?;
+
+    let join_targets = base_voters
+        .iter()
+        .map(|target| gateway_admin_join_target(&added_ood, ingress_port, route_prefix, target))
+        .collect::<Vec<_>>();
+    let added_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "learner",
+    };
+    let retry_patch = KLogJoinRetryPatch {
+        initial_interval_ms: 100,
+        max_interval_ms: 100,
+        max_attempts: 80,
+        request_timeout_ms: 20,
+    };
+    let added_config = write_klog_config_with_join_targets_and_retry_patch(
+        harness,
+        &added_ood,
+        &added_options,
+        &join_targets,
+        retry_patch,
+        raft_patch,
+    )?;
+    spawn_klog_with_log_level(harness, &klog_daemon_bin, &added_config, &added_ood, "info")?;
+    wait_tcp("127.0.0.1", added_ood.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", added_ood.ports.inter, Duration::from_secs(12)).await?;
+
+    let member_nodes = base_voters
+        .iter()
+        .cloned()
+        .chain(std::iter::once(added_ood.clone()))
+        .collect::<Vec<_>>();
+    wait_membership(
+        &client,
+        &member_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[4],
+        Duration::from_secs(120),
+    )
+    .await?;
+    let join_log = wait_klog_out_log_contains(
+        harness,
+        &added_ood,
+        &[
+            "add-learner request send failed",
+            "Auto-join skip add-learner because node is already learner",
+            "Auto-join succeeded",
+        ],
+        Duration::from_secs(20),
+    )
+    .await?;
+    if join_log.contains("Auto-join promote learner to voter") {
+        return Err("auto-join unexpectedly promoted learner target role to voter".to_string());
+    }
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    wait_membership(
+        &client,
+        &member_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[4],
+        Duration::from_secs(30),
+    )
+    .await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &member_nodes,
+        &pre_join_witness,
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    let promote_leader_id = change_voters_via_current_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3, 4],
+        true,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &member_nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3, 4],
+        &[],
+        Duration::from_secs(80),
+    )
+    .await?;
+    let after_promote = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &added_ood,
+        &base_voters[0],
+        &member_nodes,
+        "raft-join-retry-idempotency-after-promote",
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] raft join retry idempotency ok: added={}, promote_leader={}, prejoin_meta_count={}, post_promote_log_id={}, timeout_ms={}, join_log_len={}",
+        added_ood.id,
+        promote_leader_id,
+        pre_join_witness.expected_meta_count,
+        after_promote.log_id,
+        retry_patch.request_timeout_ms,
+        join_log.len()
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_raft_join_retry_idempotency() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_raft_join_retry_idempotency_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_kv_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -13715,6 +14026,7 @@ async fn run() -> Result<(), String> {
             run_local_gateway_raft_membership_change_rejoin().await
         }
         RAFT_CONCURRENT_MEMBERSHIP_MODE => run_local_gateway_raft_concurrent_membership().await,
+        RAFT_JOIN_RETRY_IDEMPOTENCY_MODE => run_local_gateway_raft_join_retry_idempotency().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -13745,6 +14057,7 @@ async fn run() -> Result<(), String> {
                 RAFT_QUORUM_LOSS_RECOVERY_MODE,
                 RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE,
                 RAFT_CONCURRENT_MEMBERSHIP_MODE,
+                RAFT_JOIN_RETRY_IDEMPOTENCY_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
