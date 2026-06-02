@@ -240,6 +240,7 @@ uv run test/run.py -p klog_raft_quorum_loss_recovery_dv
 uv run test/run.py -p klog_raft_membership_change_rejoin_dv
 uv run test/run.py -p klog_raft_concurrent_membership_dv
 uv run test/run.py -p klog_raft_join_retry_idempotency_dv
+uv run test/run.py -p klog_raft_snapshot_install_crash_dv
 ```
 
 `klog_ood_single_to_two_dv` 覆盖 `1 voter -> add learner -> promote to 2 voters`，验证加入前数据能同步到 learner，promote 后两个 voter 继续强读写。`klog_ood_two_voter_loss_dv` 覆盖 `2 voters -> 当前 leader 被动停止`，验证剩余单 voter 不能选主，也不能继续处理强读或写入；这是预期的 quorum 安全边界。
@@ -251,6 +252,8 @@ uv run test/run.py -p klog_raft_join_retry_idempotency_dv
 `klog_raft_concurrent_membership_dv` 覆盖同一 leader 上并发执行两个 add-learner admin 请求，验证 membership mutation in-flight 时第二个请求明确返回 `409 Conflict`，最终只有一个 learner 进入 membership，promote 后集群继续通过 gateway 完成 log/meta 强读写。
 
 `klog_raft_join_retry_idempotency_dv` 覆盖 auto-join 的 add-learner 请求在服务端提交成功但客户端超时的场景；重试后应识别节点已经是 learner，不重复提交 add-learner，也不会在 `target_role=learner` 时错误 promote。用例随后手工 promote 并验证 gateway log/meta 一致性。
+
+`klog_raft_snapshot_install_crash_dv` 覆盖 learner 通过 snapshot 追平过程中被动停止的场景：先让 3 voter 集群生成并保留 snapshot，再 add learner，观察到 learner 本地 `snapshot.temp` 已收到数据后 kill；重启后 learner 应重新接收/安装 snapshot，追平加入前 bulk 数据，并通过 gateway 继续完成 log/meta 写入。
 
 ## 10. 常见误配
 

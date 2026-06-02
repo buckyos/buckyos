@@ -137,6 +137,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Validates blocking add-learner can commit after the auto-join HTTP client
     times out, the retry observes the node as an existing learner, does not
     duplicate membership, and does not promote when `target_role=learner`.
+- [x] Validate learner snapshot install crash/restart recovery.
+  - Covered by `test/klog_raft_snapshot_install_crash_dv.sh`.
+  - Validates a learner killed after receiving snapshot chunks through
+    `snapshot.temp` can restart, reinstall snapshot state, catch up joining-era
+    log/meta data, and continue gateway log/meta writes.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
 - [x] Validate klog meta KV semantics needed by system_config replacement.

@@ -34,6 +34,7 @@ const RAFT_QUORUM_LOSS_RECOVERY_MODE: &str = "local-gateway-raft-quorum-loss-rec
 const RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE: &str = "local-gateway-raft-membership-change-rejoin";
 const RAFT_CONCURRENT_MEMBERSHIP_MODE: &str = "local-gateway-raft-concurrent-membership";
 const RAFT_JOIN_RETRY_IDEMPOTENCY_MODE: &str = "local-gateway-raft-join-retry-idempotency";
+const RAFT_SNAPSHOT_INSTALL_CRASH_MODE: &str = "local-gateway-raft-snapshot-install-crash";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -62,8 +63,16 @@ const ENV_MVCC_CHANGE_FEED_STRESS_ROUNDS: &str = "KLOG_MVCC_CHANGE_FEED_STRESS_R
 const ENV_MVCC_CHANGE_FEED_STRESS_PAGE_LIMIT: &str = "KLOG_MVCC_CHANGE_FEED_STRESS_PAGE_LIMIT";
 const ENV_MVCC_CHANGE_FEED_STRESS_ROUND_DELAY_MS: &str =
     "KLOG_MVCC_CHANGE_FEED_STRESS_ROUND_DELAY_MS";
+const ENV_RAFT_SNAPSHOT_INSTALL_CRASH_ITEMS: &str = "KLOG_RAFT_SNAPSHOT_INSTALL_CRASH_ITEMS";
+const ENV_RAFT_SNAPSHOT_INSTALL_CRASH_VALUE_BYTES: &str =
+    "KLOG_RAFT_SNAPSHOT_INSTALL_CRASH_VALUE_BYTES";
+const ENV_RAFT_SNAPSHOT_INSTALL_CRASH_CHUNK_BYTES: &str =
+    "KLOG_RAFT_SNAPSHOT_INSTALL_CRASH_CHUNK_BYTES";
 const DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_ITEMS: usize = 300;
 const DEFAULT_OOD_SNAPSHOT_MEMBERSHIP_VALUE_BYTES: usize = 512;
+const DEFAULT_RAFT_SNAPSHOT_INSTALL_CRASH_ITEMS: usize = 300;
+const DEFAULT_RAFT_SNAPSHOT_INSTALL_CRASH_VALUE_BYTES: usize = 4096;
+const DEFAULT_RAFT_SNAPSHOT_INSTALL_CRASH_CHUNK_BYTES: usize = 4096;
 const DEFAULT_MVCC_SNAPSHOT_MEMBERSHIP_KEYS: usize = 60;
 const DEFAULT_MVCC_CHANGE_FEED_STRESS_KEYS: usize = 48;
 const DEFAULT_MVCC_CHANGE_FEED_STRESS_CONCURRENCY: usize = 4;
@@ -3263,6 +3272,10 @@ fn klog_snapshot_dir(harness: &LocalHarness, node: &LocalNodeDef) -> PathBuf {
         .join("snapshots")
 }
 
+fn klog_snapshot_temp_path(harness: &LocalHarness, node: &LocalNodeDef) -> PathBuf {
+    klog_snapshot_dir(harness, node).join("snapshot.temp")
+}
+
 fn klog_out_log_path(harness: &LocalHarness, node: &LocalNodeDef) -> PathBuf {
     harness
         .root
@@ -3292,6 +3305,35 @@ async fn wait_klog_out_log_contains(
             ));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_snapshot_temp_file_exists(
+    harness: &LocalHarness,
+    node: &LocalNodeDef,
+    timeout: Duration,
+) -> Result<u64, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let path = klog_snapshot_temp_path(harness, node);
+    loop {
+        if let Ok(metadata) = fs::metadata(&path)
+            && metadata.is_file()
+            && metadata.len() > 0
+        {
+            return Ok(metadata.len());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timeout waiting snapshot temp file for {}: temp={}, snapshot_count={}, log_len={}",
+                node.name,
+                path.display(),
+                snapshot_file_count(harness, node)?,
+                fs::read_to_string(klog_out_log_path(harness, node))
+                    .map(|content| content.len())
+                    .unwrap_or(0)
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -5716,6 +5758,18 @@ fn ood_snapshot_membership_raft_patch() -> KLogRaftPatch<'static> {
         snapshot_max_chunk_size_bytes: Some(512 * 1024),
         max_in_snapshot_log_to_keep: Some(5),
         purge_batch_size: Some(50),
+    }
+}
+
+fn raft_snapshot_install_crash_raft_patch(chunk_bytes: usize) -> KLogRaftPatch<'static> {
+    KLogRaftPatch {
+        install_snapshot_timeout_ms: Some(30_000),
+        max_payload_entries: Some(8),
+        replication_lag_threshold: Some(5),
+        snapshot_policy: Some("since_last:20"),
+        snapshot_max_chunk_size_bytes: Some(chunk_bytes as u64),
+        max_in_snapshot_log_to_keep: Some(2),
+        purge_batch_size: Some(20),
     }
 }
 
@@ -10305,6 +10359,266 @@ async fn run_local_gateway_raft_follower_lag_snapshot_install() -> Result<(), St
     result
 }
 
+async fn run_local_gateway_raft_snapshot_install_crash_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let item_count = parse_env_usize(
+        ENV_RAFT_SNAPSHOT_INSTALL_CRASH_ITEMS,
+        DEFAULT_RAFT_SNAPSHOT_INSTALL_CRASH_ITEMS,
+    )?;
+    let value_bytes = parse_env_usize(
+        ENV_RAFT_SNAPSHOT_INSTALL_CRASH_VALUE_BYTES,
+        DEFAULT_RAFT_SNAPSHOT_INSTALL_CRASH_VALUE_BYTES,
+    )?;
+    let chunk_bytes = parse_env_usize(
+        ENV_RAFT_SNAPSHOT_INSTALL_CRASH_CHUNK_BYTES,
+        DEFAULT_RAFT_SNAPSHOT_INSTALL_CRASH_CHUNK_BYTES,
+    )?;
+    if item_count == 0 || value_bytes == 0 || chunk_bytes == 0 {
+        return Err(format!(
+            "{}={}, {}={}, and {}={} must all be greater than 0",
+            ENV_RAFT_SNAPSHOT_INSTALL_CRASH_ITEMS,
+            item_count,
+            ENV_RAFT_SNAPSHOT_INSTALL_CRASH_VALUE_BYTES,
+            value_bytes,
+            ENV_RAFT_SNAPSHOT_INSTALL_CRASH_CHUNK_BYTES,
+            chunk_bytes
+        ));
+    }
+
+    let route_prefix = "/.cluster/klog-it-raft-snapshot-install-crash-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, RAFT_SNAPSHOT_INSTALL_CRASH_MODE, route_prefix, 4)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let base_voters = nodes.iter().take(3).cloned().collect::<Vec<_>>();
+    let learner = nodes
+        .get(3)
+        .cloned()
+        .ok_or_else(|| "missing snapshot install crash learner node".to_string())?;
+    let seed = base_voters
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing snapshot install crash seed node".to_string())?;
+    let raft_patch = raft_snapshot_install_crash_raft_patch(chunk_bytes);
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    for node in &base_voters {
+        let config = write_klog_config_with_raft_patch(harness, node, &voter_config, raft_patch)?;
+        spawn_klog_with_log_level(harness, &klog_daemon_bin, &config, node, "info")?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.inter, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let writer = base_voters
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing snapshot install crash writer".to_string())?;
+    let target = base_voters
+        .get(1)
+        .cloned()
+        .ok_or_else(|| "missing snapshot install crash target".to_string())?;
+    let bulk = write_snapshot_bulk_data(
+        &client,
+        ingress_port,
+        route_prefix,
+        &writer,
+        &target,
+        "raft-snapshot-install-crash-prejoin",
+        item_count,
+        value_bytes,
+    )
+    .await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &base_voters,
+        &bulk,
+        Duration::from_secs(80),
+    )
+    .await?;
+    let snapshot_leader_id = wait_consistent_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let snapshot_leader = base_voters
+        .iter()
+        .find(|node| node.id == snapshot_leader_id)
+        .ok_or_else(|| format!("snapshot leader node {} not found", snapshot_leader_id))?;
+    let leader_snapshot_files =
+        wait_snapshot_file_count(harness, snapshot_leader, 1, Duration::from_secs(100)).await?;
+
+    let learner_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "learner",
+    };
+    let learner_config =
+        write_klog_config_with_raft_patch(harness, &learner, &learner_options, raft_patch)?;
+    spawn_klog_with_log_level(harness, &klog_daemon_bin, &learner_config, &learner, "info")?;
+    wait_tcp("127.0.0.1", learner.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", learner.ports.inter, Duration::from_secs(12)).await?;
+
+    let add_leader_id = wait_consistent_leader(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let add_leader = base_voters
+        .iter()
+        .find(|node| node.id == add_leader_id)
+        .ok_or_else(|| format!("add-learner leader node {} not found", add_leader_id))?;
+    post_add_learner_via_admin_route(
+        &client,
+        gateway_addr(add_leader, ingress_port).as_str(),
+        route_prefix,
+        add_leader.name.as_str(),
+        &learner,
+        false,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &base_voters,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[4],
+        Duration::from_secs(80),
+    )
+    .await?;
+    let temp_bytes =
+        wait_snapshot_temp_file_exists(harness, &learner, Duration::from_secs(120)).await?;
+    harness.stop(format!("klog-{}", learner.name).as_str())?;
+    let snapshot_files_before_restart = snapshot_file_count(harness, &learner)?;
+
+    spawn_klog_with_log_level(harness, &klog_daemon_bin, &learner_config, &learner, "info")?;
+    wait_tcp("127.0.0.1", learner.ports.admin, Duration::from_secs(12)).await?;
+    wait_tcp("127.0.0.1", learner.ports.inter, Duration::from_secs(12)).await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[4],
+        Duration::from_secs(160),
+    )
+    .await?;
+    wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(90),
+    )
+    .await?;
+    let learner_snapshot_files =
+        wait_snapshot_file_count(harness, &learner, 1, Duration::from_secs(160)).await?;
+    verify_snapshot_bulk_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &nodes,
+        &bulk,
+        Duration::from_secs(120),
+    )
+    .await?;
+
+    let after_restart = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &learner,
+        snapshot_leader,
+        &nodes,
+        "raft-snapshot-install-crash-after-restart",
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] raft snapshot install crash ok: add_leader={}, snapshot_leader={}, learner={}, leader_snapshots={}, learner_snapshots_before_restart={}, learner_snapshots_after_restart={}, temp_bytes_before_kill={}, bulk_items={}, value_bytes={}, chunk_bytes={}, recovered_log_id={}, prefix={}",
+        add_leader_id,
+        snapshot_leader_id,
+        learner.id,
+        leader_snapshot_files,
+        snapshot_files_before_restart,
+        learner_snapshot_files,
+        temp_bytes,
+        bulk.expected_meta_count,
+        value_bytes,
+        chunk_bytes,
+        after_restart.log_id,
+        bulk.meta_prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_raft_snapshot_install_crash() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_raft_snapshot_install_crash_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_raft_quorum_loss_recovery_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -14027,6 +14341,7 @@ async fn run() -> Result<(), String> {
         }
         RAFT_CONCURRENT_MEMBERSHIP_MODE => run_local_gateway_raft_concurrent_membership().await,
         RAFT_JOIN_RETRY_IDEMPOTENCY_MODE => run_local_gateway_raft_join_retry_idempotency().await,
+        RAFT_SNAPSHOT_INSTALL_CRASH_MODE => run_local_gateway_raft_snapshot_install_crash().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -14058,6 +14373,7 @@ async fn run() -> Result<(), String> {
                 RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE,
                 RAFT_CONCURRENT_MEMBERSHIP_MODE,
                 RAFT_JOIN_RETRY_IDEMPOTENCY_MODE,
+                RAFT_SNAPSHOT_INSTALL_CRASH_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
