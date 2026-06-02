@@ -121,6 +121,12 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Covered by `test/klog_ood_two_voter_loss_dv.sh`.
   - Validates that `2 voters -> stopped leader -> 1 survivor` does not elect a
     replacement leader and rejects strong reads/writes without quorum.
+- [x] Validate membership shrink and removed voter rejoin persistence.
+  - Covered by `test/klog_raft_membership_change_rejoin_dv.sh`.
+  - Validates `3 voters -> stopped non-leader voter -> change-membership shrink
+    to remaining 2 voters -> removed node restarts with old local state` does
+    not alter the active cluster membership, then add learner/promote catches up
+    and restores the 3-voter set.
 - [x] Validate full restart recovery for logs, meta revision, and membership.
   - Covered by `test/klog_restart_recovery_dv.sh`.
 - [x] Validate klog meta KV semantics needed by system_config replacement.

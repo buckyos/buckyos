@@ -72,6 +72,7 @@ klog-daemon 负责本机 klog 节点运行：
 3. admin plane：默认 `21003`，正式 BuckyOS 场景应只监听 loopback。
 4. client JSON-RPC plane：默认 `4080`，由 gateway 暴露为 `/kapi/klog-service`。
 5. auto-join：当 `KLOG_AUTO_BOOTSTRAP=false` 且 `KLOG_JOIN_TARGETS` 非空时，启动后自动向任意可用 join target 查询 cluster-state，优先找到当前 leader 后执行 add-learner；若目标角色是 voter，再执行 change-membership promote。
+6. 如果本地已有持久化 Raft membership 状态，但远端当前 membership 已不包含本节点，klog-daemon 会停止 auto-join；这类节点通常是被 shrink 移除后重启，必须通过显式 admin add-learner/promote 重新加入。
 
 klog-daemon 不做用户级 RBAC，也不应该根据 BuckyOS desired OOD 列表自行删除其他 Raft 成员。它只执行明确的 admin API 请求，并在一致性层面拒绝危险操作，例如直接移除当前 leader。
 
@@ -142,9 +143,10 @@ gateway 是 admin plane 的授权和暴露边界。ZoneGateway/公网业务入�
 
 需要注意：
 
-1. 新 OOD 必须能访问本机 node gateway，并能经 gateway route 到达现有 OOD admin plane。
-2. `KLOG_NODE_ID` 必须由该 OOD 的 `DeviceConfig.id` 派生，不能复用旧设备的 node id。
-3. 如果是替换 OOD，旧设备 DID 变化意味着这是新的 Raft 成员，不能把它视为原成员原地恢复。
+1. auto-join 面向全新 OOD 或已在远端 membership 中的 learner 续跑，不负责把已被 shrink 移除的旧 voter 自动加回集群。
+2. 新 OOD 必须能访问本机 node gateway，并能经 gateway route 到达现有 OOD admin plane。
+3. `KLOG_NODE_ID` 必须由该 OOD 的 `DeviceConfig.id` 派生，不能复用旧设备的 node id。
+4. 如果是替换 OOD，旧设备 DID 变化意味着这是新的 Raft 成员，不能把它视为原成员原地恢复。
 
 ## 6. 删除 OOD
 

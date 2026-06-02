@@ -692,7 +692,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     info!("Raft node created: node_id={}", cfg.node_id);
 
     initialize_cluster_if_needed(&cfg, &raft).await;
-    let join_task = spawn_auto_join_task(&cfg);
+    let join_task = spawn_auto_join_task(&cfg, &raft);
     let meta_compaction_task =
         spawn_auto_meta_compaction_task(&cfg, &raft, state_store_manager.clone());
 
