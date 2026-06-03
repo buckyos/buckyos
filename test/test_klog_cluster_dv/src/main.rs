@@ -26,6 +26,7 @@ const MVCC_CHANGE_FEED_MODE: &str = "local-gateway-mvcc-change-feed";
 const MVCC_CHANGE_FEED_STRESS_MODE: &str = "local-gateway-mvcc-change-feed-stress";
 const MVCC_FAILOVER_MODE: &str = "local-gateway-mvcc-failover";
 const MVCC_AUTO_COMPACT_FAILOVER_MODE: &str = "local-gateway-mvcc-auto-compact-failover";
+const MVCC_COMPACTION_LEADER_SWITCH_MODE: &str = "local-gateway-mvcc-compaction-leader-switch";
 const MVCC_CRASH_RECOVERY_MODE: &str = "local-gateway-mvcc-crash-recovery";
 const MVCC_COMPACT_DURING_SNAPSHOT_MODE: &str = "local-gateway-mvcc-compact-during-snapshot";
 const RAFT_OLD_LEADER_REJOIN_MODE: &str = "local-gateway-raft-old-leader-rejoin";
@@ -3510,6 +3511,17 @@ async fn wait_klog_out_log_contains(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+fn count_klog_out_log_occurrences(
+    harness: &LocalHarness,
+    node: &LocalNodeDef,
+    pattern: &str,
+) -> Result<usize, String> {
+    let path = klog_out_log_path(harness, node);
+    let content = fs::read_to_string(&path)
+        .map_err(|err| format!("failed to read klog log {}: {}", path.display(), err))?;
+    Ok(content.matches(pattern).count())
 }
 
 async fn wait_snapshot_temp_file_exists(
@@ -10064,6 +10076,553 @@ async fn run_local_gateway_mvcc_auto_compact_failover() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_mvcc_compaction_leader_switch_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-mvcc-compaction-leader-switch-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, MVCC_COMPACTION_LEADER_SWITCH_MODE, route_prefix, 3)
+            .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let meta_compaction = KLogMetaCompactionPatch {
+        retention_revisions: 8,
+        check_interval_ms: 1500,
+        min_compact_gap: 1,
+    };
+    let mut configs = BTreeMap::new();
+    for node in &nodes {
+        let config =
+            write_klog_config_with_meta_compaction(harness, node, &voter_config, meta_compaction)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog_with_log_level(harness, &klog_daemon_bin, &config, node, "info")?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(50),
+    )
+    .await?;
+
+    let suffix = unique_suffix("mvcc-compaction-leader-switch");
+    let prefix = format!("test/klog_mvcc_compaction_leader_switch_dv/{}/", suffix);
+    let mut expected_current = Vec::new();
+    for index in 0..6usize {
+        let source = &nodes[index % nodes.len()];
+        let target = &nodes[(index + 1) % nodes.len()];
+        let key = format!("{}manual-{:03}", prefix, index);
+        let value = format!("manual-value-{:03}", index);
+        let stored = put_meta_via_cluster_inter_route(
+            &client,
+            gateway_addr(source, ingress_port).as_str(),
+            route_prefix,
+            target.name.as_str(),
+            key.as_str(),
+            value.as_str(),
+            Some(0),
+        )
+        .await?;
+        if stored.create_revision != stored.mod_revision || stored.version != 1 {
+            return Err(format!(
+                "unexpected manual phase put response: {:?}",
+                stored
+            ));
+        }
+        expected_current.push(ExpectedMetaChange {
+            revision: stored.mod_revision,
+            key,
+            value,
+            deleted: false,
+            create_revision: stored.create_revision,
+            version: stored.version,
+        });
+    }
+    let manual_compact_revision = expected_current
+        .get(2)
+        .ok_or_else(|| "missing manual compact target revision".to_string())?
+        .revision;
+    let manual_retained_revision = expected_current
+        .get(3)
+        .ok_or_else(|| "missing manual retained revision".to_string())?
+        .revision;
+    let manual_current_revision = expected_current
+        .last()
+        .ok_or_else(|| "missing manual current revision".to_string())?
+        .revision;
+
+    let manual_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let manual_leader = nodes
+        .iter()
+        .find(|node| node.id == manual_leader_id)
+        .cloned()
+        .ok_or_else(|| format!("manual compact leader {} not found", manual_leader_id))?;
+    let manual_url = cluster_route_url(
+        gateway_addr(&manual_leader, ingress_port).as_str(),
+        route_prefix,
+        manual_leader.name.as_str(),
+        "admin",
+        "/meta-compact",
+    );
+    let manual_client = client.clone();
+    let manual_task = tokio::spawn(async move {
+        let response = manual_client
+            .post(manual_url.as_str())
+            .json(&MetaCompactRequest {
+                revision: manual_compact_revision,
+            })
+            .send()
+            .await
+            .map_err(|err| format!("manual in-flight meta-compact request failed: {}", err))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|err| format!("<failed to read body: {}>", err));
+            return Err(format!(
+                "manual in-flight meta-compact returned {}: {}",
+                status, body
+            ));
+        }
+        response
+            .json::<MetaCompactResponse>()
+            .await
+            .map_err(|err| format!("manual in-flight meta-compact decode failed: {}", err))
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    harness.stop(format!("klog-{}", manual_leader.name).as_str())?;
+    let manual_result = manual_task
+        .await
+        .map_err(|err| format!("manual in-flight compact task join failed: {}", err));
+
+    let alive_after_manual = nodes
+        .iter()
+        .filter(|node| node.id != manual_leader_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    wait_membership(
+        &client,
+        &alive_after_manual,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let manual_failover_leader_id = wait_consistent_leader(
+        &client,
+        &alive_after_manual,
+        ingress_port,
+        route_prefix,
+        Some(manual_leader_id),
+        Duration::from_secs(70),
+    )
+    .await?;
+    let manual_observer = alive_after_manual
+        .first()
+        .ok_or_else(|| "missing manual alive observer".to_string())?;
+    let manual_observer_gateway = gateway_addr(manual_observer, ingress_port);
+    let manual_already_compacted = wait_meta_query_compacted_via_cluster_inter_route(
+        &client,
+        manual_observer_gateway.as_str(),
+        route_prefix,
+        manual_observer.name.as_str(),
+        None,
+        Some(prefix.as_str()),
+        manual_compact_revision,
+        Duration::from_secs(8),
+    )
+    .await
+    .is_ok();
+    if !manual_already_compacted {
+        let new_leader = alive_after_manual
+            .iter()
+            .find(|node| node.id == manual_failover_leader_id)
+            .ok_or_else(|| {
+                format!(
+                    "manual failover leader {} not found",
+                    manual_failover_leader_id
+                )
+            })?;
+        let compacted = post_meta_compact_via_admin_route(
+            &client,
+            gateway_addr(new_leader, ingress_port).as_str(),
+            route_prefix,
+            new_leader.name.as_str(),
+            manual_compact_revision,
+        )
+        .await?;
+        if compacted.compacted_revision != manual_compact_revision
+            || compacted.current_revision < manual_current_revision
+        {
+            return Err(format!(
+                "unexpected manual failover compaction response: {:?}, expected compacted={}, current>={}",
+                compacted, manual_compact_revision, manual_current_revision
+            ));
+        }
+    } else if let Ok(Ok(compacted)) = manual_result
+        && (compacted.compacted_revision != manual_compact_revision
+            || compacted.current_revision < manual_current_revision)
+    {
+        return Err(format!(
+            "unexpected in-flight manual compaction response: {:?}, expected compacted={}, current>={}",
+            compacted, manual_compact_revision, manual_current_revision
+        ));
+    }
+
+    for node in &alive_after_manual {
+        wait_meta_query_compacted_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            None,
+            Some(prefix.as_str()),
+            manual_compact_revision,
+            Duration::from_secs(20),
+        )
+        .await?;
+        let retained = query_meta_at_revision_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            expected_current[3].key.as_str(),
+            Some(manual_retained_revision),
+        )
+        .await?;
+        require_meta_values(
+            &retained,
+            &[(
+                expected_current[3].key.as_str(),
+                expected_current[3].value.as_str(),
+                expected_current[3].create_revision,
+                expected_current[3].revision,
+                expected_current[3].version,
+            )],
+        )?;
+    }
+
+    let manual_commit_pattern = format!(
+        "StateMachine meta-compact request committed: compacted_revision={},",
+        manual_compact_revision
+    );
+    for node in &nodes {
+        let count = count_klog_out_log_occurrences(harness, node, manual_commit_pattern.as_str())?;
+        if count > 1 {
+            return Err(format!(
+                "manual compact target committed more than once on {}: target={}, count={}",
+                node.name, manual_compact_revision, count
+            ));
+        }
+    }
+
+    let manual_leader_config = configs
+        .get(&manual_leader_id)
+        .ok_or_else(|| format!("missing config for manual leader {}", manual_leader_id))?;
+    spawn_klog_with_log_level(
+        harness,
+        &klog_daemon_bin,
+        manual_leader_config,
+        &manual_leader,
+        "info",
+    )?;
+    wait_tcp(
+        "127.0.0.1",
+        manual_leader.ports.admin,
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(90),
+    )
+    .await?;
+    wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(80),
+    )
+    .await?;
+    for node in &nodes {
+        wait_meta_query_compacted_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            None,
+            Some(prefix.as_str()),
+            manual_compact_revision,
+            Duration::from_secs(30),
+        )
+        .await?;
+    }
+
+    for index in 0..14usize {
+        let source = &nodes[index % nodes.len()];
+        let target = &nodes[(index + 1) % nodes.len()];
+        let key = format!("{}auto-{:03}", prefix, index);
+        let value = format!("auto-value-{:03}", index);
+        let stored = put_meta_via_cluster_inter_route(
+            &client,
+            gateway_addr(source, ingress_port).as_str(),
+            route_prefix,
+            target.name.as_str(),
+            key.as_str(),
+            value.as_str(),
+            Some(0),
+        )
+        .await?;
+        if stored.create_revision != stored.mod_revision || stored.version != 1 {
+            return Err(format!("unexpected auto phase put response: {:?}", stored));
+        }
+        expected_current.push(ExpectedMetaChange {
+            revision: stored.mod_revision,
+            key,
+            value,
+            deleted: false,
+            create_revision: stored.create_revision,
+            version: stored.version,
+        });
+    }
+    let auto_compact_probe_revision = manual_retained_revision;
+    let auto_latest = expected_current
+        .last()
+        .cloned()
+        .ok_or_else(|| "missing auto phase latest revision".to_string())?;
+    let auto_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(40),
+    )
+    .await?;
+    let auto_leader = nodes
+        .iter()
+        .find(|node| node.id == auto_leader_id)
+        .cloned()
+        .ok_or_else(|| format!("auto compact leader {} not found", auto_leader_id))?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    harness.stop(format!("klog-{}", auto_leader.name).as_str())?;
+
+    let alive_after_auto = nodes
+        .iter()
+        .filter(|node| node.id != auto_leader_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    wait_membership(
+        &client,
+        &alive_after_auto,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let auto_failover_leader_id = wait_consistent_leader(
+        &client,
+        &alive_after_auto,
+        ingress_port,
+        route_prefix,
+        Some(auto_leader_id),
+        Duration::from_secs(70),
+    )
+    .await?;
+    let auto_observer = alive_after_auto
+        .first()
+        .ok_or_else(|| "missing auto alive observer".to_string())?;
+    wait_meta_query_compacted_via_cluster_inter_route(
+        &client,
+        gateway_addr(auto_observer, ingress_port).as_str(),
+        route_prefix,
+        auto_observer.name.as_str(),
+        None,
+        Some(prefix.as_str()),
+        auto_compact_probe_revision,
+        Duration::from_secs(70),
+    )
+    .await?;
+    for node in &alive_after_auto {
+        let current = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            expected_current.len() + 8,
+        )
+        .await?;
+        require_expected_current_meta_values(&current, expected_current.as_slice())?;
+        let latest_page = query_meta_changes_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            auto_latest.revision,
+            8,
+            None,
+        )
+        .await?;
+        require_meta_changes(
+            &latest_page,
+            &[(
+                auto_latest.revision,
+                auto_latest.key.as_str(),
+                auto_latest.value.as_str(),
+                false,
+                auto_latest.create_revision,
+                auto_latest.version,
+            )],
+        )?;
+    }
+
+    let auto_leader_config = configs
+        .get(&auto_leader_id)
+        .ok_or_else(|| format!("missing config for auto leader {}", auto_leader_id))?;
+    spawn_klog_with_log_level(
+        harness,
+        &klog_daemon_bin,
+        auto_leader_config,
+        &auto_leader,
+        "info",
+    )?;
+    wait_tcp(
+        "127.0.0.1",
+        auto_leader.ports.admin,
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(90),
+    )
+    .await?;
+    wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(80),
+    )
+    .await?;
+    for node in &nodes {
+        wait_meta_query_compacted_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            None,
+            Some(prefix.as_str()),
+            auto_compact_probe_revision,
+            Duration::from_secs(40),
+        )
+        .await?;
+        let current = query_meta_prefix_via_cluster_inter_route(
+            &client,
+            gateway_addr(node, ingress_port).as_str(),
+            route_prefix,
+            node.name.as_str(),
+            prefix.as_str(),
+            expected_current.len() + 8,
+        )
+        .await?;
+        require_expected_current_meta_values(&current, expected_current.as_slice())?;
+    }
+
+    println!(
+        "[klog-cluster-dv] MVCC compaction leader switch ok: manual_leader={}, manual_failover_leader={}, auto_switch_leader={}, auto_failover_leader={}, manual_compacted={}, auto_probe_compacted={}, latest_revision={}, keys={}, prefix={}",
+        manual_leader_id,
+        manual_failover_leader_id,
+        auto_leader_id,
+        auto_failover_leader_id,
+        manual_compact_revision,
+        auto_compact_probe_revision,
+        auto_latest.revision,
+        expected_current.len(),
+        prefix
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_mvcc_compaction_leader_switch() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_mvcc_compaction_leader_switch_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_mvcc_crash_recovery_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -16402,6 +16961,9 @@ async fn run() -> Result<(), String> {
         MVCC_CHANGE_FEED_STRESS_MODE => run_local_gateway_mvcc_change_feed_stress().await,
         MVCC_FAILOVER_MODE => run_local_gateway_mvcc_failover().await,
         MVCC_AUTO_COMPACT_FAILOVER_MODE => run_local_gateway_mvcc_auto_compact_failover().await,
+        MVCC_COMPACTION_LEADER_SWITCH_MODE => {
+            run_local_gateway_mvcc_compaction_leader_switch().await
+        }
         MVCC_CRASH_RECOVERY_MODE => run_local_gateway_mvcc_crash_recovery().await,
         MVCC_COMPACT_DURING_SNAPSHOT_MODE => run_local_gateway_mvcc_compact_during_snapshot().await,
         RAFT_OLD_LEADER_REJOIN_MODE => run_local_gateway_raft_old_leader_rejoin().await,
@@ -16447,6 +17009,7 @@ async fn run() -> Result<(), String> {
                 MVCC_CHANGE_FEED_STRESS_MODE,
                 MVCC_FAILOVER_MODE,
                 MVCC_AUTO_COMPACT_FAILOVER_MODE,
+                MVCC_COMPACTION_LEADER_SWITCH_MODE,
                 MVCC_CRASH_RECOVERY_MODE,
                 MVCC_COMPACT_DURING_SNAPSHOT_MODE,
                 RAFT_OLD_LEADER_REJOIN_MODE,

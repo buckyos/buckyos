@@ -173,6 +173,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Starts a replacement `klog-service` with an existing `node_id` but different
     data directory, ports, node name, and device id, then verifies admin
     add-learner and auto-join both fail with explicit node identity diagnostics.
+- [x] Validate MVCC compaction remains consistent across leader switch.
+  - Covered by `test/klog_mvcc_compaction_leader_switch_dv.sh`.
+  - Exercises manual compact during leader stop and auto compact across leader
+    switch, then verifies compacted history, retained changes, and current state
+    converge across voters.
 - [x] Validate local multi-OOD system_config klog rollout rule.
   - Covered by `test/klog_system_config_rollout_dv.sh`.
   - Validates that only the bootstrap OOD copies sled data into klog and that a
