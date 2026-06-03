@@ -40,6 +40,7 @@ const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-members
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
 const SYSTEM_CONFIG_LEADER_FAILOVER_MODE: &str = "local-gateway-system-config-leader-failover";
+const GATEWAY_ABNORMAL_MODE: &str = "local-gateway-abnormal";
 const SYSTEM_CONFIG_ROLLOUT_MODE: &str = "local-gateway-system-config-rollout";
 const SYSTEM_CONFIG_PAGINATION_MODE: &str = "local-gateway-system-config-pagination";
 const SYSTEM_CONFIG_MVCC_MODE: &str = "local-gateway-system-config-mvcc";
@@ -643,6 +644,33 @@ async fn put_meta_via_cluster_inter_route(
             url, err
         )
     })
+}
+
+async fn expect_meta_put_error_via_cluster_inter_route(
+    client: &reqwest::Client,
+    gateway_addr: &str,
+    route_prefix: &str,
+    node_name: &str,
+    key: &str,
+    value: &str,
+) -> Result<String, String> {
+    match put_meta_via_cluster_inter_route(
+        client,
+        gateway_addr,
+        route_prefix,
+        node_name,
+        key,
+        value,
+        None,
+    )
+    .await
+    {
+        Ok(response) => Err(format!(
+            "cluster inter meta-put unexpectedly succeeded for key {}: {:?}",
+            key, response
+        )),
+        Err(err) => Ok(err),
+    }
 }
 
 async fn expect_meta_put_status_via_cluster_inter_route(
@@ -2284,6 +2312,56 @@ fn gateway_addr(node: &LocalNodeDef, ingress_port: u16) -> String {
     format!("{}:{}", node.gateway_host, ingress_port)
 }
 
+fn gateway_info_path(harness: &LocalHarness, node: &LocalNodeDef) -> PathBuf {
+    harness
+        .root
+        .join(format!("gateway-{}", node.name))
+        .join("etc")
+        .join("node_gateway_info.json")
+}
+
+fn patch_gateway_direct_route(
+    harness: &LocalHarness,
+    source_node: &LocalNodeDef,
+    target_node_name: &str,
+    direct_url: &str,
+) -> Result<(), String> {
+    let path = gateway_info_path(harness, source_node);
+    let content = fs::read_to_string(path.as_path())
+        .map_err(|err| format!("failed to read gateway info {}: {}", path.display(), err))?;
+    let mut value = serde_json::from_str::<Value>(content.as_str()).map_err(|err| {
+        format!(
+            "failed to decode gateway info {} before route patch: {}",
+            path.display(),
+            err
+        )
+    })?;
+    let route = value
+        .get_mut("routes")
+        .and_then(|routes| routes.get_mut(target_node_name))
+        .and_then(|route| route.get_mut("direct"))
+        .and_then(|direct| direct.get_mut("url"))
+        .ok_or_else(|| {
+            format!(
+                "missing direct route for target {} in {}",
+                target_node_name,
+                path.display()
+            )
+        })?;
+    *route = Value::String(direct_url.to_string());
+    fs::write(
+        path.as_path(),
+        serde_json::to_string_pretty(&value).unwrap(),
+    )
+    .map_err(|err| {
+        format!(
+            "failed to write gateway info {} after route patch: {}",
+            path.display(),
+            err
+        )
+    })
+}
+
 fn gateway_admin_join_target(
     source_gateway: &LocalNodeDef,
     ingress_port: u16,
@@ -2995,6 +3073,36 @@ fn require_system_config_klog_failover_error(err: &str) -> Result<(), String> {
     ))
 }
 
+fn require_gateway_diagnostic_error(err: &str, context: &str) -> Result<(), String> {
+    let lower = err.to_ascii_lowercase();
+    let has_route_context = lower.contains("http://")
+        || lower.contains("url=")
+        || lower.contains("status")
+        || lower.contains("gateway")
+        || lower.contains("route");
+    let has_failure_context = [
+        "500",
+        "502",
+        "503",
+        "timeout",
+        "connect",
+        "connection",
+        "refused",
+        "failed",
+        "non-success",
+        "tcp",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if has_route_context && has_failure_context {
+        return Ok(());
+    }
+    Err(format!(
+        "gateway abnormal error for {} is not diagnostic enough: {}",
+        context, err
+    ))
+}
+
 fn require_system_config_value(
     value: &Value,
     expected_value: &str,
@@ -3047,6 +3155,16 @@ fn require_system_config_null(value: &Value, context: &str) -> Result<(), String
         return Err(format!(
             "system_config value should be null for {}: {}",
             context, value
+        ));
+    }
+    Ok(())
+}
+
+fn require_meta_key_absent(response: &MetaQueryResponse, key: &str) -> Result<(), String> {
+    if response.items.iter().any(|item| item.key == key) {
+        return Err(format!(
+            "meta key {} should be absent but query returned {:?}",
+            key, response.items
         ));
     }
     Ok(())
@@ -13547,6 +13665,319 @@ async fn run_local_gateway_system_config_leader_failover() -> Result<(), String>
     result
 }
 
+async fn run_local_gateway_abnormal_inner(harness: &mut LocalHarness) -> Result<(), String> {
+    if LocalGatewayRouteMode::from_env()? != LocalGatewayRouteMode::TargetGateway {
+        return Err(format!(
+            "{} requires {}=target-gateway",
+            GATEWAY_ABNORMAL_MODE, KLOG_CLUSTER_DV_ROUTE_MODE_ENV
+        ));
+    }
+
+    let route_prefix = "/.cluster/klog-it-gateway-abnormal-dv";
+    let setup =
+        prepare_local_gateway_setup(harness, GATEWAY_ABNORMAL_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing gateway abnormal seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.rpc, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let source = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .cloned()
+        .ok_or_else(|| format!("gateway abnormal leader {} not found", leader_id))?;
+    let mut non_leaders = nodes
+        .iter()
+        .filter(|node| node.id != leader_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    if non_leaders.len() < 2 {
+        return Err("gateway abnormal requires two non-leader nodes".to_string());
+    }
+    let stopped_victim = non_leaders.remove(0);
+    let healthy_target = non_leaders.remove(0);
+    let source_gateway_addr = gateway_addr(&source, ingress_port);
+    let healthy_gateway_addr = gateway_addr(&healthy_target, ingress_port);
+    let repo_root = repo_root()?;
+    let buckyos_root = get_buckyos_root();
+    let cyfs_gateway_bin = resolve_cyfs_gateway_bin(&repo_root, &buckyos_root)?;
+    let mut used_ports = collect_used_ports(&nodes, ingress_port);
+    let stale_source = LocalNodeDef {
+        id: 99,
+        name: "client".to_string(),
+        gateway_host: "127.0.0.4".to_string(),
+        ports: LocalNodePorts {
+            raft: pick_local_port(&mut used_ports)?,
+            inter: pick_local_port(&mut used_ports)?,
+            admin: pick_local_port(&mut used_ports)?,
+            rpc: pick_local_port(&mut used_ports)?,
+            rtcp: pick_local_port(&mut used_ports)?,
+            zone_http: pick_local_port(&mut used_ports)?,
+            control: pick_local_port(&mut used_ports)?,
+        },
+    };
+    if !reserve_port(stale_source.gateway_host.as_str(), ingress_port) {
+        return Err(format!(
+            "gateway abnormal stale source ingress is not free: {}:{}",
+            stale_source.gateway_host, ingress_port
+        ));
+    }
+    let stale_source_gateway_addr = gateway_addr(&stale_source, ingress_port);
+
+    let suffix = unique_suffix("gateway-abnormal");
+    let base = format!("gateway_abnormal_dv/{}/", suffix);
+    let baseline_key = format!("{}baseline", base);
+    let stopped_key = format!("{}target-gateway-stopped", base);
+    let stale_key = format!("{}stale-route", base);
+    let stale_recovery_key = format!("{}stale-route-recovered", base);
+
+    let baseline = put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        healthy_target.name.as_str(),
+        baseline_key.as_str(),
+        "baseline-v1",
+        None,
+    )
+    .await?;
+    let baseline_query = query_meta_via_cluster_inter_route(
+        &client,
+        healthy_gateway_addr.as_str(),
+        route_prefix,
+        healthy_target.name.as_str(),
+        baseline_key.as_str(),
+    )
+    .await?;
+    require_meta_value(
+        &baseline_query,
+        baseline_key.as_str(),
+        "baseline-v1",
+        baseline.revision,
+    )?;
+
+    harness.stop(format!("gateway-{}", stopped_victim.name).as_str())?;
+    let stopped_err = expect_meta_put_error_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        stopped_victim.name.as_str(),
+        stopped_key.as_str(),
+        "must-not-write-while-target-gateway-stopped",
+    )
+    .await?;
+    require_gateway_diagnostic_error(stopped_err.as_str(), "target gateway stopped data route")?;
+    let stopped_query = query_meta_via_cluster_inter_route(
+        &client,
+        healthy_gateway_addr.as_str(),
+        route_prefix,
+        healthy_target.name.as_str(),
+        stopped_key.as_str(),
+    )
+    .await?;
+    require_meta_key_absent(&stopped_query, stopped_key.as_str())?;
+
+    let stale_gateway_options = GatewayRuntimeOptions {
+        all_nodes: &nodes,
+        ingress_port,
+        route_prefix,
+        route_mode: LocalGatewayRouteMode::TargetGateway,
+    };
+    let stale_gateway_config = write_gateway_runtime(
+        harness,
+        &repo_root,
+        &buckyos_root,
+        &stale_source,
+        &stale_gateway_options,
+    )?;
+    patch_gateway_direct_route(
+        harness,
+        &stale_source,
+        healthy_target.name.as_str(),
+        "tcp:///127.0.0.250",
+    )?;
+    spawn_gateway(
+        harness,
+        &cyfs_gateway_bin,
+        stale_gateway_config.as_path(),
+        &stale_source,
+    )?;
+    wait_tcp(
+        stale_source.gateway_host.as_str(),
+        ingress_port,
+        Duration::from_secs(8),
+    )
+    .await?;
+
+    let stale_err = expect_meta_put_error_via_cluster_inter_route(
+        &client,
+        stale_source_gateway_addr.as_str(),
+        route_prefix,
+        healthy_target.name.as_str(),
+        stale_key.as_str(),
+        "must-not-write-through-stale-route",
+    )
+    .await?;
+    require_gateway_diagnostic_error(stale_err.as_str(), "stale route data route")?;
+    let admin_err = match fetch_cluster_state_via_admin_route(
+        &client,
+        stale_source_gateway_addr.as_str(),
+        route_prefix,
+        healthy_target.name.as_str(),
+    )
+    .await
+    {
+        Ok(value) => Err(format!(
+            "stale gateway admin route unexpectedly succeeded: {}",
+            value
+        )),
+        Err(err) => Ok(err),
+    }?;
+    require_gateway_diagnostic_error(admin_err.as_str(), "stale route admin route")?;
+
+    let stale_query = query_meta_via_cluster_inter_route(
+        &client,
+        healthy_gateway_addr.as_str(),
+        route_prefix,
+        healthy_target.name.as_str(),
+        stale_key.as_str(),
+    )
+    .await?;
+    require_meta_key_absent(&stale_query, stale_key.as_str())?;
+    wait_consistent_leader(
+        &client,
+        &[source.clone(), healthy_target.clone()],
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(60),
+    )
+    .await?;
+    let stale_recovery = put_meta_via_cluster_inter_route(
+        &client,
+        source_gateway_addr.as_str(),
+        route_prefix,
+        healthy_target.name.as_str(),
+        stale_recovery_key.as_str(),
+        "stale-route-recovered-v1",
+        None,
+    )
+    .await?;
+    let current = query_meta_prefix_via_cluster_inter_route(
+        &client,
+        healthy_gateway_addr.as_str(),
+        route_prefix,
+        healthy_target.name.as_str(),
+        base.as_str(),
+        16,
+    )
+    .await?;
+    require_meta_key_absent(&current, stopped_key.as_str())?;
+    require_meta_key_absent(&current, stale_key.as_str())?;
+    require_meta_selected_values(
+        &current,
+        &[
+            (
+                baseline_key.as_str(),
+                "baseline-v1",
+                baseline.revision,
+                baseline.revision,
+                1,
+            ),
+            (
+                stale_recovery_key.as_str(),
+                "stale-route-recovered-v1",
+                stale_recovery.revision,
+                stale_recovery.revision,
+                1,
+            ),
+        ],
+    )?;
+
+    println!(
+        "[klog-cluster-dv] gateway abnormal ok: leader={}, source={}, stopped_victim={}, healthy_target={}, stale_source={}, stopped_error_len={}, stale_error_len={}, admin_error_len={}, prefix={}",
+        leader_id,
+        source.name,
+        stopped_victim.name,
+        healthy_target.name,
+        stale_source.name,
+        stopped_err.len(),
+        stale_err.len(),
+        admin_err.len(),
+        base
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_abnormal() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_abnormal_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_mvcc_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -15386,6 +15817,7 @@ async fn run() -> Result<(), String> {
         SYSTEM_CONFIG_LEADER_FAILOVER_MODE => {
             run_local_gateway_system_config_leader_failover().await
         }
+        GATEWAY_ABNORMAL_MODE => run_local_gateway_abnormal().await,
         SYSTEM_CONFIG_MVCC_MODE => run_local_gateway_system_config_mvcc().await,
         SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE => run_local_gateway_system_config_multi_ood_mvcc().await,
         SYSTEM_CONFIG_PAGINATION_MODE => run_local_gateway_system_config_pagination().await,
@@ -15420,6 +15852,7 @@ async fn run() -> Result<(), String> {
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
                 SYSTEM_CONFIG_LEADER_FAILOVER_MODE,
+                GATEWAY_ABNORMAL_MODE,
                 SYSTEM_CONFIG_MVCC_MODE,
                 SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE,
                 SYSTEM_CONFIG_PAGINATION_MODE,

@@ -157,6 +157,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     klog leader during a write, validates the transient kRPC error path, then
     retries reads/writes after new leader election and verifies old-leader
     rejoin catches up the klog-backed keys.
+- [x] Validate gateway abnormal routing diagnostics and no-miswrite behavior.
+  - Covered by `test/klog_gateway_abnormal_dv.sh`.
+  - Stops the target gateway and patches a source gateway route to a stale
+    address, then verifies data-route writes fail without landing in klog and
+    admin-route failures include diagnosable route/status context.
 - [x] Validate local multi-OOD system_config klog rollout rule.
   - Covered by `test/klog_system_config_rollout_dv.sh`.
   - Validates that only the bootstrap OOD copies sled data into klog and that a
