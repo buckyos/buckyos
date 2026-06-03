@@ -168,6 +168,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
     `klog-service` with its old config, then starts a real `system_config`
     instance against that stale local klog endpoint and verifies failed writes
     do not land in active klog or re-add the removed OOD.
+- [x] Validate duplicate klog node id replacement is rejected.
+  - Covered by `test/klog_node_id_reuse_dv.sh`.
+  - Starts a replacement `klog-service` with an existing `node_id` but different
+    data directory, ports, and node name, then verifies admin add-learner and
+    auto-join both fail with explicit node identity diagnostics.
 - [x] Validate local multi-OOD system_config klog rollout rule.
   - Covered by `test/klog_system_config_rollout_dv.sh`.
   - Validates that only the bootstrap OOD copies sled data into klog and that a

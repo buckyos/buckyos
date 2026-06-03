@@ -154,6 +154,7 @@ uv run test/run.py -p klog_system_config_rollout_dv
 uv run test/run.py -p klog_system_config_leader_failover_dv
 uv run test/run.py -p klog_gateway_abnormal_dv
 uv run test/run.py -p klog_system_config_stale_config_rejoin_dv
+uv run test/run.py -p klog_node_id_reuse_dv
 ```
 
 该用例会启动 3 节点 klog 集群、两个隔离的 `system_config` 实例，并验证只有 bootstrap OOD 的 sled 数据会迁移；非 bootstrap OOD 的本地 sled 残留不会进入 klog。
@@ -163,6 +164,8 @@ uv run test/run.py -p klog_system_config_stale_config_rejoin_dv
 `klog_gateway_abnormal_dv` 会启动 3 节点 target-gateway 模式 klog 集群，覆盖目标 gateway 停止、source gateway route map 指向陈旧地址，以及 admin route 返回错误的路径。测试会确认失败写入没有落入 klog，并检查错误里保留 route/status/connect 等诊断上下文。
 
 `klog_system_config_stale_config_rejoin_dv` 会模拟 OOD 被 shrink 后，node-daemon 仍用旧配置重启该 OOD 上的 `klog-service`。测试会启动真实 `system_config` 指向这个 stale local klog endpoint，确认写入失败不会落入 active klog，也不会把被移除 OOD 自动加回 membership；active OOD 的 `system_config` 仍可继续读写。
+
+`klog_node_id_reuse_dv` 会启动一个 replacement `klog-service`，使用已存在的 `node_id` 但不同数据目录、端口和 node name。测试会确认 admin add-learner 与 auto-join 都产生明确的 node identity mismatch/duplicate membership 错误，且 active 集群 membership 和读写不受影响。
 
 ## 9. MVCC auto compaction
 
