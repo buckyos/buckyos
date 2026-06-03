@@ -1096,6 +1096,7 @@ mod tests {
             admin_port: 21003,
             rpc_port: 4080,
             node_name: Some("node-7".to_string()),
+            device_id: None,
         }
     }
 
@@ -1142,6 +1143,7 @@ mod tests {
             admin_port: 0,
             rpc_port: 4080,
             node_name: None,
+            device_id: None,
         };
         let transport = KClusterTransportConfig::default();
         let builder = KClusterEndpointBuilder::new(&node, &transport);

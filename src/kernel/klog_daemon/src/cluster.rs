@@ -31,6 +31,7 @@ pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftR
                     0
                 },
                 node_name: cfg.advertise_node_name.clone(),
+                device_id: cfg.advertise_device_id.clone(),
             },
         );
         match raft.initialize(members).await {
@@ -276,14 +277,18 @@ async fn join_and_promote_once(
             if let Some(node_name) = cfg.advertise_node_name.as_deref() {
                 q.append_pair("node_name", node_name);
             }
+            if let Some(device_id) = cfg.advertise_device_id.as_deref() {
+                q.append_pair("device_id", device_id);
+            }
             q.append_pair("blocking", if cfg.join_blocking { "true" } else { "false" });
         }
 
         info!(
-            "Auto-join add-learner: admin_target={}, node_id={}, node_name={:?}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
+            "Auto-join add-learner: admin_target={}, node_id={}, node_name={:?}, device_id={:?}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
             admin_target,
             cfg.node_id,
             cfg.advertise_node_name.as_deref(),
+            cfg.advertise_device_id.as_deref(),
             cfg.advertise_addr,
             cfg.advertise_port,
             cfg.advertise_inter_port,
@@ -462,6 +467,8 @@ fn ensure_existing_remote_node_matches_config(
     };
     let expected_node_name = cfg.advertise_node_name.as_deref().unwrap_or("");
     let remote_node_name = remote.node_name.as_deref().unwrap_or("");
+    let expected_device_id = cfg.advertise_device_id.as_deref().unwrap_or("");
+    let remote_device_id = remote.device_id.as_deref().unwrap_or("");
     let mut mismatches = Vec::new();
     if remote.addr != cfg.advertise_addr {
         mismatches.push(format!(
@@ -497,6 +504,12 @@ fn ensure_existing_remote_node_matches_config(
         mismatches.push(format!(
             "node_name expected={} remote={}",
             expected_node_name, remote_node_name
+        ));
+    }
+    if remote_device_id != expected_device_id {
+        mismatches.push(format!(
+            "device_id expected={} remote={}",
+            expected_device_id, remote_device_id
         ));
     }
 
@@ -747,6 +760,7 @@ mod tests {
             admin_port: 21003,
             rpc_port: 31001,
             node_name: None,
+            device_id: None,
         };
         let target = admin_target_from_node(&cfg, &node);
         assert_eq!(target, "127.0.0.1:21003");
@@ -763,6 +777,7 @@ mod tests {
             admin_port: 0,
             rpc_port: 31001,
             node_name: None,
+            device_id: None,
         };
         let target = admin_target_from_node(&cfg, &node);
         assert_eq!(target, "127.0.0.1:21001");
@@ -782,6 +797,7 @@ mod tests {
             admin_port: 21003,
             rpc_port: 31001,
             node_name: Some("ood2".to_string()),
+            device_id: None,
         };
         let target = admin_target_from_node(&cfg, &node);
         assert_eq!(target, "http://127.0.0.1:3180/.cluster/klog/ood2/admin");
@@ -816,6 +832,7 @@ mod tests {
             advertise_admin_port: 21003,
             rpc_advertise_port: 21101,
             advertise_node_name: None,
+            advertise_device_id: None,
             data_dir: PathBuf::from("/tmp/klog_cluster_test"),
             cluster_name: cluster_name.to_string(),
             cluster_id: cluster_id.to_string(),
@@ -883,6 +900,7 @@ mod tests {
                 admin_port: cfg.advertise_admin_port,
                 rpc_port: cfg.rpc_advertise_port,
                 node_name: cfg.advertise_node_name.clone(),
+                device_id: cfg.advertise_device_id.clone(),
             },
         );
     }
@@ -891,6 +909,7 @@ mod tests {
     fn test_existing_remote_node_identity_match_ok() {
         let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
         cfg.advertise_node_name = Some("ood1".to_string());
+        cfg.advertise_device_id = Some("did:dev:ood1".to_string());
         let mut state = sample_state("cluster_a", "cluster_a_id");
         insert_cfg_node(&mut state, &cfg);
 
@@ -913,6 +932,7 @@ mod tests {
                 admin_port: cfg.advertise_admin_port,
                 rpc_port: cfg.rpc_advertise_port,
                 node_name: Some("ood1".to_string()),
+                device_id: Some("did:dev:ood1".to_string()),
             },
         );
 
@@ -927,6 +947,39 @@ mod tests {
         assert!(err.contains("node_id=1"));
         assert!(err.contains("raft_port"));
         assert!(err.contains("node_name"));
+    }
+
+    #[test]
+    fn test_existing_remote_node_device_id_mismatch_rejected() {
+        let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
+        cfg.advertise_node_name = Some("ood1".to_string());
+        cfg.advertise_device_id = Some("did:dev:new-ood1".to_string());
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.nodes.insert(
+            cfg.node_id,
+            KNode {
+                id: cfg.node_id,
+                addr: cfg.advertise_addr.clone(),
+                port: cfg.advertise_port,
+                inter_port: cfg.advertise_inter_port,
+                admin_port: cfg.advertise_admin_port,
+                rpc_port: cfg.rpc_advertise_port,
+                node_name: Some("ood1".to_string()),
+                device_id: Some("did:dev:old-ood1".to_string()),
+            },
+        );
+
+        let err = ensure_existing_remote_node_matches_config(
+            &cfg,
+            &state,
+            "127.0.0.1:21001",
+            "already-voter",
+        )
+        .expect_err("device identity mismatch should fail");
+        assert!(err.contains("node identity mismatch"));
+        assert!(err.contains("device_id"));
+        assert!(err.contains("did:dev:new-ood1"));
+        assert!(err.contains("did:dev:old-ood1"));
     }
 
     #[test]

@@ -16,14 +16,14 @@ use futures::prelude::*;
 use log::*;
 use named_store::NamedDataMgr;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, from_value, json};
+use serde_json::{from_value, json, Value};
 use simplelog::*;
 use toml;
 
 use buckyos_api::*;
 use buckyos_kit::*;
 use jsonwebtoken::jwk::Jwk;
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use name_client::*;
 use name_lib::*;
 use ndn_lib::*;
@@ -32,10 +32,10 @@ use package_lib::*;
 use crate::active_server::*;
 use crate::app_mgr::*;
 use crate::boot::{
-    NodeRole, build_boot_node_gateway_info, build_keep_tunnel_targets, dedup_keep_tunnel_targets,
+    build_boot_node_gateway_info, build_keep_tunnel_targets, dedup_keep_tunnel_targets,
     discover_oods_in_lan, extract_keep_tunnel_targets_from_gateway_info,
     merge_keep_tunnel_into_gateway_config, read_local_gateway_keep_tunnel_targets,
-    write_boot_node_gateway_config, write_boot_node_gateway_info,
+    write_boot_node_gateway_config, write_boot_node_gateway_info, NodeRole,
 };
 use crate::finder::{DiscoveredNode, NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
@@ -871,7 +871,11 @@ fn derive_klog_node_id_from_device(device_doc: &DeviceConfig) -> u64 {
         hash = hash.wrapping_mul(FNV1A64_PRIME);
     }
 
-    if hash == 0 { 1 } else { hash }
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
 }
 
 fn build_klog_gateway_admin_target(ood_name: &str) -> String {
@@ -938,6 +942,10 @@ fn build_klog_service_env(
     env_vars.insert(
         "KLOG_ADVERTISE_NODE_NAME".to_string(),
         this_node_name.to_string(),
+    );
+    env_vars.insert(
+        "KLOG_ADVERTISE_DEVICE_ID".to_string(),
+        this_device_doc.id.to_string(),
     );
     env_vars.insert(
         "KLOG_ADVERTISE_PORT".to_string(),
@@ -2262,6 +2270,7 @@ mod tests {
     fn build_klog_service_env_bootstraps_first_ood() {
         let device_doc = test_device_doc("ood1", "ood1-device-key");
         let expected_node_id = derive_klog_node_id_from_device(&device_doc).to_string();
+        let expected_device_id = device_doc.id.to_string();
         let env = build_klog_service_env(
             &device_doc,
             "test.zone",
@@ -2272,6 +2281,10 @@ mod tests {
         assert_eq!(
             env.get("KLOG_NODE_ID").map(String::as_str),
             Some(expected_node_id.as_str())
+        );
+        assert_eq!(
+            env.get("KLOG_ADVERTISE_DEVICE_ID").map(String::as_str),
+            Some(expected_device_id.as_str())
         );
         assert_eq!(
             env.get("KLOG_AUTO_BOOTSTRAP").map(String::as_str),
@@ -2289,6 +2302,7 @@ mod tests {
     fn build_klog_service_env_joins_later_ood_to_seed() {
         let device_doc = test_device_doc("ood2", "ood2-device-key");
         let expected_node_id = derive_klog_node_id_from_device(&device_doc).to_string();
+        let expected_device_id = device_doc.id.to_string();
         let env = build_klog_service_env(
             &device_doc,
             "test.zone",
@@ -2299,6 +2313,10 @@ mod tests {
         assert_eq!(
             env.get("KLOG_NODE_ID").map(String::as_str),
             Some(expected_node_id.as_str())
+        );
+        assert_eq!(
+            env.get("KLOG_ADVERTISE_DEVICE_ID").map(String::as_str),
+            Some(expected_device_id.as_str())
         );
         assert_eq!(
             env.get("KLOG_AUTO_BOOTSTRAP").map(String::as_str),
@@ -2476,8 +2494,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ensure_node_gateway_dir_pkgs_installed_does_not_accept_friendly_dir_for_exact_pkg()
-     {
+    async fn test_ensure_node_gateway_dir_pkgs_installed_does_not_accept_friendly_dir_for_exact_pkg(
+    ) {
         let pkg_env_path =
             create_temp_pkg_env_path("ensure_node_gateway_dir_pkgs_installed_requires_exact");
         let (_, meta_obj_id) = index_test_pkg(&pkg_env_path, "portal-web", "1.0.0");

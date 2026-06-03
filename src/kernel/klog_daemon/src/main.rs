@@ -197,6 +197,9 @@ fn apply_buckyos_runtime_defaults(
     network
         .advertise_node_name
         .get_or_insert_with(|| node_name.to_string());
+    network
+        .advertise_device_id
+        .get_or_insert_with(|| device.id.to_string());
     network.enable_rpc_server.get_or_insert(true);
 
     let default_transport = KClusterTransportConfig::default();
@@ -388,10 +391,15 @@ async fn init_buckyos_runtime_if_needed(
     validate_buckyos_cluster_transport_identity(
         cfg.cluster_network.mode,
         cfg.advertise_node_name.as_deref(),
+        cfg.advertise_device_id.as_deref(),
         runtime
             .device_config
             .as_ref()
             .map(|device| device.name.as_str()),
+        runtime
+            .device_config
+            .as_ref()
+            .map(|device| device.id.to_string()),
     )?;
     runtime.set_main_service_port(rpc_port).await;
 
@@ -447,7 +455,9 @@ fn parse_port_from_addr(addr: &str) -> Option<u16> {
 fn validate_buckyos_cluster_transport_identity(
     transport_mode: KClusterTransportMode,
     advertise_node_name: Option<&str>,
+    advertise_device_id: Option<&str>,
     runtime_node_name: Option<&str>,
+    runtime_device_id: Option<String>,
 ) -> Result<(), String> {
     if transport_mode == KClusterTransportMode::Direct {
         return Ok(());
@@ -469,6 +479,22 @@ fn validate_buckyos_cluster_transport_identity(
         error!("{}", msg);
         msg
     })?;
+    let runtime_device_id = runtime_device_id.ok_or_else(|| {
+        let msg = format!(
+            "Missing BuckyOS runtime device identity for cluster_network.mode={}",
+            transport_mode
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    let advertise_device_id = advertise_device_id.ok_or_else(|| {
+        let msg = format!(
+            "Missing network.advertise_device_id (BuckyOS device id) for cluster_network.mode={} under BuckyOS runtime",
+            transport_mode
+        );
+        error!("{}", msg);
+        msg
+    })?;
 
     if advertise_node_name != runtime_node_name {
         let msg = format!(
@@ -478,10 +504,22 @@ fn validate_buckyos_cluster_transport_identity(
         error!("{}", msg);
         return Err(msg);
     }
+    if advertise_device_id != runtime_device_id.as_str() {
+        let msg = format!(
+            "Invalid cluster transport identity: cluster_network.mode={}, advertise_device_id(BuckyOS device id)={} must equal runtime_device_id={}",
+            transport_mode, advertise_device_id, runtime_device_id
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
 
     info!(
-        "Validated BuckyOS cluster transport identity: cluster_network.mode={}, advertise_node_name(BuckyOS node name)={}, runtime_node_name={}",
-        transport_mode, advertise_node_name, runtime_node_name
+        "Validated BuckyOS cluster transport identity: cluster_network.mode={}, advertise_node_name(BuckyOS node name)={}, runtime_node_name={}, advertise_device_id(BuckyOS device id)={}, runtime_device_id={}",
+        transport_mode,
+        advertise_node_name,
+        runtime_node_name,
+        advertise_device_id,
+        runtime_device_id
     );
     Ok(())
 }
@@ -521,8 +559,14 @@ mod tests {
 
     #[test]
     fn validate_buckyos_cluster_transport_identity_direct_skips_check() {
-        validate_buckyos_cluster_transport_identity(KClusterTransportMode::Direct, None, None)
-            .expect("direct mode should skip node identity validation");
+        validate_buckyos_cluster_transport_identity(
+            KClusterTransportMode::Direct,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("direct mode should skip node identity validation");
     }
 
     #[test]
@@ -530,18 +574,33 @@ mod tests {
         validate_buckyos_cluster_transport_identity(
             KClusterTransportMode::GatewayProxy,
             Some("ood1"),
+            Some("did:dev:ood1"),
             Some("ood1"),
+            Some("did:dev:ood1".to_string()),
         )
         .expect("matching advertise_node_name should be accepted");
 
         let err = validate_buckyos_cluster_transport_identity(
             KClusterTransportMode::Hybrid,
             Some("ood2"),
+            Some("did:dev:ood1"),
             Some("ood1"),
+            Some("did:dev:ood1".to_string()),
         )
         .expect_err("mismatched advertise_node_name should be rejected");
         assert!(err.contains("advertise_node_name(BuckyOS node name)=ood2"));
         assert!(err.contains("runtime_node_name=ood1"));
+
+        let err = validate_buckyos_cluster_transport_identity(
+            KClusterTransportMode::Hybrid,
+            Some("ood1"),
+            Some("did:dev:replacement"),
+            Some("ood1"),
+            Some("did:dev:ood1".to_string()),
+        )
+        .expect_err("mismatched advertise_device_id should be rejected");
+        assert!(err.contains("advertise_device_id(BuckyOS device id)=did:dev:replacement"));
+        assert!(err.contains("runtime_device_id=did:dev:ood1"));
     }
 }
 
@@ -555,7 +614,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
     })?;
 
     info!(
-        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, advertise_node_name(BuckyOS node name)={:?}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, cluster_network_mode={}, cluster_gateway_addr={}, cluster_gateway_route_prefix={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), meta_compaction(enabled={}, policy={}, retention_revisions={}, check_interval_ms={}, min_compact_gap={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
+        "klog startup config: node_id={}, raft_listen_addr={}, inter_node_listen_addr={}, admin_listen_addr={}, rpc_enabled={}, rpc_listen_addr={}, advertise_addr={}, advertise_port={}, advertise_inter_port={}, advertise_admin_port={}, rpc_advertise_port={}, advertise_node_name(BuckyOS node name)={:?}, advertise_device_id(BuckyOS device id)={:?}, data_dir={}, cluster_name={}, cluster_id={}, auto_bootstrap={}, state_store_sync_write={}, cluster_network_mode={}, cluster_gateway_addr={}, cluster_gateway_route_prefix={}, join_targets={:?}, join_blocking={}, join_target_role={}, join_retry(strategy={}, initial_interval_ms={}, max_interval_ms={}, multiplier={}, jitter_ratio={}, max_attempts={}, request_timeout_ms={}, shuffle_targets_each_round={}, config_change_conflict_extra_backoff_ms={}), raft(election_timeout_min_ms={}, election_timeout_max_ms={}, heartbeat_interval_ms={}, install_snapshot_timeout_ms={}, max_payload_entries={}, replication_lag_threshold={}, snapshot_policy={}, snapshot_max_chunk_size_bytes={}, max_in_snapshot_log_to_keep={}, purge_batch_size={}), meta_compaction(enabled={}, policy={}, retention_revisions={}, check_interval_ms={}, min_compact_gap={}), admin_local_only={}, rpc_append(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_query(timeout_ms={}, body_limit_bytes={}, concurrency={}), rpc_jsonrpc(timeout_ms={}, body_limit_bytes={}, concurrency={})",
         cfg.node_id,
         cfg.listen_addr,
         cfg.inter_node_listen_addr,
@@ -568,6 +627,7 @@ async fn run(cfg: KLogRuntimeConfig) -> Result<(), String> {
         cfg.advertise_admin_port,
         cfg.rpc_advertise_port,
         cfg.advertise_node_name.as_deref(),
+        cfg.advertise_device_id.as_deref(),
         cfg.data_dir.display(),
         cfg.cluster_name,
         cfg.cluster_id,

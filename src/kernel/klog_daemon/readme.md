@@ -118,7 +118,7 @@ BuckyOS/gateway 层负责：
 2. 算法：`FNV-1a 64`，输入前缀固定为 `buckyos:klog-node-id:v1:`。
 3. 结果：非 0 的 `u64`，写入 `KLOG_NODE_ID`。
 
-这个算法是 klog voter 身份协议的一部分，一旦集群初始化后不能随意修改。`KLOG_ADVERTISE_NODE_NAME` 仍使用 BuckyOS 的设备名，gateway cluster route 也继续按 node name 转发。
+这个算法是 klog voter 身份协议的一部分，一旦集群初始化后不能随意修改。`KLOG_ADVERTISE_NODE_NAME` 仍使用 BuckyOS 的设备名，gateway cluster route 也继续按 node name 转发。`KLOG_ADVERTISE_DEVICE_ID` 使用 BuckyOS `DeviceConfig.id` 的 DID 字符串，是可选的外部设备身份字段；BuckyOS 集成模式会自动填充，并在 auto-join 发现相同 `KLOG_NODE_ID` 已存在时与远端 membership 中的 `device_id` 一起校验。
 
 这样做的目的：
 
@@ -165,7 +165,7 @@ uv run test/run.py -p klog_node_id_reuse_dv
 
 `klog_system_config_stale_config_rejoin_dv` 会模拟 OOD 被 shrink 后，node-daemon 仍用旧配置重启该 OOD 上的 `klog-service`。测试会启动真实 `system_config` 指向这个 stale local klog endpoint，确认写入失败不会落入 active klog，也不会把被移除 OOD 自动加回 membership；active OOD 的 `system_config` 仍可继续读写。
 
-`klog_node_id_reuse_dv` 会启动一个 replacement `klog-service`，使用已存在的 `node_id` 但不同数据目录、端口和 node name。测试会确认 admin add-learner 与 auto-join 都产生明确的 node identity mismatch/duplicate membership 错误，且 active 集群 membership 和读写不受影响。
+`klog_node_id_reuse_dv` 会启动一个 replacement `klog-service`，使用已存在的 `node_id` 但不同数据目录、端口、node name 和 device id。测试会确认 admin add-learner 与 auto-join 都产生明确的 node identity mismatch/duplicate membership 错误，且 active 集群 membership 和读写不受影响。
 
 ## 9. MVCC auto compaction
 

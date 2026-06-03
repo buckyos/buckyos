@@ -19,6 +19,9 @@ pub const ENV_ADVERTISE_ADDR: &str = "KLOG_ADVERTISE_ADDR";
 /// Environment variable key: advertised stable node name for gateway/proxy routing.
 pub const ENV_ADVERTISE_NODE_NAME: &str = "KLOG_ADVERTISE_NODE_NAME";
 
+/// Environment variable key: advertised external device identity.
+pub const ENV_ADVERTISE_DEVICE_ID: &str = "KLOG_ADVERTISE_DEVICE_ID";
+
 /// Environment variable key: advertised raft protocol port.
 pub const ENV_ADVERTISE_PORT: &str = "KLOG_ADVERTISE_PORT";
 
