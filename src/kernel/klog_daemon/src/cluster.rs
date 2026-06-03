@@ -239,6 +239,12 @@ async fn join_and_promote_once(
     );
 
     if state_before.voters.contains(&cfg.node_id) {
+        ensure_existing_remote_node_matches_config(
+            cfg,
+            &state_before,
+            admin_target,
+            "already-voter",
+        )?;
         if cfg.join_target_role == KLogJoinTargetRole::Learner {
             return Ok(format!(
                 "node is already voter, target_role=learner does not downgrade existing voter: node_id={}, voters={:?}",
@@ -291,6 +297,12 @@ async fn join_and_promote_once(
             admin_target, cfg.node_id, add_result
         );
     } else {
+        ensure_existing_remote_node_matches_config(
+            cfg,
+            &state_before,
+            admin_target,
+            "already-learner",
+        )?;
         info!(
             "Auto-join skip add-learner because node is already learner: admin_target={}, node_id={}",
             admin_target, cfg.node_id
@@ -426,6 +438,82 @@ fn build_promote_voters_csv(existing_voters: &[u64], node_id: u64) -> String {
         .map(|v| v.to_string())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn ensure_existing_remote_node_matches_config(
+    cfg: &KLogRuntimeConfig,
+    state: &KLogClusterStateResponse,
+    admin_target: &str,
+    stage: &str,
+) -> Result<(), String> {
+    let Some(remote) = state.nodes.get(&cfg.node_id) else {
+        let msg = format!(
+            "node identity mismatch at stage={}: remote membership contains node_id={} but cluster-state nodes map has no entry: admin_target={}, remote_voters={:?}, remote_learners={:?}",
+            stage, cfg.node_id, admin_target, state.voters, state.learners
+        );
+        error!("{}", msg);
+        return Err(msg);
+    };
+
+    let expected_rpc_port = if cfg.enable_rpc_server {
+        cfg.rpc_advertise_port
+    } else {
+        0
+    };
+    let expected_node_name = cfg.advertise_node_name.as_deref().unwrap_or("");
+    let remote_node_name = remote.node_name.as_deref().unwrap_or("");
+    let mut mismatches = Vec::new();
+    if remote.addr != cfg.advertise_addr {
+        mismatches.push(format!(
+            "addr expected={} remote={}",
+            cfg.advertise_addr, remote.addr
+        ));
+    }
+    if remote.port != cfg.advertise_port {
+        mismatches.push(format!(
+            "raft_port expected={} remote={}",
+            cfg.advertise_port, remote.port
+        ));
+    }
+    if remote.inter_port != cfg.advertise_inter_port {
+        mismatches.push(format!(
+            "inter_port expected={} remote={}",
+            cfg.advertise_inter_port, remote.inter_port
+        ));
+    }
+    if remote.admin_port != cfg.advertise_admin_port {
+        mismatches.push(format!(
+            "admin_port expected={} remote={}",
+            cfg.advertise_admin_port, remote.admin_port
+        ));
+    }
+    if remote.rpc_port != expected_rpc_port {
+        mismatches.push(format!(
+            "rpc_port expected={} remote={}",
+            expected_rpc_port, remote.rpc_port
+        ));
+    }
+    if remote_node_name != expected_node_name {
+        mismatches.push(format!(
+            "node_name expected={} remote={}",
+            expected_node_name, remote_node_name
+        ));
+    }
+
+    if mismatches.is_empty() {
+        return Ok(());
+    }
+
+    let msg = format!(
+        "node identity mismatch at stage={}: node_id={} is already present in remote membership but local advertised identity differs: admin_target={}, mismatches=[{}], remote_node={:?}",
+        stage,
+        cfg.node_id,
+        admin_target,
+        mismatches.join("; "),
+        remote
+    );
+    error!("{}", msg);
+    Err(msg)
 }
 
 fn ensure_auto_join_allowed_by_local_state(
@@ -603,7 +691,8 @@ fn build_admin_url(target: &str, path: &str) -> Result<reqwest::Url, String> {
 mod tests {
     use super::{
         admin_target_from_node, build_admin_url, build_promote_voters_csv, dedup_targets,
-        ensure_cluster_identity_matches, should_block_auto_join_from_local_membership,
+        ensure_cluster_identity_matches, ensure_existing_remote_node_matches_config,
+        should_block_auto_join_from_local_membership,
     };
     use crate::config::{
         KLogJoinRetryConfig, KLogJoinTargetRole, KLogRaftConfig, KLogRuntimeConfig,
@@ -781,6 +870,79 @@ mod tests {
         let state = sample_state("renamed_cluster", "cluster_a_id");
         ensure_cluster_identity_matches(&cfg, &state, "127.0.0.1:21001", "test")
             .expect("name mismatch should be allowed when cluster_id matches");
+    }
+
+    fn insert_cfg_node(state: &mut KLogClusterStateResponse, cfg: &KLogRuntimeConfig) {
+        state.nodes.insert(
+            cfg.node_id,
+            KNode {
+                id: cfg.node_id,
+                addr: cfg.advertise_addr.clone(),
+                port: cfg.advertise_port,
+                inter_port: cfg.advertise_inter_port,
+                admin_port: cfg.advertise_admin_port,
+                rpc_port: cfg.rpc_advertise_port,
+                node_name: cfg.advertise_node_name.clone(),
+            },
+        );
+    }
+
+    #[test]
+    fn test_existing_remote_node_identity_match_ok() {
+        let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
+        cfg.advertise_node_name = Some("ood1".to_string());
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        insert_cfg_node(&mut state, &cfg);
+
+        ensure_existing_remote_node_matches_config(&cfg, &state, "127.0.0.1:21001", "test")
+            .expect("existing node identity should match");
+    }
+
+    #[test]
+    fn test_existing_remote_node_identity_mismatch_rejected() {
+        let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
+        cfg.advertise_node_name = Some("replacement-ood".to_string());
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.nodes.insert(
+            cfg.node_id,
+            KNode {
+                id: cfg.node_id,
+                addr: cfg.advertise_addr.clone(),
+                port: cfg.advertise_port + 1,
+                inter_port: cfg.advertise_inter_port,
+                admin_port: cfg.advertise_admin_port,
+                rpc_port: cfg.rpc_advertise_port,
+                node_name: Some("ood1".to_string()),
+            },
+        );
+
+        let err = ensure_existing_remote_node_matches_config(
+            &cfg,
+            &state,
+            "127.0.0.1:21001",
+            "already-voter",
+        )
+        .expect_err("identity mismatch should fail");
+        assert!(err.contains("node identity mismatch"));
+        assert!(err.contains("node_id=1"));
+        assert!(err.contains("raft_port"));
+        assert!(err.contains("node_name"));
+    }
+
+    #[test]
+    fn test_existing_remote_node_missing_spec_rejected() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
+        let state = sample_state("cluster_a", "cluster_a_id");
+
+        let err = ensure_existing_remote_node_matches_config(
+            &cfg,
+            &state,
+            "127.0.0.1:21001",
+            "already-voter",
+        )
+        .expect_err("missing remote node spec should fail");
+        assert!(err.contains("node identity mismatch"));
+        assert!(err.contains("nodes map has no entry"));
     }
 
     #[test]

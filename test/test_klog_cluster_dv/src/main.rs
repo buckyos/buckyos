@@ -36,6 +36,7 @@ const RAFT_MEMBERSHIP_CHANGE_REJOIN_MODE: &str = "local-gateway-raft-membership-
 const RAFT_CONCURRENT_MEMBERSHIP_MODE: &str = "local-gateway-raft-concurrent-membership";
 const RAFT_JOIN_RETRY_IDEMPOTENCY_MODE: &str = "local-gateway-raft-join-retry-idempotency";
 const RAFT_SNAPSHOT_INSTALL_CRASH_MODE: &str = "local-gateway-raft-snapshot-install-crash";
+const NODE_ID_REUSE_MODE: &str = "local-gateway-node-id-reuse";
 const MVCC_SNAPSHOT_MEMBERSHIP_MODE: &str = "local-gateway-mvcc-snapshot-membership";
 const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
@@ -3101,6 +3102,29 @@ fn require_gateway_diagnostic_error(err: &str, context: &str) -> Result<(), Stri
     }
     Err(format!(
         "gateway abnormal error for {} is not diagnostic enough: {}",
+        context, err
+    ))
+}
+
+fn require_node_id_reuse_error(err: &str, context: &str) -> Result<(), String> {
+    let lower = err.to_ascii_lowercase();
+    let has_node_context = lower.contains("node_id") || lower.contains("node id");
+    let has_reuse_context = [
+        "node identity mismatch",
+        "already",
+        "voter",
+        "learner",
+        "membership",
+        "exists",
+        "conflict",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if has_node_context && has_reuse_context {
+        return Ok(());
+    }
+    Err(format!(
+        "node-id reuse error for {} is not diagnostic enough: {}",
         context, err
     ))
 }
@@ -12146,6 +12170,239 @@ async fn run_local_gateway_raft_membership_change_rejoin() -> Result<(), String>
     result
 }
 
+async fn run_local_gateway_node_id_reuse_inner(harness: &mut LocalHarness) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-node-id-reuse-dv";
+    let setup = prepare_local_gateway_setup(harness, NODE_ID_REUSE_MODE, route_prefix, 3).await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing node-id reuse seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.rpc, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let leader_node = nodes
+        .iter()
+        .find(|node| node.id == leader_id)
+        .cloned()
+        .ok_or_else(|| format!("node-id reuse leader {} not found", leader_id))?;
+    let reused_node = nodes
+        .iter()
+        .find(|node| node.id != seed.id)
+        .cloned()
+        .ok_or_else(|| "missing non-seed node for node-id reuse".to_string())?;
+    let mut used_ports = collect_used_ports(&nodes, ingress_port);
+    let replacement = LocalNodeDef {
+        id: reused_node.id,
+        name: format!("{}-replacement", reused_node.name),
+        gateway_host: "127.0.0.4".to_string(),
+        ports: LocalNodePorts {
+            raft: pick_local_port(&mut used_ports)?,
+            inter: pick_local_port(&mut used_ports)?,
+            admin: pick_local_port(&mut used_ports)?,
+            rpc: pick_local_port(&mut used_ports)?,
+            rtcp: pick_local_port(&mut used_ports)?,
+            zone_http: pick_local_port(&mut used_ports)?,
+            control: pick_local_port(&mut used_ports)?,
+        },
+    };
+
+    let (duplicate_status, duplicate_body) = post_add_learner_via_admin_route_status(
+        &client,
+        gateway_addr(&leader_node, ingress_port).as_str(),
+        route_prefix,
+        leader_node.name.as_str(),
+        &replacement,
+        true,
+    )
+    .await?;
+    if duplicate_status.is_success() {
+        return Err(format!(
+            "duplicate add-learner unexpectedly succeeded: reused_node_id={}, replacement={:?}, body={}",
+            replacement.id, replacement, duplicate_body
+        ));
+    }
+    require_node_id_reuse_error(
+        format!(
+            "duplicate add-learner node_id={} status={} body={}",
+            replacement.id, duplicate_status, duplicate_body
+        )
+        .as_str(),
+        "duplicate admin add-learner",
+    )?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    let join_targets = vec![format!("127.0.0.1:{}", leader_node.ports.admin)];
+    let replacement_options = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: false,
+        target_role: "voter",
+    };
+    let replacement_retry = KLogJoinRetryPatch {
+        initial_interval_ms: 200,
+        max_interval_ms: 200,
+        max_attempts: 1,
+        request_timeout_ms: 1000,
+    };
+    let replacement_config = write_klog_config_with_join_targets_and_retry_patch(
+        harness,
+        &replacement,
+        &replacement_options,
+        join_targets.as_slice(),
+        replacement_retry,
+        KLogRaftPatch::default(),
+    )?;
+    spawn_klog_with_log_level(
+        harness,
+        &klog_daemon_bin,
+        &replacement_config,
+        &replacement,
+        "info",
+    )?;
+    wait_tcp(
+        "127.0.0.1",
+        replacement.ports.admin,
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_tcp("127.0.0.1", replacement.ports.rpc, Duration::from_secs(12)).await?;
+    let node_id_pattern = format!("node_id={}", replacement.id);
+    let replacement_name_pattern = format!("expected={} remote=", replacement.name);
+    let join_log = wait_klog_out_log_contains(
+        harness,
+        &replacement,
+        &[
+            "Auto-join reached max attempts without success",
+            "node identity mismatch",
+            node_id_pattern.as_str(),
+            "node_name",
+            replacement_name_pattern.as_str(),
+        ],
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(30),
+    )
+    .await?;
+    let witness = write_log_and_meta_witness(
+        &client,
+        ingress_port,
+        route_prefix,
+        &leader_node,
+        &reused_node,
+        &nodes,
+        "node-id-reuse-after-rejected-replacement",
+    )
+    .await?;
+    verify_log_and_meta_witness_on_nodes(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &witness,
+        Duration::from_secs(40),
+    )
+    .await?;
+
+    println!(
+        "[klog-cluster-dv] node id reuse ok: leader={}, reused_node={}, replacement_name={}, duplicate_status={}, duplicate_body_len={}, join_log_len={}, log_id={}, meta_key={}",
+        leader_id,
+        reused_node.id,
+        replacement.name,
+        duplicate_status,
+        duplicate_body.len(),
+        join_log.len(),
+        witness.log_id,
+        witness.meta_key
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_node_id_reuse() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_node_id_reuse_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_raft_concurrent_membership_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -16148,6 +16405,7 @@ async fn run() -> Result<(), String> {
         RAFT_CONCURRENT_MEMBERSHIP_MODE => run_local_gateway_raft_concurrent_membership().await,
         RAFT_JOIN_RETRY_IDEMPOTENCY_MODE => run_local_gateway_raft_join_retry_idempotency().await,
         RAFT_SNAPSHOT_INSTALL_CRASH_MODE => run_local_gateway_raft_snapshot_install_crash().await,
+        NODE_ID_REUSE_MODE => run_local_gateway_node_id_reuse().await,
         MVCC_SNAPSHOT_MEMBERSHIP_MODE => run_local_gateway_mvcc_snapshot_membership().await,
         SYSTEM_CONFIG_KV_MODE => run_local_gateway_system_config_kv().await,
         SYSTEM_CONFIG_SERVICE_MODE => run_local_gateway_system_config_service().await,
@@ -16188,6 +16446,7 @@ async fn run() -> Result<(), String> {
                 RAFT_CONCURRENT_MEMBERSHIP_MODE,
                 RAFT_JOIN_RETRY_IDEMPOTENCY_MODE,
                 RAFT_SNAPSHOT_INSTALL_CRASH_MODE,
+                NODE_ID_REUSE_MODE,
                 MVCC_SNAPSHOT_MEMBERSHIP_MODE,
                 SYSTEM_CONFIG_KV_MODE,
                 SYSTEM_CONFIG_SERVICE_MODE,
