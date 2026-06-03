@@ -123,6 +123,7 @@ struct AddLearnerQuery {
     admin_port: Option<u16>,
     rpc_port: Option<u16>,
     node_name: Option<String>,
+    device_id: Option<String>,
     blocking: Option<bool>,
 }
 
@@ -955,11 +956,20 @@ impl KNetworkServer {
                     Some(trimmed.to_string())
                 }
             }),
+            device_id: query.device_id.as_ref().and_then(|v| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }),
         };
         info!(
-            "KNetworkServer admin add-learner request: node_id={}, node_name={:?}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
+            "KNetworkServer admin add-learner request: node_id={}, node_name={:?}, device_id={:?}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
             query.node_id,
             node.node_name.as_deref(),
+            node.device_id.as_deref(),
             query.addr,
             query.port,
             node.inter_port,

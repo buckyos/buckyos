@@ -441,6 +441,9 @@ pub struct KNode {
     /// Stable BuckyOS node name used by gateway/proxy cluster routing.
     #[serde(default)]
     pub node_name: Option<String>,
+    /// Optional external device identity for diagnosing node-id reuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
 }
 
 declare_raft_types!(

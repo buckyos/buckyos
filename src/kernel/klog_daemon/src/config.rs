@@ -17,8 +17,8 @@ use crate::constants::{
     DEFAULT_RAFT_SNAPSHOT_POLICY, DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_CONCURRENCY_LIMIT,
     DEFAULT_RPC_LISTEN_HOST, DEFAULT_RPC_PORT, DEFAULT_RPC_TIMEOUT_MS,
     DEFAULT_STATE_STORE_SYNC_WRITE, ENV_ADMIN_ADVERTISE_PORT, ENV_ADMIN_LISTEN_ADDR,
-    ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR, ENV_ADVERTISE_INTER_PORT, ENV_ADVERTISE_NODE_NAME,
-    ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_GATEWAY_ADDR,
+    ENV_ADMIN_LOCAL_ONLY, ENV_ADVERTISE_ADDR, ENV_ADVERTISE_DEVICE_ID, ENV_ADVERTISE_INTER_PORT,
+    ENV_ADVERTISE_NODE_NAME, ENV_ADVERTISE_PORT, ENV_AUTO_BOOTSTRAP, ENV_CLUSTER_GATEWAY_ADDR,
     ENV_CLUSTER_GATEWAY_ROUTE_PREFIX, ENV_CLUSTER_ID, ENV_CLUSTER_NAME, ENV_CLUSTER_NETWORK_MODE,
     ENV_CONFIG_FILE, ENV_DATA_DIR, ENV_ENABLE_RPC_SERVER, ENV_INTER_NODE_LISTEN_ADDR,
     ENV_JOIN_BLOCKING, ENV_JOIN_RETRY_CONFIG_CHANGE_CONFLICT_EXTRA_BACKOFF_MS,
@@ -402,6 +402,9 @@ pub struct KLogRuntimeConfig {
     /// Stable BuckyOS node name used for gateway/proxy cluster routing.
     pub advertise_node_name: Option<String>,
 
+    /// Optional external device identity used for node-id reuse diagnostics.
+    pub advertise_device_id: Option<String>,
+
     /// Root data directory for raft log, state store and snapshots.
     pub data_dir: PathBuf,
 
@@ -480,6 +483,9 @@ pub struct KLogNetworkConfigPatch {
 
     /// Optional override for advertised stable BuckyOS node name.
     pub advertise_node_name: Option<String>,
+
+    /// Optional override for advertised external device identity.
+    pub advertise_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -731,6 +737,7 @@ impl KLogRuntimeConfig {
                 advertise_admin_port: parse_env_u16(ENV_ADMIN_ADVERTISE_PORT)?,
                 rpc_advertise_port: parse_env_u16(ENV_RPC_ADVERTISE_PORT)?,
                 advertise_node_name: parse_env_string(ENV_ADVERTISE_NODE_NAME)?,
+                advertise_device_id: parse_env_string(ENV_ADVERTISE_DEVICE_ID)?,
             }),
             storage: Some(KLogStorageConfigPatch {
                 data_dir: parse_env_pathbuf(ENV_DATA_DIR)?,
@@ -956,6 +963,10 @@ impl KLogRuntimeConfig {
             .advertise_node_name
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
+        let advertise_device_id = network
+            .advertise_device_id
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         if advertise_admin_port == advertise_port {
             let msg = format!(
                 "Invalid config: network.advertise_admin_port ({}) must not equal network.advertise_port ({})",
@@ -1012,6 +1023,7 @@ impl KLogRuntimeConfig {
             advertise_admin_port,
             rpc_advertise_port: network.rpc_advertise_port.unwrap_or(DEFAULT_RPC_PORT),
             advertise_node_name,
+            advertise_device_id,
             data_dir: storage.data_dir.unwrap_or(default_data_dir),
             cluster_name,
             cluster_id,
@@ -2024,6 +2036,7 @@ id = "cluster_admin_conflict_id"
                 advertise_admin_port: Some(23003),
                 rpc_advertise_port: Some(23101),
                 advertise_node_name: Some("node-buckyos".to_string()),
+                advertise_device_id: Some("device-buckyos".to_string()),
             }),
             storage: Some(KLogStorageConfigPatch {
                 data_dir: None,
@@ -2091,6 +2104,7 @@ id = "cluster_admin_conflict_id"
         assert_eq!(cfg.advertise_admin_port, 23003);
         assert_eq!(cfg.rpc_advertise_port, 23101);
         assert_eq!(cfg.advertise_node_name.as_deref(), Some("node-buckyos"));
+        assert_eq!(cfg.advertise_device_id.as_deref(), Some("device-buckyos"));
         assert_eq!(cfg.data_dir, default_data_dir());
         assert_eq!(cfg.cluster_name, "bk");
         assert_eq!(cfg.cluster_id, "bk-id");

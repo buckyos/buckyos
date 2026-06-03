@@ -217,7 +217,7 @@ Admin APIs are cluster membership primitives:
 
 | Method | Path | Params |
 | --- | --- | --- |
-| `POST` | `/klog/admin/add-learner` | `node_id`, `addr`, `port`, optional `inter_port`, `admin_port`, `rpc_port`, `node_name`, `blocking` |
+| `POST` | `/klog/admin/add-learner` | `node_id`, `addr`, `port`, optional `inter_port`, `admin_port`, `rpc_port`, `node_name`, `device_id`, `blocking` |
 | `POST` | `/klog/admin/remove-learner` | `node_id` |
 | `POST` | `/klog/admin/change-membership` | `voters`, optional `retain` |
 | `GET` | `/klog/admin/cluster-state` | none |

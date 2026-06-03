@@ -1704,6 +1704,7 @@ async fn post_add_learner_via_admin_route_status(
         let mut query = url.query_pairs_mut();
         query.append_pair("node_id", learner.id.to_string().as_str());
         query.append_pair("node_name", learner.name.as_str());
+        query.append_pair("device_id", learner.device_id.as_str());
         query.append_pair("addr", "127.0.0.1");
         query.append_pair("port", learner.ports.raft.to_string().as_str());
         query.append_pair("inter_port", learner.ports.inter.to_string().as_str());
@@ -1952,6 +1953,7 @@ struct LocalNodePorts {
 struct LocalNodeDef {
     id: u64,
     name: String,
+    device_id: String,
     gateway_host: String,
     ports: LocalNodePorts,
 }
@@ -2296,6 +2298,7 @@ fn build_local_node_defs(ingress_port: u16, count: usize) -> Result<Vec<LocalNod
         nodes.push(LocalNodeDef {
             id: (idx + 1) as u64,
             name: format!("ood{}", idx + 1),
+            device_id: format!("did:dv:ood{}", idx + 1),
             gateway_host: host.to_string(),
             ports: LocalNodePorts {
                 raft: pick_local_port(&mut used)?,
@@ -2713,6 +2716,7 @@ advertise_inter_port = {inter_port}
 advertise_admin_port = {admin_port}
 rpc_advertise_port = {rpc_port}
 advertise_node_name = "{node_name}"
+advertise_device_id = "{device_id}"
 
 [storage]
 data_dir = "{data_dir}"
@@ -2757,6 +2761,7 @@ install_snapshot_timeout_ms = {install_snapshot_timeout_ms}
         admin_port = node.ports.admin,
         rpc_port = node.ports.rpc,
         node_name = node.name,
+        device_id = node.device_id,
         data_dir = data_dir.display(),
         cluster_name = options.cluster_name,
         auto_bootstrap = if node.id == options.seed.id {
@@ -12248,6 +12253,7 @@ async fn run_local_gateway_node_id_reuse_inner(harness: &mut LocalHarness) -> Re
     let replacement = LocalNodeDef {
         id: reused_node.id,
         name: format!("{}-replacement", reused_node.name),
+        device_id: format!("did:dv:{}-replacement", reused_node.name),
         gateway_host: "127.0.0.4".to_string(),
         ports: LocalNodePorts {
             raft: pick_local_port(&mut used_ports)?,
@@ -12333,6 +12339,7 @@ async fn run_local_gateway_node_id_reuse_inner(harness: &mut LocalHarness) -> Re
     wait_tcp("127.0.0.1", replacement.ports.rpc, Duration::from_secs(12)).await?;
     let node_id_pattern = format!("node_id={}", replacement.id);
     let replacement_name_pattern = format!("expected={} remote=", replacement.name);
+    let replacement_device_pattern = format!("expected={} remote=", replacement.device_id);
     let join_log = wait_klog_out_log_contains(
         harness,
         &replacement,
@@ -12342,6 +12349,8 @@ async fn run_local_gateway_node_id_reuse_inner(harness: &mut LocalHarness) -> Re
             node_id_pattern.as_str(),
             "node_name",
             replacement_name_pattern.as_str(),
+            "device_id",
+            replacement_device_pattern.as_str(),
         ],
         Duration::from_secs(12),
     )
@@ -14020,6 +14029,7 @@ async fn run_local_gateway_abnormal_inner(harness: &mut LocalHarness) -> Result<
     let stale_source = LocalNodeDef {
         id: 99,
         name: "client".to_string(),
+        device_id: "did:dv:client".to_string(),
         gateway_host: "127.0.0.4".to_string(),
         ports: LocalNodePorts {
             raft: pick_local_port(&mut used_ports)?,

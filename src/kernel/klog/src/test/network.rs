@@ -61,6 +61,7 @@ fn test_client(server: &TestHttpServer) -> KNetworkClient {
         admin_port: server.addr.port(),
         rpc_port: server.addr.port(),
         node_name: None,
+        device_id: None,
     };
     KNetworkClient::new(1, 2, node, Default::default())
 }
