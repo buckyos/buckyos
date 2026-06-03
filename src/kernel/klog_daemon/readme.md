@@ -153,6 +153,7 @@ BUCKYOS_SYSTEM_CONFIG_KLOG_BOOTSTRAP_FROM_SLED=true
 uv run test/run.py -p klog_system_config_rollout_dv
 uv run test/run.py -p klog_system_config_leader_failover_dv
 uv run test/run.py -p klog_gateway_abnormal_dv
+uv run test/run.py -p klog_system_config_stale_config_rejoin_dv
 ```
 
 该用例会启动 3 节点 klog 集群、两个隔离的 `system_config` 实例，并验证只有 bootstrap OOD 的 sled 数据会迁移；非 bootstrap OOD 的本地 sled 残留不会进入 klog。
@@ -160,6 +161,8 @@ uv run test/run.py -p klog_gateway_abnormal_dv
 `klog_system_config_leader_failover_dv` 会启动真实 `/kapi/system_config` 服务并使用 klog backend。测试把 `system_config` 指向一个非 leader klog RPC endpoint，kill 当前 klog leader 后验证写入期间的 transient kRPC 错误语义；随后等待新 leader，使用同一 `system_config` endpoint 重试读写，最后重启旧 leader 并确认 klog-backed keys 追平。
 
 `klog_gateway_abnormal_dv` 会启动 3 节点 target-gateway 模式 klog 集群，覆盖目标 gateway 停止、source gateway route map 指向陈旧地址，以及 admin route 返回错误的路径。测试会确认失败写入没有落入 klog，并检查错误里保留 route/status/connect 等诊断上下文。
+
+`klog_system_config_stale_config_rejoin_dv` 会模拟 OOD 被 shrink 后，node-daemon 仍用旧配置重启该 OOD 上的 `klog-service`。测试会启动真实 `system_config` 指向这个 stale local klog endpoint，确认写入失败不会落入 active klog，也不会把被移除 OOD 自动加回 membership；active OOD 的 `system_config` 仍可继续读写。
 
 ## 9. MVCC auto compaction
 
