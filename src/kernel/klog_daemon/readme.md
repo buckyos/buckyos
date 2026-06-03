@@ -155,6 +155,7 @@ uv run test/run.py -p klog_system_config_leader_failover_dv
 uv run test/run.py -p klog_gateway_abnormal_dv
 uv run test/run.py -p klog_system_config_stale_config_rejoin_dv
 uv run test/run.py -p klog_node_id_reuse_dv
+uv run test/run.py -p klog_mvcc_compaction_leader_switch_dv
 ```
 
 该用例会启动 3 节点 klog 集群、两个隔离的 `system_config` 实例，并验证只有 bootstrap OOD 的 sled 数据会迁移；非 bootstrap OOD 的本地 sled 残留不会进入 klog。
@@ -166,6 +167,8 @@ uv run test/run.py -p klog_node_id_reuse_dv
 `klog_system_config_stale_config_rejoin_dv` 会模拟 OOD 被 shrink 后，node-daemon 仍用旧配置重启该 OOD 上的 `klog-service`。测试会启动真实 `system_config` 指向这个 stale local klog endpoint，确认写入失败不会落入 active klog，也不会把被移除 OOD 自动加回 membership；active OOD 的 `system_config` 仍可继续读写。
 
 `klog_node_id_reuse_dv` 会启动一个 replacement `klog-service`，使用已存在的 `node_id` 但不同数据目录、端口、node name 和 device id。测试会确认 admin add-learner 与 auto-join 都产生明确的 node identity mismatch/duplicate membership 错误，且 active 集群 membership 和读写不受影响。
+
+`klog_mvcc_compaction_leader_switch_dv` 覆盖 manual compact 和 auto compact 的 leader switch 路径。测试会在 manual compact 发起后停止 leader，必要时由新 leader 补交一次，并验证每个存活 voter 对同一 compact target 最多 apply 一次；随后在 auto compact 条件满足时切换 leader，确认 compacted history、retained change-feed 和当前值在所有 voter 上一致。
 
 ## 9. MVCC auto compaction
 
