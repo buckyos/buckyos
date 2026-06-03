@@ -178,6 +178,11 @@ This file tracks current implementation gaps after the BuckyOS integration work.
   - Exercises manual compact during leader stop and auto compact across leader
     switch, then verifies compacted history, retained changes, and current state
     converge across voters.
+- [x] Validate long-poll change-feed across leader failover and compaction.
+  - Covered by `test/klog_mvcc_change_feed_failover_dv.sh`.
+  - Starts a long-poll change-feed wait, stops the current leader, verifies the
+    caller can continue or resume feed on the new leader, then compacts and
+    verifies old resume returns `COMPACTED` while retained revisions still feed.
 - [x] Validate local multi-OOD system_config klog rollout rule.
   - Covered by `test/klog_system_config_rollout_dv.sh`.
   - Validates that only the bootstrap OOD copies sled data into klog and that a
