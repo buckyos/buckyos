@@ -41,6 +41,8 @@ const SYSTEM_CONFIG_KV_MODE: &str = "local-gateway-system-config-kv";
 const SYSTEM_CONFIG_SERVICE_MODE: &str = "local-gateway-system-config-service";
 const SYSTEM_CONFIG_LEADER_FAILOVER_MODE: &str = "local-gateway-system-config-leader-failover";
 const GATEWAY_ABNORMAL_MODE: &str = "local-gateway-abnormal";
+const SYSTEM_CONFIG_STALE_CONFIG_REJOIN_MODE: &str =
+    "local-gateway-system-config-stale-config-rejoin";
 const SYSTEM_CONFIG_ROLLOUT_MODE: &str = "local-gateway-system-config-rollout";
 const SYSTEM_CONFIG_PAGINATION_MODE: &str = "local-gateway-system-config-pagination";
 const SYSTEM_CONFIG_MVCC_MODE: &str = "local-gateway-system-config-mvcc";
@@ -13978,6 +13980,341 @@ async fn run_local_gateway_abnormal() -> Result<(), String> {
     result
 }
 
+async fn run_local_gateway_system_config_stale_config_rejoin_inner(
+    harness: &mut LocalHarness,
+) -> Result<(), String> {
+    let route_prefix = "/.cluster/klog-it-system-config-stale-config-rejoin-dv";
+    let setup = prepare_local_gateway_setup(
+        harness,
+        SYSTEM_CONFIG_STALE_CONFIG_REJOIN_MODE,
+        route_prefix,
+        3,
+    )
+    .await?;
+    let LocalGatewaySetup {
+        klog_daemon_bin,
+        route_prefix,
+        ingress_port,
+        nodes,
+        cluster_name,
+    } = setup;
+    let route_prefix = route_prefix.as_str();
+    let seed = nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing system_config stale-config seed node".to_string())?;
+    let voter_config = KLogConfigOptions {
+        seed: &seed,
+        ingress_port,
+        route_prefix,
+        cluster_name: cluster_name.as_str(),
+        auto_join_seed: true,
+        target_role: "voter",
+    };
+    let mut configs = BTreeMap::new();
+    for node in &nodes {
+        let config = write_klog_config(harness, node, &voter_config)?;
+        configs.insert(node.id, config.clone());
+        spawn_klog(harness, &klog_daemon_bin, &config, node)?;
+        wait_tcp("127.0.0.1", node.ports.admin, Duration::from_secs(12)).await?;
+        wait_tcp("127.0.0.1", node.ports.rpc, Duration::from_secs(12)).await?;
+        if node.id == seed.id {
+            wait_voters(
+                &reqwest::Client::new(),
+                std::slice::from_ref(node),
+                ingress_port,
+                route_prefix,
+                &[seed.id],
+                Duration::from_secs(20),
+            )
+            .await?;
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|err| format!("failed to build http client: {}", err))?;
+    wait_membership(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        &[1, 2, 3],
+        &[],
+        Duration::from_secs(60),
+    )
+    .await?;
+    let initial_leader_id = wait_consistent_leader(
+        &client,
+        &nodes,
+        ingress_port,
+        route_prefix,
+        None,
+        Duration::from_secs(50),
+    )
+    .await?;
+    let removed_node = nodes
+        .iter()
+        .find(|node| node.id != initial_leader_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!("failed to pick stale-config removed node, leader={initial_leader_id}")
+        })?;
+    let active_nodes = nodes
+        .iter()
+        .filter(|node| node.id != removed_node.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    if active_nodes.len() != 2 {
+        return Err(format!(
+            "expected two active nodes after removing {}, got {}",
+            removed_node.id,
+            active_nodes.len()
+        ));
+    }
+    let active_voters = active_nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+    let active_system_node = active_nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing active system_config node".to_string())?;
+
+    let repo_root = repo_root()?;
+    let buckyos_root = get_buckyos_root();
+    let system_config_bin = resolve_system_config_bin(&repo_root, &buckyos_root)?;
+    let mut used_ports = collect_used_ports(&nodes, ingress_port);
+    let active_system_config_port = pick_local_port(&mut used_ports)?;
+    let stale_system_config_port = pick_local_port(&mut used_ports)?;
+    let active_root = harness.root.join("system-config-active-root");
+    let stale_root = harness.root.join("system-config-stale-root");
+    let active_klog_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        active_system_node.ports.rpc, KLOG_JSON_RPC_SERVICE_PATH
+    );
+    let stale_klog_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        removed_node.ports.rpc, KLOG_JSON_RPC_SERVICE_PATH
+    );
+    let active_token = system_config_jwt(active_system_node.name.as_str(), "root", "scheduler")?;
+    let stale_token = system_config_jwt(removed_node.name.as_str(), "root", "scheduler")?;
+
+    spawn_system_config_with_options(
+        harness,
+        "system-config-active-klog",
+        &system_config_bin,
+        active_root.as_path(),
+        active_system_config_port,
+        Some(active_klog_endpoint.as_str()),
+        active_system_node.name.as_str(),
+        false,
+    )?;
+    wait_tcp(
+        "127.0.0.1",
+        active_system_config_port,
+        Duration::from_secs(15),
+    )
+    .await?;
+    let active_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        active_system_config_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    let suffix = unique_suffix("syscfg-stale-config");
+    let base = format!("users/alice/klog_stale_config_dv/{}", suffix);
+    let before_key = format!("{}/before_shrink", base);
+    let after_shrink_key = format!("{}/after_shrink", base);
+    let stale_key = format!("{}/stale_write", base);
+    let active_after_stale_key = format!("{}/active_after_stale", base);
+
+    call_system_config_rpc(
+        &client,
+        active_endpoint.as_str(),
+        active_token.as_str(),
+        "sys_config_create",
+        json!({"key": before_key.as_str(), "value": "before-shrink"}),
+    )
+    .await?;
+    let before_value = call_system_config_rpc(
+        &client,
+        active_endpoint.as_str(),
+        active_token.as_str(),
+        "sys_config_get",
+        json!({"key": before_key.as_str()}),
+    )
+    .await?;
+    let (_, before_revision) = system_config_value_and_version(&before_value)?;
+    require_system_config_value(&before_value, "before-shrink", before_revision)?;
+
+    harness.stop(format!("klog-{}", removed_node.name).as_str())?;
+    let shrink_leader_id = change_voters_via_current_leader(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        active_voters.as_slice(),
+        false,
+    )
+    .await?;
+    wait_membership(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        active_voters.as_slice(),
+        &[],
+        Duration::from_secs(80),
+    )
+    .await?;
+    call_system_config_rpc(
+        &client,
+        active_endpoint.as_str(),
+        active_token.as_str(),
+        "sys_config_create",
+        json!({"key": after_shrink_key.as_str(), "value": "after-shrink"}),
+    )
+    .await?;
+
+    let removed_config = configs
+        .get(&removed_node.id)
+        .ok_or_else(|| format!("missing stale removed node config {}", removed_node.id))?;
+    spawn_klog(harness, &klog_daemon_bin, removed_config, &removed_node)?;
+    wait_tcp(
+        "127.0.0.1",
+        removed_node.ports.admin,
+        Duration::from_secs(12),
+    )
+    .await?;
+    wait_tcp("127.0.0.1", removed_node.ports.rpc, Duration::from_secs(12)).await?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    wait_membership(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        active_voters.as_slice(),
+        &[],
+        Duration::from_secs(30),
+    )
+    .await?;
+
+    spawn_system_config_with_options(
+        harness,
+        "system-config-stale-klog",
+        &system_config_bin,
+        stale_root.as_path(),
+        stale_system_config_port,
+        Some(stale_klog_endpoint.as_str()),
+        removed_node.name.as_str(),
+        false,
+    )?;
+    wait_tcp(
+        "127.0.0.1",
+        stale_system_config_port,
+        Duration::from_secs(15),
+    )
+    .await?;
+    let stale_endpoint = format!(
+        "http://127.0.0.1:{}{}",
+        stale_system_config_port, SYSTEM_CONFIG_RPC_SERVICE_PATH
+    );
+    let stale_write_err = expect_system_config_rpc_error(
+        &client,
+        stale_endpoint.as_str(),
+        stale_token.as_str(),
+        "sys_config_create",
+        json!({"key": stale_key.as_str(), "value": "must-not-land-from-stale-config"}),
+    )
+    .await?;
+    require_system_config_klog_failover_error(stale_write_err.as_str())?;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_membership(
+        &client,
+        &active_nodes,
+        ingress_port,
+        route_prefix,
+        active_voters.as_slice(),
+        &[],
+        Duration::from_secs(30),
+    )
+    .await?;
+    let stale_from_active = call_system_config_rpc(
+        &client,
+        active_endpoint.as_str(),
+        active_token.as_str(),
+        "sys_config_get",
+        json!({"key": stale_key.as_str()}),
+    )
+    .await?;
+    require_system_config_null(&stale_from_active, stale_key.as_str())?;
+
+    call_system_config_rpc(
+        &client,
+        active_endpoint.as_str(),
+        active_token.as_str(),
+        "sys_config_create",
+        json!({"key": active_after_stale_key.as_str(), "value": "active-after-stale"}),
+    )
+    .await?;
+    let active_after_stale = call_system_config_rpc(
+        &client,
+        active_endpoint.as_str(),
+        active_token.as_str(),
+        "sys_config_get",
+        json!({"key": active_after_stale_key.as_str()}),
+    )
+    .await?;
+    let (_, active_after_stale_revision) = system_config_value_and_version(&active_after_stale)?;
+    require_system_config_value(
+        &active_after_stale,
+        "active-after-stale",
+        active_after_stale_revision,
+    )?;
+
+    let active_prefix = query_meta_prefix_via_cluster_inter_route(
+        &client,
+        gateway_addr(&active_system_node, ingress_port).as_str(),
+        route_prefix,
+        active_system_node.name.as_str(),
+        format!("{}/", base).as_str(),
+        16,
+    )
+    .await?;
+    require_meta_key_absent(&active_prefix, stale_key.as_str())?;
+    require_meta_keys(
+        &active_prefix,
+        &[
+            before_key.as_str(),
+            after_shrink_key.as_str(),
+            active_after_stale_key.as_str(),
+        ],
+    )?;
+
+    println!(
+        "[klog-cluster-dv] system_config stale config rejoin ok: initial_leader={}, removed_node={}, shrink_leader={}, active_voters={:?}, active_endpoint={}, stale_endpoint={}, stale_error_len={}, prefix={}",
+        initial_leader_id,
+        removed_node.id,
+        shrink_leader_id,
+        active_voters,
+        active_endpoint,
+        stale_endpoint,
+        stale_write_err.len(),
+        base
+    );
+    Ok(())
+}
+
+async fn run_local_gateway_system_config_stale_config_rejoin() -> Result<(), String> {
+    let mut harness = LocalHarness::new()?;
+    let result = run_local_gateway_system_config_stale_config_rejoin_inner(&mut harness).await;
+    if result.is_err() || std::env::var_os("KLOG_CLUSTER_DV_KEEP_TEMP").is_some() {
+        harness.keep_temp = true;
+        eprintln!(
+            "[klog-cluster-dv] keeping temp root for diagnostics: {}",
+            harness.root.display()
+        );
+    }
+    result
+}
+
 async fn run_local_gateway_system_config_mvcc_inner(
     harness: &mut LocalHarness,
 ) -> Result<(), String> {
@@ -15818,6 +16155,9 @@ async fn run() -> Result<(), String> {
             run_local_gateway_system_config_leader_failover().await
         }
         GATEWAY_ABNORMAL_MODE => run_local_gateway_abnormal().await,
+        SYSTEM_CONFIG_STALE_CONFIG_REJOIN_MODE => {
+            run_local_gateway_system_config_stale_config_rejoin().await
+        }
         SYSTEM_CONFIG_MVCC_MODE => run_local_gateway_system_config_mvcc().await,
         SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE => run_local_gateway_system_config_multi_ood_mvcc().await,
         SYSTEM_CONFIG_PAGINATION_MODE => run_local_gateway_system_config_pagination().await,
@@ -15853,6 +16193,7 @@ async fn run() -> Result<(), String> {
                 SYSTEM_CONFIG_SERVICE_MODE,
                 SYSTEM_CONFIG_LEADER_FAILOVER_MODE,
                 GATEWAY_ABNORMAL_MODE,
+                SYSTEM_CONFIG_STALE_CONFIG_REJOIN_MODE,
                 SYSTEM_CONFIG_MVCC_MODE,
                 SYSTEM_CONFIG_MULTI_OOD_MVCC_MODE,
                 SYSTEM_CONFIG_PAGINATION_MODE,
