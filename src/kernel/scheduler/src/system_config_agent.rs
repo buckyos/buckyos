@@ -14,17 +14,21 @@ use crate::scheduler::*;
 use crate::service::*;
 use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
 use buckyos_api::{
-    get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
+    get_buckyos_api_runtime, AppServiceSpec, KLogBuckyosSettings, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,
-    ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT,
+    ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT, KLOG_CLUSTER_ADMIN_SERVICE_NAME,
+    KLOG_CLUSTER_INTER_SERVICE_NAME, KLOG_CLUSTER_RAFT_SERVICE_NAME, KLOG_SERVICE_UNIQUE_ID,
 };
 use buckyos_kit::*;
 use name_client::*;
 use name_lib::{get_x_from_jwk, DeviceInfo, ZoneConfig};
 
 const SYSTEM_CONFIG_SERVICE_PORT: u16 = 3200;
+const DEFAULT_NODE_GATEWAY_HTTP_PORT: u16 = 3180;
 const FIXED_SERVICE_WEIGHT: u32 = 100;
 const DEFAULT_REQUIRED_MEMORY: u64 = 32 * 1024 * 1024;
+const DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX: &str = "/.cluster/klog";
+const KLOG_OOD_VOTER_AFFINITY_LABEL: &str = "klog-ood-voter";
 
 fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     match user_type {
@@ -34,14 +38,63 @@ fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     }
 }
 
-fn craete_node_item_by_device_info(device_name: &str, device_info: &DeviceInfo) -> NodeItem {
+fn extract_zone_config(input_config: &HashMap<String, String>) -> Option<ZoneConfig> {
+    let raw = input_config.get("boot/config")?;
+    match serde_json::from_str::<ZoneConfig>(raw) {
+        Ok(zone_config) => Some(zone_config),
+        Err(err) => {
+            warn!("parse boot/config failed while deriving klog OOD voters: {err}");
+            None
+        }
+    }
+}
+
+fn extract_klog_settings(input_config: &HashMap<String, String>) -> KLogBuckyosSettings {
+    let Some(raw_settings) = input_config.get("services/klog-service/settings") else {
+        return KLogBuckyosSettings::default();
+    };
+
+    match serde_json::from_str::<KLogBuckyosSettings>(raw_settings) {
+        Ok(settings) => settings,
+        Err(err) => {
+            warn!(
+                "parse services/klog-service/settings failed while deriving klog placement: {err}"
+            );
+            KLogBuckyosSettings::default()
+        }
+    }
+}
+
+fn extract_klog_ood_voter_names(input_config: &HashMap<String, String>) -> HashSet<String> {
+    let settings = extract_klog_settings(input_config);
+    if !settings.deployment.mode.is_ood_voters() {
+        return HashSet::new();
+    }
+
+    extract_zone_config(input_config)
+        .map(|zone_config| {
+            zone_config
+                .oods
+                .iter()
+                .filter(|ood| ood.node_type.is_ood())
+                .map(|ood| ood.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn craete_node_item_by_device_info(
+    device_name: &str,
+    device_info: &DeviceInfo,
+    labels: Vec<String>,
+) -> NodeItem {
     let node_state =
         crate::scheduler::NodeState::from(device_info.state.clone().unwrap_or("Ready".to_string()));
     let net_id = device_info.net_id.clone().unwrap_or("".to_string());
     NodeItem {
         id: device_name.to_string(),
         node_type: NodeType::from(device_info.device_doc.device_type.clone()),
-        labels: vec![],
+        labels,
         network_zone: net_id,
         state: node_state,
         support_container: device_info.support_container,
@@ -133,6 +186,7 @@ pub fn create_scheduler_by_system_config(
 ) -> Result<(NodeScheduler, HashMap<String, DeviceInfo>)> {
     let mut scheduler_ctx = NodeScheduler::new_empty(1);
     let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
+    let klog_ood_voter_names = extract_klog_ood_voter_names(input_config);
     for (key, value) in input_config.iter() {
         //add node
         if key.starts_with("devices/") && key.ends_with("/info") {
@@ -141,8 +195,12 @@ pub fn create_scheduler_by_system_config(
                 error!("serde_json::from_str failed: {:?}", e);
                 e
             })?;
-            let node_item = craete_node_item_by_device_info(device_name, &device_info);
-            let node_item = craete_node_item_by_device_info(device_name, &device_info);
+            let labels = if klog_ood_voter_names.contains(device_name) {
+                vec![KLOG_OOD_VOTER_AFFINITY_LABEL.to_string()]
+            } else {
+                Vec::new()
+            };
+            let node_item = craete_node_item_by_device_info(device_name, &device_info, labels);
             device_list.insert(device_name.to_string(), device_info);
             scheduler_ctx.add_node(node_item);
         }
@@ -203,7 +261,12 @@ pub fn create_scheduler_by_system_config(
                     error!("KernelServiceConfig serde_json::from_str failed: {:?}", e);
                     e
                 })?;
-            let service_spec = create_service_spec_by_service_config(service_name, &service_config);
+            let mut service_spec =
+                create_service_spec_by_service_config(service_name, &service_config);
+            if service_name == KLOG_SERVICE_UNIQUE_ID && !klog_ood_voter_names.is_empty() {
+                service_spec.best_instance_count = klog_ood_voter_names.len() as u32;
+                service_spec.node_affinity = Some(KLOG_OOD_VOTER_AFFINITY_LABEL.to_string());
+            }
             scheduler_ctx.add_service_spec(service_spec);
         }
 
@@ -678,6 +741,18 @@ enum NodeGatewayAppEntry {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeGatewayClusterRouteNodeEntry {
+    ports: HashMap<String, u16>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NodeGatewayClusterRouteEntry {
+    route_prefix: String,
+    ingress_port: u16,
+    nodes: HashMap<String, NodeGatewayClusterRouteNodeEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct NodeGatewayInfo {
     node_info: NodeGatewayNodeInfo,
     app_info: HashMap<String, NodeGatewayAppEntry>,
@@ -687,6 +762,8 @@ struct NodeGatewayInfo {
     routes: HashMap<String, Vec<NodeGatewayRouteCandidate>>,
     #[serde(default)]
     did_ip_hints: HashMap<String, Vec<DidIpHint>>,
+    #[serde(default)]
+    cluster_route_map: HashMap<String, NodeGatewayClusterRouteEntry>,
     trust_key: HashMap<String, String>,
 }
 
@@ -898,6 +975,140 @@ fn build_node_route_map(
     node_route_map
 }
 
+fn normalize_klog_cluster_route_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX.to_string();
+    }
+
+    let with_leading_slash = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{}", trimmed)
+    };
+    let normalized = with_leading_slash.trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        "/".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn extract_klog_cluster_route_prefix(input_system_config: &HashMap<String, String>) -> String {
+    let Some(raw_settings) = input_system_config.get("services/klog-service/settings") else {
+        return DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX.to_string();
+    };
+
+    let Ok(settings) = serde_json::from_str::<Value>(raw_settings) else {
+        warn!(
+            "parse services/klog-service/settings failed while building klog cluster gateway route prefix"
+        );
+        return DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX.to_string();
+    };
+
+    settings
+        .get("cluster_network")
+        .and_then(|v| v.get("gateway_route_prefix"))
+        .and_then(Value::as_str)
+        .map(normalize_klog_cluster_route_prefix)
+        .unwrap_or_else(|| DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX.to_string())
+}
+
+fn collect_klog_ports_from_instance(
+    node_ports: &mut HashMap<String, HashMap<String, u16>>,
+    instance: &ReplicaInstance,
+    only_plane: Option<&str>,
+    fallback_ports: Option<&HashMap<String, u16>>,
+) {
+    let planes = [
+        KLOG_CLUSTER_RAFT_SERVICE_NAME,
+        KLOG_CLUSTER_INTER_SERVICE_NAME,
+        KLOG_CLUSTER_ADMIN_SERVICE_NAME,
+    ];
+    let selected_planes = only_plane
+        .map(|plane| vec![plane])
+        .unwrap_or_else(|| planes.to_vec());
+
+    for plane in selected_planes {
+        let port = instance
+            .service_ports
+            .get(plane)
+            .copied()
+            .or_else(|| fallback_ports.and_then(|ports| ports.get(plane).copied()));
+        if let Some(port) = port {
+            node_ports
+                .entry(instance.node_id.clone())
+                .or_default()
+                .insert(plane.to_string(), port);
+        }
+    }
+}
+
+fn collect_klog_ports_from_service_info(
+    node_ports: &mut HashMap<String, HashMap<String, u16>>,
+    service_info: &ServiceInfo,
+    only_plane: Option<&str>,
+    fallback_ports: Option<&HashMap<String, u16>>,
+) {
+    match service_info {
+        ServiceInfo::SingleInstance(instance) => {
+            collect_klog_ports_from_instance(node_ports, instance, only_plane, fallback_ports);
+        }
+        ServiceInfo::RandomCluster(cluster) => {
+            for (_, instance) in cluster.values() {
+                collect_klog_ports_from_instance(node_ports, instance, only_plane, fallback_ports);
+            }
+        }
+    }
+}
+
+fn build_klog_cluster_route_entry(
+    scheduler_ctx: &NodeScheduler,
+    input_system_config: &HashMap<String, String>,
+) -> Option<NodeGatewayClusterRouteEntry> {
+    let mut node_ports: HashMap<String, HashMap<String, u16>> = HashMap::new();
+    let fallback_ports = scheduler_ctx
+        .specs
+        .get(KLOG_SERVICE_UNIQUE_ID)
+        .map(|spec| &spec.service_ports_config);
+
+    for (service_info_id, service_info) in scheduler_ctx.service_infos.iter() {
+        let (spec_id, service_name) = get_spec_id_from_service_info_id(service_info_id);
+        if spec_id != KLOG_SERVICE_UNIQUE_ID {
+            continue;
+        }
+
+        let only_plane = match service_name.as_str() {
+            "www" => None,
+            KLOG_CLUSTER_RAFT_SERVICE_NAME => Some(KLOG_CLUSTER_RAFT_SERVICE_NAME),
+            KLOG_CLUSTER_INTER_SERVICE_NAME => Some(KLOG_CLUSTER_INTER_SERVICE_NAME),
+            KLOG_CLUSTER_ADMIN_SERVICE_NAME => Some(KLOG_CLUSTER_ADMIN_SERVICE_NAME),
+            _ => continue,
+        };
+        collect_klog_ports_from_service_info(
+            &mut node_ports,
+            service_info,
+            only_plane,
+            fallback_ports,
+        );
+    }
+
+    let nodes = node_ports
+        .into_iter()
+        .filter(|(_, ports)| !ports.is_empty())
+        .map(|(node_id, ports)| (node_id, NodeGatewayClusterRouteNodeEntry { ports }))
+        .collect::<HashMap<_, _>>();
+    if nodes.is_empty() {
+        return None;
+    }
+
+    Some(NodeGatewayClusterRouteEntry {
+        route_prefix: extract_klog_cluster_route_prefix(input_system_config),
+        ingress_port: DEFAULT_NODE_GATEWAY_HTTP_PORT,
+        nodes,
+    })
+}
+
 fn insert_trust_key(
     trust_key: &mut HashMap<String, String>,
     key_id: &str,
@@ -971,6 +1182,12 @@ pub(crate) async fn update_node_gateway_info(
     let device_list = get_device_list(input_system_config)?;
     let zone_host = zone_config.id.to_host_name();
     let forward_plan = build_forward_plan(node_id, &zone_config, &zone_host, &device_list);
+    let mut cluster_route_map = HashMap::new();
+    if let Some(klog_cluster_route) =
+        build_klog_cluster_route_entry(scheduler_ctx, input_system_config)
+    {
+        cluster_route_map.insert(KLOG_SERVICE_UNIQUE_ID.to_string(), klog_cluster_route);
+    }
 
     let mut node_gateway_info = NodeGatewayInfo {
         node_info: NodeGatewayNodeInfo {
@@ -982,6 +1199,7 @@ pub(crate) async fn update_node_gateway_info(
         node_route_map: build_node_route_map(node_id, &zone_host, &device_list),
         routes: forward_plan.routes,
         did_ip_hints: forward_plan.did_ip_hints,
+        cluster_route_map,
         trust_key: build_trust_keys(node_id, &zone_config, &device_list),
     };
 
@@ -1528,8 +1746,8 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
 mod tests {
     use super::*;
     use buckyos_api::{
-        AppDocBuilder, AppServiceSpec, AppType, ServiceExposeConfig, ServiceInstallConfig,
-        ServiceInstanceState, ServiceState, SubPkgDesc,
+        generate_klog_service_doc, AppDocBuilder, AppServiceSpec, AppType, KernelServiceSpec,
+        ServiceExposeConfig, ServiceInstallConfig, ServiceInstanceState, ServiceState, SubPkgDesc,
     };
     use jsonwebtoken::jwk::Jwk;
     use name_lib::generate_ed25519_key_pair;
@@ -1555,14 +1773,23 @@ mod tests {
         }
     }
 
-    fn create_test_device_info(name: &str, rtcp_port: Option<u32>) -> DeviceInfo {
+    fn create_test_device_info_with_type(
+        name: &str,
+        rtcp_port: Option<u32>,
+        device_type: &str,
+    ) -> DeviceInfo {
         let (_, public_key_jwk) = generate_ed25519_key_pair();
         let public_key_jwk: Jwk = serde_json::from_value(public_key_jwk).unwrap();
         let pkx = get_x_from_jwk(&public_key_jwk).unwrap();
         let mut device = DeviceConfig::new(name, pkx);
         device.rtcp_port = rtcp_port;
         device.owner = DID::new("bns", "owner");
+        device.device_type = device_type.to_string();
         DeviceInfo::from_device_doc(&device)
+    }
+
+    fn create_test_device_info(name: &str, rtcp_port: Option<u32>) -> DeviceInfo {
+        create_test_device_info_with_type(name, rtcp_port, "ood")
     }
 
     fn create_test_zone_config() -> ZoneConfig {
@@ -1584,6 +1811,81 @@ mod tests {
             public_key: verify_hub_key_jwk,
         });
         zone_config
+    }
+
+    fn create_test_klog_kernel_spec() -> KernelServiceSpec {
+        KernelServiceSpec {
+            service_doc: generate_klog_service_doc(),
+            enable: true,
+            app_index: 0,
+            expected_instance_count: 1,
+            state: ServiceState::default(),
+            install_config: ServiceInstallConfig::default(),
+        }
+    }
+
+    #[test]
+    fn test_create_scheduler_places_klog_on_zone_ood_voters() {
+        let mut zone_config = create_test_zone_config();
+        zone_config.oods.push(OODDescriptionString::new(
+            "ood3".to_string(),
+            DeviceNodeType::OOD,
+            None,
+            None,
+        ));
+        let device_ood1 = create_test_device_info("ood1", None);
+        let device_ood2 = create_test_device_info("ood2", None);
+        let device_ood3 = create_test_device_info("ood3", None);
+        let device_node1 = create_test_device_info_with_type("node1", None, "server");
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood2/info".to_string(),
+            serde_json::to_string(&device_ood2).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood3/info".to_string(),
+            serde_json::to_string(&device_ood3).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/node1/info".to_string(),
+            serde_json::to_string(&device_node1).unwrap(),
+        );
+        input_system_config.insert(
+            "services/klog-service/spec".to_string(),
+            serde_json::to_string(&create_test_klog_kernel_spec()).unwrap(),
+        );
+
+        let (scheduler_ctx, _) = create_scheduler_by_system_config(&input_system_config).unwrap();
+        let klog_spec = scheduler_ctx.specs.get(KLOG_SERVICE_UNIQUE_ID).unwrap();
+        assert_eq!(klog_spec.best_instance_count, 3);
+        assert_eq!(
+            klog_spec.node_affinity.as_deref(),
+            Some(KLOG_OOD_VOTER_AFFINITY_LABEL)
+        );
+
+        for node_name in ["ood1", "ood2", "ood3"] {
+            assert!(scheduler_ctx
+                .nodes
+                .get(node_name)
+                .unwrap()
+                .labels
+                .contains(&KLOG_OOD_VOTER_AFFINITY_LABEL.to_string()));
+        }
+        assert!(!scheduler_ctx
+            .nodes
+            .get("node1")
+            .unwrap()
+            .labels
+            .contains(&KLOG_OOD_VOTER_AFFINITY_LABEL.to_string()));
     }
 
     fn create_test_app_spec() -> AppServiceSpec {
@@ -1756,6 +2058,7 @@ mod tests {
             node_route_map: build_node_route_map("ood1", &zone_host, &device_list),
             routes: forward_plan.routes,
             did_ip_hints: forward_plan.did_ip_hints,
+            cluster_route_map: HashMap::new(),
             trust_key: build_trust_keys("ood1", zone_config, &device_list),
         }
     }
@@ -2458,6 +2761,191 @@ mod tests {
             create_expected_node_gateway_info_for_files_app(&zone_config, &input_system_config);
 
         assert_eq!(gateway_info, expected_gateway_info);
+    }
+
+    #[tokio::test]
+    async fn test_update_node_gateway_info_adds_klog_cluster_route_entry() {
+        let zone_config = create_test_zone_config();
+        let device_ood1 = create_test_device_info("ood1", None);
+        let device_ood2 = create_test_device_info("ood2", Some(2981));
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood2/info".to_string(),
+            serde_json::to_string(&device_ood2).unwrap(),
+        );
+        input_system_config.insert(
+            "services/klog-service/settings".to_string(),
+            json!({
+                "cluster_network": {
+                    "gateway_route_prefix": "cluster/klog-test/"
+                }
+            })
+            .to_string(),
+        );
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.service_infos.insert(
+            KLOG_SERVICE_UNIQUE_ID.to_string(),
+            ServiceInfo::RandomCluster(HashMap::from([
+                (
+                    "klog-service@ood1".to_string(),
+                    (
+                        100,
+                        create_test_replica_instance(
+                            KLOG_SERVICE_UNIQUE_ID,
+                            "klog-service@ood1",
+                            "ood1",
+                            &[
+                                ("www", 4080),
+                                (KLOG_CLUSTER_RAFT_SERVICE_NAME, 21001),
+                                (KLOG_CLUSTER_INTER_SERVICE_NAME, 21002),
+                                (KLOG_CLUSTER_ADMIN_SERVICE_NAME, 21003),
+                            ],
+                        ),
+                    ),
+                ),
+                (
+                    "klog-service@ood2".to_string(),
+                    (
+                        100,
+                        create_test_replica_instance(
+                            KLOG_SERVICE_UNIQUE_ID,
+                            "klog-service@ood2",
+                            "ood2",
+                            &[
+                                ("www", 4080),
+                                (KLOG_CLUSTER_RAFT_SERVICE_NAME, 21011),
+                                (KLOG_CLUSTER_INTER_SERVICE_NAME, 21012),
+                                (KLOG_CLUSTER_ADMIN_SERVICE_NAME, 21013),
+                            ],
+                        ),
+                    ),
+                ),
+            ])),
+        );
+
+        let actions = update_node_gateway_info("ood1", &scheduler_ctx, &input_system_config)
+            .await
+            .unwrap();
+        let gateway_info_str = match actions.get("nodes/ood1/gateway_info").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected kv action: {:?}", other),
+        };
+        let gateway_info: NodeGatewayInfo = serde_json::from_str(gateway_info_str).unwrap();
+
+        let klog_cluster_route = gateway_info
+            .cluster_route_map
+            .get(KLOG_SERVICE_UNIQUE_ID)
+            .unwrap();
+        assert_eq!(klog_cluster_route.route_prefix, "/cluster/klog-test");
+        assert_eq!(
+            klog_cluster_route.ingress_port,
+            DEFAULT_NODE_GATEWAY_HTTP_PORT
+        );
+
+        let local = klog_cluster_route.nodes.get("ood1").unwrap();
+        assert_eq!(local.ports.get("raft"), Some(&21001));
+        assert_eq!(local.ports.get("inter"), Some(&21002));
+        assert_eq!(local.ports.get("admin"), Some(&21003));
+
+        let remote = klog_cluster_route.nodes.get("ood2").unwrap();
+        assert_eq!(remote.ports.get("raft"), Some(&21011));
+        assert_eq!(remote.ports.get("inter"), Some(&21012));
+        assert_eq!(remote.ports.get("admin"), Some(&21013));
+    }
+
+    #[tokio::test]
+    async fn test_update_node_gateway_info_fills_klog_cluster_ports_from_spec() {
+        let zone_config = create_test_zone_config();
+        let device_ood1 = create_test_device_info("ood1", None);
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.add_service_spec(ServiceSpec {
+            id: KLOG_SERVICE_UNIQUE_ID.to_string(),
+            app_id: KLOG_SERVICE_UNIQUE_ID.to_string(),
+            app_index: 0,
+            owner_id: "root".to_string(),
+            spec_type: ServiceSpecType::Kernel,
+            state: ServiceSpecState::Deployed,
+            need_container: false,
+            best_instance_count: 1,
+            required_cpu_mhz: 200,
+            required_memory: DEFAULT_REQUIRED_MEMORY,
+            required_gpu_tflops: 0.0,
+            required_gpu_mem: 0,
+            node_affinity: None,
+            network_affinity: None,
+            service_ports_config: HashMap::from([
+                ("www".to_string(), 4080),
+                (KLOG_CLUSTER_RAFT_SERVICE_NAME.to_string(), 21001),
+                (KLOG_CLUSTER_INTER_SERVICE_NAME.to_string(), 21002),
+                (KLOG_CLUSTER_ADMIN_SERVICE_NAME.to_string(), 21003),
+            ]),
+        });
+        scheduler_ctx.service_infos.insert(
+            KLOG_SERVICE_UNIQUE_ID.to_string(),
+            ServiceInfo::SingleInstance(create_test_replica_instance(
+                KLOG_SERVICE_UNIQUE_ID,
+                "klog-service@ood1",
+                "ood1",
+                &[("www", 4080)],
+            )),
+        );
+
+        let actions = update_node_gateway_info("ood1", &scheduler_ctx, &input_system_config)
+            .await
+            .unwrap();
+        let gateway_info_str = match actions.get("nodes/ood1/gateway_info").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected kv action: {:?}", other),
+        };
+        let gateway_info: NodeGatewayInfo = serde_json::from_str(gateway_info_str).unwrap();
+        let klog_cluster_route = gateway_info
+            .cluster_route_map
+            .get(KLOG_SERVICE_UNIQUE_ID)
+            .unwrap();
+        let local = klog_cluster_route.nodes.get("ood1").unwrap();
+        assert_eq!(local.ports.get("raft"), Some(&21001));
+        assert_eq!(local.ports.get("inter"), Some(&21002));
+        assert_eq!(local.ports.get("admin"), Some(&21003));
+    }
+
+    #[test]
+    fn test_extract_klog_cluster_route_prefix_normalizes_slashes() {
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "services/klog-service/settings".to_string(),
+            json!({
+                "cluster_network": {
+                    "gateway_route_prefix": "cluster/klog-test/"
+                }
+            })
+            .to_string(),
+        );
+
+        assert_eq!(
+            extract_klog_cluster_route_prefix(&input_system_config),
+            "/cluster/klog-test"
+        );
     }
 
     #[tokio::test]

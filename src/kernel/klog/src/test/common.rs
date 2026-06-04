@@ -19,6 +19,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 pub(crate) struct TestMemoryContext {
     pub(crate) log_storage: MemoryLogStorage,
     pub(crate) state_machine: KLogStateMachine,
+    pub(crate) state_store_manager: Arc<KLogStateStoreManager>,
 }
 
 impl TestMemoryContext {
@@ -41,13 +42,14 @@ impl TestMemoryContext {
         let snapshot_manager = Arc::new(snapshot_manager);
         snapshot_manager.clean_all_snapshots().await.unwrap();
 
-        let state_machine = KLogStateMachine::new(state_store_manager, snapshot_manager)
+        let state_machine = KLogStateMachine::new(state_store_manager.clone(), snapshot_manager)
             .await
             .unwrap();
 
         Self {
             log_storage,
             state_machine,
+            state_store_manager,
         }
     }
 }
@@ -233,7 +235,7 @@ pub(crate) fn sample_state_entries() -> Vec<KLogEntry> {
         KLogEntry {
             id: 11,
             timestamp: 100,
-            node_id: 1,
+            node_name: "node-1".to_string(),
             request_id: None,
             level: Default::default(),
             source: None,
@@ -243,7 +245,7 @@ pub(crate) fn sample_state_entries() -> Vec<KLogEntry> {
         KLogEntry {
             id: 12,
             timestamp: 101,
-            node_id: 1,
+            node_name: "node-1".to_string(),
             request_id: None,
             level: Default::default(),
             source: None,
@@ -267,6 +269,8 @@ pub(crate) fn sample_membership(node_id: KNodeId) -> Membership<KNodeId, KNode> 
             inter_port: 3002,
             admin_port: 3003,
             rpc_port: 3001,
+            node_name: None,
+            device_id: None,
         },
     );
 

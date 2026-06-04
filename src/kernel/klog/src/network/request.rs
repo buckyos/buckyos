@@ -1,4 +1,8 @@
-use crate::{KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KNode, KNodeId, KResult, KTypeConfig};
+use crate::state_store::{KLogMetaChangeCursor, KLogMetaHistoryRecord};
+use crate::{
+    KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KLogMetaVersion, KNode, KNodeId, KResult,
+    KTypeConfig,
+};
 use openraft::error::PayloadTooLarge;
 use openraft::error::{InstallSnapshotError, RaftError};
 use openraft::network::RPCTypes;
@@ -17,6 +21,7 @@ const NETWORK_HEADER_LEN: usize = 8 + 2 + 1 + 1 + 1 + 4;
 pub const KLOG_FORWARD_HOPS_HEADER: &str = "x-klog-forward-hops";
 pub const KLOG_FORWARDED_BY_HEADER: &str = "x-klog-forwarded-by";
 pub const KLOG_TRACE_ID_HEADER: &str = "x-klog-trace-id";
+pub const KLOG_ORIGIN_NODE_NAME_HEADER: &str = "x-klog-origin-node-name";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RaftRequestType {
@@ -62,6 +67,7 @@ pub enum KLogAdminRequestType {
     RemoveLearner,
     ChangeMembership,
     ClusterState,
+    MetaCompact,
 }
 
 impl KLogAdminRequestType {
@@ -71,6 +77,7 @@ impl KLogAdminRequestType {
             KLogAdminRequestType::RemoveLearner => "remove-learner",
             KLogAdminRequestType::ChangeMembership => "change-membership",
             KLogAdminRequestType::ClusterState => "cluster-state",
+            KLogAdminRequestType::MetaCompact => "meta-compact",
         }
     }
 
@@ -85,7 +92,9 @@ pub enum KLogDataRequestType {
     Query,
     MetaPut,
     MetaDelete,
+    MetaTx,
     MetaQuery,
+    MetaChanges,
 }
 
 impl KLogDataRequestType {
@@ -95,7 +104,9 @@ impl KLogDataRequestType {
             KLogDataRequestType::Query => "query",
             KLogDataRequestType::MetaPut => "meta-put",
             KLogDataRequestType::MetaDelete => "meta-delete",
+            KLogDataRequestType::MetaTx => "meta-tx",
             KLogDataRequestType::MetaQuery => "meta-query",
+            KLogDataRequestType::MetaChanges => "meta-changes",
         }
     }
 
@@ -108,7 +119,8 @@ impl KLogDataRequestType {
 pub struct KLogAppendRequest {
     pub message: String,
     pub timestamp: Option<u64>,
-    pub node_id: Option<KNodeId>,
+    #[serde(default)]
+    pub node_name: Option<String>,
     #[serde(default)]
     pub level: Option<KLogLevel>,
     #[serde(default)]
@@ -150,6 +162,8 @@ pub struct KLogQueryResponse {
 pub struct KLogMetaPutRequest {
     pub key: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<u64>,
 }
@@ -157,7 +171,26 @@ pub struct KLogMetaPutRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KLogMetaPutResponse {
     pub key: String,
+    /// Backward-compatible alias for `mod_revision`.
     pub revision: u64,
+    #[serde(default)]
+    pub create_revision: u64,
+    #[serde(default)]
+    pub mod_revision: u64,
+    #[serde(default)]
+    pub version: u64,
+}
+
+impl KLogMetaPutResponse {
+    pub fn from_entry(item: &KLogMetaEntry) -> Self {
+        Self {
+            key: item.key.clone(),
+            revision: item.effective_mod_revision(),
+            create_revision: item.effective_create_revision(),
+            mod_revision: item.effective_mod_revision(),
+            version: item.effective_version(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +203,8 @@ pub struct KLogMetaDeleteResponse {
     pub key: String,
     pub existed: bool,
     pub prev_meta: Option<KLogMetaEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_version: Option<KLogMetaVersion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -177,6 +212,10 @@ pub struct KLogMetaQueryRequest {
     pub key: Option<String>,
     pub prefix: Option<String>,
     pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
     /// When true, require linearizable read on leader before serving query.
     pub strong_read: Option<bool>,
 }
@@ -184,6 +223,57 @@ pub struct KLogMetaQueryRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KLogMetaQueryResponse {
     pub items: Vec<KLogMetaEntry>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    #[serde(default)]
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KLogMetaChangesRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_deleted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_timeout_ms: Option<u64>,
+    /// When true, require linearizable read on leader before serving query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strong_read: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaChangesResponse {
+    pub items: Vec<KLogMetaHistoryRecord>,
+    #[serde(default)]
+    pub next_cursor: Option<KLogMetaChangeCursor>,
+    #[serde(default)]
+    pub has_more: bool,
+    pub current_revision: u64,
+    pub next_start_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaCompactRequest {
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogMetaCompactResponse {
+    pub compacted_revision: u64,
+    pub current_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -554,6 +644,10 @@ mod tests {
             KLogAdminRequestType::ClusterState.klog_path(),
             "/klog/admin/cluster-state"
         );
+        assert_eq!(
+            KLogAdminRequestType::MetaCompact.klog_path(),
+            "/klog/admin/meta-compact"
+        );
     }
 
     #[test]
@@ -569,8 +663,16 @@ mod tests {
             "/klog/data/meta-delete"
         );
         assert_eq!(
+            KLogDataRequestType::MetaTx.klog_path(),
+            "/klog/data/meta-tx"
+        );
+        assert_eq!(
             KLogDataRequestType::MetaQuery.klog_path(),
             "/klog/data/meta-query"
+        );
+        assert_eq!(
+            KLogDataRequestType::MetaChanges.klog_path(),
+            "/klog/data/meta-changes"
         );
     }
 }

@@ -1,8 +1,12 @@
 use super::snapshot::{KSnapshotMeta, SnapshotManager, SnapshotManagerRef};
 use crate::state_machine::snapshot::KSnapshotData;
 use crate::state_store::KLogStateStoreManagerRef;
-use crate::state_store::{KLogMetaPutResult, KLogStateMachineMeta, KLogStateSnapshot};
-use crate::{KLogId, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult};
+use crate::state_store::{
+    KLogMetaPutResult, KLogMetaTxResult, KLogStateMachineMeta, KLogStateSnapshot,
+};
+use crate::{
+    KLogId, KLogMetaEntry, KLogRequest, KLogResponse, KNode, KNodeId, KTypeConfig, StorageResult,
+};
 use openraft::{
     Entry, EntryPayload, OptionalSend, RaftSnapshotBuilder, SnapshotMeta, StoredMembership,
     storage::RaftStateMachine,
@@ -90,10 +94,10 @@ impl KLogStateMachine {
                 // Id is expected to be assigned on leader before log replication.
                 // State machine apply must be deterministic and should not mutate ids.
                 debug!(
-                    "StateMachine process append request: id={}, ts={}, node_id={}, msg_len={}",
+                    "StateMachine process append request: id={}, ts={}, node_name={}, msg_len={}",
                     item.id,
                     item.timestamp,
-                    item.node_id,
+                    item.node_name,
                     item.message.len()
                 );
                 match self.state_store.append_prepared_entry(item).await {
@@ -112,11 +116,11 @@ impl KLogStateMachine {
                 expected_revision,
             } => {
                 debug!(
-                    "StateMachine process put-meta request: key={}, value_len={}, updated_at={}, updated_by={}, expected_revision={:?}",
+                    "StateMachine process put-meta request: key={}, value_len={}, updated_at={}, updated_by_node_name={}, expected_revision={:?}",
                     item.key,
                     item.value.len(),
                     item.updated_at,
-                    item.updated_by,
+                    item.updated_by_node_name,
                     expected_revision
                 );
                 let key = item.key.clone();
@@ -127,13 +131,13 @@ impl KLogStateMachine {
                 {
                     Ok(KLogMetaPutResult::Stored(stored)) => {
                         debug!(
-                            "StateMachine put-meta request committed: key={}, revision={}",
-                            key, stored.revision
-                        );
-                        KLogResponse::MetaPutOk {
+                            "StateMachine put-meta request committed: key={}, mod_revision={}, create_revision={}, version={}",
                             key,
-                            revision: stored.revision,
-                        }
+                            stored.effective_mod_revision(),
+                            stored.effective_create_revision(),
+                            stored.effective_version()
+                        );
+                        KLogResponse::MetaPutOk { item: stored }
                     }
                     Ok(KLogMetaPutResult::VersionConflict {
                         expected_revision,
@@ -160,20 +164,127 @@ impl KLogStateMachine {
                 match self.state_store.delete_meta_key(&key).await {
                     Ok(prev_meta) => {
                         let existed = prev_meta.is_some();
+                        let meta_version = if existed {
+                            match self.state_store.current_meta_revision(&key).await {
+                                Ok(Some(mod_revision)) => {
+                                    let create_revision = prev_meta
+                                        .as_ref()
+                                        .map(KLogMetaEntry::effective_create_revision)
+                                        .unwrap_or(mod_revision);
+                                    Some(crate::KLogMetaVersion::new(
+                                        create_revision,
+                                        mod_revision,
+                                        0,
+                                        true,
+                                    ))
+                                }
+                                Ok(None) => None,
+                                Err(err) => {
+                                    error!(
+                                        "StateMachine delete-meta revision lookup failed: key={}, err={}",
+                                        key, err
+                                    );
+                                    return KLogResponse::Err(err.to_string());
+                                }
+                            }
+                        } else {
+                            None
+                        };
                         debug!(
-                            "StateMachine delete-meta request committed: key={}, existed={}, prev_meta_revision={:?}",
+                            "StateMachine delete-meta request committed: key={}, existed={}, prev_meta_revision={:?}, meta_version={:?}",
                             key,
                             existed,
-                            prev_meta.as_ref().map(|v| v.revision)
+                            prev_meta
+                                .as_ref()
+                                .map(KLogMetaEntry::effective_mod_revision),
+                            meta_version
                         );
                         KLogResponse::MetaDeleteOk {
                             key,
                             existed,
                             prev_meta,
+                            meta_version,
                         }
                     }
                     Err(err) => {
                         error!("StateMachine delete-meta request failed: {}", err);
+                        KLogResponse::Err(err.to_string())
+                    }
+                }
+            }
+            KLogRequest::ExecMetaTx { tx } => {
+                debug!(
+                    "StateMachine process meta-tx request: actions={}, guard={:?}",
+                    tx.actions.len(),
+                    tx.guard
+                );
+                match self.state_store.exec_meta_tx(tx).await {
+                    Ok(KLogMetaTxResult::Committed(resp)) => {
+                        debug!(
+                            "StateMachine meta-tx request committed: revisions={:?}, meta_versions={:?}",
+                            resp.revisions, resp.meta_versions
+                        );
+                        KLogResponse::MetaTxOk { response: resp }
+                    }
+                    Ok(KLogMetaTxResult::VersionConflict {
+                        key,
+                        expected_revision,
+                        current_revision,
+                    }) => {
+                        warn!(
+                            "StateMachine meta-tx request CAS conflict: key={}, expected_revision={}, current_revision={:?}",
+                            key, expected_revision, current_revision
+                        );
+                        KLogResponse::MetaTxConflict {
+                            key,
+                            expected_revision,
+                            current_revision,
+                        }
+                    }
+                    Err(err) => {
+                        error!("StateMachine meta-tx request failed: {}", err);
+                        KLogResponse::Err(err.to_string())
+                    }
+                }
+            }
+            KLogRequest::CompactMeta { revision } => {
+                debug!(
+                    "StateMachine process meta-compact request: revision={}",
+                    revision
+                );
+                let current_revision = match self.state_store.meta_revision().await {
+                    Ok(current_revision) => current_revision,
+                    Err(err) => {
+                        error!(
+                            "StateMachine meta-compact current revision lookup failed: {}",
+                            err
+                        );
+                        return KLogResponse::Err(err.to_string());
+                    }
+                };
+                if revision == 0 || revision > current_revision {
+                    warn!(
+                        "StateMachine meta-compact rejected: revision={}, current_revision={}",
+                        revision, current_revision
+                    );
+                    return KLogResponse::MetaCompactRejected {
+                        revision,
+                        current_revision,
+                    };
+                }
+                match self.state_store.compact_meta(revision).await {
+                    Ok(compacted_revision) => {
+                        debug!(
+                            "StateMachine meta-compact request committed: compacted_revision={}, current_revision={}",
+                            compacted_revision, current_revision
+                        );
+                        KLogResponse::MetaCompactOk {
+                            compacted_revision,
+                            current_revision,
+                        }
+                    }
+                    Err(err) => {
+                        error!("StateMachine meta-compact request failed: {}", err);
                         KLogResponse::Err(err.to_string())
                     }
                 }
@@ -187,10 +298,7 @@ impl RaftStateMachine<KTypeConfig> for KLogStateMachine {
 
     async fn applied_state(&mut self) -> StorageResult<(Option<KLogId>, KStoredMembership)> {
         let data = self.data.read().await;
-        Ok((
-            data.last_applied_log_id.clone(),
-            data.last_membership.clone(),
-        ))
+        Ok((data.last_applied_log_id, data.last_membership.clone()))
     }
 
     async fn apply<I>(&mut self, entries: I) -> StorageResult<Vec<KLogResponse>>
@@ -272,11 +380,8 @@ impl RaftStateMachine<KTypeConfig> for KLogStateMachine {
                     source: StorageIOError::write_snapshot(None, &std::io::Error::other(msg)),
                 }
             })?;
-        self.persist_state_machine_meta(
-            data.meta.last_log_id.clone(),
-            data.meta.last_membership.clone(),
-        )
-        .await?;
+        self.persist_state_machine_meta(data.meta.last_log_id, data.meta.last_membership.clone())
+            .await?;
 
         // Then, update the in-memory state machine metadata.
         let mut state = self.data.write().await;
@@ -301,14 +406,7 @@ impl RaftStateMachine<KTypeConfig> for KLogStateMachine {
             return Ok(None);
         }
 
-        let (path, snapshot) = ret.unwrap();
-        let file = tokio::fs::File::open(&path).await.map_err(|err| {
-            let msg = format!("Failed to open snapshot file: {:?}, {}", path, err);
-            error!("{}", msg);
-            StorageError::IO {
-                source: StorageIOError::read(&err),
-            }
-        })?;
+        let (_path, snapshot, file) = ret.unwrap();
 
         let snapshot = KSnapshot {
             meta: snapshot.meta,
@@ -328,13 +426,11 @@ impl RaftSnapshotBuilder<KTypeConfig> for KLogStateMachine {
             let snapshot_id =
                 SnapshotManager::generate_snapshot_id(data.last_applied_log_id.as_ref());
 
-            let meta = SnapshotMeta {
+            SnapshotMeta {
                 last_log_id: data.last_applied_log_id,
                 last_membership: data.last_membership.clone(),
                 snapshot_id,
-            };
-
-            meta
+            }
         };
         info!(
             "StateMachine build_snapshot meta prepared: snapshot_id={}, last_log_id={:?}, last_membership={:?}",

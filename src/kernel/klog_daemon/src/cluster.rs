@@ -2,7 +2,7 @@ use crate::config::{
     KLogJoinRetryConfig, KLogJoinRetryStrategy, KLogJoinTargetRole, KLogRuntimeConfig,
 };
 use klog::network::{KLogAdminRequestType, KLogClusterStateResponse};
-use klog::{KNode, KRaftRef};
+use klog::{KClusterTransportMode, KNode, KRaftRef};
 use log::{error, info, warn};
 use rand::Rng;
 use rand::seq::SliceRandom;
@@ -11,6 +11,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 const CONFIG_CHANGE_CONFLICT_MARKER: &str = "undergoing a configuration change";
+const AUTO_JOIN_REFUSED_LOCAL_STATE_MARKER: &str =
+    "auto-join refused by local persisted membership";
 
 pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftRef) {
     if cfg.auto_bootstrap {
@@ -28,6 +30,8 @@ pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftR
                 } else {
                     0
                 },
+                node_name: cfg.advertise_node_name.clone(),
+                device_id: cfg.advertise_device_id.clone(),
             },
         );
         match raft.initialize(members).await {
@@ -49,11 +53,12 @@ pub async fn initialize_cluster_if_needed(cfg: &KLogRuntimeConfig, raft: &KRaftR
     }
 }
 
-pub fn spawn_auto_join_task(cfg: &KLogRuntimeConfig) -> Option<JoinHandle<()>> {
+pub fn spawn_auto_join_task(cfg: &KLogRuntimeConfig, raft: &KRaftRef) -> Option<JoinHandle<()>> {
     if !cfg.auto_bootstrap && !cfg.join_targets.is_empty() {
         let join_cfg = cfg.clone();
+        let join_raft = raft.clone();
         Some(tokio::spawn(async move {
-            run_auto_join_loop(join_cfg).await;
+            run_auto_join_loop(join_cfg, join_raft).await;
         }))
     } else {
         if !cfg.auto_bootstrap {
@@ -65,7 +70,7 @@ pub fn spawn_auto_join_task(cfg: &KLogRuntimeConfig) -> Option<JoinHandle<()>> {
     }
 }
 
-async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
+async fn run_auto_join_loop(cfg: KLogRuntimeConfig, raft: KRaftRef) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(cfg.join_retry.request_timeout_ms))
         .build();
@@ -88,7 +93,7 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
         }
         attempts += 1;
 
-        match try_join_once(&client, &cfg).await {
+        match try_join_once(&client, &cfg, &raft).await {
             Ok(msg) => {
                 info!(
                     "Auto-join succeeded: node_id={}, attempt={}, join_target_role={}, {}",
@@ -97,6 +102,13 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
                 return;
             }
             Err(e) => {
+                if e.contains(AUTO_JOIN_REFUSED_LOCAL_STATE_MARKER) {
+                    warn!(
+                        "Auto-join stopped because local persisted membership requires explicit admin rejoin: node_id={}, err={}",
+                        cfg.node_id, e
+                    );
+                    return;
+                }
                 let sleep_ms = compute_retry_delay_ms(&cfg.join_retry, attempts, &e);
                 warn!(
                     "Auto-join attempt failed: node_id={}, attempt={}, join_target_role={}, err={}, next_retry_in_ms={}",
@@ -111,6 +123,7 @@ async fn run_auto_join_loop(cfg: KLogRuntimeConfig) {
 async fn try_join_once(
     client: &reqwest::Client,
     cfg: &KLogRuntimeConfig,
+    raft: &KRaftRef,
 ) -> Result<String, String> {
     let cluster_state_path = KLogAdminRequestType::ClusterState.klog_path();
     let mut errors = Vec::new();
@@ -141,13 +154,13 @@ async fn try_join_once(
         if let Some(leader_id) = seed_state.current_leader
             && let Some(leader_node) = seed_state.nodes.get(&leader_id)
         {
-            admin_targets.push(admin_target_from_node(leader_node));
+            admin_targets.push(admin_target_from_node(cfg, leader_node));
         }
         admin_targets.push(target.clone());
         dedup_targets(&mut admin_targets);
 
         for admin_target in admin_targets {
-            match join_and_promote_once(client, cfg, &admin_target).await {
+            match join_and_promote_once(client, cfg, raft, &admin_target).await {
                 Ok(msg) => {
                     return Ok(format!(
                         "seed_target='{}', admin_target='{}', {}",
@@ -155,6 +168,10 @@ async fn try_join_once(
                     ));
                 }
                 Err(err) => {
+                    warn!(
+                        "Auto-join admin target failed: seed_target='{}', admin_target='{}', node_id={}, err={}",
+                        target, admin_target, cfg.node_id, err
+                    );
                     errors.push(format!(
                         "seed_target='{}', admin_target='{}': {}",
                         target, admin_target, err
@@ -202,6 +219,7 @@ fn apply_jitter(base_ms: u64, jitter_ratio: f64) -> u64 {
 async fn join_and_promote_once(
     client: &reqwest::Client,
     cfg: &KLogRuntimeConfig,
+    raft: &KRaftRef,
     admin_target: &str,
 ) -> Result<String, String> {
     let cluster_state_path = KLogAdminRequestType::ClusterState.klog_path();
@@ -222,6 +240,12 @@ async fn join_and_promote_once(
     );
 
     if state_before.voters.contains(&cfg.node_id) {
+        ensure_existing_remote_node_matches_config(
+            cfg,
+            &state_before,
+            admin_target,
+            "already-voter",
+        )?;
         if cfg.join_target_role == KLogJoinTargetRole::Learner {
             return Ok(format!(
                 "node is already voter, target_role=learner does not downgrade existing voter: node_id={}, voters={:?}",
@@ -233,6 +257,7 @@ async fn join_and_promote_once(
             cfg.node_id, state_before.voters
         ));
     }
+    ensure_auto_join_allowed_by_local_state(cfg, raft, &state_before, admin_target)?;
 
     if !state_before.learners.contains(&cfg.node_id) {
         let advertised_rpc_port = if cfg.enable_rpc_server {
@@ -249,13 +274,21 @@ async fn join_and_promote_once(
             q.append_pair("inter_port", &cfg.advertise_inter_port.to_string());
             q.append_pair("admin_port", &cfg.advertise_admin_port.to_string());
             q.append_pair("rpc_port", &advertised_rpc_port.to_string());
+            if let Some(node_name) = cfg.advertise_node_name.as_deref() {
+                q.append_pair("node_name", node_name);
+            }
+            if let Some(device_id) = cfg.advertise_device_id.as_deref() {
+                q.append_pair("device_id", device_id);
+            }
             q.append_pair("blocking", if cfg.join_blocking { "true" } else { "false" });
         }
 
         info!(
-            "Auto-join add-learner: admin_target={}, node_id={}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
+            "Auto-join add-learner: admin_target={}, node_id={}, node_name={:?}, device_id={:?}, addr={}, raft_port={}, inter_port={}, admin_port={}, rpc_port={}, blocking={}",
             admin_target,
             cfg.node_id,
+            cfg.advertise_node_name.as_deref(),
+            cfg.advertise_device_id.as_deref(),
             cfg.advertise_addr,
             cfg.advertise_port,
             cfg.advertise_inter_port,
@@ -269,6 +302,12 @@ async fn join_and_promote_once(
             admin_target, cfg.node_id, add_result
         );
     } else {
+        ensure_existing_remote_node_matches_config(
+            cfg,
+            &state_before,
+            admin_target,
+            "already-learner",
+        )?;
         info!(
             "Auto-join skip add-learner because node is already learner: admin_target={}, node_id={}",
             admin_target, cfg.node_id
@@ -406,6 +445,140 @@ fn build_promote_voters_csv(existing_voters: &[u64], node_id: u64) -> String {
         .join(",")
 }
 
+fn ensure_existing_remote_node_matches_config(
+    cfg: &KLogRuntimeConfig,
+    state: &KLogClusterStateResponse,
+    admin_target: &str,
+    stage: &str,
+) -> Result<(), String> {
+    let Some(remote) = state.nodes.get(&cfg.node_id) else {
+        let msg = format!(
+            "node identity mismatch at stage={}: remote membership contains node_id={} but cluster-state nodes map has no entry: admin_target={}, remote_voters={:?}, remote_learners={:?}",
+            stage, cfg.node_id, admin_target, state.voters, state.learners
+        );
+        error!("{}", msg);
+        return Err(msg);
+    };
+
+    let expected_rpc_port = if cfg.enable_rpc_server {
+        cfg.rpc_advertise_port
+    } else {
+        0
+    };
+    let expected_node_name = cfg.advertise_node_name.as_deref().unwrap_or("");
+    let remote_node_name = remote.node_name.as_deref().unwrap_or("");
+    let expected_device_id = cfg.advertise_device_id.as_deref().unwrap_or("");
+    let remote_device_id = remote.device_id.as_deref().unwrap_or("");
+    let mut mismatches = Vec::new();
+    if remote.addr != cfg.advertise_addr {
+        mismatches.push(format!(
+            "addr expected={} remote={}",
+            cfg.advertise_addr, remote.addr
+        ));
+    }
+    if remote.port != cfg.advertise_port {
+        mismatches.push(format!(
+            "raft_port expected={} remote={}",
+            cfg.advertise_port, remote.port
+        ));
+    }
+    if remote.inter_port != cfg.advertise_inter_port {
+        mismatches.push(format!(
+            "inter_port expected={} remote={}",
+            cfg.advertise_inter_port, remote.inter_port
+        ));
+    }
+    if remote.admin_port != cfg.advertise_admin_port {
+        mismatches.push(format!(
+            "admin_port expected={} remote={}",
+            cfg.advertise_admin_port, remote.admin_port
+        ));
+    }
+    if remote.rpc_port != expected_rpc_port {
+        mismatches.push(format!(
+            "rpc_port expected={} remote={}",
+            expected_rpc_port, remote.rpc_port
+        ));
+    }
+    if remote_node_name != expected_node_name {
+        mismatches.push(format!(
+            "node_name expected={} remote={}",
+            expected_node_name, remote_node_name
+        ));
+    }
+    if remote_device_id != expected_device_id {
+        mismatches.push(format!(
+            "device_id expected={} remote={}",
+            expected_device_id, remote_device_id
+        ));
+    }
+
+    if mismatches.is_empty() {
+        return Ok(());
+    }
+
+    let msg = format!(
+        "node identity mismatch at stage={}: node_id={} is already present in remote membership but local advertised identity differs: admin_target={}, mismatches=[{}], remote_node={:?}",
+        stage,
+        cfg.node_id,
+        admin_target,
+        mismatches.join("; "),
+        remote
+    );
+    error!("{}", msg);
+    Err(msg)
+}
+
+fn ensure_auto_join_allowed_by_local_state(
+    cfg: &KLogRuntimeConfig,
+    raft: &KRaftRef,
+    remote_state: &KLogClusterStateResponse,
+    admin_target: &str,
+) -> Result<(), String> {
+    let (local_voters, local_learners) = local_membership_ids(raft);
+    if should_block_auto_join_from_local_membership(
+        &local_voters,
+        &local_learners,
+        remote_state,
+        cfg.node_id,
+    ) {
+        let msg = format!(
+            "{}: local raft state is initialized but remote membership does not contain this node: node_id={}, admin_target={}, local_voters={:?}, local_learners={:?}, remote_voters={:?}, remote_learners={:?}",
+            AUTO_JOIN_REFUSED_LOCAL_STATE_MARKER,
+            cfg.node_id,
+            admin_target,
+            local_voters,
+            local_learners,
+            remote_state.voters,
+            remote_state.learners
+        );
+        warn!("{}", msg);
+        return Err(msg);
+    }
+    Ok(())
+}
+
+fn local_membership_ids(raft: &KRaftRef) -> (Vec<u64>, Vec<u64>) {
+    let metrics = raft.metrics();
+    let metrics = metrics.borrow().clone();
+    let membership = metrics.membership_config.membership();
+    let voters = membership.voter_ids().collect::<Vec<_>>();
+    let learners = membership.learner_ids().collect::<Vec<_>>();
+    (voters, learners)
+}
+
+fn should_block_auto_join_from_local_membership(
+    local_voters: &[u64],
+    local_learners: &[u64],
+    remote_state: &KLogClusterStateResponse,
+    node_id: u64,
+) -> bool {
+    let local_initialized = !local_voters.is_empty() || !local_learners.is_empty();
+    let remote_contains_node =
+        remote_state.voters.contains(&node_id) || remote_state.learners.contains(&node_id);
+    local_initialized && !remote_contains_node
+}
+
 fn ensure_cluster_identity_matches(
     cfg: &KLogRuntimeConfig,
     state: &KLogClusterStateResponse,
@@ -431,7 +604,18 @@ fn ensure_cluster_identity_matches(
     Ok(())
 }
 
-fn admin_target_from_node(node: &KNode) -> String {
+fn admin_target_from_node(cfg: &KLogRuntimeConfig, node: &KNode) -> String {
+    if cfg.cluster_network.mode != KClusterTransportMode::Direct
+        && let Some(node_name) = node.node_name.as_deref()
+        && !node_name.trim().is_empty()
+    {
+        return gateway_admin_target(
+            &cfg.cluster_network.gateway_addr,
+            &cfg.cluster_network.gateway_route_prefix,
+            node_name,
+        );
+    }
+
     let admin_port = if node.admin_port > 0 {
         node.admin_port
     } else if node.inter_port > 0 {
@@ -440,6 +624,36 @@ fn admin_target_from_node(node: &KNode) -> String {
         node.port
     };
     format!("{}:{}", node.addr, admin_port)
+}
+
+fn gateway_admin_target(gateway_addr: &str, route_prefix: &str, node_name: &str) -> String {
+    let gateway_addr = gateway_addr.trim().trim_end_matches('/');
+    let gateway_base =
+        if gateway_addr.starts_with("http://") || gateway_addr.starts_with("https://") {
+            gateway_addr.to_string()
+        } else {
+            format!("http://{}", gateway_addr)
+        };
+    let route_prefix = normalize_gateway_route_prefix(route_prefix);
+    let route_base = if route_prefix == "/" {
+        String::new()
+    } else {
+        route_prefix
+    };
+    format!("{gateway_base}{route_base}/{node_name}/admin")
+}
+
+fn normalize_gateway_route_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        return "/".to_string();
+    }
+    format!("/{trimmed}")
+}
+
+fn admin_path_suffix(path: &str) -> &str {
+    path.strip_prefix("/klog/admin/")
+        .unwrap_or_else(|| path.trim_start_matches('/'))
 }
 
 fn dedup_targets(targets: &mut Vec<String>) {
@@ -471,7 +685,17 @@ fn build_admin_url(target: &str, path: &str) -> Result<reqwest::Url, String> {
 
     let mut url = reqwest::Url::parse(&with_scheme)
         .map_err(|e| format!("invalid join target url '{}': {}", trimmed, e))?;
-    url.set_path(path);
+    let base_path = url.path().trim_end_matches('/');
+    let next_path = if base_path.is_empty() || base_path == "/" {
+        if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        }
+    } else {
+        format!("{}/{}", base_path, admin_path_suffix(path))
+    };
+    url.set_path(&next_path);
     url.set_query(None);
     Ok(url)
 }
@@ -480,13 +704,14 @@ fn build_admin_url(target: &str, path: &str) -> Result<reqwest::Url, String> {
 mod tests {
     use super::{
         admin_target_from_node, build_admin_url, build_promote_voters_csv, dedup_targets,
-        ensure_cluster_identity_matches,
+        ensure_cluster_identity_matches, ensure_existing_remote_node_matches_config,
+        should_block_auto_join_from_local_membership,
     };
     use crate::config::{
         KLogJoinRetryConfig, KLogJoinTargetRole, KLogRaftConfig, KLogRuntimeConfig,
     };
     use klog::network::KLogClusterStateResponse;
-    use klog::{KNode, KNodeId};
+    use klog::{KClusterTransportConfig, KClusterTransportMode, KNode, KNodeId};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -497,6 +722,17 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "http://127.0.0.1:21001/klog/admin/add-learner"
+        );
+    }
+
+    #[test]
+    fn test_build_admin_url_preserves_gateway_admin_base_path() {
+        let path = klog::network::KLogAdminRequestType::ClusterState.klog_path();
+        let url = build_admin_url("http://127.0.0.1:3180/.cluster/klog/ood1/admin", &path)
+            .expect("build admin url");
+        assert_eq!(
+            url.as_str(),
+            "http://127.0.0.1:3180/.cluster/klog/ood1/admin/cluster-state"
         );
     }
 
@@ -515,6 +751,7 @@ mod tests {
 
     #[test]
     fn test_admin_target_from_node() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
         let node = KNode {
             id: 10 as KNodeId,
             addr: "127.0.0.1".to_string(),
@@ -522,13 +759,16 @@ mod tests {
             inter_port: 21002,
             admin_port: 21003,
             rpc_port: 31001,
+            node_name: None,
+            device_id: None,
         };
-        let target = admin_target_from_node(&node);
+        let target = admin_target_from_node(&cfg, &node);
         assert_eq!(target, "127.0.0.1:21003");
     }
 
     #[test]
     fn test_admin_target_from_node_fallback_to_raft_port() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
         let node = KNode {
             id: 10 as KNodeId,
             addr: "127.0.0.1".to_string(),
@@ -536,9 +776,31 @@ mod tests {
             inter_port: 0,
             admin_port: 0,
             rpc_port: 31001,
+            node_name: None,
+            device_id: None,
         };
-        let target = admin_target_from_node(&node);
+        let target = admin_target_from_node(&cfg, &node);
         assert_eq!(target, "127.0.0.1:21001");
+    }
+
+    #[test]
+    fn test_admin_target_from_node_uses_gateway_proxy_node_name() {
+        let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
+        cfg.cluster_network.mode = KClusterTransportMode::GatewayProxy;
+        cfg.cluster_network.gateway_addr = "127.0.0.1:3180".to_string();
+        cfg.cluster_network.gateway_route_prefix = "/.cluster/klog".to_string();
+        let node = KNode {
+            id: 10 as KNodeId,
+            addr: "10.0.0.8".to_string(),
+            port: 21001,
+            inter_port: 21002,
+            admin_port: 21003,
+            rpc_port: 31001,
+            node_name: Some("ood2".to_string()),
+            device_id: None,
+        };
+        let target = admin_target_from_node(&cfg, &node);
+        assert_eq!(target, "http://127.0.0.1:3180/.cluster/klog/ood2/admin");
     }
 
     #[test]
@@ -569,6 +831,8 @@ mod tests {
             advertise_inter_port: 21002,
             advertise_admin_port: 21003,
             rpc_advertise_port: 21101,
+            advertise_node_name: None,
+            advertise_device_id: None,
             data_dir: PathBuf::from("/tmp/klog_cluster_test"),
             cluster_name: cluster_name.to_string(),
             cluster_id: cluster_id.to_string(),
@@ -579,8 +843,10 @@ mod tests {
             join_target_role: KLogJoinTargetRole::Voter,
             join_retry: KLogJoinRetryConfig::default(),
             raft: KLogRaftConfig::default(),
+            cluster_network: KClusterTransportConfig::default(),
             admin_local_only: true,
             rpc: Default::default(),
+            meta_compaction: Default::default(),
         }
     }
 
@@ -621,5 +887,156 @@ mod tests {
         let state = sample_state("renamed_cluster", "cluster_a_id");
         ensure_cluster_identity_matches(&cfg, &state, "127.0.0.1:21001", "test")
             .expect("name mismatch should be allowed when cluster_id matches");
+    }
+
+    fn insert_cfg_node(state: &mut KLogClusterStateResponse, cfg: &KLogRuntimeConfig) {
+        state.nodes.insert(
+            cfg.node_id,
+            KNode {
+                id: cfg.node_id,
+                addr: cfg.advertise_addr.clone(),
+                port: cfg.advertise_port,
+                inter_port: cfg.advertise_inter_port,
+                admin_port: cfg.advertise_admin_port,
+                rpc_port: cfg.rpc_advertise_port,
+                node_name: cfg.advertise_node_name.clone(),
+                device_id: cfg.advertise_device_id.clone(),
+            },
+        );
+    }
+
+    #[test]
+    fn test_existing_remote_node_identity_match_ok() {
+        let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
+        cfg.advertise_node_name = Some("ood1".to_string());
+        cfg.advertise_device_id = Some("did:dev:ood1".to_string());
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        insert_cfg_node(&mut state, &cfg);
+
+        ensure_existing_remote_node_matches_config(&cfg, &state, "127.0.0.1:21001", "test")
+            .expect("existing node identity should match");
+    }
+
+    #[test]
+    fn test_existing_remote_node_identity_mismatch_rejected() {
+        let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
+        cfg.advertise_node_name = Some("replacement-ood".to_string());
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.nodes.insert(
+            cfg.node_id,
+            KNode {
+                id: cfg.node_id,
+                addr: cfg.advertise_addr.clone(),
+                port: cfg.advertise_port + 1,
+                inter_port: cfg.advertise_inter_port,
+                admin_port: cfg.advertise_admin_port,
+                rpc_port: cfg.rpc_advertise_port,
+                node_name: Some("ood1".to_string()),
+                device_id: Some("did:dev:ood1".to_string()),
+            },
+        );
+
+        let err = ensure_existing_remote_node_matches_config(
+            &cfg,
+            &state,
+            "127.0.0.1:21001",
+            "already-voter",
+        )
+        .expect_err("identity mismatch should fail");
+        assert!(err.contains("node identity mismatch"));
+        assert!(err.contains("node_id=1"));
+        assert!(err.contains("raft_port"));
+        assert!(err.contains("node_name"));
+    }
+
+    #[test]
+    fn test_existing_remote_node_device_id_mismatch_rejected() {
+        let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
+        cfg.advertise_node_name = Some("ood1".to_string());
+        cfg.advertise_device_id = Some("did:dev:new-ood1".to_string());
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.nodes.insert(
+            cfg.node_id,
+            KNode {
+                id: cfg.node_id,
+                addr: cfg.advertise_addr.clone(),
+                port: cfg.advertise_port,
+                inter_port: cfg.advertise_inter_port,
+                admin_port: cfg.advertise_admin_port,
+                rpc_port: cfg.rpc_advertise_port,
+                node_name: Some("ood1".to_string()),
+                device_id: Some("did:dev:old-ood1".to_string()),
+            },
+        );
+
+        let err = ensure_existing_remote_node_matches_config(
+            &cfg,
+            &state,
+            "127.0.0.1:21001",
+            "already-voter",
+        )
+        .expect_err("device identity mismatch should fail");
+        assert!(err.contains("node identity mismatch"));
+        assert!(err.contains("device_id"));
+        assert!(err.contains("did:dev:new-ood1"));
+        assert!(err.contains("did:dev:old-ood1"));
+    }
+
+    #[test]
+    fn test_existing_remote_node_missing_spec_rejected() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
+        let state = sample_state("cluster_a", "cluster_a_id");
+
+        let err = ensure_existing_remote_node_matches_config(
+            &cfg,
+            &state,
+            "127.0.0.1:21001",
+            "already-voter",
+        )
+        .expect_err("missing remote node spec should fail");
+        assert!(err.contains("node identity mismatch"));
+        assert!(err.contains("nodes map has no entry"));
+    }
+
+    #[test]
+    fn test_auto_join_blocks_initialized_removed_node() {
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.voters = vec![1, 3];
+        state.learners = vec![];
+
+        assert!(should_block_auto_join_from_local_membership(
+            &[1, 2, 3],
+            &[],
+            &state,
+            2
+        ));
+    }
+
+    #[test]
+    fn test_auto_join_allows_fresh_node() {
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.voters = vec![1, 3];
+        state.learners = vec![];
+
+        assert!(!should_block_auto_join_from_local_membership(
+            &[],
+            &[],
+            &state,
+            2
+        ));
+    }
+
+    #[test]
+    fn test_auto_join_allows_existing_learner_resume() {
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.voters = vec![1, 3];
+        state.learners = vec![2];
+
+        assert!(!should_block_auto_join_from_local_membership(
+            &[1, 2, 3],
+            &[],
+            &state,
+            2
+        ));
     }
 }

@@ -99,6 +99,12 @@
         "ood2" : "rtcp://ood2.test.buckyos.io/",
         "ood3" : "rtcp://ood3.test.buckyos.io/"
     },
+    "routes": {
+    },
+    "did_ip_hints": {
+    },
+    "cluster_route_map": {
+    },
     "trust_key": {
         "verify-hub": "Wo0udCICmiQtnLwzpfulTbFEDvtT5UHNP-MZvnQ3dns",
         "ood1": "s9j6X2zwk1DPjFt60z65LeBJN1DCTsqgeh15iF6Zmd4"

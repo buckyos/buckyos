@@ -16,6 +16,12 @@ pub const ENV_INTER_NODE_LISTEN_ADDR: &str = "KLOG_INTER_NODE_LISTEN_ADDR";
 /// Environment variable key: advertised host/IP for cluster peers.
 pub const ENV_ADVERTISE_ADDR: &str = "KLOG_ADVERTISE_ADDR";
 
+/// Environment variable key: advertised stable node name for gateway/proxy routing.
+pub const ENV_ADVERTISE_NODE_NAME: &str = "KLOG_ADVERTISE_NODE_NAME";
+
+/// Environment variable key: advertised external device identity.
+pub const ENV_ADVERTISE_DEVICE_ID: &str = "KLOG_ADVERTISE_DEVICE_ID";
+
 /// Environment variable key: advertised raft protocol port.
 pub const ENV_ADVERTISE_PORT: &str = "KLOG_ADVERTISE_PORT";
 
@@ -48,6 +54,15 @@ pub const ENV_AUTO_BOOTSTRAP: &str = "KLOG_AUTO_BOOTSTRAP";
 
 /// Environment variable key: fsync/sync-write for state store.
 pub const ENV_STATE_STORE_SYNC_WRITE: &str = "KLOG_STATE_STORE_SYNC_WRITE";
+
+/// Environment variable key: cluster internal transport mode.
+pub const ENV_CLUSTER_NETWORK_MODE: &str = "KLOG_CLUSTER_NETWORK_MODE";
+
+/// Environment variable key: node-gateway or local proxy address for cluster transport.
+pub const ENV_CLUSTER_GATEWAY_ADDR: &str = "KLOG_CLUSTER_GATEWAY_ADDR";
+
+/// Environment variable key: gateway route prefix for cluster transport proxying.
+pub const ENV_CLUSTER_GATEWAY_ROUTE_PREFIX: &str = "KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX";
 
 /// Environment variable key: comma-separated join targets (admin endpoint host:port).
 pub const ENV_JOIN_TARGETS: &str = "KLOG_JOIN_TARGETS";
@@ -146,6 +161,22 @@ pub const ENV_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP: &str = "KLOG_RAFT_MAX_IN_SNAPSHO
 /// Environment variable key: raft purge batch size.
 pub const ENV_RAFT_PURGE_BATCH_SIZE: &str = "KLOG_RAFT_PURGE_BATCH_SIZE";
 
+/// Environment variable key: whether automatic MVCC metadata compaction is enabled.
+pub const ENV_META_COMPACTION_ENABLED: &str = "KLOG_META_COMPACTION_ENABLED";
+
+/// Environment variable key: automatic MVCC metadata compaction policy.
+pub const ENV_META_COMPACTION_POLICY: &str = "KLOG_META_COMPACTION_POLICY";
+
+/// Environment variable key: revisions retained after automatic MVCC metadata compaction.
+pub const ENV_META_COMPACTION_RETENTION_REVISIONS: &str =
+    "KLOG_META_COMPACTION_RETENTION_REVISIONS";
+
+/// Environment variable key: automatic MVCC metadata compaction check interval in milliseconds.
+pub const ENV_META_COMPACTION_CHECK_INTERVAL_MS: &str = "KLOG_META_COMPACTION_CHECK_INTERVAL_MS";
+
+/// Environment variable key: minimum compacted-revision advance before auto compact writes.
+pub const ENV_META_COMPACTION_MIN_COMPACT_GAP: &str = "KLOG_META_COMPACTION_MIN_COMPACT_GAP";
+
 /// Default host for raft protocol listener.
 pub const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
 
@@ -165,13 +196,13 @@ pub const DEFAULT_INTER_NODE_PORT: u16 = 21002;
 pub const DEFAULT_ADMIN_PORT: u16 = 21003;
 
 /// Default client RPC port (local service client).
-pub const DEFAULT_RPC_PORT: u16 = 21101;
+pub const DEFAULT_RPC_PORT: u16 = 4080;
 
 /// Default timeout for append/query/json-rpc handlers in milliseconds.
 pub const DEFAULT_RPC_TIMEOUT_MS: u64 = 3_000;
 
 /// Default request body size limit for append/query/json-rpc handlers.
-pub const DEFAULT_RPC_BODY_LIMIT_BYTES: usize = 1 * 1024 * 1024;
+pub const DEFAULT_RPC_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 
 /// Default in-flight request limit for append/query/json-rpc handlers.
 pub const DEFAULT_RPC_CONCURRENCY_LIMIT: usize = 128;
@@ -184,6 +215,15 @@ pub const DEFAULT_AUTO_BOOTSTRAP: bool = false;
 
 /// Default switch: enable state-store sync write for durability.
 pub const DEFAULT_STATE_STORE_SYNC_WRITE: bool = true;
+
+/// Default cluster internal transport mode.
+pub const DEFAULT_CLUSTER_NETWORK_MODE: &str = "direct";
+
+/// Default local gateway address for proxy/hybrid cluster transport.
+pub const DEFAULT_CLUSTER_GATEWAY_ADDR: &str = "127.0.0.1:3180";
+
+/// Default route prefix used by cluster transport proxy mode.
+pub const DEFAULT_CLUSTER_GATEWAY_ROUTE_PREFIX: &str = "/.cluster/klog";
 
 /// Default add-learner request mode, non-blocking.
 pub const DEFAULT_JOIN_BLOCKING: bool = false;
@@ -248,5 +288,20 @@ pub const DEFAULT_RAFT_MAX_IN_SNAPSHOT_LOG_TO_KEEP: u64 = 1_000;
 /// Default raft purge batch size.
 pub const DEFAULT_RAFT_PURGE_BATCH_SIZE: u64 = 1;
 
+/// Default switch: automatic MVCC metadata compaction is disabled.
+pub const DEFAULT_META_COMPACTION_ENABLED: bool = false;
+
+/// Default automatic MVCC metadata compaction policy.
+pub const DEFAULT_META_COMPACTION_POLICY: &str = "revision_count";
+
+/// Default number of latest metadata revisions retained by automatic compaction.
+pub const DEFAULT_META_COMPACTION_RETENTION_REVISIONS: u64 = 100_000;
+
+/// Default automatic MVCC metadata compaction check interval in milliseconds.
+pub const DEFAULT_META_COMPACTION_CHECK_INTERVAL_MS: u64 = 300_000;
+
+/// Default minimum revision advance before automatic compaction submits a write.
+pub const DEFAULT_META_COMPACTION_MIN_COMPACT_GAP: u64 = 10_000;
+
 /// Service name used to derive default data dir.
-pub const KLOG_SERVICE_NAME: &str = "klog";
+pub const KLOG_SERVICE_NAME: &str = "klog-service";

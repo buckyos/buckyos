@@ -8,6 +8,7 @@ pub async fn run_server_lifecycle(
     network_server: KNetworkServer,
     rpc_server: Option<KRpcServer>,
     auto_join_task: Option<JoinHandle<()>>,
+    auto_meta_compaction_task: Option<JoinHandle<()>>,
 ) -> Result<(), String> {
     let (raft_shutdown_tx_raw, raft_shutdown_rx) = oneshot::channel::<()>();
     let mut raft_shutdown_tx = Some(raft_shutdown_tx_raw);
@@ -90,15 +91,16 @@ pub async fn run_server_lifecycle(
         }
     };
 
-    stop_auto_join_task(auto_join_task).await;
+    stop_background_task("auto-join", auto_join_task).await;
+    stop_background_task("auto-meta-compaction", auto_meta_compaction_task).await;
     server_result
 }
 
-pub async fn stop_auto_join_task(join_task: Option<JoinHandle<()>>) {
-    if let Some(handle) = join_task {
+pub async fn stop_background_task(task_name: &str, task: Option<JoinHandle<()>>) {
+    if let Some(handle) = task {
         handle.abort();
         let _ = handle.await;
-        info!("Auto-join task stopped because network server exited");
+        info!("{} task stopped because network server exited", task_name);
     }
 }
 

@@ -1,0 +1,2 @@
+service_name = "klog_daemon"
+service_type = "kernel"

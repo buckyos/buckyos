@@ -63,6 +63,14 @@ enum NodeDaemonErrors {
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
+const ENV_SYSTEM_CONFIG_STORE: &str = "BUCKYOS_SYSTEM_CONFIG_STORE";
+const SYSTEM_CONFIG_STORE_KLOG: &str = "klog";
+const KLOG_CLUSTER_ROUTE_PREFIX: &str = "/.cluster/klog";
+const KLOG_CLUSTER_GATEWAY_ADDR: &str = "127.0.0.1:3180";
+const KLOG_NODE_ID_HASH_PREFIX: &str = "buckyos:klog-node-id:v1:";
+const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV1A64_PRIME: u64 = 0x100000001b3;
+
 async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
     //If local files exist, priority loads local files
     let etc_dir = get_buckyos_system_etc_dir();
@@ -845,6 +853,222 @@ async fn wait_sysmte_config_sync() -> std::result::Result<(), String> {
     return Ok(());
 }
 
+fn system_config_store_is_klog() -> bool {
+    env::var(ENV_SYSTEM_CONFIG_STORE)
+        .map(|value| value.trim().eq_ignore_ascii_case(SYSTEM_CONFIG_STORE_KLOG))
+        .unwrap_or(false)
+}
+
+fn derive_klog_node_id_from_device(device_doc: &DeviceConfig) -> u64 {
+    let mut hash = FNV1A64_OFFSET_BASIS;
+    let device_did = device_doc.id.to_string();
+    for byte in KLOG_NODE_ID_HASH_PREFIX
+        .as_bytes()
+        .iter()
+        .chain(device_did.as_bytes().iter())
+    {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV1A64_PRIME);
+    }
+
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
+}
+
+fn build_klog_gateway_admin_target(ood_name: &str) -> String {
+    format!(
+        "http://{}{}/{}/admin",
+        KLOG_CLUSTER_GATEWAY_ADDR, KLOG_CLUSTER_ROUTE_PREFIX, ood_name
+    )
+}
+
+fn build_klog_join_targets(this_node_name: &str, ood_names: &[String]) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut seen = Vec::new();
+    for ood_name in ood_names {
+        if ood_name == this_node_name || seen.iter().any(|name| name == ood_name) {
+            continue;
+        }
+        seen.push(ood_name.clone());
+        targets.push(build_klog_gateway_admin_target(ood_name));
+    }
+    targets
+}
+
+fn build_klog_service_env(
+    this_device_doc: &DeviceConfig,
+    zone_host: &str,
+    ood_names: Vec<String>,
+) -> std::result::Result<HashMap<String, String>, String> {
+    if ood_names.is_empty() {
+        return Err("cannot start klog-service: zone has no OOD voter".to_string());
+    }
+
+    let this_node_name = this_device_doc.name.as_str();
+    if !ood_names.iter().any(|name| name == this_node_name) {
+        return Err(format!(
+            "cannot start klog-service on non-OOD node {}, voters={:?}",
+            this_node_name, ood_names
+        ));
+    }
+
+    let node_id = derive_klog_node_id_from_device(this_device_doc);
+    let seed_ood = ood_names.first().unwrap();
+    let auto_bootstrap = seed_ood == this_node_name;
+    let mut env_vars = HashMap::new();
+    env_vars.insert("KLOG_NODE_ID".to_string(), node_id.to_string());
+    env_vars.insert("KLOG_CLUSTER_NAME".to_string(), zone_host.to_string());
+    env_vars.insert("KLOG_CLUSTER_ID".to_string(), zone_host.to_string());
+    env_vars.insert(
+        "KLOG_LISTEN_ADDR".to_string(),
+        format!("0.0.0.0:{}", KLOG_CLUSTER_RAFT_PORT),
+    );
+    env_vars.insert(
+        "KLOG_INTER_NODE_LISTEN_ADDR".to_string(),
+        format!("0.0.0.0:{}", KLOG_CLUSTER_INTER_PORT),
+    );
+    env_vars.insert(
+        "KLOG_ADMIN_LISTEN_ADDR".to_string(),
+        format!("127.0.0.1:{}", KLOG_CLUSTER_ADMIN_PORT),
+    );
+    env_vars.insert(
+        "KLOG_RPC_LISTEN_ADDR".to_string(),
+        format!("127.0.0.1:{}", KLOG_SERVICE_PORT),
+    );
+    env_vars.insert("KLOG_ADVERTISE_ADDR".to_string(), "127.0.0.1".to_string());
+    env_vars.insert(
+        "KLOG_ADVERTISE_NODE_NAME".to_string(),
+        this_node_name.to_string(),
+    );
+    env_vars.insert(
+        "KLOG_ADVERTISE_DEVICE_ID".to_string(),
+        this_device_doc.id.to_string(),
+    );
+    env_vars.insert(
+        "KLOG_ADVERTISE_PORT".to_string(),
+        KLOG_CLUSTER_RAFT_PORT.to_string(),
+    );
+    env_vars.insert(
+        "KLOG_ADVERTISE_INTER_PORT".to_string(),
+        KLOG_CLUSTER_INTER_PORT.to_string(),
+    );
+    env_vars.insert(
+        "KLOG_ADMIN_ADVERTISE_PORT".to_string(),
+        KLOG_CLUSTER_ADMIN_PORT.to_string(),
+    );
+    env_vars.insert(
+        "KLOG_RPC_ADVERTISE_PORT".to_string(),
+        KLOG_SERVICE_PORT.to_string(),
+    );
+    env_vars.insert("KLOG_ENABLE_RPC_SERVER".to_string(), "true".to_string());
+    env_vars.insert(
+        "KLOG_CLUSTER_NETWORK_MODE".to_string(),
+        "gateway_proxy".to_string(),
+    );
+    env_vars.insert(
+        "KLOG_CLUSTER_GATEWAY_ADDR".to_string(),
+        KLOG_CLUSTER_GATEWAY_ADDR.to_string(),
+    );
+    env_vars.insert(
+        "KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX".to_string(),
+        KLOG_CLUSTER_ROUTE_PREFIX.to_string(),
+    );
+    env_vars.insert(
+        "KLOG_AUTO_BOOTSTRAP".to_string(),
+        auto_bootstrap.to_string(),
+    );
+    env_vars.insert("KLOG_JOIN_BLOCKING".to_string(), "true".to_string());
+    env_vars.insert("KLOG_JOIN_TARGET_ROLE".to_string(), "voter".to_string());
+    if !auto_bootstrap {
+        let join_targets = build_klog_join_targets(this_node_name, &ood_names);
+        env_vars.insert("KLOG_JOIN_TARGETS".to_string(), join_targets.join(","));
+    }
+
+    Ok(env_vars)
+}
+
+fn build_klog_service_env_from_zone_boot(
+    this_device_doc: &DeviceConfig,
+    zone_host: &str,
+    zone_boot_config: &ZoneBootConfig,
+) -> std::result::Result<HashMap<String, String>, String> {
+    let ood_names = zone_boot_config
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+        .map(|ood| ood.name.clone())
+        .collect();
+    build_klog_service_env(this_device_doc, zone_host, ood_names)
+}
+
+fn build_klog_service_env_from_zone_config(
+    this_device_doc: &DeviceConfig,
+    zone_config: &ZoneConfig,
+) -> std::result::Result<HashMap<String, String>, String> {
+    let ood_names = zone_config
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+        .map(|ood| ood.name.clone())
+        .collect();
+    build_klog_service_env(
+        this_device_doc,
+        zone_config.id.to_host_name().as_str(),
+        ood_names,
+    )
+}
+
+async fn keep_klog_service(
+    env_vars: &HashMap<String, String>,
+    is_restart: bool,
+) -> std::result::Result<(), String> {
+    let mut klog_service_pkg = ServicePkg::new(
+        KLOG_SERVICE_UNIQUE_ID.to_string(),
+        get_buckyos_system_bin_dir(),
+    );
+    klog_service_pkg.set_context(None, Some(env_vars));
+
+    if !klog_service_pkg.try_load().await {
+        error!("load klog_service pkg failed!");
+        let mut env = new_system_package_env();
+        let result = env.install_pkg(KLOG_SERVICE_UNIQUE_ID, false, false).await;
+        if result.is_err() {
+            error!("install klog_service pkg failed! {}", result.err().unwrap());
+            return Err(String::from("install klog_service pkg failed!"));
+        } else {
+            info!("install klog_service pkg success");
+        }
+    }
+
+    let mut running_state = klog_service_pkg.status(None).await.map_err(|err| {
+        error!("check klog_service running failed! {}", err);
+        String::from("check klog_service running failed!")
+    })?;
+
+    if is_restart {
+        klog_service_pkg.stop(None).await.map_err(|err| {
+            error!("stop klog_service failed! {}", err);
+            String::from("stop klog_service failed!")
+        })?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        running_state = ServiceInstanceState::Stopped;
+    }
+
+    if running_state == ServiceInstanceState::Stopped {
+        warn!("check klog_service is stopped, try to start klog_service");
+        let start_result = klog_service_pkg.start(None).await.map_err(|err| {
+            error!("start klog_service failed! {}", err);
+            String::from("start klog_service failed!")
+        })?;
+        info!("start klog_service OK!, result:{}", start_result);
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+    Ok(())
+}
+
 async fn keep_system_config_service(
     node_id: &str,
     device_doc: &DeviceConfig,
@@ -1275,7 +1499,20 @@ async fn node_daemon_main_loop(
             last_register_time = now;
         }
 
-        if (is_ood) {
+        if is_ood {
+            if system_config_store_is_klog() {
+                let klog_env = build_klog_service_env_from_zone_config(device_doc, zone_config)
+                    .map_err(|err| {
+                        error!("build klog_service env failed! {}", err);
+                        NodeDaemonErrors::SystemConfigError(
+                            "build klog_service env failed!".to_string(),
+                        )
+                    })?;
+                keep_klog_service(&klog_env, false).await.map_err(|err| {
+                    error!("start klog_service failed! {}", err);
+                    NodeDaemonErrors::SystemConfigError("start klog_service failed!".to_string())
+                })?;
+            }
             keep_system_config_service(node_id, device_doc, device_private_key, false)
                 .await
                 .map_err(|err| {
@@ -1748,6 +1985,22 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let boot_config: serde_json::Value;
     let mut boot_config_result_str = "".to_string();
     if is_ood {
+        if system_config_store_is_klog() {
+            let klog_env = build_klog_service_env_from_zone_boot(
+                &device_doc,
+                zone_host.as_str(),
+                &zone_boot_config,
+            )
+            .map_err(|err| {
+                error!("build boot klog_service env failed! {}", err);
+                err
+            })?;
+            keep_klog_service(&klog_env, false).await.map_err(|err| {
+                error!("start klog_service before system_config failed! {}", err);
+                String::from("start klog_service before system_config failed!")
+            })?;
+        }
+
         keep_system_config_service(node_id.as_str(), &device_doc, &device_private_key, false)
             .await
             .map_err(|err| {
@@ -1997,6 +2250,157 @@ mod tests {
                 }
             }
         })
+    }
+
+    fn test_device_doc(name: &str, did_suffix: &str) -> DeviceConfig {
+        DeviceConfig::new(name, did_suffix.to_string())
+    }
+
+    #[test]
+    fn derive_klog_node_id_from_device_is_stable_protocol() {
+        let device_doc = test_device_doc("ood2", "ood2-device-key");
+
+        assert_eq!(
+            derive_klog_node_id_from_device(&device_doc),
+            5_588_228_819_824_065_463
+        );
+    }
+
+    #[test]
+    fn build_klog_service_env_bootstraps_first_ood() {
+        let device_doc = test_device_doc("ood1", "ood1-device-key");
+        let expected_node_id = derive_klog_node_id_from_device(&device_doc).to_string();
+        let expected_device_id = device_doc.id.to_string();
+        let env = build_klog_service_env(
+            &device_doc,
+            "test.zone",
+            vec!["ood1".to_string(), "ood2".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            env.get("KLOG_NODE_ID").map(String::as_str),
+            Some(expected_node_id.as_str())
+        );
+        assert_eq!(
+            env.get("KLOG_ADVERTISE_DEVICE_ID").map(String::as_str),
+            Some(expected_device_id.as_str())
+        );
+        assert_eq!(
+            env.get("KLOG_AUTO_BOOTSTRAP").map(String::as_str),
+            Some("true")
+        );
+        assert!(!env.contains_key("KLOG_JOIN_TARGETS"));
+        assert_eq!(
+            env.get("KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX")
+                .map(String::as_str),
+            Some(KLOG_CLUSTER_ROUTE_PREFIX)
+        );
+    }
+
+    #[test]
+    fn build_klog_service_env_joins_later_ood_to_seed() {
+        let device_doc = test_device_doc("ood2", "ood2-device-key");
+        let expected_node_id = derive_klog_node_id_from_device(&device_doc).to_string();
+        let expected_device_id = device_doc.id.to_string();
+        let env = build_klog_service_env(
+            &device_doc,
+            "test.zone",
+            vec!["ood1".to_string(), "ood2".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            env.get("KLOG_NODE_ID").map(String::as_str),
+            Some(expected_node_id.as_str())
+        );
+        assert_eq!(
+            env.get("KLOG_ADVERTISE_DEVICE_ID").map(String::as_str),
+            Some(expected_device_id.as_str())
+        );
+        assert_eq!(
+            env.get("KLOG_AUTO_BOOTSTRAP").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            env.get("KLOG_JOIN_TARGETS").map(String::as_str),
+            Some("http://127.0.0.1:3180/.cluster/klog/ood1/admin")
+        );
+    }
+
+    #[test]
+    fn build_klog_service_env_joins_later_ood_to_all_other_oods() {
+        let device_doc = test_device_doc("ood4", "ood4-device-key");
+        let env = build_klog_service_env(
+            &device_doc,
+            "test.zone",
+            vec![
+                "ood1".to_string(),
+                "ood2".to_string(),
+                "ood3".to_string(),
+                "ood4".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            env.get("KLOG_AUTO_BOOTSTRAP").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            env.get("KLOG_JOIN_TARGETS").map(String::as_str),
+            Some(
+                "http://127.0.0.1:3180/.cluster/klog/ood1/admin,http://127.0.0.1:3180/.cluster/klog/ood2/admin,http://127.0.0.1:3180/.cluster/klog/ood3/admin"
+            )
+        );
+    }
+
+    #[test]
+    fn build_klog_join_targets_deduplicates_and_excludes_self() {
+        let targets = build_klog_join_targets(
+            "ood2",
+            &[
+                "ood1".to_string(),
+                "ood2".to_string(),
+                "ood1".to_string(),
+                "ood3".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            targets,
+            vec![
+                "http://127.0.0.1:3180/.cluster/klog/ood1/admin".to_string(),
+                "http://127.0.0.1:3180/.cluster/klog/ood3/admin".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_klog_service_env_keeps_node_id_stable_when_ood_order_changes() {
+        let device_doc = test_device_doc("ood2", "ood2-device-key");
+        let env1 = build_klog_service_env(
+            &device_doc,
+            "test.zone",
+            vec!["ood1".to_string(), "ood2".to_string(), "ood3".to_string()],
+        )
+        .unwrap();
+        let env2 = build_klog_service_env(
+            &device_doc,
+            "test.zone",
+            vec!["ood1".to_string(), "ood3".to_string(), "ood2".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(env1.get("KLOG_NODE_ID"), env2.get("KLOG_NODE_ID"));
+        assert_eq!(
+            env1.get("KLOG_AUTO_BOOTSTRAP").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            env2.get("KLOG_AUTO_BOOTSTRAP").map(String::as_str),
+            Some("false")
+        );
     }
 
     async fn create_test_store_mgr(base_dir: &Path) -> NamedDataMgr {

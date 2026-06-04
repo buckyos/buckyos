@@ -15,6 +15,10 @@ collections:
     type: json_map
     file_path: ./node_gateway_info.json#routes
     only_read_file: true
+  CLUSTER_ROUTE_MAP:
+    type: json_map
+    file_path: ./node_gateway_info.json#cluster_route_map
+    only_read_file: true
   TRUST_KEY:
     type: json_map
     file_path: ./node_gateway_info.json#trust_key
@@ -97,14 +101,20 @@ servers:
               global CONTROL_PANEL_URL="https://sys.${THIS_ZONE_HOST}/";
               global APP_ID="";
               global SERVICE_ID="";
+              global KLOG_CLUSTER_TARGET_NODE_NAME="";
+              global KLOG_CLUSTER_TARGET_PORT="";
+              global KLOG_CLUSTER_INGRESS_PORT="";
               if match $REQ.path "/kapi/kevent/*" then
                 return --from chain $(exec forward_to_kevent);
               end
-              global APP_ID="";
-              global SERVICE_ID="";
 
               if eq $REQ.host "public.${THIS_ZONE_HOST}" then
                 return --from chain $(exec forward_to_public);
+              end
+
+              exec get_klog_cluster_target_from_req;
+              if !eq $KLOG_CLUSTER_TARGET_NODE_NAME "" then
+                return --from chain $(exec forward_to_klog_cluster);
               end
 
               exec get_app_info_from_req;
@@ -124,6 +134,31 @@ servers:
               end
               echo "reject";
               reject;
+
+          get_klog_cluster_target_from_req:
+            priority: 125
+            block: |
+              global KLOG_CLUSTER_TARGET_NODE_NAME="";
+              global KLOG_CLUSTER_TARGET_PORT="";
+              global KLOG_CLUSTER_INGRESS_PORT="";
+              match-include $CLUSTER_ROUTE_MAP "klog-service" || return false;
+              local klog_cluster_route=$CLUSTER_ROUTE_MAP["klog-service"];
+              local request_dest_port=$REQ_target_port;
+              eq $request_dest_port "${klog_cluster_route.ingress_port}" || return false;
+              local route_prefix=$klog_cluster_route.route_prefix;
+              starts-with $REQ.path $route_prefix || return false;
+              local klog_route_suffix=$(strip-prefix $REQ.path $route_prefix);
+              map-create klog_target_match;
+              match-reg --capture klog_target_match $klog_route_suffix "^/([a-zA-Z0-9_-]+)/(raft|inter|admin)(/.*)?" || return false;
+              local target_node_name=$klog_target_match[1];
+              local target_plane=$klog_target_match[2];
+              match-include $klog_cluster_route.nodes $target_node_name || return false;
+              global KLOG_CLUSTER_TARGET_NODE_NAME=$target_node_name;
+              global KLOG_CLUSTER_TARGET_PORT=${klog_cluster_route.nodes[$target_node_name].ports[$target_plane]};
+              global KLOG_CLUSTER_INGRESS_PORT=${klog_cluster_route.ingress_port};
+              eq $KLOG_CLUSTER_TARGET_PORT "" && return false;
+              eq $KLOG_CLUSTER_INGRESS_PORT "" && return false;
+              return true;
 
           get_app_info_from_req:
             # 尝试通过域名解析得到appid
@@ -253,6 +288,36 @@ servers:
                 forward round_robin --map $primary_peers --backup-map $backup_peers --group "service:${SERVICE_ID}" --next-upstream "error,timeout" --tries 3;
               end
               echo "forward to service failed";
+              reject;
+
+          forward_to_klog_cluster:
+            priority: 155
+            block: |
+              eq $KLOG_CLUSTER_TARGET_NODE_NAME "" && reject;
+              eq $KLOG_CLUSTER_TARGET_PORT "" && reject;
+              eq $KLOG_CLUSTER_INGRESS_PORT "" && reject;
+
+              if eq $KLOG_CLUSTER_TARGET_NODE_NAME $THIS_NODE_ID then
+                forward "tcp:///127.0.0.1:${KLOG_CLUSTER_TARGET_PORT}";
+              elif match-include $ROUTES $KLOG_CLUSTER_TARGET_NODE_NAME then
+                map-create klog_primary_peers;
+                map-create klog_backup_peers;
+                for route_id, route in $ROUTES[$KLOG_CLUSTER_TARGET_NODE_NAME] then
+                  local target_url="${route.url}:${KLOG_CLUSTER_INGRESS_PORT}";
+                  if eq $route.backup true then
+                    map-add klog_backup_peers $target_url 100;
+                  else
+                    map-add klog_primary_peers $target_url 100;
+                  end
+                end
+                forward round_robin --map $klog_primary_peers --backup-map $klog_backup_peers --group "klog-cluster:${KLOG_CLUSTER_TARGET_NODE_NAME}" --next-upstream "error,timeout" --tries 3;
+              else
+                local target_rtcp_url=${NODE_ROUTE_MAP[$KLOG_CLUSTER_TARGET_NODE_NAME]};
+                if !eq $target_rtcp_url "" then
+                  forward "${target_rtcp_url}:${KLOG_CLUSTER_INGRESS_PORT}";
+                end
+              end
+              echo "forward to klog cluster failed";
               reject;
 
           forward_to_app:

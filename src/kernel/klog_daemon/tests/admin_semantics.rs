@@ -314,6 +314,100 @@ async fn test_admin_write_on_follower_returns_not_leader() -> Result<(), String>
 }
 
 #[tokio::test]
+async fn test_admin_change_membership_rejects_current_leader_demotion() -> Result<(), String> {
+    if !can_bind_localhost() {
+        eprintln!("skip admin leader-demotion test: localhost bind is not available");
+        return Ok(());
+    }
+
+    let ports = choose_unique_ports(3)?;
+    let port1 = ports[0];
+    let port2 = ports[1];
+    let port3 = ports[2];
+    let cluster_name = format!(
+        "klog_admin_reject_leader_demote_{}_{}_{}",
+        port1, port2, port3
+    );
+    let mut nodes = spawn_three_voter_cluster_with_raft_timing(
+        &cluster_name,
+        port1,
+        port2,
+        port3,
+        ADMIN_RAFT_TIMING,
+    )
+    .await?;
+
+    let result = async {
+        let _ = wait_cluster_membership(
+            &[port1, port2, port3],
+            &[1, 2, 3],
+            &[],
+            Duration::from_secs(60),
+        )
+        .await?;
+        let leader =
+            wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40))
+                .await?;
+        let leader_port = if leader == 1 {
+            port1
+        } else if leader == 2 {
+            port2
+        } else {
+            port3
+        };
+        let remaining_voters = [1_u64, 2, 3]
+            .into_iter()
+            .filter(|id| *id != leader)
+            .collect::<Vec<_>>();
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .map_err(|e| format!("failed to build http client: {}", e))?;
+
+        let (status, body) =
+            post_change_membership(&client, leader_port, &remaining_voters, true).await?;
+        if status != StatusCode::CONFLICT {
+            return Err(format!(
+                "current leader demotion should return 409, got status={}, body={}",
+                status, body
+            ));
+        }
+        if !body.contains("cannot remove current leader") {
+            return Err(format!(
+                "unexpected current leader demotion rejection body: {}",
+                body
+            ));
+        }
+
+        let _ = wait_cluster_membership(
+            &[port1, port2, port3],
+            &[1, 2, 3],
+            &[],
+            Duration::from_secs(30),
+        )
+        .await?;
+        let stable_leader =
+            wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(20))
+                .await?;
+        if ![1_u64, 2, 3].contains(&stable_leader) {
+            return Err(format!(
+                "unexpected leader after rejected demotion: {}",
+                stable_leader
+            ));
+        }
+
+        Ok(())
+    }
+    .await;
+
+    for n in &mut nodes {
+        n.stop().await;
+    }
+    result
+}
+
+#[tokio::test]
 async fn test_admin_change_membership_retry_after_transient_conflict() -> Result<(), String> {
     if !can_bind_localhost() {
         eprintln!("skip admin config-change retry test: localhost bind is not available");

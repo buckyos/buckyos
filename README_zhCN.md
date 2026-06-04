@@ -49,6 +49,15 @@ clone 完成后，先安装 `uv`。仓库根目录现在带有 `pyproject.toml`�
 
 如果本机还没准备好开发环境，可以先执行 `python3 devenv.py`。脚本会按当前平台安装 `uv`、`deno`、`tmux` 以及其他基础依赖。
 
+如果是在 Linux 非 root 环境，或不希望脚本执行 sudo/root 级修改，可以使用 user mode：
+
+```bash
+python3 devenv.py --user
+export BUCKYOS_ROOT="$PWD/.dev_buckyos"
+```
+
+user mode 会尽量安装用户态工具，并输出仍需管理员权限的操作提示，例如系统包、Docker、`/opt/buckyos`、低端口 `setcap` 等。只想检查环境、不修改机器状态时，可以执行 `python3 devenv.py --doctor`。
+
 ```bash
 cd buckyos
 uv run src/buckyos-build.py --skip-web

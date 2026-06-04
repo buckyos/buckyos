@@ -9,6 +9,7 @@ pub use server::*;
 
 pub const KLOG_JSON_RPC_VERSION: &str = "2.0";
 pub const KLOG_JSON_RPC_PATH: &str = "/klog/rpc";
+pub const KLOG_JSON_RPC_SERVICE_PATH: &str = "/kapi/klog-service";
 pub const KLOG_RPC_METHOD_LOG_APPEND: &str = "klog.log.append";
 pub const KLOG_RPC_METHOD_LOG_QUERY: &str = "klog.log.query";
 pub const KLOG_RPC_METHOD_LOG_APPEND_LEGACY: &str = "klog.append";
@@ -17,7 +18,9 @@ pub const KLOG_RPC_METHOD_APPEND: &str = KLOG_RPC_METHOD_LOG_APPEND;
 pub const KLOG_RPC_METHOD_QUERY: &str = KLOG_RPC_METHOD_LOG_QUERY;
 pub const KLOG_RPC_METHOD_META_PUT: &str = "klog.meta.put";
 pub const KLOG_RPC_METHOD_META_DELETE: &str = "klog.meta.delete";
+pub const KLOG_RPC_METHOD_META_TX: &str = "klog.meta.tx";
 pub const KLOG_RPC_METHOD_META_QUERY: &str = "klog.meta.query";
+pub const KLOG_RPC_METHOD_META_CHANGES: &str = "klog.meta.changes";
 
 pub const KLOG_RPC_ERR_INVALID_REQUEST: i64 = -32600;
 pub const KLOG_RPC_ERR_METHOD_NOT_FOUND: i64 = -32601;

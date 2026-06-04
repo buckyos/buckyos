@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 
 TEST_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = TEST_ROOT.parent
+TEST_TARGET_ROOT = REPO_ROOT / "src" / "target"
 
 
 @dataclass
@@ -27,6 +31,13 @@ def load_package_json(package_json_path: Path) -> dict:
         return json.loads(package_json_path.read_text(encoding="utf-8"))
     except Exception as error:
         raise RuntimeError(f"failed to read {package_json_path}: {error}") from error
+
+
+def load_cargo_toml(cargo_toml_path: Path) -> dict:
+    try:
+        return tomllib.loads(cargo_toml_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise RuntimeError(f"failed to read {cargo_toml_path}: {error}") from error
 
 
 def detect_runner(path: Path) -> RunnerSpec | None:
@@ -77,11 +88,22 @@ def detect_runner(path: Path) -> RunnerSpec | None:
             )
 
     if cargo_toml_path.exists():
+        cargo_toml = load_cargo_toml(cargo_toml_path)
+        dv_metadata = (
+            cargo_toml.get("package", {})
+            .get("metadata", {})
+            .get("dv", {})
+        )
+        cargo_command = dv_metadata.get("command", "test")
+        if cargo_command not in {"test", "run"}:
+            raise RuntimeError(
+                f"unsupported package.metadata.dv.command={cargo_command!r} in {cargo_toml_path}"
+            )
         return RunnerSpec(
             module_name=path.name,
             path=path,
             kind="cargo",
-            command=["cargo", "test", "--manifest-path", str(cargo_toml_path)],
+            command=["cargo", cargo_command, "--manifest-path", str(cargo_toml_path)],
             cwd=TEST_ROOT.parent,
         )
 
@@ -129,6 +151,10 @@ def discover_modules() -> dict[str, RunnerSpec]:
     return modules
 
 
+def cargo_target_dir(module_name: str) -> Path:
+    return TEST_TARGET_ROOT / module_name
+
+
 def resolve_module(name: str, modules: dict[str, RunnerSpec]) -> RunnerSpec:
     if name in modules:
         return modules[name]
@@ -151,7 +177,12 @@ def run_module(spec: RunnerSpec) -> int:
         flush=True,
     )
     print(f"[cmd] {' '.join(spec.command)}", flush=True)
-    completed = subprocess.run(spec.command, cwd=spec.cwd)
+    env = None
+    if spec.kind == "cargo":
+        env = os.environ.copy()
+        env["CARGO_TARGET_DIR"] = str(cargo_target_dir(spec.module_name))
+        print(f"[env] CARGO_TARGET_DIR={env['CARGO_TARGET_DIR']}", flush=True)
+    completed = subprocess.run(spec.command, cwd=spec.cwd, env=env)
     return completed.returncode
 
 

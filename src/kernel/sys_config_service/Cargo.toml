@@ -29,5 +29,5 @@ buckyos-http-server = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-
+klog = { path = "../klog" }
 

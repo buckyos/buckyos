@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 
 pub type KSnapshotMeta = openraft::SnapshotMeta<KNodeId, KNode>;
+const RECENT_SNAPSHOT_RETAIN_COUNT: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KSnapshotData {
@@ -76,17 +78,13 @@ impl SnapshotManager {
     // Parse a snapshot ID into its timestamp and log id components
     fn parse_snapshot_id(sid: &str) -> Option<(i64, i64)> {
         // First part is the timestamp, last part is the log id
-        let Some((ts, _)) = sid.split_once('_') else {
-            return None;
-        };
+        let (ts, _) = sid.split_once('_')?;
 
         let Ok(ts) = ts.parse::<i64>() else {
             return None;
         };
 
-        let Some((_, log_id)) = sid.rsplit_once('_') else {
-            return None;
-        };
+        let (_, log_id) = sid.rsplit_once('_')?;
 
         let Ok(log_id) = log_id.parse::<i64>() else {
             return None;
@@ -171,7 +169,14 @@ impl SnapshotManager {
             }
         }
 
-        match tokio::fs::File::create(&path).await {
+        match tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .await
+        {
             Ok(file) => Ok(Box::new(file)),
             Err(err) => {
                 error!("Failed to create snapshot file: {}", err);
@@ -280,12 +285,38 @@ impl SnapshotManager {
         meta: Option<&KSnapshotMeta>,
         path: &Path,
     ) -> StorageResult<KSnapshotData> {
-        assert!(path.exists(), "Snapshot file does not exist: {:?}", path);
+        let mut file = tokio::fs::File::open(path).await.map_err(|e| {
+            let msg = format!("Failed to open snapshot file {:?}: {}", path, e);
+            error!("{}", msg);
+            StorageError::IO {
+                source: StorageIOError::read_snapshot(meta.map(|m| m.signature()), &e),
+            }
+        })?;
+        self.load_snapshot_from_open_file(meta, path, &mut file)
+            .await
+    }
 
-        let bytes = tokio::fs::read(&path).await.map_err(|e| {
+    async fn load_snapshot_from_open_file(
+        &self,
+        meta: Option<&KSnapshotMeta>,
+        path: &Path,
+        file: &mut tokio::fs::File,
+    ) -> StorageResult<KSnapshotData> {
+        file.seek(std::io::SeekFrom::Start(0)).await.map_err(|e| {
+            let msg = format!("Failed to rewind snapshot file {:?}: {}", path, e);
+            error!("{}", msg);
+            StorageError::IO {
+                source: StorageIOError::read_snapshot(meta.map(|m| m.signature()), &e),
+            }
+        })?;
+
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).await.map_err(|e| {
             let msg = format!("Failed to read snapshot file {:?}: {}", path, e);
             error!("{}", msg);
-            StorageIOError::read_snapshot(meta.map(|m| m.signature()), &e)
+            StorageError::IO {
+                source: StorageIOError::read_snapshot(meta.map(|m| m.signature()), &e),
+            }
         })?;
 
         let snapshot = KSnapshotData::deserialize(&bytes).map_err(|e| {
@@ -365,7 +396,9 @@ impl SnapshotManager {
     }
 
     // Load the most recent snapshot from the snapshots directory
-    pub async fn load_current_snapshot(&self) -> StorageResult<Option<(PathBuf, KSnapshotData)>> {
+    pub async fn load_current_snapshot(
+        &self,
+    ) -> StorageResult<Option<(PathBuf, KSnapshotData, tokio::fs::File)>> {
         if !self.data_dir.exists() {
             warn!("Snapshots directory does not exist: {:?}", self.data_dir);
             return Ok(None);
@@ -380,8 +413,7 @@ impl SnapshotManager {
             }
         })?;
 
-        let mut latest_ts: Option<i64> = None;
-        let mut latest_file_name = None;
+        let mut candidates = Vec::new();
         while let Ok(Some(entry)) = list.next_entry().await {
             let file_name = entry.file_name();
             let name = file_name.to_str().unwrap_or_default();
@@ -410,39 +442,10 @@ impl SnapshotManager {
                 }
             };
 
-            if let Some(latest) = latest_ts {
-                if ts > latest {
-                    latest_ts = Some(ts);
-                    latest_file_name = Some(name.to_string());
-                } else if ts == latest {
-                    // Maybe two different nodes created snapshot at the same second
-                    // Then we pick the one with the larger log id
-
-                    let last_name = latest_file_name.as_deref().unwrap_or_default();
-                    let last_log_id = match Self::parse_snapshot_file_name(last_name) {
-                        Some((_, id)) => id,
-                        None => {
-                            warn!("Invalid filename in snapshots dir: {}", last_name);
-                            continue;
-                        }
-                    };
-
-                    if log_id > last_log_id {
-                        latest_ts = Some(ts);
-                        latest_file_name = Some(name.to_string());
-                    } else {
-                        // keep the existing one
-                        info!("Keeping existing snapshot file {} over {}", last_name, name);
-                        continue;
-                    }
-                }
-            } else {
-                latest_ts = Some(ts);
-                latest_file_name = Some(name.to_string());
-            }
+            candidates.push((ts, log_id, entry.path(), name.to_string()));
         }
 
-        if latest_ts.is_none() {
+        if candidates.is_empty() {
             warn!(
                 "No valid snapshot files found in snapshots dir {}",
                 self.data_dir.display()
@@ -450,16 +453,53 @@ impl SnapshotManager {
             return Ok(None);
         }
 
-        assert!(latest_file_name.is_some());
-        let path = self.data_dir.join(latest_file_name.unwrap());
-        info!("Loading latest snapshot from file {:?}", path);
+        candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+        for (_, _, path, name) in candidates {
+            info!("Loading latest snapshot from file {:?}", path);
+            let mut file = match tokio::fs::File::open(&path).await {
+                Ok(file) => file,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    warn!(
+                        "Snapshot candidate disappeared before open: name={}, path={}",
+                        name,
+                        path.display()
+                    );
+                    continue;
+                }
+                Err(err) => {
+                    let msg = format!("Failed to open snapshot file {:?}: {}", path, err);
+                    error!("{}", msg);
+                    return Err(StorageError::IO {
+                        source: StorageIOError::read_snapshot(None, &err),
+                    });
+                }
+            };
+            let data = self
+                .load_snapshot_from_open_file(None, &path, &mut file)
+                .await?;
+            file.seek(std::io::SeekFrom::Start(0))
+                .await
+                .map_err(|err| {
+                    let msg = format!(
+                        "Failed to rewind snapshot file {:?} after loading metadata: {}",
+                        path, err
+                    );
+                    error!("{}", msg);
+                    StorageError::IO {
+                        source: StorageIOError::read_snapshot(None, &err),
+                    }
+                })?;
+            return Ok(Some((path, data, file)));
+        }
 
-        let data = self.load_snapshot_from_file(None, &path).await?;
-
-        Ok(Some((path, data)))
+        warn!(
+            "No readable snapshot files found in snapshots dir {}",
+            self.data_dir.display()
+        );
+        Ok(None)
     }
 
-    /// Clean up old snapshots, keeping only the latest one with id == `last_snapshot_id`
+    /// Clean up old snapshots while retaining the newest snapshots for in-flight streaming.
     pub async fn clean_old_snapshots(&self, last_snapshot_id: &str) -> StorageResult<()> {
         if !self.data_dir.exists() {
             warn!("Snapshots directory does not exist: {:?}", self.data_dir);
@@ -497,13 +537,18 @@ impl SnapshotManager {
             }
 
             let sid = &name["snapshot_".len()..];
-            if sid != last_snapshot_id {
-                snapshots.push(entry.path());
-            }
+            let Some((ts, log_id)) = Self::parse_snapshot_id(sid) else {
+                warn!("Invalid filename in snapshots dir: {}", name);
+                continue;
+            };
+            snapshots.push((ts, log_id, sid.to_string(), entry.path()));
         }
 
-        // Delete all old snapshots
-        for path in snapshots {
+        snapshots.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+        for (index, (_, _, sid, path)) in snapshots.into_iter().enumerate() {
+            if sid == last_snapshot_id || index < RECENT_SNAPSHOT_RETAIN_COUNT {
+                continue;
+            }
             info!("Removing old snapshot file {:?}", path);
             if let Err(e) = tokio::fs::remove_file(&path).await {
                 error!("Failed to remove old snapshot file {:?}: {}", path, e);

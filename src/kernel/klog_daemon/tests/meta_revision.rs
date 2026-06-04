@@ -2,13 +2,27 @@ mod common;
 
 use common::*;
 use klog::error::KLogErrorCode;
-use klog::network::{KLogMetaPutRequest, KLogMetaQueryRequest};
+use klog::network::{
+    KLogMetaChangesRequest, KLogMetaCompactRequest, KLogMetaDeleteRequest, KLogMetaPutRequest,
+    KLogMetaQueryRequest,
+};
 use klog::rpc::KLogClient;
 use std::time::Duration;
 
 fn client_for_rpc_port(rpc_port: u16, node_id: u64) -> KLogClient {
-    KLogClient::from_daemon_addr(format!("127.0.0.1:{}", rpc_port).as_str(), node_id)
-        .with_timeout(Duration::from_secs(3))
+    KLogClient::from_daemon_addr(
+        format!("127.0.0.1:{}", rpc_port).as_str(),
+        format!("node-{}", node_id),
+    )
+    .with_timeout(Duration::from_secs(3))
+}
+
+fn admin_port_by_node_id(nodes: &[TestNode], node_id: u64) -> Result<u16, String> {
+    nodes
+        .iter()
+        .find(|n| n.node_id == node_id)
+        .map(|n| n.admin_port)
+        .ok_or_else(|| format!("admin port not found for node_id={}", node_id))
 }
 
 #[tokio::test]
@@ -44,14 +58,17 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v1".to_string(),
+                node_name: None,
                 expected_revision: Some(0),
             })
             .await
             .map_err(|e| format!("create-if-absent put_meta failed: {}", e))?;
-        if created.revision != 1 {
+        if (created.revision, created.create_revision, created.mod_revision, created.version)
+            != (1, 1, 1, 1)
+        {
             return Err(format!(
-                "unexpected create revision: expected=1, got={}",
-                created.revision
+                "unexpected create revision fields: revision={}, create_revision={}, mod_revision={}, version={}",
+                created.revision, created.create_revision, created.mod_revision, created.version
             ));
         }
 
@@ -59,6 +76,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v-create-conflict".to_string(),
+                node_name: None,
                 expected_revision: Some(0),
             })
             .await
@@ -75,14 +93,17 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v2".to_string(),
+                node_name: None,
                 expected_revision: Some(1),
             })
             .await
             .map_err(|e| format!("cas put_meta(expected=1) failed: {}", e))?;
-        if updated.revision != 2 {
+        if (updated.revision, updated.create_revision, updated.mod_revision, updated.version)
+            != (2, 1, 2, 2)
+        {
             return Err(format!(
-                "unexpected cas update revision: expected=2, got={}",
-                updated.revision
+                "unexpected cas update revision fields: revision={}, create_revision={}, mod_revision={}, version={}",
+                updated.revision, updated.create_revision, updated.mod_revision, updated.version
             ));
         }
 
@@ -90,6 +111,7 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v-stale".to_string(),
+                node_name: None,
                 expected_revision: Some(1),
             })
             .await
@@ -106,14 +128,96 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "v3-non-cas".to_string(),
+                node_name: None,
                 expected_revision: None,
             })
             .await
             .map_err(|e| format!("non-cas put_meta failed: {}", e))?;
-        if non_cas.revision != 3 {
+        if (non_cas.revision, non_cas.create_revision, non_cas.mod_revision, non_cas.version)
+            != (3, 1, 3, 3)
+        {
             return Err(format!(
-                "unexpected non-cas revision: expected=3, got={}",
-                non_cas.revision
+                "unexpected non-cas revision fields: revision={}, create_revision={}, mod_revision={}, version={}",
+                non_cas.revision, non_cas.create_revision, non_cas.mod_revision, non_cas.version
+            ));
+        }
+
+        let deleted = follower_client
+            .delete_meta(KLogMetaDeleteRequest { key: key.clone() })
+            .await
+            .map_err(|e| format!("delete_meta failed: {}", e))?;
+        let deleted_version = deleted
+            .meta_version
+            .as_ref()
+            .map(|v| (v.revision, v.create_revision, v.mod_revision, v.version, v.deleted));
+        if !deleted.existed
+            || deleted.prev_meta.as_ref().map(|item| {
+                (
+                    item.revision,
+                    item.create_revision,
+                    item.mod_revision,
+                    item.version,
+                )
+            }) != Some((3, 1, 3, 3))
+            || deleted_version != Some((4, 1, 4, 0, true))
+        {
+            return Err(format!(
+                "unexpected delete response: existed={}, prev_revision={:?}, delete_meta_version={:?}",
+                deleted.existed,
+                deleted.prev_meta.as_ref().map(|item| {
+                    (
+                        item.revision,
+                        item.create_revision,
+                        item.mod_revision,
+                        item.version,
+                    )
+                }),
+                deleted_version
+            ));
+        }
+
+        let stale_after_delete = follower_client
+            .put_meta(KLogMetaPutRequest {
+                key: key.clone(),
+                value: "v-stale-after-delete".to_string(),
+                node_name: None,
+                expected_revision: Some(3),
+            })
+            .await
+            .expect_err("expected stale revision conflict after delete");
+        if stale_after_delete.error_code != KLogErrorCode::VersionConflict
+            || !stale_after_delete
+                .message
+                .contains("current_revision=Some(4)")
+        {
+            return Err(format!(
+                "unexpected stale-after-delete conflict: code={:?}, message={}",
+                stale_after_delete.error_code, stale_after_delete.message
+            ));
+        }
+
+        let recreated = follower_client
+            .put_meta(KLogMetaPutRequest {
+                key: key.clone(),
+                value: "v4-recreated".to_string(),
+                node_name: None,
+                expected_revision: Some(0),
+            })
+            .await
+            .map_err(|e| format!("recreate put_meta failed: {}", e))?;
+        if (
+            recreated.revision,
+            recreated.create_revision,
+            recreated.mod_revision,
+            recreated.version,
+        ) != (5, 5, 5, 1)
+        {
+            return Err(format!(
+                "unexpected recreated revision fields: revision={}, create_revision={}, mod_revision={}, version={}",
+                recreated.revision,
+                recreated.create_revision,
+                recreated.mod_revision,
+                recreated.version
             ));
         }
 
@@ -122,6 +226,8 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
                 key: Some(key.clone()),
                 prefix: None,
                 limit: Some(1),
+                cursor: None,
+                revision: None,
                 strong_read: Some(true),
             })
             .await
@@ -132,10 +238,93 @@ async fn test_three_node_meta_revision_optional_cas_via_client() -> Result<(), S
                 queried.items.len()
             ));
         }
-        if queried.items[0].value != "v3-non-cas" || queried.items[0].revision != 3 {
+        if queried.items[0].value != "v4-recreated"
+            || (
+                queried.items[0].revision,
+                queried.items[0].create_revision,
+                queried.items[0].mod_revision,
+                queried.items[0].version,
+            ) != (5, 5, 5, 1)
+        {
             return Err(format!(
-                "unexpected meta value/revision: value={}, revision={}",
-                queried.items[0].value, queried.items[0].revision
+                "unexpected meta value/revision fields: value={}, revision={}, create_revision={}, mod_revision={}, version={}",
+                queried.items[0].value,
+                queried.items[0].revision,
+                queried.items[0].create_revision,
+                queried.items[0].mod_revision,
+                queried.items[0].version
+            ));
+        }
+
+        let historical_v2 = leader_client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: Some(2),
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("query_meta revision=2 failed: {}", e))?;
+        if historical_v2.items.len() != 1
+            || historical_v2.items[0].value != "v2"
+            || (
+                historical_v2.items[0].revision,
+                historical_v2.items[0].create_revision,
+                historical_v2.items[0].mod_revision,
+                historical_v2.items[0].version,
+            ) != (2, 1, 2, 2)
+        {
+            return Err(format!(
+                "unexpected historical rev2 query: len={}, first={:?}",
+                historical_v2.items.len(),
+                historical_v2.items.first()
+            ));
+        }
+
+        let historical_deleted = leader_client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: Some(4),
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("query_meta revision=4 failed: {}", e))?;
+        if !historical_deleted.items.is_empty() {
+            return Err(format!(
+                "deleted historical revision should be invisible: items={:?}",
+                historical_deleted.items
+            ));
+        }
+
+        let historical_recreated = leader_client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: Some(5),
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("query_meta revision=5 failed: {}", e))?;
+        if historical_recreated.items.len() != 1
+            || historical_recreated.items[0].value != "v4-recreated"
+            || (
+                historical_recreated.items[0].revision,
+                historical_recreated.items[0].create_revision,
+                historical_recreated.items[0].mod_revision,
+                historical_recreated.items[0].version,
+            ) != (5, 5, 5, 1)
+        {
+            return Err(format!(
+                "unexpected historical rev5 query: len={}, first={:?}",
+                historical_recreated.items.len(),
+                historical_recreated.items.first()
             ));
         }
 
@@ -175,14 +364,16 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "before-failover".to_string(),
+                node_name: None,
                 expected_revision: Some(0),
             })
             .await
             .map_err(|e| format!("put_meta before failover failed: {}", e))?;
-        if first.revision != 1 {
+        if (first.revision, first.create_revision, first.mod_revision, first.version) != (1, 1, 1, 1)
+        {
             return Err(format!(
-                "unexpected revision before failover: expected=1, got={}",
-                first.revision
+                "unexpected revision before failover: revision={}, create_revision={}, mod_revision={}, version={}",
+                first.revision, first.create_revision, first.mod_revision, first.version
             ));
         }
 
@@ -213,6 +404,8 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
                 key: Some(key.clone()),
                 prefix: None,
                 limit: Some(1),
+                cursor: None,
+                revision: None,
                 strong_read: Some(true),
             })
             .await
@@ -223,10 +416,21 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
                 queried.items.len()
             ));
         }
-        if queried.items[0].value != "before-failover" || queried.items[0].revision != 1 {
+        if queried.items[0].value != "before-failover"
+            || (
+                queried.items[0].revision,
+                queried.items[0].create_revision,
+                queried.items[0].mod_revision,
+                queried.items[0].version,
+            ) != (1, 1, 1, 1)
+        {
             return Err(format!(
-                "unexpected meta after failover: value={}, revision={}",
-                queried.items[0].value, queried.items[0].revision
+                "unexpected meta after failover: value={}, revision={}, create_revision={}, mod_revision={}, version={}",
+                queried.items[0].value,
+                queried.items[0].revision,
+                queried.items[0].create_revision,
+                queried.items[0].mod_revision,
+                queried.items[0].version
             ));
         }
 
@@ -234,14 +438,17 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
             .put_meta(KLogMetaPutRequest {
                 key: key.clone(),
                 value: "after-failover".to_string(),
+                node_name: None,
                 expected_revision: Some(1),
             })
             .await
             .map_err(|e| format!("put_meta after failover failed: {}", e))?;
-        if second.revision != 2 {
+        if (second.revision, second.create_revision, second.mod_revision, second.version)
+            != (2, 1, 2, 2)
+        {
             return Err(format!(
-                "unexpected revision after failover update: expected=2, got={}",
-                second.revision
+                "unexpected revision after failover update: revision={}, create_revision={}, mod_revision={}, version={}",
+                second.revision, second.create_revision, second.mod_revision, second.version
             ));
         }
 
@@ -252,5 +459,247 @@ async fn test_three_node_meta_revision_kept_after_leader_failover() -> Result<()
     for n in &mut nodes {
         n.stop().await;
     }
+    result
+}
+
+#[tokio::test]
+async fn test_three_node_meta_compaction_rejects_compacted_revision() -> Result<(), String> {
+    if !can_bind_localhost() {
+        eprintln!("skip meta compaction test: localhost bind is not available");
+        return Ok(());
+    }
+
+    let ports = choose_unique_ports(3)?;
+    let port1 = ports[0];
+    let port2 = ports[1];
+    let port3 = ports[2];
+    let cluster_name = format!("klog_meta_compaction_{}_{}_{}", port1, port2, port3);
+    let mut nodes = spawn_three_voter_cluster(&cluster_name, port1, port2, port3).await?;
+
+    let result = async {
+        let leader_id =
+            wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40))
+                .await?;
+        let leader_rpc_port = rpc_port_by_node_id(&nodes, leader_id)?;
+        let leader_admin_port = admin_port_by_node_id(&nodes, leader_id)?;
+        let client = client_for_rpc_port(leader_rpc_port, 9021);
+        let key = format!("cluster/meta/compact/{}", leader_id);
+
+        for value in ["v1", "v2", "v3", "v4"] {
+            client
+                .put_meta(KLogMetaPutRequest {
+                    key: key.clone(),
+                    value: value.to_string(),
+                    node_name: None,
+                    expected_revision: None,
+                })
+                .await
+                .map_err(|e| format!("put_meta {} failed: {}", value, e))?;
+        }
+
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .map_err(|e| format!("failed to build http client: {}", e))?;
+        let compact_url = format!(
+            "http://127.0.0.1:{}/klog/admin/meta-compact",
+            leader_admin_port
+        );
+        let compact_resp = http
+            .post(compact_url)
+            .json(&KLogMetaCompactRequest { revision: 3 })
+            .send()
+            .await
+            .map_err(|e| format!("meta-compact request failed: {}", e))?;
+        if !compact_resp.status().is_success() {
+            let status = compact_resp.status();
+            let body = compact_resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "meta-compact failed: status={}, body={}",
+                status, body
+            ));
+        }
+
+        let compacted_query = client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: Some(2),
+                strong_read: Some(true),
+            })
+            .await
+            .expect_err("expected compacted historical query error");
+        if compacted_query.error_code != KLogErrorCode::Compacted {
+            return Err(format!(
+                "unexpected compacted query code: expected={:?}, got={:?}, message={}",
+                KLogErrorCode::Compacted,
+                compacted_query.error_code,
+                compacted_query.message
+            ));
+        }
+
+        let live = client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: None,
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("live query after compaction failed: {}", e))?;
+        if live.items.len() != 1 || live.items[0].value != "v4" {
+            return Err(format!(
+                "unexpected live query after compaction: {:?}",
+                live
+            ));
+        }
+
+        let compacted_changes = client
+            .query_meta_changes(KLogMetaChangesRequest {
+                start_revision: Some(1),
+                key: Some(key.clone()),
+                limit: Some(10),
+                strong_read: Some(true),
+                ..KLogMetaChangesRequest::default()
+            })
+            .await
+            .expect_err("expected compacted changes query error");
+        if compacted_changes.error_code != KLogErrorCode::Compacted {
+            return Err(format!(
+                "unexpected compacted changes code: expected={:?}, got={:?}, message={}",
+                KLogErrorCode::Compacted,
+                compacted_changes.error_code,
+                compacted_changes.message
+            ));
+        }
+
+        let changes = client
+            .query_meta_changes(KLogMetaChangesRequest {
+                start_revision: Some(4),
+                key: Some(key.clone()),
+                limit: Some(10),
+                strong_read: Some(true),
+                ..KLogMetaChangesRequest::default()
+            })
+            .await
+            .map_err(|e| format!("changes query after compaction failed: {}", e))?;
+        if changes.items.len() != 1
+            || changes.items[0].mod_revision != 4
+            || changes.items[0].value != "v4"
+        {
+            return Err(format!(
+                "unexpected changes after compaction: {:?}",
+                changes.items
+            ));
+        }
+
+        Ok(())
+    }
+    .await;
+
+    for n in &mut nodes {
+        n.stop().await;
+    }
+    result
+}
+
+#[tokio::test]
+async fn test_single_node_auto_meta_compaction_triggers() -> Result<(), String> {
+    if !can_bind_localhost() {
+        eprintln!("skip auto meta compaction test: localhost bind is not available");
+        return Ok(());
+    }
+
+    let ports = choose_unique_ports(1)?;
+    let port = ports[0];
+    let cluster_name = format!("klog_auto_meta_compaction_{}", port);
+    let options = TestNodeSpawnOptions {
+        meta_compaction: Some(TestMetaCompactionOptions {
+            enabled: true,
+            retention_revisions: 4,
+            check_interval_ms: 100,
+            min_compact_gap: 2,
+        }),
+        ..TestNodeSpawnOptions::default()
+    };
+    let mut node =
+        spawn_node_with_options(1, port, &cluster_name, true, &[], "voter", &options).await?;
+
+    let result = async {
+        wait_single_node_leader(port, 1, Duration::from_secs(20)).await?;
+        let client = client_for_rpc_port(node.rpc_port, 9031);
+        let key = format!("cluster/meta/auto-compact/{}", port);
+
+        for rev in 1..=12 {
+            client
+                .put_meta(KLogMetaPutRequest {
+                    key: key.clone(),
+                    value: format!("v{}", rev),
+                    node_name: None,
+                    expected_revision: None,
+                })
+                .await
+                .map_err(|e| format!("put_meta rev={} failed: {}", rev, e))?;
+        }
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            match client
+                .query_meta(KLogMetaQueryRequest {
+                    key: Some(key.clone()),
+                    prefix: None,
+                    limit: Some(1),
+                    cursor: None,
+                    revision: Some(1),
+                    strong_read: Some(true),
+                })
+                .await
+            {
+                Ok(value) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "auto meta compaction did not compact revision=1 before timeout: {:?}",
+                            value
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(err) if err.error_code == KLogErrorCode::Compacted => break,
+                Err(err) => {
+                    return Err(format!(
+                        "unexpected query_meta revision=1 error while waiting auto compaction: {}",
+                        err
+                    ));
+                }
+            }
+        }
+
+        let live = client
+            .query_meta(KLogMetaQueryRequest {
+                key: Some(key.clone()),
+                prefix: None,
+                limit: Some(1),
+                cursor: None,
+                revision: None,
+                strong_read: Some(true),
+            })
+            .await
+            .map_err(|e| format!("live query after auto compaction failed: {}", e))?;
+        if live.items.len() != 1 || live.items[0].value != "v12" {
+            return Err(format!(
+                "unexpected live query after auto compaction: {:?}",
+                live
+            ));
+        }
+
+        Ok(())
+    }
+    .await;
+
+    node.stop().await;
     result
 }

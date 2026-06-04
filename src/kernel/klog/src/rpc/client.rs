@@ -1,18 +1,20 @@
 use super::{
-    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_VERSION, KLOG_RPC_METHOD_LOG_APPEND,
-    KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
-    KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
+    KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_JSON_RPC_VERSION,
+    KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_CHANGES,
+    KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY,
+    KLOG_RPC_METHOD_META_TX, KLogJsonRpcRequest, KLogJsonRpcResponse,
 };
-use crate::KNode;
 use crate::error::{
     KLogErrorCode, KLogErrorEnvelope, generate_trace_id, map_http_status_to_error_code,
     map_json_rpc_error_code_to_klog_error_code, parse_error_envelope_json,
 };
 use crate::network::{
-    KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaDeleteRequest,
-    KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest,
-    KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
+    KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaChangesRequest,
+    KLogMetaChangesResponse, KLogMetaDeleteRequest, KLogMetaDeleteResponse, KLogMetaPutRequest,
+    KLogMetaPutResponse, KLogMetaQueryRequest, KLogMetaQueryResponse, KLogQueryRequest,
+    KLogQueryResponse,
 };
+use crate::{KLogMetaTxRequest, KLogMetaTxResponse, KNode};
 use reqwest::StatusCode;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +22,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_LOCAL_SERVICE_ADDR: &str = "127.0.0.1:4080";
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error(
@@ -80,29 +83,40 @@ pub struct KLogClient {
     client: reqwest::Client,
     next_id: AtomicU64,
     timeout: Duration,
-    request_node_id: u64,
+    request_node_name: String,
 }
 
 impl KLogClient {
-    pub fn new(endpoint: impl Into<String>, request_node_id: u64) -> Self {
+    pub fn new(endpoint: impl Into<String>, request_node_name: impl Into<String>) -> Self {
         Self {
             endpoint: normalize_endpoint(endpoint.into()),
             client: reqwest::Client::new(),
             next_id: AtomicU64::new(1),
             timeout: DEFAULT_RPC_TIMEOUT,
-            request_node_id,
+            request_node_name: request_node_name.into(),
         }
     }
 
-    pub fn from_daemon_addr(addr: &str, request_node_id: u64) -> Self {
+    pub fn from_daemon_addr(addr: &str, request_node_name: impl Into<String>) -> Self {
         Self::new(
             format!("http://{}{}", addr, KLOG_JSON_RPC_PATH),
-            request_node_id,
+            request_node_name,
         )
     }
 
-    pub fn local_default(request_node_id: u64) -> Self {
-        Self::from_daemon_addr("127.0.0.1:21101", request_node_id)
+    pub fn from_buckyos_service_addr(addr: &str, request_node_name: impl Into<String>) -> Self {
+        Self::new(
+            format!("http://{}{}", addr, KLOG_JSON_RPC_SERVICE_PATH),
+            request_node_name,
+        )
+    }
+
+    pub fn local_buckyos_service_default(request_node_name: impl Into<String>) -> Self {
+        Self::from_buckyos_service_addr(DEFAULT_LOCAL_SERVICE_ADDR, request_node_name)
+    }
+
+    pub fn local_default(request_node_name: impl Into<String>) -> Self {
+        Self::local_buckyos_service_default(request_node_name)
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -110,8 +124,8 @@ impl KLogClient {
         self
     }
 
-    pub fn generate_request_id(node_id: u64) -> String {
-        format!("{}-{}", node_id, Uuid::now_v7())
+    pub fn generate_request_id(node_name: &str) -> String {
+        format!("{}-{}", node_name, Uuid::now_v7())
     }
 
     pub async fn append_log(
@@ -138,7 +152,7 @@ impl KLogClient {
             .append_log(KLogAppendRequest {
                 message: message.into(),
                 timestamp: None,
-                node_id: None,
+                node_name: None,
                 level: None,
                 source: None,
                 attrs: None,
@@ -194,6 +208,21 @@ impl KLogClient {
             .await
     }
 
+    pub async fn exec_meta_tx(
+        &self,
+        req: KLogMetaTxRequest,
+    ) -> Result<KLogMetaTxResponse, KLogClientError> {
+        let (resp, _) = self.exec_meta_tx_with_trace(req).await?;
+        Ok(resp)
+    }
+
+    pub async fn exec_meta_tx_with_trace(
+        &self,
+        req: KLogMetaTxRequest,
+    ) -> Result<(KLogMetaTxResponse, KLogCallTrace), KLogClientError> {
+        self.call_with_trace(KLOG_RPC_METHOD_META_TX, &req).await
+    }
+
     pub async fn query_meta(
         &self,
         req: KLogMetaQueryRequest,
@@ -207,6 +236,22 @@ impl KLogClient {
         req: KLogMetaQueryRequest,
     ) -> Result<(KLogMetaQueryResponse, KLogCallTrace), KLogClientError> {
         self.call_with_trace(KLOG_RPC_METHOD_META_QUERY, &req).await
+    }
+
+    pub async fn query_meta_changes(
+        &self,
+        req: KLogMetaChangesRequest,
+    ) -> Result<KLogMetaChangesResponse, KLogClientError> {
+        let (resp, _) = self.query_meta_changes_with_trace(req).await?;
+        Ok(resp)
+    }
+
+    pub async fn query_meta_changes_with_trace(
+        &self,
+        req: KLogMetaChangesRequest,
+    ) -> Result<(KLogMetaChangesResponse, KLogCallTrace), KLogClientError> {
+        self.call_with_trace(KLOG_RPC_METHOD_META_CHANGES, &req)
+            .await
     }
 
     async fn call_with_trace<Req, Resp>(
@@ -351,6 +396,13 @@ impl KLogClient {
     }
 
     fn fill_append_defaults(&self, mut req: KLogAppendRequest) -> KLogAppendRequest {
+        req.node_name = req
+            .node_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string())
+            .or_else(|| Some(self.request_node_name.clone()));
         let request_id = req
             .request_id
             .as_deref()
@@ -358,8 +410,11 @@ impl KLogClient {
             .filter(|v| !v.is_empty())
             .map(|v| v.to_string());
         req.request_id = Some(request_id.unwrap_or_else(|| {
-            let request_node_id = req.node_id.unwrap_or(self.request_node_id);
-            Self::generate_request_id(request_node_id)
+            let request_node_name = req
+                .node_name
+                .as_deref()
+                .unwrap_or(self.request_node_name.as_str());
+            Self::generate_request_id(request_node_name)
         }));
         req
     }
@@ -388,15 +443,18 @@ mod tests {
     use crate::KLogEntry;
     use crate::error::KLogErrorCode;
     use crate::network::{
-        KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaDeleteRequest,
-        KLogMetaDeleteResponse, KLogMetaPutRequest, KLogMetaPutResponse, KLogMetaQueryRequest,
-        KLogMetaQueryResponse, KLogQueryRequest, KLogQueryResponse,
+        KLOG_TRACE_ID_HEADER, KLogAppendRequest, KLogAppendResponse, KLogMetaChangesRequest,
+        KLogMetaChangesResponse, KLogMetaDeleteRequest, KLogMetaDeleteResponse, KLogMetaPutRequest,
+        KLogMetaPutResponse, KLogMetaQueryRequest, KLogMetaQueryResponse, KLogMetaTxAction,
+        KLogMetaTxRequest, KLogMetaTxResponse, KLogQueryRequest, KLogQueryResponse,
     };
     use crate::rpc::{
-        KLOG_JSON_RPC_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND, KLOG_RPC_METHOD_LOG_APPEND,
-        KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT,
-        KLOG_RPC_METHOD_META_QUERY, KLogJsonRpcRequest, KLogJsonRpcResponse,
+        KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_RPC_ERR_METHOD_NOT_FOUND,
+        KLOG_RPC_METHOD_LOG_APPEND, KLOG_RPC_METHOD_LOG_QUERY, KLOG_RPC_METHOD_META_CHANGES,
+        KLOG_RPC_METHOD_META_DELETE, KLOG_RPC_METHOD_META_PUT, KLOG_RPC_METHOD_META_QUERY,
+        KLOG_RPC_METHOD_META_TX, KLogJsonRpcRequest, KLogJsonRpcResponse,
     };
+    use crate::state_store::{KLogMetaChangeCursor, KLogMetaHistoryRecord};
     use axum::Router;
     use axum::extract::Json;
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -443,7 +501,12 @@ mod tests {
         }
 
         fn client(&self) -> KLogClient {
-            KLogClient::from_daemon_addr(&self.addr.to_string(), 9)
+            KLogClient::from_daemon_addr(&self.addr.to_string(), "node-9")
+                .with_timeout(Duration::from_secs(1))
+        }
+
+        fn service_client(&self) -> KLogClient {
+            KLogClient::from_buckyos_service_addr(&self.addr.to_string(), "node-9")
                 .with_timeout(Duration::from_secs(1))
         }
     }
@@ -462,6 +525,21 @@ mod tests {
             normalize_endpoint(format!("127.0.0.1:21001{}", KLOG_JSON_RPC_PATH)),
             "http://127.0.0.1:21001/klog/rpc"
         );
+    }
+
+    #[test]
+    fn test_buckyos_service_endpoint_uses_kapi_route() {
+        let client = KLogClient::local_buckyos_service_default("node-9");
+        assert_eq!(
+            client.endpoint,
+            format!("http://127.0.0.1:4080{}", KLOG_JSON_RPC_SERVICE_PATH)
+        );
+    }
+
+    #[test]
+    fn test_local_default_uses_buckyos_service_entry() {
+        let client = KLogClient::local_default("node-9");
+        assert_eq!(client.endpoint, "http://127.0.0.1:4080/kapi/klog-service");
     }
 
     #[tokio::test]
@@ -495,7 +573,7 @@ mod tests {
             .append_log(KLogAppendRequest {
                 message: "hello-klog".to_string(),
                 timestamp: Some(1000),
-                node_id: Some(1),
+                node_name: Some("node-1".to_string()),
                 level: None,
                 source: Some("kernel/kmsg".to_string()),
                 attrs: Some(attrs),
@@ -544,7 +622,7 @@ mod tests {
             .append_log_with_trace(KLogAppendRequest {
                 message: "hello-trace".to_string(),
                 timestamp: Some(1001),
-                node_id: Some(1),
+                node_name: Some("node-1".to_string()),
                 level: None,
                 source: None,
                 attrs: None,
@@ -558,7 +636,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_json_rpc_client_append_auto_request_id_uses_nodeid_uuid() -> anyhow::Result<()> {
+    async fn test_json_rpc_client_append_success_via_buckyos_service_path() -> anyhow::Result<()> {
+        let app = Router::new().route(
+            KLOG_JSON_RPC_SERVICE_PATH,
+            post(|Json(request): Json<KLogJsonRpcRequest>| async move {
+                assert_eq!(request.method, KLOG_RPC_METHOD_LOG_APPEND);
+                let response =
+                    KLogJsonRpcResponse::success(request.id, KLogAppendResponse { id: 52 });
+                (StatusCode::OK, Json(response))
+            }),
+        );
+
+        let Some(server) = TestJsonRpcServer::try_start(app).await? else {
+            return Ok(());
+        };
+        let client = server.service_client();
+        let resp = client
+            .append_log(KLogAppendRequest {
+                message: "hello-kapi".to_string(),
+                timestamp: Some(1002),
+                node_name: Some("node-1".to_string()),
+                level: None,
+                source: None,
+                attrs: None,
+                request_id: Some("req-kapi".to_string()),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("append via /kapi failed: {}", e))?;
+        assert_eq!(resp.id, 52);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_json_rpc_client_append_auto_request_id_uses_node_name_uuid() -> anyhow::Result<()>
+    {
         let app = Router::new().route(
             KLOG_JSON_RPC_PATH,
             post(|Json(request): Json<KLogJsonRpcRequest>| async move {
@@ -566,11 +677,15 @@ mod tests {
                 let params: KLogAppendRequest =
                     serde_json::from_value(request.params).expect("append params");
                 let request_id = params.request_id.expect("request_id should be auto-filled");
-                let (node_prefix, uuid_part) = request_id
-                    .split_once('-')
-                    .expect("request_id should be in nodeid-uuid format");
-                assert_eq!(node_prefix, "9");
+                let prefix = "node-9-";
+                assert!(
+                    request_id.starts_with(prefix),
+                    "request_id should use node-name prefix, got={}",
+                    request_id
+                );
+                let uuid_part = &request_id[prefix.len()..];
                 Uuid::parse_str(uuid_part).expect("uuid part should be valid");
+                assert_eq!(params.node_name.as_deref(), Some("node-9"));
 
                 let response =
                     KLogJsonRpcResponse::success(request.id, KLogAppendResponse { id: 43 });
@@ -586,7 +701,7 @@ mod tests {
             .append_log(KLogAppendRequest {
                 message: "auto-request-id".to_string(),
                 timestamp: Some(2000),
-                node_id: None,
+                node_name: None,
                 level: None,
                 source: None,
                 attrs: None,
@@ -614,7 +729,7 @@ mod tests {
                         items: vec![KLogEntry {
                             id: 7,
                             timestamp: 123,
-                            node_id: 1,
+                            node_name: "node-1".to_string(),
                             request_id: None,
                             level: Default::default(),
                             source: None,
@@ -665,6 +780,9 @@ mod tests {
                             KLogMetaPutResponse {
                                 key: params.key,
                                 revision: 7,
+                                create_revision: 3,
+                                mod_revision: 7,
+                                version: 4,
                             },
                         );
                         (StatusCode::OK, Json(response))
@@ -680,9 +798,43 @@ mod tests {
                                     key: "cluster/config/epoch".to_string(),
                                     value: "42".to_string(),
                                     updated_at: 1234,
-                                    updated_by: 1,
+                                    updated_by_node_name: "node-1".to_string(),
                                     revision: 7,
+                                    create_revision: 3,
+                                    mod_revision: 7,
+                                    version: 4,
                                 }],
+                                next_cursor: None,
+                                has_more: false,
+                            },
+                        );
+                        (StatusCode::OK, Json(response))
+                    }
+                    KLOG_RPC_METHOD_META_CHANGES => {
+                        let params: KLogMetaChangesRequest =
+                            serde_json::from_value(request.params).expect("meta changes params");
+                        assert_eq!(params.start_revision, Some(7));
+                        assert_eq!(params.prefix.as_deref(), Some("cluster/config/"));
+                        let response = KLogJsonRpcResponse::success(
+                            request.id,
+                            KLogMetaChangesResponse {
+                                items: vec![KLogMetaHistoryRecord {
+                                    key: "cluster/config/epoch".to_string(),
+                                    value: "42".to_string(),
+                                    updated_at: 1234,
+                                    updated_by_node_name: "node-1".to_string(),
+                                    create_revision: 3,
+                                    mod_revision: 7,
+                                    version: 4,
+                                    deleted: false,
+                                }],
+                                next_cursor: Some(KLogMetaChangeCursor {
+                                    revision: 7,
+                                    key: "cluster/config/epoch".to_string(),
+                                }),
+                                has_more: true,
+                                current_revision: 9,
+                                next_start_revision: 7,
                             },
                         );
                         (StatusCode::OK, Json(response))
@@ -699,9 +851,32 @@ mod tests {
                                     key: "cluster/config/epoch".to_string(),
                                     value: "42".to_string(),
                                     updated_at: 1234,
-                                    updated_by: 1,
+                                    updated_by_node_name: "node-1".to_string(),
                                     revision: 7,
+                                    create_revision: 3,
+                                    mod_revision: 7,
+                                    version: 4,
                                 }),
+                                meta_version: Some(crate::KLogMetaVersion::new(3, 8, 0, true)),
+                            },
+                        );
+                        (StatusCode::OK, Json(response))
+                    }
+                    KLOG_RPC_METHOD_META_TX => {
+                        let params: KLogMetaTxRequest =
+                            serde_json::from_value(request.params).expect("meta tx params");
+                        assert_eq!(params.actions.len(), 1);
+                        let response = KLogJsonRpcResponse::success(
+                            request.id,
+                            KLogMetaTxResponse {
+                                revisions: BTreeMap::from([(
+                                    "cluster/config/tx".to_string(),
+                                    Some(1),
+                                )]),
+                                meta_versions: BTreeMap::from([(
+                                    "cluster/config/tx".to_string(),
+                                    crate::KLogMetaVersion::new(1, 1, 1, false),
+                                )]),
                             },
                         );
                         (StatusCode::OK, Json(response))
@@ -726,24 +901,50 @@ mod tests {
             .put_meta(KLogMetaPutRequest {
                 key: "cluster/config/epoch".to_string(),
                 value: "42".to_string(),
+                node_name: None,
                 expected_revision: None,
             })
             .await
             .map_err(|e| anyhow::anyhow!("put_meta failed: {}", e))?;
         assert_eq!(put.key, "cluster/config/epoch");
         assert_eq!(put.revision, 7);
+        assert_eq!(put.create_revision, 3);
+        assert_eq!(put.mod_revision, 7);
+        assert_eq!(put.version, 4);
 
         let query = client
             .query_meta(KLogMetaQueryRequest {
                 key: Some("cluster/config/epoch".to_string()),
                 prefix: None,
                 limit: None,
+                cursor: None,
+                revision: None,
                 strong_read: None,
             })
             .await
             .map_err(|e| anyhow::anyhow!("query_meta failed: {}", e))?;
         assert_eq!(query.items.len(), 1);
         assert_eq!(query.items[0].value, "42");
+        assert_eq!(query.items[0].create_revision, 3);
+        assert_eq!(query.items[0].mod_revision, 7);
+        assert_eq!(query.items[0].version, 4);
+
+        let changes = client
+            .query_meta_changes(KLogMetaChangesRequest {
+                start_revision: Some(7),
+                prefix: Some("cluster/config/".to_string()),
+                limit: Some(1),
+                include_deleted: Some(true),
+                ..KLogMetaChangesRequest::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("query_meta_changes failed: {}", e))?;
+        assert_eq!(changes.items.len(), 1);
+        assert_eq!(changes.items[0].key, "cluster/config/epoch");
+        assert_eq!(changes.items[0].mod_revision, 7);
+        assert!(changes.has_more);
+        assert_eq!(changes.current_revision, 9);
+        assert_eq!(changes.next_start_revision, 7);
 
         let del = client
             .delete_meta(KLogMetaDeleteRequest {
@@ -753,6 +954,42 @@ mod tests {
             .map_err(|e| anyhow::anyhow!("delete_meta failed: {}", e))?;
         assert!(del.existed);
         assert_eq!(del.prev_meta.as_ref().map(|v| v.revision), Some(7));
+        assert_eq!(
+            del.meta_version.as_ref().map(|v| (
+                v.create_revision,
+                v.mod_revision,
+                v.version,
+                v.deleted
+            )),
+            Some((3, 8, 0, true))
+        );
+
+        let mut actions = BTreeMap::new();
+        actions.insert(
+            "cluster/config/tx".to_string(),
+            KLogMetaTxAction::Put {
+                item: crate::KLogMetaEntry {
+                    key: "cluster/config/tx".to_string(),
+                    value: "tx".to_string(),
+                    updated_at: 1235,
+                    updated_by_node_name: "node-1".to_string(),
+                    ..crate::KLogMetaEntry::default()
+                },
+                expected_revision: Some(0),
+            },
+        );
+        let tx = client
+            .exec_meta_tx(KLogMetaTxRequest {
+                actions,
+                guard: None,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("exec_meta_tx failed: {}", e))?;
+        assert_eq!(tx.revisions.get("cluster/config/tx"), Some(&Some(1)));
+        assert_eq!(
+            tx.meta_versions.get("cluster/config/tx"),
+            Some(&crate::KLogMetaVersion::new(1, 1, 1, false))
+        );
         Ok(())
     }
 

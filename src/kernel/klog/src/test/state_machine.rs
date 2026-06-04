@@ -4,7 +4,10 @@ use crate::state_store::{
     KLogQuery, KLogStateSnapshotData, KLogStateStore, KLogStateStoreManager, MemoryStateStore,
     RocksDbSnapshotMode, RocksDbStateStore,
 };
-use crate::{KLogEntry, KLogMetaEntry, KLogRequest, KLogResponse};
+use crate::{
+    KLogEntry, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxGuard, KLogMetaTxRequest, KLogRequest,
+    KLogResponse,
+};
 use openraft::entry::EntryPayload;
 use openraft::storage::RaftStateMachine;
 use openraft::{CommittedLeaderId, Entry, LogId};
@@ -19,7 +22,7 @@ async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result
     let no_id_entry = KLogEntry {
         id: 0,
         timestamp: 100,
-        node_id: 1,
+        node_name: "node-1".to_string(),
         request_id: Some("sm-prepare-1".to_string()),
         level: Default::default(),
         source: None,
@@ -37,7 +40,7 @@ async fn test_prepare_append_entry_assigns_id_on_leader_only() -> anyhow::Result
     let fixed_id_entry = KLogEntry {
         id: 42,
         timestamp: 101,
-        node_id: 1,
+        node_name: "node-1".to_string(),
         request_id: Some("sm-prepare-2".to_string()),
         level: Default::default(),
         source: None,
@@ -68,7 +71,7 @@ async fn test_state_machine_apply_keeps_prepared_id() -> anyhow::Result<()> {
             item: KLogEntry {
                 id: prepared_id,
                 timestamp: 200,
-                node_id: 1,
+                node_name: "node-1".to_string(),
                 request_id: Some("sm-apply-1".to_string()),
                 level: Default::default(),
                 source: None,
@@ -97,7 +100,7 @@ async fn test_state_store_manager_request_id_dedup() -> anyhow::Result<()> {
     let first = manager.prepare_append_entry(KLogEntry {
         id: 0,
         timestamp: 300,
-        node_id: 1,
+        node_name: "node-1".to_string(),
         request_id: Some("idem-1".to_string()),
         level: Default::default(),
         source: None,
@@ -109,7 +112,7 @@ async fn test_state_store_manager_request_id_dedup() -> anyhow::Result<()> {
     let retry = manager.prepare_append_entry(KLogEntry {
         id: 0,
         timestamp: 301,
-        node_id: 1,
+        node_name: "node-1".to_string(),
         request_id: Some("idem-1".to_string()),
         level: Default::default(),
         source: None,
@@ -194,8 +197,8 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
                 key: "cluster/config/epoch".to_string(),
                 value: "42".to_string(),
                 updated_at: 5000,
-                updated_by: 1,
-                revision: 0,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
             },
             expected_revision: None,
         }),
@@ -211,7 +214,15 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
     assert_eq!(responses.len(), 2);
     assert!(matches!(
         responses[0],
-        KLogResponse::MetaPutOk { revision: 1, .. }
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 1,
+                create_revision: 1,
+                mod_revision: 1,
+                version: 1,
+                ..
+            }
+        }
     ));
     assert!(matches!(
         responses[1],
@@ -219,6 +230,173 @@ async fn test_state_machine_apply_meta_put_and_delete() -> anyhow::Result<()> {
             existed: true,
             prev_meta: Some(KLogMetaEntry { revision: 1, .. }),
             ..
+        }
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_state_machine_applies_meta_compaction() -> anyhow::Result<()> {
+    let context = TestMemoryContext::new().await;
+    let manager = context.state_store_manager.clone();
+    let mut sm = context.state_machine;
+
+    let put_a_v1 = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 1),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/compact/a".to_string(),
+                value: "a-v1".to_string(),
+                updated_at: 5200,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: None,
+        }),
+    };
+    let put_b_v1 = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 2),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/compact/b".to_string(),
+                value: "b-v1".to_string(),
+                updated_at: 5201,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: None,
+        }),
+    };
+    let put_b_v2 = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 3),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "cluster/config/compact/b".to_string(),
+                value: "b-v2".to_string(),
+                updated_at: 5202,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: None,
+        }),
+    };
+    let compact = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 4),
+        payload: EntryPayload::Normal(KLogRequest::CompactMeta { revision: 2 }),
+    };
+
+    let responses = sm
+        .apply(vec![put_a_v1, put_b_v1, put_b_v2, compact])
+        .await?;
+    assert_eq!(responses.len(), 4);
+    assert!(matches!(
+        responses[3],
+        KLogResponse::MetaCompactOk {
+            compacted_revision: 2,
+            current_revision: 3,
+        }
+    ));
+    assert_eq!(manager.meta_compacted_revision().await?, 2);
+    let a_at_rev3 = manager
+        .get_meta_entry_at_revision("cluster/config/compact/a", 3)
+        .await?
+        .expect("baseline before compaction should be retained");
+    assert_eq!(a_at_rev3.value, "a-v1");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_state_machine_meta_delete_tombstone_blocks_stale_cas() -> anyhow::Result<()> {
+    let context = TestMemoryContext::new().await;
+    let mut sm = context.state_machine;
+
+    let key = "cluster/config/aba".to_string();
+    let create = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 1),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: key.clone(),
+                value: "v1".to_string(),
+                updated_at: 5100,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(0),
+        }),
+    };
+    let delete = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 2),
+        payload: EntryPayload::Normal(KLogRequest::DeleteMeta { key: key.clone() }),
+    };
+    let stale = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 3),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: key.clone(),
+                value: "stale".to_string(),
+                updated_at: 5101,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(1),
+        }),
+    };
+    let recreate = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(4, 0), 4),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key,
+                value: "v2".to_string(),
+                updated_at: 5102,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(0),
+        }),
+    };
+
+    let responses = sm.apply(vec![create, delete, stale, recreate]).await?;
+    assert_eq!(responses.len(), 4);
+    assert!(matches!(
+        responses[0],
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 1,
+                create_revision: 1,
+                mod_revision: 1,
+                version: 1,
+                ..
+            }
+        }
+    ));
+    assert!(matches!(
+        responses[1],
+        KLogResponse::MetaDeleteOk {
+            existed: true,
+            prev_meta: Some(KLogMetaEntry { revision: 1, .. }),
+            ..
+        }
+    ));
+    assert!(matches!(
+        responses[2],
+        KLogResponse::MetaPutConflict {
+            expected_revision: 1,
+            current_revision: Some(2),
+            ..
+        }
+    ));
+    assert!(matches!(
+        responses[3],
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 3,
+                create_revision: 3,
+                mod_revision: 3,
+                version: 1,
+                ..
+            }
         }
     ));
 
@@ -237,8 +415,8 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
                 key: "cluster/config/name".to_string(),
                 value: "alpha".to_string(),
                 updated_at: 6000,
-                updated_by: 1,
-                revision: 0,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(0),
         }),
@@ -250,8 +428,8 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
                 key: "cluster/config/name".to_string(),
                 value: "beta".to_string(),
                 updated_at: 6001,
-                updated_by: 1,
-                revision: 0,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(1),
         }),
@@ -263,8 +441,8 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
                 key: "cluster/config/name".to_string(),
                 value: "gamma".to_string(),
                 updated_at: 6002,
-                updated_by: 1,
-                revision: 0,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
             },
             expected_revision: Some(1),
         }),
@@ -274,11 +452,27 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
     assert_eq!(responses.len(), 3);
     assert!(matches!(
         responses[0],
-        KLogResponse::MetaPutOk { revision: 1, .. }
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 1,
+                create_revision: 1,
+                mod_revision: 1,
+                version: 1,
+                ..
+            }
+        }
     ));
     assert!(matches!(
         responses[1],
-        KLogResponse::MetaPutOk { revision: 2, .. }
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 2,
+                create_revision: 1,
+                mod_revision: 2,
+                version: 2,
+                ..
+            }
+        }
     ));
     assert!(matches!(
         responses[2],
@@ -288,6 +482,166 @@ async fn test_state_machine_apply_meta_put_with_optional_cas() -> anyhow::Result
             ..
         }
     ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_state_machine_apply_meta_tx_is_atomic_on_conflict() -> anyhow::Result<()> {
+    let context = TestMemoryContext::new().await;
+    let mut sm = context.state_machine;
+
+    let seed = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(6, 0), 1),
+        payload: EntryPayload::Normal(KLogRequest::PutMeta {
+            item: KLogMetaEntry {
+                key: "system/config/guard".to_string(),
+                value: "v1".to_string(),
+                updated_at: 7000,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(0),
+        }),
+    };
+
+    let mut actions = std::collections::BTreeMap::new();
+    actions.insert(
+        "system/config/a".to_string(),
+        KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: "system/config/a".to_string(),
+                value: "a1".to_string(),
+                updated_at: 7001,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(0),
+        },
+    );
+    actions.insert(
+        "system/config/b".to_string(),
+        KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: "system/config/b".to_string(),
+                value: "b1".to_string(),
+                updated_at: 7001,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(0),
+        },
+    );
+    let tx = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(6, 0), 2),
+        payload: EntryPayload::Normal(KLogRequest::ExecMetaTx {
+            tx: KLogMetaTxRequest {
+                actions,
+                guard: Some(KLogMetaTxGuard {
+                    key: "system/config/guard".to_string(),
+                    expected_revision: 1,
+                }),
+            },
+        }),
+    };
+
+    let mut stale_actions = std::collections::BTreeMap::new();
+    stale_actions.insert(
+        "system/config/c".to_string(),
+        KLogMetaTxAction::Put {
+            item: KLogMetaEntry {
+                key: "system/config/c".to_string(),
+                value: "c1".to_string(),
+                updated_at: 7002,
+                updated_by_node_name: "node-1".to_string(),
+                ..KLogMetaEntry::default()
+            },
+            expected_revision: Some(0),
+        },
+    );
+    let stale_tx = Entry {
+        log_id: LogId::new(CommittedLeaderId::new(6, 0), 3),
+        payload: EntryPayload::Normal(KLogRequest::ExecMetaTx {
+            tx: KLogMetaTxRequest {
+                actions: stale_actions,
+                guard: Some(KLogMetaTxGuard {
+                    key: "system/config/guard".to_string(),
+                    expected_revision: 1,
+                }),
+            },
+        }),
+    };
+
+    let responses = sm.apply(vec![seed, tx, stale_tx]).await?;
+    assert_eq!(responses.len(), 3);
+    assert!(matches!(
+        responses[0],
+        KLogResponse::MetaPutOk {
+            item: KLogMetaEntry {
+                revision: 1,
+                create_revision: 1,
+                mod_revision: 1,
+                version: 1,
+                ..
+            }
+        }
+    ));
+    let KLogResponse::MetaTxOk { response } = &responses[1] else {
+        panic!("unexpected meta tx response: {:?}", responses[1]);
+    };
+    assert_eq!(
+        response.meta_versions.get("system/config/a").map(|v| (
+            v.create_revision,
+            v.mod_revision,
+            v.version,
+            v.deleted
+        )),
+        Some((2, 2, 1, false))
+    );
+    assert_eq!(
+        response.meta_versions.get("system/config/b").map(|v| (
+            v.create_revision,
+            v.mod_revision,
+            v.version,
+            v.deleted
+        )),
+        Some((2, 2, 1, false))
+    );
+    assert_eq!(
+        response.meta_versions.get("system/config/guard").map(|v| (
+            v.create_revision,
+            v.mod_revision,
+            v.version,
+            v.deleted
+        )),
+        Some((1, 2, 2, false))
+    );
+    assert!(matches!(
+        &responses[2],
+        KLogResponse::MetaTxConflict {
+            key,
+            expected_revision: 1,
+            current_revision: Some(2),
+        } if key == "system/config/guard"
+    ));
+
+    let items = context
+        .state_store_manager
+        .list_meta_entries(Some("system/config/"), None, 10)
+        .await?;
+    let keys = items
+        .iter()
+        .map(|item| item.key.as_str())
+        .collect::<Vec<_>>();
+    assert!(keys.contains(&"system/config/a"));
+    assert!(keys.contains(&"system/config/b"));
+    assert!(!keys.contains(&"system/config/c"));
+    let guard = context
+        .state_store_manager
+        .get_meta_entry("system/config/guard")
+        .await?
+        .expect("guard should exist");
+    assert_eq!(guard.revision, 2);
 
     Ok(())
 }

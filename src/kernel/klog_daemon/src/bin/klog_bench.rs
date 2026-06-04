@@ -891,6 +891,7 @@ async fn run_workload_phase(
         let req_fail = Arc::clone(&req_fail);
         let write_target = cfg.write_target;
         let request_node_id = cfg.request_node_id;
+        let request_node_name = format!("bench-node-{}", request_node_id);
         let fault_shared = fault_shared.clone();
 
         let workload = cfg.workload.clone();
@@ -901,19 +902,19 @@ async fn run_workload_phase(
             let mut append_seq = 0_u64;
             let timeout = Duration::from_secs(4);
             let leader_client =
-                KLogClient::from_daemon_addr(leader_endpoint.as_str(), request_node_id)
+                KLogClient::from_daemon_addr(leader_endpoint.as_str(), request_node_name.clone())
                     .with_timeout(timeout);
             let clients = endpoint_addrs
                 .iter()
                 .map(|endpoint| {
-                    KLogClient::from_daemon_addr(endpoint.as_str(), request_node_id)
+                    KLogClient::from_daemon_addr(endpoint.as_str(), request_node_name.clone())
                         .with_timeout(timeout)
                 })
                 .collect::<Vec<_>>();
             let base_append_req = KLogAppendRequest {
                 message: payload.clone(),
                 timestamp: None,
-                node_id: None,
+                node_name: None,
                 level: Some(KLogLevel::Info),
                 source: Some("klog_bench".to_string()),
                 attrs: None,
@@ -966,6 +967,7 @@ async fn run_workload_phase(
                         let req = KLogMetaPutRequest {
                             key: format!("bench/meta/{}", key_idx),
                             value: payload.clone(),
+                            node_name: None,
                             expected_revision: None,
                         };
                         client.put_meta(req).await.map(|_| None)
@@ -976,6 +978,8 @@ async fn run_workload_phase(
                             key: Some(format!("bench/meta/{}", key_idx)),
                             prefix: None,
                             limit: Some(1),
+                            cursor: None,
+                            revision: None,
                             strong_read: Some(workload.meta_query_strong_read),
                         };
                         client.query_meta(req).await.map(|_| None)
@@ -1211,8 +1215,9 @@ async fn collect_node_max_log_ids(
 ) -> BTreeMap<u64, u64> {
     let mut out = BTreeMap::new();
     for (node_id, rpc_port) in rpc_ports {
+        let request_node_name = format!("bench-node-{}", request_node_id);
         let client =
-            KLogClient::from_daemon_addr(&format!("127.0.0.1:{}", rpc_port), request_node_id)
+            KLogClient::from_daemon_addr(&format!("127.0.0.1:{}", rpc_port), request_node_name)
                 .with_timeout(Duration::from_secs(3));
         let req = KLogQueryRequest {
             start_id: None,

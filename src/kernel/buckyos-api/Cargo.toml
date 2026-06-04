@@ -41,5 +41,6 @@ rbac = { workspace = true }
 ndn-lib = { workspace = true }
 named_store = { workspace = true }
 ndn-toolkit = { workspace = true }
+klog = { path = "../klog" }
 
 [dev-dependencies]
