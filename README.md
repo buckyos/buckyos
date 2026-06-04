@@ -53,6 +53,15 @@ uv run src/buckyos-build.py --skip-web
 
 If your machine is not ready for BuckyOS development yet, you can run `python3 devenv.py` first. The script installs `uv`, `deno`, `tmux`, and other basic dependencies according to the current platform.
 
+On Linux machines where you do not want the script to make root/sudo changes, use user mode:
+
+```bash
+python3 devenv.py --user
+export BUCKYOS_ROOT="$PWD/.dev_buckyos"
+```
+
+User mode installs user-scoped tools when possible and prints the privileged commands that still require an administrator, such as system packages, Docker setup, `/opt/buckyos`, or low-port `setcap` changes. To inspect the environment without changing it, run `python3 devenv.py --doctor`.
+
 Before building, you can refer to `devenv.py` to prepare the environment. The main dependencies are the Rust toolchain, Node.js + pnpm, Python 3.12, `uv`, Deno, tmux, and `docker.io`. Once those are ready, use the following steps.
 
 ### Step 1. Build cyfs-gateway

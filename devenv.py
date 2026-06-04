@@ -116,6 +116,7 @@ MUSL_CROSS_TOOLCHAINS = [
     ("x86_64-linux-musl", "x86_64-linux-musl-cross"),
     ("aarch64-linux-musl", "aarch64-linux-musl-cross"),
 ]
+USER_DEV_DIR_NAME = "buckyos-dev"
 
 LINUX_BINDGEN_PACKAGE_CHOICES = {
     "apt-get": [["clang", "libclang-dev", "llvm-dev"]],
@@ -190,7 +191,7 @@ class Bootstrapper:
     def run(self, command: Sequence[str], check: bool = True, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
         display = self.format_command(command)
         print(f"> {display}")
-        if self.args.dry_run:
+        if self.args.dry_run or self.args.doctor:
             return subprocess.CompletedProcess(command, 0, "", "")
 
         result = subprocess.run(
@@ -226,11 +227,50 @@ class Bootstrapper:
     def print_command(self, command: Sequence[str]) -> None:
         print(f"> {self.format_command(command)}")
 
+    def repo_root(self) -> Path:
+        return Path(__file__).resolve().parent
+
+    def user_dev_root(self) -> Path:
+        return self.invoking_user_home() / ".local" / "share" / USER_DEV_DIR_NAME
+
+    def user_bin_dir(self) -> Path:
+        return self.invoking_user_home() / ".local" / "bin"
+
+    def user_npm_prefix(self) -> Path:
+        return self.user_dev_root() / "npm"
+
+    def buckyos_root(self) -> Path:
+        if self.args.buckyos_root:
+            return Path(self.args.buckyos_root).expanduser()
+        if self.args.user:
+            return self.repo_root() / ".dev_buckyos"
+        return Path("/opt/buckyos")
+
+    def linux_install_command(self, packages: Sequence[str], update: bool = False) -> str:
+        manager = self.package_manager
+        if manager == "apt-get":
+            commands = []
+            if update:
+                commands.append("sudo apt-get update")
+            commands.append(f"sudo apt-get install -y {shlex.join(list(packages))}")
+            return " && ".join(commands)
+        if manager == "dnf":
+            return f"sudo dnf install -y {shlex.join(list(packages))}"
+        if manager == "yum":
+            return f"sudo yum install -y {shlex.join(list(packages))}"
+        if manager == "pacman":
+            return f"sudo pacman -S --noconfirm --needed {shlex.join(list(packages))}"
+        if manager == "zypper":
+            return f"sudo zypper --non-interactive install --no-recommends {shlex.join(list(packages))}"
+        return f"Install packages manually: {', '.join(packages)}"
+
     def require_privilege(self, command: Sequence[str]) -> list[str]:
         if self.package_manager in {"apt-get", "dnf", "yum", "pacman", "zypper"}:
             if hasattr(os, "geteuid") and os.geteuid() == 0:
                 return list(command)
             if shutil.which("sudo"):
+                return ["sudo", *command]
+            if self.args.dry_run:
                 return ["sudo", *command]
             raise BootstrapError("Please use root privileges or ensure sudo is available")
         return list(command)
@@ -241,6 +281,8 @@ class Bootstrapper:
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             return list(command)
         if shutil.which("sudo"):
+            return ["sudo", *command]
+        if self.args.dry_run:
             return ["sudo", *command]
         raise BootstrapError("Please use administrator privileges or ensure sudo is available")
 
@@ -451,12 +493,44 @@ class Bootstrapper:
 
     def find_corepack(self) -> str | None:
         candidates = [
+            Path(self.invoking_user_home()) / ".local" / "bin" / "corepack",
             Path("/usr/bin/corepack"),
             Path("/usr/local/bin/corepack"),
             Path("/opt/homebrew/bin/corepack"),
             Path("/home/linuxbrew/.linuxbrew/bin/corepack"),
         ]
         return self.find_binary("corepack", candidates)
+
+    def find_node(self) -> str | None:
+        candidates = [
+            Path(self.invoking_user_home()) / ".local" / "bin" / "node",
+            Path("/usr/bin/node"),
+            Path("/usr/local/bin/node"),
+            Path("/opt/homebrew/bin/node"),
+            Path("/home/linuxbrew/.linuxbrew/bin/node"),
+        ]
+        return self.find_binary("node", candidates)
+
+    def find_npm(self) -> str | None:
+        candidates = [
+            Path(self.invoking_user_home()) / ".local" / "bin" / "npm",
+            Path("/usr/bin/npm"),
+            Path("/usr/local/bin/npm"),
+            Path("/opt/homebrew/bin/npm"),
+            Path("/home/linuxbrew/.linuxbrew/bin/npm"),
+        ]
+        return self.find_binary("npm", candidates)
+
+    def find_pnpm(self) -> str | None:
+        candidates = [
+            self.user_npm_prefix() / "bin" / "pnpm",
+            Path(self.invoking_user_home()) / ".local" / "bin" / "pnpm",
+            Path("/usr/bin/pnpm"),
+            Path("/usr/local/bin/pnpm"),
+            Path("/opt/homebrew/bin/pnpm"),
+            Path("/home/linuxbrew/.linuxbrew/bin/pnpm"),
+        ]
+        return self.find_binary("pnpm", candidates)
 
     def find_binary(self, binary_name: str, candidates: Sequence[Path]) -> str | None:
         if path := shutil.which(binary_name):
@@ -525,6 +599,14 @@ class Bootstrapper:
         if self.find_uv():
             return
 
+        if self.args.doctor:
+            self.warnings.append("uv not found; user mode can install it with the official installer")
+            return
+
+        if self.args.user and self.system == "Linux":
+            self.ensure_unix_script_tool("uv", "https://astral.sh/uv/install.sh", self.find_uv)
+            return
+
         if self.system == "Linux":
             packages = self.resolve_package_set(LINUX_UV_CHOICES[self.package_manager])
             if packages:
@@ -547,6 +629,14 @@ class Bootstrapper:
         if self.find_deno():
             return
 
+        if self.args.doctor:
+            self.warnings.append("Deno not found; user mode can install it with the official installer")
+            return
+
+        if self.args.user and self.system == "Linux":
+            self.ensure_unix_script_tool("Deno", "https://deno.land/install.sh", self.find_deno)
+            return
+
         if self.system == "Linux":
             packages = self.resolve_package_set(LINUX_DENO_CHOICES[self.package_manager])
             if packages:
@@ -567,6 +657,14 @@ class Bootstrapper:
 
     def ensure_linux_rustup(self) -> None:
         if self.find_rustup():
+            return
+
+        if self.args.doctor:
+            self.warnings.append("rustup not found; user mode can install it with the official rustup installer")
+            return
+
+        if self.args.user:
+            self.install_linux_rustup_user()
             return
 
         packages = self.resolve_package_set(LINUX_RUSTUP_CHOICES[self.package_manager])
@@ -594,8 +692,26 @@ class Bootstrapper:
         if rustup_path and not shutil.which(Path(rustup_path).name):
             self.notes.append(f"rustup was installed at {rustup_path}; reopen the terminal if it is not yet in PATH")
 
+    def install_linux_rustup_user(self) -> None:
+        if shutil.which("curl"):
+            fetch_command = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+        elif shutil.which("wget"):
+            fetch_command = "wget -qO- https://sh.rustup.rs | sh -s -- -y"
+        else:
+            raise BootstrapError("rustup installer requires curl or wget")
+
+        self.run(["sh", "-c", fetch_command])
+        rustup_path = self.find_rustup()
+        if rustup_path and not shutil.which(Path(rustup_path).name):
+            self.notes.append(f"rustup was installed at {rustup_path}; reopen the terminal if it is not yet in PATH")
+
     def ensure_tmux(self) -> None:
         if shutil.which("tmux"):
+            return
+
+        if self.args.user or self.args.doctor:
+            command = self.linux_install_command(["tmux"], update=self.package_manager == "apt-get")
+            self.warnings.append(f"tmux not found; install it with privileges if you need Jarvis debugging: {command}")
             return
 
         if self.system == "Windows":
@@ -606,7 +722,7 @@ class Bootstrapper:
             self.install_first_resolved_set("tmux", LINUX_TMUX_CHOICES[self.package_manager])
 
     def installed_node_version(self) -> str | None:
-        node_path = shutil.which("node")
+        node_path = self.find_node()
         if not node_path:
             return None
         version = self.capture_text([node_path, "--version"])
@@ -640,6 +756,26 @@ class Bootstrapper:
             self.notes.append(f"Using existing Node.js installation: {installed_version}")
             return
 
+        if self.args.doctor:
+            self.warnings.append("Node.js not found; user mode can install official Node.js binaries under ~/.local")
+            return
+
+        if self.args.user:
+            self.install_linux_node_from_official_archive(
+                self.user_dev_root() / "nodejs",
+                self.user_bin_dir(),
+                privileged=False,
+            )
+            self.notes.append(f"Add {self.user_bin_dir()} to PATH if node/npm/corepack are not visible")
+            return
+
+        self.install_linux_node_from_official_archive(
+            Path("/usr/local/lib/nodejs"),
+            Path("/usr/local/bin"),
+            privileged=True,
+        )
+
+    def install_linux_node_from_official_archive(self, install_root: Path, link_dir: Path, privileged: bool) -> None:
         target_major = NODEJS_LINUX_LTS_MAJOR
         arch = self.resolve_linux_node_arch()
         base_url = f"{NODEJS_DIST_BASE_URL}/latest-v{target_major}.x"
@@ -648,12 +784,15 @@ class Bootstrapper:
         if self.args.dry_run:
             self.print_command(["curl", "-fsSL", shasums_url])
             self.print_command(["curl", "-fsSLO", f"{base_url}/node-<version>-linux-{arch}.tar.xz"])
-            self.print_command(["sudo", "tar", "-xJf", "node-<version>-linux-<arch>.tar.xz", "-C", "/usr/local/lib/nodejs"])
-            self.print_command(["sudo", "ln", "-sfn", "/usr/local/lib/nodejs/node-<version>-linux-<arch>/bin/node", "/usr/local/bin/node"])
-            self.print_command(["sudo", "ln", "-sfn", "/usr/local/lib/nodejs/node-<version>-linux-<arch>/bin/npm", "/usr/local/bin/npm"])
-            self.print_command(["sudo", "ln", "-sfn", "/usr/local/lib/nodejs/node-<version>-linux-<arch>/bin/npx", "/usr/local/bin/npx"])
-            self.print_command(["sudo", "ln", "-sfn", "/usr/local/lib/nodejs/node-<version>-linux-<arch>/bin/corepack", "/usr/local/bin/corepack"])
-            self.print_command(["sudo", "corepack", "enable", "pnpm"])
+            mkdir_command = ["mkdir", "-p", str(install_root), str(link_dir)]
+            if privileged:
+                mkdir_command = self.require_unix_privilege(mkdir_command)
+            self.print_command(mkdir_command)
+            for binary in ("node", "npm", "npx", "corepack"):
+                link_command = ["ln", "-sfn", f"{install_root}/node-<version>-linux-{arch}/bin/{binary}", str(link_dir / binary)]
+                if privileged:
+                    link_command = self.require_unix_privilege(link_command)
+                self.print_command(link_command)
             return
 
         try:
@@ -706,19 +845,29 @@ class Bootstrapper:
                 raise BootstrapError(f"Unexpected Node.js archive layout in {archive_name}")
 
             extracted_dir = extracted_dirs[0]
-            install_root = Path("/usr/local/lib/nodejs")
             install_dir = install_root / extracted_dir.name
 
-            self.run(self.require_unix_privilege(["mkdir", "-p", str(install_root)]))
+            if privileged:
+                self.run(self.require_unix_privilege(["mkdir", "-p", str(install_root), str(link_dir)]))
+            else:
+                install_root.mkdir(parents=True, exist_ok=True)
+                link_dir.mkdir(parents=True, exist_ok=True)
+
             if not install_dir.exists():
-                self.run(self.require_unix_privilege(["mv", str(extracted_dir), str(install_dir)]))
+                if privileged:
+                    self.run(self.require_unix_privilege(["mv", str(extracted_dir), str(install_dir)]))
+                else:
+                    shutil.move(str(extracted_dir), str(install_dir))
 
             for binary in ("node", "npm", "npx", "corepack"):
-                self.run(
-                    self.require_unix_privilege(
-                        ["ln", "-sfn", str(install_dir / "bin" / binary), f"/usr/local/bin/{binary}"]
-                    )
-                )
+                link_path = link_dir / binary
+                target_path = install_dir / "bin" / binary
+                if privileged:
+                    self.run(self.require_unix_privilege(["ln", "-sfn", str(target_path), str(link_path)]))
+                else:
+                    if link_path.exists() or link_path.is_symlink():
+                        link_path.unlink()
+                    link_path.symlink_to(target_path)
 
             self.notes.append(f"Installed Node.js from official binaries at {install_dir}")
 
@@ -743,6 +892,98 @@ class Bootstrapper:
         else:
             self.warnings.append("Failed to enable pnpm via corepack")
         return False
+
+    def ensure_pnpm_user(self) -> None:
+        if self.find_pnpm():
+            return
+
+        if self.args.doctor:
+            self.warnings.append("pnpm not found; user mode can install it with npm into ~/.local/share/buckyos-dev/npm")
+            return
+
+        npm = self.find_npm()
+        if npm:
+            prefix = self.user_npm_prefix()
+            self.run([npm, "install", "-g", "--prefix", str(prefix), "pnpm"])
+            self.notes.append(f"Installed pnpm under {prefix}")
+            self.notes.append(f"Add {prefix / 'bin'} to PATH if pnpm is not visible")
+            return
+
+        self.warnings.append("pnpm not found and npm is unavailable; install Node.js/npm first or rerun user mode after reopening the terminal")
+
+    def check_linux_user_system_dependencies(self) -> None:
+        missing_commands = []
+        for command in ("git", "pkg-config", "clang"):
+            if not shutil.which(command):
+                missing_commands.append(command)
+
+        if not shutil.which("curl") and not shutil.which("wget"):
+            missing_commands.append("curl or wget")
+
+        if not shutil.which("python3"):
+            missing_commands.append("python3")
+
+        if missing_commands:
+            packages = LINUX_CORE_PACKAGES[self.package_manager] + LINUX_PYTHON_CHOICES[self.package_manager][0]
+            command = self.linux_install_command(packages, update=self.package_manager == "apt-get")
+            self.warnings.append(
+                f"Missing system tools for native builds: {', '.join(missing_commands)}. "
+                f"Run with privileges if builds fail: {command}"
+            )
+
+        if shutil.which("pkg-config") and not self.probe(["pkg-config", "--exists", "openssl"]):
+            package = "libssl-dev" if self.package_manager == "apt-get" else "openssl-devel"
+            command = self.linux_install_command([package], update=self.package_manager == "apt-get")
+            self.warnings.append(f"OpenSSL development files not detected by pkg-config. Install with: {command}")
+
+        if not self.find_libclang():
+            choices = LINUX_BINDGEN_PACKAGE_CHOICES.get(self.package_manager)
+            if choices:
+                command = self.linux_install_command(choices[0], update=self.package_manager == "apt-get")
+                self.warnings.append(f"libclang not detected; crates using bindgen may fail. Install with: {command}")
+
+        if not self.args.skip_docker:
+            if not shutil.which("docker"):
+                docker_choices = LINUX_DOCKER_CHOICES.get(self.package_manager, [])
+                if docker_choices:
+                    command = self.linux_install_command(docker_choices[0], update=self.package_manager == "apt-get")
+                    self.warnings.append(f"Docker not found. Install with privileges if Docker workflows are needed: {command}")
+            elif not self.probe(["docker", "info"]):
+                self.warnings.append(
+                    "Docker is installed but not usable by this user. Add the user to the docker group and log in again, "
+                    "or run Docker-dependent workflows with appropriate privileges."
+                )
+
+    def install_linux_user_environment(self) -> None:
+        self.check_linux_user_system_dependencies()
+        self.ensure_linux_node()
+        self.ensure_linux_rustup()
+        self.ensure_uv()
+        self.ensure_deno()
+        self.ensure_tmux()
+        self.ensure_pnpm_user()
+        self.ensure_rust_toolchain()
+
+        if not self.args.skip_cross_tools:
+            self.check_linux_static_tooling()
+        self.check_linux_bindgen_tooling()
+
+        if not self.args.skip_buckyos_dir:
+            self.ensure_buckyos_directory()
+
+        root = self.buckyos_root()
+        if self.args.user:
+            self.notes.append(f"Use user-mode BuckyOS rootfs with: export BUCKYOS_ROOT={shlex.quote(str(root))}")
+            self.notes.append("Then run development commands from src/, for example: uv run ./buckyos-build.py --skip-web --target=x86_64-unknown-linux-gnu")
+        else:
+            self.notes.append(f"BuckyOS rootfs path for this check: {root}")
+            self.notes.append("For non-root Linux setup, rerun with --user to use a writable user-mode rootfs")
+        if self.args.user:
+            self.notes.append(
+                "User mode does not grant low-port binding. If cyfs-gateway must bind :80, run setcap on the built cyfs_gateway binary with privileges."
+            )
+        else:
+            self.notes.append("Low-port binding still requires root or setcap on the built cyfs_gateway binary")
 
     def install_linux_environment(self) -> None:
         self.update_package_index()
@@ -1013,6 +1254,10 @@ class Bootstrapper:
                 self.warnings.append("rustup.exe not found; please reopen terminal and run `rustup default stable`")
             return
 
+        if self.args.doctor:
+            self.notes.append(f"rustup found at {rustup}")
+            return
+
         self.run([rustup, "default", "stable"])
         if self.system == "Linux" and not self.args.skip_cross_tools:
             self.run([rustup, "target", "add", "x86_64-unknown-linux-musl"])
@@ -1061,7 +1306,27 @@ class Bootstrapper:
         if self.system == "Windows":
             return
 
-        target = Path("/opt/buckyos")
+        target = self.buckyos_root()
+        if self.args.user or self.args.doctor:
+            if self.args.doctor:
+                if target.exists():
+                    if os.access(target, os.W_OK):
+                        self.notes.append(f"User-mode BuckyOS rootfs is writable: {target}")
+                    else:
+                        self.warnings.append(f"User-mode BuckyOS rootfs exists but is not writable: {target}")
+                else:
+                    self.notes.append(f"User-mode BuckyOS rootfs would be created at {target}")
+                return
+
+            if self.args.dry_run:
+                self.print_command(["mkdir", "-p", str(target)])
+                self.notes.append(f"Would prepare user-mode BuckyOS rootfs at {target}")
+                return
+
+            target.mkdir(parents=True, exist_ok=True)
+            self.notes.append(f"Prepared user-mode BuckyOS rootfs at {target}")
+            return
+
         owner = os.environ.get("SUDO_USER") or os.environ.get("USER")
         group_name = None
 
@@ -1083,12 +1348,23 @@ class Bootstrapper:
         print(f"Detected platform: {self.system} ({self.package_manager})")
         if self.args.dry_run:
             print("Dry run enabled: commands will be printed but not executed")
+        if self.args.doctor:
+            print("Doctor mode enabled: no changes will be made")
+        if self.args.user:
+            print("User mode enabled: privileged system setup will be skipped")
 
         if self.system == "Linux":
-            self.install_linux_environment()
+            if self.args.user or self.args.doctor:
+                self.install_linux_user_environment()
+            else:
+                self.install_linux_environment()
         elif self.system == "Darwin":
+            if self.args.user:
+                raise BootstrapError("--user is currently supported on Linux only")
             self.install_macos_environment()
         elif self.system == "Windows":
+            if self.args.user:
+                raise BootstrapError("--user is currently supported on Linux only")
             self.install_windows_environment()
         else:
             raise BootstrapError(f"Unsupported system: {self.system}")
@@ -1096,7 +1372,11 @@ class Bootstrapper:
         self.print_summary()
 
     def print_summary(self) -> None:
-        print("\nEnvironment bootstrap completed.")
+        if self.args.doctor:
+            print("\nEnvironment diagnostics completed.")
+        else:
+            print("\nEnvironment bootstrap completed.")
+
         print("\nInstalled or checked:")
         print("- Rust toolchain (stable)")
         print("- Node.js + pnpm")
@@ -1110,7 +1390,7 @@ class Bootstrapper:
         if self.system == "Linux" and not self.args.skip_cross_tools:
             print("- Linux cross-compilation helpers (best effort)")
         if self.system != "Windows" and not self.args.skip_buckyos_dir:
-            print("- /opt/buckyos")
+            print(f"- {self.buckyos_root()}")
 
         if self.notes:
             print("\nNotes:")
@@ -1127,6 +1407,13 @@ class Bootstrapper:
             print("- Reopen terminal to ensure winget-installed software is in PATH")
             print("- `cd buckyos`")
             print("- `uv run src\\buckyos-build.py --no-build-web-apps`")
+        elif self.args.user:
+            print(f"- `export BUCKYOS_ROOT={shlex.quote(str(self.buckyos_root()))}`")
+            print("- `cd src`")
+            print("- `uv run ./buckyos-build.py --skip-web --target=x86_64-unknown-linux-gnu`")
+        elif self.args.doctor:
+            print("- Resolve the warnings above")
+            print("- For non-root Linux setup, run `python3 devenv.py --user`")
         else:
             print("- Reopen terminal to ensure rustup/uv/deno are in PATH")
             print("- `cd buckyos`")
@@ -1136,9 +1423,12 @@ class Bootstrapper:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bootstrap a BuckyOS development environment")
     parser.add_argument("--dry-run", action="store_true", help="Only print commands to be executed")
+    parser.add_argument("--doctor", action="store_true", help="Check the development environment without changing it")
+    parser.add_argument("--user", action="store_true", help="Prepare a Linux user-mode development environment without sudo/root changes")
+    parser.add_argument("--buckyos-root", help="Override the prepared BuckyOS rootfs path")
     parser.add_argument("--skip-docker", action="store_true", help="Skip Docker / Docker Desktop")
     parser.add_argument("--skip-cross-tools", action="store_true", help="Skip Linux cross-compilation dependencies")
-    parser.add_argument("--skip-buckyos-dir", action="store_true", help="Skip /opt/buckyos directory preparation")
+    parser.add_argument("--skip-buckyos-dir", action="store_true", help="Skip BuckyOS rootfs directory preparation")
     parser.add_argument("--skip-msvc", action="store_true", help="Skip Visual Studio Build Tools on Windows")
     return parser.parse_args()
 
