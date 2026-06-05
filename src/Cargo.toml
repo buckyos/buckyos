@@ -139,6 +139,7 @@ tempfile = "3.24.0"
 
 [patch.crates-io]
 grammers-session = { path = "patches/grammers-session-0.8.0" }
+glass_pumpkin = { path = "patches/glass_pumpkin-1.10.0" }
 
 
 [profile.release]

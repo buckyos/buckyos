@@ -1,0 +1,143 @@
+name: glass_pumpkin
+
+on:
+  pull_request:
+    paths-ignore:
+      - README.md
+      - LICENSE
+      - MAINTAINERS.md
+      - rustfmt.toml
+  push:
+    branches: main
+    paths-ignore:
+      - README.md
+      - LICENSE
+      - MAINTAINERS.md
+      - rustfmt.toml
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  RUST_LOG_STYLE: always
+  RUSTFLAGS: "-Dwarnings"
+  RUSTDOCFLAGS: "-Dwarnings"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - run: cargo build --all-features
+
+  build-nostd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          # thumbv7m-none-eabi target doesn't have `std`, so compilation will fail even if library
+          # transitively depends on `std`. In general, any `...-none-...` target will work.
+          targets: thumbv7m-none-eabi
+      - run: cargo build --no-default-features -F no_std --target thumbv7m-none-eabi
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - run: cargo test --all-features
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+      - run: cargo clippy --all --all-features -- -D warnings
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - run: cargo doc --all-features
+
+  # Makes sure docs build on nightly, since this is how they are built on docs.rs
+  doc-nightly:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-Dwarnings --cfg docsrs"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - run: cargo doc --all-features
+
+  pants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall --no-confirm cargo-pants
+      - run: cargo pants --loud --dev
+
+  outdated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall --no-confirm cargo-outdated
+      - run: cargo outdated --root-deps-only --exit-code=1
+
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall --no-confirm cargo-udeps
+      - run: cargo udeps --all-targets --all-features
+
+  careful:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall --no-confirm cargo-careful
+      - run: cargo careful test tests --all-features --release
