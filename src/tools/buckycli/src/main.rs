@@ -322,6 +322,13 @@ oods look like this 'ood1,ood2'.")
                         .required(true)
                 )
                 .arg(
+                    Arg::new("ood_names")
+                        .long("ood_names")
+                        .value_name("ood_names")
+                        .help("all OOD device names, comma separated, e.g. ood1,ood2,ood3")
+                        .required(false)
+                )
+                .arg(
                     Arg::new("sn_base_host")
                         .long("sn_base_host")
                         .value_name("sn_base_host")
@@ -772,10 +779,11 @@ oods look like this 'ood1,ood2'.")
             let username = matches.get_one::<String>("username").unwrap();
             let hostname = matches.get_one::<String>("hostname").unwrap();
             let ood_name = matches.get_one::<String>("ood_name").unwrap();
+            let ood_names = matches.get_one::<String>("ood_names");
             let sn_base_host = matches.get_one::<String>("sn_base_host").unwrap();
             let rtcp_port = matches.get_one::<u16>("rtcp_port").unwrap();
             let output_dir = matches.get_one::<String>("output_dir");
-            info!("create user env: username: {}, hostname: {}, ood_name: {}, sn_base_host: {}, rtcp_port: {}", username, hostname, ood_name, sn_base_host, rtcp_port);
+            info!("create user env: username: {}, hostname: {}, ood_name: {}, ood_names: {:?}, sn_base_host: {}, rtcp_port: {}", username, hostname, ood_name, ood_names, sn_base_host, rtcp_port);
             match test_config::cmd_create_user_env(
                 username,
                 hostname,
@@ -783,6 +791,7 @@ oods look like this 'ood1,ood2'.")
                 sn_base_host,
                 *rtcp_port,
                 output_dir.map(|s| s.as_str()),
+                ood_names.map(|s| s.as_str()),
             )
             .await
             {

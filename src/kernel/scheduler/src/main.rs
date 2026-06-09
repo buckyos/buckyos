@@ -628,6 +628,7 @@ g, cyfs-gateway, kernel
             "",
             2980,
             Some(output_dir_str.as_str()),
+            None,
         )
         .await
         .expect("failed to create user env");

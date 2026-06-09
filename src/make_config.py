@@ -468,6 +468,7 @@ def make_identity_files(
     web3_bridge: str,
     ca_name: str,
     ca_dir: Optional[Path],
+    ood_names: Optional[List[str]] = None,
 ) -> None:
     """Use buckycli to generate identity files and use cert_mgr to generate TLS certificates."""
     if not BUCKYCLI_BIN.exists():
@@ -484,23 +485,27 @@ def make_identity_files(
     # Has sn_base_host, node_name, netid is wan: need to configure ddns_sn_url
     # Has sn_base_host, node_name, netid is portmap: node with portmap enabled
 
+    create_user_env_args = [
+        "create_user_env",
+        "--username",
+        username,
+        "--hostname",
+        zone_id,
+        "--ood_name",
+        node_name_for_zone,
+        "--sn_base_host",
+        sn_base_host,
+        "--rtcp_port",
+        str(rtcp_port),
+        "--output_dir",
+        str(user_tmp),
+    ]
+    if ood_names:
+        create_user_env_args.extend(["--ood_names", ",".join(ood_names)])
+
     # 1. Create user/zone
     run_buckycli(
-        [
-            "create_user_env",
-            "--username",
-            username,
-            "--hostname",
-            zone_id,
-            "--ood_name",
-            node_name_for_zone,
-            "--sn_base_host",
-            sn_base_host,
-            "--rtcp_port",
-            str(rtcp_port),
-            "--output_dir",
-            str(user_tmp),
-        ],
+        create_user_env_args,
         cwd=tmp_root,
         runtime_root=target_dir,
     )
@@ -731,6 +736,28 @@ def get_params_from_group_name(group_name: str) -> Dict[str, object]:
             "ca_name": "buckyos_test_ca",
             "is_sn": False,
         }
+    if group_name.startswith("klog_3ood."):
+        node_name = group_name.split(".", 1)[1]
+        if node_name not in ("ood1", "ood2", "ood3"):
+            raise ValueError(f"invalid klog_3ood node name: {node_name}")
+        return {
+            "username": "devtest",
+            "zone_id": "klog3ood.local",
+            "node_name": node_name,
+            "netid": "lan",
+            "rtcp_port": 2980,
+            "sn_base_host": "",
+            "web3_bridge": "web3.devtests.org",
+            "trust_did": [
+                "did:web:buckyos.org",
+                "did:web:buckyos.ai",
+                "did:web:buckyos.io",
+            ],
+            "force_https": False,
+            "ca_name": "buckyos_test_ca",
+            "is_sn": False,
+            "ood_names": ["ood1", "ood2", "ood3"],
+        }
     if group_name == "alice.ood1":
         return {
             "username": "alice",
@@ -942,6 +969,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
             params["web3_bridge"],
             params["ca_name"],
             ca_dir,
+            params.get("ood_names"),
         )
         make_repo_cache_file(target_root)
         seed_bin_pkg_meta_db(target_root)

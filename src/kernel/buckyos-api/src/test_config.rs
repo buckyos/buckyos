@@ -170,6 +170,8 @@ impl TestKeys {
         let key_ids = vec![
             "devtest",
             "devtest_ood1",
+            "devtest_ood2",
+            "devtest_ood3",
             "devtest_node1",
             "devtests",
             "devtests_ood1",
@@ -195,6 +197,10 @@ impl TestKeys {
             "devtest" => TestKeys::devtest_owner(),
             "devtest_ood1" => TestKeys::devtest_ood1(),
             "devtest.ood1" => TestKeys::devtest_ood1(),
+            "devtest_ood2" => TestKeys::devtest_ood2(),
+            "devtest.ood2" => TestKeys::devtest_ood2(),
+            "devtest_ood3" => TestKeys::devtest_ood3(),
+            "devtest.ood3" => TestKeys::devtest_ood3(),
             "devtest_node1" => TestKeys::devtest_node1(),
             "devtest.node1" => TestKeys::devtest_node1(),
 
@@ -248,6 +254,26 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 -----END PRIVATE KEY-----"#
                 .to_string(),
             public_key_x: "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc".to_string(),
+        }
+    }
+
+    fn devtest_ood2() -> TestKeyPair {
+        TestKeyPair {
+            private_key_pem: r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIFhhjCmHPbCnYqIYw6J6UBCKSRSLh/I5fdsv42s8aUtq
+-----END PRIVATE KEY-----"#
+                .to_string(),
+            public_key_x: "PfX6wzwAwcZe0BMXhhDWOIkoRhlw2fWH6ForTRTKO9E".to_string(),
+        }
+    }
+
+    fn devtest_ood3() -> TestKeyPair {
+        TestKeyPair {
+            private_key_pem: r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIBHrbZ4JXXyS+vpFS9GOmblYxRwBCraG7Ux3IZTOCKKh
+-----END PRIVATE KEY-----"#
+                .to_string(),
+            public_key_x: "q-jP_9aJrjSbnw3j4AnoMI2V-aGl1TdxDVOcesa3Vs4".to_string(),
         }
     }
 
@@ -571,28 +597,28 @@ impl<'a> UserEnvScope<'a> {
         ood: OODDescriptionString,
         rtcp_port: u16,
     ) -> ZoneTxtRecord {
-        let device_full_id = format!("{}.{}", self.username, ood.name.as_str());
-        let device_key_pair = TestKeys::get_key_pair_by_id(&device_full_id).unwrap();
-        let ood_net_id = ood.net_id.clone();
-        let mut ddns_sn_url = None;
-        let mut real_sn_host = sn_host.clone();
-        if ood_net_id.is_some() {
-            let ood_net_id = ood_net_id.unwrap();
-            if ood_net_id.starts_with("wan") {
-                real_sn_host = None;
-            }
+        self.create_zone_boot_config_jwt_multi(sn_host, vec![ood], rtcp_port)
+    }
 
-            if ood_net_id.starts_with("wan_dyn") {
-                if sn_host.is_some() {
-                    let sn_real_host = sn_host.clone().unwrap();
-                    ddns_sn_url = Some(format!("https://{}/kapi/sn", sn_real_host));
+    pub fn create_zone_boot_config_jwt_multi(
+        &self,
+        sn_host: Option<String>,
+        oods: Vec<OODDescriptionString>,
+        rtcp_port: u16,
+    ) -> ZoneTxtRecord {
+        assert!(!oods.is_empty(), "oods must not be empty");
+        let mut real_sn_host = sn_host.clone();
+        for ood in oods.iter() {
+            if let Some(ood_net_id) = ood.net_id.as_ref() {
+                if ood_net_id.starts_with("wan") {
+                    real_sn_host = None;
                 }
             }
         }
 
         let mut zone_boot = ZoneBootConfig {
             id: None,
-            oods: vec![ood.clone()],
+            oods: oods.clone(),
             sn: real_sn_host,
             exp: self.builder.exp,
             owner: None,
@@ -635,43 +661,59 @@ impl<'a> UserEnvScope<'a> {
         } else {
             Some(rtcp_port as u32)
         };
-        //ood1 mini config jwt
-        let mini_config = DeviceMiniConfig {
-            name: ood.name.clone(),
-            x: device_key_pair.public_key_x.clone(),
-            rtcp_port: real_rtcp_port,
-            exp: self.builder.exp,
-            extra_info: HashMap::new(),
-        };
-        let mini_jwt = mini_config.to_jwt(&owner_key).unwrap();
-        println!(
-            "=> {} TXT Record({}): DEV={};",
-            zone_host_name,
-            mini_jwt.len() + 5,
-            mini_jwt.to_string()
-        );
+        let mut first_mini_jwt = None;
+        for ood in oods.iter() {
+            let device_full_id = format!("{}.{}", self.username, ood.name.as_str());
+            let device_key_pair = TestKeys::get_key_pair_by_id(&device_full_id).unwrap();
 
-        // 2. Create device configuration and JWT
-        let device_jwk = get_jwk(&device_key_pair.public_key_x);
-        let mut device_config = DeviceConfig::new_by_jwk(ood.name.as_str(), device_jwk.clone());
-        device_config.support_container = true;
-        device_config.net_id = ood.net_id.clone();
-        device_config.owner = self.did.clone();
-        device_config.zone_did = Some(self.zone_did.clone());
-        device_config.ddns_sn_url = ddns_sn_url;
-        let node_dir = self.user_dir.join(ood.name.as_str());
-        write_json(&node_dir.join("node_device_config.json"), &device_config);
+            let mini_config = DeviceMiniConfig {
+                name: ood.name.clone(),
+                x: device_key_pair.public_key_x.clone(),
+                rtcp_port: real_rtcp_port,
+                exp: self.builder.exp,
+                extra_info: HashMap::new(),
+            };
+            let mini_jwt = mini_config.to_jwt(&owner_key).unwrap();
+            println!(
+                "=> {} TXT Record({}): DEV={};",
+                zone_host_name,
+                mini_jwt.len() + 5,
+                mini_jwt.to_string()
+            );
+            if first_mini_jwt.is_none() {
+                first_mini_jwt = Some(mini_jwt.to_string());
+            }
 
-        println!(
-            "{} device config: {}",
-            ood.name.as_str(),
-            serde_json::to_string_pretty(&device_config).unwrap()
-        );
+            let mut ddns_sn_url = None;
+            if let Some(ood_net_id) = ood.net_id.as_ref() {
+                if ood_net_id.starts_with("wan_dyn") {
+                    if let Some(sn_real_host) = sn_host.as_ref() {
+                        ddns_sn_url = Some(format!("https://{}/kapi/sn", sn_real_host));
+                    }
+                }
+            }
+
+            let device_jwk = get_jwk(&device_key_pair.public_key_x);
+            let mut device_config = DeviceConfig::new_by_jwk(ood.name.as_str(), device_jwk.clone());
+            device_config.support_container = true;
+            device_config.net_id = ood.net_id.clone();
+            device_config.owner = self.did.clone();
+            device_config.zone_did = Some(self.zone_did.clone());
+            device_config.ddns_sn_url = ddns_sn_url;
+            let node_dir = self.user_dir.join(ood.name.as_str());
+            write_json(&node_dir.join("node_device_config.json"), &device_config);
+
+            println!(
+                "{} device config: {}",
+                ood.name.as_str(),
+                serde_json::to_string_pretty(&device_config).unwrap()
+            );
+        }
 
         let zone_txt_record = ZoneTxtRecord {
             boot_config_jwt: jwt_str.clone(),
-            device_mini_doc_jwt: mini_jwt.to_string(),
-            pkx: pkx,
+            device_mini_doc_jwt: first_mini_jwt.unwrap(),
+            pkx,
         };
         write_json(
             &self.user_dir.join("zone_txt_record.json"),
@@ -1142,6 +1184,7 @@ pub async fn cmd_create_user_env(
     sn_base_host: &str,
     rtcp_port: u16,
     output_dir: Option<&str>,
+    ood_names: Option<&str>,
 ) -> Result<(), String> {
     let root_dir = if let Some(dir) = output_dir {
         PathBuf::from(dir)
@@ -1180,16 +1223,32 @@ pub async fn cmd_create_user_env(
     // Create owner configuration
     scope.create_owner_config();
 
-    // Create zone_boot_config (currently only generates a simple OOD description, SN is empty)
-    let ood: OODDescriptionString = ood_name.to_string().parse().unwrap();
-    let _zone_txt_record = scope.create_zone_boot_config_jwt(sn_host, ood, rtcp_port);
+    let ood_name_list: Vec<String> = if let Some(ood_names) = ood_names {
+        ood_names
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string)
+            .collect()
+    } else {
+        vec![ood_name.to_string()]
+    };
+    if ood_name_list.is_empty() {
+        return Err("ood_names must not be empty".to_string());
+    }
+
+    let oods: Vec<OODDescriptionString> = ood_name_list
+        .iter()
+        .map(|name| name.parse().unwrap())
+        .collect();
+    let _zone_txt_record = scope.create_zone_boot_config_jwt_multi(sn_host, oods, rtcp_port);
 
     println!(
         "Successfully created user environment configuration: {}",
         username
     );
     println!("Zone hostname: {}", hostname);
-    println!("Zone netid: {}", ood_name);
+    println!("Zone OODs: {}", ood_name_list.join(","));
     Ok(())
 }
 
