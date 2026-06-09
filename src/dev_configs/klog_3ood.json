@@ -1,0 +1,102 @@
+{
+  "nodes": {
+    "klogood1": {
+      "node_id": "klogood1",
+      "vm_template": "ubuntu_basic",
+      "vm_params": {
+        "cpu": 1,
+        "memory": "2G",
+        "disk": "15G"
+      },
+      "network": {
+        "lan_id": "lan",
+        "type": "nat"
+      },
+      "apps": {
+        "buckyos_dev": {
+          "node_group": "klog_3ood.ood1"
+        }
+      },
+      "init_commands": [
+        "sudo hostnamectl set-hostname klogood1",
+        "sudo mkdir -p /opt/buckyos",
+        "sudo chown -R ubuntu:ubuntu /opt/buckyos"
+      ],
+      "instance_commands": [
+        "sudo sh -c \"grep -q 'ood1.klog3ood.local' /etc/hosts || echo '{{klogood1.ip}} ood1.klog3ood.local' >> /etc/hosts\"",
+        "sudo sh -c \"grep -q 'ood2.klog3ood.local' /etc/hosts || echo '{{klogood2.ip}} ood2.klog3ood.local' >> /etc/hosts\"",
+        "sudo sh -c \"grep -q 'ood3.klog3ood.local' /etc/hosts || echo '{{klogood3.ip}} ood3.klog3ood.local' >> /etc/hosts\""
+      ],
+      "directories": {
+        "logs": "/opt/buckyos/logs"
+      }
+    },
+    "klogood2": {
+      "node_id": "klogood2",
+      "vm_template": "ubuntu_basic",
+      "vm_params": {
+        "cpu": 1,
+        "memory": "2G",
+        "disk": "15G"
+      },
+      "network": {
+        "lan_id": "lan",
+        "type": "nat"
+      },
+      "apps": {
+        "buckyos_dev": {
+          "node_group": "klog_3ood.ood2"
+        }
+      },
+      "init_commands": [
+        "sudo hostnamectl set-hostname klogood2",
+        "sudo mkdir -p /opt/buckyos",
+        "sudo chown -R ubuntu:ubuntu /opt/buckyos"
+      ],
+      "instance_commands": [
+        "sudo sh -c \"grep -q 'ood1.klog3ood.local' /etc/hosts || echo '{{klogood1.ip}} ood1.klog3ood.local' >> /etc/hosts\"",
+        "sudo sh -c \"grep -q 'ood2.klog3ood.local' /etc/hosts || echo '{{klogood2.ip}} ood2.klog3ood.local' >> /etc/hosts\"",
+        "sudo sh -c \"grep -q 'ood3.klog3ood.local' /etc/hosts || echo '{{klogood3.ip}} ood3.klog3ood.local' >> /etc/hosts\""
+      ],
+      "directories": {
+        "logs": "/opt/buckyos/logs"
+      }
+    },
+    "klogood3": {
+      "node_id": "klogood3",
+      "vm_template": "ubuntu_basic",
+      "vm_params": {
+        "cpu": 1,
+        "memory": "2G",
+        "disk": "15G"
+      },
+      "network": {
+        "lan_id": "lan",
+        "type": "nat"
+      },
+      "apps": {
+        "buckyos_dev": {
+          "node_group": "klog_3ood.ood3"
+        }
+      },
+      "init_commands": [
+        "sudo hostnamectl set-hostname klogood3",
+        "sudo mkdir -p /opt/buckyos",
+        "sudo chown -R ubuntu:ubuntu /opt/buckyos"
+      ],
+      "instance_commands": [
+        "sudo sh -c \"grep -q 'ood1.klog3ood.local' /etc/hosts || echo '{{klogood1.ip}} ood1.klog3ood.local' >> /etc/hosts\"",
+        "sudo sh -c \"grep -q 'ood2.klog3ood.local' /etc/hosts || echo '{{klogood2.ip}} ood2.klog3ood.local' >> /etc/hosts\"",
+        "sudo sh -c \"grep -q 'ood3.klog3ood.local' /etc/hosts || echo '{{klogood3.ip}} ood3.klog3ood.local' >> /etc/hosts\""
+      ],
+      "directories": {
+        "logs": "/opt/buckyos/logs"
+      }
+    }
+  },
+  "instance_order": [
+    "klogood1",
+    "klogood2",
+    "klogood3"
+  ]
+}
