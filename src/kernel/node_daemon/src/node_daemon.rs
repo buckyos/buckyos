@@ -34,8 +34,9 @@ use crate::app_mgr::*;
 use crate::boot::{
     build_boot_node_gateway_info, build_keep_tunnel_targets, dedup_keep_tunnel_targets,
     discover_oods_in_lan, extract_keep_tunnel_targets_from_gateway_info,
-    merge_keep_tunnel_into_gateway_config, read_local_gateway_keep_tunnel_targets,
-    write_boot_node_gateway_config, write_boot_node_gateway_info, NodeRole,
+    merge_keep_tunnel_into_gateway_config, merge_missing_boot_klog_gateway_info,
+    read_local_gateway_keep_tunnel_targets, write_boot_node_gateway_config,
+    write_boot_node_gateway_info, NodeRole,
 };
 use crate::finder::{DiscoveredNode, NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
@@ -1544,6 +1545,16 @@ async fn node_daemon_main_loop(
             let new_node_gateway_info =
                 load_node_gateway_info(node_host_name, &system_config_client).await;
             if let Ok(new_node_gateway_info) = new_node_gateway_info {
+                let gateway_info_path =
+                    buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
+                let local_gateway_info = std::fs::read_to_string(&gateway_info_path)
+                    .ok()
+                    .and_then(|content| serde_json::from_str::<Value>(&content).ok());
+                let new_node_gateway_info = if let Some(local_gateway_info) = local_gateway_info {
+                    merge_missing_boot_klog_gateway_info(new_node_gateway_info, &local_gateway_info)
+                } else {
+                    new_node_gateway_info
+                };
                 gateway_info_keep_tunnels =
                     extract_keep_tunnel_targets_from_gateway_info(&new_node_gateway_info);
                 let (new_node_gateway_info_id_value, new_node_gateway_info_str) =
@@ -1559,8 +1570,6 @@ async fn node_daemon_main_loop(
                 } else if need_write {
                     node_gateway_info_id = Some(new_node_gateway_info_id_value);
                     info!("node gateway_info changed, will write to node_gateway_info.json");
-                    let gateway_info_path =
-                        buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
                     std::fs::write(gateway_info_path, new_node_gateway_info_str.as_bytes())
                         .unwrap();
                 }
@@ -1934,6 +1943,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         role,
         &device_doc,
         &zone_boot_config,
+        &discovered_oods,
         zone_host.as_str(),
         sn_host_name.as_deref(),
     );

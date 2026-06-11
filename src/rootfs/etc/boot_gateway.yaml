@@ -147,9 +147,8 @@ servers:
               eq $request_dest_port "${klog_cluster_route.ingress_port}" || return false;
               local route_prefix=$klog_cluster_route.route_prefix;
               starts-with $REQ.path $route_prefix || return false;
-              local klog_route_suffix=$(strip-prefix $REQ.path $route_prefix);
               map-create klog_target_match;
-              match-reg --capture klog_target_match $klog_route_suffix "^/([a-zA-Z0-9_-]+)/(raft|inter|admin)(/.*)?" || return false;
+              match-reg --capture klog_target_match $REQ.path "^/\\.cluster/klog/([a-zA-Z0-9_-]+)/(raft|inter|admin)(/.*)?" || return false;
               local target_node_name=$klog_target_match[1];
               local target_plane=$klog_target_match[2];
               match-include $klog_cluster_route.nodes $target_node_name || return false;
@@ -266,16 +265,11 @@ servers:
                 forward "tcp:///127.0.0.1:${port}";
               else
                 map-create primary_peers;
-                map-create backup_peers;
                 for node_id, node_info in $TARGET_SERVICE_INFO.selector then
                   if match-include $ROUTES $node_id then
                     for route_id, route in $ROUTES[$node_id] then
                       local target_url="${route.url}:${node_info.port}";
-                      if eq $route.backup true then
-                        map-add backup_peers $target_url $node_info.weight;
-                      else
-                        map-add primary_peers $target_url $node_info.weight;
-                      end
+                      map-add primary_peers $target_url $node_info.weight;
                     end
                   else
                     local target_rtcp_url=${NODE_ROUTE_MAP[$node_id]};
@@ -285,7 +279,7 @@ servers:
                     end
                   end
                 end
-                forward round_robin --map $primary_peers --backup-map $backup_peers --group "service:${SERVICE_ID}" --next-upstream "error,timeout" --tries 3;
+                forward round_robin --map $primary_peers;
               end
               echo "forward to service failed";
               reject;
@@ -301,16 +295,11 @@ servers:
                 forward "tcp:///127.0.0.1:${KLOG_CLUSTER_TARGET_PORT}";
               elif match-include $ROUTES $KLOG_CLUSTER_TARGET_NODE_NAME then
                 map-create klog_primary_peers;
-                map-create klog_backup_peers;
                 for route_id, route in $ROUTES[$KLOG_CLUSTER_TARGET_NODE_NAME] then
                   local target_url="${route.url}:${KLOG_CLUSTER_INGRESS_PORT}";
-                  if eq $route.backup true then
-                    map-add klog_backup_peers $target_url 100;
-                  else
-                    map-add klog_primary_peers $target_url 100;
-                  end
+                  map-add klog_primary_peers $target_url 100;
                 end
-                forward round_robin --map $klog_primary_peers --backup-map $klog_backup_peers --group "klog-cluster:${KLOG_CLUSTER_TARGET_NODE_NAME}" --next-upstream "error,timeout" --tries 3;
+                forward round_robin --map $klog_primary_peers;
               else
                 local target_rtcp_url=${NODE_ROUTE_MAP[$KLOG_CLUSTER_TARGET_NODE_NAME]};
                 if !eq $target_rtcp_url "" then
@@ -330,16 +319,11 @@ servers:
                 eq $TARGET_APP_INFO.node_id $THIS_NODE_ID && forward "tcp:///127.0.0.1:${TARGET_APP_INFO.port}";
                 if match-include $ROUTES $TARGET_APP_INFO.node_id then
                   map-create app_primary_peers;
-                  map-create app_backup_peers;
                   for route_id, route in $ROUTES[$TARGET_APP_INFO.node_id] then
                     local target_url="${route.url}:${TARGET_APP_INFO.port}";
-                    if eq $route.backup true then
-                      map-add app_backup_peers $target_url 100;
-                    else
-                      map-add app_primary_peers $target_url 100;
-                    end
+                    map-add app_primary_peers $target_url 100;
                   end
-                  forward round_robin --map $app_primary_peers --backup-map $app_backup_peers --group "app:${APP_ID}" --next-upstream "error,timeout" --tries 3;
+                  forward round_robin --map $app_primary_peers;
                 else
                   forward "${NODE_ROUTE_MAP[$TARGET_APP_INFO.node_id]}:${TARGET_APP_INFO.port}";
                 end

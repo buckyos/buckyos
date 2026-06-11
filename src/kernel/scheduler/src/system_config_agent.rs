@@ -16,8 +16,9 @@ use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteC
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KLogBuckyosSettings, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,
-    ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT, KLOG_CLUSTER_ADMIN_SERVICE_NAME,
-    KLOG_CLUSTER_INTER_SERVICE_NAME, KLOG_CLUSTER_RAFT_SERVICE_NAME, KLOG_SERVICE_UNIQUE_ID,
+    ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT, KLOG_CLUSTER_ADMIN_PORT,
+    KLOG_CLUSTER_ADMIN_SERVICE_NAME, KLOG_CLUSTER_INTER_PORT, KLOG_CLUSTER_INTER_SERVICE_NAME,
+    KLOG_CLUSTER_RAFT_PORT, KLOG_CLUSTER_RAFT_SERVICE_NAME, KLOG_SERVICE_UNIQUE_ID,
 };
 use buckyos_kit::*;
 use name_client::*;
@@ -29,6 +30,10 @@ const FIXED_SERVICE_WEIGHT: u32 = 100;
 const DEFAULT_REQUIRED_MEMORY: u64 = 32 * 1024 * 1024;
 const DEFAULT_KLOG_CLUSTER_ROUTE_PREFIX: &str = "/.cluster/klog";
 const KLOG_OOD_VOTER_AFFINITY_LABEL: &str = "klog-ood-voter";
+// 仅用于 VM/dev 集成测试，和 node-daemon boot 阶段保持同一个开关。
+// 默认不设置该变量时，scheduler 仍生成正式环境使用的 RTCP DID 路由。
+const ENV_DEV_BOOT_LAN_ROUTE_KIND: &str = "BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND";
+const DEV_BOOT_LAN_ROUTE_TCP_DIRECT: &str = "tcp_direct";
 
 fn map_api_user_type(user_type: &ApiUserType) -> UserType {
     match user_type {
@@ -955,8 +960,25 @@ fn build_static_web_app_host_entry(app_spec: &AppServiceSpec) -> Option<NodeGate
 
 fn build_node_route_map(
     this_node_id: &str,
+    zone_config: &ZoneConfig,
     zone_host: &str,
     device_list: &HashMap<String, DeviceInfo>,
+) -> HashMap<String, String> {
+    build_node_route_map_inner(
+        this_node_id,
+        zone_config,
+        zone_host,
+        device_list,
+        dev_boot_lan_tcp_direct_enabled(),
+    )
+}
+
+fn build_node_route_map_inner(
+    this_node_id: &str,
+    zone_config: &ZoneConfig,
+    zone_host: &str,
+    device_list: &HashMap<String, DeviceInfo>,
+    prefer_tcp_direct: bool,
 ) -> HashMap<String, String> {
     let mut node_route_map = HashMap::new();
 
@@ -965,14 +987,47 @@ fn build_node_route_map(
             continue;
         }
 
-        let route = match device_info.device_doc.rtcp_port {
-            Some(port) if port != 2980 => format!("rtcp://{}.{}:{}/", node_id, zone_host, port),
-            _ => format!("rtcp://{}.{}/", node_id, zone_host),
+        let route = if prefer_tcp_direct {
+            format_tcp_direct_node_url(node_id, zone_host)
+        } else {
+            match device_info.device_doc.rtcp_port {
+                Some(port) if port != 2980 => format!("rtcp://{}.{}:{}/", node_id, zone_host, port),
+                _ => format!("rtcp://{}.{}/", node_id, zone_host),
+            }
         };
         node_route_map.insert(node_id.clone(), route);
     }
 
+    for ood in zone_config.oods.iter() {
+        if ood.name == this_node_id {
+            continue;
+        }
+        if !ood.node_type.is_ood() {
+            continue;
+        }
+
+        node_route_map.entry(ood.name.clone()).or_insert_with(|| {
+            if prefer_tcp_direct {
+                // dev-only tcp_direct 依赖 VM /etc/hosts 中的 OOD 主机名；
+                // 正式环境默认仍走下面的 RTCP DID URL。
+                format_tcp_direct_node_url(ood.name.as_str(), zone_host)
+            } else {
+                format!("rtcp://{}.{}/", ood.name, zone_host)
+            }
+        });
+    }
+
     node_route_map
+}
+
+fn format_tcp_direct_node_url(node_id: &str, zone_host: &str) -> String {
+    format!("tcp:///{}.{}", node_id, zone_host)
+}
+
+fn dev_boot_lan_tcp_direct_enabled() -> bool {
+    std::env::var(ENV_DEV_BOOT_LAN_ROUTE_KIND)
+        .map(|value| value.eq_ignore_ascii_case(DEV_BOOT_LAN_ROUTE_TCP_DIRECT))
+        .unwrap_or(false)
 }
 
 fn normalize_klog_cluster_route_prefix(prefix: &str) -> String {
@@ -1064,6 +1119,7 @@ fn collect_klog_ports_from_service_info(
 
 fn build_klog_cluster_route_entry(
     scheduler_ctx: &NodeScheduler,
+    zone_config: &ZoneConfig,
     input_system_config: &HashMap<String, String>,
 ) -> Option<NodeGatewayClusterRouteEntry> {
     let mut node_ports: HashMap<String, HashMap<String, u16>> = HashMap::new();
@@ -1091,6 +1147,47 @@ fn build_klog_cluster_route_entry(
             only_plane,
             fallback_ports,
         );
+    }
+
+    if extract_klog_settings(input_system_config)
+        .deployment
+        .mode
+        .is_ood_voters()
+    {
+        if let Some(fallback_ports) = fallback_ports {
+            for ood in zone_config.oods.iter() {
+                if !ood.node_type.is_ood() {
+                    continue;
+                }
+                if node_ports.contains_key(&ood.name) {
+                    continue;
+                }
+
+                let mut ports = HashMap::new();
+                ports.insert(
+                    KLOG_CLUSTER_RAFT_SERVICE_NAME.to_string(),
+                    fallback_ports
+                        .get(KLOG_CLUSTER_RAFT_SERVICE_NAME)
+                        .copied()
+                        .unwrap_or(KLOG_CLUSTER_RAFT_PORT),
+                );
+                ports.insert(
+                    KLOG_CLUSTER_INTER_SERVICE_NAME.to_string(),
+                    fallback_ports
+                        .get(KLOG_CLUSTER_INTER_SERVICE_NAME)
+                        .copied()
+                        .unwrap_or(KLOG_CLUSTER_INTER_PORT),
+                );
+                ports.insert(
+                    KLOG_CLUSTER_ADMIN_SERVICE_NAME.to_string(),
+                    fallback_ports
+                        .get(KLOG_CLUSTER_ADMIN_SERVICE_NAME)
+                        .copied()
+                        .unwrap_or(KLOG_CLUSTER_ADMIN_PORT),
+                );
+                node_ports.insert(ood.name.clone(), ports);
+            }
+        }
     }
 
     let nodes = node_ports
@@ -1184,7 +1281,7 @@ pub(crate) async fn update_node_gateway_info(
     let forward_plan = build_forward_plan(node_id, &zone_config, &zone_host, &device_list);
     let mut cluster_route_map = HashMap::new();
     if let Some(klog_cluster_route) =
-        build_klog_cluster_route_entry(scheduler_ctx, input_system_config)
+        build_klog_cluster_route_entry(scheduler_ctx, &zone_config, input_system_config)
     {
         cluster_route_map.insert(KLOG_SERVICE_UNIQUE_ID.to_string(), klog_cluster_route);
     }
@@ -1196,7 +1293,7 @@ pub(crate) async fn update_node_gateway_info(
         },
         app_info: HashMap::new(),
         service_info: HashMap::new(),
-        node_route_map: build_node_route_map(node_id, &zone_host, &device_list),
+        node_route_map: build_node_route_map(node_id, &zone_config, &zone_host, &device_list),
         routes: forward_plan.routes,
         did_ip_hints: forward_plan.did_ip_hints,
         cluster_route_map,
@@ -1813,6 +1910,48 @@ mod tests {
         zone_config
     }
 
+    #[test]
+    fn test_build_node_route_map_defaults_to_rtcp_routes() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let device_list = HashMap::from([
+            ("ood1".to_string(), create_test_device_info("ood1", None)),
+            (
+                "ood2".to_string(),
+                create_test_device_info("ood2", Some(2981)),
+            ),
+        ]);
+
+        let node_route_map =
+            build_node_route_map_inner("ood1", &zone_config, &zone_host, &device_list, false);
+
+        assert_eq!(
+            node_route_map.get("ood2").map(String::as_str),
+            Some("rtcp://ood2.test.buckyos.io:2981/")
+        );
+    }
+
+    #[test]
+    fn test_build_node_route_map_uses_dev_tcp_direct_when_enabled() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let device_list = HashMap::from([
+            ("ood1".to_string(), create_test_device_info("ood1", None)),
+            (
+                "ood2".to_string(),
+                create_test_device_info("ood2", Some(2981)),
+            ),
+        ]);
+
+        let node_route_map =
+            build_node_route_map_inner("ood1", &zone_config, &zone_host, &device_list, true);
+
+        assert_eq!(
+            node_route_map.get("ood2").map(String::as_str),
+            Some("tcp:///ood2.test.buckyos.io")
+        );
+    }
+
     fn create_test_klog_kernel_spec() -> KernelServiceSpec {
         KernelServiceSpec {
             service_doc: generate_klog_service_doc(),
@@ -2055,7 +2194,7 @@ mod tests {
             },
             app_info,
             service_info,
-            node_route_map: build_node_route_map("ood1", &zone_host, &device_list),
+            node_route_map: build_node_route_map("ood1", zone_config, &zone_host, &device_list),
             routes: forward_plan.routes,
             did_ip_hints: forward_plan.did_ip_hints,
             cluster_route_map: HashMap::new(),
@@ -2927,6 +3066,10 @@ mod tests {
         assert_eq!(local.ports.get("raft"), Some(&21001));
         assert_eq!(local.ports.get("inter"), Some(&21002));
         assert_eq!(local.ports.get("admin"), Some(&21003));
+        let remote = klog_cluster_route.nodes.get("ood2").unwrap();
+        assert_eq!(remote.ports.get("raft"), Some(&21001));
+        assert_eq!(remote.ports.get("inter"), Some(&21002));
+        assert_eq!(remote.ports.get("admin"), Some(&21003));
     }
 
     #[test]

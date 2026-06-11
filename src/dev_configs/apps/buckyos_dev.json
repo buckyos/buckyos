@@ -27,7 +27,7 @@
       "sudo update-ca-certificates"
     ],
     "start": [
-      "sudo env BUCKYOS_SYSTEM_CONFIG_STORE=klog nohup /opt/buckyos/bin/node-daemon/node_daemon --enable_active > /dev/null 2>&1 &"
+      "sudo env BUCKYOS_SYSTEM_CONFIG_STORE=klog BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND=tcp_direct nohup /opt/buckyos/bin/node-daemon/node_daemon --enable_active > /dev/null 2>&1 &"
     ],
     "stop": [
       "sudo python3 /opt/buckyos/bin/stop.py"

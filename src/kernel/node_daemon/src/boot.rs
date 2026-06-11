@@ -4,8 +4,6 @@
 // 三个角色（OOD / 非 OOD ZoneGateway / 普通 Node）流程虽不同，但下面的工具
 // 都可被复用，差异只在调用顺序与目标。
 
-use std::collections::HashMap;
-
 use buckyos_api::{
     KLOG_CLUSTER_ADMIN_PORT, KLOG_CLUSTER_ADMIN_SERVICE_NAME, KLOG_CLUSTER_INTER_PORT,
     KLOG_CLUSTER_INTER_SERVICE_NAME, KLOG_CLUSTER_RAFT_PORT, KLOG_CLUSTER_RAFT_SERVICE_NAME,
@@ -14,7 +12,8 @@ use buckyos_api::{
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
 use name_lib::{DeviceConfig, ZoneBootConfig};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
+use std::collections::HashMap;
 
 use crate::finder::{DiscoveredNode, NodeFinderClient};
 
@@ -23,6 +22,11 @@ const DEFAULT_NODE_GATEWAY_HTTP_PORT: u16 = 3180;
 const SYSTEM_CONFIG_PORT: u16 = 3200;
 const KLOG_CLUSTER_ROUTE_PREFIX: &str = "/.cluster/klog";
 const FINDER_DISCOVERY_TIMEOUT_SECS: u64 = 3;
+// 仅用于 VM/dev 集成测试：VM 的 /etc/hosts 会写入同 Zone OOD 主机名，
+// 此时可以让 boot 阶段生成 tcp_direct node-gateway 路由，绕过 RTCP tunnel 依赖。
+// 默认不设置该变量，保持正式环境的 RTCP DID 路由和 keep_tunnel 行为。
+const ENV_DEV_BOOT_LAN_ROUTE_KIND: &str = "BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND";
+const DEV_BOOT_LAN_ROUTE_TCP_DIRECT: &str = "tcp_direct";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeRole {
@@ -130,6 +134,24 @@ pub fn build_boot_node_gateway_info(
     discovered_oods: &HashMap<String, DiscoveredNode>,
     sn_host_name: Option<&str>,
 ) -> Value {
+    build_boot_node_gateway_info_inner(
+        this_node_id,
+        zone_host,
+        zone_boot_config,
+        discovered_oods,
+        sn_host_name,
+        dev_boot_lan_tcp_direct_enabled(),
+    )
+}
+
+fn build_boot_node_gateway_info_inner(
+    this_node_id: &str,
+    zone_host: &str,
+    zone_boot_config: &ZoneBootConfig,
+    discovered_oods: &HashMap<String, DiscoveredNode>,
+    sn_host_name: Option<&str>,
+    prefer_tcp_direct: bool,
+) -> Value {
     let oods_in_zone: Vec<&str> = zone_boot_config
         .oods
         .iter()
@@ -145,15 +167,16 @@ pub fn build_boot_node_gateway_info(
             .get(*ood_name)
             .map(|node| node.rtcp_port as u32)
             .unwrap_or(DEFAULT_RTCP_PORT);
-        let direct_url = format_rtcp_did_url(ood_name, zone_host, port);
+        let direct_route = build_lan_direct_route(ood_name, zone_host, port, prefer_tcp_direct);
+        let direct_url = direct_route.url;
         node_route_map.insert((*ood_name).to_string(), direct_url.clone());
 
         let mut candidates = vec![build_route_candidate(
             "direct",
-            "rtcp_direct",
+            direct_route.kind,
             10,
             false,
-            true,
+            direct_route.keep_tunnel,
             &direct_url,
             "zone_boot_config",
             None,
@@ -189,17 +212,23 @@ pub fn build_boot_node_gateway_info(
         if !ood.node_type.is_gateway() {
             continue;
         }
-        let direct_url = format_rtcp_did_url(ood.name.as_str(), zone_host, DEFAULT_RTCP_PORT);
+        let direct_route = build_lan_direct_route(
+            ood.name.as_str(),
+            zone_host,
+            DEFAULT_RTCP_PORT,
+            prefer_tcp_direct,
+        );
+        let direct_url = direct_route.url;
         node_route_map
             .entry(ood.name.clone())
             .or_insert_with(|| direct_url.clone());
         routes.entry(ood.name.clone()).or_insert_with(|| {
             vec![build_route_candidate(
                 "direct",
-                "rtcp_direct",
+                direct_route.kind,
                 10,
                 false,
-                true,
+                direct_route.keep_tunnel,
                 &direct_url,
                 "zone_boot_config",
                 None,
@@ -285,6 +314,35 @@ pub fn build_boot_node_gateway_info(
     })
 }
 
+struct BootDirectRoute {
+    kind: &'static str,
+    url: String,
+    keep_tunnel: bool,
+}
+
+fn build_lan_direct_route(
+    node_id: &str,
+    zone_host: &str,
+    rtcp_port: u32,
+    prefer_tcp_direct: bool,
+) -> BootDirectRoute {
+    if prefer_tcp_direct {
+        // dev-only tcp_direct 指向对端 node-gateway 主机名；它不是直连 klog 端口。
+        // 生产默认路径仍为下面的 rtcp_direct DID URL。
+        return BootDirectRoute {
+            kind: "tcp_direct",
+            url: format_tcp_direct_node_url(node_id, zone_host),
+            keep_tunnel: false,
+        };
+    }
+
+    BootDirectRoute {
+        kind: "rtcp_direct",
+        url: format_rtcp_did_url(node_id, zone_host, rtcp_port),
+        keep_tunnel: true,
+    }
+}
+
 fn build_route_candidate(
     id: &str,
     kind: &str,
@@ -333,6 +391,16 @@ fn format_rtcp_did_url(node_id: &str, zone_host: &str, port: u32) -> String {
     }
 }
 
+fn format_tcp_direct_node_url(node_id: &str, zone_host: &str) -> String {
+    format!("tcp:///{}.{}", node_id, zone_host)
+}
+
+fn dev_boot_lan_tcp_direct_enabled() -> bool {
+    std::env::var(ENV_DEV_BOOT_LAN_ROUTE_KIND)
+        .map(|value| value.eq_ignore_ascii_case(DEV_BOOT_LAN_ROUTE_TCP_DIRECT))
+        .unwrap_or(false)
+}
+
 fn format_relay_rtcp_url(
     sn_host: &str,
     target_node_id: &str,
@@ -358,8 +426,27 @@ pub fn build_keep_tunnel_targets(
     role: NodeRole,
     device_doc: &DeviceConfig,
     zone_boot_config: &ZoneBootConfig,
+    _discovered_oods: &HashMap<String, DiscoveredNode>,
     zone_host: &str,
     sn_host_name: Option<&str>,
+) -> Vec<String> {
+    build_keep_tunnel_targets_inner(
+        role,
+        device_doc,
+        zone_boot_config,
+        zone_host,
+        sn_host_name,
+        dev_boot_lan_tcp_direct_enabled(),
+    )
+}
+
+fn build_keep_tunnel_targets_inner(
+    role: NodeRole,
+    device_doc: &DeviceConfig,
+    zone_boot_config: &ZoneBootConfig,
+    zone_host: &str,
+    sn_host_name: Option<&str>,
+    prefer_tcp_direct: bool,
 ) -> Vec<String> {
     let mut targets: Vec<String> = Vec::new();
 
@@ -376,10 +463,15 @@ pub fn build_keep_tunnel_targets(
 
     // boot 阶段对其它节点的 rtcp_port 没有可信来源，统一用默认 2980；
     // scheduler 接管后可生成包含真实端口的 routes。
+    // dev tcp_direct 模式下不会生成 OOD RTCP route，因此这里也不写入 OOD
+    // keep_tunnel，避免 VM 测试环境被 RTCP 连通性影响。
     match role {
         NodeRole::Ood | NodeRole::ZoneGateway => {
             for ood in zone_boot_config.oods.iter() {
                 if ood.name == device_doc.name {
+                    continue;
+                }
+                if prefer_tcp_direct {
                     continue;
                 }
                 targets.push(format_rtcp_did_url(
@@ -398,6 +490,9 @@ pub fn build_keep_tunnel_targets(
                 .filter(|ood| ood.node_type.is_ood())
                 .take(2)
             {
+                if prefer_tcp_direct {
+                    continue;
+                }
                 targets.push(format_rtcp_did_url(
                     ood.name.as_str(),
                     zone_host,
@@ -510,6 +605,74 @@ pub fn merge_keep_tunnel_into_gateway_config(
     gateway_config
 }
 
+pub fn merge_missing_boot_klog_gateway_info(
+    mut gateway_info: Value,
+    boot_gateway_info: &Value,
+) -> Value {
+    // klog voter 集群启动时，scheduler 可能还没来得及产出完整 runtime
+    // gateway_info。保留 boot 阶段的 klog cluster route 可以避免 system_config
+    // 依赖 klog quorum、klog quorum 又依赖 gateway route 的启动环。
+    let Some(boot_klog_route) = boot_gateway_info
+        .get("cluster_route_map")
+        .and_then(Value::as_object)
+        .and_then(|cluster_route_map| cluster_route_map.get(KLOG_SERVICE_UNIQUE_ID))
+        .cloned()
+    else {
+        return gateway_info;
+    };
+
+    if !gateway_info.is_object() {
+        return gateway_info;
+    }
+
+    let has_klog_route = gateway_info
+        .get("cluster_route_map")
+        .and_then(Value::as_object)
+        .and_then(|cluster_route_map| cluster_route_map.get(KLOG_SERVICE_UNIQUE_ID))
+        .is_some();
+    if !has_klog_route {
+        if gateway_info
+            .get("cluster_route_map")
+            .and_then(Value::as_object)
+            .is_none()
+        {
+            gateway_info["cluster_route_map"] = json!({});
+        }
+        if let Some(cluster_route_map) = gateway_info
+            .get_mut("cluster_route_map")
+            .and_then(Value::as_object_mut)
+        {
+            cluster_route_map.insert(KLOG_SERVICE_UNIQUE_ID.to_string(), boot_klog_route);
+        }
+    }
+
+    merge_missing_object_entries(&mut gateway_info, boot_gateway_info, "node_route_map");
+    merge_missing_object_entries(&mut gateway_info, boot_gateway_info, "routes");
+
+    gateway_info
+}
+
+fn merge_missing_object_entries(target: &mut Value, source: &Value, field: &str) {
+    let Some(source_map) = source.get(field).and_then(Value::as_object) else {
+        return;
+    };
+    if source_map.is_empty() {
+        return;
+    }
+
+    if target.get(field).and_then(Value::as_object).is_none() {
+        target[field] = json!({});
+    }
+    let Some(target_map) = target.get_mut(field).and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (key, value) in source_map.iter() {
+        target_map
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+}
+
 pub fn write_boot_node_gateway_config(keep_tunnels: &[String]) -> std::io::Result<()> {
     let path = buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway.json");
     let existing_config = std::fs::read_to_string(&path)
@@ -590,6 +753,60 @@ mod tests {
     }
 
     #[test]
+    fn merge_missing_boot_klog_gateway_info_preserves_boot_routes() {
+        let runtime_gateway_info = json!({
+            "node_info": {
+                "this_node_id": "ood1",
+                "this_zone_host": "test.zone"
+            },
+            "app_info": {},
+            "service_info": {},
+            "node_route_map": {},
+            "routes": {},
+            "cluster_route_map": {},
+            "trust_key": {},
+        });
+        let boot_gateway_info = json!({
+            "cluster_route_map": {
+                "klog-service": {
+                    "route_prefix": KLOG_CLUSTER_ROUTE_PREFIX,
+                    "ingress_port": DEFAULT_NODE_GATEWAY_HTTP_PORT,
+                    "nodes": {
+                        "ood1": {"ports": {"admin": KLOG_CLUSTER_ADMIN_PORT}},
+                        "ood2": {"ports": {"admin": KLOG_CLUSTER_ADMIN_PORT}}
+                    }
+                }
+            },
+            "node_route_map": {
+                "ood2": "tcp:///ood2.test.zone"
+            },
+            "routes": {
+                "ood2": [
+                    {
+                        "id": "direct",
+                        "kind": "tcp_direct",
+                        "url": "tcp:///ood2.test.zone",
+                        "priority": 10,
+                        "weight": 100,
+                        "backup": false,
+                        "keep_tunnel": false,
+                        "source": "zone_boot_config"
+                    }
+                ]
+            }
+        });
+
+        let merged = merge_missing_boot_klog_gateway_info(runtime_gateway_info, &boot_gateway_info);
+
+        assert_eq!(
+            merged["cluster_route_map"][KLOG_SERVICE_UNIQUE_ID]["nodes"]["ood2"]["ports"]["admin"],
+            KLOG_CLUSTER_ADMIN_PORT
+        );
+        assert_eq!(merged["node_route_map"]["ood2"], "tcp:///ood2.test.zone");
+        assert_eq!(merged["routes"]["ood2"][0]["kind"], "tcp_direct");
+    }
+
+    #[test]
     fn dedup_keep_tunnel_targets_keeps_order() {
         let mut targets = vec![
             "rtcp://ood2.zone/".to_string(),
@@ -640,5 +857,127 @@ mod tests {
             route["nodes"]["ood2"]["ports"][KLOG_CLUSTER_RAFT_SERVICE_NAME],
             KLOG_CLUSTER_RAFT_PORT
         );
+    }
+
+    #[test]
+    fn build_boot_node_gateway_info_defaults_to_rtcp_direct_for_lan_ood() {
+        let zone_boot_config = ZoneBootConfig {
+            id: None,
+            oods: vec!["ood1".parse().unwrap(), "$ood2".parse().unwrap()],
+            sn: None,
+            exp: 0,
+            owner: None,
+            owner_key: None,
+            extra_info: HashMap::new(),
+        };
+        let mut discovered_oods = HashMap::new();
+        discovered_oods.insert(
+            "ood2".to_string(),
+            DiscoveredNode {
+                node_id: "ood2".to_string(),
+                device_doc: DeviceConfig::new("ood2", "test_public_key".to_string()),
+                device_doc_jwt: "test_device_doc_jwt".to_string(),
+                addr: "192.168.64.22:2981".parse().unwrap(),
+                rtcp_port: 2981,
+                last_seen: 42,
+                from_cache: false,
+            },
+        );
+
+        let gateway_info = build_boot_node_gateway_info_inner(
+            "ood1",
+            "test.zone",
+            &zone_boot_config,
+            &discovered_oods,
+            None,
+            false,
+        );
+        let direct_route = &gateway_info["routes"]["ood2"][0];
+
+        assert_eq!(
+            gateway_info["node_route_map"]["ood2"],
+            "rtcp://ood2.test.zone:2981/"
+        );
+        assert_eq!(direct_route["kind"], "rtcp_direct");
+        assert_eq!(direct_route["url"], "rtcp://ood2.test.zone:2981/");
+        assert_eq!(direct_route["keep_tunnel"], true);
+    }
+
+    #[test]
+    fn build_boot_node_gateway_info_uses_tcp_direct_for_lan_ood() {
+        let zone_boot_config = ZoneBootConfig {
+            id: None,
+            oods: vec!["ood1".parse().unwrap(), "$ood2".parse().unwrap()],
+            sn: None,
+            exp: 0,
+            owner: None,
+            owner_key: None,
+            extra_info: HashMap::new(),
+        };
+        let mut discovered_oods = HashMap::new();
+        discovered_oods.insert(
+            "ood2".to_string(),
+            DiscoveredNode {
+                node_id: "ood2".to_string(),
+                device_doc: DeviceConfig::new("ood2", "test_public_key".to_string()),
+                device_doc_jwt: "test_device_doc_jwt".to_string(),
+                addr: "192.168.64.22:2980".parse().unwrap(),
+                rtcp_port: DEFAULT_RTCP_PORT as u16,
+                last_seen: 42,
+                from_cache: false,
+            },
+        );
+
+        let gateway_info = build_boot_node_gateway_info_inner(
+            "ood1",
+            "test.zone",
+            &zone_boot_config,
+            &discovered_oods,
+            None,
+            true,
+        );
+        let direct_route = &gateway_info["routes"]["ood2"][0];
+
+        assert_eq!(
+            gateway_info["node_route_map"]["ood2"],
+            "tcp:///ood2.test.zone"
+        );
+        assert_eq!(direct_route["kind"], "tcp_direct");
+        assert_eq!(direct_route["url"], "tcp:///ood2.test.zone");
+        assert_eq!(direct_route["keep_tunnel"], false);
+    }
+
+    #[test]
+    fn build_keep_tunnel_targets_defaults_to_rtcp_and_dev_tcp_direct_skips_ood_rtcp() {
+        let zone_boot_config = ZoneBootConfig {
+            id: None,
+            oods: vec!["ood1".parse().unwrap(), "$ood2".parse().unwrap()],
+            sn: None,
+            exp: 0,
+            owner: None,
+            owner_key: None,
+            extra_info: HashMap::new(),
+        };
+        let device_doc = DeviceConfig::new("ood1", "test_public_key".to_string());
+
+        let default_targets = build_keep_tunnel_targets_inner(
+            NodeRole::Ood,
+            &device_doc,
+            &zone_boot_config,
+            "test.zone",
+            None,
+            false,
+        );
+        assert_eq!(default_targets, vec!["rtcp://ood2.test.zone/".to_string()]);
+
+        let dev_tcp_targets = build_keep_tunnel_targets_inner(
+            NodeRole::Ood,
+            &device_doc,
+            &zone_boot_config,
+            "test.zone",
+            None,
+            true,
+        );
+        assert!(dev_tcp_targets.is_empty());
     }
 }
