@@ -36,11 +36,12 @@ LINUX_CORE_PACKAGES = {
         "clang",
         "libclang-dev",
         "llvm-dev",
+        "unzip",
     ],
-    "dnf": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconf-pkg-config", "openssl-devel"],
-    "yum": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconfig", "openssl-devel"],
-    "pacman": ["base-devel", "curl", "wget", "git", "pkgconf", "openssl"],
-    "zypper": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkg-config", "libopenssl-devel"],
+    "dnf": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconf-pkg-config", "openssl-devel", "unzip"],
+    "yum": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconfig", "openssl-devel", "unzip"],
+    "pacman": ["base-devel", "curl", "wget", "git", "pkgconf", "openssl", "unzip"],
+    "zypper": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkg-config", "libopenssl-devel", "unzip"],
 }
 
 LINUX_PYTHON_CHOICES = {
@@ -337,7 +338,11 @@ class Bootstrapper:
 
     def package_available(self, package: str, kind: str = "package") -> bool:
         if self.package_manager == "apt-get":
-            return self.probe(["apt-cache", "show", package])
+            policy = self.capture_text(["apt-cache", "policy", package])
+            for line in policy.splitlines():
+                if line.strip().startswith("Candidate:"):
+                    return line.split(":", 1)[1].strip() != "(none)"
+            return bool(self.capture_text(["apt-cache", "show", package]))
         if self.package_manager == "dnf":
             return self.probe(["dnf", "info", package])
         if self.package_manager == "yum":
@@ -450,7 +455,13 @@ class Bootstrapper:
             self.install_packages(missing, kind=kind)
         return packages
 
-    def ensure_unix_script_tool(self, description: str, script_url: str, locator: Callable[[], str | None]) -> None:
+    def ensure_unix_script_tool(
+        self,
+        description: str,
+        script_url: str,
+        locator: Callable[[], str | None],
+        script_args: Sequence[str] = (),
+    ) -> None:
         if locator():
             return
 
@@ -459,10 +470,14 @@ class Bootstrapper:
                 f"{description} will be installed into root's home directory because the script is running as root"
             )
 
+        script_arg_suffix = ""
+        if script_args:
+            script_arg_suffix = " -s -- " + " ".join(shlex.quote(arg) for arg in script_args)
+
         if shutil.which("curl"):
-            fetch_command = f"curl -LsSf {shlex.quote(script_url)} | sh"
+            fetch_command = f"curl -LsSf {shlex.quote(script_url)} | sh{script_arg_suffix}"
         elif shutil.which("wget"):
-            fetch_command = f"wget -qO- {shlex.quote(script_url)} | sh"
+            fetch_command = f"wget -qO- {shlex.quote(script_url)} | sh{script_arg_suffix}"
         else:
             raise BootstrapError(f"{description} installer requires curl or wget")
 
@@ -634,7 +649,7 @@ class Bootstrapper:
             return
 
         if self.args.user and self.system == "Linux":
-            self.ensure_unix_script_tool("Deno", "https://deno.land/install.sh", self.find_deno)
+            self.ensure_unix_script_tool("Deno", "https://deno.land/install.sh", self.find_deno, ["-y"])
             return
 
         if self.system == "Linux":
@@ -644,7 +659,7 @@ class Bootstrapper:
                 if missing:
                     self.install_packages(missing)
             else:
-                self.ensure_unix_script_tool("Deno", "https://deno.land/install.sh", self.find_deno)
+                self.ensure_unix_script_tool("Deno", "https://deno.land/install.sh", self.find_deno, ["-y"])
             return
 
         if self.system == "Windows":
@@ -919,6 +934,9 @@ class Bootstrapper:
 
         if not shutil.which("curl") and not shutil.which("wget"):
             missing_commands.append("curl or wget")
+
+        if not shutil.which("unzip") and not shutil.which("7z"):
+            missing_commands.append("unzip or 7z")
 
         if not shutil.which("python3"):
             missing_commands.append("python3")
