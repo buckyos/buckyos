@@ -1182,20 +1182,50 @@ async fn keep_cyfs_gateway_service(
     if running_state == ServiceInstanceState::Stopped {
         warn!("check cyfs_gateway is stopped,try to start cyfs_gateway");
 
-        let start_result = cyfs_gateway_service_pkg.start(None).await.map_err(|err| {
-            error!("start cyfs_gateway failed! {}", err);
-            return String::from("start cyfs_gateway failed!");
-        })?;
+        let start_params = cyfs_gateway_start_params();
+        let start_result = cyfs_gateway_service_pkg
+            .start(Some(&start_params))
+            .await
+            .map_err(|err| {
+                error!("start cyfs_gateway failed! {}", err);
+                return String::from("start cyfs_gateway failed!");
+            })?;
 
         info!(
             "start cyfs_gateway OK!,result:{}. wait 2 seconds...",
             start_result
         );
-        //wait 5 seconds
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        // ServicePkg 的 native detached start 只能说明进程被 spawn 出来；
+        // cyfs-gateway 启动失败时也可能很快退出，所以这里必须等 NodeGateway
+        // 入口端口 ready 后才认为 boot 阶段 gateway 已经可用。
+        running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
+            error!("start cyfs_gateway failed! {}", err);
+            return String::from("start cyfs_gateway failed!");
+        })?;
+        if running_state != ServiceInstanceState::Started {
+            error!("cyfs_gateway did not become ready after start");
+            return Err(String::from(
+                "cyfs_gateway did not become ready after start",
+            ));
+        }
     }
 
     Ok(())
+}
+
+fn cyfs_gateway_start_params() -> Vec<String> {
+    // 默认路径理论上也是 `$BUCKYOS_ROOT/etc/cyfs_gateway.yaml`，这里显式传入
+    // 是为了和 VM 排障时验证过的手工启动命令保持一致，并让启动日志直观看到
+    // node-daemon 实际使用的配置文件。
+    vec![
+        "--config_file".to_string(),
+        get_buckyos_system_etc_dir()
+            .join("cyfs_gateway.yaml")
+            .to_string_lossy()
+            .to_string(),
+    ]
 }
 
 // 把 ZoneBootConfig.sn 解析成 cyfs-gateway keep_tunnel 直接可用的 host name。

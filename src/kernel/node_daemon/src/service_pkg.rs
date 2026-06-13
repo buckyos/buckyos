@@ -1,4 +1,4 @@
-use buckyos_api::{KLOG_SERVICE_PORT, ServiceInstanceState};
+use buckyos_api::{ServiceInstanceState, KLOG_SERVICE_PORT};
 use buckyos_kit::*;
 use log::*;
 use package_lib::*;
@@ -14,6 +14,10 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 type Result<T> = std::result::Result<T, ServiceControlError>;
+
+// cyfs-gateway 是 detached 进程，单纯匹配进程名无法确认 NodeGateway 已就绪；
+// 3180 是 boot/runtime 都依赖的本机入口，因此 status 需要同时检查这个端口。
+const CYFS_GATEWAY_NODE_HTTP_PORT: u16 = 3180;
 
 pub(crate) fn new_package_env(pkg_env_path: PathBuf) -> PackageEnv {
     let mut pkg_env = PackageEnv::new(pkg_env_path);
@@ -476,6 +480,7 @@ fn uses_operation_subcommand(service_name: &str) -> bool {
 
 fn status_port_for_service(service_name: &str) -> Option<u16> {
     match service_name {
+        "cyfs-gateway" | "cyfs_gateway" => Some(CYFS_GATEWAY_NODE_HTTP_PORT),
         "klog-service" | "klog_service" | "klog-daemon" | "klog_daemon" => Some(KLOG_SERVICE_PORT),
         "repo-service" | "repo_service" => Some(4000),
         "system-config" | "system_config" => Some(3200),
@@ -870,6 +875,12 @@ mod tests {
             dir.as_path(),
             "deploy"
         ));
+    }
+
+    #[test]
+    fn cyfs_gateway_status_checks_node_gateway_port() {
+        assert_eq!(status_port_for_service("cyfs-gateway"), Some(3180));
+        assert_eq!(status_port_for_service("cyfs_gateway"), Some(3180));
     }
 
     #[test]
