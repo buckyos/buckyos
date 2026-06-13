@@ -157,13 +157,19 @@ async fn do_boot_scheduler() -> Result<()> {
     );
     let zone_boot_config_json = zone_boot_config_str.unwrap();
     let zone_boot_config: ZoneBootConfig = serde_json::from_str(&zone_boot_config_json).unwrap();
-    let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
-
-    if rpc_session_token_str.is_err() {
-        return Err(anyhow::anyhow!("SCHEDULER_SESSION_TOKEN is not set"));
+    // Keep the boot path aligned with kernel-service runtime token lookup. An empty
+    // value would only fail later as a JWT parse error, so surface it at the handoff.
+    let scheduler_token_env_key = get_session_token_env_key(SCHEDULER_SERVICE_SERVICE_NAME, false);
+    let rpc_session_token = std::env::var(scheduler_token_env_key.as_str())
+        .map_err(|_| anyhow::anyhow!("{} is not set", scheduler_token_env_key))?;
+    if rpc_session_token.trim().is_empty() {
+        return Err(anyhow::anyhow!("{} is empty", scheduler_token_env_key));
     }
-
-    let rpc_session_token = rpc_session_token_str.unwrap();
+    info!(
+        "boot scheduler loaded session token from env_key={}, len={}",
+        scheduler_token_env_key,
+        rpc_session_token.len()
+    );
     let system_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
     let boot_config = system_config_client.get("boot/config").await;
     if boot_config.is_ok() {

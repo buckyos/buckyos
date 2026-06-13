@@ -828,12 +828,33 @@ async fn report_ood_info_to_sn(
     Ok(())
 }
 
-async fn do_boot_schedule() -> std::result::Result<(), String> {
+fn scheduler_session_token_env_key() -> String {
+    get_session_token_env_key(SCHEDULER_SERVICE_SERVICE_NAME, false)
+}
+
+async fn do_boot_schedule(session_token: &str) -> std::result::Result<(), String> {
+    if session_token.trim().is_empty() {
+        error!("scheduler session token is empty");
+        return Err(String::from("scheduler session token is empty"));
+    }
+
     let mut scheduler_pkg = ServicePkg::new("scheduler".to_string(), get_buckyos_system_bin_dir());
     if !scheduler_pkg.try_load().await {
         error!("load scheduler pkg failed!");
         return Err(String::from("load scheduler pkg failed!"));
     }
+
+    let scheduler_token_env_key = scheduler_session_token_env_key();
+    let mut env_vars = HashMap::new();
+    env_vars.insert(scheduler_token_env_key.clone(), session_token.to_string());
+    // Boot scheduler is a one-shot child process. Scope its session token to this
+    // ServicePkg invocation instead of leaking it into node-daemon's global env.
+    scheduler_pkg.set_context(None, Some(&env_vars));
+    info!(
+        "boot scheduler session token prepared: env_key={}, len={}",
+        scheduler_token_env_key,
+        session_token.len()
+    );
 
     let params = vec!["--boot".to_string()];
     let start_result = scheduler_pkg.start(Some(&params)).await.map_err(|err| {
@@ -2078,17 +2099,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                     do_boot_upgreade().await?;
 
                     warn!("Do boot schedule to generate all system configs...");
-                    unsafe {
-                        std::env::set_var(
-                            "SCHEDULER_SESSION_TOKEN",
-                            device_session_token_jwt.clone(),
-                        );
-                    }
-                    debug!(
-                        "set var SCHEDULER_SESSION_TOKEN {}",
-                        device_session_token_jwt
-                    );
-                    let boot_result = do_boot_schedule().await;
+                    let boot_result = do_boot_schedule(device_session_token_jwt.as_str()).await;
                     if boot_result.is_ok() {
                         warn!("BuckyOS BOOT_INIT OK, will enter system after 2 secs.");
                         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -2304,6 +2315,11 @@ mod tests {
             derive_klog_node_id_from_device(&device_doc),
             5_588_228_819_824_065_463
         );
+    }
+
+    #[test]
+    fn scheduler_session_token_env_key_matches_runtime_key() {
+        assert_eq!(scheduler_session_token_env_key(), "SCHEDULER_SESSION_TOKEN");
     }
 
     #[test]
