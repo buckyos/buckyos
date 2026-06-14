@@ -4,7 +4,7 @@ use log::*;
 use package_lib::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -18,6 +18,8 @@ type Result<T> = std::result::Result<T, ServiceControlError>;
 // cyfs-gateway 是 detached 进程，单纯匹配进程名无法确认 NodeGateway 已就绪；
 // 3180 是 boot/runtime 都依赖的本机入口，因此 status 需要同时检查这个端口。
 const CYFS_GATEWAY_NODE_HTTP_PORT: u16 = 3180;
+const ENV_CAPTURE_DETACHED_STDIO: &str = "BUCKYOS_DEV_CAPTURE_DETACHED_STDIO";
+const DETACHED_LOG_MAX_SIZE_BYTES: u64 = 50 * 1024 * 1024;
 
 pub(crate) fn new_package_env(pkg_env_path: PathBuf) -> PackageEnv {
     let mut pkg_env = PackageEnv::new(pkg_env_path);
@@ -712,8 +714,9 @@ fn spawn_detached(
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
     cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
+    let (stdout, stderr, log_path) = detached_stdio(program, envs);
+    cmd.stdout(stdout);
+    cmd.stderr(stderr);
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
@@ -743,7 +746,118 @@ fn spawn_detached(
     let child = cmd.spawn().map_err(|error| {
         ServiceControlError::ReasonError(format!("spawn {} failed: {}", program.display(), error))
     })?;
+    if let Some(log_path) = log_path {
+        info!(
+            "detached native service stdout/stderr redirected to {}",
+            log_path.display()
+        );
+    }
     Ok(child.id())
+}
+
+fn detached_stdio(
+    program: &Path,
+    envs: Option<&HashMap<String, String>>,
+) -> (Stdio, Stdio, Option<PathBuf>) {
+    if !capture_detached_stdio_enabled(envs) {
+        return (Stdio::null(), Stdio::null(), None);
+    }
+
+    let service_name = program
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .or_else(|| program.file_stem().and_then(|name| name.to_str()))
+        .unwrap_or("native-service");
+    let log_dir = get_buckyos_root_dir().join("logs").join(service_name);
+    let log_path = log_dir.join("native-detached.log");
+
+    if let Err(err) = fs::create_dir_all(&log_dir) {
+        warn!(
+            "create detached native service log dir {} failed: {}",
+            log_dir.display(),
+            err
+        );
+        return (Stdio::null(), Stdio::null(), None);
+    }
+
+    rotate_detached_log_if_needed(&log_path);
+
+    // DEV/VM diagnostics only: some native services, notably klog_daemon, log early
+    // startup failures only to stdout/stderr. Keep default detached behavior unchanged.
+    let file = match OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(file) => file,
+        Err(err) => {
+            warn!(
+                "open detached native service log {} failed: {}",
+                log_path.display(),
+                err
+            );
+            return (Stdio::null(), Stdio::null(), None);
+        }
+    };
+    let stderr = match file.try_clone() {
+        Ok(stderr) => Stdio::from(stderr),
+        Err(err) => {
+            warn!(
+                "clone detached native service log {} failed: {}",
+                log_path.display(),
+                err
+            );
+            return (Stdio::from(file), Stdio::null(), Some(log_path));
+        }
+    };
+
+    (Stdio::from(file), stderr, Some(log_path))
+}
+
+fn capture_detached_stdio_enabled(envs: Option<&HashMap<String, String>>) -> bool {
+    let process_value = std::env::var(ENV_CAPTURE_DETACHED_STDIO).ok();
+    capture_detached_stdio_enabled_with_process_env(envs, process_value.as_deref())
+}
+
+fn capture_detached_stdio_enabled_with_process_env(
+    envs: Option<&HashMap<String, String>>,
+    process_value: Option<&str>,
+) -> bool {
+    envs.and_then(|envs| envs.get(ENV_CAPTURE_DETACHED_STDIO))
+        .map(|value| env_flag_enabled(value))
+        .unwrap_or_else(|| process_value.map(env_flag_enabled).unwrap_or(false))
+}
+
+fn env_flag_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn rotate_detached_log_if_needed(log_path: &Path) {
+    let Ok(metadata) = fs::metadata(log_path) else {
+        return;
+    };
+    if metadata.len() < DETACHED_LOG_MAX_SIZE_BYTES {
+        return;
+    }
+
+    let backup_path = log_path.with_extension("log.1");
+    if let Err(err) = fs::remove_file(&backup_path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            warn!(
+                "remove old detached native service log backup {} failed: {}",
+                backup_path.display(),
+                err
+            );
+        }
+    }
+    if let Err(err) = fs::rename(log_path, &backup_path) {
+        warn!(
+            "rotate detached native service log {} to {} failed: {}",
+            log_path.display(),
+            backup_path.display(),
+            err
+        );
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -889,5 +1003,26 @@ mod tests {
         assert!(!is_active_process_status(ProcessStatus::Dead));
         assert!(is_active_process_status(ProcessStatus::Run));
         assert!(is_active_process_status(ProcessStatus::Sleep));
+    }
+
+    #[test]
+    fn capture_detached_stdio_is_opt_in() {
+        assert!(!capture_detached_stdio_enabled_with_process_env(None, None));
+        assert!(capture_detached_stdio_enabled_with_process_env(
+            None,
+            Some("true")
+        ));
+
+        let disabled = HashMap::from([(ENV_CAPTURE_DETACHED_STDIO.to_string(), "0".to_string())]);
+        assert!(!capture_detached_stdio_enabled_with_process_env(
+            Some(&disabled),
+            Some("1")
+        ));
+
+        let enabled = HashMap::from([(ENV_CAPTURE_DETACHED_STDIO.to_string(), "1".to_string())]);
+        assert!(capture_detached_stdio_enabled_with_process_env(
+            Some(&enabled),
+            None
+        ));
     }
 }
