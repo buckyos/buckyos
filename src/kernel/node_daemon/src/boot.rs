@@ -117,15 +117,17 @@ pub async fn discover_oods_in_lan(
 }
 
 // Boot 阶段为本节点构造一份最小 `node_gateway_info.json` 内容。
-// 目的：让 cyfs-gateway 在 scheduler 还没产出正式 routes 时也能用 RTCP 直连/relay
-// 转发 `127.0.0.1:3180/kapi/system_config` 到 OOD。
+// 目的：让 cyfs-gateway 在 scheduler 还没产出正式 routes 时，也能通过 boot routes
+// 转发 `127.0.0.1:3180/kapi/system_config` 到 OOD。默认 route 仍是 RTCP；
+// DEV VM 场景可用 `BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND=tcp_direct` 切到 tcp_direct。
 //
 // 写入字段：
 //  - node_info.this_node_id / this_zone_host
 //  - service_info.system_config 的 selector 指向所有 OOD
-//  - node_route_map 提供 OOD/ZoneGateway 的 RTCP URL（兼容现有 boot_gateway.yaml）
+//  - node_route_map 提供 OOD/ZoneGateway 的 boot URL（默认 RTCP，DEV 可为 tcp_direct）
 //  - cluster_route_map.klog-service 提供 klog 集群启动期的 gateway proxy route
 //  - routes 为新格式（per doc 设计）的 direct + via-sn 候选
+//  - did_ip_hints 对齐 scheduler 生成的 gateway_info schema，boot 期先留空
 //  - app_info / trust_key 留空，等 scheduler 接管
 pub fn build_boot_node_gateway_info(
     this_node_id: &str,
@@ -309,6 +311,7 @@ fn build_boot_node_gateway_info_inner(
         "service_info": service_info,
         "node_route_map": node_route_map,
         "routes": routes,
+        "did_ip_hints": {},
         "cluster_route_map": Value::Object(cluster_route_map),
         "trust_key": {},
     })
@@ -392,6 +395,7 @@ fn format_rtcp_did_url(node_id: &str, zone_host: &str, port: u32) -> String {
 }
 
 fn format_tcp_direct_node_url(node_id: &str, zone_host: &str) -> String {
+    // cyfs-gateway tunnel URL uses the path as "host:port"; boot_gateway.yaml appends the port.
     format!("tcp:///{}.{}", node_id, zone_host)
 }
 
@@ -612,6 +616,7 @@ pub fn merge_missing_boot_klog_gateway_info(
     // klog voter 集群启动时，scheduler 可能还没来得及产出完整 runtime
     // gateway_info。保留 boot 阶段的 klog cluster route 可以避免 system_config
     // 依赖 klog quorum、klog quorum 又依赖 gateway route 的启动环。
+    // 这里只补缺失字段，不覆盖 scheduler 已经发布的正式 gateway_info。
     let Some(boot_klog_route) = boot_gateway_info
         .get("cluster_route_map")
         .and_then(Value::as_object)
@@ -646,22 +651,24 @@ pub fn merge_missing_boot_klog_gateway_info(
         }
     }
 
-    merge_missing_object_entries(&mut gateway_info, boot_gateway_info, "node_route_map");
-    merge_missing_object_entries(&mut gateway_info, boot_gateway_info, "routes");
+    merge_missing_object_field(&mut gateway_info, boot_gateway_info, "node_info");
+    merge_missing_object_field(&mut gateway_info, boot_gateway_info, "app_info");
+    merge_missing_object_field(&mut gateway_info, boot_gateway_info, "service_info");
+    merge_missing_object_field(&mut gateway_info, boot_gateway_info, "node_route_map");
+    merge_missing_object_field(&mut gateway_info, boot_gateway_info, "routes");
+    merge_missing_object_field(&mut gateway_info, boot_gateway_info, "did_ip_hints");
+    merge_missing_object_field(&mut gateway_info, boot_gateway_info, "trust_key");
 
     gateway_info
 }
 
-fn merge_missing_object_entries(target: &mut Value, source: &Value, field: &str) {
+fn merge_missing_object_field(target: &mut Value, source: &Value, field: &str) {
     let Some(source_map) = source.get(field).and_then(Value::as_object) else {
         return;
     };
-    if source_map.is_empty() {
-        return;
-    }
 
     if target.get(field).and_then(Value::as_object).is_none() {
-        target[field] = json!({});
+        target[field] = Value::Object(serde_json::Map::new());
     }
     let Some(target_map) = target.get_mut(field).and_then(Value::as_object_mut) else {
         return;
@@ -804,6 +811,48 @@ mod tests {
         );
         assert_eq!(merged["node_route_map"]["ood2"], "tcp:///ood2.test.zone");
         assert_eq!(merged["routes"]["ood2"][0]["kind"], "tcp_direct");
+    }
+
+    #[test]
+    fn merge_missing_boot_klog_gateway_info_preserves_boot_identity() {
+        let runtime_gateway_info = json!({
+            "cluster_route_map": {},
+            "node_route_map": {},
+            "routes": {},
+        });
+        let boot_gateway_info = json!({
+            "node_info": {
+                "this_node_id": "ood2",
+                "this_zone_host": "test.zone"
+            },
+            "service_info": {
+                "system_config": {
+                    "selector": {
+                        "ood1": {"port": SYSTEM_CONFIG_PORT, "weight": 100},
+                        "ood2": {"port": SYSTEM_CONFIG_PORT, "weight": 100}
+                    }
+                }
+            },
+            "cluster_route_map": {
+                "klog-service": {
+                    "route_prefix": KLOG_CLUSTER_ROUTE_PREFIX,
+                    "ingress_port": DEFAULT_NODE_GATEWAY_HTTP_PORT,
+                    "nodes": {
+                        "ood1": {"ports": {"inter": KLOG_CLUSTER_INTER_PORT}},
+                        "ood2": {"ports": {"inter": KLOG_CLUSTER_INTER_PORT}}
+                    }
+                }
+            }
+        });
+
+        let merged = merge_missing_boot_klog_gateway_info(runtime_gateway_info, &boot_gateway_info);
+
+        assert_eq!(merged["node_info"]["this_node_id"], "ood2");
+        assert_eq!(merged["node_info"]["this_zone_host"], "test.zone");
+        assert_eq!(
+            merged["service_info"]["system_config"]["selector"]["ood1"]["port"],
+            SYSTEM_CONFIG_PORT
+        );
     }
 
     #[test]
