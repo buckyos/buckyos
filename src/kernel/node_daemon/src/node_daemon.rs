@@ -71,6 +71,13 @@ const KLOG_CLUSTER_GATEWAY_ADDR: &str = "127.0.0.1:3180";
 const KLOG_NODE_ID_HASH_PREFIX: &str = "buckyos:klog-node-id:v1:";
 const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV1A64_PRIME: u64 = 0x100000001b3;
+const ENV_DEV_BOOT_LAN_ROUTE_KIND: &str = "BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND";
+const DEV_BOOT_LAN_ROUTE_TCP_DIRECT: &str = "tcp_direct";
+const ENV_DEV_KLOG_ADVERTISE_ADDR: &str = "BUCKYOS_DEV_KLOG_ADVERTISE_ADDR";
+const NODE_GATEWAY_HTTP_PORT: u16 = 3180;
+// VM/dev gateway configs can take longer to parse/link when verbose logs are enabled.
+// Keep this above the normal fast path so node-daemon does not tear down boot early.
+const CYFS_GATEWAY_READY_TIMEOUT_SECS: u64 = 60;
 
 async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
     //If local files exist, priority loads local files
@@ -920,6 +927,83 @@ fn build_klog_join_targets(this_node_name: &str, ood_names: &[String]) -> Vec<St
     targets
 }
 
+fn dev_boot_lan_tcp_direct_enabled_from_env(value: Option<&str>) -> bool {
+    value
+        .map(|value| {
+            value
+                .trim()
+                .eq_ignore_ascii_case(DEV_BOOT_LAN_ROUTE_TCP_DIRECT)
+        })
+        .unwrap_or(false)
+}
+
+fn dev_boot_lan_tcp_direct_enabled_for_klog() -> bool {
+    dev_boot_lan_tcp_direct_enabled_from_env(
+        std::env::var(ENV_DEV_BOOT_LAN_ROUTE_KIND).ok().as_deref(),
+    )
+}
+
+fn detect_lan_advertise_addr() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let ip_addr = socket.local_addr().ok()?.ip();
+
+    if ip_addr.is_loopback() || ip_addr.is_unspecified() {
+        None
+    } else {
+        Some(ip_addr.to_string())
+    }
+}
+
+fn dev_klog_advertise_addr_override_from_env(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn resolve_klog_advertise_addr() -> String {
+    resolve_klog_advertise_addr_inner(
+        dev_boot_lan_tcp_direct_enabled_for_klog(),
+        std::env::var(ENV_DEV_KLOG_ADVERTISE_ADDR).ok().as_deref(),
+        detect_lan_advertise_addr(),
+    )
+}
+
+fn resolve_klog_advertise_addr_inner(
+    prefer_tcp_direct: bool,
+    dev_override: Option<&str>,
+    detected_lan_addr: Option<String>,
+) -> String {
+    if prefer_tcp_direct {
+        // DEV tcp_direct 模式绕过 gateway proxy 的 RTCP 链路，raft 成员必须看到彼此
+        // 在 VM/LAN 中可达的地址。显式 override 用于无默认外网路由、自动探测失效的环境。
+        if let Some(addr) = dev_klog_advertise_addr_override_from_env(dev_override) {
+            info!(
+                "dev tcp_direct klog advertise addr resolved from {} to {}",
+                ENV_DEV_KLOG_ADVERTISE_ADDR, addr
+            );
+            return addr;
+        }
+
+        // 默认模式仍发布 loopback，避免改变单机 devtest 和正式网关代理路径。
+        if let Some(lan_addr) = detected_lan_addr {
+            info!(
+                "dev tcp_direct klog advertise addr resolved to {}",
+                lan_addr
+            );
+            return lan_addr;
+        }
+
+        warn!(
+            "dev tcp_direct klog advertise addr fallback to 127.0.0.1; set {} to force a LAN address",
+            ENV_DEV_KLOG_ADVERTISE_ADDR
+        );
+    }
+
+    "127.0.0.1".to_string()
+}
+
 fn build_klog_service_env(
     this_device_doc: &DeviceConfig,
     zone_host: &str,
@@ -960,7 +1044,10 @@ fn build_klog_service_env(
         "KLOG_RPC_LISTEN_ADDR".to_string(),
         format!("127.0.0.1:{}", KLOG_SERVICE_PORT),
     );
-    env_vars.insert("KLOG_ADVERTISE_ADDR".to_string(), "127.0.0.1".to_string());
+    env_vars.insert(
+        "KLOG_ADVERTISE_ADDR".to_string(),
+        resolve_klog_advertise_addr(),
+    );
     env_vars.insert(
         "KLOG_ADVERTISE_NODE_NAME".to_string(),
         this_node_name.to_string(),
@@ -1041,6 +1128,43 @@ fn build_klog_service_env_from_zone_config(
         zone_config.id.to_host_name().as_str(),
         ood_names,
     )
+}
+
+fn insert_klog_service_session_token(
+    env_vars: &mut HashMap<String, String>,
+    device_doc: &DeviceConfig,
+    device_private_key: &EncodingKey,
+) -> std::result::Result<(), String> {
+    let timestamp = buckyos_get_unix_timestamp();
+    let service_session_token = kRPC::RPCSessionToken {
+        token_type: kRPC::RPCSessionTokenType::Normal,
+        appid: Some(KLOG_SERVICE_UNIQUE_ID.to_string()),
+        jti: Some(timestamp.to_string()),
+        session: None,
+        sub: Some(device_doc.name.clone()),
+        aud: None,
+        exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
+        iss: Some(device_doc.name.clone()),
+        token: None,
+        extra: HashMap::new(),
+    };
+
+    let service_session_token_jwt = service_session_token
+        .generate_jwt(None, device_private_key)
+        .map_err(|err| {
+            error!("generate klog-service session token failed! {}", err);
+            String::from("generate klog-service session token failed!")
+        })?;
+
+    // klog is started by the boot/system-config bring-up path, not by
+    // KernelServiceRunItem::start(). Pass the same service token explicitly so
+    // klog can enable BuckyOS runtime integration and report its instance info.
+    env_vars.insert(
+        get_session_token_env_key(KLOG_SERVICE_UNIQUE_ID, false),
+        service_session_token_jwt,
+    );
+
+    Ok(())
 }
 
 async fn keep_klog_service(
@@ -1213,27 +1337,63 @@ async fn keep_cyfs_gateway_service(
             })?;
 
         info!(
-            "start cyfs_gateway OK!,result:{}. wait 2 seconds...",
-            start_result
+            "start cyfs_gateway OK!,result:{}. wait up to {} seconds for ready...",
+            start_result, CYFS_GATEWAY_READY_TIMEOUT_SECS
         );
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        wait_cyfs_gateway_ready(&cyfs_gateway_service_pkg, CYFS_GATEWAY_READY_TIMEOUT_SECS).await?;
+    }
 
+    Ok(())
+}
+
+async fn wait_cyfs_gateway_ready(
+    cyfs_gateway_service_pkg: &ServicePkg,
+    timeout_secs: u64,
+) -> std::result::Result<(), String> {
+    let start_at = Instant::now();
+    loop {
         // ServicePkg 的 native detached start 只能说明进程被 spawn 出来；
-        // cyfs-gateway 启动失败时也可能很快退出，所以这里必须等 NodeGateway
-        // 入口端口 ready 后才认为 boot 阶段 gateway 已经可用。
-        running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
-            error!("start cyfs_gateway failed! {}", err);
-            return String::from("start cyfs_gateway failed!");
+        // cyfs-gateway 可能还在初始化，也可能启动失败后退出。轮询 3180
+        // 可以区分这两种情况，避免 VM 上短暂的 ready race 误杀 boot。
+        let running_state = cyfs_gateway_service_pkg.status(None).await.map_err(|err| {
+            error!("check cyfs_gateway ready failed! {}", err);
+            String::from("check cyfs_gateway ready failed!")
         })?;
-        if running_state != ServiceInstanceState::Started {
-            error!("cyfs_gateway did not become ready after start");
+        if running_state == ServiceInstanceState::Started {
+            info!("cyfs_gateway ready, state={:?}", running_state);
+            return Ok(());
+        }
+
+        if probe_local_node_gateway_port().await {
+            warn!(
+                "cyfs_gateway 3180 is ready while service status is {:?}",
+                running_state
+            );
+            return Ok(());
+        }
+
+        if start_at.elapsed() >= tokio::time::Duration::from_secs(timeout_secs) {
+            error!(
+                "cyfs_gateway did not become ready after {} seconds, last state={:?}",
+                timeout_secs, running_state
+            );
             return Err(String::from(
                 "cyfs_gateway did not become ready after start",
             ));
         }
-    }
 
-    Ok(())
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
+}
+
+async fn probe_local_node_gateway_port() -> bool {
+    tokio::time::timeout(
+        tokio::time::Duration::from_millis(500),
+        tokio::net::TcpStream::connect(("127.0.0.1", NODE_GATEWAY_HTTP_PORT)),
+    )
+    .await
+    .map(|result| result.is_ok())
+    .unwrap_or(false)
 }
 
 fn cyfs_gateway_start_params() -> Vec<String> {
@@ -1553,11 +1713,18 @@ async fn node_daemon_main_loop(
 
         if is_ood {
             if system_config_store_is_klog() {
-                let klog_env = build_klog_service_env_from_zone_config(device_doc, zone_config)
+                let mut klog_env = build_klog_service_env_from_zone_config(device_doc, zone_config)
                     .map_err(|err| {
                         error!("build klog_service env failed! {}", err);
                         NodeDaemonErrors::SystemConfigError(
                             "build klog_service env failed!".to_string(),
+                        )
+                    })?;
+                insert_klog_service_session_token(&mut klog_env, device_doc, device_private_key)
+                    .map_err(|err| {
+                        error!("prepare klog_service session token failed! {}", err);
+                        NodeDaemonErrors::SystemConfigError(
+                            "prepare klog_service session token failed!".to_string(),
                         )
                     })?;
                 keep_klog_service(&klog_env, false).await.map_err(|err| {
@@ -2047,7 +2214,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let mut boot_config_result_str = "".to_string();
     if is_ood {
         if system_config_store_is_klog() {
-            let klog_env = build_klog_service_env_from_zone_boot(
+            let mut klog_env = build_klog_service_env_from_zone_boot(
                 &device_doc,
                 zone_host.as_str(),
                 &zone_boot_config,
@@ -2056,6 +2223,11 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                 error!("build boot klog_service env failed! {}", err);
                 err
             })?;
+            insert_klog_service_session_token(&mut klog_env, &device_doc, &device_private_key)
+                .map_err(|err| {
+                    error!("prepare boot klog_service session token failed! {}", err);
+                    err
+                })?;
             keep_klog_service(&klog_env, false).await.map_err(|err| {
                 error!("start klog_service before system_config failed! {}", err);
                 String::from("start klog_service before system_config failed!")
@@ -2124,6 +2296,15 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                 }
             }
         }
+
+        // In a klog-backed multi-OOD zone, the boot scheduler can be executed through
+        // another OOD's system-config instance. Refresh this local instance after
+        // boot/config exists so it loads the cluster-written trust keys and RBAC
+        // policy before node-daemon starts local kernel services with service tokens.
+        syc_cfg_client.refresh_trust_keys().await.map_err(|err| {
+            error!("refresh local system_config trust keys failed! {}", err);
+            String::from("refresh local system_config trust keys failed!")
+        })?;
 
         let zone_config: ZoneConfig = serde_json::from_str(boot_config_result_str.as_str())
             .map_err(|err| {
@@ -2343,6 +2524,10 @@ mod tests {
             Some(expected_device_id.as_str())
         );
         assert_eq!(
+            env.get("KLOG_ADVERTISE_ADDR").map(String::as_str),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
             env.get("KLOG_AUTO_BOOTSTRAP").map(String::as_str),
             Some("true")
         );
@@ -2351,6 +2536,48 @@ mod tests {
             env.get("KLOG_CLUSTER_GATEWAY_ROUTE_PREFIX")
                 .map(String::as_str),
             Some(KLOG_CLUSTER_ROUTE_PREFIX)
+        );
+    }
+
+    #[test]
+    fn dev_boot_lan_tcp_direct_enabled_from_env_matches_explicit_dev_value() {
+        assert!(dev_boot_lan_tcp_direct_enabled_from_env(Some("tcp_direct")));
+        assert!(dev_boot_lan_tcp_direct_enabled_from_env(Some(
+            " TCP_DIRECT "
+        )));
+        assert!(!dev_boot_lan_tcp_direct_enabled_from_env(None));
+        assert!(!dev_boot_lan_tcp_direct_enabled_from_env(Some(
+            "rtcp_direct"
+        )));
+    }
+
+    #[test]
+    fn dev_klog_advertise_addr_override_from_env_trims_empty_values() {
+        assert_eq!(
+            dev_klog_advertise_addr_override_from_env(Some(" 192.168.64.12 ")).as_deref(),
+            Some("192.168.64.12")
+        );
+        assert!(dev_klog_advertise_addr_override_from_env(None).is_none());
+        assert!(dev_klog_advertise_addr_override_from_env(Some("   ")).is_none());
+    }
+
+    #[test]
+    fn resolve_klog_advertise_addr_uses_dev_override_only_for_tcp_direct() {
+        assert_eq!(
+            resolve_klog_advertise_addr_inner(
+                true,
+                Some("192.168.64.12"),
+                Some("10.0.0.8".to_string())
+            ),
+            "192.168.64.12"
+        );
+        assert_eq!(
+            resolve_klog_advertise_addr_inner(
+                false,
+                Some("192.168.64.12"),
+                Some("10.0.0.8".to_string())
+            ),
+            "127.0.0.1"
         );
     }
 
