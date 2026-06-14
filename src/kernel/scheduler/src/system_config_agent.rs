@@ -1626,6 +1626,81 @@ fn collect_tx_action_keys(tx_actions: &HashMap<String, KVAction>) -> Vec<String>
     keys
 }
 
+fn persisted_json_matches(current_value: Option<&String>, expected_value: &str) -> bool {
+    let Some(current_value) = current_value else {
+        return false;
+    };
+
+    match (
+        serde_json::from_str::<Value>(current_value),
+        serde_json::from_str::<Value>(expected_value),
+    ) {
+        (Ok(current_json), Ok(expected_json)) => current_json == expected_json,
+        _ => current_value == expected_value,
+    }
+}
+
+fn persisted_service_info_has_nodes(value: &str) -> bool {
+    serde_json::from_str::<Value>(value)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("node_list")
+                .and_then(|node_list| node_list.as_object())
+                .map(|node_list| !node_list.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+fn repair_stale_service_info_actions(
+    scheduler_ctx: &NodeScheduler,
+    device_list: &HashMap<String, DeviceInfo>,
+    input_system_config: &HashMap<String, String>,
+    existing_tx_actions: &HashMap<String, KVAction>,
+) -> Result<HashMap<String, KVAction>> {
+    let mut result = HashMap::new();
+
+    for (spec_id, service_info) in scheduler_ctx.service_infos.iter() {
+        if should_skip_app_service_info_deletion(
+            spec_id.as_str(),
+            service_info,
+            input_system_config,
+        )? {
+            continue;
+        }
+
+        let update_actions = update_service_info(
+            spec_id.as_str(),
+            service_info,
+            device_list,
+            input_system_config,
+        )?;
+
+        for (key, action) in update_actions {
+            if existing_tx_actions.contains_key(&key) {
+                continue;
+            }
+
+            let needs_update = match &action {
+                KVAction::Update(expected_value) => {
+                    let current_value = input_system_config.get(&key);
+                    let expected_has_nodes = persisted_service_info_has_nodes(expected_value);
+                    (current_value.is_some() || expected_has_nodes)
+                        && !persisted_json_matches(current_value, expected_value)
+                }
+                _ => true,
+            };
+
+            if needs_update {
+                info!("will repair stale service info: {}", spec_id);
+                result.insert(key, action);
+            }
+        }
+    }
+
+    Ok(result)
+}
+
 pub(crate) async fn build_schedule_plan(
     input_system_config: &HashMap<String, String>,
     is_boot: bool,
@@ -1673,6 +1748,16 @@ pub(crate) async fn build_schedule_plan(
         )?;
         extend_kv_action_map(&mut tx_actions, &new_tx_actions);
     }
+
+    // scheduler 的 snapshot 保存的是内部 ServiceInfo；services/<id>/info 是运行时服务发现使用的外部格式。
+    // 如果启动早期因 device info 尚未齐全写出了空 node_list，后续内部状态不变时也要能把外部 key 修正回来。
+    let service_info_repair_actions = repair_stale_service_info_actions(
+        &scheduler_ctx,
+        &device_list,
+        input_system_config,
+        &tx_actions,
+    )?;
+    extend_kv_action_map(&mut tx_actions, &service_info_repair_actions);
 
     if is_boot || last_schedule_snapshot.is_none() {
         need_update_rbac = true;
@@ -2254,6 +2339,76 @@ mod tests {
         assert_ne!(
             second_plan.schedule_snapshot.schedule_time,
             persisted_snapshot.schedule_time
+        );
+    }
+
+    #[test]
+    fn test_repair_stale_service_info_rewrites_empty_persisted_node_list() {
+        let device_ood1 = create_test_device_info("ood1", None);
+        let device_ood2 = create_test_device_info("ood2", None);
+        let mut device_list = HashMap::new();
+        device_list.insert("ood1".to_string(), device_ood1.clone());
+        device_list.insert("ood2".to_string(), device_ood2);
+
+        let mut scheduler_ctx = NodeScheduler::new_empty(1);
+        scheduler_ctx.service_infos.insert(
+            KLOG_SERVICE_UNIQUE_ID.to_string(),
+            ServiceInfo::RandomCluster(HashMap::from([
+                (
+                    "klog-service-ood1".to_string(),
+                    (
+                        100,
+                        create_test_replica_instance(
+                            KLOG_SERVICE_UNIQUE_ID,
+                            "klog-service-ood1",
+                            "ood1",
+                            &[("www", 4080)],
+                        ),
+                    ),
+                ),
+                (
+                    "klog-service-ood2".to_string(),
+                    (
+                        100,
+                        create_test_replica_instance(
+                            KLOG_SERVICE_UNIQUE_ID,
+                            "klog-service-ood2",
+                            "ood2",
+                            &[("www", 4080)],
+                        ),
+                    ),
+                ),
+            ])),
+        );
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "services/klog-service/info".to_string(),
+            json!({"selector_type":"random","node_list":{}}).to_string(),
+        );
+
+        let tx_actions = repair_stale_service_info_actions(
+            &scheduler_ctx,
+            &device_list,
+            &input_system_config,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let service_info_value = match tx_actions
+            .get("services/klog-service/info")
+            .expect("stale service info should be repaired")
+        {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected kv action: {:?}", other),
+        };
+        let service_info_json: Value = serde_json::from_str(service_info_value).unwrap();
+        assert_eq!(
+            service_info_json
+                .get("node_list")
+                .and_then(|node_list| node_list.as_object())
+                .map(|node_list| node_list.len()),
+            Some(2)
         );
     }
 

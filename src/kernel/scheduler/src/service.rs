@@ -96,14 +96,16 @@ pub fn update_service_info(
     let mut info_map: HashMap<String, ServiceNode> = HashMap::new();
     match service_info {
         &SchedulerServiceInfo::RandomCluster(ref cluster) => {
-            for (node_id, (weight, instance)) in cluster.iter() {
-                let device_info = device_list.get(node_id.as_str());
+            for (_instance_id, (weight, instance)) in cluster.iter() {
+                // RandomCluster 的 key 是 instance_id；对外 ServiceInfo 需要按 node_id 发布。
+                let node_id = instance.node_id.as_str();
+                let device_info = device_list.get(node_id);
                 if device_info.is_some() {
                     let device_info = device_info.unwrap();
                     let node_net_id = device_info.device_doc.net_id.clone();
 
                     info_map.insert(
-                        node_id.clone(),
+                        instance.node_id.clone(),
                         ServiceNode {
                             node_did: device_info.id.clone(),
                             node_net_id,
