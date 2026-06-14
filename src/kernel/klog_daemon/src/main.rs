@@ -29,6 +29,7 @@ use logging::init_logging;
 use meta_compaction::spawn_auto_meta_compaction_task;
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -44,8 +45,16 @@ async fn main() {
     info!("klog runtime config source: {}", source);
 
     if let Err(e) = init_buckyos_runtime_if_needed(&mut cfg, runtime).await {
-        error!("Failed to initialize BuckyOS runtime integration: {}", e);
-        std::process::exit(1);
+        if should_retry_buckyos_runtime_init(e.as_str()) {
+            warn!(
+                "BuckyOS runtime integration is not ready yet; klog core will start and runtime init will retry in background: {}",
+                e
+            );
+            spawn_buckyos_runtime_init_retry(cfg.clone());
+        } else {
+            error!("Failed to initialize BuckyOS runtime integration: {}", e);
+            std::process::exit(1);
+        }
     }
 
     if let Err(e) = run(cfg).await {
@@ -447,6 +456,99 @@ async fn init_buckyos_runtime_if_needed(
     Ok(())
 }
 
+fn should_retry_buckyos_runtime_init(error: &str) -> bool {
+    error.contains("get boot config")
+        || error.contains("error sending request")
+        || error.contains("Service not valid")
+        || error.contains("LeaderUnavailable")
+}
+
+fn spawn_buckyos_runtime_init_retry(cfg: KLogRuntimeConfig) {
+    let Some(rpc_port) = parse_port_from_addr(&cfg.rpc_listen_addr) else {
+        warn!(
+            "skip BuckyOS runtime init retry because rpc_listen_addr is invalid: {}",
+            cfg.rpc_listen_addr
+        );
+        return;
+    };
+    let transport_mode = cfg.cluster_network.mode;
+    let advertise_node_name = cfg.advertise_node_name.clone();
+    let advertise_device_id = cfg.advertise_device_id.clone();
+    let data_dir = cfg.data_dir.clone();
+
+    tokio::task::spawn(async move {
+        let mut timer = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            timer.tick().await;
+
+            let runtime = match init_logged_in_buckyos_runtime().await {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    warn!(
+                        "BuckyOS runtime init retry for {} failed: {}",
+                        KLOG_SERVICE_UNIQUE_ID, err
+                    );
+                    continue;
+                }
+            };
+
+            if let Err(err) = validate_buckyos_cluster_transport_identity(
+                transport_mode,
+                advertise_node_name.as_deref(),
+                advertise_device_id.as_deref(),
+                runtime
+                    .device_config
+                    .as_ref()
+                    .map(|device| device.name.as_str()),
+                runtime
+                    .device_config
+                    .as_ref()
+                    .map(|device| device.id.to_string()),
+            ) {
+                error!(
+                    "BuckyOS runtime init retry for {} failed identity validation: {}",
+                    KLOG_SERVICE_UNIQUE_ID, err
+                );
+                break;
+            }
+
+            runtime.set_main_service_port(rpc_port).await;
+            match runtime.get_data_folder() {
+                Ok(runtime_data_dir) if runtime_data_dir != data_dir => {
+                    warn!(
+                        "BuckyOS runtime data dir differs after klog startup; keep current data dir={}, runtime data dir={}",
+                        data_dir.display(),
+                        runtime_data_dir.display()
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        "BuckyOS runtime init retry could not resolve data dir for {}: {}",
+                        KLOG_SERVICE_UNIQUE_ID, err
+                    );
+                }
+                _ => {}
+            }
+
+            match set_buckyos_api_runtime(runtime) {
+                Ok(()) => {
+                    info!(
+                        "BuckyOS runtime integration enabled after retry: service_name={}, service_port={}",
+                        KLOG_SERVICE_UNIQUE_ID, rpc_port
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        "BuckyOS runtime integration retry finished but runtime was already registered: {}",
+                        err
+                    );
+                }
+            }
+            break;
+        }
+    });
+}
+
 fn parse_port_from_addr(addr: &str) -> Option<u16> {
     let (_, port_str) = addr.rsplit_once(':')?;
     port_str.parse::<u16>().ok()
@@ -601,6 +703,23 @@ mod tests {
         .expect_err("mismatched advertise_device_id should be rejected");
         assert!(err.contains("advertise_device_id(BuckyOS device id)=did:dev:replacement"));
         assert!(err.contains("runtime_device_id=did:dev:ood1"));
+    }
+
+    #[test]
+    fn retry_buckyos_runtime_init_for_boot_dependency_errors() {
+        assert!(should_retry_buckyos_runtime_init(
+            "Failed to login BuckyOS runtime for klog-service: get boot config failed"
+        ));
+        assert!(should_retry_buckyos_runtime_init(
+            "Failed due to reason: error sending request for url (http://127.0.0.1:3200)"
+        ));
+    }
+
+    #[test]
+    fn do_not_retry_buckyos_runtime_init_for_bad_token() {
+        assert!(!should_retry_buckyos_runtime_init(
+            "Failed to decode session token: parts.len != 3"
+        ));
     }
 }
 
