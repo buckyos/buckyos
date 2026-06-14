@@ -12,7 +12,10 @@ use serde_json::{json, Value};
 use crate::app::*;
 use crate::scheduler::*;
 use crate::service::*;
-use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
+use crate::zone_route_builder::{
+    build_forward_plan, build_forward_plan_with_dev_tcp_direct, DidIpHint,
+    NodeGatewayRouteCandidate,
+};
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KLogBuckyosSettings, KernelServiceSpec, NodeConfig,
     ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,
@@ -1021,6 +1024,7 @@ fn build_node_route_map_inner(
 }
 
 fn format_tcp_direct_node_url(node_id: &str, zone_host: &str) -> String {
+    // cyfs-gateway tunnel URL uses the path as "host:port"; boot_gateway.yaml appends the port.
     format!("tcp:///{}.{}", node_id, zone_host)
 }
 
@@ -1278,7 +1282,11 @@ pub(crate) async fn update_node_gateway_info(
     let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
     let device_list = get_device_list(input_system_config)?;
     let zone_host = zone_config.id.to_host_name();
-    let forward_plan = build_forward_plan(node_id, &zone_config, &zone_host, &device_list);
+    let forward_plan = if dev_boot_lan_tcp_direct_enabled() {
+        build_forward_plan_with_dev_tcp_direct(node_id, &zone_config, &zone_host, &device_list)
+    } else {
+        build_forward_plan(node_id, &zone_config, &zone_host, &device_list)
+    };
     let mut cluster_route_map = HashMap::new();
     if let Some(klog_cluster_route) =
         build_klog_cluster_route_entry(scheduler_ctx, &zone_config, input_system_config)

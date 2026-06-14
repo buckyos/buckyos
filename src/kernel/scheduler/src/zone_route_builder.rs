@@ -193,6 +193,11 @@ fn format_rtcp_did_url(node_id: &str, zone_host: &str, port: u32) -> String {
     }
 }
 
+fn format_tcp_direct_node_url(node_id: &str, zone_host: &str) -> String {
+    // cyfs-gateway tunnel URL uses the path as "host:port"; boot_gateway.yaml appends the port.
+    format!("tcp:///{}.{}", node_id, zone_host)
+}
+
 fn format_relay_rtcp_url(
     relay_url: &str,
     target_node_id: &str,
@@ -490,8 +495,21 @@ fn build_direct_candidate(
     target_port: u32,
     zone_host: &str,
     evidence: DirectEvidence,
+    prefer_tcp_direct: bool,
 ) -> NodeGatewayRouteCandidate {
-    let url = format_rtcp_did_url(target_node_id, zone_host, target_port);
+    let (kind, url, keep_tunnel) = if prefer_tcp_direct {
+        (
+            "tcp_direct".to_string(),
+            format_tcp_direct_node_url(target_node_id, zone_host),
+            false,
+        )
+    } else {
+        (
+            "rtcp_direct".to_string(),
+            format_rtcp_did_url(target_node_id, zone_host, target_port),
+            true,
+        )
+    };
     let route_evidence = match evidence {
         DirectEvidence::SignedWanIp => route_evidence(
             "signed_wan_ip",
@@ -540,11 +558,11 @@ fn build_direct_candidate(
 
     NodeGatewayRouteCandidate {
         id: "direct".to_string(),
-        kind: "rtcp_direct".to_string(),
+        kind,
         priority: DIRECT_PRIORITY,
         weight: DEFAULT_ROUTE_WEIGHT,
         backup: false,
-        keep_tunnel: true,
+        keep_tunnel,
         url,
         source: "system_config".to_string(),
         relay_node: None,
@@ -653,6 +671,25 @@ pub(crate) fn build_forward_plan(
     zone_host: &str,
     device_list: &HashMap<String, DeviceInfo>,
 ) -> ForwardPlan {
+    build_forward_plan_inner(this_node_id, zone_config, zone_host, device_list, false)
+}
+
+pub(crate) fn build_forward_plan_with_dev_tcp_direct(
+    this_node_id: &str,
+    zone_config: &ZoneConfig,
+    zone_host: &str,
+    device_list: &HashMap<String, DeviceInfo>,
+) -> ForwardPlan {
+    build_forward_plan_inner(this_node_id, zone_config, zone_host, device_list, true)
+}
+
+fn build_forward_plan_inner(
+    this_node_id: &str,
+    zone_config: &ZoneConfig,
+    zone_host: &str,
+    device_list: &HashMap<String, DeviceInfo>,
+    prefer_tcp_direct: bool,
+) -> ForwardPlan {
     let mut plan = ForwardPlan::default();
     let Some(source_device) = device_list.get(this_node_id) else {
         return plan;
@@ -695,65 +732,72 @@ pub(crate) fn build_forward_plan(
                 target_port,
                 zone_host,
                 evidence,
+                prefer_tcp_direct,
             ));
         }
 
-        if let Some(sn_host) = zone_config.sn.as_ref() {
-            let relay_is_backup = !candidates.is_empty();
-            candidates.push(NodeGatewayRouteCandidate {
-                id: "via-sn".to_string(),
-                kind: "rtcp_relay".to_string(),
-                priority: SN_PRIORITY,
-                weight: DEFAULT_ROUTE_WEIGHT,
-                backup: relay_is_backup,
-                // 签名 wan IP 的 target 是稳定 WAN，不需要 SN 维持 keep_tunnel；只在异常时回退。
-                keep_tunnel: !has_signed_wan_ip(target_device),
-                url: format_relay_rtcp_url(
-                    format!("rtcp://{}/", sn_host).as_str(),
-                    target_node_id,
-                    zone_host,
-                    target_port,
-                ),
-                source: "zone_config".to_string(),
-                relay_node: Some(sn_host.clone()),
-                evidence: Some(route_evidence(
-                    "sn_relay",
-                    Some(this_node_id),
-                    Some(target_node_id),
-                    None,
-                    "low",
-                    "zone_wide",
-                )),
-            });
-        }
-
-        if let Some(gateway_node) = zone_gateway_node.as_ref() {
-            if gateway_node != this_node_id && gateway_node != target_node_id {
+        // DEV tcp_direct 用于 VM 同 LAN 集成测试：一旦 direct 可用，routes 中只保留
+        // tcp_direct，避免 cyfs-gateway 当前 round-robin 逻辑随机选中 backup relay。
+        let add_relay_candidates = !(prefer_tcp_direct && !candidates.is_empty());
+        if add_relay_candidates {
+            if let Some(sn_host) = zone_config.sn.as_ref() {
                 let relay_is_backup = !candidates.is_empty();
                 candidates.push(NodeGatewayRouteCandidate {
-                    id: format!("via-zone-gateway-{}", gateway_node),
+                    id: "via-sn".to_string(),
                     kind: "rtcp_relay".to_string(),
-                    priority: ZONE_GATEWAY_PRIORITY,
+                    priority: SN_PRIORITY,
                     weight: DEFAULT_ROUTE_WEIGHT,
                     backup: relay_is_backup,
-                    keep_tunnel: false,
+                    // 签名 wan IP 的 target 是稳定 WAN，不需要 SN 维持 keep_tunnel；只在异常时回退。
+                    keep_tunnel: !has_signed_wan_ip(target_device),
                     url: format_relay_rtcp_url(
-                        format_rtcp_did_url(gateway_node, zone_host, DEFAULT_RTCP_PORT).as_str(),
+                        format!("rtcp://{}/", sn_host).as_str(),
                         target_node_id,
                         zone_host,
                         target_port,
                     ),
                     source: "zone_config".to_string(),
-                    relay_node: Some(gateway_node.clone()),
+                    relay_node: Some(sn_host.clone()),
                     evidence: Some(route_evidence(
-                        "zone_gateway_relay",
+                        "sn_relay",
                         Some(this_node_id),
                         Some(target_node_id),
-                        Some(gateway_node.as_str()),
+                        None,
                         "low",
                         "zone_wide",
                     )),
                 });
+            }
+
+            if let Some(gateway_node) = zone_gateway_node.as_ref() {
+                if gateway_node != this_node_id && gateway_node != target_node_id {
+                    let relay_is_backup = !candidates.is_empty();
+                    candidates.push(NodeGatewayRouteCandidate {
+                        id: format!("via-zone-gateway-{}", gateway_node),
+                        kind: "rtcp_relay".to_string(),
+                        priority: ZONE_GATEWAY_PRIORITY,
+                        weight: DEFAULT_ROUTE_WEIGHT,
+                        backup: relay_is_backup,
+                        keep_tunnel: false,
+                        url: format_relay_rtcp_url(
+                            format_rtcp_did_url(gateway_node, zone_host, DEFAULT_RTCP_PORT)
+                                .as_str(),
+                            target_node_id,
+                            zone_host,
+                            target_port,
+                        ),
+                        source: "zone_config".to_string(),
+                        relay_node: Some(gateway_node.clone()),
+                        evidence: Some(route_evidence(
+                            "zone_gateway_relay",
+                            Some(this_node_id),
+                            Some(target_node_id),
+                            Some(gateway_node.as_str()),
+                            "low",
+                            "zone_wide",
+                        )),
+                    });
+                }
             }
         }
 
@@ -966,6 +1010,33 @@ mod tests {
         assert_eq!(hints[0].ip, "203.0.113.10".parse::<IpAddr>().unwrap());
         assert_eq!(hints[0].source, DidIpHintSource::SignedDeviceDoc);
         assert_eq!(hints[0].confidence, "high");
+    }
+
+    #[test]
+    fn test_build_forward_plan_dev_tcp_direct_rewrites_direct_candidate() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
+        let device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan1"));
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let plan =
+            build_forward_plan_with_dev_tcp_direct("ood1", &zone_config, &zone_host, &device_list);
+        let ood2_routes = plan.routes.get("ood2").unwrap();
+        let direct = ood2_routes
+            .iter()
+            .find(|candidate| candidate.id == "direct")
+            .unwrap();
+
+        assert_eq!(direct.kind, "tcp_direct");
+        assert_eq!(direct.url, format!("tcp:///ood2.{}", zone_host));
+        assert!(!direct.keep_tunnel);
+        assert!(!direct.backup);
+        assert_eq!(ood2_routes.len(), 1);
     }
 
     #[test]
