@@ -6,7 +6,7 @@
       "vm_params": {
         "cpu": 1,
         "memory": "2G",
-        "disk": "15G"
+        "disk": "30G"
       },
       "network": {
         "lan_id": "lan",
@@ -37,7 +37,7 @@
       "vm_params": {
         "cpu": 1,
         "memory": "2G",
-        "disk": "15G"
+        "disk": "30G"
       },
       "network": {
         "lan_id": "lan",
@@ -68,7 +68,7 @@
       "vm_params": {
         "cpu": 1,
         "memory": "2G",
-        "disk": "15G"
+        "disk": "30G"
       },
       "network": {
         "lan_id": "lan",

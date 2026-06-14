@@ -9,13 +9,13 @@
   },
   "commands": {
     "build": [
-      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" CXXFLAGS=\"-include cstdint\" uv run buckyos-build --skip-web --target=x86_64-unknown-linux-gnu",
-      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" uv run ./buckyos-install.py --app=buckyos --skip-web --target-rootfs=/home/yaxin/work/buckyos/.dev_buckyos"
+      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" TMPDIR=\"/home/yaxin/tmp-cargo\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" CXXFLAGS=\"-include cstdint\" uv run buckyos-build --skip-web --target=x86_64-unknown-linux-gnu",
+      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" TMPDIR=\"/home/yaxin/tmp-cargo\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" uv run ./buckyos-install.py --app=buckyos --skip-web --target-rootfs=/home/yaxin/work/buckyos/.dev_buckyos"
     ],
     "build_all": [
-      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" CXXFLAGS=\"-include cstdint\" uv run buckyos-build --skip-web --target=x86_64-unknown-linux-gnu",
-      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" uv run ./buckyos-install.py --all --app=buckyos --skip-web --target-rootfs=/home/yaxin/work/buckyos/.dev_buckyos",
-      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" uv run ./make_config.py {{buckyos_dev.node_group}} --rootfs /home/yaxin/work/buckyos/.dev_buckyos"
+      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" TMPDIR=\"/home/yaxin/tmp-cargo\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" CXXFLAGS=\"-include cstdint\" uv run buckyos-build --skip-web --target=x86_64-unknown-linux-gnu",
+      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" TMPDIR=\"/home/yaxin/tmp-cargo\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" uv run ./buckyos-install.py --all --app=buckyos --skip-web --target-rootfs=/home/yaxin/work/buckyos/.dev_buckyos",
+      "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\" TMPDIR=\"/home/yaxin/tmp-cargo\" BUCKYOS_ROOT=\"/home/yaxin/work/buckyos/.dev_buckyos\" uv run ./make_config.py {{buckyos_dev.node_group}} --rootfs /home/yaxin/work/buckyos/.dev_buckyos"
     ],
     "update": [
       "echo 'update buckyos from /home/yaxin/work/buckyos/.dev_buckyos/bin'"
@@ -27,10 +27,10 @@
       "sudo update-ca-certificates"
     ],
     "start": [
-      "sudo env BUCKYOS_SYSTEM_CONFIG_STORE=klog BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND=tcp_direct nohup /opt/buckyos/bin/node-daemon/node_daemon --enable_active > /dev/null 2>&1 &"
+      "sudo systemd-run --unit=buckyos-dev-node-daemon --collect --setenv=BUCKYOS_SYSTEM_CONFIG_STORE=klog --setenv=BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND=tcp_direct --setenv=BUCKYOS_DEV_CAPTURE_DETACHED_STDIO=1 /opt/buckyos/bin/node-daemon/node_daemon --enable_active"
     ],
     "stop": [
-      "sudo python3 /opt/buckyos/bin/stop.py"
+      "sudo systemctl stop buckyos-dev-node-daemon.service 2>/dev/null || true; sudo python3 /opt/buckyos/bin/stop.py"
     ]
   }
 }
