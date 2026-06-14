@@ -17,6 +17,7 @@ use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::process::exit;
+use std::time::Duration;
 //use upon::Engine;
 
 use anyhow::Result;
@@ -32,6 +33,11 @@ use service::*;
 use std::sync::Arc;
 use system_config_agent::schedule_loop;
 use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
+
+const BOOT_INIT_LOCK_KEY: &str = "boot/init_lock";
+const BOOT_CONFIG_KEY: &str = "boot/config";
+const BOOT_CONFIG_WAIT_RETRIES: usize = 30;
+const BOOT_CONFIG_WAIT_INTERVAL: Duration = Duration::from_secs(2);
 
 async fn create_init_list_by_template(
     zone_boot_config: &ZoneBootConfig,
@@ -99,7 +105,14 @@ async fn create_init_list_by_template(
         );
     }
 
-    let ood_name = zone_boot_config.oods.first().unwrap().name.as_str();
+    let Some(first_ood) = zone_boot_config
+        .oods
+        .iter()
+        .find(|ood| ood.node_type.is_ood())
+    else {
+        return Err(anyhow::anyhow!("zone boot config has no OOD node"));
+    };
+    let ood_name = first_ood.name.as_str();
     let mut builder = SystemConfigBuilder::new(boot_config);
     builder
         .add_boot_config(&start_config, &verify_hub_public_key, zone_boot_config)?
@@ -135,15 +148,96 @@ async fn create_init_list_by_template(
         .await?
         .add_default_agents(&start_config)
         .await?
-        .add_gateway_settings(&start_config)?
-        .add_node(ood_name)?;
+        .add_gateway_settings(&start_config)?;
+    for ood in zone_boot_config
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+    {
+        builder.add_node(ood.name.as_str())?;
+    }
     let mut config = builder.build();
 
     Ok(config)
 }
 
+fn is_key_not_found_error(err: &SystemConfigError, key: &str) -> bool {
+    match err {
+        SystemConfigError::KeyNotFound(missing_key) => missing_key == key,
+        _ => false,
+    }
+}
+
+fn is_key_exist_error(err: &SystemConfigError, key: &str) -> bool {
+    match err {
+        SystemConfigError::ReasonError(reason) => {
+            reason.contains(format!("key exist : {key}").as_str())
+        }
+        _ => false,
+    }
+}
+
+async fn boot_config_exists(system_config_client: &SystemConfigClient) -> Result<bool> {
+    match system_config_client.get(BOOT_CONFIG_KEY).await {
+        Ok(_) => Ok(true),
+        Err(err) if is_key_not_found_error(&err, BOOT_CONFIG_KEY) => Ok(false),
+        Err(err) => Err(anyhow::anyhow!(
+            "check {} failed before boot scheduler: {}",
+            BOOT_CONFIG_KEY,
+            err
+        )),
+    }
+}
+
+async fn acquire_boot_init_lock(system_config_client: &SystemConfigClient) -> Result<bool> {
+    let lock_value = json!({
+        "pid": std::process::id(),
+        "created_at": buckyos_get_unix_timestamp(),
+    })
+    .to_string();
+
+    match system_config_client
+        .create(BOOT_INIT_LOCK_KEY, lock_value.as_str())
+        .await
+    {
+        Ok(_) => {
+            info!(
+                "boot scheduler acquired init lock at {}",
+                BOOT_INIT_LOCK_KEY
+            );
+            Ok(true)
+        }
+        Err(err) if is_key_exist_error(&err, BOOT_INIT_LOCK_KEY) => {
+            info!(
+                "boot scheduler init lock already exists at {}, wait for another OOD to finish",
+                BOOT_INIT_LOCK_KEY
+            );
+            Ok(false)
+        }
+        Err(err) => Err(anyhow::anyhow!(
+            "create {} failed before boot scheduler: {}",
+            BOOT_INIT_LOCK_KEY,
+            err
+        )),
+    }
+}
+
+async fn wait_for_boot_config(system_config_client: &SystemConfigClient) -> Result<()> {
+    for _ in 0..BOOT_CONFIG_WAIT_RETRIES {
+        if boot_config_exists(system_config_client).await? {
+            info!("{} is ready, boot scheduler can skip init", BOOT_CONFIG_KEY);
+            return Ok(());
+        }
+        tokio::time::sleep(BOOT_CONFIG_WAIT_INTERVAL).await;
+    }
+
+    Err(anyhow::anyhow!(
+        "{} did not appear after waiting for boot init lock holder",
+        BOOT_CONFIG_KEY
+    ))
+}
+
 async fn do_boot_scheduler() -> Result<()> {
-    let mut init_list: HashMap<String, String> = HashMap::new();
     let zone_boot_config_str = std::env::var("BUCKYOS_ZONE_BOOT_CONFIG");
 
     if zone_boot_config_str.is_err() {
@@ -171,11 +265,17 @@ async fn do_boot_scheduler() -> Result<()> {
         rpc_session_token.len()
     );
     let system_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
-    let boot_config = system_config_client.get("boot/config").await;
-    if boot_config.is_ok() {
-        return Err(anyhow::anyhow!(
-            "boot/config already exists, boot scheduler failed"
-        ));
+
+    if boot_config_exists(&system_config_client).await? {
+        info!(
+            "{} already exists, skip boot scheduler init",
+            BOOT_CONFIG_KEY
+        );
+        return Ok(());
+    }
+
+    if !acquire_boot_init_lock(&system_config_client).await? {
+        return wait_for_boot_config(&system_config_client).await;
     }
 
     let mut init_list = create_init_list_by_template(&zone_boot_config)
@@ -185,9 +285,12 @@ async fn do_boot_scheduler() -> Result<()> {
             e
         })?;
 
-    let boot_config_str = init_list.get("boot/config");
+    let boot_config_str = init_list.get(BOOT_CONFIG_KEY);
     if boot_config_str.is_none() {
-        return Err(anyhow::anyhow!("boot/config not found in init list"));
+        return Err(anyhow::anyhow!(
+            "{} not found in init list",
+            BOOT_CONFIG_KEY
+        ));
     }
     let boot_config_str = boot_config_str.unwrap();
     info!("after boot_config_str: {}", boot_config_str);
@@ -198,7 +301,7 @@ async fn do_boot_scheduler() -> Result<()> {
         })?;
     zone_config.init_by_boot_config(&zone_boot_config, &zone_boot_config_json);
     init_list.insert(
-        "boot/config".to_string(),
+        BOOT_CONFIG_KEY.to_string(),
         serde_json::to_string_pretty(&zone_config).unwrap(),
     );
     //info!("use init list from template {} to do boot scheduler",template_type_str);
@@ -332,7 +435,7 @@ mod test {
         NameClient, NameClientConfig, NameInfo, NsProvider, RecordType, GLOBAL_NAME_CLIENT,
     };
     use name_lib::{
-        DeviceConfig, DeviceInfo, EncodedDocument, NSError, OODDescriptionString,
+        DeviceConfig, DeviceInfo, DeviceNodeType, EncodedDocument, NSError, OODDescriptionString,
         DEFAULT_EXPIRE_TIME,
     };
     use package_lib::PackageId;
@@ -350,6 +453,16 @@ mod test {
     const TEST_HOSTNAME: &str = "devtest.buckyos.io";
     const TEST_DEVICE_NAME: &str = "ood1";
     const TEST_NET_ID: &str = "lan1";
+
+    #[test]
+    fn test_boot_init_lock_detects_nested_key_exist_error() {
+        let err = SystemConfigError::ReasonError(
+            "rpc call error: Failed due to reason: key exist : boot/init_lock".to_string(),
+        );
+
+        assert!(is_key_exist_error(&err, BOOT_INIT_LOCK_KEY));
+        assert!(!is_key_exist_error(&err, "services/scheduler/spec"));
+    }
 
     #[tokio::test]
     async fn test_gen_service_doc() -> Result<()> {
@@ -378,7 +491,19 @@ mod test {
         write_boot_template(temp_root.path());
         init_static_name_client().await;
 
-        let zone_boot_config = prepare_scheduler_test_configs(temp_root.path()).await;
+        let mut zone_boot_config = prepare_scheduler_test_configs(temp_root.path()).await;
+        zone_boot_config.oods.push(OODDescriptionString::new(
+            "ood2".to_string(),
+            DeviceNodeType::OOD,
+            Some(TEST_NET_ID.to_string()),
+            None,
+        ));
+        zone_boot_config.oods.push(OODDescriptionString::new(
+            "ood3".to_string(),
+            DeviceNodeType::OOD,
+            Some(TEST_NET_ID.to_string()),
+            None,
+        ));
         let mut init_map = create_init_list_by_template(&zone_boot_config)
             .await
             .expect("init list generation should succeed");
@@ -402,6 +527,15 @@ mod test {
         assert!(init_map.contains_key("services/repo-service/pkg_list"));
         assert!(init_map.contains_key("services/aicc/spec"));
         assert!(init_map.contains_key("services/msg-center/spec"));
+        assert!(init_map.contains_key("nodes/ood1/config"));
+        assert!(init_map.contains_key("nodes/ood2/config"));
+        assert!(init_map.contains_key("nodes/ood3/config"));
+        let base_policy = init_map
+            .get("system/rbac/base_policy")
+            .expect("base policy should exist");
+        assert!(base_policy.contains("g, ood1, ood"));
+        assert!(base_policy.contains("g, ood2, ood"));
+        assert!(base_policy.contains("g, ood3, ood"));
         //assert!(init_map.contains_key("services/smb-service/spec"));
 
         for (key, value) in init_map.iter() {
