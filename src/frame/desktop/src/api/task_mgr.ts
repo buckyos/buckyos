@@ -671,11 +671,19 @@ class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
     const id = normalizeNumericTaskId(task.taskId)
     if (!kind || id === null) return
 
+    const actedAt = new Date()
     await this.getClient().updateTaskData(id, {
       ...taskDataForUpdate(task),
       human_action: {
         kind,
-        acted_at: new Date().toISOString(),
+        actor: 'desktop',
+        submitted_at: Math.floor(actedAt.getTime() / 1000),
+        payload: {
+          source: 'desktop',
+          acted_at: actedAt.toISOString(),
+        },
+        // Legacy aliases kept while older consumers still read raw Task.data.
+        acted_at: actedAt.toISOString(),
         source: 'desktop',
       },
     })

@@ -103,7 +103,9 @@ impl TaskDb {
 
     async fn cleanup_removed_task_schema(&self) -> DbResult<()> {
         self.drop_task_name_scope_index().await?;
-        self.drop_task_title_column().await
+        self.drop_task_title_column().await?;
+        self.ensure_task_claim_columns().await?;
+        self.ensure_task_claim_indexes().await
     }
 
     async fn drop_task_name_scope_index(&self) -> DbResult<()> {
@@ -135,6 +137,74 @@ impl TaskDb {
                     .await?;
             }
         }
+        Ok(())
+    }
+
+    async fn ensure_task_claim_columns(&self) -> DbResult<()> {
+        self.add_task_column_if_missing("claim_token", "claim_token TEXT", "claim_token TEXT")
+            .await?;
+        self.add_task_column_if_missing("claimed_by", "claimed_by TEXT", "claimed_by TEXT")
+            .await?;
+        self.add_task_column_if_missing("claimed_at", "claimed_at INTEGER", "claimed_at BIGINT")
+            .await?;
+        self.add_task_column_if_missing("lease_until", "lease_until INTEGER", "lease_until BIGINT")
+            .await?;
+        self.add_task_column_if_missing(
+            "last_heartbeat_at",
+            "last_heartbeat_at INTEGER",
+            "last_heartbeat_at BIGINT",
+        )
+        .await
+    }
+
+    async fn add_task_column_if_missing(
+        &self,
+        column_name: &str,
+        sqlite_column_def: &str,
+        postgres_column_def: &str,
+    ) -> DbResult<()> {
+        match self.backend {
+            RdbBackend::Sqlite => {
+                let exists = sqlx::query("SELECT 1 FROM pragma_table_info('task') WHERE name = ?")
+                    .bind(column_name)
+                    .fetch_optional(self.pool())
+                    .await?
+                    .is_some();
+                if !exists {
+                    self.pool
+                        .execute(
+                            format!("ALTER TABLE task ADD COLUMN {}", sqlite_column_def).as_str(),
+                        )
+                        .await?;
+                }
+            }
+            RdbBackend::Postgres => {
+                self.pool
+                    .execute(
+                        format!(
+                            "ALTER TABLE task ADD COLUMN IF NOT EXISTS {}",
+                            postgres_column_def
+                        )
+                        .as_str(),
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn ensure_task_claim_indexes(&self) -> DbResult<()> {
+        let runner_lease_index = self.render_sql(
+            "CREATE INDEX IF NOT EXISTS idx_task_runner_status_lease
+            ON task(runner, status, lease_until)",
+        );
+        self.pool.execute(runner_lease_index.as_str()).await?;
+
+        let claim_token_index = self.render_sql(
+            "CREATE INDEX IF NOT EXISTS idx_task_claim_token
+            ON task(claim_token)",
+        );
+        self.pool.execute(claim_token_index.as_str()).await?;
         Ok(())
     }
 
@@ -335,13 +405,33 @@ impl TaskDb {
 
     pub async fn update_task_status(&self, id: i64, status: TaskStatus) -> DbResult<()> {
         let updated_at = now_ts();
-        let sql = self.render_sql("UPDATE task SET status = ?, updated_at = ? WHERE id = ?");
-        let result = sqlx::query(&sql)
-            .bind(status.to_string())
-            .bind(updated_at)
-            .bind(id)
-            .execute(self.pool())
-            .await?;
+        let result = if status == TaskStatus::Running {
+            let sql = self.render_sql("UPDATE task SET status = ?, updated_at = ? WHERE id = ?");
+            sqlx::query(&sql)
+                .bind(status.to_string())
+                .bind(updated_at)
+                .bind(id)
+                .execute(self.pool())
+                .await?
+        } else {
+            let sql = self.render_sql(
+                "UPDATE task SET
+                    status = ?,
+                    updated_at = ?,
+                    claim_token = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    lease_until = NULL,
+                    last_heartbeat_at = NULL
+                WHERE id = ?",
+            );
+            sqlx::query(&sql)
+                .bind(status.to_string())
+                .bind(updated_at)
+                .bind(id)
+                .execute(self.pool())
+                .await?
+        };
         info!(
             "task_db.update_task_status: id={} status={} changed={}",
             id,
@@ -351,19 +441,164 @@ impl TaskDb {
         Ok(())
     }
 
+    pub async fn claim_task_for_runner(
+        &self,
+        id: i64,
+        runner: &str,
+        claim_token: &str,
+        now: u64,
+        lease_until: u64,
+    ) -> DbResult<Option<Task>> {
+        let updated_at = now as i64;
+        let lease_until = lease_until as i64;
+        let sql = self.render_sql(
+            "UPDATE task SET
+                status = ?,
+                updated_at = ?,
+                claim_token = ?,
+                claimed_by = ?,
+                claimed_at = ?,
+                lease_until = ?,
+                last_heartbeat_at = ?
+            WHERE id = ? AND runner = ? AND status = ?",
+        );
+        let result = sqlx::query(&sql)
+            .bind(TaskStatus::Running.to_string())
+            .bind(updated_at)
+            .bind(claim_token.to_string())
+            .bind(runner.to_string())
+            .bind(updated_at)
+            .bind(lease_until)
+            .bind(updated_at)
+            .bind(id)
+            .bind(runner.to_string())
+            .bind(TaskStatus::Pending.to_string())
+            .execute(self.pool())
+            .await?;
+
+        info!(
+            "task_db.claim_task_for_runner: id={} runner={} changed={}",
+            id,
+            runner,
+            result.rows_affected()
+        );
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get_task(id).await
+    }
+
+    pub async fn heartbeat_task_claim(
+        &self,
+        id: i64,
+        claim_token: &str,
+        now: u64,
+        lease_until: u64,
+    ) -> DbResult<bool> {
+        let updated_at = now as i64;
+        let lease_until = lease_until as i64;
+        let sql = self.render_sql(
+            "UPDATE task SET
+                updated_at = ?,
+                lease_until = ?,
+                last_heartbeat_at = ?
+            WHERE id = ? AND claim_token = ? AND status = ?",
+        );
+        let result = sqlx::query(&sql)
+            .bind(updated_at)
+            .bind(lease_until)
+            .bind(updated_at)
+            .bind(id)
+            .bind(claim_token.to_string())
+            .bind(TaskStatus::Running.to_string())
+            .execute(self.pool())
+            .await?;
+        info!(
+            "task_db.heartbeat_task_claim: id={} changed={}",
+            id,
+            result.rows_affected()
+        );
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn requeue_stale_claims(&self, now: u64, runner: Option<&str>) -> DbResult<u64> {
+        let now = now as i64;
+        let sql = if runner.is_some() {
+            self.render_sql(
+                "UPDATE task SET
+                    status = ?,
+                    updated_at = ?,
+                    claim_token = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    lease_until = NULL,
+                    last_heartbeat_at = NULL
+                WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ? AND runner = ?",
+            )
+        } else {
+            self.render_sql(
+                "UPDATE task SET
+                    status = ?,
+                    updated_at = ?,
+                    claim_token = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    lease_until = NULL,
+                    last_heartbeat_at = NULL
+                WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?",
+            )
+        };
+        let mut query = sqlx::query(&sql)
+            .bind(TaskStatus::Pending.to_string())
+            .bind(now)
+            .bind(TaskStatus::Running.to_string())
+            .bind(now);
+        if let Some(runner) = runner {
+            query = query.bind(runner.to_string());
+        }
+        let result = query.execute(self.pool()).await?;
+        info!(
+            "task_db.requeue_stale_claims: runner={:?} changed={}",
+            runner,
+            result.rows_affected()
+        );
+        Ok(result.rows_affected())
+    }
+
     pub async fn update_task_status_by_root_id(
         &self,
         root_id: &str,
         status: TaskStatus,
     ) -> DbResult<()> {
         let updated_at = now_ts();
-        let sql = self.render_sql("UPDATE task SET status = ?, updated_at = ? WHERE root_id = ?");
-        let result = sqlx::query(&sql)
-            .bind(status.to_string())
-            .bind(updated_at)
-            .bind(root_id.to_string())
-            .execute(self.pool())
-            .await?;
+        let result = if status == TaskStatus::Running {
+            let sql =
+                self.render_sql("UPDATE task SET status = ?, updated_at = ? WHERE root_id = ?");
+            sqlx::query(&sql)
+                .bind(status.to_string())
+                .bind(updated_at)
+                .bind(root_id.to_string())
+                .execute(self.pool())
+                .await?
+        } else {
+            let sql = self.render_sql(
+                "UPDATE task SET
+                    status = ?,
+                    updated_at = ?,
+                    claim_token = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    lease_until = NULL,
+                    last_heartbeat_at = NULL
+                WHERE root_id = ?",
+            );
+            sqlx::query(&sql)
+                .bind(status.to_string())
+                .bind(updated_at)
+                .bind(root_id.to_string())
+                .execute(self.pool())
+                .await?
+        };
         info!(
             "task_db.update_task_status_by_root_id: root_id={} status={} changed={}",
             root_id,
@@ -406,7 +641,17 @@ impl TaskDb {
     pub async fn update_task_error(&self, id: i64, error_message: &str) -> DbResult<()> {
         let updated_at = now_ts();
         let sql = self.render_sql(
-            "UPDATE task SET status = ?, error_message = ?, message = ?, updated_at = ? WHERE id = ?",
+            "UPDATE task SET
+                status = ?,
+                error_message = ?,
+                message = ?,
+                updated_at = ?,
+                claim_token = NULL,
+                claimed_by = NULL,
+                claimed_at = NULL,
+                lease_until = NULL,
+                last_heartbeat_at = NULL
+            WHERE id = ?",
         );
         let result = sqlx::query(&sql)
             .bind(TaskStatus::Failed.to_string())
@@ -473,27 +718,57 @@ impl TaskDb {
 
         let updated_at = now_ts();
         let status_str = status.as_ref().map(|s| s.to_string());
+        let clear_claim = status
+            .as_ref()
+            .map(|status| *status != TaskStatus::Running)
+            .unwrap_or(false);
         let progress_f64 = progress.map(|p| p as f64);
         let message_present = message.is_some();
         let data_patch_present = data_str.is_some();
-        let sql = self.render_sql(
-            "UPDATE task SET
-                status = COALESCE(?, status),
-                progress = COALESCE(?, progress),
-                message = COALESCE(?, message),
-                data = COALESCE(?, data),
-                updated_at = ?
-            WHERE id = ?",
-        );
-        let result = sqlx::query(&sql)
-            .bind(status_str)
-            .bind(progress_f64)
-            .bind(message.clone())
-            .bind(data_str)
-            .bind(updated_at)
-            .bind(id)
-            .execute(self.pool())
-            .await?;
+        let result = if clear_claim {
+            let sql = self.render_sql(
+                "UPDATE task SET
+                    status = COALESCE(?, status),
+                    progress = COALESCE(?, progress),
+                    message = COALESCE(?, message),
+                    data = COALESCE(?, data),
+                    updated_at = ?,
+                    claim_token = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    lease_until = NULL,
+                    last_heartbeat_at = NULL
+                WHERE id = ?",
+            );
+            sqlx::query(&sql)
+                .bind(status_str)
+                .bind(progress_f64)
+                .bind(message.clone())
+                .bind(data_str)
+                .bind(updated_at)
+                .bind(id)
+                .execute(self.pool())
+                .await?
+        } else {
+            let sql = self.render_sql(
+                "UPDATE task SET
+                    status = COALESCE(?, status),
+                    progress = COALESCE(?, progress),
+                    message = COALESCE(?, message),
+                    data = COALESCE(?, data),
+                    updated_at = ?
+                WHERE id = ?",
+            );
+            sqlx::query(&sql)
+                .bind(status_str)
+                .bind(progress_f64)
+                .bind(message.clone())
+                .bind(data_str)
+                .bind(updated_at)
+                .bind(id)
+                .execute(self.pool())
+                .await?
+        };
         info!(
             "task_db.update_task: id={} status={:?} progress={:?} message_present={} data_patch_present={} changed={}",
             id,
@@ -830,6 +1105,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
                 .unwrap();
         assert!(name_scope_index.is_none());
 
+        for column_name in [
+            "claim_token",
+            "claimed_by",
+            "claimed_at",
+            "lease_until",
+            "last_heartbeat_at",
+        ] {
+            let column = sqlx::query("SELECT 1 FROM pragma_table_info('task') WHERE name = ?")
+                .bind(column_name)
+                .fetch_optional(db.pool())
+                .await
+                .unwrap();
+            assert!(column.is_some(), "missing migrated column {column_name}");
+        }
+
+        for index_name in ["idx_task_runner_status_lease", "idx_task_claim_token"] {
+            let index =
+                sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?")
+                    .bind(index_name)
+                    .fetch_optional(db.pool())
+                    .await
+                    .unwrap();
+            assert!(index.is_some(), "missing migrated index {index_name}");
+        }
+
         let id1 = db.create_task(&create_test_task("task1")).await.unwrap();
         let id2 = db.create_task(&create_test_task("task1")).await.unwrap();
         assert_ne!(id1, id2);
@@ -1043,6 +1343,80 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
         assert_eq!(completed_tasks.len(), 1);
         assert_eq!(running_tasks[0].name, "task1");
         assert_eq!(completed_tasks[0].name, "task2");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_claim_task_for_runner_only_claims_matching_pending_task() {
+        let (db, _temp_dir) = setup_test_db().await;
+
+        let mut task = create_test_task("claimable");
+        task.runner = "node-a".to_string();
+        let id = db.create_task(&task).await.unwrap();
+
+        let wrong_runner = db
+            .claim_task_for_runner(id, "node-b", "token-wrong", 100, 200)
+            .await
+            .unwrap();
+        assert!(wrong_runner.is_none());
+
+        let claimed = db
+            .claim_task_for_runner(id, "node-a", "token-1", 100, 200)
+            .await
+            .unwrap();
+        let claimed = claimed.expect("pending task should be claimed");
+        assert_eq!(claimed.status, TaskStatus::Running);
+        assert_eq!(claimed.runner, "node-a");
+
+        let second_claim = db
+            .claim_task_for_runner(id, "node-a", "token-2", 100, 200)
+            .await
+            .unwrap();
+        assert!(second_claim.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_claim_heartbeat_and_requeue_stale_claim() {
+        let (db, _temp_dir) = setup_test_db().await;
+
+        let mut task = create_test_task("leased");
+        task.runner = "node-a".to_string();
+        let id = db.create_task(&task).await.unwrap();
+
+        let claimed = db
+            .claim_task_for_runner(id, "node-a", "token-1", 100, 200)
+            .await
+            .unwrap()
+            .expect("task should be claimed");
+        assert_eq!(claimed.status, TaskStatus::Running);
+
+        let wrong_token = db
+            .heartbeat_task_claim(id, "token-wrong", 150, 250)
+            .await
+            .unwrap();
+        assert!(!wrong_token);
+
+        let extended = db
+            .heartbeat_task_claim(id, "token-1", 150, 260)
+            .await
+            .unwrap();
+        assert!(extended);
+
+        let not_expired = db.requeue_stale_claims(259, Some("node-a")).await.unwrap();
+        assert_eq!(not_expired, 0);
+        assert_eq!(
+            db.get_task(id).await.unwrap().unwrap().status,
+            TaskStatus::Running
+        );
+
+        let requeued = db.requeue_stale_claims(261, Some("node-a")).await.unwrap();
+        assert_eq!(requeued, 1);
+        assert_eq!(
+            db.get_task(id).await.unwrap().unwrap().status,
+            TaskStatus::Pending
+        );
+
+        let stale_again = db.requeue_stale_claims(300, Some("node-a")).await.unwrap();
+        assert_eq!(stale_again, 0);
     }
 
     #[tokio::test(flavor = "current_thread")]

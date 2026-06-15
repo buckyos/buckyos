@@ -1,8 +1,9 @@
 use anyhow::{bail, Context, Result};
 use buckyos_api::{
-    get_session_token_env_key, parse_typed_task_data, FunctionObject, FunctionType,
-    NodeExecutorTaskState, Task, TaskFilter, TaskManagerClient, TaskStatus, ThunkExecutionResult,
-    ThunkExecutionStatus, ThunkObject, ThunkTaskData, TypedTaskData, TASK_MANAGER_SERVICE_PORT,
+    get_session_token_env_key, parse_typed_task_data, ClaimTaskResult, FunctionObject,
+    FunctionType, NodeExecutorTaskState, Task, TaskFilter, TaskManagerClient, TaskStatus,
+    ThunkExecutionResult, ThunkExecutionStatus, ThunkObject, ThunkTaskData, TypedTaskData,
+    TASK_MANAGER_SERVICE_PORT,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
 use log::{info, warn};
@@ -23,6 +24,8 @@ use ::kRPC::kRPC;
 
 pub const NODE_EXECUTOR_TASK_TYPE: &str = "scheduler.dispatch_thunk";
 pub const NODE_DAEMON_APP_ID: &str = "node-daemon";
+const TASK_CLAIM_LEASE: Duration = Duration::from_secs(60);
+const TASK_CLAIM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone)]
 pub struct NodeExecutorConfig {
@@ -59,6 +62,8 @@ pub struct NodeExecutor {
 struct RunningThunkExecution {
     task_id: i64,
     thunk_obj_id: String,
+    claim_token: Option<String>,
+    last_heartbeat_at: Instant,
     child: Child,
     started_at: Instant,
     timeout: Option<Duration>,
@@ -108,7 +113,21 @@ impl NodeExecutor {
 
     pub async fn run_task(&self, task_id: i64) -> Result<bool> {
         let task = self.task_manager.get_task(task_id).await?;
-        self.maybe_start_task(task).await
+        if task.status == TaskStatus::Pending {
+            let claim = self
+                .task_manager
+                .claim_task_with_lease(
+                    task.id,
+                    self.config.node_id.as_str(),
+                    Some(TASK_CLAIM_LEASE),
+                )
+                .await?;
+            if claim.task.is_none() {
+                return Ok(false);
+            }
+            return self.maybe_start_task(claim).await;
+        }
+        self.start_task_execution(task, None).await
     }
 
     async fn start_pending_tasks(&self) -> Result<usize> {
@@ -129,7 +148,19 @@ impl NodeExecutor {
 
         let mut launched = 0;
         for task in tasks {
-            match self.maybe_start_task(task.clone()).await {
+            let claim = self
+                .task_manager
+                .claim_task_with_lease(
+                    task.id,
+                    self.config.node_id.as_str(),
+                    Some(TASK_CLAIM_LEASE),
+                )
+                .await
+                .with_context(|| format!("claim pending task {} failed", task.id))?;
+            let Some(task) = claim.task.clone() else {
+                continue;
+            };
+            match self.maybe_start_task(claim).await {
                 Ok(true) => launched += 1,
                 Ok(false) => {}
                 Err(err) => {
@@ -145,7 +176,14 @@ impl NodeExecutor {
         Ok(launched)
     }
 
-    async fn maybe_start_task(&self, task: Task) -> Result<bool> {
+    async fn maybe_start_task(&self, claim: ClaimTaskResult) -> Result<bool> {
+        let Some(task) = claim.task else {
+            return Ok(false);
+        };
+        self.start_task_execution(task, claim.claim_token).await
+    }
+
+    async fn start_task_execution(&self, task: Task, claim_token: Option<String>) -> Result<bool> {
         let payload = NodeExecutorTaskPayload::from_task(&task)?;
         let thunk_obj_id = payload
             .thunk_obj_id
@@ -157,7 +195,7 @@ impl NodeExecutor {
         }
 
         let execution = self
-            .spawn_task_execution(&task, &payload, &thunk_obj_id)
+            .spawn_task_execution(&task, &payload, &thunk_obj_id, claim_token)
             .await
             .with_context(|| format!("spawn task {} failed", task.id))?;
         self.mark_task_running(&task, &execution, &payload).await?;
@@ -170,6 +208,7 @@ impl NodeExecutor {
         task: &Task,
         payload: &NodeExecutorTaskPayload,
         thunk_obj_id: &str,
+        claim_token: Option<String>,
     ) -> Result<RunningThunkExecution> {
         tokio::fs::create_dir_all(&self.config.work_root).await?;
         let work_dir = self.config.work_root.join(format!(
@@ -221,6 +260,8 @@ impl NodeExecutor {
         Ok(RunningThunkExecution {
             task_id: task.id,
             thunk_obj_id: thunk_obj_id.to_string(),
+            claim_token,
+            last_heartbeat_at: Instant::now(),
             child,
             started_at: Instant::now(),
             timeout: payload.function_object.timeout.map(Duration::from_secs),
@@ -261,10 +302,17 @@ impl NodeExecutor {
         };
 
         for thunk_obj_id in thunk_ids {
-            let task_id = match self.running.lock().await.get(&thunk_obj_id) {
-                Some(execution) => execution.task_id,
-                None => continue,
-            };
+            let (task_id, claim_token, should_heartbeat) =
+                match self.running.lock().await.get(&thunk_obj_id) {
+                    Some(execution) => (
+                        execution.task_id,
+                        execution.claim_token.clone(),
+                        execution.claim_token.is_some()
+                            && execution.last_heartbeat_at.elapsed()
+                                >= TASK_CLAIM_HEARTBEAT_INTERVAL,
+                    ),
+                    None => continue,
+                };
 
             let task_status = self
                 .task_manager
@@ -272,6 +320,17 @@ impl NodeExecutor {
                 .await
                 .map(|task| task.status)
                 .unwrap_or(TaskStatus::Running);
+
+            if task_status == TaskStatus::Pending && claim_token.is_some() {
+                warn!(
+                    "node_executor task {} lost its claim and was requeued; stopping local execution",
+                    task_id
+                );
+                if let Some(mut execution) = self.running.lock().await.remove(&thunk_obj_id) {
+                    let _ = execution.child.kill().await;
+                }
+                continue;
+            }
 
             if task_status == TaskStatus::Canceled {
                 if let Some(mut execution) = self.running.lock().await.remove(&thunk_obj_id) {
@@ -281,12 +340,36 @@ impl NodeExecutor {
                 continue;
             }
 
+            if should_heartbeat {
+                if let Some(claim_token) = claim_token.as_deref() {
+                    match self
+                        .task_manager
+                        .heartbeat_task_claim(task_id, claim_token, Some(TASK_CLAIM_LEASE))
+                        .await
+                    {
+                        Ok(_) => {
+                            if let Some(execution) =
+                                self.running.lock().await.get_mut(&thunk_obj_id)
+                            {
+                                execution.last_heartbeat_at = Instant::now();
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                "node_executor heartbeat failed for task {}: {}",
+                                task_id, err
+                            );
+                        }
+                    }
+                }
+            }
+
             let timed_out = match self.running.lock().await.get(&thunk_obj_id) {
                 Some(execution) => execution
                     .timeout
                     .map(|timeout| execution.started_at.elapsed() > timeout)
                     .unwrap_or(false),
-                None => false,
+                None => continue,
             };
             if timed_out {
                 if let Some(mut execution) = self.running.lock().await.remove(&thunk_obj_id) {

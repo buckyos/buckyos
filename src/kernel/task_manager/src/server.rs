@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 // Keep the inlined data small enough that the full event (envelope + task
 // fields + data) fits in a single shared-ringbuffer slot (SLOT_DATA_SIZE =
@@ -30,6 +31,10 @@ use std::time::{Duration, Instant};
 // 1300 leaves headroom.
 const TASK_EVENT_DATA_INLINE_LIMIT_BYTES: usize = 1300;
 const TASK_EVENT_RATE_LIMIT: Duration = Duration::from_secs(1);
+const DEFAULT_TASK_CLAIM_LEASE: Duration = Duration::from_secs(60);
+const MAX_TASK_CLAIM_LEASE: Duration = Duration::from_secs(60 * 60);
+const MIN_TASK_CLAIM_LEASE: Duration = Duration::from_secs(1);
+const NODE_DAEMON_RUNNER_APP_ID: &str = "node-daemon";
 
 #[derive(Clone, Copy)]
 enum TaskChangeKind {
@@ -129,6 +134,28 @@ impl TaskManagerService {
         app_id == "kernel" || app_id == "system"
     }
 
+    fn is_system_context(ctx: &RequestContext) -> bool {
+        !ctx.app_id.trim().is_empty() && Self::is_system_app(ctx.app_id.as_str())
+    }
+
+    fn can_manage_runner(ctx: &RequestContext, runner: &str) -> bool {
+        if ctx.user_id.trim().is_empty() || ctx.app_id.trim().is_empty() {
+            return false;
+        }
+        if Self::is_system_context(ctx) {
+            return true;
+        }
+        let runner = runner.trim();
+        if runner.is_empty() {
+            return false;
+        }
+        if ctx.app_id == runner {
+            return true;
+        }
+        ctx.app_id == NODE_DAEMON_RUNNER_APP_ID
+            && (ctx.user_id == runner || ctx.user_id == "kernel")
+    }
+
     fn task_event_id(task_id: i64) -> String {
         format!("/task_mgr/{}", task_id)
     }
@@ -151,6 +178,24 @@ impl TaskManagerService {
         let event_id = format!("/task_mgr/runner/{}/task_ready", trimmed);
         validate_eventid(event_id.as_str()).ok()?;
         Some(event_id)
+    }
+
+    fn now_ts() -> u64 {
+        chrono::Utc::now().timestamp().max(0) as u64
+    }
+
+    fn resolve_claim_lease(lease_ms: Option<u64>) -> Duration {
+        let requested = lease_ms
+            .map(Duration::from_millis)
+            .unwrap_or(DEFAULT_TASK_CLAIM_LEASE);
+        requested.clamp(MIN_TASK_CLAIM_LEASE, MAX_TASK_CLAIM_LEASE)
+    }
+
+    fn build_claim_window(lease_ms: Option<u64>) -> (u64, u64) {
+        let now = Self::now_ts();
+        let lease = Self::resolve_claim_lease(lease_ms);
+        let lease_until = now.saturating_add(lease.as_secs());
+        (now, lease_until)
     }
 
     /// Returns true if the rate-limit gate is open and updates the last-emit
@@ -629,6 +674,162 @@ impl TaskManagerHandler for TaskManagerService {
         }
 
         Ok(task)
+    }
+
+    async fn handle_claim_task(
+        &self,
+        id: i64,
+        runner: &str,
+        lease_ms: Option<u64>,
+        ctx: RPCContext,
+    ) -> Result<ClaimTaskResult> {
+        let runner = runner.trim();
+        if runner.is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "runner is required".to_string(),
+            ));
+        }
+
+        let request_ctx = request_context_from_rpc(&ctx);
+        let before_task = self.load_task(id).await?;
+        if !Self::can_manage_runner(&request_ctx, runner) {
+            return Err(RPCErrors::NoPermission(
+                "No permission to claim task".to_string(),
+            ));
+        }
+        if before_task.runner != runner || before_task.status != TaskStatus::Pending {
+            return Ok(ClaimTaskResult {
+                task: None,
+                claim_token: None,
+                lease_until: None,
+            });
+        }
+
+        let claim_token = Uuid::new_v4().to_string();
+        let (now, lease_until) = Self::build_claim_window(lease_ms);
+        let claimed = self
+            .db
+            .claim_task_for_runner(id, runner, claim_token.as_str(), now, lease_until)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        if let Some(after_task) = claimed.as_ref() {
+            self.publish_task_changed_event(
+                &before_task,
+                after_task,
+                TaskChangeKind::Status,
+                "claim_task",
+            )
+            .await;
+        }
+        if claimed.is_none() {
+            return Ok(ClaimTaskResult {
+                task: None,
+                claim_token: None,
+                lease_until: None,
+            });
+        }
+
+        Ok(ClaimTaskResult {
+            task: claimed,
+            claim_token: Some(claim_token),
+            lease_until: Some(lease_until),
+        })
+    }
+
+    async fn handle_heartbeat_task_claim(
+        &self,
+        id: i64,
+        claim_token: &str,
+        lease_ms: Option<u64>,
+        ctx: RPCContext,
+    ) -> Result<HeartbeatTaskClaimResult> {
+        let claim_token = claim_token.trim();
+        if claim_token.is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "claim_token is required".to_string(),
+            ));
+        }
+
+        let request_ctx = request_context_from_rpc(&ctx);
+        let task = self.load_task(id).await?;
+        if !Self::can_manage_runner(&request_ctx, task.runner.as_str()) {
+            return Err(RPCErrors::NoPermission(
+                "No permission to heartbeat task claim".to_string(),
+            ));
+        }
+
+        let (now, lease_until) = Self::build_claim_window(lease_ms);
+        let extended = self
+            .db
+            .heartbeat_task_claim(id, claim_token, now, lease_until)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        if !extended {
+            return Err(RPCErrors::ReasonError(format!(
+                "Task claim {} is not active",
+                id
+            )));
+        }
+        Ok(HeartbeatTaskClaimResult { lease_until })
+    }
+
+    async fn handle_requeue_stale_task_claims(
+        &self,
+        now: Option<u64>,
+        runner: Option<&str>,
+        ctx: RPCContext,
+    ) -> Result<RequeueStaleClaimsResult> {
+        let now = now.unwrap_or_else(Self::now_ts);
+        let runner = runner.map(str::trim).filter(|value| !value.is_empty());
+        let request_ctx = request_context_from_rpc(&ctx);
+        if let Some(runner) = runner {
+            if !Self::can_manage_runner(&request_ctx, runner) {
+                return Err(RPCErrors::NoPermission(
+                    "No permission to requeue runner claims".to_string(),
+                ));
+            }
+        } else if !Self::is_system_context(&request_ctx) {
+            return Err(RPCErrors::NoPermission(
+                "No permission to requeue all stale claims".to_string(),
+            ));
+        }
+        let stale_tasks = self
+            .db
+            .list_tasks_filtered(
+                None,
+                None,
+                None,
+                runner,
+                Some(TaskStatus::Running),
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        let requeued_count = self
+            .db
+            .requeue_stale_claims(now, runner)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+
+        for before_task in stale_tasks {
+            if let Ok(after_task) = self.load_task(before_task.id).await {
+                if before_task.status != after_task.status {
+                    self.publish_task_changed_event(
+                        &before_task,
+                        &after_task,
+                        TaskChangeKind::Status,
+                        "requeue_stale_task_claims",
+                    )
+                    .await;
+                    self.publish_task_ready_event(&after_task, "requeue_stale_task_claims")
+                        .await;
+                }
+            }
+        }
+
+        Ok(RequeueStaleClaimsResult { requeued_count })
     }
 
     async fn handle_add_task_note(
@@ -1225,6 +1426,21 @@ mod tests {
         }
     }
 
+    fn create_rpc_request_with_token(
+        method: &str,
+        params: Value,
+        user_id: &str,
+        app_id: &str,
+    ) -> RPCRequest {
+        RPCRequest {
+            method: method.to_string(),
+            params,
+            seq: 1,
+            token: Some(json!({ "sub": user_id, "appid": app_id }).to_string()),
+            trace_id: Some("".to_string()),
+        }
+    }
+
     async fn setup_test_environment() -> (
         buckyos_api::TaskManagerServerHandler<TaskManagerService>,
         tempfile::TempDir,
@@ -1240,6 +1456,36 @@ mod tests {
         let service = TaskManagerService::new(Arc::new(db));
         let server = buckyos_api::TaskManagerServerHandler::new(service);
         (server, temp_dir)
+    }
+
+    async fn setup_test_service() -> (TaskManagerService, tempfile::TempDir) {
+        INIT_LOGGING.call_once(|| {
+            buckyos_kit::init_logging("test_task_manager", false);
+        });
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+
+        let db = TaskDb::open(&conn, RdbBackend::Sqlite, None).await.unwrap();
+        let service = TaskManagerService::new(Arc::new(db));
+        (service, temp_dir)
+    }
+
+    fn task_with_permissions(read: TaskScope, write: TaskScope) -> Task {
+        let mut task = new_task(
+            "permission_task".to_string(),
+            "test_type".to_string(),
+            "runner-1".to_string(),
+            "user1".to_string(),
+            "app1".to_string(),
+            "session1".to_string(),
+            None,
+            TaskPermissions { read, write },
+            json!({"small": true}),
+        );
+        task.id = 42;
+        task.root_id = "42".to_string();
+        task
     }
 
     #[test]
@@ -1267,6 +1513,106 @@ mod tests {
             TaskManagerService::runner_task_ready_event_id("bad/runner"),
             None
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_permission_scope_checks() {
+        let (service, _temp_dir) = setup_test_service().await;
+        let same_app = RequestContext {
+            user_id: "user1".to_string(),
+            app_id: "app1".to_string(),
+        };
+        let same_user_other_app = RequestContext {
+            user_id: "user1".to_string(),
+            app_id: "app2".to_string(),
+        };
+        let system_app = RequestContext {
+            user_id: "admin".to_string(),
+            app_id: "system".to_string(),
+        };
+        let other_user = RequestContext {
+            user_id: "user2".to_string(),
+            app_id: "app1".to_string(),
+        };
+
+        let private_task = task_with_permissions(TaskScope::Private, TaskScope::Private);
+        assert!(service.can_read_task(&same_app, &private_task));
+        assert!(service.can_write_task(&same_app, &private_task));
+        assert!(!service.can_read_task(&same_user_other_app, &private_task));
+        assert!(!service.can_write_task(&same_user_other_app, &private_task));
+
+        let user_task = task_with_permissions(TaskScope::User, TaskScope::User);
+        assert!(service.can_read_task(&same_user_other_app, &user_task));
+        assert!(service.can_write_task(&same_user_other_app, &user_task));
+        assert!(!service.can_read_task(&other_user, &user_task));
+
+        let system_task = task_with_permissions(TaskScope::System, TaskScope::System);
+        assert!(service.can_read_task(&system_app, &system_task));
+        assert!(service.can_write_task(&system_app, &system_task));
+        assert!(!service.can_read_task(&same_app, &system_task));
+
+        let empty_context = RequestContext::empty();
+        assert!(service.can_read_task(&empty_context, &private_task));
+        assert!(service.can_write_task(&empty_context, &private_task));
+    }
+
+    #[test]
+    fn test_runner_management_permission_checks() {
+        let empty_context = RequestContext::empty();
+        assert!(!TaskManagerService::can_manage_runner(
+            &empty_context,
+            "node-a"
+        ));
+
+        let system_context = RequestContext {
+            user_id: "admin".to_string(),
+            app_id: "system".to_string(),
+        };
+        assert!(TaskManagerService::can_manage_runner(
+            &system_context,
+            "node-a"
+        ));
+
+        let node_daemon_context = RequestContext {
+            user_id: "node-a".to_string(),
+            app_id: NODE_DAEMON_RUNNER_APP_ID.to_string(),
+        };
+        assert!(TaskManagerService::can_manage_runner(
+            &node_daemon_context,
+            "node-a"
+        ));
+        assert!(!TaskManagerService::can_manage_runner(
+            &node_daemon_context,
+            "node-b"
+        ));
+
+        let app_runner_context = RequestContext {
+            user_id: "user1".to_string(),
+            app_id: "app.runner".to_string(),
+        };
+        assert!(TaskManagerService::can_manage_runner(
+            &app_runner_context,
+            "app.runner"
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_event_payload_omits_large_task_data_and_rate_limits_low_priority_changes() {
+        let (service, _temp_dir) = setup_test_service().await;
+        let before = task_with_permissions(TaskScope::User, TaskScope::User);
+        let mut after = before.clone();
+        after.data = json!({"blob": "x".repeat(TASK_EVENT_DATA_INLINE_LIMIT_BYTES + 128)});
+        after.progress = 20.0;
+
+        let payload =
+            service.build_event_payload(&before, &after, TaskChangeKind::Data, "update_task_data");
+        assert_eq!(payload["data_omitted"], true);
+        assert!(payload["data_size"].as_u64().unwrap() > TASK_EVENT_DATA_INLINE_LIMIT_BYTES as u64);
+        assert!(payload.get("data").is_none());
+
+        assert!(service.check_and_update_rate_limit(after.id, TaskChangeKind::Progress));
+        assert!(!service.check_and_update_rate_limit(after.id, TaskChangeKind::Progress));
+        assert!(service.check_and_update_rate_limit(after.id, TaskChangeKind::Status));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1462,6 +1808,213 @@ mod tests {
             assert_eq!(tasks[0]["root_id"], "session-beta");
         } else {
             panic!("Failed to list tasks by root_id");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_child_task_inherits_parent_root_id() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+
+        let parent_req = create_rpc_request(
+            "create_task",
+            json!({
+                "name": "parent_task",
+                "task_type": "workflow/run",
+                "app_id": "workflow",
+                "user_id": "user1",
+                "root_id": "workflow-root-1"
+            }),
+        );
+        let parent_resp = server.handle_rpc_call(parent_req, ip).await.unwrap();
+        let parent_id = if let RPCResult::Success(result) = parent_resp.result {
+            assert_eq!(result["task"]["root_id"], "workflow-root-1");
+            result["task_id"].as_i64().unwrap()
+        } else {
+            panic!("Failed to create parent task");
+        };
+
+        let child_req = create_rpc_request(
+            "create_task",
+            json!({
+                "name": "child_task",
+                "task_type": "workflow/step",
+                "app_id": "workflow",
+                "user_id": "user1",
+                "parent_id": parent_id,
+                "root_id": "ignored-child-root"
+            }),
+        );
+        let child_resp = server.handle_rpc_call(child_req, ip).await.unwrap();
+        let child_id = if let RPCResult::Success(result) = child_resp.result {
+            assert_eq!(result["task"]["parent_id"], parent_id);
+            assert_eq!(result["task"]["root_id"], "workflow-root-1");
+            result["task_id"].as_i64().unwrap()
+        } else {
+            panic!("Failed to create child task");
+        };
+
+        let list_req = create_rpc_request("list_tasks", json!({ "root_id": "workflow-root-1" }));
+        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = list_resp.result {
+            let ids = result["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|task| task["id"].as_i64().unwrap())
+                .collect::<Vec<_>>();
+            assert!(ids.contains(&parent_id));
+            assert!(ids.contains(&child_id));
+            assert_eq!(ids.len(), 2);
+        } else {
+            panic!("Failed to list task tree by root_id");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_claim_task_claims_pending_runner_task_once() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+
+        let create_req = create_rpc_request(
+            "create_task",
+            json!({
+                "name": "claimable_task",
+                "task_type": "scheduler.dispatch_thunk",
+                "runner": "node-a",
+                "app_id": "scheduler",
+                "user_id": "user1"
+            }),
+        );
+        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        let task_id = if let RPCResult::Success(result) = create_resp.result {
+            result["task_id"].as_i64().unwrap()
+        } else {
+            panic!("Failed to create claimable task");
+        };
+
+        let unauthenticated_claim_req =
+            create_rpc_request("claim_task", json!({ "id": task_id, "runner": "node-b" }));
+        let unauthenticated_claim = server.handle_rpc_call(unauthenticated_claim_req, ip).await;
+        assert!(matches!(
+            unauthenticated_claim,
+            Err(RPCErrors::NoPermission(_))
+        ));
+
+        let wrong_runner_req = create_rpc_request_with_token(
+            "claim_task",
+            json!({ "id": task_id, "runner": "node-b" }),
+            "kernel",
+            "system",
+        );
+        let wrong_runner_resp = server.handle_rpc_call(wrong_runner_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = wrong_runner_resp.result {
+            assert!(result["task"].is_null());
+        } else {
+            panic!("Wrong runner claim should return success with null task");
+        }
+
+        let unauthorized_runner_req = create_rpc_request_with_token(
+            "claim_task",
+            json!({ "id": task_id, "runner": "node-a" }),
+            "node-b",
+            NODE_DAEMON_RUNNER_APP_ID,
+        );
+        let unauthorized_runner = server.handle_rpc_call(unauthorized_runner_req, ip).await;
+        assert!(matches!(
+            unauthorized_runner,
+            Err(RPCErrors::NoPermission(_))
+        ));
+
+        let claim_req = create_rpc_request_with_token(
+            "claim_task",
+            json!({ "id": task_id, "runner": "node-a" }),
+            "node-a",
+            NODE_DAEMON_RUNNER_APP_ID,
+        );
+        let claim_resp = server.handle_rpc_call(claim_req, ip).await.unwrap();
+        let (claim_token, mut lease_until) = if let RPCResult::Success(result) = claim_resp.result {
+            assert_eq!(result["task"]["id"], task_id);
+            assert_eq!(result["task"]["runner"], "node-a");
+            assert_eq!(result["task"]["status"], "Running");
+            let claim_token = result["claim_token"]
+                .as_str()
+                .expect("claim_token should be returned")
+                .to_string();
+            let lease_until = result["lease_until"]
+                .as_u64()
+                .expect("lease_until should be returned");
+            assert!(!claim_token.is_empty());
+            assert!(lease_until > 0);
+            (claim_token, lease_until)
+        } else {
+            panic!("Matching runner should claim task");
+        };
+
+        let second_claim_req = create_rpc_request_with_token(
+            "claim_task",
+            json!({ "id": task_id, "runner": "node-a" }),
+            "node-a",
+            NODE_DAEMON_RUNNER_APP_ID,
+        );
+        let second_claim_resp = server.handle_rpc_call(second_claim_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = second_claim_resp.result {
+            assert!(result["task"].is_null());
+        } else {
+            panic!("Second claim should return success with null task");
+        }
+
+        let heartbeat_req = create_rpc_request_with_token(
+            "heartbeat_task_claim",
+            json!({
+                "id": task_id,
+                "claim_token": claim_token,
+                "lease_ms": 120000
+            }),
+            "node-a",
+            NODE_DAEMON_RUNNER_APP_ID,
+        );
+        let heartbeat_resp = server.handle_rpc_call(heartbeat_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = heartbeat_resp.result {
+            assert!(result["lease_until"].as_u64().unwrap() >= lease_until);
+            lease_until = result["lease_until"].as_u64().unwrap();
+        } else {
+            panic!("Heartbeat should renew the claim");
+        }
+
+        let unauthorized_all_requeue_req = create_rpc_request_with_token(
+            "requeue_stale_task_claims",
+            json!({ "now": lease_until + 1 }),
+            "node-a",
+            NODE_DAEMON_RUNNER_APP_ID,
+        );
+        let unauthorized_all_requeue = server
+            .handle_rpc_call(unauthorized_all_requeue_req, ip)
+            .await;
+        assert!(matches!(
+            unauthorized_all_requeue,
+            Err(RPCErrors::NoPermission(_))
+        ));
+
+        let requeue_req = create_rpc_request_with_token(
+            "requeue_stale_task_claims",
+            json!({ "now": lease_until + 1, "runner": "node-a" }),
+            "node-a",
+            NODE_DAEMON_RUNNER_APP_ID,
+        );
+        let requeue_resp = server.handle_rpc_call(requeue_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = requeue_resp.result {
+            assert_eq!(result["requeued_count"], 1);
+        } else {
+            panic!("Expired claim should be requeued");
+        }
+
+        let get_req = create_rpc_request("get_task", json!({ "id": task_id }));
+        let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = get_resp.result {
+            assert_eq!(result["task"]["status"], "Pending");
+        } else {
+            panic!("Failed to read requeued task");
         }
     }
 

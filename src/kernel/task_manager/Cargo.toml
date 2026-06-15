@@ -27,6 +27,7 @@ ndn-lib = { workspace = true }
 ndn-toolkit = { workspace = true }
 named_store = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

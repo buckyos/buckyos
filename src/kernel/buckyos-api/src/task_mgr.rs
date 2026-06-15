@@ -26,7 +26,7 @@ pub const TASK_MANAGER_SERVICE_PORT: u16 = 3380;
 pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "task-mgr-main";
 /// Version of the task table schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent, so the scheduler can detect drift.
-pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 5;
+pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 6;
 
 /// Sqlite DDL for the task-manager database. `CREATE TABLE IF NOT EXISTS` so
 /// the migration is safe to re-run on every process start.
@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS task (
     root_id         TEXT NOT NULL DEFAULT '',
     permissions     TEXT,
     message         TEXT,
+    claim_token     TEXT,
+    claimed_by      TEXT,
+    claimed_at      INTEGER,
+    lease_until     INTEGER,
+    last_heartbeat_at INTEGER,
     FOREIGN KEY(parent_id) REFERENCES task(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_task_root_status ON task(root_id, status);
@@ -99,7 +104,12 @@ CREATE TABLE IF NOT EXISTS task (
     parent_id       BIGINT REFERENCES task(id) ON DELETE CASCADE,
     root_id         TEXT NOT NULL DEFAULT '',
     permissions     TEXT,
-    message         TEXT
+    message         TEXT,
+    claim_token     TEXT,
+    claimed_by      TEXT,
+    claimed_at      BIGINT,
+    lease_until     BIGINT,
+    last_heartbeat_at BIGINT
 );
 CREATE INDEX IF NOT EXISTS idx_task_root_status ON task(root_id, status);
 CREATE INDEX IF NOT EXISTS idx_task_parent ON task(parent_id);
@@ -335,6 +345,25 @@ pub struct ListTasksResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimTaskResult {
+    pub task: Option<Task>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_until: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatTaskClaimResult {
+    pub lease_until: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequeueStaleClaimsResult {
+    pub requeued_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddTaskNoteResult {
     pub note_id: TaskNoteId,
     pub note: TaskNote,
@@ -498,6 +527,80 @@ impl TaskManagerGetTaskReq {
     pub fn from_json(value: Value) -> Result<Self> {
         serde_json::from_value(value).map_err(|e| {
             RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerGetTaskReq: {}", e))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskManagerClaimTaskReq {
+    pub id: i64,
+    pub runner: String,
+    #[serde(default)]
+    pub lease_ms: Option<u64>,
+}
+
+impl TaskManagerClaimTaskReq {
+    pub fn new(id: i64, runner: String) -> Self {
+        Self {
+            id,
+            runner,
+            lease_ms: None,
+        }
+    }
+
+    pub fn from_json(value: Value) -> Result<Self> {
+        serde_json::from_value(value).map_err(|e| {
+            RPCErrors::ParseRequestError(format!("Failed to parse TaskManagerClaimTaskReq: {}", e))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskManagerHeartbeatTaskClaimReq {
+    pub id: i64,
+    pub claim_token: String,
+    #[serde(default)]
+    pub lease_ms: Option<u64>,
+}
+
+impl TaskManagerHeartbeatTaskClaimReq {
+    pub fn new(id: i64, claim_token: String, lease_ms: Option<u64>) -> Self {
+        Self {
+            id,
+            claim_token,
+            lease_ms,
+        }
+    }
+
+    pub fn from_json(value: Value) -> Result<Self> {
+        serde_json::from_value(value).map_err(|e| {
+            RPCErrors::ParseRequestError(format!(
+                "Failed to parse TaskManagerHeartbeatTaskClaimReq: {}",
+                e
+            ))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskManagerRequeueStaleClaimsReq {
+    #[serde(default)]
+    pub now: Option<u64>,
+    #[serde(default)]
+    pub runner: Option<String>,
+}
+
+impl TaskManagerRequeueStaleClaimsReq {
+    pub fn new(now: Option<u64>, runner: Option<String>) -> Self {
+        Self { now, runner }
+    }
+
+    pub fn from_json(value: Value) -> Result<Self> {
+        serde_json::from_value(value).map_err(|e| {
+            RPCErrors::ParseRequestError(format!(
+                "Failed to parse TaskManagerRequeueStaleClaimsReq: {}",
+                e
+            ))
         })
     }
 }
@@ -889,6 +992,12 @@ pub enum TaskManagerClient {
     KRPC(Box<kRPC>),
 }
 
+fn in_process_system_context() -> RPCContext {
+    let mut ctx = RPCContext::default();
+    ctx.token = Some(json!({ "sub": "kernel", "appid": "kernel" }).to_string());
+    ctx
+}
+
 impl TaskManagerClient {
     pub fn new(client: kRPC) -> Self {
         Self::KRPC(Box::new(client))
@@ -1043,6 +1152,104 @@ impl TaskManagerClient {
                     .ok_or_else(|| {
                         RPCErrors::ParserResponseError("Expected task in response".to_string())
                     })
+            }
+        }
+    }
+
+    pub async fn claim_task(&self, id: i64, runner: &str) -> Result<Option<Task>> {
+        let result = self.claim_task_with_lease(id, runner, None).await?;
+        Ok(result.task)
+    }
+
+    pub async fn claim_task_with_lease(
+        &self,
+        id: i64,
+        runner: &str,
+        lease: Option<Duration>,
+    ) -> Result<ClaimTaskResult> {
+        let lease_ms = lease.map(|duration| duration.as_millis() as u64);
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = in_process_system_context();
+                handler.handle_claim_task(id, runner, lease_ms, ctx).await
+            }
+            Self::KRPC(client) => {
+                let mut req = TaskManagerClaimTaskReq::new(id, runner.to_string());
+                req.lease_ms = lease_ms;
+                let req_json = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
+                })?;
+                let result = client.call("claim_task", req_json).await?;
+                serde_json::from_value::<ClaimTaskResult>(result).map_err(|e| {
+                    RPCErrors::ParserResponseError(format!(
+                        "Expected ClaimTaskResult response: {}",
+                        e
+                    ))
+                })
+            }
+        }
+    }
+
+    pub async fn heartbeat_task_claim(
+        &self,
+        id: i64,
+        claim_token: &str,
+        lease: Option<Duration>,
+    ) -> Result<u64> {
+        let lease_ms = lease.map(|duration| duration.as_millis() as u64);
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = in_process_system_context();
+                let result = handler
+                    .handle_heartbeat_task_claim(id, claim_token, lease_ms, ctx)
+                    .await?;
+                Ok(result.lease_until)
+            }
+            Self::KRPC(client) => {
+                let req =
+                    TaskManagerHeartbeatTaskClaimReq::new(id, claim_token.to_string(), lease_ms);
+                let req_json = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
+                })?;
+                let result = client.call("heartbeat_task_claim", req_json).await?;
+                let response =
+                    serde_json::from_value::<HeartbeatTaskClaimResult>(result).map_err(|e| {
+                        RPCErrors::ParserResponseError(format!(
+                            "Expected HeartbeatTaskClaimResult response: {}",
+                            e
+                        ))
+                    })?;
+                Ok(response.lease_until)
+            }
+        }
+    }
+
+    pub async fn requeue_stale_task_claims(&self, runner: Option<&str>) -> Result<u64> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = in_process_system_context();
+                let result = handler
+                    .handle_requeue_stale_task_claims(None, runner, ctx)
+                    .await?;
+                Ok(result.requeued_count)
+            }
+            Self::KRPC(client) => {
+                let req = TaskManagerRequeueStaleClaimsReq::new(
+                    None,
+                    runner.map(|value| value.to_string()),
+                );
+                let req_json = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
+                })?;
+                let result = client.call("requeue_stale_task_claims", req_json).await?;
+                let response =
+                    serde_json::from_value::<RequeueStaleClaimsResult>(result).map_err(|e| {
+                        RPCErrors::ParserResponseError(format!(
+                            "Expected RequeueStaleClaimsResult response: {}",
+                            e
+                        ))
+                    })?;
+                Ok(response.requeued_count)
             }
         }
     }
@@ -1658,6 +1865,44 @@ pub trait TaskManagerHandler: Send + Sync {
 
     async fn handle_get_task(&self, id: i64, ctx: RPCContext) -> Result<Task>;
 
+    async fn handle_claim_task(
+        &self,
+        id: i64,
+        runner: &str,
+        lease_ms: Option<u64>,
+        ctx: RPCContext,
+    ) -> Result<ClaimTaskResult> {
+        let _ = (id, runner, lease_ms, ctx);
+        Err(RPCErrors::ReasonError(
+            "claim_task not implemented".to_string(),
+        ))
+    }
+
+    async fn handle_heartbeat_task_claim(
+        &self,
+        id: i64,
+        claim_token: &str,
+        lease_ms: Option<u64>,
+        ctx: RPCContext,
+    ) -> Result<HeartbeatTaskClaimResult> {
+        let _ = (id, claim_token, lease_ms, ctx);
+        Err(RPCErrors::ReasonError(
+            "heartbeat_task_claim not implemented".to_string(),
+        ))
+    }
+
+    async fn handle_requeue_stale_task_claims(
+        &self,
+        now: Option<u64>,
+        runner: Option<&str>,
+        ctx: RPCContext,
+    ) -> Result<RequeueStaleClaimsResult> {
+        let _ = (now, runner, ctx);
+        Err(RPCErrors::ReasonError(
+            "requeue_stale_task_claims not implemented".to_string(),
+        ))
+    }
+
     async fn handle_add_task_note(
         &self,
         task_id: i64,
@@ -1842,6 +2087,44 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                 let get_req = TaskManagerGetTaskReq::from_json(req.params)?;
                 let task = self.0.handle_get_task(get_req.id, ctx).await?;
                 RPCResult::Success(json!(GetTaskResult { task }))
+            }
+            "claim_task" => {
+                let claim_req = TaskManagerClaimTaskReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_claim_task(
+                        claim_req.id,
+                        claim_req.runner.as_str(),
+                        claim_req.lease_ms,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            "heartbeat_task_claim" => {
+                let heartbeat_req = TaskManagerHeartbeatTaskClaimReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_heartbeat_task_claim(
+                        heartbeat_req.id,
+                        heartbeat_req.claim_token.as_str(),
+                        heartbeat_req.lease_ms,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            "requeue_stale_task_claims" => {
+                let requeue_req = TaskManagerRequeueStaleClaimsReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_requeue_stale_task_claims(
+                        requeue_req.now,
+                        requeue_req.runner.as_deref(),
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
             }
             "add_task_note" => {
                 let note_req = TaskManagerAddTaskNoteReq::from_json(req.params)?;
