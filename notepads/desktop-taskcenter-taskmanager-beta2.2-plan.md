@@ -300,8 +300,8 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 当前估算：
 
 - 按已确认本轮范围，整体约 75%。
-- 按当前 PR 已扩展范围，整体约 90-95%。
-- 如果把 `7ea31b13` 新增的 `slog` 事件接入、通用 schema registry、opendan 代码迁移都算入，整体约 70-75%。
+- 按当前 PR 已扩展范围，整体约 85-90%。
+- 如果把 `7ea31b13` 新增的 `slog` 事件接入、通用 schema registry、opendan 代码迁移、TaskManager 后台 stale sweep、per-task reclaim policy 都算入，整体约 60-65%。
 
 已完成：
 
@@ -311,8 +311,7 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 - TaskManager 已新增 claim lease schema、`heartbeat_task_claim`、显式 `requeue_stale_task_claims`，覆盖 runner 崩溃后的手动回收路径。
 - TaskManager runner 操作已收敛权限：`claim_task` / `heartbeat_task_claim` / `requeue_stale_task_claims` 不再接受空 context，改用 system 或 runner-scoped token。
 - node_daemon 的 thunk runner 已改为先 leased claim，运行中定期 heartbeat；领取失败或 claim 被回收时跳过/停止本地执行。
-- TaskManager 已补齐后台 stale claim sweep 和 per-task reclaim policy：`scheduler.dispatch_thunk` 默认 retry，`agent.delegate` 与未知任务默认 manual，任务可通过 `data.reclaim_policy` / `data.task_claim.reclaim_policy` 覆盖为 `retry` / `fail` / `manual`。
-- TaskManager runner claim / lease / event 语义与 opendan 边界已单独整理到 `notepads/taskmanager-runner-claim-lease-beta2.2.md`。
+- TaskManager runner claim / lease / event 语义与未完成的后台 sweep、policy、opendan 边界已单独整理到 `notepads/taskmanager-runner-claim-lease-beta2.2.md`。
 - TaskCenter notification action 已对齐 `TaskHumanAction` typed schema，短期继续通过 `Task.data.human_action` 回灌，不新增 approval RPC。
 - TaskCenter 详情页已新增 schema 驱动交互最小实现：`human/approval` 渲染 Approve/Deny，`human/comment` / suggestion 类 schema 渲染输入框并通过 `submit_output` 写回。
 - 已按需求提交 `7ea31b13` 对齐 issue #486 评论和本计划，明确 TaskManager 是任务真相源、`slog` 是系统事件真相源。
@@ -322,7 +321,7 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 已验证：
 
 - `cargo fmt -p buckyos-api -p task_manager -p node_daemon --check`
-- `cargo test -p task_manager`（46 tests）
+- `cargo test -p task_manager`（44 tests）
 - `cargo test -p node_daemon`（45 tests）
 - `cargo test -p buckyos-api task_mgr`
 - `pnpm run check`
@@ -341,7 +340,7 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 - `Task.data.human_action` 作为 Beta2.2 的稳定交互协议，approval 专用 RPC 留到后续有审计、幂等或权限需求时再设计。
 - TaskCenter schema 驱动交互 UI 已先完成最小闭环；下一阶段重点是 schema registry、更多 schema 类型和真实任务 schema 来源。
 - TaskManager 本轮保留通用读写 API 的空 context 兼容路径，仅 runner ownership API 已收敛权限。
-- stale claim 本轮已启用后台 sweep，并让显式 `requeue_stale_task_claims` 与后台 sweep 共享同一套 policy-aware reclaim 逻辑。
+- stale claim 本轮保持显式 `requeue_stale_task_claims` 入口，不启用后台 sweep 和 per-task policy engine。
 - opendan 本轮只保留迁移设计，不改 task inbox 代码；后续只迁移 `Pending` 新 session 路径。
 
 ## 6. 讨论记录与待确认问题

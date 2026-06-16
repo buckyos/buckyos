@@ -360,12 +360,7 @@ pub struct HeartbeatTaskClaimResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequeueStaleClaimsResult {
-    #[serde(default)]
     pub requeued_count: u64,
-    #[serde(default)]
-    pub failed_count: u64,
-    #[serde(default)]
-    pub manual_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
