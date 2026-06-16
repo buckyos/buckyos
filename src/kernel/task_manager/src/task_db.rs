@@ -521,6 +521,131 @@ impl TaskDb {
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn list_stale_claimed_tasks(
+        &self,
+        now: u64,
+        runner: Option<&str>,
+    ) -> DbResult<Vec<Task>> {
+        let now = now as i64;
+        let sql = if runner.is_some() {
+            self.render_sql(
+                "SELECT * FROM task
+                WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ? AND runner = ?
+                ORDER BY lease_until ASC, id ASC",
+            )
+        } else {
+            self.render_sql(
+                "SELECT * FROM task
+                WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?
+                ORDER BY lease_until ASC, id ASC",
+            )
+        };
+        let mut query = sqlx::query(&sql)
+            .bind(TaskStatus::Running.to_string())
+            .bind(now);
+        if let Some(runner) = runner {
+            query = query.bind(runner.to_string());
+        }
+        let rows = query.fetch_all(self.pool()).await?;
+        rows.into_iter().map(task_from_row).collect()
+    }
+
+    pub async fn requeue_stale_claim(&self, id: i64, now: u64) -> DbResult<bool> {
+        let now = now as i64;
+        let sql = self.render_sql(
+            "UPDATE task SET
+                status = ?,
+                updated_at = ?,
+                claim_token = NULL,
+                claimed_by = NULL,
+                claimed_at = NULL,
+                lease_until = NULL,
+                last_heartbeat_at = NULL
+            WHERE id = ? AND status = ? AND lease_until IS NOT NULL AND lease_until < ?",
+        );
+        let result = sqlx::query(&sql)
+            .bind(TaskStatus::Pending.to_string())
+            .bind(now)
+            .bind(id)
+            .bind(TaskStatus::Running.to_string())
+            .bind(now)
+            .execute(self.pool())
+            .await?;
+        info!(
+            "task_db.requeue_stale_claim: id={} changed={}",
+            id,
+            result.rows_affected()
+        );
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn fail_stale_claim(&self, id: i64, now: u64, message: &str) -> DbResult<bool> {
+        let now = now as i64;
+        let sql = self.render_sql(
+            "UPDATE task SET
+                status = ?,
+                error_message = ?,
+                message = ?,
+                updated_at = ?,
+                claim_token = NULL,
+                claimed_by = NULL,
+                claimed_at = NULL,
+                lease_until = NULL,
+                last_heartbeat_at = NULL
+            WHERE id = ? AND status = ? AND lease_until IS NOT NULL AND lease_until < ?",
+        );
+        let result = sqlx::query(&sql)
+            .bind(TaskStatus::Failed.to_string())
+            .bind(message.to_string())
+            .bind(message.to_string())
+            .bind(now)
+            .bind(id)
+            .bind(TaskStatus::Running.to_string())
+            .bind(now)
+            .execute(self.pool())
+            .await?;
+        info!(
+            "task_db.fail_stale_claim: id={} changed={}",
+            id,
+            result.rows_affected()
+        );
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn mark_stale_claim_manual(
+        &self,
+        id: i64,
+        now: u64,
+        message: &str,
+    ) -> DbResult<bool> {
+        let now = now as i64;
+        let sql = self.render_sql(
+            "UPDATE task SET
+                message = ?,
+                updated_at = ?,
+                claim_token = NULL,
+                claimed_by = NULL,
+                claimed_at = NULL,
+                lease_until = NULL,
+                last_heartbeat_at = NULL
+            WHERE id = ? AND status = ? AND lease_until IS NOT NULL AND lease_until < ?",
+        );
+        let result = sqlx::query(&sql)
+            .bind(message.to_string())
+            .bind(now)
+            .bind(id)
+            .bind(TaskStatus::Running.to_string())
+            .bind(now)
+            .execute(self.pool())
+            .await?;
+        info!(
+            "task_db.mark_stale_claim_manual: id={} changed={}",
+            id,
+            result.rows_affected()
+        );
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn requeue_stale_claims(&self, now: u64, runner: Option<&str>) -> DbResult<u64> {
         let now = now as i64;
         let sql = if runner.is_some() {
@@ -1417,6 +1542,81 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
 
         let stale_again = db.requeue_stale_claims(300, Some("node-a")).await.unwrap();
         assert_eq!(stale_again, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_policy_stale_claim_updates_are_conditional() {
+        let (db, _temp_dir) = setup_test_db().await;
+
+        let mut retry_task = create_test_task("retry_leased");
+        retry_task.runner = "node-a".to_string();
+        let retry_id = db.create_task(&retry_task).await.unwrap();
+        db.claim_task_for_runner(retry_id, "node-a", "token-retry", 100, 200)
+            .await
+            .unwrap()
+            .expect("retry task should be claimed");
+
+        let mut fail_task = create_test_task("fail_leased");
+        fail_task.runner = "node-a".to_string();
+        let fail_id = db.create_task(&fail_task).await.unwrap();
+        db.claim_task_for_runner(fail_id, "node-a", "token-fail", 100, 200)
+            .await
+            .unwrap()
+            .expect("fail task should be claimed");
+
+        let mut manual_task = create_test_task("manual_leased");
+        manual_task.runner = "node-b".to_string();
+        let manual_id = db.create_task(&manual_task).await.unwrap();
+        db.claim_task_for_runner(manual_id, "node-b", "token-manual", 100, 200)
+            .await
+            .unwrap()
+            .expect("manual task should be claimed");
+
+        assert!(!db.requeue_stale_claim(retry_id, 199).await.unwrap());
+        assert_eq!(
+            db.list_stale_claimed_tasks(201, Some("node-a"))
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            db.list_stale_claimed_tasks(201, Some("node-b"))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert!(db.requeue_stale_claim(retry_id, 201).await.unwrap());
+        assert!(db
+            .fail_stale_claim(fail_id, 201, "claim expired")
+            .await
+            .unwrap());
+        assert!(db
+            .mark_stale_claim_manual(manual_id, 201, "claim needs manual reclaim")
+            .await
+            .unwrap());
+
+        let retry_task = db.get_task(retry_id).await.unwrap().unwrap();
+        assert_eq!(retry_task.status, TaskStatus::Pending);
+
+        let fail_task = db.get_task(fail_id).await.unwrap().unwrap();
+        assert_eq!(fail_task.status, TaskStatus::Failed);
+        assert_eq!(fail_task.message.as_deref(), Some("claim expired"));
+
+        let manual_task = db.get_task(manual_id).await.unwrap().unwrap();
+        assert_eq!(manual_task.status, TaskStatus::Running);
+        assert_eq!(
+            manual_task.message.as_deref(),
+            Some("claim needs manual reclaim")
+        );
+
+        assert!(db
+            .list_stale_claimed_tasks(300, None)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]

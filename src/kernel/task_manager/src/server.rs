@@ -34,7 +34,13 @@ const TASK_EVENT_RATE_LIMIT: Duration = Duration::from_secs(1);
 const DEFAULT_TASK_CLAIM_LEASE: Duration = Duration::from_secs(60);
 const MAX_TASK_CLAIM_LEASE: Duration = Duration::from_secs(60 * 60);
 const MIN_TASK_CLAIM_LEASE: Duration = Duration::from_secs(1);
+const STALE_TASK_CLAIM_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+const STALE_TASK_CLAIM_FAILED_MESSAGE: &str = "Task claim lease expired";
+const STALE_TASK_CLAIM_MANUAL_MESSAGE: &str =
+    "Task claim lease expired; waiting for manual recovery";
 const NODE_DAEMON_RUNNER_APP_ID: &str = "node-daemon";
+const TASK_TYPE_SCHEDULER_DISPATCH_THUNK: &str = "scheduler.dispatch_thunk";
+const TASK_TYPE_AGENT_DELEGATE: &str = "agent.delegate";
 
 #[derive(Clone, Copy)]
 enum TaskChangeKind {
@@ -56,6 +62,24 @@ impl TaskChangeKind {
 
     fn always_emit(self) -> bool {
         matches!(self, TaskChangeKind::Status | TaskChangeKind::Error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReclaimPolicy {
+    Retry,
+    Fail,
+    Manual,
+}
+
+impl ReclaimPolicy {
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "retry" | "requeue" => Some(Self::Retry),
+            "fail" | "failed" => Some(Self::Fail),
+            "manual" | "manual_intervention" | "manual-intervention" => Some(Self::Manual),
+            _ => None,
+        }
     }
 }
 
@@ -196,6 +220,174 @@ impl TaskManagerService {
         let lease = Self::resolve_claim_lease(lease_ms);
         let lease_until = now.saturating_add(lease.as_secs());
         (now, lease_until)
+    }
+
+    fn configured_reclaim_policy(data: &Value) -> Option<ReclaimPolicy> {
+        let keys = ["reclaim_policy", "reclaimPolicy"];
+        for key in keys {
+            if let Some(policy) = data
+                .get(key)
+                .and_then(Value::as_str)
+                .and_then(ReclaimPolicy::from_str)
+            {
+                return Some(policy);
+            }
+        }
+
+        let nested_paths = [
+            ("task_claim", "reclaim_policy"),
+            ("task_claim", "reclaimPolicy"),
+            ("taskClaim", "reclaim_policy"),
+            ("taskClaim", "reclaimPolicy"),
+            ("claim", "reclaim_policy"),
+            ("claim", "reclaimPolicy"),
+        ];
+        for (object_key, policy_key) in nested_paths {
+            if let Some(policy) = data
+                .get(object_key)
+                .and_then(|value| value.get(policy_key))
+                .and_then(Value::as_str)
+                .and_then(ReclaimPolicy::from_str)
+            {
+                return Some(policy);
+            }
+        }
+
+        None
+    }
+
+    fn reclaim_policy_for_task(task: &Task) -> ReclaimPolicy {
+        if let Some(policy) = Self::configured_reclaim_policy(&task.data) {
+            return policy;
+        }
+
+        match task.task_type.as_str() {
+            TASK_TYPE_SCHEDULER_DISPATCH_THUNK => ReclaimPolicy::Retry,
+            TASK_TYPE_AGENT_DELEGATE => ReclaimPolicy::Manual,
+            _ => ReclaimPolicy::Manual,
+        }
+    }
+
+    async fn reclaim_stale_task_claims(
+        &self,
+        now: u64,
+        runner: Option<&str>,
+        source_method: &str,
+    ) -> Result<RequeueStaleClaimsResult> {
+        let stale_tasks = self
+            .db
+            .list_stale_claimed_tasks(now, runner)
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+
+        let mut result = RequeueStaleClaimsResult {
+            requeued_count: 0,
+            failed_count: 0,
+            manual_count: 0,
+        };
+
+        for before_task in stale_tasks {
+            let policy = Self::reclaim_policy_for_task(&before_task);
+            let changed = match policy {
+                ReclaimPolicy::Retry => {
+                    let changed = self
+                        .db
+                        .requeue_stale_claim(before_task.id, now)
+                        .await
+                        .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                    if changed {
+                        result.requeued_count += 1;
+                    }
+                    changed
+                }
+                ReclaimPolicy::Fail => {
+                    let changed = self
+                        .db
+                        .fail_stale_claim(before_task.id, now, STALE_TASK_CLAIM_FAILED_MESSAGE)
+                        .await
+                        .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                    if changed {
+                        result.failed_count += 1;
+                    }
+                    changed
+                }
+                ReclaimPolicy::Manual => {
+                    let changed = self
+                        .db
+                        .mark_stale_claim_manual(
+                            before_task.id,
+                            now,
+                            STALE_TASK_CLAIM_MANUAL_MESSAGE,
+                        )
+                        .await
+                        .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                    if changed {
+                        result.manual_count += 1;
+                    }
+                    changed
+                }
+            };
+
+            if !changed {
+                continue;
+            }
+
+            match self.load_task(before_task.id).await {
+                Ok(after_task) => {
+                    if let Some(kind) = Self::diff_kind(&before_task, &after_task) {
+                        self.publish_task_changed_event(
+                            &before_task,
+                            &after_task,
+                            kind,
+                            source_method,
+                        )
+                        .await;
+                    }
+                    if after_task.status == TaskStatus::Pending {
+                        self.publish_task_ready_event(&after_task, source_method)
+                            .await;
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        "task_mgr.reclaim_stale_task_claims failed to reload task {} for event publish: {}",
+                        before_task.id, err
+                    );
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn start_stale_claim_sweeper(&self) {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(STALE_TASK_CLAIM_SWEEP_INTERVAL);
+            loop {
+                interval.tick().await;
+                let now = TaskManagerService::now_ts();
+                match service
+                    .reclaim_stale_task_claims(now, None, "stale_claim_sweep")
+                    .await
+                {
+                    Ok(result)
+                        if result.requeued_count > 0
+                            || result.failed_count > 0
+                            || result.manual_count > 0 =>
+                    {
+                        info!(
+                            "task_mgr.stale_claim_sweep: requeued={} failed={} manual={}",
+                            result.requeued_count, result.failed_count, result.manual_count
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        warn!("task_mgr.stale_claim_sweep failed: {}", err);
+                    }
+                }
+            }
+        });
     }
 
     /// Returns true if the rate-limit gate is open and updates the last-emit
@@ -793,43 +985,8 @@ impl TaskManagerHandler for TaskManagerService {
                 "No permission to requeue all stale claims".to_string(),
             ));
         }
-        let stale_tasks = self
-            .db
-            .list_tasks_filtered(
-                None,
-                None,
-                None,
-                runner,
-                Some(TaskStatus::Running),
-                None,
-                None,
-                None,
-            )
+        self.reclaim_stale_task_claims(now, runner, "requeue_stale_task_claims")
             .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        let requeued_count = self
-            .db
-            .requeue_stale_claims(now, runner)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-
-        for before_task in stale_tasks {
-            if let Ok(after_task) = self.load_task(before_task.id).await {
-                if before_task.status != after_task.status {
-                    self.publish_task_changed_event(
-                        &before_task,
-                        &after_task,
-                        TaskChangeKind::Status,
-                        "requeue_stale_task_claims",
-                    )
-                    .await;
-                    self.publish_task_ready_event(&after_task, "requeue_stale_task_claims")
-                        .await;
-                }
-            }
-        }
-
-        Ok(RequeueStaleClaimsResult { requeued_count })
     }
 
     async fn handle_add_task_note(
@@ -1390,6 +1547,7 @@ pub async fn start_task_manager_service() -> Result<()> {
     info!("task-manager database initialized");
 
     let handler = TaskManagerService::new(Arc::new(db));
+    handler.start_stale_claim_sweeper();
     let server = TaskManagerHttpServer::new(handler);
 
     info!("start node task manager service...");
@@ -2015,6 +2173,102 @@ mod tests {
             assert_eq!(result["task"]["status"], "Pending");
         } else {
             panic!("Failed to read requeued task");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_reclaim_stale_task_claims_applies_policy() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+
+        let mut task_ids = Vec::new();
+        let tasks = [
+            ("retry_task", TASK_TYPE_SCHEDULER_DISPATCH_THUNK, json!({})),
+            ("manual_task", TASK_TYPE_AGENT_DELEGATE, json!({})),
+            (
+                "fail_task",
+                "custom.runner_task",
+                json!({ "reclaim_policy": "fail" }),
+            ),
+        ];
+
+        for (name, task_type, data) in tasks {
+            let create_req = create_rpc_request(
+                "create_task",
+                json!({
+                    "name": name,
+                    "task_type": task_type,
+                    "runner": "node-a",
+                    "app_id": "scheduler",
+                    "user_id": "user1",
+                    "data": data
+                }),
+            );
+            let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+            let task_id = if let RPCResult::Success(result) = create_resp.result {
+                result["task_id"].as_i64().unwrap()
+            } else {
+                panic!("Failed to create reclaim policy task");
+            };
+            task_ids.push(task_id);
+        }
+
+        let mut max_lease_until = 0;
+        for task_id in &task_ids {
+            let claim_req = create_rpc_request_with_token(
+                "claim_task",
+                json!({
+                    "id": task_id,
+                    "runner": "node-a",
+                    "lease_ms": 1000
+                }),
+                "kernel",
+                "system",
+            );
+            let claim_resp = server.handle_rpc_call(claim_req, ip).await.unwrap();
+            if let RPCResult::Success(result) = claim_resp.result {
+                max_lease_until = max_lease_until.max(result["lease_until"].as_u64().unwrap());
+                assert_eq!(result["task"]["status"], "Running");
+            } else {
+                panic!("Failed to claim reclaim policy task");
+            }
+        }
+
+        let reclaim_req = create_rpc_request_with_token(
+            "requeue_stale_task_claims",
+            json!({ "now": max_lease_until + 1 }),
+            "kernel",
+            "system",
+        );
+        let reclaim_resp = server.handle_rpc_call(reclaim_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = reclaim_resp.result {
+            assert_eq!(result["requeued_count"], 1);
+            assert_eq!(result["failed_count"], 1);
+            assert_eq!(result["manual_count"], 1);
+        } else {
+            panic!("Failed to reclaim stale claims");
+        }
+
+        let expected = [
+            (task_ids[0], "Pending", None),
+            (
+                task_ids[1],
+                "Running",
+                Some(STALE_TASK_CLAIM_MANUAL_MESSAGE),
+            ),
+            (task_ids[2], "Failed", Some(STALE_TASK_CLAIM_FAILED_MESSAGE)),
+        ];
+        for (task_id, status, message) in expected {
+            let get_req = create_rpc_request("get_task", json!({ "id": task_id }));
+            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
+            if let RPCResult::Success(result) = get_resp.result {
+                assert_eq!(result["task"]["status"], status);
+                if let Some(message) = message {
+                    assert_eq!(result["task"]["message"], message);
+                }
+            } else {
+                panic!("Failed to get reclaimed task");
+            }
         }
     }
 

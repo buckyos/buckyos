@@ -21,7 +21,8 @@ The current branch has added the first strong consistency and recovery step:
 - The update is guarded by `id + runner + Pending`.
 - Successful claim returns an opaque `claim_token` and `lease_until`.
 - `heartbeat_task_claim(id, claim_token, lease_ms?)` renews an active claim.
-- `requeue_stale_task_claims` can explicitly move expired `Running` claims back to `Pending`.
+- `requeue_stale_task_claims` can explicitly reclaim expired `Running` claims using the configured policy.
+- The TaskManager service also runs a background stale-claim sweep.
 - A losing runner receives `None` and must skip the task.
 - `node_daemon` now uses leased claim before starting a thunk task and heartbeats while the child process is running.
 
@@ -38,13 +39,13 @@ Implemented behavior:
 3. TaskManager persists claim metadata: `claim_token`, `claimed_by`, `claimed_at`, `lease_until`, `last_heartbeat_at`.
 4. Runner heartbeats before the lease expires.
 5. If the runner process or host crashes, heartbeat stops.
-6. `requeue_stale_task_claims` can set expired `Running` claims back to `Pending` and publish `task_ready`.
+6. Background sweep or `requeue_stale_task_claims` applies the reclaim policy:
+   retry moves the task back to `Pending` and publishes `task_ready`, fail marks it `Failed`, and manual leaves it `Running` for operator/session recovery while clearing the stale claim.
 
 Remaining gap:
 
-- No background sweep is enabled yet.
-- No per-task-type reclaim policy is implemented yet.
-- Requeue is currently explicit and conservative.
+- `complete_task` / `update_task` do not yet enforce claim-token ownership checks.
+- opendan task inbox still needs its separate migration design before it adopts claim for the safe `Pending` startup path.
 
 ## 3. Event Semantics
 
@@ -106,19 +107,18 @@ Implemented APIs:
 
 - `claim_task(id, runner, lease_ms?) -> { task, claim_token, lease_until }`
 - `heartbeat_task_claim(id, claim_token, lease_ms?) -> { lease_until }`
-- `requeue_stale_task_claims(now?, runner?) -> { requeued_count }`
+- `requeue_stale_task_claims(now?, runner?) -> { requeued_count, failed_count, manual_count }`
 
 Not implemented yet:
 
 - `complete_task` / `update_task` claim-token ownership checks.
-- Background reclaim sweep.
-- Per-task-type reclaim policy.
 
 Recommended state rules:
 
 - `Pending -> Running` only through `claim_task` for runner-owned work.
 - `Running -> Pending` can happen only when `lease_until < now` and reclaim policy permits retry.
 - `Running -> Failed` can happen when lease expired and reclaim policy says fail.
+- `Running -> Running` with claim metadata cleared can happen when lease expired and reclaim policy says manual.
 - Terminal tasks are never reclaimed.
 - `Canceled` always wins over heartbeat and reclaim.
 
@@ -136,15 +136,16 @@ Recommended policy:
 
 - `retry`: set stale `Running` task back to `Pending` and publish `task_ready`.
 - `fail`: mark stale `Running` task as `Failed`.
-- `manual`: leave task `Running` but add a note/event for operator intervention.
+- `manual`: leave task `Running`, clear stale claim metadata, and write a message/event for operator or session recovery.
 
 For Beta2.2, use conservative defaults:
 
 - `scheduler.dispatch_thunk`: `retry` is reasonable because node_daemon writes execution output under task-specific work dirs and should be made idempotent.
 - `agent.delegate`: do not auto-retry yet; this belongs to opendan session recovery design.
-- Unknown task types: `manual` or `fail`, not automatic retry.
+- Unknown task types: `manual`, not automatic retry.
 
 The policy can initially live in task `data`, but the reclaim query should still use real lease columns.
+Implemented override keys are `data.reclaim_policy`, `data.reclaimPolicy`, `data.task_claim.reclaim_policy`, `data.task_claim.reclaimPolicy`, `data.taskClaim.reclaim_policy`, `data.taskClaim.reclaimPolicy`, `data.claim.reclaim_policy`, and `data.claim.reclaimPolicy`.
 
 ## 7. opendan Migration Boundary
 
@@ -199,18 +200,14 @@ Status: implemented in current branch.
 
 ### Phase C: Reclaim Sweep
 
-Status: minimal explicit reclaim API implemented; background sweep and policy are not implemented.
+Status: implemented in current branch.
 
 - Add TaskManager explicit reclaim API for stale claims.
-- Requeue expired claims and republish `task_ready`.
-- Leave automatic/background sweep for a separate change.
-- Leave per-task-type reclaim policy for a separate change.
-
-Still pending:
-
 - Add background sweep for stale claims.
 - Implement per-task-type reclaim policy.
 - Mark unsafe stale tasks as `Failed` or leave for manual intervention.
+- Requeue expired retryable claims and republish `task_ready`.
+- Keep `agent.delegate` conservative with `manual` default until opendan migration is designed.
 
 ### Phase D: opendan Migration
 
@@ -226,11 +223,10 @@ For this branch, keep the implemented lease path focused:
 
 - Phase A is complete.
 - Phase B is complete.
-- Phase C has only explicit reclaim, no automatic sweep or policy engine.
+- Phase C is complete: explicit reclaim, background sweep, and conservative policy are implemented.
 - Phase D remains a separate opendan migration task.
 
 Runner ownership permission tightening is already included for `claim_task`,
 `heartbeat_task_claim`, and `requeue_stale_task_claims`. Do not expand this
-branch further into general TaskManager API permission tightening, background
-sweep, per-task policy, or opendan code migration before reviewing the current
-lease behavior in isolation.
+branch further into general TaskManager API permission tightening or opendan
+code migration before reviewing the current lease behavior in isolation.
