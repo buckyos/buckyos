@@ -34,6 +34,26 @@ function makeTask(
   }
 }
 
+function toHumanActionKind(action: string): string {
+  switch (action) {
+    case 'confirm':
+      return 'approve'
+    case 'dismiss':
+      return 'reject'
+    default:
+      return action
+  }
+}
+
+function findTaskById(tasks: Task[], taskId: string): Task | null {
+  for (const task of tasks) {
+    if (task.taskId === taskId) return task
+    const child = findTaskById(task.children, taskId)
+    if (child) return child
+  }
+  return null
+}
+
 const seedTasks: Task[] = [
   makeTask({
     taskId: 'task-001',
@@ -241,9 +261,23 @@ const seedTasks: Task[] = [
     status: 'paused',
     source: 'agent',
     progress: 60,
+    schemaType: 'human/approval',
     createdAt: '2026-04-04T06:00:00Z',
     updatedAt: '2026-04-04T08:00:00Z',
     startedAt: '2026-04-04T06:05:00Z',
+    payload: {
+      interaction: {
+        kind: 'approval',
+        title: 'Agent Authorization',
+        summary: 'DataBot wants to continue the pipeline with access to /private/documents.',
+        approveLabel: 'Approve access',
+        rejectLabel: 'Deny access',
+      },
+      request: {
+        agent: 'DataBot',
+        resource: '/private/documents',
+      },
+    },
   }),
   makeTask({
     taskId: 'task-009',
@@ -419,6 +453,34 @@ const seedTasks: Task[] = [
         endedAt: '2026-05-28T06:00:05Z',
       }),
     ],
+  }),
+  makeTask({
+    taskId: 'task-012',
+    rootTaskId: 'task-012',
+    title: 'Agent Review: Deployment Plan',
+    summary: 'Waiting for deployment review comments',
+    type: 'workflow',
+    status: 'paused',
+    source: 'agent',
+    progress: null,
+    schemaType: 'human/comment',
+    createdAt: '2026-05-28T11:00:00Z',
+    updatedAt: '2026-05-28T11:15:00Z',
+    startedAt: '2026-05-28T11:00:00Z',
+    payload: {
+      interaction: {
+        kind: 'comment',
+        title: 'Review Request',
+        summary: 'Leave comments or suggested changes before the deployment workflow continues.',
+        placeholder: 'Add deployment notes or requested changes...',
+        submitLabel: 'Submit response',
+        outputKey: 'comment',
+      },
+      request: {
+        run_id: 'run-deploy-review-20260528',
+        node_id: 'review',
+      },
+    },
   }),
 ]
 
@@ -659,6 +721,35 @@ export class TaskCenterMockStore {
       notif.handledAction = action as SystemNotification['handledAction']
       notif.handledAt = new Date().toISOString()
     }
+  }
+
+  submitTaskHumanAction(taskId: string, action: string, payload?: Record<string, unknown>): void {
+    const task = findTaskById(this.tasks, taskId)
+    if (!task) return
+
+    const actedAt = new Date()
+    const kind = toHumanActionKind(action)
+    const actionPayload =
+      kind === 'submit_output'
+        ? payload
+        : {
+            source: 'desktop',
+            acted_at: actedAt.toISOString(),
+            ...(payload ?? {}),
+          }
+
+    task.payload = {
+      ...task.payload,
+      human_action: {
+        kind,
+        actor: 'desktop',
+        submitted_at: Math.floor(actedAt.getTime() / 1000),
+        ...(actionPayload ? { payload: actionPayload } : {}),
+        acted_at: actedAt.toISOString(),
+        source: 'desktop',
+      },
+    }
+    task.updatedAt = actedAt.toISOString()
   }
 
   getEvents(): SystemEvent[] {

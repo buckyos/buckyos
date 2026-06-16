@@ -139,6 +139,7 @@ export interface TaskCenterModel {
   filterTasks(opts: TaskCenterFilter): Task[]
   getPendingNotifications(): SystemNotification[]
   handleNotification(id: string, action: string): void
+  submitTaskHumanAction(taskId: string, action: string, payload?: Record<string, unknown>): Promise<void>
   getEvents(): SystemEvent[]
 }
 
@@ -184,7 +185,7 @@ interface TaskMgrSdkClient {
 
 interface TaskCenterRpcProvider {
   listTasks(): Promise<RawTask[]>
-  handleNotificationAction(task: Task, action: string): Promise<void>
+  submitTaskHumanAction(task: Task, action: string, payload?: Record<string, unknown>): Promise<void>
 }
 
 const terminalStatuses = new Set<TaskStatus>(['completed', 'failed', 'cancelled'])
@@ -480,7 +481,7 @@ function taskDataForUpdate(task: Task): Record<string, unknown> {
   return data
 }
 
-function toHumanActionKind(action: string): 'approve' | 'reject' | null {
+function toHumanActionKind(action: string): string | null {
   switch (action) {
     case 'approve':
     case 'confirm':
@@ -488,6 +489,13 @@ function toHumanActionKind(action: string): 'approve' | 'reject' | null {
     case 'reject':
     case 'dismiss':
       return 'reject'
+    case 'modify':
+    case 'retry':
+    case 'skip':
+    case 'abort':
+    case 'rollback':
+    case 'submit_output':
+      return action
     default:
       return null
   }
@@ -549,6 +557,11 @@ export class TaskCenterMockModel extends TaskCenterMockStore implements TaskCent
 
   override handleNotification(id: string, action: string): void {
     super.handleNotification(id, action)
+    this.subscription.emitChange()
+  }
+
+  async submitTaskHumanAction(taskId: string, action: string, payload?: Record<string, unknown>): Promise<void> {
+    super.submitTaskHumanAction(taskId, action, payload)
     this.subscription.emitChange()
   }
 }
@@ -638,7 +651,7 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
 
     if (!task) return
 
-    void this.provider.handleNotificationAction(task, action)
+    void this.provider.submitTaskHumanAction(task, action)
       .then(() => this.refresh())
       .catch((error) => {
         console.error('task_mgr.handleNotification failed', error)
@@ -648,6 +661,15 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
         delete notification.handledAt
         this.emitChange()
       })
+  }
+
+  async submitTaskHumanAction(taskId: string, action: string, payload?: Record<string, unknown>): Promise<void> {
+    const task = this.getTaskById(taskId)
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`)
+    }
+    await this.provider.submitTaskHumanAction(task, action, payload)
+    await this.refresh()
   }
 
   getEvents(): SystemEvent[] {
@@ -666,22 +688,27 @@ class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
     return this.getClient().listTasks()
   }
 
-  async handleNotificationAction(task: Task, action: string): Promise<void> {
+  async submitTaskHumanAction(task: Task, action: string, payload?: Record<string, unknown>): Promise<void> {
     const kind = toHumanActionKind(action)
     const id = normalizeNumericTaskId(task.taskId)
     if (!kind || id === null) return
 
     const actedAt = new Date()
+    const actionPayload =
+      kind === 'submit_output'
+        ? payload
+        : {
+            source: 'desktop',
+            acted_at: actedAt.toISOString(),
+            ...(payload ?? {}),
+          }
     await this.getClient().updateTaskData(id, {
       ...taskDataForUpdate(task),
       human_action: {
         kind,
         actor: 'desktop',
         submitted_at: Math.floor(actedAt.getTime() / 1000),
-        payload: {
-          source: 'desktop',
-          acted_at: actedAt.toISOString(),
-        },
+        ...(actionPayload ? { payload: actionPayload } : {}),
         // Legacy aliases kept while older consumers still read raw Task.data.
         acted_at: actedAt.toISOString(),
         source: 'desktop',

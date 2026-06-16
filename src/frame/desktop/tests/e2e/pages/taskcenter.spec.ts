@@ -78,3 +78,37 @@ test('taskcenter task detail supports taskid deep link', async ({ page }) => {
   await expect(page.getByPlaceholder('Search tasks...')).toBeVisible()
   expect(consoleErrors).toEqual([])
 })
+
+test('taskcenter task detail renders approval schema actions', async ({ page }) => {
+  const consoleErrors = trackConsoleErrors(page)
+
+  await page.goto('/taskcenter?taskid=task-008')
+
+  await expect(page.getByRole('heading', { name: 'Agent Authorization' })).toBeVisible()
+  await expect(
+    page.getByText('DataBot wants to continue the pipeline with access to /private/documents.', { exact: true }),
+  ).toBeVisible()
+
+  await page.getByRole('button', { name: 'Approve access' }).click()
+
+  await expect(page.getByText(/^Submitted\b/)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Approve access' })).toBeDisabled()
+  await expect(page.getByText('"kind": "approve"')).toBeVisible()
+  expect(consoleErrors).toEqual([])
+})
+
+test('taskcenter task detail renders comment schema interaction', async ({ page }) => {
+  const consoleErrors = trackConsoleErrors(page)
+
+  await page.goto('/taskcenter?taskid=task-012')
+
+  await expect(page.getByRole('heading', { name: 'Review Request' })).toBeVisible()
+  await page.getByLabel('Response').fill('Looks good. Run it during the maintenance window.')
+  await page.getByRole('button', { name: 'Submit response' }).click()
+
+  await expect(page.getByText(/^Submitted\b/)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Submit response' })).toBeDisabled()
+  await expect(page.getByText('"kind": "submit_output"')).toBeVisible()
+  await expect(page.getByText('"comment": "Looks good. Run it during the maintenance window."')).toBeVisible()
+  expect(consoleErrors).toEqual([])
+})

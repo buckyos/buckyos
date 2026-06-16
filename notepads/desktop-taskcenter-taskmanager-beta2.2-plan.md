@@ -1,6 +1,6 @@
 # Desktop / TaskCenter / TaskManager Beta2.2 工作计划
 
-更新时间：2026-06-12
+更新时间：2026-06-16
 
 ## 0. 范围确认
 
@@ -38,17 +38,47 @@
 
 - Desktop 框架本轮不做结构性改造，重点改为模块边界说明和 TaskCenter 自动化基线。
 - `control_panel` 属于系统面板启动骨架范围，但当前 PR 不纳入已有未确认的 untracked `src/frame/control_panel/*` 实现；后续如需要再单独整理。
-- TaskCenter 不定义任务系统语义，只做 TaskManager / Workflow 快照到 UI 视图的适配。
+- TaskCenter 不定义任务系统语义，只做 TaskManager / Workflow 任务与计划任务数据到 UI 视图的适配。
 - `Task.data.human_action` 作为 Beta2.2 的稳定交互协议，approval 专用 RPC 留到后续审计、幂等、权限需求明确后再设计。
 - TaskManager 的强一致入口是 `claim_task`；`task_ready` / task changed kevent 只作为唤醒和 UI 加速信号，DB task 状态是唯一真相。
+- 系统事件不再按 TaskManager snapshot 或 kevent 历史定义；需求提交已明确目标真相源是 `slog`，TaskManager 只作为任务状态真相源。
 - runner ownership API 已收敛权限，但通用 TaskManager 读写 API 的空 request context 兼容路径本轮保留。
 
 明确延期：
 
 - Desktop / control_panel 的进一步 APP 化结构改造。
-- TaskCenter 事件页升级为真实 kevent 历史。
+- TaskCenter 事件页接入真实 `slog` 事件流。
+- TaskCenter schema renderer registry 和更多 schema 类型扩展；当前仅落地详情页 Approve/Deny、评论/建议的最小渲染器。
 - TaskManager 后台 stale claim sweep 和 per-task reclaim policy。
 - opendan task inbox 代码迁移；当前只保留迁移设计，后续只迁移 `Pending` 新 session 路径。
+
+## 0.2 需求提交对齐（commit `7ea31b13`）
+
+对齐来源：
+
+- `product/desktop/BuckyOS_Web_Desktop_需求文档.md`
+- `product/desktop/Desktop_UI_DataModel.md`
+- `product/task_center/TaskCenter_mgr.md`
+
+说明：
+
+- 该提交目前不在当前 `feat/desktop-taskcenter-taskmanager-beta22` 本地分支的文件树中，需求对齐以 GitHub commit `7ea31b13d75b61402ed5ad3f709b03cb4b903a21` 为准。
+- 对齐结论已先整理到 issue #486 的评论 `https://github.com/buckyos/buckyos/issues/486#issuecomment-4713007550`。
+
+对当前计划的修正：
+
+- Desktop 仍按 thin shell 理解：launcher、layout container、window container。StatusBar 和 SystemSidebar 是已接受的最小 System UI，不触发本轮 Desktop 框架重构。
+- Desktop Dead Zone 的目标口径是桌面端停用、移动端保留为内部 safe-area / sheet inset 机制；用户可调 Dead Zone 不作为本轮目标。
+- Desktop window identity 的产品目标是 `APP ID + Path`，但当前运行态仍主要是 `appId + timestamp` 与按 `appId` 复用 geometry；多窗口身份模型延期。
+- TaskCenter 的核心心智是分布式长任务统一汇聚点，尤其是 Pending 且需要人工处理/确认的任务。Agent 授权应建模为独立 Task，并支持 task id 深链。
+- 任务真相源是 TaskManager，系统事件真相源是 `slog`。TaskCenter 可以临时保留 task snapshot / mock 派生事件作为 UI fallback，但不能把它定义为正式事件源。
+- 系统通知仍从 `WaitingForApproval` 任务派生，当前通过 `human_action` 写回；dedicated approval API 后续再按审计、幂等、权限需求设计。
+- Task data 需要 schema 驱动交互 UI。JSON/XML 只是未知 schema 的兜底；Approve/Deny、评论/建议等专用渲染器已先落地最小实现，后续再扩展 registry 和更多 schema。
+
+对当前 PR 边界的影响：
+
+- 当前 PR 继续聚焦 TaskManager runner claim / lease / heartbeat / requeue 可靠性基线、runner 权限收敛、node_daemon 适配、TaskCenter `human_action` typed schema、详情页最小 schema 交互 UI 和自动化测试。
+- `slog` 事件接入、通用 schema renderer registry、approval 专用 API、opendan inbox 迁移、后台 stale sweep、per-task reclaim policy、Desktop `APP ID + Path` 多窗口身份都不并入当前实现批次。
 
 ## 1. 产品与架构意图
 
@@ -95,7 +125,7 @@ TaskCenter 是 Desktop 内的任务管理 UI app，不是独立后端模块，�
 - 展示运行中和已完成任务。
 - 展示计划任务。
 - 展示任务详情。
-- 展示系统事件。
+- 展示系统事件。目标来源是 `slog`；当前可保留 mock / task snapshot 派生作为 UI fallback。
 - 处理需要用户确认的 task notification。
 
 关键入口：
@@ -110,6 +140,7 @@ TaskCenter 是 Desktop 内的任务管理 UI app，不是独立后端模块，�
 
 - TaskCenter 的前端边界应该保持轻：展示、过滤、确认动作、任务详情导航。
 - TaskCenter 不应该定义任务系统语义；任务状态、任务树、订阅和分布式消费者模型属于 TaskManager / Workflow。
+- TaskCenter 不应该把系统事件定义为 TaskManager snapshot；系统事件目标来源是 `slog`，TaskManager 只负责任务状态。
 
 ### TaskManager
 
@@ -154,7 +185,8 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 
 - 数据适配层已经封装 `buckyos.getTaskManagerClient()`，但 TaskCenter 对后端任务语义的假设需要显式文档化。
 - notification 的前端确认动作通过 `updateTaskData` 写 `human_action`，需要确认后端消费者是否有稳定约定。
-- `SystemEvent` 当前由任务快照派生，不是真实事件流；需要明确这是 UI 层视图，不代表 kevent 历史。
+- `SystemEvent` 的目标来源是 `slog`，不是 TaskManager snapshot 或 kevent 历史；当前由任务快照或 mock 派生的展示只能作为 UI fallback。
+- 详情页还缺 schema 驱动交互区：Approve/Deny、评论/建议等 schema 应有专用渲染器，Raw payload 只做兜底。
 - schedule 状态从 Task status 转换为 UI friendly enum，需确保 Workflow / ScheduledTaskManager 的状态语义匹配。
 
 ### TaskManager 差距
@@ -171,7 +203,7 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 
 1. 更新 Desktop README，替换模板说明，写清模块职责、启动方式、mock/runtime、测试入口。
 2. 在 notepads 中维护本计划，作为 Code Agent 工作队列。
-3. 为 TaskCenter 写数据语义说明：哪些来自 TaskManager，哪些是 UI 派生。
+3. 为 TaskCenter 写数据语义说明：任务/通知哪些来自 TaskManager，系统事件目标如何接入 `slog`，哪些只是 UI fallback。
 
 ### P1：TaskManager 语义验证
 
@@ -268,7 +300,8 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 当前估算：
 
 - 按已确认本轮范围，整体约 75%。
-- 如果把 opendan 代码迁移、TaskManager 后台 stale sweep、per-task reclaim policy 都算入本轮，整体约 60-65%。
+- 按当前 PR 已扩展范围，整体约 85-90%。
+- 如果把 `7ea31b13` 新增的 `slog` 事件接入、通用 schema registry、opendan 代码迁移、TaskManager 后台 stale sweep、per-task reclaim policy 都算入，整体约 60-65%。
 
 已完成：
 
@@ -280,6 +313,8 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 - node_daemon 的 thunk runner 已改为先 leased claim，运行中定期 heartbeat；领取失败或 claim 被回收时跳过/停止本地执行。
 - TaskManager runner claim / lease / event 语义与未完成的后台 sweep、policy、opendan 边界已单独整理到 `notepads/taskmanager-runner-claim-lease-beta2.2.md`。
 - TaskCenter notification action 已对齐 `TaskHumanAction` typed schema，短期继续通过 `Task.data.human_action` 回灌，不新增 approval RPC。
+- TaskCenter 详情页已新增 schema 驱动交互最小实现：`human/approval` 渲染 Approve/Deny，`human/comment` / suggestion 类 schema 渲染输入框并通过 `submit_output` 写回。
+- 已按需求提交 `7ea31b13` 对齐 issue #486 评论和本计划，明确 TaskManager 是任务真相源、`slog` 是系统事件真相源。
 - opendan task inbox 迁移方案已整理到 `notepads/opendan-task-inbox-claim-migration-beta2.2.md`，本轮不直接改 opendan 代码。
 - TaskCenter Playwright e2e 已补充独立路由、计划任务页、计划任务详情、`taskid` 深链和通知处理覆盖。
 
@@ -301,8 +336,9 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 本轮收口建议：
 
 - Desktop 框架不做结构性改造，保持系统壳边界说明和 TaskCenter 自动化基线。
-- TaskCenter 继续展示由 task snapshot 派生的 `SystemEvent`，不把它声明为 kevent 历史或审计日志。
+- TaskCenter 可继续用 task snapshot / mock 派生 `SystemEvent` 作为 UI fallback，但正式目标来源必须是 `slog`，不声明为 kevent 历史或审计日志。
 - `Task.data.human_action` 作为 Beta2.2 的稳定交互协议，approval 专用 RPC 留到后续有审计、幂等或权限需求时再设计。
+- TaskCenter schema 驱动交互 UI 已先完成最小闭环；下一阶段重点是 schema registry、更多 schema 类型和真实任务 schema 来源。
 - TaskManager 本轮保留通用读写 API 的空 context 兼容路径，仅 runner ownership API 已收敛权限。
 - stale claim 本轮保持显式 `requeue_stale_task_claims` 入口，不启用后台 sweep 和 per-task policy engine。
 - opendan 本轮只保留迁移设计，不改 task inbox 代码；后续只迁移 `Pending` 新 session 路径。
@@ -318,7 +354,8 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 
 建议延期到后续阶段确认：
 
-- 是否把 TaskCenter 的事件页升级为真实 kevent 历史。
+- 是否把 TaskCenter 的事件页接入真实 `slog` 事件流，以及 slog 与 task id 的关联检索接口形态。
+- 是否建设 TaskCenter schema renderer registry，优先覆盖 Approve/Deny 与评论/建议。
 - 是否新增 approval 专用 RPC，承载审计、幂等提交和更细权限。
 - 是否进一步收敛 TaskManager 普通读写 API 的空 request context 兼容路径。
 - 是否迁移 opendan task inbox 的 `Pending` 新 session 路径到 `claim_task`。
