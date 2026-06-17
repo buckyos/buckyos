@@ -15,6 +15,7 @@
 7. 低成本、确定性 Mock 模型前期测试，以及真实模型的 gateway 验收。
 8. gateway 验收必须覆盖 `openai`、`fal`、`google`、`claude`、`openrouter`、`sn` 六类 Provider；其中 `sn` Provider 不需要 API key。
 9. gateway 真实模型验收按 Provider 与其支持模型的笛卡尔积生成用例，每个用例执行一条复杂 workflow。
+10. 新模型、新 Provider、新逻辑目录挂载、metadata / 运营策略 / routing 更新的维护验收闭环，覆盖测试环境相关用例、测试环境全量用例、发布环境相关用例、发布环境全量用例，以及必要的回滚验证。
 
 ## 2. 设计依据
 
@@ -88,6 +89,7 @@
 | Streaming | Provider-native streaming 转最终 summary；中间态写 task data；AICC response 只返回 `succeeded` 或 `running` | L1/L3/L4 |
 | Usage log | 成功调用写一条 durable event；幂等不重复写；缺 usage 视为 provider protocol error；按 1d/7d/provider/model 查询 | L1/L3 |
 | 配置 | system_config 写入、全量/局部更新、`reload_settings`、`models.list` 生效验证 | L3/L4 |
+| 维护更新 | 模型事实基线、运营策略、`remote_cache` / 本地 override、随版本内置缓存、provider settings、routing_config、相关用例筛选、发布后复验、事实配置回滚、策略配置回滚 | L3/L4 |
 | 安全 | `local_only` 硬过滤、`proxy_unknown` 非本地、trace 脱敏、密钥不入日志、跨租户隔离 | L1/L3/L4 |
 
 ## 6. 需求追踪矩阵
@@ -119,6 +121,10 @@
 | `aicc_api设计.md` idempotency | `idempotency_*` | L1/L2/L3 |
 | `aicc_usage_log_db_requirements.md` usage event | `usage_log_*` | L1/L3 |
 | `update_aicc_settings_via_system_config.md` reload | `settings_reload_*` | L3/L4 |
+| `aicc_maintenance_roles.md` 统一更新验收流程 | `maintenance_update_*` | L3/L4 |
+| `aicc_maintenance_roles.md` 模型事实 / 运营策略分离 | `maintenance_metadata_*`、`maintenance_policy_*` | L3/L4 |
+| `aicc_maintenance_roles.md` 服务商 / 用户配置覆盖 | `maintenance_provider_settings_*`、`maintenance_routing_config_*` | L3/L4 |
+| `aicc_maintenance_roles.md` 回滚验收 | `maintenance_rollback_*` | L3/L4 |
 
 ## 7. Method 验收清单
 
@@ -620,7 +626,7 @@ test/aicc_test/reports/acceptance/<run_id>/
 | 字段 | 示例 |
 |---|---|
 | `layer` | `l1`、`l2`、`l3`、`l4` |
-| `domain` | `routing`、`route_resolve`、`typed_inference`、`helper`、`metadata`、`overlay`、`scheduler`、`provider`、`protocol`、`resource`、`task`、`usage`、`security`、`settings`、`gateway` |
+| `domain` | `routing`、`route_resolve`、`typed_inference`、`helper`、`metadata`、`overlay`、`scheduler`、`provider`、`protocol`、`resource`、`task`、`usage`、`security`、`settings`、`gateway`、`maintenance` |
 | `feature` | `exact_model`、`fallback`、`min_line`、`auto_mount`、`variant_lowering`、`inherit`、`replace`、`stream_merge`、`reload_settings`、`named_object` |
 | `scenario` | `success`、`no_fallback`、`rate_limit`、`policy_rejected`、`conflict` |
 
@@ -634,8 +640,11 @@ l1_provider_openai_stream_merge
 l2_client_idempotency_conflict
 l3_krpc_reload_settings_mock_openai
 l3_resource_named_object_image_txt2img
+l3_maintenance_metadata_openai_gpt_5_mini_logical_llm_chat
+l3_maintenance_policy_openai_gpt_5_mini_cost_fallback
 l4_gateway_openai_gpt_5_4_complex_workflow
 l4_gateway_fal_video_upscale_workflow
+l4_maintenance_release_openai_gpt_5_mini_related_cases
 ```
 
 命名要求：
@@ -643,6 +652,7 @@ l4_gateway_fal_video_upscale_workflow
 - case id 一旦进入报告，不应随意改名。
 - case id 应能从名字看出层级、功能域和主要断言。
 - 需求追踪矩阵中的用例族可用前缀表达，例如 `l1_routing_exact_model_*`。
+- 维护更新类用例命名应能按更新内容筛选，建议包含更新类型、provider driver、provider instance 或厂商名、model id 或 model family、api type、逻辑目录和场景。manifest tags 应同步维护 `update:metadata`、`update:policy`、`update:routing`、`provider:<driver>`、`model:<id>`、`api_type:<method>`、`logical:<catalog>` 等字段；tags 尚未落地时，必须用 case id 关键词保证可检索。
 
 ## 24. Mock Provider 配置样例
 
@@ -715,6 +725,38 @@ usage_output_tokens = 3
 9. 真实模型调用次数、attempt 次数和成本在报告中可见。
 10. 所有 failed / partial 用例都有明确失败原因、错误码或 Provider 摘要。
 11. runner 创建的临时 group 已清理，或报告中明确记录保留原因和清理命令。
+
+### 25.1 新模型维护更新验收
+
+当验收目标来自 `aicc_maintenance_roles.md` 中的新模型、新 Provider、新逻辑目录挂载、metadata、运营策略或 routing 维护动作时，除满足常规发布标准外，还必须执行本节闭环。
+
+维护更新类型：
+
+| 类型 | 交付物 | 必验内容 |
+|---|---|---|
+| 已有 Provider 新增协议兼容模型 | 模型事实 metadata、运营策略、必要的 routing_config | `models.list` 出现新 exact model；`api_types`、`capabilities`、上下文长度、`logical_mounts` 正确；成本、健康度、权重和 fallback 策略生效 |
+| 新增 OpenAI-compatible Provider instance | provider settings、`base_url`、授权、models 列表、metadata override | Provider 启用后 inventory 可见；exact model 可调用；逻辑目录可路由；缺 key / 错 key / `/models` 不兼容时错误可诊断 |
+| 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
+| 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
+| 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |
+| 运行时覆盖更新 | `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`、local override 或 system_config | `reload_settings` 后生效；覆盖优先级正确；损坏配置不破坏上一版可用状态；可独立回滚 |
+
+统一验收顺序：
+
+1. 准备更新说明，列出 provider、model、api type、逻辑目录、模型事实变更、运营策略变更、routing 变更、是否需要 adapter 发版，以及影响的旧用例族。
+2. 新增或更新命名可检索的相关用例，并在 manifest tags 中标明更新类型、provider、model、api type 和逻辑目录。
+3. 在测试环境发布云端配置、运行时覆盖文件或版本包，触发 `reload_settings`。
+4. 先执行本次新增用例和受影响旧用例，覆盖 inventory、metadata 解析、exact model、logical model、fallback、成本估算、禁用策略和错误返回。
+5. 相关用例通过后执行 AICC 全量用例，确认旧 Provider、旧模型和旧路由策略未回归。
+6. 发布环境上线后重复相关用例，再执行发布环境全量用例；发布环境的授权、网络、Provider 实际状态和报告摘要必须可诊断。
+7. 如本次支持回滚，至少执行一次目标回滚用例：模型事实错误时回滚 metadata / override；路由错误时优先回滚运营策略或 routing_config；回滚后重新 `reload_settings`，确认 `models.list`、route trace 和关键调用恢复预期。
+
+角色边界：
+
+- BuckyOS 项目方更新公共协议、默认模型事实基线、默认运营策略基线、默认逻辑目录和随版本缓存时，必须同时提交或更新对应 L1/L3/L4 用例。
+- 商业服务商跟随 BuckyOS 更新或维护自有 Provider 网关、模型事实包、运营策略包和产品默认 routing_config 时，必须保留服务商维度的用例 tags，报告中能按服务商 Provider / model 聚合。
+- 产品用户通过 system_config、local metadata override 或 `session_overlay` 做临时接入时，验收只要求配置生效、可回滚和安全边界正确；不要求修改公共基线。
+- 模型服务商主动提供 BuckyOS metadata / inventory / cost / quota / health 信息目前按畅想处理；如接入试点，应作为服务商或第三方 Provider 包验收，不作为 P0 默认要求。
 
 ## 26. 性能与并发最低要求
 
@@ -1043,6 +1085,7 @@ Mock 阶段必须保证执行环境确定：
 - `doc/aicc/update_aicc_settings_via_system_config.md`
 - `doc/aicc/aicc_provider_plan.md`
 - `doc/aicc/aicc_usage_log_db_requirements.md`
+- `doc/aicc/aicc_maintenance_roles.md`
 - `src/kernel/buckyos-api/src/aicc_client.rs`
 - `src/frame/aicc/src`
 - `test/aicc_test`
@@ -1057,6 +1100,7 @@ Mock 阶段必须保证执行环境确定：
 6. 修改 fallback、session config、policy 字段。
 7. 修改 usage log schema。
 8. 修改 task data / event 中 AICC 字段。
+9. 修改 metadata、运营策略、`remote_cache`、provider settings、routing_config 或回滚流程。
 
 ## 34. 用例 Manifest 约定
 
@@ -1109,6 +1153,22 @@ max_attempts = 3
 expect_status = "partial_or_passed"
 expect_usage = true
 expect_trace = true
+
+[[cases]]
+case_id = "l3_maintenance_metadata_openai_gpt_5_mini_logical_llm_chat"
+layer = "L3"
+priority = "P1"
+method = "maintenance.update"
+provider = "openai-mock-1"
+model = "gpt-5-mini@openai-mock-1"
+update_type = "metadata"
+api_types = ["llm.chat"]
+logical_catalogs = ["llm.chat"]
+tags = ["update:metadata", "provider:openai", "model:gpt-5-mini", "api_type:llm.chat", "logical:llm.chat"]
+requires = ["mock_provider", "aicc_service", "settings_reload"]
+expect_status = "succeeded"
+expect_usage = false
+expect_trace = true
 ```
 
 字段说明：
@@ -1121,7 +1181,12 @@ expect_trace = true
 | `method` | AICC method 或 `workflow` |
 | `model_alias` | 请求模型名，可为逻辑模型或精确模型 |
 | `provider` | 期望命中的 Provider；路由类用例可为空 |
+| `provider_driver` | Provider driver 名，例如 `openai`、`google-gemini`、`claude` |
 | `scenario` | Mock 行为场景 |
+| `update_type` | 维护更新类型，例如 `metadata`、`policy`、`routing`、`provider_settings`、`adapter_release`、`rollback` |
+| `api_types` | 本用例覆盖的 AICC method / API type 列表 |
+| `logical_catalogs` | 本用例覆盖的逻辑目录列表 |
+| `tags` | 可检索标签；维护更新类用例至少包含 `update:*`、`provider:*`、`model:*`、`api_type:*` 或 `logical:*` 中适用项 |
 | `requires` | 前置能力；缺失时用例 `skipped` |
 | `fixtures` | 所需 fixture 列表 |
 | `expect_status` | `succeeded`、`running`、`failed`、`partial_or_passed` |
@@ -1139,6 +1204,7 @@ Runner 要求：
 - 报告中的 case 顺序应与 manifest 顺序一致，便于人工阅读。
 - L4 动态矩阵用例可以由模板 case 展开；展开后的 `case_id` 必须唯一，并保留 `provider`、`model`、`api_types`、`matrix_source`。
 - L4 attempt 明细必须挂在同一个 case 下，不能展开成多个独立 case 影响通过率统计。
+- 维护更新类用例必须支持按 `update_type`、`provider_driver`、`provider`、`model`、`api_types`、`logical_catalogs` 和 `tags` 筛选；报告中应能单独汇总本次更新相关用例与全量回归用例。
 
 ## 35. Mock Provider HTTP 接口约定
 
