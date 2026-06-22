@@ -31,9 +31,9 @@ use uuid::Uuid;
 // 1300 leaves headroom.
 const TASK_EVENT_DATA_INLINE_LIMIT_BYTES: usize = 1300;
 const TASK_EVENT_RATE_LIMIT: Duration = Duration::from_secs(1);
-const DEFAULT_TASK_CLAIM_LEASE: Duration = Duration::from_secs(60);
-const MAX_TASK_CLAIM_LEASE: Duration = Duration::from_secs(60 * 60);
-const MIN_TASK_CLAIM_LEASE: Duration = Duration::from_secs(1);
+const DEFAULT_TASK_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const MAX_TASK_EXECUTION_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+const MIN_TASK_EXECUTION_TIMEOUT: Duration = Duration::from_secs(1);
 const NODE_DAEMON_RUNNER_APP_ID: &str = "node-daemon";
 
 #[derive(Clone, Copy)]
@@ -184,18 +184,18 @@ impl TaskManagerService {
         chrono::Utc::now().timestamp().max(0) as u64
     }
 
-    fn resolve_claim_lease(lease_ms: Option<u64>) -> Duration {
-        let requested = lease_ms
+    fn resolve_execution_timeout(timeout_ms: Option<u64>) -> Duration {
+        let requested = timeout_ms
             .map(Duration::from_millis)
-            .unwrap_or(DEFAULT_TASK_CLAIM_LEASE);
-        requested.clamp(MIN_TASK_CLAIM_LEASE, MAX_TASK_CLAIM_LEASE)
+            .unwrap_or(DEFAULT_TASK_EXECUTION_TIMEOUT);
+        requested.clamp(MIN_TASK_EXECUTION_TIMEOUT, MAX_TASK_EXECUTION_TIMEOUT)
     }
 
-    fn build_claim_window(lease_ms: Option<u64>) -> (u64, u64) {
+    fn build_execution_timeout_window(timeout_ms: Option<u64>) -> (u64, u64) {
         let now = Self::now_ts();
-        let lease = Self::resolve_claim_lease(lease_ms);
-        let lease_until = now.saturating_add(lease.as_secs());
-        (now, lease_until)
+        let timeout = Self::resolve_execution_timeout(timeout_ms);
+        let timeout_at = now.saturating_add(timeout.as_secs());
+        (now, timeout_at)
     }
 
     /// Returns true if the rate-limit gate is open and updates the last-emit
@@ -676,13 +676,13 @@ impl TaskManagerHandler for TaskManagerService {
         Ok(task)
     }
 
-    async fn handle_claim_task(
+    async fn handle_start_assigned_task(
         &self,
         id: i64,
         runner: &str,
-        lease_ms: Option<u64>,
+        timeout_ms: Option<u64>,
         ctx: RPCContext,
-    ) -> Result<ClaimTaskResult> {
+    ) -> Result<StartAssignedTaskResult> {
         let runner = runner.trim();
         if runner.is_empty() {
             return Err(RPCErrors::ParseRequestError(
@@ -694,59 +694,59 @@ impl TaskManagerHandler for TaskManagerService {
         let before_task = self.load_task(id).await?;
         if !Self::can_manage_runner(&request_ctx, runner) {
             return Err(RPCErrors::NoPermission(
-                "No permission to claim task".to_string(),
+                "No permission to start assigned task".to_string(),
             ));
         }
         if before_task.runner != runner || before_task.status != TaskStatus::Pending {
-            return Ok(ClaimTaskResult {
+            return Ok(StartAssignedTaskResult {
                 task: None,
-                claim_token: None,
-                lease_until: None,
+                execution_token: None,
+                timeout_at: None,
             });
         }
 
-        let claim_token = Uuid::new_v4().to_string();
-        let (now, lease_until) = Self::build_claim_window(lease_ms);
-        let claimed = self
+        let execution_token = Uuid::new_v4().to_string();
+        let (now, timeout_at) = Self::build_execution_timeout_window(timeout_ms);
+        let started = self
             .db
-            .claim_task_for_runner(id, runner, claim_token.as_str(), now, lease_until)
+            .start_assigned_task_for_runner(id, runner, execution_token.as_str(), now, timeout_at)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        if let Some(after_task) = claimed.as_ref() {
+        if let Some(after_task) = started.as_ref() {
             self.publish_task_changed_event(
                 &before_task,
                 after_task,
                 TaskChangeKind::Status,
-                "claim_task",
+                "start_assigned_task",
             )
             .await;
         }
-        if claimed.is_none() {
-            return Ok(ClaimTaskResult {
+        if started.is_none() {
+            return Ok(StartAssignedTaskResult {
                 task: None,
-                claim_token: None,
-                lease_until: None,
+                execution_token: None,
+                timeout_at: None,
             });
         }
 
-        Ok(ClaimTaskResult {
-            task: claimed,
-            claim_token: Some(claim_token),
-            lease_until: Some(lease_until),
+        Ok(StartAssignedTaskResult {
+            task: started,
+            execution_token: Some(execution_token),
+            timeout_at: Some(timeout_at),
         })
     }
 
-    async fn handle_heartbeat_task_claim(
+    async fn handle_extend_task_execution(
         &self,
         id: i64,
-        claim_token: &str,
-        lease_ms: Option<u64>,
+        execution_token: &str,
+        timeout_ms: Option<u64>,
         ctx: RPCContext,
-    ) -> Result<HeartbeatTaskClaimResult> {
-        let claim_token = claim_token.trim();
-        if claim_token.is_empty() {
+    ) -> Result<ExtendTaskExecutionResult> {
+        let execution_token = execution_token.trim();
+        if execution_token.is_empty() {
             return Err(RPCErrors::ParseRequestError(
-                "claim_token is required".to_string(),
+                "execution_token is required".to_string(),
             ));
         }
 
@@ -754,43 +754,43 @@ impl TaskManagerHandler for TaskManagerService {
         let task = self.load_task(id).await?;
         if !Self::can_manage_runner(&request_ctx, task.runner.as_str()) {
             return Err(RPCErrors::NoPermission(
-                "No permission to heartbeat task claim".to_string(),
+                "No permission to extend task execution".to_string(),
             ));
         }
 
-        let (now, lease_until) = Self::build_claim_window(lease_ms);
+        let (now, timeout_at) = Self::build_execution_timeout_window(timeout_ms);
         let extended = self
             .db
-            .heartbeat_task_claim(id, claim_token, now, lease_until)
+            .extend_task_execution(id, execution_token, now, timeout_at)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
         if !extended {
             return Err(RPCErrors::ReasonError(format!(
-                "Task claim {} is not active",
+                "Task execution {} is not active",
                 id
             )));
         }
-        Ok(HeartbeatTaskClaimResult { lease_until })
+        Ok(ExtendTaskExecutionResult { timeout_at })
     }
 
-    async fn handle_requeue_stale_task_claims(
+    async fn handle_fail_timed_out_task_executions(
         &self,
         now: Option<u64>,
         runner: Option<&str>,
         ctx: RPCContext,
-    ) -> Result<RequeueStaleClaimsResult> {
+    ) -> Result<FailTimedOutExecutionsResult> {
         let now = now.unwrap_or_else(Self::now_ts);
         let runner = runner.map(str::trim).filter(|value| !value.is_empty());
         let request_ctx = request_context_from_rpc(&ctx);
         if let Some(runner) = runner {
             if !Self::can_manage_runner(&request_ctx, runner) {
                 return Err(RPCErrors::NoPermission(
-                    "No permission to requeue runner claims".to_string(),
+                    "No permission to fail runner timed-out executions".to_string(),
                 ));
             }
         } else if !Self::is_system_context(&request_ctx) {
             return Err(RPCErrors::NoPermission(
-                "No permission to requeue all stale claims".to_string(),
+                "No permission to fail all timed-out executions".to_string(),
             ));
         }
         let stale_tasks = self
@@ -807,9 +807,9 @@ impl TaskManagerHandler for TaskManagerService {
             )
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        let requeued_count = self
+        let failed_count = self
             .db
-            .requeue_stale_claims(now, runner)
+            .fail_timed_out_executions(now, runner)
             .await
             .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
 
@@ -820,16 +820,14 @@ impl TaskManagerHandler for TaskManagerService {
                         &before_task,
                         &after_task,
                         TaskChangeKind::Status,
-                        "requeue_stale_task_claims",
+                        "fail_timed_out_task_executions",
                     )
                     .await;
-                    self.publish_task_ready_event(&after_task, "requeue_stale_task_claims")
-                        .await;
                 }
             }
         }
 
-        Ok(RequeueStaleClaimsResult { requeued_count })
+        Ok(FailTimedOutExecutionsResult { failed_count })
     }
 
     async fn handle_add_task_note(
@@ -1872,14 +1870,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_claim_task_claims_pending_runner_task_once() {
+    async fn test_start_assigned_task_starts_pending_runner_task_once() {
         let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
         let create_req = create_rpc_request(
             "create_task",
             json!({
-                "name": "claimable_task",
+                "name": "startable_task",
                 "task_type": "scheduler.dispatch_thunk",
                 "runner": "node-a",
                 "app_id": "scheduler",
@@ -1890,19 +1888,21 @@ mod tests {
         let task_id = if let RPCResult::Success(result) = create_resp.result {
             result["task_id"].as_i64().unwrap()
         } else {
-            panic!("Failed to create claimable task");
+            panic!("Failed to create startable task");
         };
 
-        let unauthenticated_claim_req =
-            create_rpc_request("claim_task", json!({ "id": task_id, "runner": "node-b" }));
-        let unauthenticated_claim = server.handle_rpc_call(unauthenticated_claim_req, ip).await;
+        let unauthenticated_start_req = create_rpc_request(
+            "start_assigned_task",
+            json!({ "id": task_id, "runner": "node-b" }),
+        );
+        let unauthenticated_start = server.handle_rpc_call(unauthenticated_start_req, ip).await;
         assert!(matches!(
-            unauthenticated_claim,
+            unauthenticated_start,
             Err(RPCErrors::NoPermission(_))
         ));
 
         let wrong_runner_req = create_rpc_request_with_token(
-            "claim_task",
+            "start_assigned_task",
             json!({ "id": task_id, "runner": "node-b" }),
             "kernel",
             "system",
@@ -1911,11 +1911,11 @@ mod tests {
         if let RPCResult::Success(result) = wrong_runner_resp.result {
             assert!(result["task"].is_null());
         } else {
-            panic!("Wrong runner claim should return success with null task");
+            panic!("Wrong runner start should return success with null task");
         }
 
         let unauthorized_runner_req = create_rpc_request_with_token(
-            "claim_task",
+            "start_assigned_task",
             json!({ "id": task_id, "runner": "node-a" }),
             "node-b",
             NODE_DAEMON_RUNNER_APP_ID,
@@ -1926,95 +1926,95 @@ mod tests {
             Err(RPCErrors::NoPermission(_))
         ));
 
-        let claim_req = create_rpc_request_with_token(
-            "claim_task",
-            json!({ "id": task_id, "runner": "node-a" }),
+        let start_req = create_rpc_request_with_token(
+            "start_assigned_task",
+            json!({ "id": task_id, "runner": "node-a", "timeout_ms": 60000 }),
             "node-a",
             NODE_DAEMON_RUNNER_APP_ID,
         );
-        let claim_resp = server.handle_rpc_call(claim_req, ip).await.unwrap();
-        let (claim_token, mut lease_until) = if let RPCResult::Success(result) = claim_resp.result {
-            assert_eq!(result["task"]["id"], task_id);
-            assert_eq!(result["task"]["runner"], "node-a");
-            assert_eq!(result["task"]["status"], "Running");
-            let claim_token = result["claim_token"]
-                .as_str()
-                .expect("claim_token should be returned")
-                .to_string();
-            let lease_until = result["lease_until"]
-                .as_u64()
-                .expect("lease_until should be returned");
-            assert!(!claim_token.is_empty());
-            assert!(lease_until > 0);
-            (claim_token, lease_until)
-        } else {
-            panic!("Matching runner should claim task");
-        };
+        let start_resp = server.handle_rpc_call(start_req, ip).await.unwrap();
+        let (execution_token, mut timeout_at) =
+            if let RPCResult::Success(result) = start_resp.result {
+                assert_eq!(result["task"]["id"], task_id);
+                assert_eq!(result["task"]["runner"], "node-a");
+                assert_eq!(result["task"]["status"], "Running");
+                let execution_token = result["execution_token"]
+                    .as_str()
+                    .expect("execution_token should be returned")
+                    .to_string();
+                let timeout_at = result["timeout_at"]
+                    .as_u64()
+                    .expect("timeout_at should be returned");
+                assert!(!execution_token.is_empty());
+                assert!(timeout_at > 0);
+                (execution_token, timeout_at)
+            } else {
+                panic!("Matching runner should start task");
+            };
 
-        let second_claim_req = create_rpc_request_with_token(
-            "claim_task",
+        let second_start_req = create_rpc_request_with_token(
+            "start_assigned_task",
             json!({ "id": task_id, "runner": "node-a" }),
             "node-a",
             NODE_DAEMON_RUNNER_APP_ID,
         );
-        let second_claim_resp = server.handle_rpc_call(second_claim_req, ip).await.unwrap();
-        if let RPCResult::Success(result) = second_claim_resp.result {
+        let second_start_resp = server.handle_rpc_call(second_start_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = second_start_resp.result {
             assert!(result["task"].is_null());
         } else {
-            panic!("Second claim should return success with null task");
+            panic!("Second start should return success with null task");
         }
 
-        let heartbeat_req = create_rpc_request_with_token(
-            "heartbeat_task_claim",
+        let extend_req = create_rpc_request_with_token(
+            "extend_task_execution",
             json!({
                 "id": task_id,
-                "claim_token": claim_token,
-                "lease_ms": 120000
+                "execution_token": execution_token,
+                "timeout_ms": 120000
             }),
             "node-a",
             NODE_DAEMON_RUNNER_APP_ID,
         );
-        let heartbeat_resp = server.handle_rpc_call(heartbeat_req, ip).await.unwrap();
-        if let RPCResult::Success(result) = heartbeat_resp.result {
-            assert!(result["lease_until"].as_u64().unwrap() >= lease_until);
-            lease_until = result["lease_until"].as_u64().unwrap();
+        let extend_resp = server.handle_rpc_call(extend_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = extend_resp.result {
+            assert!(result["timeout_at"].as_u64().unwrap() >= timeout_at);
+            timeout_at = result["timeout_at"].as_u64().unwrap();
         } else {
-            panic!("Heartbeat should renew the claim");
+            panic!("Extend execution should renew the timeout");
         }
 
-        let unauthorized_all_requeue_req = create_rpc_request_with_token(
-            "requeue_stale_task_claims",
-            json!({ "now": lease_until + 1 }),
+        let unauthorized_all_fail_req = create_rpc_request_with_token(
+            "fail_timed_out_task_executions",
+            json!({ "now": timeout_at + 1 }),
             "node-a",
             NODE_DAEMON_RUNNER_APP_ID,
         );
-        let unauthorized_all_requeue = server
-            .handle_rpc_call(unauthorized_all_requeue_req, ip)
-            .await;
+        let unauthorized_all_fail = server.handle_rpc_call(unauthorized_all_fail_req, ip).await;
         assert!(matches!(
-            unauthorized_all_requeue,
+            unauthorized_all_fail,
             Err(RPCErrors::NoPermission(_))
         ));
 
-        let requeue_req = create_rpc_request_with_token(
-            "requeue_stale_task_claims",
-            json!({ "now": lease_until + 1, "runner": "node-a" }),
+        let fail_req = create_rpc_request_with_token(
+            "fail_timed_out_task_executions",
+            json!({ "now": timeout_at + 1, "runner": "node-a" }),
             "node-a",
             NODE_DAEMON_RUNNER_APP_ID,
         );
-        let requeue_resp = server.handle_rpc_call(requeue_req, ip).await.unwrap();
-        if let RPCResult::Success(result) = requeue_resp.result {
-            assert_eq!(result["requeued_count"], 1);
+        let fail_resp = server.handle_rpc_call(fail_req, ip).await.unwrap();
+        if let RPCResult::Success(result) = fail_resp.result {
+            assert_eq!(result["failed_count"], 1);
         } else {
-            panic!("Expired claim should be requeued");
+            panic!("Timed-out execution should fail");
         }
 
         let get_req = create_rpc_request("get_task", json!({ "id": task_id }));
         let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
         if let RPCResult::Success(result) = get_resp.result {
-            assert_eq!(result["task"]["status"], "Pending");
+            assert_eq!(result["task"]["status"], "Failed");
+            assert_eq!(result["task"]["message"], "Task execution timed out");
         } else {
-            panic!("Failed to read requeued task");
+            panic!("Failed to read timed-out task");
         }
     }
 

@@ -1,4 +1,4 @@
-# opendan Task Inbox Claim Migration Plan for Beta2.2
+# opendan Task Inbox Assigned Start Migration Plan for Beta2.2
 
 更新时间：2026-06-12
 
@@ -22,12 +22,11 @@ opendan 当前会处理这些 `agent.delegate` 状态：
 
 ## 2. 不能直接照搬 node_daemon 的原因
 
-node_daemon 的 claim 模型：
+node_daemon 的 assigned start 模型：
 
 - sweep `Pending`
-- `claim_task`
+- `start_assigned_task`
 - 启动一个子进程
-- heartbeat
 - 写终态
 
 opendan 的模型：
@@ -38,13 +37,13 @@ opendan 的模型：
 - `Paused` / `Canceled` 需要反射到 session control。
 - `execution.session_id` 是避免重复创建 session 的核心幂等键。
 
-因此 opendan 迁移必须是局部的，不能把所有状态都先 claim。
+因此 opendan 迁移必须是局部的，不能把所有状态都先进入 start guard。
 
 ## 3. 迁移目标
 
 Beta2.2 目标：
 
-- 只让“启动新 session 的 `Pending` 路径”进入 `claim_task`。
+- 只让“启动新 session 的 `Pending` 路径”进入 `start_assigned_task`。
 - 保持 `WaitingForApproval`、`Running`、`Paused`、`Canceled` 的现有恢复/控制语义。
 - 不改变 msg-center inbox pump 和 session inbox 模型。
 - 不依赖 kevent 正确性；kevent 仍只做加速。
@@ -56,15 +55,15 @@ Beta2.2 目标：
 推荐迁移：
 
 1. sweep 到 `Pending agent.delegate`。
-2. 如果 task 已经带 `execution.session_id`，不要 claim，走 existing session recover / wake。
-3. 如果 task 没有绑定 session，调用 `claim_task(id, runner)`。
-4. claim 成功后再创建 work session。
+2. 如果 task 已经带 `execution.session_id`，不要 start，走 existing session recover / wake。
+3. 如果 task 没有绑定 session，调用 `start_assigned_task(id, runner)`。
+4. start 成功后再创建 work session。
 5. 创建 session 后立刻写回 `execution.session_id`，作为后续 sweep 的幂等键。
-6. claim 返回 `None` 时跳过，认为别的消费者赢得竞争。
+6. start 返回 `None` 时跳过，认为别的消费者赢得竞争。
 
 ### WaitingForApproval
 
-不 claim。
+不 start。
 
 继续走：
 
@@ -78,7 +77,7 @@ Beta2.2 目标：
 
 ### Running
 
-不 claim。
+不 start。
 
 继续走：
 
@@ -87,11 +86,11 @@ Beta2.2 目标：
 
 原因：
 
-- `Running` 代表可能已有会话，不应被新 claim 覆盖。
+- `Running` 代表可能已有会话，不应被新 start 覆盖。
 
 ### Paused / Canceled
 
-不 claim。
+不 start。
 
 继续走：
 
@@ -101,32 +100,33 @@ Beta2.2 目标：
 
 - 这些是控制状态，不是待领取工作。
 
-## 5. Lease / Heartbeat 策略
+## 5. Timeout 策略
 
-opendan 不应在第一步复用 node_daemon 的进程 heartbeat。
+opendan 不应在第一步复用 node_daemon 的简单子进程终态模型。
 
 推荐后续单独设计：
 
-- claim 成功到 session_id 写回之间使用短 lease。
-- session 创建成功后，是否继续 heartbeat 要以 session lifecycle 为准，而不是 task inbox sweep 为准。
-- 如果 session 已绑定，reclaim 不能简单把 `Running` 改回 `Pending`，否则可能产生重复会话。
+- start 成功到 session_id 写回之间使用明确 timeout。
+- session 创建成功后，后续超时和恢复要以 session lifecycle 为准，而不是 task inbox sweep 为准。
+- 如果 session 已绑定，timeout 不能简单把 `Running` 改回 `Pending`，否则可能产生重复会话。
+- 如果需要重跑，应创建新的 task，而不是复用同一个 task instance。
 
 Beta2.2 第一阶段建议：
 
-- Pending 新 session 启动路径先接 `claim_task`。
-- 暂不对 opendan 启用自动 stale requeue。
-- stale `agent.delegate` 默认走 manual/recovery，不自动 retry。
+- Pending 新 session 启动路径先接 `start_assigned_task`。
+- 暂不对 opendan 启用自动 timeout sweep。
+- timed-out `agent.delegate` 默认走 manual/recovery，不自动 retry。
 
 ## 6. 验证计划
 
 单元测试优先：
 
-- `Pending` 未绑定 session：claim 成功后创建 session。
-- `Pending` claim 返回 `None`：不创建 session。
-- `Pending` 已带 `execution.session_id`：不 claim，直接 recover / wake。
-- `WaitingForApproval`：不 claim，继续检查 human input child。
-- `Running`：不 claim，按 session_id recover / wake。
-- `Paused` / `Canceled`：不 claim，反射控制到 session。
+- `Pending` 未绑定 session：start 成功后创建 session。
+- `Pending` start 返回 `None`：不创建 session。
+- `Pending` 已带 `execution.session_id`：不 start，直接 recover / wake。
+- `WaitingForApproval`：不 start，继续检查 human input child。
+- `Running`：不 start，按 session_id recover / wake。
+- `Paused` / `Canceled`：不 start，反射控制到 session。
 
 端到端验证：
 

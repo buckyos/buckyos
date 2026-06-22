@@ -104,8 +104,8 @@ impl TaskDb {
     async fn cleanup_removed_task_schema(&self) -> DbResult<()> {
         self.drop_task_name_scope_index().await?;
         self.drop_task_title_column().await?;
-        self.ensure_task_claim_columns().await?;
-        self.ensure_task_claim_indexes().await
+        self.ensure_task_execution_columns().await?;
+        self.ensure_task_execution_indexes().await
     }
 
     async fn drop_task_name_scope_index(&self) -> DbResult<()> {
@@ -140,19 +140,31 @@ impl TaskDb {
         Ok(())
     }
 
-    async fn ensure_task_claim_columns(&self) -> DbResult<()> {
-        self.add_task_column_if_missing("claim_token", "claim_token TEXT", "claim_token TEXT")
-            .await?;
-        self.add_task_column_if_missing("claimed_by", "claimed_by TEXT", "claimed_by TEXT")
-            .await?;
-        self.add_task_column_if_missing("claimed_at", "claimed_at INTEGER", "claimed_at BIGINT")
-            .await?;
-        self.add_task_column_if_missing("lease_until", "lease_until INTEGER", "lease_until BIGINT")
+    async fn ensure_task_execution_columns(&self) -> DbResult<()> {
+        self.add_task_column_if_missing(
+            "execution_token",
+            "execution_token TEXT",
+            "execution_token TEXT",
+        )
+        .await?;
+        self.add_task_column_if_missing(
+            "assigned_executor",
+            "assigned_executor TEXT",
+            "assigned_executor TEXT",
+        )
+        .await?;
+        self.add_task_column_if_missing(
+            "execution_started_at",
+            "execution_started_at INTEGER",
+            "execution_started_at BIGINT",
+        )
+        .await?;
+        self.add_task_column_if_missing("timeout_at", "timeout_at INTEGER", "timeout_at BIGINT")
             .await?;
         self.add_task_column_if_missing(
-            "last_heartbeat_at",
-            "last_heartbeat_at INTEGER",
-            "last_heartbeat_at BIGINT",
+            "last_execution_update_at",
+            "last_execution_update_at INTEGER",
+            "last_execution_update_at BIGINT",
         )
         .await
     }
@@ -193,18 +205,18 @@ impl TaskDb {
         Ok(())
     }
 
-    async fn ensure_task_claim_indexes(&self) -> DbResult<()> {
-        let runner_lease_index = self.render_sql(
-            "CREATE INDEX IF NOT EXISTS idx_task_runner_status_lease
-            ON task(runner, status, lease_until)",
+    async fn ensure_task_execution_indexes(&self) -> DbResult<()> {
+        let runner_timeout_index = self.render_sql(
+            "CREATE INDEX IF NOT EXISTS idx_task_runner_status_timeout
+            ON task(runner, status, timeout_at)",
         );
-        self.pool.execute(runner_lease_index.as_str()).await?;
+        self.pool.execute(runner_timeout_index.as_str()).await?;
 
-        let claim_token_index = self.render_sql(
-            "CREATE INDEX IF NOT EXISTS idx_task_claim_token
-            ON task(claim_token)",
+        let execution_token_index = self.render_sql(
+            "CREATE INDEX IF NOT EXISTS idx_task_execution_token
+            ON task(execution_token)",
         );
-        self.pool.execute(claim_token_index.as_str()).await?;
+        self.pool.execute(execution_token_index.as_str()).await?;
         Ok(())
     }
 
@@ -418,11 +430,11 @@ impl TaskDb {
                 "UPDATE task SET
                     status = ?,
                     updated_at = ?,
-                    claim_token = NULL,
-                    claimed_by = NULL,
-                    claimed_at = NULL,
-                    lease_until = NULL,
-                    last_heartbeat_at = NULL
+                    execution_token = NULL,
+                    assigned_executor = NULL,
+                    execution_started_at = NULL,
+                    timeout_at = NULL,
+                    last_execution_update_at = NULL
                 WHERE id = ?",
             );
             sqlx::query(&sql)
@@ -441,34 +453,34 @@ impl TaskDb {
         Ok(())
     }
 
-    pub async fn claim_task_for_runner(
+    pub async fn start_assigned_task_for_runner(
         &self,
         id: i64,
         runner: &str,
-        claim_token: &str,
+        execution_token: &str,
         now: u64,
-        lease_until: u64,
+        timeout_at: u64,
     ) -> DbResult<Option<Task>> {
         let updated_at = now as i64;
-        let lease_until = lease_until as i64;
+        let timeout_at = timeout_at as i64;
         let sql = self.render_sql(
             "UPDATE task SET
                 status = ?,
                 updated_at = ?,
-                claim_token = ?,
-                claimed_by = ?,
-                claimed_at = ?,
-                lease_until = ?,
-                last_heartbeat_at = ?
+                execution_token = ?,
+                assigned_executor = ?,
+                execution_started_at = ?,
+                timeout_at = ?,
+                last_execution_update_at = ?
             WHERE id = ? AND runner = ? AND status = ?",
         );
         let result = sqlx::query(&sql)
             .bind(TaskStatus::Running.to_string())
             .bind(updated_at)
-            .bind(claim_token.to_string())
+            .bind(execution_token.to_string())
             .bind(runner.to_string())
             .bind(updated_at)
-            .bind(lease_until)
+            .bind(timeout_at)
             .bind(updated_at)
             .bind(id)
             .bind(runner.to_string())
@@ -477,7 +489,7 @@ impl TaskDb {
             .await?;
 
         info!(
-            "task_db.claim_task_for_runner: id={} runner={} changed={}",
+            "task_db.start_assigned_task_for_runner: id={} runner={} changed={}",
             id,
             runner,
             result.rows_affected()
@@ -488,68 +500,75 @@ impl TaskDb {
         self.get_task(id).await
     }
 
-    pub async fn heartbeat_task_claim(
+    pub async fn extend_task_execution(
         &self,
         id: i64,
-        claim_token: &str,
+        execution_token: &str,
         now: u64,
-        lease_until: u64,
+        timeout_at: u64,
     ) -> DbResult<bool> {
         let updated_at = now as i64;
-        let lease_until = lease_until as i64;
+        let timeout_at = timeout_at as i64;
         let sql = self.render_sql(
             "UPDATE task SET
                 updated_at = ?,
-                lease_until = ?,
-                last_heartbeat_at = ?
-            WHERE id = ? AND claim_token = ? AND status = ?",
+                timeout_at = ?,
+                last_execution_update_at = ?
+            WHERE id = ? AND execution_token = ? AND status = ?",
         );
         let result = sqlx::query(&sql)
             .bind(updated_at)
-            .bind(lease_until)
+            .bind(timeout_at)
             .bind(updated_at)
             .bind(id)
-            .bind(claim_token.to_string())
+            .bind(execution_token.to_string())
             .bind(TaskStatus::Running.to_string())
             .execute(self.pool())
             .await?;
         info!(
-            "task_db.heartbeat_task_claim: id={} changed={}",
+            "task_db.extend_task_execution: id={} changed={}",
             id,
             result.rows_affected()
         );
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn requeue_stale_claims(&self, now: u64, runner: Option<&str>) -> DbResult<u64> {
+    pub async fn fail_timed_out_executions(&self, now: u64, runner: Option<&str>) -> DbResult<u64> {
         let now = now as i64;
         let sql = if runner.is_some() {
             self.render_sql(
                 "UPDATE task SET
                     status = ?,
+                    error_message = ?,
+                    message = ?,
                     updated_at = ?,
-                    claim_token = NULL,
-                    claimed_by = NULL,
-                    claimed_at = NULL,
-                    lease_until = NULL,
-                    last_heartbeat_at = NULL
-                WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ? AND runner = ?",
+                    execution_token = NULL,
+                    assigned_executor = NULL,
+                    execution_started_at = NULL,
+                    timeout_at = NULL,
+                    last_execution_update_at = NULL
+                WHERE status = ? AND timeout_at IS NOT NULL AND timeout_at < ? AND runner = ?",
             )
         } else {
             self.render_sql(
                 "UPDATE task SET
                     status = ?,
+                    error_message = ?,
+                    message = ?,
                     updated_at = ?,
-                    claim_token = NULL,
-                    claimed_by = NULL,
-                    claimed_at = NULL,
-                    lease_until = NULL,
-                    last_heartbeat_at = NULL
-                WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?",
+                    execution_token = NULL,
+                    assigned_executor = NULL,
+                    execution_started_at = NULL,
+                    timeout_at = NULL,
+                    last_execution_update_at = NULL
+                WHERE status = ? AND timeout_at IS NOT NULL AND timeout_at < ?",
             )
         };
+        let timeout_message = "Task execution timed out";
         let mut query = sqlx::query(&sql)
-            .bind(TaskStatus::Pending.to_string())
+            .bind(TaskStatus::Failed.to_string())
+            .bind(timeout_message.to_string())
+            .bind(timeout_message.to_string())
             .bind(now)
             .bind(TaskStatus::Running.to_string())
             .bind(now);
@@ -558,7 +577,7 @@ impl TaskDb {
         }
         let result = query.execute(self.pool()).await?;
         info!(
-            "task_db.requeue_stale_claims: runner={:?} changed={}",
+            "task_db.fail_timed_out_executions: runner={:?} changed={}",
             runner,
             result.rows_affected()
         );
@@ -585,11 +604,11 @@ impl TaskDb {
                 "UPDATE task SET
                     status = ?,
                     updated_at = ?,
-                    claim_token = NULL,
-                    claimed_by = NULL,
-                    claimed_at = NULL,
-                    lease_until = NULL,
-                    last_heartbeat_at = NULL
+                    execution_token = NULL,
+                    assigned_executor = NULL,
+                    execution_started_at = NULL,
+                    timeout_at = NULL,
+                    last_execution_update_at = NULL
                 WHERE root_id = ?",
             );
             sqlx::query(&sql)
@@ -646,11 +665,11 @@ impl TaskDb {
                 error_message = ?,
                 message = ?,
                 updated_at = ?,
-                claim_token = NULL,
-                claimed_by = NULL,
-                claimed_at = NULL,
-                lease_until = NULL,
-                last_heartbeat_at = NULL
+                execution_token = NULL,
+                assigned_executor = NULL,
+                execution_started_at = NULL,
+                timeout_at = NULL,
+                last_execution_update_at = NULL
             WHERE id = ?",
         );
         let result = sqlx::query(&sql)
@@ -718,14 +737,14 @@ impl TaskDb {
 
         let updated_at = now_ts();
         let status_str = status.as_ref().map(|s| s.to_string());
-        let clear_claim = status
+        let clear_execution = status
             .as_ref()
             .map(|status| *status != TaskStatus::Running)
             .unwrap_or(false);
         let progress_f64 = progress.map(|p| p as f64);
         let message_present = message.is_some();
         let data_patch_present = data_str.is_some();
-        let result = if clear_claim {
+        let result = if clear_execution {
             let sql = self.render_sql(
                 "UPDATE task SET
                     status = COALESCE(?, status),
@@ -733,11 +752,11 @@ impl TaskDb {
                     message = COALESCE(?, message),
                     data = COALESCE(?, data),
                     updated_at = ?,
-                    claim_token = NULL,
-                    claimed_by = NULL,
-                    claimed_at = NULL,
-                    lease_until = NULL,
-                    last_heartbeat_at = NULL
+                    execution_token = NULL,
+                    assigned_executor = NULL,
+                    execution_started_at = NULL,
+                    timeout_at = NULL,
+                    last_execution_update_at = NULL
                 WHERE id = ?",
             );
             sqlx::query(&sql)
@@ -1106,11 +1125,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
         assert!(name_scope_index.is_none());
 
         for column_name in [
-            "claim_token",
-            "claimed_by",
-            "claimed_at",
-            "lease_until",
-            "last_heartbeat_at",
+            "execution_token",
+            "assigned_executor",
+            "execution_started_at",
+            "timeout_at",
+            "last_execution_update_at",
         ] {
             let column = sqlx::query("SELECT 1 FROM pragma_table_info('task') WHERE name = ?")
                 .bind(column_name)
@@ -1120,7 +1139,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
             assert!(column.is_some(), "missing migrated column {column_name}");
         }
 
-        for index_name in ["idx_task_runner_status_lease", "idx_task_claim_token"] {
+        for index_name in ["idx_task_runner_status_timeout", "idx_task_execution_token"] {
             let index =
                 sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?")
                     .bind(index_name)
@@ -1346,77 +1365,88 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_claim_task_for_runner_only_claims_matching_pending_task() {
+    async fn test_start_assigned_task_for_runner_only_starts_matching_pending_task() {
         let (db, _temp_dir) = setup_test_db().await;
 
-        let mut task = create_test_task("claimable");
+        let mut task = create_test_task("startable");
         task.runner = "node-a".to_string();
         let id = db.create_task(&task).await.unwrap();
 
         let wrong_runner = db
-            .claim_task_for_runner(id, "node-b", "token-wrong", 100, 200)
+            .start_assigned_task_for_runner(id, "node-b", "token-wrong", 100, 200)
             .await
             .unwrap();
         assert!(wrong_runner.is_none());
 
-        let claimed = db
-            .claim_task_for_runner(id, "node-a", "token-1", 100, 200)
+        let started = db
+            .start_assigned_task_for_runner(id, "node-a", "token-1", 100, 200)
             .await
             .unwrap();
-        let claimed = claimed.expect("pending task should be claimed");
-        assert_eq!(claimed.status, TaskStatus::Running);
-        assert_eq!(claimed.runner, "node-a");
+        let started = started.expect("pending task should be started");
+        assert_eq!(started.status, TaskStatus::Running);
+        assert_eq!(started.runner, "node-a");
 
-        let second_claim = db
-            .claim_task_for_runner(id, "node-a", "token-2", 100, 200)
+        let second_start = db
+            .start_assigned_task_for_runner(id, "node-a", "token-2", 100, 200)
             .await
             .unwrap();
-        assert!(second_claim.is_none());
+        assert!(second_start.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_claim_heartbeat_and_requeue_stale_claim() {
+    async fn test_execution_extend_and_fail_timed_out_execution() {
         let (db, _temp_dir) = setup_test_db().await;
 
-        let mut task = create_test_task("leased");
+        let mut task = create_test_task("timed_execution");
         task.runner = "node-a".to_string();
         let id = db.create_task(&task).await.unwrap();
 
-        let claimed = db
-            .claim_task_for_runner(id, "node-a", "token-1", 100, 200)
+        let started = db
+            .start_assigned_task_for_runner(id, "node-a", "token-1", 100, 200)
             .await
             .unwrap()
-            .expect("task should be claimed");
-        assert_eq!(claimed.status, TaskStatus::Running);
+            .expect("task should be started");
+        assert_eq!(started.status, TaskStatus::Running);
 
         let wrong_token = db
-            .heartbeat_task_claim(id, "token-wrong", 150, 250)
+            .extend_task_execution(id, "token-wrong", 150, 250)
             .await
             .unwrap();
         assert!(!wrong_token);
 
         let extended = db
-            .heartbeat_task_claim(id, "token-1", 150, 260)
+            .extend_task_execution(id, "token-1", 150, 260)
             .await
             .unwrap();
         assert!(extended);
 
-        let not_expired = db.requeue_stale_claims(259, Some("node-a")).await.unwrap();
+        let not_expired = db
+            .fail_timed_out_executions(259, Some("node-a"))
+            .await
+            .unwrap();
         assert_eq!(not_expired, 0);
         assert_eq!(
             db.get_task(id).await.unwrap().unwrap().status,
             TaskStatus::Running
         );
 
-        let requeued = db.requeue_stale_claims(261, Some("node-a")).await.unwrap();
-        assert_eq!(requeued, 1);
+        let failed = db
+            .fail_timed_out_executions(261, Some("node-a"))
+            .await
+            .unwrap();
+        assert_eq!(failed, 1);
+        let failed_task = db.get_task(id).await.unwrap().unwrap();
+        assert_eq!(failed_task.status, TaskStatus::Failed);
         assert_eq!(
-            db.get_task(id).await.unwrap().unwrap().status,
-            TaskStatus::Pending
+            failed_task.message.as_deref(),
+            Some("Task execution timed out")
         );
 
-        let stale_again = db.requeue_stale_claims(300, Some("node-a")).await.unwrap();
-        assert_eq!(stale_again, 0);
+        let expired_again = db
+            .fail_timed_out_executions(300, Some("node-a"))
+            .await
+            .unwrap();
+        assert_eq!(expired_again, 0);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1,11 +1,11 @@
-# TaskManager Runner Claim / Lease Plan for Beta2.2
+# TaskManager Assigned Executor Start / Timeout Plan for Beta2.2
 
 ## 1. Background
 
-TaskManager is the shared state layer for distributed async work. Producers create tasks with:
+TaskManager is the shared state layer for distributed async work. Producers and schedulers create tasks with:
 
 - `status = Pending`
-- `runner = <runner id>`
+- `runner = <assigned executor id>`
 - task-specific payload in `data`
 
 Consumers discover work through two channels:
@@ -15,63 +15,62 @@ Consumers discover work through two channels:
 
 The key rule is that kevent is only an acceleration signal. The database state is the source of truth.
 
-The current branch has added the first strong consistency and recovery step:
+The Beta2.2 model is not an open preemptive producer-consumer queue. Scheduler assignment is deterministic. A runner may start only tasks already assigned to that runner, and TaskManager's atomic update is the duplicate-start guard.
 
-- `claim_task(id, runner)` atomically changes a matching `Pending` task to `Running`.
+## 2. Implemented Behavior
+
+The current branch implements the assigned executor baseline:
+
+- `start_assigned_task(id, runner, timeout_ms?)` atomically changes a matching `Pending` task to `Running`.
 - The update is guarded by `id + runner + Pending`.
-- Successful claim returns an opaque `claim_token` and `lease_until`.
-- `heartbeat_task_claim(id, claim_token, lease_ms?)` renews an active claim.
-- `requeue_stale_task_claims` can explicitly move expired `Running` claims back to `Pending`.
+- Successful start returns an opaque `execution_token` and `timeout_at`.
+- `extend_task_execution(id, execution_token, timeout_ms?)` can extend the execution timeout before it expires.
+- `fail_timed_out_task_executions(now?, runner?)` marks expired `Running` executions as `Failed`.
 - A losing runner receives `None` and must skip the task.
-- `node_daemon` now uses leased claim before starting a thunk task and heartbeats while the child process is running.
+- `node_daemon` starts only after `start_assigned_task` succeeds and no longer depends on periodic renewal or Running-to-Pending recovery.
 
-This prevents the basic duplicate-start race from `list_tasks(Pending) -> update_task_status(Running)`.
+This prevents the duplicate-start race from `list_tasks(Pending) -> update_task_status(Running)` while keeping task rerun semantics explicit.
 
-## 2. Current Gap
+## 3. Timeout And Rerun Semantics
 
-The minimal lease path now solves the basic runner failure after claim case when reclaim is invoked.
+Timeout is a terminal failure for the current task instance:
 
-Implemented behavior:
+- `Pending -> Running` happens through `start_assigned_task` for runner-owned work.
+- `Running -> Failed` happens when `timeout_at < now` and `fail_timed_out_task_executions` is invoked.
+- `Running -> Pending` is not part of this branch.
+- Re-running work should create a new task instance, not reuse the same task id.
+- Terminal tasks are not restarted by TaskManager.
+- `Canceled` always wins over local executor completion.
 
-1. Producer creates a task.
-2. Runner claims it: `Pending -> Running`.
-3. TaskManager persists claim metadata: `claim_token`, `claimed_by`, `claimed_at`, `lease_until`, `last_heartbeat_at`.
-4. Runner heartbeats before the lease expires.
-5. If the runner process or host crashes, heartbeat stops.
-6. `requeue_stale_task_claims` can set expired `Running` claims back to `Pending` and publish `task_ready`.
+This matches the product direction that the scheduler assigns executors, while TaskManager guards state transitions and records timeout failure.
 
-Remaining gap:
+## 4. Event Semantics
 
-- No background sweep is enabled yet.
-- No per-task-type reclaim policy is implemented yet.
-- Requeue is currently explicit and conservative.
-
-## 3. Event Semantics
-
-TaskManager event semantics should be documented as:
+TaskManager event semantics:
 
 - `task_ready` means "there may be runnable work for this runner".
 - `task_ready` does not grant ownership.
-- Consumers must call `claim_task` before starting new `Pending` work.
+- Consumers must call `start_assigned_task` before starting new `Pending` work.
 - Consumers must re-read TaskManager state after any event.
-- Missed kevents are acceptable because polling / sweep remains the correctness fallback.
+- Missed kevents are acceptable because polling remains the correctness fallback.
 - Task changed events are notification and UI acceleration only; event payloads are not the authority.
+- `fail_timed_out_task_executions` publishes task status change events, not `task_ready`.
 
 Recommended consumer loop:
 
 1. Subscribe `/task_mgr/runner/{runner}/task_ready` if kevent is available.
 2. Periodically sweep `list_tasks(runner, status=Pending)`.
-3. For every candidate, call `claim_task(id, runner)`.
-4. Only start execution if `claim_task` returns a task.
+3. For every candidate, call `start_assigned_task(id, runner)`.
+4. Only start execution if `start_assigned_task` returns a task.
 5. Treat `None` as a normal race loss.
 
-## 4. Claim Permission Model
+## 5. Runner Permission Model
 
 Current compatibility behavior:
 
 - General TaskManager read/write APIs still keep the existing empty-context compatibility path.
-- Runner ownership APIs are tightened: `claim_task`, `heartbeat_task_claim`, and `requeue_stale_task_claims` require a non-empty token context.
-- `claim_task` is no longer authorized by generic task write permission. It is authorized by runner ownership.
+- Runner ownership APIs are tightened: `start_assigned_task`, `extend_task_execution`, and `fail_timed_out_task_executions` require a non-empty token context.
+- `start_assigned_task` is not authorized by generic task write permission. It is authorized by runner ownership.
 
 Beta2.2 runner ownership rule:
 
@@ -79,76 +78,42 @@ Beta2.2 runner ownership rule:
 - A service whose `appid` equals the `runner` can manage that runner.
 - `node-daemon` can manage runner `<runner>` when the token `sub` equals `<runner>`.
 - A `node-daemon` token with `sub = kernel` is accepted for boot compatibility.
-- `claim_task` still atomically guards on `task.runner == runner` and `task.status == Pending`.
-- `heartbeat_task_claim` checks caller runner authority before accepting the claim token.
-- `requeue_stale_task_claims(runner = None)` is system-only; runner-scoped requeue requires authority for that runner.
+- `start_assigned_task` still atomically guards on `task.runner == runner` and `task.status == Pending`.
+- `extend_task_execution` checks caller runner authority before accepting the execution token.
+- `fail_timed_out_task_executions(runner = None)` is system-only; runner-scoped timeout failure requires authority for that runner.
 
 Remaining compatibility boundary:
 
 - Empty context is still allowed for existing general task read/write paths.
 - Tightening general task APIs is a separate change because Desktop, tests, and legacy service callers may still rely on that compatibility.
 
-## 5. Lease / Heartbeat Design
+## 6. Persisted Execution Fields
 
-The next reliability step should introduce a claim lease. A lease gives TaskManager enough information to detect a dead runner and either requeue or fail the task.
+Implemented DB fields:
 
-Implemented persisted fields:
+- `execution_token`: opaque token returned by `start_assigned_task`.
+- `assigned_executor`: runner id that started the task.
+- `execution_started_at`: start timestamp.
+- `timeout_at`: timestamp after which the running execution should fail.
+- `last_execution_update_at`: last accepted execution timeout update timestamp.
 
-- `claim_token`: opaque token returned by `claim_task`.
-- `claimed_by`: runner id that claimed the task.
-- `claimed_at`: claim timestamp.
-- `lease_until`: timestamp after which the claim is considered stale.
-- `last_heartbeat_at`: last successful heartbeat timestamp.
-
-These should be database fields, not only JSON inside `Task.data`, because reclaim needs indexed, backend-portable queries across Sqlite and Postgres.
+These are database fields, not only JSON inside `Task.data`, because timeout checks need indexed, backend-portable queries across Sqlite and Postgres.
 
 Implemented APIs:
 
-- `claim_task(id, runner, lease_ms?) -> { task, claim_token, lease_until }`
-- `heartbeat_task_claim(id, claim_token, lease_ms?) -> { lease_until }`
-- `requeue_stale_task_claims(now?, runner?) -> { requeued_count }`
+- `start_assigned_task(id, runner, timeout_ms?) -> { task, execution_token, timeout_at }`
+- `extend_task_execution(id, execution_token, timeout_ms?) -> { timeout_at }`
+- `fail_timed_out_task_executions(now?, runner?) -> { failed_count }`
 
-Not implemented yet:
+Not implemented:
 
-- `complete_task` / `update_task` claim-token ownership checks.
-- Background reclaim sweep.
-- Per-task-type reclaim policy.
-
-Recommended state rules:
-
-- `Pending -> Running` only through `claim_task` for runner-owned work.
-- `Running -> Pending` can happen only when `lease_until < now` and reclaim policy permits retry.
-- `Running -> Failed` can happen when lease expired and reclaim policy says fail.
-- Terminal tasks are never reclaimed.
-- `Canceled` always wins over heartbeat and reclaim.
-
-Recommended default timeout:
-
-- Start with a conservative default such as 60 seconds.
-- Runner can request a longer lease for long setup phases.
-- Heartbeat interval should be less than half the lease duration.
-
-## 6. Reclaim Policy
-
-Not every task is safe to retry.
-
-Recommended policy:
-
-- `retry`: set stale `Running` task back to `Pending` and publish `task_ready`.
-- `fail`: mark stale `Running` task as `Failed`.
-- `manual`: leave task `Running` but add a note/event for operator intervention.
-
-For Beta2.2, use conservative defaults:
-
-- `scheduler.dispatch_thunk`: `retry` is reasonable because node_daemon writes execution output under task-specific work dirs and should be made idempotent.
-- `agent.delegate`: do not auto-retry yet; this belongs to opendan session recovery design.
-- Unknown task types: `manual` or `fail`, not automatic retry.
-
-The policy can initially live in task `data`, but the reclaim query should still use real lease columns.
+- `complete_task` / `update_task` execution-token ownership checks.
+- Background timeout sweep.
+- Automatic retry/rerun policy.
 
 ## 7. opendan Migration Boundary
 
-Do not directly copy node_daemon's simple claim flow into opendan.
+Do not directly copy node_daemon's simple start flow into opendan.
 
 node_daemon flow:
 
@@ -162,55 +127,50 @@ opendan task inbox flow:
 - can recover an existing bound work session
 - can resume after human input
 - can route a task into a session
-- may need to wake an existing session instead of claiming new execution
+- may need to wake an existing session instead of starting new execution
 
 Required opendan design before migration:
 
-- Claim only the `Pending` path that starts a new session.
-- Do not claim `WaitingForApproval`; it is waiting for a child human input task.
-- Do not claim `Running`; it may represent an existing session that needs recovery/wake.
+- Use `start_assigned_task` only for the `Pending` path that starts a new session.
+- Do not start `WaitingForApproval`; it is waiting for a child human input task.
+- Do not start `Running`; it may represent an existing session that needs recovery/wake.
 - Preserve `Paused` and `Canceled` control reflection behavior.
 - Make `execution.session_id` the idempotency key for duplicate sweeps.
 
 Until that design is complete, opendan should continue to use its current recovery-oriented logic.
 
-## 8. Proposed Implementation Phases
+## 8. Implementation Phases
 
-### Phase A: Claim Semantics
+### Phase A: Assigned Executor Start Guard
 
 Status: implemented in current branch.
 
-- Add `claim_task`.
+- Add `start_assigned_task`.
 - Add DB conditional update.
 - Use it in node_daemon.
 - Document event semantics.
-- Tighten runner ownership permission for claim-style APIs while keeping general task APIs compatible.
+- Tighten runner ownership permission for runner APIs while keeping general task APIs compatible.
 
-### Phase B: Lease Schema and Heartbeat
+### Phase B: Execution Timeout Fields
 
 Status: implemented in current branch.
 
-- Add lease fields to DB schema and migration.
-- Extend API result types with `claim_token` and `lease_until`.
-- Add `heartbeat_task_claim`.
-- Add unit tests for stale claim detection and heartbeat extension.
-- Keep `claim_task()` client compatibility by mapping the new result back to `Option<Task>`.
-- node_daemon renews the claim while a thunk child process is running.
+- Add execution timeout fields to DB schema and migration.
+- Extend API result types with `execution_token` and `timeout_at`.
+- Add `extend_task_execution`.
+- Add unit tests for duplicate-start prevention and timeout extension.
+- Keep `start_assigned_task()` client compatibility by mapping the result back to `Option<Task>`.
 
-### Phase C: Reclaim Sweep
+### Phase C: Timed-Out Execution Failure
 
-Status: minimal explicit reclaim API implemented; background sweep and policy are not implemented.
+Status: explicit API implemented; background sweep is not implemented.
 
-- Add TaskManager explicit reclaim API for stale claims.
-- Requeue expired claims and republish `task_ready`.
+- Add TaskManager explicit timeout failure API.
+- Mark expired running executions as `Failed`.
+- Publish task status changed events only.
+- Do not move `Running` tasks back to `Pending`.
 - Leave automatic/background sweep for a separate change.
-- Leave per-task-type reclaim policy for a separate change.
-
-Still pending:
-
-- Add background sweep for stale claims.
-- Implement per-task-type reclaim policy.
-- Mark unsafe stale tasks as `Failed` or leave for manual intervention.
+- Leave rerun policy for a separate scheduler-level change that creates new tasks.
 
 ### Phase D: opendan Migration
 
@@ -218,19 +178,15 @@ Separate task.
 
 - Design opendan-specific idempotency around session binding.
 - Add tests for `Pending`, `WaitingForApproval`, `Running`, `Paused`, and `Canceled`.
-- Migrate only safe `Pending` startup to `claim_task`.
+- Migrate only safe `Pending` startup to `start_assigned_task`.
 
 ## 9. Current Recommendation
 
-For this branch, keep the implemented lease path focused:
+For this branch, keep the implemented path focused:
 
 - Phase A is complete.
 - Phase B is complete.
-- Phase C has only explicit reclaim, no automatic sweep or policy engine.
+- Phase C has explicit timeout failure, no automatic sweep.
 - Phase D remains a separate opendan migration task.
 
-Runner ownership permission tightening is already included for `claim_task`,
-`heartbeat_task_claim`, and `requeue_stale_task_claims`. Do not expand this
-branch further into general TaskManager API permission tightening, background
-sweep, per-task policy, or opendan code migration before reviewing the current
-lease behavior in isolation.
+Runner ownership permission tightening is included for `start_assigned_task`, `extend_task_execution`, and `fail_timed_out_task_executions`. Do not expand this branch into general TaskManager API permission tightening, background timeout sweep, retry policy, or opendan code migration before reviewing the current assigned-executor behavior in isolation.

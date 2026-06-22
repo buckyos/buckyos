@@ -1,6 +1,6 @@
 # Desktop / TaskCenter / TaskManager Beta2.2 工作计划
 
-更新时间：2026-06-16
+更新时间：2026-06-22
 
 ## 0. 范围确认
 
@@ -40,7 +40,9 @@
 - `control_panel` 属于系统面板启动骨架范围，但当前 PR 不纳入已有未确认的 untracked `src/frame/control_panel/*` 实现；后续如需要再单独整理。
 - TaskCenter 不定义任务系统语义，只做 TaskManager / Workflow 任务与计划任务数据到 UI 视图的适配。
 - `Task.data.human_action` 作为 Beta2.2 的稳定交互协议，approval 专用 RPC 留到后续审计、幂等、权限需求明确后再设计。
-- TaskManager 的强一致入口是 `claim_task`；`task_ready` / task changed kevent 只作为唤醒和 UI 加速信号，DB task 状态是唯一真相。
+- TaskManager 的强一致入口是 `start_assigned_task`；`task_ready` / task changed kevent 只作为唤醒和 UI 加速信号，DB task 状态是唯一真相。
+- TaskManager 不采用开放抢占式消费者模型。任务由 scheduler 明确指定 runner，`start_assigned_task` 只做指定 executor 的启动保护和防重复启动。
+- timeout 后当前 task instance 进入 `Failed`，不再 `Running -> Pending`；重跑通过创建新的 task。
 - 系统事件不再按 TaskManager snapshot 或 kevent 历史定义；需求提交已明确目标真相源是 `slog`，TaskManager 只作为任务状态真相源。
 - runner ownership API 已收敛权限，但通用 TaskManager 读写 API 的空 request context 兼容路径本轮保留。
 
@@ -49,7 +51,7 @@
 - Desktop / control_panel 的进一步 APP 化结构改造。
 - TaskCenter 事件页接入真实 `slog` 事件流。
 - TaskCenter schema renderer registry 和更多 schema 类型扩展；当前仅落地详情页 Approve/Deny、评论/建议的最小渲染器。
-- TaskManager 后台 stale claim sweep 和 per-task reclaim policy。
+- TaskManager 后台 timeout sweep 和 scheduler 层 rerun policy。
 - opendan task inbox 代码迁移；当前只保留迁移设计，后续只迁移 `Pending` 新 session 路径。
 
 ## 0.2 需求提交对齐（commit `7ea31b13`）
@@ -77,8 +79,8 @@
 
 对当前 PR 边界的影响：
 
-- 当前 PR 继续聚焦 TaskManager runner claim / lease / heartbeat / requeue 可靠性基线、runner 权限收敛、node_daemon 适配、TaskCenter `human_action` typed schema、详情页最小 schema 交互 UI 和自动化测试。
-- `slog` 事件接入、通用 schema renderer registry、approval 专用 API、opendan inbox 迁移、后台 stale sweep、per-task reclaim policy、Desktop `APP ID + Path` 多窗口身份都不并入当前实现批次。
+- 当前 PR 继续聚焦 TaskManager 指定 executor 启动保护、timeout 失败语义、runner 权限收敛、node_daemon 适配、TaskCenter `human_action` typed schema、详情页最小 schema 交互 UI 和自动化测试。
+- `slog` 事件接入、通用 schema renderer registry、approval 专用 API、opendan inbox 迁移、后台 timeout sweep、scheduler 层 rerun policy、Desktop `APP ID + Path` 多窗口身份都不并入当前实现批次。
 
 ## 1. 产品与架构意图
 
@@ -193,7 +195,7 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 
 - 事件发布已做 data inline size 限制和 progress/data rate limit，但订阅模型与丢事件后的补偿策略需要明确。
 - 权限模型存在兼容路径：空 request context 会放行，后续是否收敛需要计划。
-- 分布式消费者模型已有 runner task_ready event 和基础 `claim_task`，但 opendan 等复杂消费者还需要逐步迁移到原子领取语义。
+- 分布式执行模型已有 runner task_ready event 和基础 `start_assigned_task`，但 opendan 等复杂消费者还需要逐步迁移到原子启动保护语义。
 - Task notes 不触发 task changed event，这个边界需要在 TaskCenter / Agent 使用侧明确。
 - DB schema 已支持 Sqlite/Postgres，但 Beta2.2 重点需要自动化验证 Sqlite 默认路径和 Postgres 等价语义中的关键用例。
 
@@ -301,29 +303,27 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 
 - 按已确认本轮范围，整体约 75%。
 - 按当前 PR 已扩展范围，整体约 85-90%。
-- 如果把 `7ea31b13` 新增的 `slog` 事件接入、通用 schema registry、opendan 代码迁移、TaskManager 后台 stale sweep、per-task reclaim policy 都算入，整体约 60-65%。
+- 如果把 `7ea31b13` 新增的 `slog` 事件接入、通用 schema registry、opendan 代码迁移、TaskManager 后台 timeout sweep、scheduler rerun policy 都算入，整体约 60-65%。
 
 已完成：
 
 - Desktop README 已从 Vite 模板整理为模块边界、运行模式、验证方式和 TaskCenter 关系说明。
 - TaskManager 服务端测试已补充权限 scope、事件 payload 大数据省略、低优先级事件限流、子任务继承 parent root_id 等覆盖。
-- TaskManager 已新增原子 `claim_task` RPC / Rust client 能力，DB 层通过 `id + runner + Pending` 条件更新完成领取。
-- TaskManager 已新增 claim lease schema、`heartbeat_task_claim`、显式 `requeue_stale_task_claims`，覆盖 runner 崩溃后的手动回收路径。
-- TaskManager runner 操作已收敛权限：`claim_task` / `heartbeat_task_claim` / `requeue_stale_task_claims` 不再接受空 context，改用 system 或 runner-scoped token。
-- node_daemon 的 thunk runner 已改为先 leased claim，运行中定期 heartbeat；领取失败或 claim 被回收时跳过/停止本地执行。
-- TaskManager runner claim / lease / event 语义与未完成的后台 sweep、policy、opendan 边界已单独整理到 `notepads/taskmanager-runner-claim-lease-beta2.2.md`。
+- TaskManager 已新增原子 `start_assigned_task` RPC / Rust client 能力，DB 层通过 `id + runner + Pending` 条件更新完成指定 executor 启动保护。
+- TaskManager 已新增 execution timeout schema、`extend_task_execution`、显式 `fail_timed_out_task_executions`，timeout 后当前 task instance 进入 `Failed`。
+- TaskManager runner 操作已收敛权限：`start_assigned_task` / `extend_task_execution` / `fail_timed_out_task_executions` 不再接受空 context，改用 system 或 runner-scoped token。
+- node_daemon 的 thunk runner 已改为先 `start_assigned_task`，不再依赖周期续期；任务完成、取消或本地超时按终态写回。
+- TaskManager assigned executor / timeout / event 语义与未完成的后台 sweep、scheduler rerun policy、opendan 边界已单独整理到 TaskManager runner 专项文档。
 - TaskCenter notification action 已对齐 `TaskHumanAction` typed schema，短期继续通过 `Task.data.human_action` 回灌，不新增 approval RPC。
 - TaskCenter 详情页已新增 schema 驱动交互最小实现：`human/approval` 渲染 Approve/Deny，`human/comment` / suggestion 类 schema 渲染输入框并通过 `submit_output` 写回。
 - 已按需求提交 `7ea31b13` 对齐 issue #486 评论和本计划，明确 TaskManager 是任务真相源、`slog` 是系统事件真相源。
-- opendan task inbox 迁移方案已整理到 `notepads/opendan-task-inbox-claim-migration-beta2.2.md`，本轮不直接改 opendan 代码。
+- opendan task inbox 迁移方案已整理到 opendan 专项文档，本轮不直接改 opendan 代码。
 - TaskCenter Playwright e2e 已补充独立路由、计划任务页、计划任务详情、`taskid` 深链和通知处理覆盖。
 
 已验证：
 
 - `cargo fmt -p buckyos-api -p task_manager -p node_daemon --check`
-- `cargo test -p task_manager`（44 tests）
-- `cargo test -p node_daemon`（45 tests）
-- `cargo test -p buckyos-api task_mgr`
+- `cargo test --manifest-path /root/app/buckyos/buckyos/src/Cargo.toml -p buckyos-api -p task_manager -p node_daemon`（buckyos-api 89 tests、node_daemon 45 tests、task_manager 44 tests）
 - `pnpm run check`
 - `pnpm exec eslint src/api/task_mgr.ts tests/e2e/pages/taskcenter.spec.ts`
 - `pnpm exec playwright test tests/e2e/pages/taskcenter.spec.ts`
@@ -340,7 +340,7 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 - `Task.data.human_action` 作为 Beta2.2 的稳定交互协议，approval 专用 RPC 留到后续有审计、幂等或权限需求时再设计。
 - TaskCenter schema 驱动交互 UI 已先完成最小闭环；下一阶段重点是 schema registry、更多 schema 类型和真实任务 schema 来源。
 - TaskManager 本轮保留通用读写 API 的空 context 兼容路径，仅 runner ownership API 已收敛权限。
-- stale claim 本轮保持显式 `requeue_stale_task_claims` 入口，不启用后台 sweep 和 per-task policy engine。
+- timeout 本轮保持显式 `fail_timed_out_task_executions` 入口，不启用后台 sweep；重跑由后续 scheduler 层创建新 task。
 - opendan 本轮只保留迁移设计，不改 task inbox 代码；后续只迁移 `Pending` 新 session 路径。
 
 ## 6. 讨论记录与待确认问题
@@ -358,6 +358,6 @@ TaskManager 是系统所有分布式异步任务行为的状态总账。
 - 是否建设 TaskCenter schema renderer registry，优先覆盖 Approve/Deny 与评论/建议。
 - 是否新增 approval 专用 RPC，承载审计、幂等提交和更细权限。
 - 是否进一步收敛 TaskManager 普通读写 API 的空 request context 兼容路径。
-- 是否迁移 opendan task inbox 的 `Pending` 新 session 路径到 `claim_task`。
-- 是否启用 TaskManager 后台 stale claim sweep。
-- 是否按 task_type 引入 reclaim policy，把部分任务 requeue、部分任务 fail/manual。
+- 是否迁移 opendan task inbox 的 `Pending` 新 session 路径到 `start_assigned_task`。
+- 是否启用 TaskManager 后台 timeout sweep。
+- 是否由 scheduler 层引入 rerun policy，通过新建 task 表达重跑。
