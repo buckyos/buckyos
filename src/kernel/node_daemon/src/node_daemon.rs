@@ -78,6 +78,7 @@ const NODE_GATEWAY_HTTP_PORT: u16 = 3180;
 // VM/dev gateway configs can take longer to parse/link when verbose logs are enabled.
 // Keep this above the normal fast path so node-daemon does not tear down boot early.
 const CYFS_GATEWAY_READY_TIMEOUT_SECS: u64 = 60;
+const CYFS_GATEWAY_RESTART_INTERVAL_SECS: u64 = 2;
 
 async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
     //If local files exist, priority loads local files
@@ -1340,7 +1341,12 @@ async fn keep_cyfs_gateway_service(
             "start cyfs_gateway OK!,result:{}. wait up to {} seconds for ready...",
             start_result, CYFS_GATEWAY_READY_TIMEOUT_SECS
         );
-        wait_cyfs_gateway_ready(&cyfs_gateway_service_pkg, CYFS_GATEWAY_READY_TIMEOUT_SECS).await?;
+        wait_cyfs_gateway_ready(
+            &cyfs_gateway_service_pkg,
+            &start_params,
+            CYFS_GATEWAY_READY_TIMEOUT_SECS,
+        )
+        .await?;
     }
 
     Ok(())
@@ -1348,9 +1354,12 @@ async fn keep_cyfs_gateway_service(
 
 async fn wait_cyfs_gateway_ready(
     cyfs_gateway_service_pkg: &ServicePkg,
+    start_params: &Vec<String>,
     timeout_secs: u64,
 ) -> std::result::Result<(), String> {
     let start_at = Instant::now();
+    let mut last_start_attempt = Instant::now();
+    let mut restart_attempts = 0_u32;
     loop {
         // ServicePkg 的 native detached start 只能说明进程被 spawn 出来；
         // cyfs-gateway 可能还在初始化，也可能启动失败后退出。轮询 3180
@@ -1366,20 +1375,38 @@ async fn wait_cyfs_gateway_ready(
 
         if probe_local_node_gateway_port().await {
             warn!(
-                "cyfs_gateway 3180 is ready while service status is {:?}",
+                "cyfs_gateway 3180 is reachable but service status is {:?}; keep waiting for a matching active process",
                 running_state
             );
-            return Ok(());
         }
 
         if start_at.elapsed() >= tokio::time::Duration::from_secs(timeout_secs) {
             error!(
-                "cyfs_gateway did not become ready after {} seconds, last state={:?}",
-                timeout_secs, running_state
+                "cyfs_gateway did not become ready after {} seconds, last state={:?}, restart_attempts={}",
+                timeout_secs, running_state, restart_attempts
             );
             return Err(String::from(
                 "cyfs_gateway did not become ready after start",
             ));
+        }
+
+        if running_state == ServiceInstanceState::Stopped
+            && last_start_attempt.elapsed()
+                >= tokio::time::Duration::from_secs(CYFS_GATEWAY_RESTART_INTERVAL_SECS)
+        {
+            restart_attempts += 1;
+            warn!(
+                "cyfs_gateway start attempt did not stay running, retry start: attempt={}",
+                restart_attempts
+            );
+            cyfs_gateway_service_pkg
+                .start(Some(start_params))
+                .await
+                .map_err(|err| {
+                    error!("retry start cyfs_gateway failed! {}", err);
+                    String::from("retry start cyfs_gateway failed!")
+                })?;
+            last_start_attempt = Instant::now();
         }
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

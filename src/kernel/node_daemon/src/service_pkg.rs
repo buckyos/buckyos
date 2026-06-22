@@ -5,10 +5,10 @@ use package_lib::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessStatus, ProcessesToUpdate, System};
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -20,6 +20,9 @@ type Result<T> = std::result::Result<T, ServiceControlError>;
 const CYFS_GATEWAY_NODE_HTTP_PORT: u16 = 3180;
 const ENV_CAPTURE_DETACHED_STDIO: &str = "BUCKYOS_DEV_CAPTURE_DETACHED_STDIO";
 const DETACHED_LOG_MAX_SIZE_BYTES: u64 = 50 * 1024 * 1024;
+const NATIVE_STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const CYFS_GATEWAY_STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(75);
+const NATIVE_STOP_WAIT_INTERVAL: Duration = Duration::from_millis(100);
 
 pub(crate) fn new_package_env(pkg_env_path: PathBuf) -> PackageEnv {
     let mut pkg_env = PackageEnv::new(pkg_env_path);
@@ -338,6 +341,7 @@ impl ServicePkg {
         }
 
         self.native_stop(spec, media_root, None, env_vars).await?;
+        wait_native_service_stopped(spec, native_stop_wait_timeout(spec)).await;
         let pid = spawn_detached(spec.executable.as_path(), &args, env_vars, cwd)?;
         info!(
             "# run detached {} {} => pid {}",
@@ -611,6 +615,15 @@ fn check_local_port(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
 }
 
+fn can_bind_local_port(port: u16) -> bool {
+    if port == 0 {
+        return true;
+    }
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    TcpListener::bind(addr).is_ok()
+}
+
 async fn stop_process_tree(pid: i32) -> Result<()> {
     if pid <= 0 {
         return Ok(());
@@ -655,6 +668,41 @@ async fn stop_process_tree(pid: i32) -> Result<()> {
             format_command_failure(&pid_output)
         )));
     }
+}
+
+async fn wait_native_service_stopped(spec: &NativeServiceSpec, timeout: Duration) {
+    let start_at = Instant::now();
+    loop {
+        let pids = service_process_pids(spec);
+        let port_in_use = spec
+            .status_port
+            .map(|port| !can_bind_local_port(port))
+            .unwrap_or(false);
+        if pids.is_empty() && !port_in_use {
+            return;
+        }
+
+        if start_at.elapsed() >= timeout {
+            warn!(
+                "native service {} did not fully stop before restart: pids={:?}, status_port={:?}, port_in_use={}",
+                spec.executable.display(),
+                pids,
+                spec.status_port,
+                port_in_use
+            );
+            return;
+        }
+
+        tokio::time::sleep(NATIVE_STOP_WAIT_INTERVAL).await;
+    }
+}
+
+fn native_stop_wait_timeout(spec: &NativeServiceSpec) -> Duration {
+    if spec.status_port == Some(CYFS_GATEWAY_NODE_HTTP_PORT) {
+        return CYFS_GATEWAY_STOP_WAIT_TIMEOUT;
+    }
+
+    NATIVE_STOP_WAIT_TIMEOUT
 }
 
 fn is_pid_running(pid: i32) -> bool {
@@ -743,16 +791,37 @@ fn spawn_detached(
         }
     }
 
-    let child = cmd.spawn().map_err(|error| {
+    let mut child = cmd.spawn().map_err(|error| {
         ServiceControlError::ReasonError(format!("spawn {} failed: {}", program.display(), error))
     })?;
+    let pid = child.id();
+    let program_for_reaper = program.to_path_buf();
+    // Dropping Child without wait leaves short-lived failed starts as zombies under node-daemon.
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) => {
+            info!(
+                "detached native service {} pid {} exited with {}",
+                program_for_reaper.display(),
+                pid,
+                status
+            );
+        }
+        Err(err) => {
+            warn!(
+                "wait detached native service {} pid {} failed: {}",
+                program_for_reaper.display(),
+                pid,
+                err
+            );
+        }
+    });
     if let Some(log_path) = log_path {
         info!(
             "detached native service stdout/stderr redirected to {}",
             log_path.display()
         );
     }
-    Ok(child.id())
+    Ok(pid)
 }
 
 fn detached_stdio(
