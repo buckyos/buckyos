@@ -7,8 +7,9 @@ mod meta_compaction;
 
 use buckyos_api::{
     BuckyOSRuntime, BuckyOSRuntimeType, KLOG_CLUSTER_ADMIN_PORT, KLOG_CLUSTER_INTER_PORT,
-    KLOG_CLUSTER_RAFT_PORT, KLOG_SERVICE_PORT, KLOG_SERVICE_UNIQUE_ID, get_session_token_env_key,
-    init_buckyos_api_runtime, set_buckyos_api_runtime,
+    KLOG_CLUSTER_RAFT_PORT, KLOG_SERVICE_PORT, KLOG_SERVICE_UNIQUE_ID,
+    derive_klog_node_id_from_device, get_session_token_env_key, init_buckyos_api_runtime,
+    set_buckyos_api_runtime,
 };
 use cluster::{initialize_cluster_if_needed, spawn_auto_join_task};
 use config::{
@@ -172,9 +173,22 @@ fn apply_buckyos_runtime_defaults(
             KLOG_SERVICE_UNIQUE_ID
         ));
     }
+    let ood_names = buckyos_runtime_ood_names(runtime, node_name)?;
 
     if patch.node_id.is_none() {
-        patch.node_id = Some(derive_buckyos_raft_node_id(runtime, node_name)?);
+        patch.node_id = Some(derive_klog_node_id_from_device(device));
+    }
+
+    let storage = patch
+        .storage
+        .get_or_insert_with(config::KLogStorageConfigPatch::default);
+    if storage.data_dir.is_none() {
+        storage.data_dir = Some(runtime.get_data_folder().map_err(|e| {
+            format!(
+                "Failed to resolve BuckyOS runtime data dir for {}: {}",
+                KLOG_SERVICE_UNIQUE_ID, e
+            )
+        })?);
     }
 
     let network = patch
@@ -238,21 +252,35 @@ fn apply_buckyos_runtime_defaults(
         .get_or_insert_with(KLogClusterConfigPatch::default);
     cluster.name.get_or_insert_with(|| zone_host.clone());
     cluster.id.get_or_insert(zone_host);
+    let seed_ood_name = ood_names
+        .first()
+        .expect("buckyos_runtime_ood_names rejects empty OOD lists");
     let auto_bootstrap = *cluster
         .auto_bootstrap
-        .get_or_insert_with(|| derive_buckyos_auto_bootstrap(runtime, node_name));
+        .get_or_insert_with(|| seed_ood_name == node_name);
+    if auto_bootstrap && seed_ood_name != node_name {
+        return Err(format!(
+            "Invalid BuckyOS runtime fallback config for {}: node {} requested auto_bootstrap=true but seed OOD is {}",
+            KLOG_SERVICE_UNIQUE_ID, node_name, seed_ood_name
+        ));
+    }
 
     if !auto_bootstrap {
         let join = patch.join.get_or_insert_with(KLogJoinConfigPatch::default);
-        if join.targets.as_ref().map(|v| v.is_empty()).unwrap_or(true)
-            && let Some(target) = derive_buckyos_default_join_target(
-                runtime,
+        if join.targets.as_ref().map(|v| v.is_empty()).unwrap_or(true) {
+            let targets = derive_buckyos_default_join_targets(
+                &ood_names,
                 node_name,
                 &gateway_addr,
                 &gateway_route_prefix,
-            )?
-        {
-            join.targets = Some(vec![target]);
+            );
+            if targets.is_empty() {
+                return Err(format!(
+                    "Cannot derive klog join target for {}: node {} is not seed and no other OOD is available",
+                    KLOG_SERVICE_UNIQUE_ID, node_name
+                ));
+            }
+            join.targets = Some(targets);
         }
         join.blocking.get_or_insert(true);
         join.target_role.get_or_insert(KLogJoinTargetRole::Voter);
@@ -261,49 +289,49 @@ fn apply_buckyos_runtime_defaults(
     Ok(())
 }
 
-fn derive_buckyos_raft_node_id(runtime: &BuckyOSRuntime, node_name: &str) -> Result<u64, String> {
-    if let Some(zone_config) = runtime.zone_config.as_ref()
-        && let Some(index) = zone_config
-            .oods
-            .iter()
-            .filter(|ood| ood.node_type.is_ood())
-            .position(|ood| ood.name == node_name)
-    {
-        return Ok((index + 1) as u64);
+fn buckyos_runtime_ood_names(
+    runtime: &BuckyOSRuntime,
+    node_name: &str,
+) -> Result<Vec<String>, String> {
+    let zone_config = runtime.zone_config.as_ref().ok_or_else(|| {
+        format!(
+            "Missing zone_config while deriving BuckyOS runtime config for {}",
+            KLOG_SERVICE_UNIQUE_ID
+        )
+    })?;
+    let ood_names: Vec<String> = zone_config
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+        .map(|ood| ood.name.clone())
+        .collect();
+    if ood_names.is_empty() {
+        return Err(format!(
+            "Cannot derive klog runtime config for {}: zone_config has no OOD node",
+            KLOG_SERVICE_UNIQUE_ID
+        ));
+    }
+    if !ood_names.iter().any(|ood_name| ood_name == node_name) {
+        return Err(format!(
+            "Cannot derive klog runtime config for {}: runtime node {} is not an OOD voter, voters={:?}",
+            KLOG_SERVICE_UNIQUE_ID, node_name, ood_names
+        ));
     }
 
-    derive_raft_node_id_from_node_name(node_name)
+    Ok(ood_names)
 }
 
-fn derive_buckyos_auto_bootstrap(runtime: &BuckyOSRuntime, node_name: &str) -> bool {
-    runtime
-        .zone_config
-        .as_ref()
-        .and_then(|zone_config| zone_config.oods.iter().find(|ood| ood.node_type.is_ood()))
-        .map(|ood| ood.name.as_str() == node_name)
-        .unwrap_or(true)
-}
-
-fn derive_buckyos_default_join_target(
-    runtime: &BuckyOSRuntime,
+fn derive_buckyos_default_join_targets(
+    ood_names: &[String],
     node_name: &str,
     gateway_addr: &str,
     gateway_route_prefix: &str,
-) -> Result<Option<String>, String> {
-    let Some(zone_config) = runtime.zone_config.as_ref() else {
-        return Ok(None);
-    };
-    let Some(seed_ood) = zone_config.oods.iter().find(|ood| ood.node_type.is_ood()) else {
-        return Err("Cannot derive klog join target: zone_config has no OOD node".to_string());
-    };
-    if seed_ood.name == node_name {
-        return Ok(None);
-    }
-    Ok(Some(build_gateway_admin_target(
-        gateway_addr,
-        gateway_route_prefix,
-        &seed_ood.name,
-    )))
+) -> Vec<String> {
+    ood_names
+        .iter()
+        .filter(|ood_name| ood_name.as_str() != node_name)
+        .map(|ood_name| build_gateway_admin_target(gateway_addr, gateway_route_prefix, ood_name))
+        .collect()
 }
 
 fn build_gateway_admin_target(gateway_addr: &str, route_prefix: &str, node_name: &str) -> String {
@@ -329,37 +357,6 @@ fn normalize_gateway_route_prefix(prefix: &str) -> String {
         return "/".to_string();
     }
     format!("/{trimmed}")
-}
-
-fn derive_raft_node_id_from_node_name(node_name: &str) -> Result<u64, String> {
-    let digits = node_name
-        .chars()
-        .rev()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    if digits.is_empty() {
-        return Err(format!(
-            "Failed to derive raft node_id from BuckyOS node name '{}': missing numeric suffix and zone_config ordering",
-            node_name
-        ));
-    }
-
-    let node_id = digits.parse::<u64>().map_err(|e| {
-        format!(
-            "Failed to parse raft node_id from BuckyOS node name '{}': {}",
-            node_name, e
-        )
-    })?;
-    if node_id == 0 {
-        return Err(format!(
-            "Invalid derived raft node_id=0 from BuckyOS node name '{}'",
-            node_name
-        ));
-    }
-    Ok(node_id)
 }
 
 async fn init_buckyos_runtime_if_needed(
@@ -631,23 +628,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn derive_raft_node_id_from_numeric_suffix() {
-        assert_eq!(derive_raft_node_id_from_node_name("ood1").unwrap(), 1);
-        assert_eq!(derive_raft_node_id_from_node_name("node42").unwrap(), 42);
-        assert_eq!(derive_raft_node_id_from_node_name("dev-003").unwrap(), 3);
-    }
-
-    #[test]
-    fn reject_missing_or_zero_raft_node_id_suffix() {
-        assert!(derive_raft_node_id_from_node_name("ood").is_err());
-        assert!(derive_raft_node_id_from_node_name("ood0").is_err());
-    }
-
-    #[test]
     fn build_gateway_admin_target_normalizes_prefix() {
         assert_eq!(
             build_gateway_admin_target("127.0.0.1:3180", "cluster/klog/", "ood1"),
             "http://127.0.0.1:3180/cluster/klog/ood1/admin"
+        );
+    }
+
+    #[test]
+    fn derive_buckyos_default_join_targets_excludes_self() {
+        let targets = derive_buckyos_default_join_targets(
+            &["ood1".to_string(), "ood2".to_string(), "ood3".to_string()],
+            "ood2",
+            "127.0.0.1:3180",
+            "/.cluster/klog",
+        );
+
+        assert_eq!(
+            targets,
+            vec![
+                "http://127.0.0.1:3180/.cluster/klog/ood1/admin".to_string(),
+                "http://127.0.0.1:3180/.cluster/klog/ood3/admin".to_string(),
+            ]
         );
     }
 

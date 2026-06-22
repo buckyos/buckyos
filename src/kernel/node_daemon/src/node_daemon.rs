@@ -68,9 +68,6 @@ const ENV_SYSTEM_CONFIG_STORE: &str = "BUCKYOS_SYSTEM_CONFIG_STORE";
 const SYSTEM_CONFIG_STORE_KLOG: &str = "klog";
 const KLOG_CLUSTER_ROUTE_PREFIX: &str = "/.cluster/klog";
 const KLOG_CLUSTER_GATEWAY_ADDR: &str = "127.0.0.1:3180";
-const KLOG_NODE_ID_HASH_PREFIX: &str = "buckyos:klog-node-id:v1:";
-const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-const FNV1A64_PRIME: u64 = 0x100000001b3;
 const ENV_DEV_BOOT_LAN_ROUTE_KIND: &str = "BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND";
 const DEV_BOOT_LAN_ROUTE_TCP_DIRECT: &str = "tcp_direct";
 const ENV_DEV_KLOG_ADVERTISE_ADDR: &str = "BUCKYOS_DEV_KLOG_ADVERTISE_ADDR";
@@ -887,25 +884,6 @@ fn system_config_store_is_klog() -> bool {
     env::var(ENV_SYSTEM_CONFIG_STORE)
         .map(|value| value.trim().eq_ignore_ascii_case(SYSTEM_CONFIG_STORE_KLOG))
         .unwrap_or(false)
-}
-
-fn derive_klog_node_id_from_device(device_doc: &DeviceConfig) -> u64 {
-    let mut hash = FNV1A64_OFFSET_BASIS;
-    let device_did = device_doc.id.to_string();
-    for byte in KLOG_NODE_ID_HASH_PREFIX
-        .as_bytes()
-        .iter()
-        .chain(device_did.as_bytes().iter())
-    {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(FNV1A64_PRIME);
-    }
-
-    if hash == 0 {
-        1
-    } else {
-        hash
-    }
 }
 
 fn build_klog_gateway_admin_target(ood_name: &str) -> String {

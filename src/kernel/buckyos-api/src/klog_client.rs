@@ -11,7 +11,7 @@ pub use ::klog::{
     KLogEntry, KLogLevel, KLogMetaEntry, KLogMetaTxAction, KLogMetaTxGuard, KLogMetaTxRequest,
     KLogMetaTxResponse, KNode, KNodeId,
 };
-use name_lib::DID;
+use name_lib::{DeviceConfig, DID};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -24,6 +24,9 @@ pub const KLOG_CLUSTER_ADMIN_SERVICE_NAME: &str = "admin";
 pub const KLOG_CLUSTER_RAFT_PORT: u16 = 21001;
 pub const KLOG_CLUSTER_INTER_PORT: u16 = 21002;
 pub const KLOG_CLUSTER_ADMIN_PORT: u16 = 21003;
+const KLOG_NODE_ID_HASH_PREFIX: &str = "buckyos:klog-node-id:v1:";
+const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV1A64_PRIME: u64 = 0x100000001b3;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +61,28 @@ pub struct KLogBuckyosSettings {
 
 pub fn default_klog_buckyos_settings() -> KLogBuckyosSettings {
     KLogBuckyosSettings::default()
+}
+
+pub fn derive_klog_node_id_from_device(device_doc: &DeviceConfig) -> KNodeId {
+    derive_klog_node_id_from_device_id(&device_doc.id.to_string())
+}
+
+pub fn derive_klog_node_id_from_device_id(device_id: &str) -> KNodeId {
+    let mut hash = FNV1A64_OFFSET_BASIS;
+    for byte in KLOG_NODE_ID_HASH_PREFIX
+        .as_bytes()
+        .iter()
+        .chain(device_id.as_bytes().iter())
+    {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV1A64_PRIME);
+    }
+
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
 }
 
 pub fn generate_klog_service_doc() -> AppDoc {
@@ -259,5 +284,13 @@ mod tests {
 
         let value = serde_json::to_value(&settings).unwrap();
         assert_eq!(value["deployment"]["mode"], "ood_voters");
+    }
+
+    #[test]
+    fn derive_klog_node_id_from_device_id_is_stable_protocol() {
+        assert_eq!(
+            derive_klog_node_id_from_device_id("did:dev:ood2-device-key"),
+            5_588_228_819_824_065_463
+        );
     }
 }
