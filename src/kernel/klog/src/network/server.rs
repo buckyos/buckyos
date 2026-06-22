@@ -1128,18 +1128,30 @@ impl KNetworkServer {
             cluster_id: state.cluster_id.clone(),
             server_state: format!("{:?}", metrics.state),
             current_leader: metrics.current_leader,
+            raft_metrics: metrics.to_string(),
+            current_term: metrics.current_term,
+            vote: metrics.vote.to_string(),
+            last_log_index: metrics.last_log_index,
+            last_applied: metrics.last_applied.map(|log_id| log_id.to_string()),
+            millis_since_quorum_ack: metrics.millis_since_quorum_ack,
             voters,
             learners,
             nodes,
         };
 
         info!(
-            "KNetworkServer admin cluster-state request: node_id={}, cluster_name={}, cluster_id={}, server_state={}, current_leader={:?}, voters={:?}, learners={:?}",
+            "KNetworkServer admin cluster-state request: node_id={}, cluster_name={}, cluster_id={}, server_state={}, current_leader={:?}, raft_metrics={}, current_term={}, vote={}, last_log_index={:?}, last_applied={:?}, millis_since_quorum_ack={:?}, voters={:?}, learners={:?}",
             body.node_id,
             body.cluster_name,
             body.cluster_id,
             body.server_state,
             body.current_leader,
+            body.raft_metrics,
+            body.current_term,
+            body.vote,
+            body.last_log_index,
+            body.last_applied,
+            body.millis_since_quorum_ack,
             body.voters,
             body.learners
         );

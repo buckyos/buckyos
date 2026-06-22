@@ -283,6 +283,12 @@ pub struct KLogClusterStateResponse {
     pub cluster_id: String,
     pub server_state: String,
     pub current_leader: Option<KNodeId>,
+    pub raft_metrics: String,
+    pub current_term: u64,
+    pub vote: String,
+    pub last_log_index: Option<u64>,
+    pub last_applied: Option<String>,
+    pub millis_since_quorum_ack: Option<u64>,
     pub voters: Vec<KNodeId>,
     pub learners: Vec<KNodeId>,
     pub nodes: BTreeMap<KNodeId, KNode>,
@@ -648,6 +654,38 @@ mod tests {
             KLogAdminRequestType::MetaCompact.klog_path(),
             "/klog/admin/meta-compact"
         );
+    }
+
+    #[test]
+    fn test_cluster_state_response_includes_raft_diagnostics() {
+        let resp = KLogClusterStateResponse {
+            node_id: 1,
+            cluster_name: "zone-a".to_string(),
+            cluster_id: "cluster-1".to_string(),
+            server_state: "Leader".to_string(),
+            current_leader: Some(1),
+            raft_metrics: "Metrics{id:1}".to_string(),
+            current_term: 42,
+            vote: "committed:42-1".to_string(),
+            last_log_index: Some(17),
+            last_applied: Some("42-17".to_string()),
+            millis_since_quorum_ack: Some(125),
+            voters: vec![1, 2, 3],
+            learners: vec![],
+            nodes: BTreeMap::new(),
+        };
+
+        let value = serde_json::to_value(&resp).expect("serialize cluster-state response");
+        assert_eq!(value["current_term"], 42);
+        assert_eq!(value["raft_metrics"], "Metrics{id:1}");
+        assert_eq!(value["vote"], "committed:42-1");
+        assert_eq!(value["last_log_index"], 17);
+        assert_eq!(value["last_applied"], "42-17");
+        assert_eq!(value["millis_since_quorum_ack"], 125);
+
+        let decoded: KLogClusterStateResponse =
+            serde_json::from_value(value).expect("deserialize cluster-state response");
+        assert_eq!(decoded, resp);
     }
 
     #[test]

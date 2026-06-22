@@ -224,7 +224,11 @@ Admin APIs are cluster membership primitives:
 | `POST` | `/klog/admin/meta-compact` | `KLogMetaCompactRequest` JSON body |
 
 `cluster-state` returns `KLogClusterStateResponse`, including cluster identity,
-server state, leader id, voters, learners, and node descriptors.
+server state, leader id, Raft term/vote/log progress, quorum-ack age, voters,
+learners, and node descriptors. It also includes the raw OpenRaft metrics
+summary as `raft_metrics` for manual diagnostics. The Raft diagnostics are
+intended for investigating transient leader-view differences during restart or
+transport recovery.
 
 `meta-compact` is an explicit maintenance operation. It is submitted as a Raft
 write command, so all voters and learners converge on the same compacted
