@@ -7,6 +7,7 @@ mod zone_did_resolver;
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use jsonwebtoken::{Algorithm, DecodingKey};
@@ -16,6 +17,7 @@ use async_trait::async_trait;
 use lazy_static::lazy_static;
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 
 use ::kRPC::*;
 use buckyos_http_server::*;
@@ -46,6 +48,9 @@ lazy_static! {
     pub(crate) static ref SYS_STORE: Arc<Mutex<dyn KVStoreProvider>> = create_sys_store();
 }
 
+static RBAC_LOADED_FROM_KV: AtomicBool = AtomicBool::new(false);
+static RBAC_RELOAD_RETRY_RUNNING: AtomicBool = AtomicBool::new(false);
+
 const INTERNAL_META_PREFIX: &str = "__meta/";
 
 // Optional. Selects the system_config storage backend.
@@ -70,6 +75,10 @@ const SYSTEM_CONFIG_BOOTSTRAP_PREFIXES: &[&str] = &[
     "system/",
     "nodes/",
 ];
+
+const RBAC_RELOAD_FAST_RETRY_ATTEMPTS: u64 = 30;
+const RBAC_RELOAD_FAST_RETRY_SECS: u64 = 2;
+const RBAC_RELOAD_SLOW_RETRY_SECS: u64 = 10;
 
 fn normalize_system_config_store_kind(raw: Option<String>) -> String {
     raw.unwrap_or_else(|| "sled".to_string())
@@ -127,6 +136,14 @@ fn env_flag_enabled(key: &str) -> bool {
         .ok()
         .map(|value| env_flag_enabled_value(&value))
         .unwrap_or(false)
+}
+
+fn rbac_reload_retry_delay_secs(attempt: u64) -> u64 {
+    if attempt <= RBAC_RELOAD_FAST_RETRY_ATTEMPTS {
+        RBAC_RELOAD_FAST_RETRY_SECS
+    } else {
+        RBAC_RELOAD_SLOW_RETRY_SECS
+    }
 }
 
 fn create_sys_store() -> Arc<Mutex<dyn KVStoreProvider>> {
@@ -611,6 +628,118 @@ fn should_reload_security_state(full_res_path: &str) -> bool {
     full_res_path == "/config/boot/config" || full_res_path.starts_with("/config/system/rbac/")
 }
 
+async fn load_rbac_from_kv_store() -> Result<bool> {
+    let store = SYS_STORE.lock().await;
+    let rbac_model = match store.get("system/rbac/model".to_string()).await {
+        Ok(value) => value,
+        Err(err) => {
+            warn!("load rbac model from kv store failed: {}", err);
+            RBAC_LOADED_FROM_KV.store(false, Ordering::SeqCst);
+            return Ok(false);
+        }
+    };
+    let rbac_policy = match store.get("system/rbac/policy".to_string()).await {
+        Ok(value) => value,
+        Err(err) => {
+            warn!("load rbac policy from kv store failed: {}", err);
+            RBAC_LOADED_FROM_KV.store(false, Ordering::SeqCst);
+            return Ok(false);
+        }
+    };
+    drop(store);
+
+    let Some(rbac_model) = rbac_model else {
+        RBAC_LOADED_FROM_KV.store(false, Ordering::SeqCst);
+        return Ok(false);
+    };
+    let Some(rbac_policy) = rbac_policy else {
+        RBAC_LOADED_FROM_KV.store(false, Ordering::SeqCst);
+        return Ok(false);
+    };
+
+    info!("model config loaded, bytes={}", rbac_model.len());
+    info!("policy config loaded, bytes={}", rbac_policy.len());
+    rbac::create_enforcer(Some(rbac_model.trim()), Some(rbac_policy.trim()))
+        .await
+        .unwrap();
+    RBAC_LOADED_FROM_KV.store(true, Ordering::SeqCst);
+    info!("load rbac model and policy from kv store successfully!");
+    Ok(true)
+}
+
+async fn load_default_rbac() {
+    rbac::create_enforcer(None, None).await.unwrap();
+    RBAC_LOADED_FROM_KV.store(false, Ordering::SeqCst);
+    info!("load rbac model and policy default setting successfully!");
+}
+
+fn should_start_rbac_reload_retry(uses_klog_store: bool, loaded_from_kv: bool) -> bool {
+    // With the klog backend, non-seed OODs can start system-config before
+    // scheduler has committed the final RBAC policy. Default RBAC keeps the
+    // service available, and this retry lets it self-heal once klog can serve
+    // system/rbac/model + system/rbac/policy. The sled backend still relies on
+    // the existing synchronous load path.
+    uses_klog_store && !loaded_from_kv
+}
+
+fn start_rbac_reload_retry_if_needed(loaded_from_kv: bool) {
+    if !should_start_rbac_reload_retry(system_config_uses_klog(), loaded_from_kv) {
+        return;
+    }
+    if RBAC_RELOAD_RETRY_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    tokio::spawn(async {
+        retry_load_rbac_from_kv().await;
+    });
+}
+
+async fn retry_load_rbac_from_kv() {
+    info!("start background rbac reload retry until kv policy is available");
+    let mut attempt = 0;
+    loop {
+        if RBAC_LOADED_FROM_KV.load(Ordering::SeqCst) {
+            break;
+        }
+
+        attempt += 1;
+        sleep(Duration::from_secs(rbac_reload_retry_delay_secs(attempt))).await;
+
+        if RBAC_LOADED_FROM_KV.load(Ordering::SeqCst) {
+            break;
+        }
+
+        match load_rbac_from_kv_store().await {
+            Ok(true) => {
+                info!(
+                    "background rbac reload retry succeeded after {} attempts",
+                    attempt
+                );
+                break;
+            }
+            Ok(false) => {
+                if attempt == 1 || attempt % 10 == 0 {
+                    info!(
+                        "background rbac reload retry waiting for kv policy, attempts={}",
+                        attempt
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "background rbac reload retry failed, attempts={}, err={}",
+                    attempt, err
+                );
+            }
+        }
+    }
+    RBAC_RELOAD_RETRY_RUNNING.store(false, Ordering::SeqCst);
+}
+
 async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
     // Check params
     let actions = params.get("actions");
@@ -884,36 +1013,13 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
         error!("Missing BUCKYOS_THIS_DEVICE");
     }
 
-    let rbac_model = store.get("system/rbac/model".to_string()).await;
-    let rbac_policy = store.get("system/rbac/policy".to_string()).await;
-    let mut set_rbac = false;
-    if rbac_model.is_ok() && rbac_policy.is_ok() {
-        let rbac_model = rbac_model.unwrap();
-        let rbac_policy = rbac_policy.unwrap();
-        if rbac_model.is_some() && rbac_policy.is_some() {
-            info!(
-                "model config loaded, bytes={}",
-                rbac_model.clone().unwrap().len()
-            );
-            info!(
-                "policy config loaded, bytes={}",
-                rbac_policy.clone().unwrap().len()
-            );
-            rbac::create_enforcer(
-                Some(rbac_model.unwrap().trim()),
-                Some(rbac_policy.unwrap().trim()),
-            )
-            .await
-            .unwrap();
-            set_rbac = true;
-            info!("load rbac model and policy from kv store successfully!");
-        }
-    }
+    drop(store);
 
-    if !set_rbac {
-        rbac::create_enforcer(None, None).await.unwrap();
-        info!("load rbac model and policy default setting successfully!");
+    let loaded_from_kv = load_rbac_from_kv_store().await?;
+    if !loaded_from_kv {
+        load_default_rbac().await;
     }
+    start_rbac_reload_retry_if_needed(loaded_from_kv);
 
     Ok(Value::Null)
 }
@@ -1415,6 +1521,26 @@ mod test {
         for value in ["", "0", "false", "off", "no"] {
             assert!(!env_flag_enabled_value(value));
         }
+    }
+
+    #[test]
+    fn rbac_retry_only_starts_for_klog_missing_policy() {
+        assert!(should_start_rbac_reload_retry(true, false));
+        assert!(!should_start_rbac_reload_retry(true, true));
+        assert!(!should_start_rbac_reload_retry(false, false));
+    }
+
+    #[test]
+    fn rbac_retry_uses_fast_then_slow_delay() {
+        assert_eq!(rbac_reload_retry_delay_secs(1), RBAC_RELOAD_FAST_RETRY_SECS);
+        assert_eq!(
+            rbac_reload_retry_delay_secs(RBAC_RELOAD_FAST_RETRY_ATTEMPTS),
+            RBAC_RELOAD_FAST_RETRY_SECS
+        );
+        assert_eq!(
+            rbac_reload_retry_delay_secs(RBAC_RELOAD_FAST_RETRY_ATTEMPTS + 1),
+            RBAC_RELOAD_SLOW_RETRY_SECS
+        );
     }
 
     #[allow(dead_code)]
