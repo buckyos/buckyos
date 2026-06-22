@@ -822,6 +822,61 @@ fn test_service_info_only_publishes_alive_running_replicas() {
 }
 
 #[test]
+fn test_service_info_preserves_spec_ports_when_runtime_reports_partial_ports() {
+    let mut scheduler = NodeScheduler::new_empty(1);
+    scheduler.add_node(create_test_node(
+        "ood1",
+        4000,
+        1024 * 1024 * 2048,
+        vec!["core".to_string()],
+        0.0,
+        NodeState::Ready,
+        "zone-1",
+    ));
+
+    let mut cluster_service = create_test_service_spec("cluster-service");
+    cluster_service.state = ServiceSpecState::Deployed;
+    cluster_service.service_ports_config = HashMap::from([
+        ("www".to_string(), 4080),
+        ("raft".to_string(), 21001),
+        ("inter".to_string(), 21002),
+        ("admin".to_string(), 21003),
+    ]);
+    scheduler.add_service_spec(cluster_service);
+
+    let mut instance = create_test_replica_instance(
+        "cluster-service",
+        "ood1",
+        InstanceState::Running,
+        buckyos_get_unix_timestamp(),
+    );
+    instance.service_ports = HashMap::from([("www".to_string(), 4180)]);
+    scheduler.add_replica_instance(instance);
+
+    let actions = scheduler.schedule(None).unwrap();
+    assert_eq!(actions.len(), 1);
+    let expected_ports = HashMap::from([
+        ("www".to_string(), 4180),
+        ("raft".to_string(), 21001),
+        ("inter".to_string(), 21002),
+        ("admin".to_string(), 21003),
+    ]);
+    match &actions[0] {
+        SchedulerAction::UpdateServiceInfo(spec_id, ServiceInfo::SingleInstance(instance)) => {
+            assert_eq!(spec_id, "cluster-service");
+            assert_eq!(instance.service_ports, expected_ports);
+        }
+        other => panic!("unexpected action: {:?}", other),
+    }
+    match scheduler.service_infos.get("cluster-service").unwrap() {
+        ServiceInfo::SingleInstance(instance) => {
+            assert_eq!(instance.service_ports, expected_ports);
+        }
+        other => panic!("unexpected service info: {:?}", other),
+    }
+}
+
+#[test]
 fn test_service_info_refresh_is_throttled_within_30_seconds() {
     let mut last_snapshot = NodeScheduler::new_empty(1);
     last_snapshot.add_node(create_test_node(

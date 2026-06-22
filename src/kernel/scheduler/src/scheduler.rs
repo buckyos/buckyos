@@ -523,6 +523,17 @@ pub fn create_replica_instance_id(spec: &ServiceSpec, node_id: &str) -> String {
     format!("{}@{}", spec.id, node_id)
 }
 
+fn service_info_ports(spec: &ServiceSpec, instance: &ReplicaInstance) -> HashMap<String, u16> {
+    // Runtime heartbeats can be partial: BuckyOSRuntime currently reports the
+    // active/main port, while static service specs may declare additional
+    // cluster ports such as klog raft/inter/admin. ServiceInfo is the discovery
+    // contract, so keep spec-declared ports and let runtime reports override
+    // the same names when they carry a newer concrete value.
+    let mut ports = spec.service_ports_config.clone();
+    ports.extend(instance.service_ports.clone());
+    ports
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeScheduler {
     schedule_step_id: u64,
@@ -693,7 +704,7 @@ impl NodeScheduler {
                 .push(instance);
         }
 
-        for (spec_id, _spec) in self.specs.iter() {
+        for (spec_id, spec) in self.specs.iter() {
             let mut info_map = HashMap::new();
 
             if let Some(instances) = spec_instances.get(spec_id.as_str()) {
@@ -704,8 +715,9 @@ impl NodeScheduler {
                         // 对应用来说，调度器返回服务可用时，如果访问失败可以尝试重试
                         // 如果调度器返回服务不可用，应用使用服务的接口应直接返回失败
                         if now - instance.last_update_time < INSTANCE_ALIVE_TIME {
-                            info_map
-                                .insert(instance.instance_id.clone(), (100, (*instance).clone()));
+                            let mut instance = (*instance).clone();
+                            instance.service_ports = service_info_ports(spec, &instance);
+                            info_map.insert(instance.instance_id.clone(), (100, instance));
                         } else {
                             warn!(
                                 "spec_id:{} instance:{} is not alive",
