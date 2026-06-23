@@ -70,6 +70,18 @@ BIN_META_SEED_PACKAGES = {
     "verify-hub",
 }
 
+KLOG_3OOD_BUCKYOS_SETTINGS = {
+    "deployment": {
+        "mode": "ood_voters",
+    },
+    "raft": {
+        "election_timeout_min_ms": 1000,
+        "election_timeout_max_ms": 2500,
+        "heartbeat_interval_ms": 250,
+        "install_snapshot_timeout_ms": 5000,
+    },
+}
+
 
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
@@ -236,6 +248,65 @@ def seed_bin_pkg_meta_db(target_dir: Path) -> None:
             )
             print(f"seed pkg meta {prefix}.{pkg_name}#{version} -> {meta_db_path}")
 
+def merge_boot_template_entries(
+    dst_boot_template: Path, entries: List[Tuple[str, str]], source_label: str
+) -> None:
+    if not entries:
+        return
+
+    if not dst_boot_template.exists():
+        content = "\n\n".join(block for _, block in entries) + "\n"
+        write_text(dst_boot_template, content)
+        print(f"create boot template from {source_label}: {dst_boot_template}")
+        return
+
+    merged = dst_boot_template.read_text()
+    replaced = 0
+    added = 0
+    for key, block in entries:
+        target_pattern = re.compile(
+            rf'(?ms)^\s*"{re.escape(key)}"\s*=\s*"""\n.*?\n"""[ \t]*\n?'
+        )
+        merged, count = target_pattern.subn(block + "\n", merged, count=1)
+        if count > 0:
+            replaced += 1
+            continue
+
+        if merged and not merged.endswith("\n"):
+            merged += "\n"
+        if merged and not merged.endswith("\n\n"):
+            merged += "\n"
+        merged += block + "\n"
+        added += 1
+
+    write_text(dst_boot_template, merged)
+    print(
+        f"merge {source_label} into template: {dst_boot_template} "
+        f"(replaced={replaced}, added={added})"
+    )
+
+
+def format_boot_template_json_entry(key: str, value: object) -> Tuple[str, str]:
+    value_str = json.dumps(value, indent=4)
+    return key, f'"{key}" = """\n{value_str}\n"""'
+
+
+def apply_klog_3ood_boot_template_settings(target_dir: Path, group_name: str) -> None:
+    if not group_name.startswith("klog_3ood."):
+        return
+
+    dst_boot_template = target_dir / "etc" / "scheduler" / "boot.template.toml"
+    merge_boot_template_entries(
+        dst_boot_template,
+        [
+            format_boot_template_json_entry(
+                "services/klog-service/settings", KLOG_3OOD_BUCKYOS_SETTINGS
+            )
+        ],
+        "klog_3ood boot settings",
+    )
+
+
 def apply_dev_boot_template_override(target_dir: Path, group_name: str) -> None:
     """
     For dev groups, optionally merge local private settings into rootfs boot template.
@@ -272,30 +343,7 @@ def apply_dev_boot_template_override(target_dir: Path, group_name: str) -> None:
         print(f"create boot template from local override: {dst_boot_template}")
         return
 
-    merged = dst_boot_template.read_text()
-    replaced = 0
-    added = 0
-    for key, block in entries:
-        target_pattern = re.compile(
-            rf'(?ms)^\s*"{re.escape(key)}"\s*=\s*"""\n.*?\n"""[ \t]*\n?'
-        )
-        merged, count = target_pattern.subn(block + "\n", merged, count=1)
-        if count > 0:
-            replaced += 1
-            continue
-
-        if merged and not merged.endswith("\n"):
-            merged += "\n"
-        if merged and not merged.endswith("\n\n"):
-            merged += "\n"
-        merged += block + "\n"
-        added += 1
-
-    write_text(dst_boot_template, merged)
-    print(
-        f"merge dev boot override into template: {dst_boot_template} "
-        f"(replaced={replaced}, added={added})"
-    )
+    merge_boot_template_entries(dst_boot_template, entries, "dev boot override")
 
 
 def extract_base_host(web3_bns: str) -> str:
@@ -973,6 +1021,7 @@ def make_config_by_group_name(group_name: str, target_root: Optional[Path], ca_d
         )
         make_repo_cache_file(target_root)
         seed_bin_pkg_meta_db(target_root)
+        apply_klog_3ood_boot_template_settings(target_root, group_name)
         apply_dev_boot_template_override(target_root, group_name)
     
     print(f"config {group_name} generation finished.")

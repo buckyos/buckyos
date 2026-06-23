@@ -66,8 +66,13 @@ type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
 const ENV_SYSTEM_CONFIG_STORE: &str = "BUCKYOS_SYSTEM_CONFIG_STORE";
 const SYSTEM_CONFIG_STORE_KLOG: &str = "klog";
+const KLOG_SERVICE_SETTINGS_KEY: &str = "services/klog-service/settings";
 const KLOG_CLUSTER_ROUTE_PREFIX: &str = "/.cluster/klog";
 const KLOG_CLUSTER_GATEWAY_ADDR: &str = "127.0.0.1:3180";
+const KLOG_RAFT_ELECTION_TIMEOUT_MIN_MS: &str = "KLOG_RAFT_ELECTION_TIMEOUT_MIN_MS";
+const KLOG_RAFT_ELECTION_TIMEOUT_MAX_MS: &str = "KLOG_RAFT_ELECTION_TIMEOUT_MAX_MS";
+const KLOG_RAFT_HEARTBEAT_INTERVAL_MS: &str = "KLOG_RAFT_HEARTBEAT_INTERVAL_MS";
+const KLOG_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS: &str = "KLOG_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS";
 const ENV_DEV_BOOT_LAN_ROUTE_KIND: &str = "BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND";
 const DEV_BOOT_LAN_ROUTE_TCP_DIRECT: &str = "tcp_direct";
 const ENV_DEV_KLOG_ADVERTISE_ADDR: &str = "BUCKYOS_DEV_KLOG_ADVERTISE_ADDR";
@@ -983,10 +988,109 @@ fn resolve_klog_advertise_addr_inner(
     "127.0.0.1".to_string()
 }
 
+fn insert_klog_raft_settings_env(
+    env_vars: &mut HashMap<String, String>,
+    settings: Option<&KLogBuckyosSettings>,
+) {
+    // The canonical runtime knob lives in services/klog-service/settings.raft.
+    // node-daemon still launches klog via env, so bridge those fields to the
+    // KLOG_RAFT_* keys that klog-daemon already validates and applies.
+    let Some(raft) = settings.and_then(|settings| settings.raft.as_ref()) else {
+        return;
+    };
+
+    if let Some(value) = raft.election_timeout_min_ms {
+        env_vars.insert(
+            KLOG_RAFT_ELECTION_TIMEOUT_MIN_MS.to_string(),
+            value.to_string(),
+        );
+    }
+    if let Some(value) = raft.election_timeout_max_ms {
+        env_vars.insert(
+            KLOG_RAFT_ELECTION_TIMEOUT_MAX_MS.to_string(),
+            value.to_string(),
+        );
+    }
+    if let Some(value) = raft.heartbeat_interval_ms {
+        env_vars.insert(
+            KLOG_RAFT_HEARTBEAT_INTERVAL_MS.to_string(),
+            value.to_string(),
+        );
+    }
+    if let Some(value) = raft.install_snapshot_timeout_ms {
+        env_vars.insert(
+            KLOG_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS.to_string(),
+            value.to_string(),
+        );
+    }
+}
+
+async fn load_klog_buckyos_settings(
+    system_config_client: &SystemConfigClient,
+) -> KLogBuckyosSettings {
+    match system_config_client.get(KLOG_SERVICE_SETTINGS_KEY).await {
+        Ok(value) => {
+            parse_klog_buckyos_settings(&value.value, KLOG_SERVICE_SETTINGS_KEY).unwrap_or_default()
+        }
+        Err(SystemConfigError::KeyNotFound(_)) => KLogBuckyosSettings::default(),
+        Err(err) => {
+            warn!(
+                "load {} failed while preparing klog env: {}",
+                KLOG_SERVICE_SETTINGS_KEY, err
+            );
+            KLogBuckyosSettings::default()
+        }
+    }
+}
+
+fn parse_klog_buckyos_settings(raw: &str, source: &str) -> Option<KLogBuckyosSettings> {
+    match serde_json::from_str::<KLogBuckyosSettings>(raw) {
+        Ok(settings) => Some(settings),
+        Err(err) => {
+            warn!("parse {} failed while preparing klog env: {}", source, err);
+            None
+        }
+    }
+}
+
+fn load_klog_buckyos_settings_from_boot_template() -> KLogBuckyosSettings {
+    let template_file_path = get_buckyos_system_etc_dir()
+        .join("scheduler")
+        .join("boot.template.toml");
+    let template_str = match std::fs::read_to_string(&template_file_path) {
+        Ok(content) => content,
+        Err(err) => {
+            debug!(
+                "read boot template for klog settings skipped: path={}, err={}",
+                template_file_path.to_string_lossy(),
+                err
+            );
+            return KLogBuckyosSettings::default();
+        }
+    };
+    let boot_config: HashMap<String, String> = match toml::from_str(&template_str) {
+        Ok(config) => config,
+        Err(err) => {
+            warn!(
+                "parse boot template for klog settings failed: path={}, err={}",
+                template_file_path.to_string_lossy(),
+                err
+            );
+            return KLogBuckyosSettings::default();
+        }
+    };
+    let Some(raw_settings) = boot_config.get(KLOG_SERVICE_SETTINGS_KEY) else {
+        return KLogBuckyosSettings::default();
+    };
+
+    parse_klog_buckyos_settings(raw_settings, KLOG_SERVICE_SETTINGS_KEY).unwrap_or_default()
+}
+
 fn build_klog_service_env(
     this_device_doc: &DeviceConfig,
     zone_host: &str,
     ood_names: Vec<String>,
+    klog_settings: Option<&KLogBuckyosSettings>,
 ) -> std::result::Result<HashMap<String, String>, String> {
     if ood_names.is_empty() {
         return Err("cannot start klog-service: zone has no OOD voter".to_string());
@@ -1074,6 +1178,7 @@ fn build_klog_service_env(
         let join_targets = build_klog_join_targets(this_node_name, &ood_names);
         env_vars.insert("KLOG_JOIN_TARGETS".to_string(), join_targets.join(","));
     }
+    insert_klog_raft_settings_env(&mut env_vars, klog_settings);
 
     Ok(env_vars)
 }
@@ -1089,12 +1194,14 @@ fn build_klog_service_env_from_zone_boot(
         .filter(|ood| ood.node_type.is_ood())
         .map(|ood| ood.name.clone())
         .collect();
-    build_klog_service_env(this_device_doc, zone_host, ood_names)
+    let klog_settings = load_klog_buckyos_settings_from_boot_template();
+    build_klog_service_env(this_device_doc, zone_host, ood_names, Some(&klog_settings))
 }
 
 fn build_klog_service_env_from_zone_config(
     this_device_doc: &DeviceConfig,
     zone_config: &ZoneConfig,
+    klog_settings: Option<&KLogBuckyosSettings>,
 ) -> std::result::Result<HashMap<String, String>, String> {
     let ood_names = zone_config
         .oods
@@ -1106,6 +1213,7 @@ fn build_klog_service_env_from_zone_config(
         this_device_doc,
         zone_config.id.to_host_name().as_str(),
         ood_names,
+        klog_settings,
     )
 }
 
@@ -1718,13 +1826,18 @@ async fn node_daemon_main_loop(
 
         if is_ood {
             if system_config_store_is_klog() {
-                let mut klog_env = build_klog_service_env_from_zone_config(device_doc, zone_config)
-                    .map_err(|err| {
-                        error!("build klog_service env failed! {}", err);
-                        NodeDaemonErrors::SystemConfigError(
-                            "build klog_service env failed!".to_string(),
-                        )
-                    })?;
+                let klog_settings = load_klog_buckyos_settings(&system_config_client).await;
+                let mut klog_env = build_klog_service_env_from_zone_config(
+                    device_doc,
+                    zone_config,
+                    Some(&klog_settings),
+                )
+                .map_err(|err| {
+                    error!("build klog_service env failed! {}", err);
+                    NodeDaemonErrors::SystemConfigError(
+                        "build klog_service env failed!".to_string(),
+                    )
+                })?;
                 insert_klog_service_session_token(&mut klog_env, device_doc, device_private_key)
                     .map_err(|err| {
                         error!("prepare klog_service session token failed! {}", err);
@@ -2517,6 +2630,7 @@ mod tests {
             &device_doc,
             "test.zone",
             vec!["ood1".to_string(), "ood2".to_string()],
+            None,
         )
         .unwrap();
 
@@ -2567,6 +2681,73 @@ mod tests {
     }
 
     #[test]
+    fn parse_klog_buckyos_settings_reads_raft_settings() {
+        let settings = parse_klog_buckyos_settings(
+            r#"{
+                "deployment": {
+                    "mode": "ood_voters"
+                },
+                "raft": {
+                    "election_timeout_min_ms": 1000,
+                    "election_timeout_max_ms": 2500,
+                    "heartbeat_interval_ms": 250,
+                    "install_snapshot_timeout_ms": 5000
+                }
+            }"#,
+            KLOG_SERVICE_SETTINGS_KEY,
+        )
+        .unwrap();
+
+        let raft = settings.raft.unwrap();
+        assert_eq!(raft.election_timeout_min_ms, Some(1000));
+        assert_eq!(raft.election_timeout_max_ms, Some(2500));
+        assert_eq!(raft.heartbeat_interval_ms, Some(250));
+        assert_eq!(raft.install_snapshot_timeout_ms, Some(5000));
+    }
+
+    #[test]
+    fn build_klog_service_env_applies_formal_raft_settings() {
+        let device_doc = test_device_doc("ood1", "ood1-device-key");
+        let settings = KLogBuckyosSettings {
+            raft: Some(KLogRaftSettings {
+                election_timeout_min_ms: Some(1000),
+                election_timeout_max_ms: Some(2500),
+                heartbeat_interval_ms: Some(250),
+                install_snapshot_timeout_ms: Some(5000),
+            }),
+            ..Default::default()
+        };
+
+        let env = build_klog_service_env(
+            &device_doc,
+            "test.zone",
+            vec!["ood1".to_string(), "ood2".to_string()],
+            Some(&settings),
+        )
+        .unwrap();
+
+        assert_eq!(
+            env.get(KLOG_RAFT_ELECTION_TIMEOUT_MIN_MS)
+                .map(String::as_str),
+            Some("1000")
+        );
+        assert_eq!(
+            env.get(KLOG_RAFT_ELECTION_TIMEOUT_MAX_MS)
+                .map(String::as_str),
+            Some("2500")
+        );
+        assert_eq!(
+            env.get(KLOG_RAFT_HEARTBEAT_INTERVAL_MS).map(String::as_str),
+            Some("250")
+        );
+        assert_eq!(
+            env.get(KLOG_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS)
+                .map(String::as_str),
+            Some("5000")
+        );
+    }
+
+    #[test]
     fn resolve_klog_advertise_addr_uses_dev_override_only_for_tcp_direct() {
         assert_eq!(
             resolve_klog_advertise_addr_inner(
@@ -2595,6 +2776,7 @@ mod tests {
             &device_doc,
             "test.zone",
             vec!["ood1".to_string(), "ood2".to_string()],
+            None,
         )
         .unwrap();
 
@@ -2628,6 +2810,7 @@ mod tests {
                 "ood3".to_string(),
                 "ood4".to_string(),
             ],
+            None,
         )
         .unwrap();
 
@@ -2671,12 +2854,14 @@ mod tests {
             &device_doc,
             "test.zone",
             vec!["ood1".to_string(), "ood2".to_string(), "ood3".to_string()],
+            None,
         )
         .unwrap();
         let env2 = build_klog_service_env(
             &device_doc,
             "test.zone",
             vec!["ood1".to_string(), "ood3".to_string(), "ood2".to_string()],
+            None,
         )
         .unwrap();
 

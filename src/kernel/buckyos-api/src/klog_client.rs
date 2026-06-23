@@ -54,9 +54,23 @@ pub struct KLogDeploymentSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KLogRaftSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub election_timeout_min_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub election_timeout_max_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_interval_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_snapshot_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KLogBuckyosSettings {
     #[serde(default)]
     pub deployment: KLogDeploymentSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft: Option<KLogRaftSettings>,
 }
 
 pub fn default_klog_buckyos_settings() -> KLogBuckyosSettings {
@@ -284,6 +298,26 @@ mod tests {
 
         let value = serde_json::to_value(&settings).unwrap();
         assert_eq!(value["deployment"]["mode"], "ood_voters");
+        assert!(value.get("raft").is_none());
+    }
+
+    #[test]
+    fn test_klog_buckyos_settings_can_carry_raft_timing() {
+        let settings = KLogBuckyosSettings {
+            raft: Some(KLogRaftSettings {
+                election_timeout_min_ms: Some(1000),
+                election_timeout_max_ms: Some(2500),
+                heartbeat_interval_ms: Some(250),
+                install_snapshot_timeout_ms: Some(5000),
+            }),
+            ..Default::default()
+        };
+
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["raft"]["election_timeout_min_ms"], 1000);
+        assert_eq!(value["raft"]["election_timeout_max_ms"], 2500);
+        assert_eq!(value["raft"]["heartbeat_interval_ms"], 250);
+        assert_eq!(value["raft"]["install_snapshot_timeout_ms"], 5000);
     }
 
     #[test]
