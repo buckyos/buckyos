@@ -186,10 +186,23 @@ fn device_rtcp_port(device_info: &DeviceInfo) -> u32 {
 }
 
 fn format_rtcp_did_url(node_id: &str, zone_host: &str, port: u32) -> String {
+    format_rtcp_host_url(format!("{}.{}", node_id, zone_host).as_str(), port)
+}
+
+fn format_rtcp_host_url(host: &str, port: u32) -> String {
     if port == DEFAULT_RTCP_PORT {
-        format!("rtcp://{}.{}/", node_id, zone_host)
+        format!("rtcp://{}/", host)
     } else {
-        format!("rtcp://{}.{}:{}/", node_id, zone_host, port)
+        format!("rtcp://{}:{}/", host, port)
+    }
+}
+
+fn device_rtcp_host(device_info: &DeviceInfo, fallback_node_id: &str, zone_host: &str) -> String {
+    let host = device_info.device_doc.id.to_host_name();
+    if host.trim().is_empty() {
+        format!("{}.{}", fallback_node_id, zone_host)
+    } else {
+        host
     }
 }
 
@@ -492,11 +505,13 @@ fn direct_evidence_for(
 fn build_direct_candidate(
     this_node_id: &str,
     target_node_id: &str,
+    target_device: &DeviceInfo,
     target_port: u32,
     zone_host: &str,
     evidence: DirectEvidence,
     prefer_tcp_direct: bool,
 ) -> NodeGatewayRouteCandidate {
+    let rtcp_host = device_rtcp_host(target_device, target_node_id, zone_host);
     let (kind, url, keep_tunnel) = if prefer_tcp_direct {
         (
             "tcp_direct".to_string(),
@@ -506,7 +521,7 @@ fn build_direct_candidate(
     } else {
         (
             "rtcp_direct".to_string(),
-            format_rtcp_did_url(target_node_id, zone_host, target_port),
+            format_rtcp_host_url(&rtcp_host, target_port),
             true,
         )
     };
@@ -729,6 +744,7 @@ fn build_forward_plan_inner(
             candidates.push(build_direct_candidate(
                 this_node_id,
                 target_node_id,
+                target_device,
                 target_port,
                 zone_host,
                 evidence,
@@ -814,7 +830,7 @@ fn build_forward_plan_inner(
 
         let hints = did_ip_hints_for_target(target_device, target_obs, target_port);
         if !hints.is_empty() {
-            let did_host = format!("{}.{}", target_node_id, zone_host);
+            let did_host = device_rtcp_host(target_device, target_node_id, zone_host);
             plan.did_ip_hints.insert(did_host, hints);
         }
     }
@@ -839,6 +855,14 @@ mod tests {
         let mut device = DeviceConfig::new(name, pkx);
         device.owner = DID::new("bns", "owner");
         DeviceInfo::from_device_doc(&device)
+    }
+
+    fn expected_rtcp_url(device_info: &DeviceInfo) -> String {
+        format!("rtcp://{}/", device_info.device_doc.id.to_host_name())
+    }
+
+    fn expected_rtcp_host(device_info: &DeviceInfo) -> String {
+        device_info.device_doc.id.to_host_name()
     }
 
     fn create_test_device_info_with_net_id(name: &str, net_id: Option<&str>) -> DeviceInfo {
@@ -986,7 +1010,10 @@ mod tests {
         assert_eq!(ood2_routes[0].id, "direct");
         assert_eq!(ood2_routes[0].kind, "rtcp_direct");
         assert_eq!(ood2_routes[0].priority, DIRECT_PRIORITY);
-        assert_eq!(ood2_routes[0].url, format!("rtcp://ood2.{}/", zone_host));
+        assert_eq!(
+            ood2_routes[0].url,
+            expected_rtcp_url(device_list.get("ood2").unwrap())
+        );
         assert!(!ood2_routes[0].backup);
         assert_eq!(
             ood2_routes[0].evidence.as_ref().unwrap().evidence_type,
@@ -1004,7 +1031,7 @@ mod tests {
         );
 
         // 签名 IP 进 did_ip_hints；互斥规则下没有其它来源混入。
-        let target_did = format!("ood2.{}", zone_host);
+        let target_did = expected_rtcp_host(device_list.get("ood2").unwrap());
         let hints = plan.did_ip_hints.get(&target_did).unwrap();
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].ip, "203.0.113.10".parse::<IpAddr>().unwrap());
@@ -1078,7 +1105,7 @@ mod tests {
         ]);
 
         let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
-        let target_did = format!("ood2.{}", zone_host);
+        let target_did = expected_rtcp_host(device_list.get("ood2").unwrap());
         let hints = plan.did_ip_hints.get(&target_did).unwrap();
         assert!(hints
             .iter()
@@ -1108,7 +1135,10 @@ mod tests {
             .expect("wan_dyn target should yield a direct candidate even from NAT source");
         assert_eq!(direct.kind, "rtcp_direct");
         assert!(!direct.backup);
-        assert_eq!(direct.url, format!("rtcp://ood2.{}/", zone_host));
+        assert_eq!(
+            direct.url,
+            expected_rtcp_url(device_list.get("ood2").unwrap())
+        );
         let evidence = direct.evidence.as_ref().unwrap();
         assert_eq!(evidence.evidence_type, "wan_target_net_id");
         assert_eq!(evidence.applicability, "zone_wide");
@@ -1219,7 +1249,10 @@ mod tests {
 
         assert_eq!(ood2_routes.len(), 2);
         assert_eq!(ood2_routes[0].id, "direct");
-        assert_eq!(ood2_routes[0].url, format!("rtcp://ood2.{}/", zone_host));
+        assert_eq!(
+            ood2_routes[0].url,
+            expected_rtcp_url(device_list.get("ood2").unwrap())
+        );
         assert!(!ood2_routes[0].backup);
         assert_eq!(
             ood2_routes[0].evidence.as_ref().unwrap().evidence_type,
@@ -1339,7 +1372,7 @@ mod tests {
         assert!(ood2_routes.iter().all(|c| !c.url.contains("192.168.1.23")));
         assert_eq!(ood2_routes[0].id, "direct");
 
-        let target_did = format!("ood2.{}", zone_host);
+        let target_did = expected_rtcp_host(device_list.get("ood2").unwrap());
         let hints = plan.did_ip_hints.get(&target_did).unwrap();
         let lan_hint = hints
             .iter()
@@ -1375,12 +1408,15 @@ mod tests {
             .iter()
             .find(|c| c.id == "direct")
             .expect("dual-LAN with global v6 endpoint should yield IPv6 direct candidate");
-        assert_eq!(direct.url, format!("rtcp://ood2.{}/", zone_host));
+        assert_eq!(
+            direct.url,
+            expected_rtcp_url(device_list.get("ood2").unwrap())
+        );
         let evidence = direct.evidence.as_ref().unwrap();
         assert_eq!(evidence.evidence_type, "ipv6_global_endpoint");
         assert_eq!(evidence.confidence, "medium");
 
-        let target_did = format!("ood2.{}", zone_host);
+        let target_did = expected_rtcp_host(device_list.get("ood2").unwrap());
         let hints = plan.did_ip_hints.get(&target_did).unwrap();
         let v6_hint = hints
             .iter()
@@ -1411,7 +1447,7 @@ mod tests {
             .all(|c| c.evidence.as_ref().map(|e| e.evidence_type.as_str())
                 != Some("ipv6_global_endpoint")));
 
-        let target_did = format!("ood2.{}", zone_host);
+        let target_did = expected_rtcp_host(device_list.get("ood2").unwrap());
         let hints = plan
             .did_ip_hints
             .get(&target_did)

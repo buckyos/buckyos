@@ -127,7 +127,7 @@ pub async fn discover_oods_in_lan(
 //  - node_route_map 提供 OOD/ZoneGateway 的 boot URL（默认 RTCP，DEV 可为 tcp_direct）
 //  - cluster_route_map.klog-service 提供 klog 集群启动期的 gateway proxy route
 //  - routes 为新格式（per doc 设计）的 direct + via-sn 候选
-//  - did_ip_hints 对齐 scheduler 生成的 gateway_info schema，boot 期先留空
+//  - did_ip_hints 对齐 scheduler 生成的 gateway_info schema，boot 期写入 finder 发现的 RTCP IP
 //  - app_info / trust_key 留空，等 scheduler 接管
 pub fn build_boot_node_gateway_info(
     this_node_id: &str,
@@ -163,13 +163,35 @@ fn build_boot_node_gateway_info_inner(
 
     let mut node_route_map: HashMap<String, String> = HashMap::new();
     let mut routes: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut did_ip_hints = serde_json::Map::new();
 
     for ood_name in oods_in_zone.iter() {
-        let port = discovered_oods
-            .get(*ood_name)
+        let discovered = discovered_oods.get(*ood_name);
+        let port = discovered
             .map(|node| node.rtcp_port as u32)
             .unwrap_or(DEFAULT_RTCP_PORT);
-        let direct_route = build_lan_direct_route(ood_name, zone_host, port, prefer_tcp_direct);
+        let rtcp_host = discovered_ood_rtcp_host(discovered);
+        if !prefer_tcp_direct {
+            if let (Some(discovered), Some(rtcp_host)) = (discovered, rtcp_host.as_deref()) {
+                did_ip_hints.insert(
+                    rtcp_host.to_string(),
+                    json!([{
+                        "ip": discovered.addr.ip(),
+                        "port": port,
+                        "source": "lan_endpoint",
+                        "confidence": "medium",
+                        "last_observed_at": discovered.last_seen,
+                    }]),
+                );
+            }
+        }
+        let direct_route = build_lan_direct_route(
+            ood_name,
+            zone_host,
+            rtcp_host.as_deref(),
+            port,
+            prefer_tcp_direct,
+        );
         let direct_url = direct_route.url;
         node_route_map.insert((*ood_name).to_string(), direct_url.clone());
 
@@ -217,6 +239,7 @@ fn build_boot_node_gateway_info_inner(
         let direct_route = build_lan_direct_route(
             ood.name.as_str(),
             zone_host,
+            None,
             DEFAULT_RTCP_PORT,
             prefer_tcp_direct,
         );
@@ -311,7 +334,7 @@ fn build_boot_node_gateway_info_inner(
         "service_info": service_info,
         "node_route_map": node_route_map,
         "routes": routes,
-        "did_ip_hints": {},
+        "did_ip_hints": Value::Object(did_ip_hints),
         "cluster_route_map": Value::Object(cluster_route_map),
         "trust_key": {},
     })
@@ -326,6 +349,7 @@ struct BootDirectRoute {
 fn build_lan_direct_route(
     node_id: &str,
     zone_host: &str,
+    rtcp_host: Option<&str>,
     rtcp_port: u32,
     prefer_tcp_direct: bool,
 ) -> BootDirectRoute {
@@ -339,9 +363,13 @@ fn build_lan_direct_route(
         };
     }
 
+    let rtcp_host = rtcp_host
+        .filter(|host| !host.trim().is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("{}.{}", node_id, zone_host));
     BootDirectRoute {
         kind: "rtcp_direct",
-        url: format_rtcp_did_url(node_id, zone_host, rtcp_port),
+        url: format_rtcp_host_url(rtcp_host.as_str(), rtcp_port),
         keep_tunnel: true,
     }
 }
@@ -387,11 +415,20 @@ fn evidence_for_direct(node: Option<&DiscoveredNode>) -> Option<Value> {
 }
 
 fn format_rtcp_did_url(node_id: &str, zone_host: &str, port: u32) -> String {
+    format_rtcp_host_url(format!("{}.{}", node_id, zone_host).as_str(), port)
+}
+
+fn format_rtcp_host_url(host: &str, port: u32) -> String {
     if port == DEFAULT_RTCP_PORT {
-        format!("rtcp://{}.{}/", node_id, zone_host)
+        format!("rtcp://{}/", host)
     } else {
-        format!("rtcp://{}.{}:{}/", node_id, zone_host, port)
+        format!("rtcp://{}:{}/", host, port)
     }
+}
+
+fn discovered_ood_rtcp_host(node: Option<&DiscoveredNode>) -> Option<String> {
+    node.map(|node| node.device_doc.id.to_host_name())
+        .filter(|host| !host.trim().is_empty())
 }
 
 fn format_tcp_direct_node_url(node_id: &str, zone_host: &str) -> String {
@@ -423,6 +460,49 @@ fn format_relay_rtcp_url(
     }
 }
 
+fn rtcp_keep_tunnel_target_from_url(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if !raw.starts_with("rtcp://") {
+        return Some(raw.to_string());
+    }
+
+    let url = match url::Url::parse(raw) {
+        Ok(url) => url,
+        Err(err) => {
+            warn!("ignore invalid rtcp keep_tunnel url {}: {}", raw, err);
+            return None;
+        }
+    };
+    if url.scheme() != "rtcp" {
+        return Some(raw.to_string());
+    }
+
+    let host = match url.host_str() {
+        Some(host) if !host.is_empty() => host,
+        _ => return None,
+    };
+
+    let mut target = String::new();
+    if !url.username().is_empty() {
+        target.push_str(url.username());
+        if let Some(password) = url.password() {
+            target.push(':');
+            target.push_str(password);
+        }
+        target.push('@');
+    }
+    target.push_str(host);
+    if let Some(port) = url.port() {
+        target.push(':');
+        target.push_str(port.to_string().as_str());
+    }
+
+    Some(target)
+}
+
 // 启动 cyfs-gateway 前写入 node_rtcp.keep_tunnel 的目标。
 // SN：本机非 wan 系时，需要它 keep tunnel 解决"被动可达"。
 // 其它 OOD：作为 RTCP direct 的 keep_tunnel 目标。
@@ -430,7 +510,7 @@ pub fn build_keep_tunnel_targets(
     role: NodeRole,
     device_doc: &DeviceConfig,
     zone_boot_config: &ZoneBootConfig,
-    _discovered_oods: &HashMap<String, DiscoveredNode>,
+    discovered_oods: &HashMap<String, DiscoveredNode>,
     zone_host: &str,
     sn_host_name: Option<&str>,
 ) -> Vec<String> {
@@ -438,6 +518,7 @@ pub fn build_keep_tunnel_targets(
         role,
         device_doc,
         zone_boot_config,
+        discovered_oods,
         zone_host,
         sn_host_name,
         dev_boot_lan_tcp_direct_enabled(),
@@ -448,6 +529,7 @@ fn build_keep_tunnel_targets_inner(
     role: NodeRole,
     device_doc: &DeviceConfig,
     zone_boot_config: &ZoneBootConfig,
+    discovered_oods: &HashMap<String, DiscoveredNode>,
     zone_host: &str,
     sn_host_name: Option<&str>,
     prefer_tcp_direct: bool,
@@ -478,11 +560,13 @@ fn build_keep_tunnel_targets_inner(
                 if prefer_tcp_direct {
                     continue;
                 }
-                targets.push(format_rtcp_did_url(
-                    ood.name.as_str(),
-                    zone_host,
-                    DEFAULT_RTCP_PORT,
-                ));
+                let rtcp_host = discovered_ood_rtcp_host(discovered_oods.get(ood.name.as_str()))
+                    .unwrap_or_else(|| format!("{}.{}", ood.name, zone_host));
+                if let Some(target) = rtcp_keep_tunnel_target_from_url(
+                    format_rtcp_host_url(&rtcp_host, DEFAULT_RTCP_PORT).as_str(),
+                ) {
+                    targets.push(target);
+                }
             }
         }
         NodeRole::Node => {
@@ -497,11 +581,13 @@ fn build_keep_tunnel_targets_inner(
                 if prefer_tcp_direct {
                     continue;
                 }
-                targets.push(format_rtcp_did_url(
-                    ood.name.as_str(),
-                    zone_host,
-                    DEFAULT_RTCP_PORT,
-                ));
+                let rtcp_host = discovered_ood_rtcp_host(discovered_oods.get(ood.name.as_str()))
+                    .unwrap_or_else(|| format!("{}.{}", ood.name, zone_host));
+                if let Some(target) = rtcp_keep_tunnel_target_from_url(
+                    format_rtcp_host_url(&rtcp_host, DEFAULT_RTCP_PORT).as_str(),
+                ) {
+                    targets.push(target);
+                }
             }
         }
     }
@@ -533,7 +619,9 @@ pub fn extract_keep_tunnel_targets_from_gateway_info(gateway_info: &Value) -> Ve
             if url.trim().is_empty() {
                 continue;
             }
-            targets.push(url.to_string());
+            if let Some(target) = rtcp_keep_tunnel_target_from_url(url) {
+                targets.push(target);
+            }
         }
     }
 
@@ -573,9 +661,9 @@ pub fn read_local_gateway_keep_tunnel_targets() -> Vec<String> {
 pub fn dedup_keep_tunnel_targets(targets: &mut Vec<String>) {
     let mut deduped = Vec::with_capacity(targets.len());
     for target in targets.drain(..) {
-        if target.trim().is_empty() {
+        let Some(target) = rtcp_keep_tunnel_target_from_url(target.as_str()) else {
             continue;
-        }
+        };
         if !deduped.iter().any(|item| item == &target) {
             deduped.push(target);
         }
@@ -722,17 +810,14 @@ mod tests {
 
         let merged = merge_keep_tunnel_into_gateway_config(
             config,
-            &[
-                "rtcp://ood2.zone/".to_string(),
-                "rtcp://ood3.zone/".to_string(),
-            ],
+            &["ood2.zone".to_string(), "ood3.zone".to_string()],
         );
 
         assert_eq!(merged["acme"]["enabled"], true);
         assert_eq!(merged["stacks"]["zone_tls"]["protocol"], "tls");
         assert_eq!(
             merged["stacks"]["node_rtcp"]["keep_tunnel"],
-            json!(["rtcp://ood2.zone/", "rtcp://ood3.zone/"])
+            json!(["ood2.zone", "ood3.zone"])
         );
     }
 
@@ -752,10 +837,7 @@ mod tests {
 
         assert_eq!(
             extract_keep_tunnel_targets_from_gateway_info(&gateway_info),
-            vec![
-                "rtcp://ood2.zone/".to_string(),
-                "rtcp://ood3.zone/".to_string()
-            ]
+            vec!["ood2.zone".to_string(), "ood3.zone".to_string()]
         );
     }
 
@@ -860,18 +942,15 @@ mod tests {
         let mut targets = vec![
             "rtcp://ood2.zone/".to_string(),
             "".to_string(),
-            "rtcp://ood2.zone/".to_string(),
-            "rtcp://ood3.zone/".to_string(),
+            "ood2.zone".to_string(),
+            "rtcp://ood3.zone:2981/".to_string(),
         ];
 
         dedup_keep_tunnel_targets(&mut targets);
 
         assert_eq!(
             targets,
-            vec![
-                "rtcp://ood2.zone/".to_string(),
-                "rtcp://ood3.zone/".to_string()
-            ]
+            vec!["ood2.zone".to_string(), "ood3.zone:2981".to_string()]
         );
     }
 
@@ -945,11 +1024,19 @@ mod tests {
 
         assert_eq!(
             gateway_info["node_route_map"]["ood2"],
-            "rtcp://ood2.test.zone:2981/"
+            "rtcp://test_public_key.dev.did:2981/"
         );
         assert_eq!(direct_route["kind"], "rtcp_direct");
-        assert_eq!(direct_route["url"], "rtcp://ood2.test.zone:2981/");
+        assert_eq!(direct_route["url"], "rtcp://test_public_key.dev.did:2981/");
         assert_eq!(direct_route["keep_tunnel"], true);
+        assert_eq!(
+            gateway_info["did_ip_hints"]["test_public_key.dev.did"][0]["ip"],
+            "192.168.64.22"
+        );
+        assert_eq!(
+            gateway_info["did_ip_hints"]["test_public_key.dev.did"][0]["port"],
+            2981
+        );
     }
 
     #[test]
@@ -1013,16 +1100,18 @@ mod tests {
             NodeRole::Ood,
             &device_doc,
             &zone_boot_config,
+            &HashMap::new(),
             "test.zone",
             None,
             false,
         );
-        assert_eq!(default_targets, vec!["rtcp://ood2.test.zone/".to_string()]);
+        assert_eq!(default_targets, vec!["ood2.test.zone".to_string()]);
 
         let dev_tcp_targets = build_keep_tunnel_targets_inner(
             NodeRole::Ood,
             &device_doc,
             &zone_boot_config,
+            &HashMap::new(),
             "test.zone",
             None,
             true,

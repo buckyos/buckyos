@@ -993,9 +993,15 @@ fn build_node_route_map_inner(
         let route = if prefer_tcp_direct {
             format_tcp_direct_node_url(node_id, zone_host)
         } else {
+            let rtcp_host = device_info.device_doc.id.to_host_name();
+            let rtcp_host = if rtcp_host.trim().is_empty() {
+                format!("{}.{}", node_id, zone_host)
+            } else {
+                rtcp_host
+            };
             match device_info.device_doc.rtcp_port {
-                Some(port) if port != 2980 => format!("rtcp://{}.{}:{}/", node_id, zone_host, port),
-                _ => format!("rtcp://{}.{}/", node_id, zone_host),
+                Some(port) if port != 2980 => format!("rtcp://{}:{}/", rtcp_host, port),
+                _ => format!("rtcp://{}/", rtcp_host),
             }
         };
         node_route_map.insert(node_id.clone(), route);
@@ -2007,12 +2013,12 @@ mod tests {
     fn test_build_node_route_map_defaults_to_rtcp_routes() {
         let zone_config = create_test_zone_config();
         let zone_host = zone_config.id.to_host_name();
+        let device_ood2 = create_test_device_info("ood2", Some(2981));
+        let expected_ood2_route =
+            format!("rtcp://{}:2981/", device_ood2.device_doc.id.to_host_name());
         let device_list = HashMap::from([
             ("ood1".to_string(), create_test_device_info("ood1", None)),
-            (
-                "ood2".to_string(),
-                create_test_device_info("ood2", Some(2981)),
-            ),
+            ("ood2".to_string(), device_ood2),
         ]);
 
         let node_route_map =
@@ -2020,7 +2026,7 @@ mod tests {
 
         assert_eq!(
             node_route_map.get("ood2").map(String::as_str),
-            Some("rtcp://ood2.test.buckyos.io:2981/")
+            Some(expected_ood2_route.as_str())
         );
     }
 
