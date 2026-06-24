@@ -8,7 +8,8 @@ use crate::network::{
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
 use crate::{
-    KClusterTransportConfig, KClusterTransportMode, KLogMetaTxRequest, KRaftRef,
+    KClusterTransportConfig, KClusterTransportMode, KLogMetaTxRequest, KLogWriteQuorumPolicy,
+    KRaftRef,
     rpc::{
         KLOG_JSON_RPC_PATH, KLOG_JSON_RPC_SERVICE_PATH, KLOG_JSON_RPC_VERSION,
         KLOG_RPC_ERR_INTERNAL, KLOG_RPC_ERR_INVALID_PARAMS, KLOG_RPC_ERR_INVALID_REQUEST,
@@ -105,6 +106,7 @@ pub struct KRpcServer {
     state_store_manager: KLogStateStoreManagerRef,
     policy: KRpcServerPolicy,
     transport: KClusterTransportConfig,
+    write_quorum_policy: KLogWriteQuorumPolicy,
 }
 
 impl KRpcServer {
@@ -119,6 +121,7 @@ impl KRpcServer {
             state_store_manager,
             policy: KRpcServerPolicy::default(),
             transport: KClusterTransportConfig::default(),
+            write_quorum_policy: KLogWriteQuorumPolicy::default(),
         }
     }
 
@@ -137,6 +140,11 @@ impl KRpcServer {
         self
     }
 
+    pub fn with_write_quorum_policy(mut self, policy: KLogWriteQuorumPolicy) -> Self {
+        self.write_quorum_policy = policy;
+        self
+    }
+
     pub async fn run(&self) -> Result<(), String> {
         self.run_with_shutdown(std::future::pending::<()>()).await
     }
@@ -151,7 +159,8 @@ impl KRpcServer {
                 self.raft.clone(),
                 self.state_store_manager.clone(),
             )
-            .with_transport_config(self.transport.clone()),
+            .with_transport_config(self.transport.clone())
+            .with_write_quorum_policy(self.write_quorum_policy),
             query_service: KLogQueryService::new(
                 "KRpcServer",
                 self.raft.clone(),

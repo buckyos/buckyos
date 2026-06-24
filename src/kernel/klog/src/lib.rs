@@ -20,6 +20,8 @@ pub mod state_store;
 mod test;
 pub(crate) mod util;
 
+pub use service::KLogWriteQuorumPolicy;
+
 #[derive(Serialize, Deserialize, Debug, Clone, thiserror::Error)]
 pub enum KLogError {
     #[error("Invalid format: {0}")]

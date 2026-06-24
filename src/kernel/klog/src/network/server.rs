@@ -9,7 +9,7 @@ use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
 use crate::{
     KClusterTransportConfig, KClusterTransportMode, KLogMetaTxRequest, KLogRequest, KLogResponse,
-    KNode, KNodeId, KRaftRef,
+    KLogWriteQuorumPolicy, KNode, KNodeId, KRaftRef,
 };
 use axum::Json;
 use axum::Router;
@@ -169,6 +169,7 @@ pub struct KNetworkServer {
     cluster_name: String,
     cluster_id: String,
     transport: KClusterTransportConfig,
+    write_quorum_policy: KLogWriteQuorumPolicy,
 }
 
 impl KNetworkServer {
@@ -183,6 +184,7 @@ impl KNetworkServer {
             cluster_name: "klog".to_string(),
             cluster_id: "klog".to_string(),
             transport: KClusterTransportConfig::default(),
+            write_quorum_policy: KLogWriteQuorumPolicy::default(),
         }
     }
 
@@ -225,6 +227,11 @@ impl KNetworkServer {
         self
     }
 
+    pub fn with_write_quorum_policy(mut self, policy: KLogWriteQuorumPolicy) -> Self {
+        self.write_quorum_policy = policy;
+        self
+    }
+
     pub async fn run(&self) -> Result<(), String> {
         self.run_with_shutdown(std::future::pending::<()>()).await
     }
@@ -255,6 +262,7 @@ impl KNetworkServer {
             write_service: self.state_store_manager.clone().map(|state_store_manager| {
                 KLogWriteService::new("KNetworkServer", self.raft.clone(), state_store_manager)
                     .with_transport_config(self.transport.clone())
+                    .with_write_quorum_policy(self.write_quorum_policy)
             }),
             query_service: self.state_store_manager.clone().map(|state_store_manager| {
                 KLogQueryService::new("KNetworkServer", self.raft.clone(), state_store_manager)

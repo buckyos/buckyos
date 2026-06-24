@@ -66,11 +66,23 @@ pub struct KLogRaftSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KLogWriteSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quorum_ack_max_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quorum_ack_wait_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quorum_ack_poll_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KLogBuckyosSettings {
     #[serde(default)]
     pub deployment: KLogDeploymentSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft: Option<KLogRaftSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write: Option<KLogWriteSettings>,
 }
 
 pub fn default_klog_buckyos_settings() -> KLogBuckyosSettings {
@@ -318,6 +330,23 @@ mod tests {
         assert_eq!(value["raft"]["election_timeout_max_ms"], 2500);
         assert_eq!(value["raft"]["heartbeat_interval_ms"], 250);
         assert_eq!(value["raft"]["install_snapshot_timeout_ms"], 5000);
+    }
+
+    #[test]
+    fn test_klog_buckyos_settings_can_carry_write_policy() {
+        let settings = KLogBuckyosSettings {
+            write: Some(KLogWriteSettings {
+                quorum_ack_max_age_ms: Some(3000),
+                quorum_ack_wait_ms: Some(800),
+                quorum_ack_poll_ms: Some(100),
+            }),
+            ..Default::default()
+        };
+
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["write"]["quorum_ack_max_age_ms"], 3000);
+        assert_eq!(value["write"]["quorum_ack_wait_ms"], 800);
+        assert_eq!(value["write"]["quorum_ack_poll_ms"], 100);
     }
 
     #[test]

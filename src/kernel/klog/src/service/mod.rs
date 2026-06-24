@@ -30,10 +30,27 @@ pub const META_QUERY_MAX_LIMIT: usize = 2_000;
 pub const META_CHANGES_MAX_WAIT_MS: u64 = 2_000;
 pub const META_CHANGES_POLL_INTERVAL_MS: u64 = 100;
 pub const META_RW_MAX_FORWARD_HOPS: u32 = 2;
-const WRITE_QUORUM_ACK_MAX_AGE_MS: u64 = 1_000;
-const WRITE_QUORUM_ACK_WAIT_MS: u64 = 300;
-const WRITE_QUORUM_ACK_POLL_MS: u64 = 50;
+const DEFAULT_WRITE_QUORUM_ACK_MAX_AGE_MS: u64 = 1_000;
+const DEFAULT_WRITE_QUORUM_ACK_WAIT_MS: u64 = 300;
+const DEFAULT_WRITE_QUORUM_ACK_POLL_MS: u64 = 50;
 pub type KServiceResult<T> = Result<T, KLogServiceError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KLogWriteQuorumPolicy {
+    pub max_age_ms: u64,
+    pub wait_ms: u64,
+    pub poll_ms: u64,
+}
+
+impl Default for KLogWriteQuorumPolicy {
+    fn default() -> Self {
+        Self {
+            max_age_ms: DEFAULT_WRITE_QUORUM_ACK_MAX_AGE_MS,
+            wait_ms: DEFAULT_WRITE_QUORUM_ACK_WAIT_MS,
+            poll_ms: DEFAULT_WRITE_QUORUM_ACK_POLL_MS,
+        }
+    }
+}
 
 fn with_forward_error_context(
     mut forward_err: KLogServiceError,
@@ -76,6 +93,7 @@ pub struct KLogWriteService {
     raft: KRaftRef,
     state_store_manager: KLogStateStoreManagerRef,
     data_client: KDataClient,
+    write_quorum_policy: KLogWriteQuorumPolicy,
 }
 
 impl KLogWriteService {
@@ -89,6 +107,7 @@ impl KLogWriteService {
             raft,
             state_store_manager,
             data_client: KDataClient::new(),
+            write_quorum_policy: KLogWriteQuorumPolicy::default(),
         }
     }
 
@@ -102,13 +121,19 @@ impl KLogWriteService {
         self
     }
 
+    pub fn with_write_quorum_policy(mut self, policy: KLogWriteQuorumPolicy) -> Self {
+        self.write_quorum_policy = policy;
+        self
+    }
+
     async fn ensure_fresh_quorum_for_local_leader(
         &self,
         operation: &str,
         context: &str,
         trace_id: &str,
     ) -> KServiceResult<()> {
-        let deadline = Instant::now() + Duration::from_millis(WRITE_QUORUM_ACK_WAIT_MS);
+        let policy = self.write_quorum_policy;
+        let deadline = Instant::now() + Duration::from_millis(policy.wait_ms);
         loop {
             let metrics = self.raft.metrics().borrow().clone();
             if !metrics.state.is_leader() {
@@ -121,7 +146,7 @@ impl KLogWriteService {
             }
 
             if let Some(age_ms) = metrics.millis_since_quorum_ack
-                && age_ms <= WRITE_QUORUM_ACK_MAX_AGE_MS
+                && age_ms <= policy.max_age_ms
             {
                 return Ok(());
             }
@@ -136,7 +161,7 @@ impl KLogWriteService {
                     metrics.current_leader,
                     voter_count,
                     metrics.millis_since_quorum_ack,
-                    WRITE_QUORUM_ACK_MAX_AGE_MS
+                    policy.max_age_ms
                 );
                 warn!("{}", msg);
                 return Err(self.service_error(
@@ -147,7 +172,7 @@ impl KLogWriteService {
                 ));
             }
 
-            sleep(Duration::from_millis(WRITE_QUORUM_ACK_POLL_MS)).await;
+            sleep(Duration::from_millis(policy.poll_ms)).await;
         }
     }
 

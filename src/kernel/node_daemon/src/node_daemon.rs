@@ -73,6 +73,9 @@ const KLOG_RAFT_ELECTION_TIMEOUT_MIN_MS: &str = "KLOG_RAFT_ELECTION_TIMEOUT_MIN_
 const KLOG_RAFT_ELECTION_TIMEOUT_MAX_MS: &str = "KLOG_RAFT_ELECTION_TIMEOUT_MAX_MS";
 const KLOG_RAFT_HEARTBEAT_INTERVAL_MS: &str = "KLOG_RAFT_HEARTBEAT_INTERVAL_MS";
 const KLOG_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS: &str = "KLOG_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS";
+const KLOG_WRITE_QUORUM_ACK_MAX_AGE_MS: &str = "KLOG_WRITE_QUORUM_ACK_MAX_AGE_MS";
+const KLOG_WRITE_QUORUM_ACK_WAIT_MS: &str = "KLOG_WRITE_QUORUM_ACK_WAIT_MS";
+const KLOG_WRITE_QUORUM_ACK_POLL_MS: &str = "KLOG_WRITE_QUORUM_ACK_POLL_MS";
 const ENV_DEV_BOOT_LAN_ROUTE_KIND: &str = "BUCKYOS_DEV_BOOT_LAN_ROUTE_KIND";
 const DEV_BOOT_LAN_ROUTE_TCP_DIRECT: &str = "tcp_direct";
 const ENV_DEV_KLOG_ADVERTISE_ADDR: &str = "BUCKYOS_DEV_KLOG_ADVERTISE_ADDR";
@@ -1025,22 +1028,54 @@ fn insert_klog_raft_settings_env(
     }
 }
 
+fn insert_klog_write_settings_env(
+    env_vars: &mut HashMap<String, String>,
+    settings: Option<&KLogBuckyosSettings>,
+) {
+    let Some(write) = settings.and_then(|settings| settings.write.as_ref()) else {
+        return;
+    };
+
+    if let Some(value) = write.quorum_ack_max_age_ms {
+        env_vars.insert(
+            KLOG_WRITE_QUORUM_ACK_MAX_AGE_MS.to_string(),
+            value.to_string(),
+        );
+    }
+    if let Some(value) = write.quorum_ack_wait_ms {
+        env_vars.insert(KLOG_WRITE_QUORUM_ACK_WAIT_MS.to_string(), value.to_string());
+    }
+    if let Some(value) = write.quorum_ack_poll_ms {
+        env_vars.insert(KLOG_WRITE_QUORUM_ACK_POLL_MS.to_string(), value.to_string());
+    }
+}
+
 async fn load_klog_buckyos_settings(
     system_config_client: &SystemConfigClient,
 ) -> KLogBuckyosSettings {
     match system_config_client.get(KLOG_SERVICE_SETTINGS_KEY).await {
-        Ok(value) => {
-            parse_klog_buckyos_settings(&value.value, KLOG_SERVICE_SETTINGS_KEY).unwrap_or_default()
+        Ok(value) => parse_klog_buckyos_settings(&value.value, KLOG_SERVICE_SETTINGS_KEY)
+            .unwrap_or_else(|| fallback_klog_buckyos_settings_from_boot_template("parse failed")),
+        Err(SystemConfigError::KeyNotFound(_)) => {
+            fallback_klog_buckyos_settings_from_boot_template("settings key not found")
         }
-        Err(SystemConfigError::KeyNotFound(_)) => KLogBuckyosSettings::default(),
         Err(err) => {
             warn!(
                 "load {} failed while preparing klog env: {}",
                 KLOG_SERVICE_SETTINGS_KEY, err
             );
-            KLogBuckyosSettings::default()
+            fallback_klog_buckyos_settings_from_boot_template("system-config unavailable")
         }
     }
+}
+
+fn fallback_klog_buckyos_settings_from_boot_template(reason: &str) -> KLogBuckyosSettings {
+    let settings = load_klog_buckyos_settings_from_boot_template();
+    info!(
+        "use boot template klog settings while preparing klog env: reason={}",
+        reason
+    );
+    settings
 }
 
 fn parse_klog_buckyos_settings(raw: &str, source: &str) -> Option<KLogBuckyosSettings> {
@@ -1179,6 +1214,7 @@ fn build_klog_service_env(
         env_vars.insert("KLOG_JOIN_TARGETS".to_string(), join_targets.join(","));
     }
     insert_klog_raft_settings_env(&mut env_vars, klog_settings);
+    insert_klog_write_settings_env(&mut env_vars, klog_settings);
 
     Ok(env_vars)
 }
@@ -2692,6 +2728,11 @@ mod tests {
                     "election_timeout_max_ms": 2500,
                     "heartbeat_interval_ms": 250,
                     "install_snapshot_timeout_ms": 5000
+                },
+                "write": {
+                    "quorum_ack_max_age_ms": 3000,
+                    "quorum_ack_wait_ms": 800,
+                    "quorum_ack_poll_ms": 100
                 }
             }"#,
             KLOG_SERVICE_SETTINGS_KEY,
@@ -2703,6 +2744,11 @@ mod tests {
         assert_eq!(raft.election_timeout_max_ms, Some(2500));
         assert_eq!(raft.heartbeat_interval_ms, Some(250));
         assert_eq!(raft.install_snapshot_timeout_ms, Some(5000));
+
+        let write = settings.write.unwrap();
+        assert_eq!(write.quorum_ack_max_age_ms, Some(3000));
+        assert_eq!(write.quorum_ack_wait_ms, Some(800));
+        assert_eq!(write.quorum_ack_poll_ms, Some(100));
     }
 
     #[test]
@@ -2714,6 +2760,11 @@ mod tests {
                 election_timeout_max_ms: Some(2500),
                 heartbeat_interval_ms: Some(250),
                 install_snapshot_timeout_ms: Some(5000),
+            }),
+            write: Some(KLogWriteSettings {
+                quorum_ack_max_age_ms: Some(3000),
+                quorum_ack_wait_ms: Some(800),
+                quorum_ack_poll_ms: Some(100),
             }),
             ..Default::default()
         };
@@ -2744,6 +2795,19 @@ mod tests {
             env.get(KLOG_RAFT_INSTALL_SNAPSHOT_TIMEOUT_MS)
                 .map(String::as_str),
             Some("5000")
+        );
+        assert_eq!(
+            env.get(KLOG_WRITE_QUORUM_ACK_MAX_AGE_MS)
+                .map(String::as_str),
+            Some("3000")
+        );
+        assert_eq!(
+            env.get(KLOG_WRITE_QUORUM_ACK_WAIT_MS).map(String::as_str),
+            Some("800")
+        );
+        assert_eq!(
+            env.get(KLOG_WRITE_QUORUM_ACK_POLL_MS).map(String::as_str),
+            Some("100")
         );
     }
 

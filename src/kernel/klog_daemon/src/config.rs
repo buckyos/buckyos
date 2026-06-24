@@ -35,12 +35,13 @@ use crate::constants::{
     ENV_RPC_APPEND_BODY_LIMIT_BYTES, ENV_RPC_APPEND_CONCURRENCY, ENV_RPC_APPEND_TIMEOUT_MS,
     ENV_RPC_JSONRPC_BODY_LIMIT_BYTES, ENV_RPC_JSONRPC_CONCURRENCY, ENV_RPC_JSONRPC_TIMEOUT_MS,
     ENV_RPC_LISTEN_ADDR, ENV_RPC_QUERY_BODY_LIMIT_BYTES, ENV_RPC_QUERY_CONCURRENCY,
-    ENV_RPC_QUERY_TIMEOUT_MS, ENV_STATE_STORE_SYNC_WRITE, KLOG_SERVICE_NAME,
+    ENV_RPC_QUERY_TIMEOUT_MS, ENV_STATE_STORE_SYNC_WRITE, ENV_WRITE_QUORUM_ACK_MAX_AGE_MS,
+    ENV_WRITE_QUORUM_ACK_POLL_MS, ENV_WRITE_QUORUM_ACK_WAIT_MS, KLOG_SERVICE_NAME,
 };
 use buckyos_api::KLogDeploymentSettings;
 use buckyos_kit::get_buckyos_service_data_dir;
 use klog::rpc::{KRpcRoutePolicy, KRpcServerPolicy};
-use klog::{KClusterTransportConfig, KClusterTransportMode, KNodeId};
+use klog::{KClusterTransportConfig, KClusterTransportMode, KLogWriteQuorumPolicy, KNodeId};
 use log::error;
 use openraft::{Config as OpenRaftConfig, SnapshotPolicy};
 use serde::{Deserialize, Serialize};
@@ -176,6 +177,39 @@ impl From<KLogRpcConfig> for KRpcServerPolicy {
             append: value.append.into(),
             query: value.query.into(),
             jsonrpc: value.jsonrpc.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KLogWriteConfig {
+    /// Max accepted age of the last quorum ack before local-leader writes.
+    pub quorum_ack_max_age_ms: u64,
+
+    /// Time to wait for a fresh quorum ack before rejecting local-leader writes.
+    pub quorum_ack_wait_ms: u64,
+
+    /// Poll interval while waiting for a fresh quorum ack.
+    pub quorum_ack_poll_ms: u64,
+}
+
+impl Default for KLogWriteConfig {
+    fn default() -> Self {
+        let policy = KLogWriteQuorumPolicy::default();
+        Self {
+            quorum_ack_max_age_ms: policy.max_age_ms,
+            quorum_ack_wait_ms: policy.wait_ms,
+            quorum_ack_poll_ms: policy.poll_ms,
+        }
+    }
+}
+
+impl From<KLogWriteConfig> for KLogWriteQuorumPolicy {
+    fn from(value: KLogWriteConfig) -> Self {
+        Self {
+            max_age_ms: value.quorum_ack_max_age_ms,
+            wait_ms: value.quorum_ack_wait_ms,
+            poll_ms: value.quorum_ack_poll_ms,
         }
     }
 }
@@ -444,6 +478,9 @@ pub struct KLogRuntimeConfig {
     /// Route-level RPC policies for append/query/jsonrpc.
     pub rpc: KLogRpcConfig,
 
+    /// Local-leader write admission policy.
+    pub write: KLogWriteConfig,
+
     /// Automatic MVCC metadata compaction policy.
     pub meta_compaction: KLogMetaCompactionConfig,
 }
@@ -640,6 +677,19 @@ pub struct KLogRpcConfigPatch {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct KLogWriteConfigPatch {
+    /// Optional max accepted age of the last quorum ack before local-leader writes.
+    pub quorum_ack_max_age_ms: Option<u64>,
+
+    /// Optional time to wait for a fresh quorum ack before rejecting local-leader writes.
+    pub quorum_ack_wait_ms: Option<u64>,
+
+    /// Optional poll interval while waiting for a fresh quorum ack.
+    pub quorum_ack_poll_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KLogMetaCompactionConfigPatch {
     /// Optional switch for automatic MVCC metadata compaction.
     pub enabled: Option<bool>,
@@ -686,6 +736,9 @@ pub struct KLogRuntimeConfigPatch {
 
     /// Optional grouped rpc policy section.
     pub rpc: Option<KLogRpcConfigPatch>,
+
+    /// Optional grouped local-leader write admission policy.
+    pub write: Option<KLogWriteConfigPatch>,
 
     /// Optional grouped automatic MVCC metadata compaction section.
     pub meta_compaction: Option<KLogMetaCompactionConfigPatch>,
@@ -805,6 +858,11 @@ impl KLogRuntimeConfig {
                     concurrency: parse_env_usize(ENV_RPC_JSONRPC_CONCURRENCY)?,
                 }),
             }),
+            write: Some(KLogWriteConfigPatch {
+                quorum_ack_max_age_ms: parse_env_u64(ENV_WRITE_QUORUM_ACK_MAX_AGE_MS)?,
+                quorum_ack_wait_ms: parse_env_u64(ENV_WRITE_QUORUM_ACK_WAIT_MS)?,
+                quorum_ack_poll_ms: parse_env_u64(ENV_WRITE_QUORUM_ACK_POLL_MS)?,
+            }),
             meta_compaction: Some(KLogMetaCompactionConfigPatch {
                 enabled: parse_env_bool(ENV_META_COMPACTION_ENABLED)?,
                 policy: parse_env_meta_compaction_policy(ENV_META_COMPACTION_POLICY)?,
@@ -863,6 +921,7 @@ impl KLogRuntimeConfig {
             cluster_network,
             admin,
             rpc,
+            write,
             meta_compaction,
             node_id,
         } = patch;
@@ -875,6 +934,7 @@ impl KLogRuntimeConfig {
         let cluster_network = cluster_network.unwrap_or_default();
         let admin = admin.unwrap_or_default();
         let rpc = rpc.unwrap_or_default();
+        let write = write.unwrap_or_default();
         let meta_compaction = meta_compaction.unwrap_or_default();
 
         let node_id = match node_id {
@@ -927,6 +987,7 @@ impl KLogRuntimeConfig {
         let join_retry_cfg = merge_join_retry_config(join.retry.unwrap_or_default())?;
         let raft_cfg = merge_raft_config(raft)?;
         let cluster_network_cfg = merge_cluster_network_config(cluster_network)?;
+        let write_cfg = merge_write_config(write)?;
         let meta_compaction_cfg = merge_meta_compaction_config(meta_compaction)?;
         let listen_addr = network.listen_addr.unwrap_or_else(default_listen_addr);
         let inter_node_listen_addr = network
@@ -1039,6 +1100,7 @@ impl KLogRuntimeConfig {
             cluster_network: cluster_network_cfg,
             admin_local_only: admin.local_only.unwrap_or(DEFAULT_ADMIN_LOCAL_ONLY),
             rpc: rpc_cfg,
+            write: write_cfg,
             meta_compaction: meta_compaction_cfg,
         })
     }
@@ -1073,6 +1135,39 @@ fn merge_rpc_config(patch: KLogRpcConfigPatch) -> Result<KLogRpcConfig, String> 
         query,
         jsonrpc,
     })
+}
+
+fn merge_write_config(patch: KLogWriteConfigPatch) -> Result<KLogWriteConfig, String> {
+    let default = KLogWriteConfig::default();
+    let cfg = KLogWriteConfig {
+        quorum_ack_max_age_ms: patch
+            .quorum_ack_max_age_ms
+            .unwrap_or(default.quorum_ack_max_age_ms),
+        quorum_ack_wait_ms: patch
+            .quorum_ack_wait_ms
+            .unwrap_or(default.quorum_ack_wait_ms),
+        quorum_ack_poll_ms: patch
+            .quorum_ack_poll_ms
+            .unwrap_or(default.quorum_ack_poll_ms),
+    };
+
+    if cfg.quorum_ack_max_age_ms == 0 {
+        let msg = "Invalid write.quorum_ack_max_age_ms=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.quorum_ack_wait_ms == 0 {
+        let msg = "Invalid write.quorum_ack_wait_ms=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if cfg.quorum_ack_poll_ms == 0 {
+        let msg = "Invalid write.quorum_ack_poll_ms=0: must be greater than 0".to_string();
+        error!("{}", msg);
+        return Err(msg);
+    }
+
+    Ok(cfg)
 }
 
 fn merge_meta_compaction_config(
@@ -1639,6 +1734,11 @@ timeout_ms = 3300
 body_limit_bytes = 1048576
 concurrency = 128
 
+[write]
+quorum_ack_max_age_ms = 3000
+quorum_ack_wait_ms = 800
+quorum_ack_poll_ms = 100
+
 [meta_compaction]
 enabled = true
 policy = "revision_count"
@@ -1700,6 +1800,9 @@ min_compact_gap = 256
         assert_eq!(cfg.rpc.jsonrpc.timeout_ms, 3300);
         assert_eq!(cfg.rpc.jsonrpc.body_limit_bytes, 1048576);
         assert_eq!(cfg.rpc.jsonrpc.concurrency, 128);
+        assert_eq!(cfg.write.quorum_ack_max_age_ms, 3000);
+        assert_eq!(cfg.write.quorum_ack_wait_ms, 800);
+        assert_eq!(cfg.write.quorum_ack_poll_ms, 100);
         assert!(cfg.meta_compaction.enabled);
         assert_eq!(
             cfg.meta_compaction.policy,
@@ -2078,6 +2181,11 @@ id = "cluster_admin_conflict_id"
             admin: Some(KLogAdminConfigPatch {
                 local_only: Some(false),
             }),
+            write: Some(KLogWriteConfigPatch {
+                quorum_ack_max_age_ms: Some(2500),
+                quorum_ack_wait_ms: Some(700),
+                quorum_ack_poll_ms: Some(100),
+            }),
             meta_compaction: Some(KLogMetaCompactionConfigPatch {
                 enabled: Some(true),
                 policy: Some(KLogMetaCompactionPolicy::RevisionCount),
@@ -2136,6 +2244,9 @@ id = "cluster_admin_conflict_id"
         assert_eq!(cfg.rpc.append.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
         assert_eq!(cfg.rpc.query.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
         assert_eq!(cfg.rpc.jsonrpc.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+        assert_eq!(cfg.write.quorum_ack_max_age_ms, 2500);
+        assert_eq!(cfg.write.quorum_ack_wait_ms, 700);
+        assert_eq!(cfg.write.quorum_ack_poll_ms, 100);
         assert!(cfg.meta_compaction.enabled);
         assert_eq!(cfg.meta_compaction.retention_revisions, 2048);
         assert_eq!(cfg.meta_compaction.check_interval_ms, 12000);
@@ -2190,6 +2301,28 @@ retention_revisions = 0
         let err = KLogRuntimeConfig::from_file(&file)
             .expect_err("meta_compaction.retention_revisions=0 must fail");
         assert!(err.contains("meta_compaction.retention_revisions=0"));
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn test_from_file_write_invalid_zero_rejected() {
+        let file = unique_test_file("write_invalid_zero");
+        let content = r#"
+node_id = 7
+
+[cluster]
+name = "cluster_write_invalid"
+id = "cluster_write_invalid_id"
+
+[write]
+quorum_ack_max_age_ms = 0
+"#;
+        std::fs::write(&file, content).expect("write file");
+
+        let err = KLogRuntimeConfig::from_file(&file)
+            .expect_err("write.quorum_ack_max_age_ms=0 must fail");
+        assert!(err.contains("write.quorum_ack_max_age_ms=0"));
 
         let _ = std::fs::remove_file(&file);
     }

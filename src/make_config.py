@@ -75,10 +75,15 @@ KLOG_3OOD_BUCKYOS_SETTINGS = {
         "mode": "ood_voters",
     },
     "raft": {
-        "election_timeout_min_ms": 1000,
-        "election_timeout_max_ms": 2500,
-        "heartbeat_interval_ms": 250,
-        "install_snapshot_timeout_ms": 5000,
+        "election_timeout_min_ms": 4000,
+        "election_timeout_max_ms": 8000,
+        "heartbeat_interval_ms": 1000,
+        "install_snapshot_timeout_ms": 10000,
+    },
+    "write": {
+        "quorum_ack_max_age_ms": 3000,
+        "quorum_ack_wait_ms": 800,
+        "quorum_ack_poll_ms": 100,
     },
 }
 

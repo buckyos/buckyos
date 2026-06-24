@@ -131,6 +131,15 @@ pub const ENV_RPC_JSONRPC_BODY_LIMIT_BYTES: &str = "KLOG_RPC_JSONRPC_BODY_LIMIT_
 /// Environment variable key: json-rpc concurrency limit.
 pub const ENV_RPC_JSONRPC_CONCURRENCY: &str = "KLOG_RPC_JSONRPC_CONCURRENCY";
 
+/// Environment variable key: max accepted age of the last quorum ack before local-leader writes.
+pub const ENV_WRITE_QUORUM_ACK_MAX_AGE_MS: &str = "KLOG_WRITE_QUORUM_ACK_MAX_AGE_MS";
+
+/// Environment variable key: time to wait for a fresh quorum ack before rejecting local-leader writes.
+pub const ENV_WRITE_QUORUM_ACK_WAIT_MS: &str = "KLOG_WRITE_QUORUM_ACK_WAIT_MS";
+
+/// Environment variable key: poll interval while waiting for a fresh quorum ack.
+pub const ENV_WRITE_QUORUM_ACK_POLL_MS: &str = "KLOG_WRITE_QUORUM_ACK_POLL_MS";
+
 /// Environment variable key: raft election timeout lower bound in milliseconds.
 pub const ENV_RAFT_ELECTION_TIMEOUT_MIN_MS: &str = "KLOG_RAFT_ELECTION_TIMEOUT_MIN_MS";
 
