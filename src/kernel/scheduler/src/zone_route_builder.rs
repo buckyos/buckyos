@@ -143,6 +143,7 @@ pub(crate) struct NodeGatewayRouteCandidate {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DidIpHintSource {
     SignedDeviceDoc,
+    DirectProbe,
     LanEndpoint,
     GlobalIpv6,
 }
@@ -589,6 +590,7 @@ fn did_ip_hints_for_target(
     target_device: &DeviceInfo,
     target_obs: Option<&NetworkObservation>,
     target_port: u32,
+    direct_probe: Option<&ProbeInfo>,
 ) -> Vec<DidIpHint> {
     let mut hints: Vec<DidIpHint> = Vec::new();
     let mut push_unique = |hint: DidIpHint, hints: &mut Vec<DidIpHint>| {
@@ -617,6 +619,25 @@ fn did_ip_hints_for_target(
         }
     }
 
+    // A fresh source->target direct probe is stronger than the target's raw interface list.
+    // It filters docker/bridge/private addresses that exist on the target but are not
+    // reachable from this source node, without launching any extra probe round.
+    if hints.is_empty() {
+        if let Some(probe) = direct_probe.and_then(probe_direct_ip) {
+            push_unique(
+                DidIpHint {
+                    ip: probe.ip,
+                    port: Some(target_port),
+                    source: DidIpHintSource::DirectProbe,
+                    confidence: "high".to_string(),
+                    last_observed_at: probe.last_success.or(probe.last_probe),
+                    freshness_ttl_secs: probe.freshness_ttl_secs,
+                },
+                &mut hints,
+            );
+        }
+    }
+
     if let Some(obs) = target_obs {
         let v6_state = obs.ipv6.as_ref().and_then(|i| i.state.as_deref());
         for endpoint in obs.endpoints.iter() {
@@ -631,17 +652,25 @@ fn did_ip_hints_for_target(
             };
 
             match scope {
-                "lan" => push_unique(
-                    DidIpHint {
-                        ip,
-                        port: Some(target_port),
-                        source: DidIpHintSource::LanEndpoint,
-                        confidence: "medium".to_string(),
-                        last_observed_at: endpoint.observed_at.or(obs.observed_at),
-                        freshness_ttl_secs: None,
-                    },
-                    &mut hints,
-                ),
+                "lan" => {
+                    if hints
+                        .iter()
+                        .any(|hint| hint.source == DidIpHintSource::DirectProbe)
+                    {
+                        continue;
+                    }
+                    push_unique(
+                        DidIpHint {
+                            ip,
+                            port: Some(target_port),
+                            source: DidIpHintSource::LanEndpoint,
+                            confidence: "medium".to_string(),
+                            last_observed_at: endpoint.observed_at.or(obs.observed_at),
+                            freshness_ttl_secs: None,
+                        },
+                        &mut hints,
+                    );
+                }
                 "global" if endpoint.family.as_deref() == Some("ipv6") => {
                     if v6_state == Some("unavailable") {
                         continue;
@@ -678,6 +707,28 @@ fn did_ip_hints_for_target(
     }
 
     hints
+}
+
+struct DirectProbeHint {
+    ip: IpAddr,
+    last_probe: Option<u64>,
+    last_success: Option<u64>,
+    freshness_ttl_secs: Option<u64>,
+}
+
+fn probe_direct_ip(probe: &ProbeInfo) -> Option<DirectProbeHint> {
+    let raw_url = probe.url.as_deref()?;
+    let parsed = url::Url::parse(raw_url).ok()?;
+    if parsed.scheme() != "rtcp" {
+        return None;
+    }
+    let ip = parsed.host_str()?.parse::<IpAddr>().ok()?;
+    Some(DirectProbeHint {
+        ip,
+        last_probe: probe.last_probe,
+        last_success: probe.last_success,
+        freshness_ttl_secs: probe.freshness_ttl_secs,
+    })
 }
 
 pub(crate) fn build_forward_plan(
@@ -828,7 +879,10 @@ fn build_forward_plan_inner(
             plan.routes.insert(target_node_id.clone(), candidates);
         }
 
-        let hints = did_ip_hints_for_target(target_device, target_obs, target_port);
+        let source_direct_probe =
+            direct_probe_to(&probe_targets, this_node_id, target_node_id.as_str());
+        let hints =
+            did_ip_hints_for_target(target_device, target_obs, target_port, source_direct_probe);
         if !hints.is_empty() {
             let did_host = device_rtcp_host(target_device, target_node_id, zone_host);
             plan.did_ip_hints.insert(did_host, hints);
@@ -1384,6 +1438,77 @@ mod tests {
     }
 
     #[test]
+    fn test_build_forward_plan_prefers_direct_probe_hint_over_raw_lan_endpoints() {
+        let zone_config = create_test_zone_config();
+        let zone_host = zone_config.id.to_host_name();
+        let mut device_ood1 = create_test_device_info_with_net_id("ood1", Some("lan1"));
+        let mut device_ood2 = create_test_device_info_with_net_id("ood2", Some("lan1"));
+
+        device_ood1.device_doc.extra_info.insert(
+            "network_observation".to_string(),
+            json!({
+                "observed_at": 1710000030_u64,
+                "direct_probe": [
+                    {
+                        "target_node": "ood2",
+                        "kind": "rtcp_direct",
+                        "url": "rtcp://10.178.80.14/",
+                        "status": "reachable",
+                        "rtt_ms": 12_u64,
+                        "last_probe": 1710000030_u64,
+                        "last_success": 1710000030_u64,
+                        "freshness_ttl_secs": 600_u64,
+                        "source": "node_daemon"
+                    }
+                ]
+            }),
+        );
+        device_ood2.device_doc.extra_info.insert(
+            "network_observation".to_string(),
+            json!({
+                "observed_at": 1710000030_u64,
+                "endpoints": [
+                    {
+                        "ip": "172.17.0.1",
+                        "family": "ipv4",
+                        "scope": "lan",
+                        "source": "system_interface",
+                        "observed_at": 1710000030_u64
+                    },
+                    {
+                        "ip": "10.178.80.14",
+                        "family": "ipv4",
+                        "scope": "lan",
+                        "source": "system_interface",
+                        "observed_at": 1710000030_u64
+                    }
+                ]
+            }),
+        );
+
+        let device_list = HashMap::from([
+            ("ood1".to_string(), device_ood1),
+            ("ood2".to_string(), device_ood2),
+        ]);
+
+        let plan = build_forward_plan("ood1", &zone_config, &zone_host, &device_list);
+        let target_did = expected_rtcp_host(device_list.get("ood2").unwrap());
+        let hints = plan.did_ip_hints.get(&target_did).unwrap();
+
+        assert!(hints
+            .iter()
+            .any(|h| h.source == DidIpHintSource::DirectProbe
+                && h.ip == "10.178.80.14".parse::<IpAddr>().unwrap()
+                && h.confidence == "high"));
+        assert!(!hints
+            .iter()
+            .any(|h| h.ip == "172.17.0.1".parse::<IpAddr>().unwrap()));
+        assert!(!hints
+            .iter()
+            .any(|h| h.source == DidIpHintSource::LanEndpoint));
+    }
+
+    #[test]
     fn test_build_forward_plan_emits_ipv6_direct_for_dual_lan_with_global_v6() {
         // 双 LAN（lan1 / lan2）—— same_trusted_lan 不成立，没有共同 OOD，没有 wan target；
         // 但双方都有 IPv6，target 上报 global v6 endpoint：仍可生成 direct candidate（DID URL）
@@ -1510,7 +1635,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let hints = did_ip_hints_for_target(&device, Some(&obs), DEFAULT_RTCP_PORT);
+        let hints = did_ip_hints_for_target(&device, Some(&obs), DEFAULT_RTCP_PORT, None);
         assert!(hints
             .iter()
             .all(|h| h.source == DidIpHintSource::SignedDeviceDoc));

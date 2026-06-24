@@ -2273,19 +2273,21 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         HashMap::new()
     };
 
-    // 把发现到的设备文档塞进 DID cache，让后续 RTCP / name-client 解析能直接拿到 endpoint。
+    // DID cache only stores the owner/device-signed document returned by finder. The LAN
+    // endpoint observed from the UDP response stays in Finder cache and boot did_ip_hints,
+    // because it is a local observation rather than part of the signed DeviceDocument.
     for node in discovered_oods.values() {
         let device_did = node.device_doc.id.clone();
         let device_doc_enc = EncodedDocument::Jwt(node.device_doc_jwt.clone());
         if let Err(err) = update_did_cache(device_did.clone(), None, device_doc_enc).await {
             warn!(
-                "update did cache for discovered device failed, did={:?}, err={}",
-                device_did, err
+                "update did cache for discovered device failed, did={:?}, observed_addr={}, from_cache={}, err={}",
+                device_did, node.addr, node.from_cache, err
             );
         } else {
             info!(
-                "update did cache for discovered device, did={:?}, ips={:?}",
-                device_did, node.device_doc.ips
+                "update did cache for discovered device, did={:?}, doc_ips={:?}, observed_addr={}, from_cache={}",
+                device_did, node.device_doc.ips, node.addr, node.from_cache
             );
         }
     }
