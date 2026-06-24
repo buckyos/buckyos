@@ -46,9 +46,15 @@ async fn service_register_publish_pull_and_invalid_inputs() {
     assert_eq!(event.eventid, "/system/node/online");
     assert_eq!(event.source_node, "node_a");
 
-    assert!(service.pull_event("missing", Some(0)).await.unwrap().is_none());
+    assert!(service
+        .pull_event("missing", Some(0))
+        .await
+        .unwrap()
+        .is_none());
     assert!(matches!(
-        service.register_reader("", vec!["/system/**".to_string()]).await,
+        service
+            .register_reader("", vec!["/system/**".to_string()])
+            .await,
         Err(KEventError::InvalidPattern(_))
     ));
     assert!(matches!(

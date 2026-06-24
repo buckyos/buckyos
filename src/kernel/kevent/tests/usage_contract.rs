@@ -51,14 +51,8 @@ fn msg_center_box_events_match_current_consumers() {
     })
     .collect::<Vec<_>>();
 
-    assert_patterns_match(
-        &control_panel_patterns,
-        "/msg_center/alice/box/in/changed",
-    );
-    assert_patterns_match(
-        &control_panel_patterns,
-        "/msg_center/alice/box/out/changed",
-    );
+    assert_patterns_match(&control_panel_patterns, "/msg_center/alice/box/in/changed");
+    assert_patterns_match(&control_panel_patterns, "/msg_center/alice/box/out/changed");
     assert_patterns_do_not_match(
         &control_panel_patterns,
         "/msg_center/alice/box/group_in/changed",
@@ -113,21 +107,11 @@ async fn dynamic_readers_fanout_unsubscribe_and_rebuild() {
         .await
         .unwrap();
     assert_eq!(
-        reader_a
-            .pull_event(Some(0))
-            .await
-            .unwrap()
-            .unwrap()
-            .data["seq"],
+        reader_a.pull_event(Some(0)).await.unwrap().unwrap().data["seq"],
         json!(1)
     );
     assert_eq!(
-        reader_b
-            .pull_event(Some(0))
-            .await
-            .unwrap()
-            .unwrap()
-            .data["seq"],
+        reader_b.pull_event(Some(0)).await.unwrap().unwrap().data["seq"],
         json!(1)
     );
     assert!(reader_a.pull_event(Some(0)).await.unwrap().is_none());
@@ -142,12 +126,7 @@ async fn dynamic_readers_fanout_unsubscribe_and_rebuild() {
         .await
         .unwrap();
     assert_eq!(
-        reader_a
-            .pull_event(Some(0))
-            .await
-            .unwrap()
-            .unwrap()
-            .data["seq"],
+        reader_a.pull_event(Some(0)).await.unwrap().unwrap().data["seq"],
         json!(2)
     );
     assert!(reader_b.pull_event(Some(0)).await.unwrap().is_none());
@@ -168,12 +147,7 @@ async fn dynamic_readers_fanout_unsubscribe_and_rebuild() {
         .await
         .unwrap();
     assert_eq!(
-        reader_c
-            .pull_event(Some(0))
-            .await
-            .unwrap()
-            .unwrap()
-            .data["seq"],
+        reader_c.pull_event(Some(0)).await.unwrap().unwrap().data["seq"],
         json!(4)
     );
 }

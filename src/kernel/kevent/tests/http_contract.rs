@@ -26,7 +26,9 @@ fn set_unique_ring_path(test_name: &str) -> std::path::PathBuf {
     path
 }
 
-async fn response_json(response: http::Response<BoxBody<Bytes, buckyos_http_server::ServerError>>) -> Value {
+async fn response_json(
+    response: http::Response<BoxBody<Bytes, buckyos_http_server::ServerError>>,
+) -> Value {
     let collected = response.into_body().collect().await.unwrap();
     serde_json::from_slice(&collected.to_bytes()).unwrap()
 }
@@ -80,7 +82,10 @@ async fn native_endpoint_roundtrips_protocol_and_rejects_bad_json() {
     assert_eq!(value["status"], "ok");
     assert_eq!(value["event"]["eventid"], "/system/node/online");
 
-    assert!(server.handle_http_request("/kapi/kevent", b"{bad-json").await.is_err());
+    assert!(server
+        .handle_http_request("/kapi/kevent", b"{bad-json")
+        .await
+        .is_err());
 }
 
 #[tokio::test]

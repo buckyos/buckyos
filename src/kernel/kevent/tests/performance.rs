@@ -79,7 +79,11 @@ async fn service_publish_pull_baseline() {
 
     let start = Instant::now();
     for seq in 0..10_000 {
-        let event = service.pull_event("perf", Some(1000)).await.unwrap().unwrap();
+        let event = service
+            .pull_event("perf", Some(1000))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(event.data["seq"], json!(seq));
     }
     let consume_elapsed = start.elapsed();

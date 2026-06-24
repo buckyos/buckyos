@@ -50,10 +50,18 @@ impl MsgQueueHandler for FakeMsgQueue {
             app_owner: app_owner.to_string(),
             ctx,
         });
-        Ok(calc_queue_urn(appid, app_owner, name.unwrap_or("generated")))
+        Ok(calc_queue_urn(
+            appid,
+            app_owner,
+            name.unwrap_or("generated"),
+        ))
     }
 
-    async fn handle_delete_queue(&self, _queue_urn: &str, _ctx: RPCContext) -> Result<(), RPCErrors> {
+    async fn handle_delete_queue(
+        &self,
+        _queue_urn: &str,
+        _ctx: RPCContext,
+    ) -> Result<(), RPCErrors> {
         Ok(())
     }
 

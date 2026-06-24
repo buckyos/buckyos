@@ -30,7 +30,13 @@ async fn persistence_reopen_preserves_queue_messages_and_cursor()
         ..QueueConfig::default()
     };
     let queue_urn = queue
-        .handle_create_queue(Some("persist"), "app", "owner", config, RPCContext::default())
+        .handle_create_queue(
+            Some("persist"),
+            "app",
+            "owner",
+            config,
+            RPCContext::default(),
+        )
         .await?;
     let first = queue
         .handle_post_message(&queue_urn, make_message("first"), RPCContext::default())
@@ -127,8 +133,7 @@ async fn sync_write_cursor_survives_reopen() -> Result<(), Box<dyn std::error::E
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn max_messages_config_is_currently_not_enforced()
--> Result<(), Box<dyn std::error::Error>> {
+async fn max_messages_config_is_currently_not_enforced() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::TempDir::new()?;
     let queue = SledMsgQueue::new_in_dir(temp.path())?;
     let config = QueueConfig {
@@ -136,7 +141,13 @@ async fn max_messages_config_is_currently_not_enforced()
         ..QueueConfig::default()
     };
     let queue_urn = queue
-        .handle_create_queue(Some("max-messages"), "app", "owner", config, RPCContext::default())
+        .handle_create_queue(
+            Some("max-messages"),
+            "app",
+            "owner",
+            config,
+            RPCContext::default(),
+        )
         .await?;
 
     for seq in 0..3 {
@@ -167,7 +178,13 @@ async fn retention_seconds_config_is_currently_not_enforced()
         ..QueueConfig::default()
     };
     let queue_urn = queue
-        .handle_create_queue(Some("retention"), "app", "owner", config, RPCContext::default())
+        .handle_create_queue(
+            Some("retention"),
+            "app",
+            "owner",
+            config,
+            RPCContext::default(),
+        )
         .await?;
     queue
         .handle_post_message(&queue_urn, old_message("old"), RPCContext::default())
@@ -186,8 +203,8 @@ async fn retention_seconds_config_is_currently_not_enforced()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn permission_config_currently_ignores_rpc_context()
--> Result<(), Box<dyn std::error::Error>> {
+async fn permission_config_currently_ignores_rpc_context() -> Result<(), Box<dyn std::error::Error>>
+{
     let temp = tempfile::TempDir::new()?;
     let queue = SledMsgQueue::new_in_dir(temp.path())?;
     let config = QueueConfig {
@@ -198,7 +215,13 @@ async fn permission_config_currently_ignores_rpc_context()
         ..QueueConfig::default()
     };
     let queue_urn = queue
-        .handle_create_queue(Some("acl"), "owner-app", "owner-user", config, RPCContext::default())
+        .handle_create_queue(
+            Some("acl"),
+            "owner-app",
+            "owner-user",
+            config,
+            RPCContext::default(),
+        )
         .await?;
 
     let other_ctx = RPCContext {
@@ -441,7 +464,10 @@ async fn concurrent_post_10k_baseline() -> Result<(), Box<dyn std::error::Error>
 
     indexes.sort_unstable();
     assert_eq!(indexes.len(), 10_000);
-    assert_eq!(indexes.iter().copied().collect::<HashSet<_>>().len(), 10_000);
+    assert_eq!(
+        indexes.iter().copied().collect::<HashSet<_>>().len(),
+        10_000
+    );
     assert_eq!(indexes.first().copied(), Some(1));
     assert_eq!(indexes.last().copied(), Some(10_000));
 
@@ -462,8 +488,7 @@ async fn sync_write_post_cost_baseline() -> Result<(), Box<dyn std::error::Error
 
     eprintln!(
         "{{\"kmsg_sync_write_false_post_1k_ms\":{},\"kmsg_sync_write_true_post_1k_ms\":{}}}",
-        sync_false_ms,
-        sync_true_ms
+        sync_false_ms, sync_true_ms
     );
 
     Ok(())
@@ -478,7 +503,11 @@ async fn post_1k_with_sync_write(sync_write: bool) -> Result<u128, Box<dyn std::
     };
     let queue_urn = queue
         .handle_create_queue(
-            Some(if sync_write { "sync-true" } else { "sync-false" }),
+            Some(if sync_write {
+                "sync-true"
+            } else {
+                "sync-false"
+            }),
             "app",
             "owner",
             config,
