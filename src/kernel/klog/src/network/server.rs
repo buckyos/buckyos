@@ -4,7 +4,7 @@ use super::request::{
     KLogMetaPutRequest, KLogMetaQueryRequest, KLogQueryRequest, RaftRequest, RaftRequestType,
     RaftResponse,
 };
-use crate::error::{KLogErrorEnvelope, KLogServiceError, generate_trace_id};
+use crate::error::{KLogErrorCode, KLogErrorEnvelope, KLogServiceError, generate_trace_id};
 use crate::service::{KLogQueryService, KLogWriteService};
 use crate::state_store::KLogStateStoreManagerRef;
 use crate::{
@@ -1320,7 +1320,11 @@ impl KNetworkServer {
         let msg = format!("KNetworkServer admin {} failed: {}", action, err);
         if msg.contains(CONFIG_CHANGE_CONFLICT_MARKER) {
             warn!("{}", msg);
-            return Self::error_response(StatusCode::CONFLICT, msg);
+            return Self::typed_error_response(
+                StatusCode::CONFLICT,
+                KLogErrorCode::ConfigChangeInProgress,
+                msg,
+            );
         }
         error!("{}", msg);
         Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
@@ -1345,7 +1349,11 @@ impl KNetworkServer {
                     action
                 );
                 warn!("{}", msg);
-                Err(Self::error_response(StatusCode::CONFLICT, msg))
+                Err(Self::typed_error_response(
+                    StatusCode::CONFLICT,
+                    KLogErrorCode::ConfigChangeInProgress,
+                    msg,
+                ))
             }
         }
     }
@@ -1370,6 +1378,16 @@ impl KNetworkServer {
     fn error_response(status: StatusCode, msg: String) -> Response {
         let trace_id = generate_trace_id();
         let envelope = KLogErrorEnvelope::from_http_status(status.as_u16(), msg, trace_id);
+        (status, Json(envelope)).into_response()
+    }
+
+    fn typed_error_response(
+        status: StatusCode,
+        error_code: KLogErrorCode,
+        msg: String,
+    ) -> Response {
+        let trace_id = generate_trace_id();
+        let envelope = KLogErrorEnvelope::new(error_code, msg, trace_id);
         (status, Json(envelope)).into_response()
     }
 

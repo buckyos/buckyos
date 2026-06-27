@@ -260,6 +260,7 @@ async fn join_and_promote_once(
     ensure_auto_join_allowed_by_local_state(cfg, raft, &state_before, admin_target)?;
 
     if !state_before.learners.contains(&cfg.node_id) {
+        ensure_admin_target_is_leader(cfg, &state_before, admin_target, "add-learner")?;
         let advertised_rpc_port = if cfg.enable_rpc_server {
             cfg.rpc_advertise_port
         } else {
@@ -329,6 +330,7 @@ async fn join_and_promote_once(
             cfg.node_id, state_after_add.voters
         ));
     }
+    ensure_admin_target_is_leader(cfg, &state_after_add, admin_target, "change-membership")?;
 
     let voters_csv = build_promote_voters_csv(&state_after_add.voters, cfg.node_id);
     let mut change_url = build_admin_url(admin_target, &change_membership_path)?;
@@ -604,6 +606,34 @@ fn ensure_cluster_identity_matches(
     Ok(())
 }
 
+fn ensure_admin_target_is_leader(
+    cfg: &KLogRuntimeConfig,
+    state: &KLogClusterStateResponse,
+    admin_target: &str,
+    write_action: &str,
+) -> Result<(), String> {
+    let Some(leader_id) = state.current_leader else {
+        return Err(format!(
+            "auto-join waits for raft leader before {}: admin_target={}, node_id={}, remote_voters={:?}, remote_learners={:?}",
+            write_action, admin_target, cfg.node_id, state.voters, state.learners
+        ));
+    };
+
+    if state.node_id == leader_id {
+        return Ok(());
+    }
+
+    let leader_target = state
+        .nodes
+        .get(&leader_id)
+        .map(|leader_node| admin_target_from_node(cfg, leader_node))
+        .unwrap_or_else(|| "<leader node info unavailable>".to_string());
+    Err(format!(
+        "auto-join skips non-leader admin target before {}: node_id={}, admin_target={}, target_node_id={}, current_leader={}, leader_target={}",
+        write_action, cfg.node_id, admin_target, state.node_id, leader_id, leader_target
+    ))
+}
+
 fn admin_target_from_node(cfg: &KLogRuntimeConfig, node: &KNode) -> String {
     if cfg.cluster_network.mode != KClusterTransportMode::Direct
         && let Some(node_name) = node.node_name.as_deref()
@@ -704,8 +734,8 @@ fn build_admin_url(target: &str, path: &str) -> Result<reqwest::Url, String> {
 mod tests {
     use super::{
         admin_target_from_node, build_admin_url, build_promote_voters_csv, dedup_targets,
-        ensure_cluster_identity_matches, ensure_existing_remote_node_matches_config,
-        should_block_auto_join_from_local_membership,
+        ensure_admin_target_is_leader, ensure_cluster_identity_matches,
+        ensure_existing_remote_node_matches_config, should_block_auto_join_from_local_membership,
     };
     use crate::config::{
         KLogJoinRetryConfig, KLogJoinTargetRole, KLogRaftConfig, KLogRuntimeConfig,
@@ -910,6 +940,71 @@ mod tests {
                 device_id: cfg.advertise_device_id.clone(),
             },
         );
+    }
+
+    fn insert_node(
+        state: &mut KLogClusterStateResponse,
+        id: KNodeId,
+        addr: &str,
+        admin_port: u16,
+        node_name: Option<&str>,
+    ) {
+        state.nodes.insert(
+            id,
+            KNode {
+                id,
+                addr: addr.to_string(),
+                port: 21001,
+                inter_port: 21002,
+                admin_port,
+                rpc_port: 4080,
+                node_name: node_name.map(str::to_string),
+                device_id: None,
+            },
+        );
+    }
+
+    #[test]
+    fn test_ensure_admin_target_is_leader_accepts_current_leader() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.node_id = 1;
+        state.current_leader = Some(1);
+
+        ensure_admin_target_is_leader(&cfg, &state, "127.0.0.1:21003", "add-learner")
+            .expect("leader target should be accepted");
+    }
+
+    #[test]
+    fn test_ensure_admin_target_is_leader_waits_without_leader() {
+        let cfg = sample_cfg("cluster_a", "cluster_a_id");
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.current_leader = None;
+
+        let err = ensure_admin_target_is_leader(&cfg, &state, "127.0.0.1:21003", "add-learner")
+            .expect_err("missing leader should wait");
+        assert!(err.contains("waits for raft leader"));
+    }
+
+    #[test]
+    fn test_ensure_admin_target_is_leader_rejects_non_leader_gateway_target() {
+        let mut cfg = sample_cfg("cluster_a", "cluster_a_id");
+        cfg.cluster_network.mode = KClusterTransportMode::GatewayProxy;
+        cfg.cluster_network.gateway_addr = "127.0.0.1:3180".to_string();
+        cfg.cluster_network.gateway_route_prefix = "/.cluster/klog".to_string();
+        let mut state = sample_state("cluster_a", "cluster_a_id");
+        state.current_leader = Some(1);
+        insert_node(&mut state, 1, "127.0.0.1", 21003, Some("ood1"));
+
+        let err = ensure_admin_target_is_leader(
+            &cfg,
+            &state,
+            "http://127.0.0.1:3180/.cluster/klog/ood2/admin",
+            "add-learner",
+        )
+        .expect_err("non-leader admin target should be skipped");
+        assert!(err.contains("non-leader admin target"));
+        assert!(err.contains("ood1"));
     }
 
     #[test]
