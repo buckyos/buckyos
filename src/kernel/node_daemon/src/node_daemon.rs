@@ -786,6 +786,65 @@ async fn publish_device_info_kevent(device_info: &DeviceInfo) {
     }
 }
 
+fn build_discovered_device_info(
+    node: &DiscoveredNode,
+    existing_info: Option<DeviceInfo>,
+) -> DeviceInfo {
+    let mut device_info =
+        existing_info.unwrap_or_else(|| DeviceInfo::from_device_doc(&node.device_doc));
+    device_info.device_doc = node.device_doc.clone();
+    device_info.update_time = buckyos_get_unix_timestamp();
+
+    let observed_ip = node.addr.ip();
+    if !device_info.all_ip.contains(&observed_ip) {
+        device_info.all_ip.push(observed_ip);
+    }
+
+    device_info
+}
+
+async fn update_discovered_device_did_cache(node: &DiscoveredNode) {
+    let device_did = node.device_doc.id.clone();
+    let device_doc_enc: EncodedDocument = EncodedDocument::Jwt(node.device_doc_jwt.clone());
+    if let Err(err) = update_did_cache(device_did.clone(), None, device_doc_enc).await {
+        warn!(
+            "update did cache for discovered device failed, did={:?}, observed_addr={}, from_cache={}, err={}",
+            device_did, node.addr, node.from_cache, err
+        );
+    } else {
+        info!(
+            "update did cache for discovered device, did={:?}, doc_ips={:?}, observed_addr={}, from_cache={}",
+            device_did, node.device_doc.ips, node.addr, node.from_cache
+        );
+    }
+
+    // Do not resolve the previous info doc here: cache misses can trigger remote providers and
+    // delay boot. Finder's latest LAN observation is enough for early RTCP route resolution.
+    let device_info = build_discovered_device_info(node, None);
+    let info_doc = match serde_json::to_value(&device_info) {
+        Ok(value) => EncodedDocument::JsonLd(value),
+        Err(err) => {
+            warn!(
+                "serialize discovered device info failed, did={:?}, observed_addr={}, err={}",
+                device_did, node.addr, err
+            );
+            return;
+        }
+    };
+
+    if let Err(err) = update_did_cache(device_did.clone(), Some("info"), info_doc).await {
+        warn!(
+            "update did info cache for discovered device failed, did={:?}, observed_addr={}, from_cache={}, err={}",
+            device_did, node.addr, node.from_cache, err
+        );
+    } else {
+        info!(
+            "update did info cache for discovered device, did={:?}, observed_addr={}, all_ip={:?}, from_cache={}",
+            device_did, node.addr, device_info.all_ip, node.from_cache
+        );
+    }
+}
+
 //if register OK then return sn's real URL for this user
 async fn report_ood_info_to_sn(
     device_info: &DeviceInfo,
@@ -2283,23 +2342,11 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         HashMap::new()
     };
 
-    // DID cache only stores the owner/device-signed document returned by finder. The LAN
-    // endpoint observed from the UDP response stays in Finder cache and boot did_ip_hints,
-    // because it is a local observation rather than part of the signed DeviceDocument.
+    // Finder returns the signed DeviceDocument and a locally observed UDP endpoint. Keep the
+    // signed document under the normal DID entry, and publish the endpoint as doc_type=info so
+    // name-client resolve_ips can use DeviceInfo::all_ip during early RTCP boot.
     for node in discovered_oods.values() {
-        let device_did = node.device_doc.id.clone();
-        let device_doc_enc = EncodedDocument::Jwt(node.device_doc_jwt.clone());
-        if let Err(err) = update_did_cache(device_did.clone(), None, device_doc_enc).await {
-            warn!(
-                "update did cache for discovered device failed, did={:?}, observed_addr={}, from_cache={}, err={}",
-                device_did, node.addr, node.from_cache, err
-            );
-        } else {
-            info!(
-                "update did cache for discovered device, did={:?}, doc_ips={:?}, observed_addr={}, from_cache={}",
-                device_did, node.device_doc.ips, node.addr, node.from_cache
-            );
-        }
+        update_discovered_device_did_cache(node).await;
     }
 
     // SN host name 解析（wan 系节点不需要 SN keep_tunnel）。
@@ -2667,6 +2714,35 @@ mod tests {
     #[test]
     fn scheduler_session_token_env_key_matches_runtime_key() {
         assert_eq!(scheduler_session_token_env_key(), "SCHEDULER_SESSION_TOKEN");
+    }
+
+    #[test]
+    fn discovered_device_info_merges_observed_ip_with_existing_info() {
+        let mut device_doc = test_device_doc("ood2", "ood2-device-key");
+        device_doc.ips = vec!["192.0.2.10".parse().unwrap()];
+        let node = DiscoveredNode {
+            node_id: "ood2".to_string(),
+            device_doc: device_doc.clone(),
+            device_doc_jwt: "test_device_doc_jwt".to_string(),
+            addr: "192.168.64.22:2981".parse().unwrap(),
+            rtcp_port: 2981,
+            last_seen: 42,
+            from_cache: false,
+        };
+        let mut existing = DeviceInfo::from_device_doc(&test_device_doc("ood2", "old-key"));
+        existing.all_ip = vec!["192.168.64.21".parse().unwrap()];
+
+        let device_info = build_discovered_device_info(&node, Some(existing));
+
+        assert_eq!(device_info.device_doc.id, device_doc.id);
+        assert_eq!(device_info.device_doc.ips, device_doc.ips);
+        assert_eq!(
+            device_info.all_ip,
+            vec![
+                "192.168.64.21".parse::<std::net::IpAddr>().unwrap(),
+                "192.168.64.22".parse().unwrap(),
+            ]
+        );
     }
 
     #[test]

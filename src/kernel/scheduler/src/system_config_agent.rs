@@ -13,8 +13,7 @@ use crate::app::*;
 use crate::scheduler::*;
 use crate::service::*;
 use crate::zone_route_builder::{
-    build_forward_plan, build_forward_plan_with_dev_tcp_direct, DidIpHint,
-    NodeGatewayRouteCandidate,
+    build_forward_plan, build_forward_plan_with_dev_tcp_direct, NodeGatewayRouteCandidate,
 };
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KLogBuckyosSettings, KernelServiceSpec, NodeConfig,
@@ -769,8 +768,6 @@ struct NodeGatewayInfo {
     #[serde(default)]
     routes: HashMap<String, Vec<NodeGatewayRouteCandidate>>,
     #[serde(default)]
-    did_ip_hints: HashMap<String, Vec<DidIpHint>>,
-    #[serde(default)]
     cluster_route_map: HashMap<String, NodeGatewayClusterRouteEntry>,
     trust_key: HashMap<String, String>,
 }
@@ -1309,7 +1306,6 @@ pub(crate) async fn update_node_gateway_info(
         service_info: HashMap::new(),
         node_route_map: build_node_route_map(node_id, &zone_config, &zone_host, &device_list),
         routes: forward_plan.routes,
-        did_ip_hints: forward_plan.did_ip_hints,
         cluster_route_map,
         trust_key: build_trust_keys(node_id, &zone_config, &device_list),
     };
@@ -2295,7 +2291,6 @@ mod tests {
             service_info,
             node_route_map: build_node_route_map("ood1", zone_config, &zone_host, &device_list),
             routes: forward_plan.routes,
-            did_ip_hints: forward_plan.did_ip_hints,
             cluster_route_map: HashMap::new(),
             trust_key: build_trust_keys("ood1", zone_config, &device_list),
         }

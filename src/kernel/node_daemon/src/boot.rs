@@ -127,7 +127,6 @@ pub async fn discover_oods_in_lan(
 //  - node_route_map 提供 OOD/ZoneGateway 的 boot URL（默认 RTCP，DEV 可为 tcp_direct）
 //  - cluster_route_map.klog-service 提供 klog 集群启动期的 gateway proxy route
 //  - routes 为新格式（per doc 设计）的 direct + via-sn 候选
-//  - did_ip_hints 对齐 scheduler 生成的 gateway_info schema，boot 期写入 finder 发现的 RTCP IP
 //  - app_info / trust_key 留空，等 scheduler 接管
 pub fn build_boot_node_gateway_info(
     this_node_id: &str,
@@ -163,7 +162,6 @@ fn build_boot_node_gateway_info_inner(
 
     let mut node_route_map: HashMap<String, String> = HashMap::new();
     let mut routes: HashMap<String, Vec<Value>> = HashMap::new();
-    let mut did_ip_hints = serde_json::Map::new();
 
     for ood_name in oods_in_zone.iter() {
         let discovered = discovered_oods.get(*ood_name);
@@ -171,20 +169,6 @@ fn build_boot_node_gateway_info_inner(
             .map(|node| node.rtcp_port as u32)
             .unwrap_or(DEFAULT_RTCP_PORT);
         let rtcp_host = discovered_ood_rtcp_host(discovered);
-        if !prefer_tcp_direct {
-            if let (Some(discovered), Some(rtcp_host)) = (discovered, rtcp_host.as_deref()) {
-                did_ip_hints.insert(
-                    rtcp_host.to_string(),
-                    json!([{
-                        "ip": discovered.addr.ip(),
-                        "port": port,
-                        "source": "lan_endpoint",
-                        "confidence": "medium",
-                        "last_observed_at": discovered.last_seen,
-                    }]),
-                );
-            }
-        }
         let direct_route = build_lan_direct_route(
             ood_name,
             zone_host,
@@ -334,7 +318,6 @@ fn build_boot_node_gateway_info_inner(
         "service_info": service_info,
         "node_route_map": node_route_map,
         "routes": routes,
-        "did_ip_hints": Value::Object(did_ip_hints),
         "cluster_route_map": Value::Object(cluster_route_map),
         "trust_key": {},
     })
@@ -744,7 +727,6 @@ pub fn merge_missing_boot_klog_gateway_info(
     merge_missing_object_field(&mut gateway_info, boot_gateway_info, "service_info");
     merge_missing_object_field(&mut gateway_info, boot_gateway_info, "node_route_map");
     merge_missing_object_field(&mut gateway_info, boot_gateway_info, "routes");
-    merge_missing_object_field(&mut gateway_info, boot_gateway_info, "did_ip_hints");
     merge_missing_object_field(&mut gateway_info, boot_gateway_info, "trust_key");
 
     gateway_info
@@ -1029,14 +1011,6 @@ mod tests {
         assert_eq!(direct_route["kind"], "rtcp_direct");
         assert_eq!(direct_route["url"], "rtcp://test_public_key.dev.did:2981/");
         assert_eq!(direct_route["keep_tunnel"], true);
-        assert_eq!(
-            gateway_info["did_ip_hints"]["test_public_key.dev.did"][0]["ip"],
-            "192.168.64.22"
-        );
-        assert_eq!(
-            gateway_info["did_ip_hints"]["test_public_key.dev.did"][0]["port"],
-            2981
-        );
     }
 
     #[test]
