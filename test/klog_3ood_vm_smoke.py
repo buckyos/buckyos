@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -88,8 +89,10 @@ class VmSmoke:
         self.http_timeout = http_timeout
         self.cluster_dir = report_dir / "cluster_state"
         self.rpc_dir = report_dir / "rpc"
+        self.log_dir = report_dir / "logs"
         self.cluster_dir.mkdir(parents=True, exist_ok=True)
         self.rpc_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self, cmd: list[str], timeout: float = 30.0) -> str:
         completed = subprocess.run(
@@ -140,6 +143,10 @@ class VmSmoke:
         path = subdir / f"{safe_name(name)}.json"
         path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
+    def save_text(self, subdir: Path, name: str, value: str) -> None:
+        path = subdir / f"{safe_name(name)}.log"
+        path.write_text(value, encoding="utf-8")
+
     def cluster_state(self, node: Node) -> dict[str, Any]:
         value = self.vm_http(
             node,
@@ -162,6 +169,35 @@ class VmSmoke:
         validate_cluster_state(value, f"{source.vm}->{target.node_name}")
         return value
 
+    def gateway_inter_query(
+        self,
+        source_node: Node,
+        target_node: Node,
+        log_id: int,
+        log_source: str,
+    ) -> dict[str, Any]:
+        query = urlencode(
+            {
+                "start_id": log_id,
+                "end_id": log_id,
+                "limit": 4,
+                "desc": "false",
+                "level": "INFO",
+                "source": log_source,
+                "strong_read": "true",
+            }
+        )
+        value = self.vm_http(
+            source_node,
+            "GET",
+            f"http://127.0.0.1:3180/.cluster/klog/{target_node.node_name}/inter/query?{query}",
+        )
+        if not isinstance(value, dict):
+            raise RuntimeError(
+                f"{source_node.vm}->{target_node.node_name} inter query returned non-object: {value!r}"
+            )
+        return value
+
     def sample_cluster(self, stage: str, save: bool = True) -> dict[str, dict[str, Any]]:
         states: dict[str, dict[str, Any]] = {}
         for node in self.nodes:
@@ -171,6 +207,24 @@ class VmSmoke:
                 self.save_json(self.cluster_dir, f"{stage}_{vm}", state)
         print_cluster_summary(stage, states)
         return states
+
+    def collect_klog_logs(self, stage: str, lines: int) -> None:
+        if lines <= 0:
+            return
+        for node in self.nodes:
+            try:
+                output = self.vm_exec(
+                    node,
+                    [
+                        "sh",
+                        "-lc",
+                        f"sudo tail -n {int(lines)} /opt/buckyos/logs/klog-service/native-detached.log 2>/dev/null || true",
+                    ],
+                    timeout=10,
+                )
+            except Exception as err:
+                output = f"<failed to collect klog log: {err}>"
+            self.save_text(self.log_dir, f"{stage}_{node.vm}_klog", output)
 
     def validate_gateway_routes(self, stage: str) -> None:
         source = self.nodes[0]
@@ -211,6 +265,42 @@ class VmSmoke:
         if "result" not in value:
             raise RuntimeError(f"{node.vm} json-rpc {method} missing result: {value!r}")
         return value["result"]
+
+    def wait_json_rpc_ready(self, stage: str, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        last_error = ""
+        attempt = 0
+        probe_node = self.nodes[0]
+        while time.monotonic() < deadline:
+            attempt += 1
+            try:
+                self.json_rpc(
+                    probe_node,
+                    "klog.log.query",
+                    {
+                        "start_id": 0,
+                        "end_id": 0,
+                        "limit": 1,
+                        "desc": False,
+                        "level": None,
+                        "source": None,
+                        "attr_key": None,
+                        "attr_value": None,
+                        "strong_read": True,
+                    },
+                )
+                print(f"[ready] {stage}: /kapi/klog-service json-rpc")
+                return
+            except Exception as err:
+                last_error = str(err)
+                print(f"[wait] {stage}: /kapi/klog-service not ready: {last_error}")
+                if attempt % 5 == 0:
+                    try:
+                        self.sample_cluster(f"{stage}_rpc_wait_{attempt:03d}", save=True)
+                    except Exception as sample_err:
+                        print(f"[wait] {stage}: cluster sample failed: {sample_err}")
+                time.sleep(2)
+        raise RuntimeError(f"timeout waiting /kapi/klog-service json-rpc ready at {stage}: {last_error}")
 
     def append_and_query(self, stage: str) -> int:
         source = "klog-3ood-vm-smoke"
@@ -265,7 +355,49 @@ class VmSmoke:
                 err = RuntimeError(f"{node.vm} query mismatch for log id {log_id}: {query_result!r}")
                 self.record_rpc_error(stage, "query", node, err, {"log_id": log_id})
                 raise err
-        print(f"[ok] {stage}: append/query log_id={log_id} matched on all nodes")
+        for target_node in self.nodes:
+            try:
+                query_result = self.gateway_inter_query(append_node, target_node, log_id, source)
+            except Exception as err:
+                self.record_rpc_error(
+                    stage,
+                    "cluster_inter_query",
+                    target_node,
+                    err,
+                    {"gateway_vm": append_node.vm, "log_id": log_id},
+                )
+                raise
+            self.save_json(
+                self.rpc_dir,
+                f"{stage}_inter_query_{append_node.vm}_to_{target_node.node_name}",
+                query_result,
+            )
+            items = query_result.get("items") if isinstance(query_result, dict) else None
+            if not items:
+                err = RuntimeError(
+                    f"{append_node.vm}->{target_node.node_name} inter query did not return log id {log_id}: {query_result!r}"
+                )
+                self.record_rpc_error(
+                    stage,
+                    "cluster_inter_query",
+                    target_node,
+                    err,
+                    {"gateway_vm": append_node.vm, "log_id": log_id},
+                )
+                raise err
+            if not any(int(item.get("id", -1)) == log_id and item.get("request_id") == request_id for item in items):
+                err = RuntimeError(
+                    f"{append_node.vm}->{target_node.node_name} inter query mismatch for log id {log_id}: {query_result!r}"
+                )
+                self.record_rpc_error(
+                    stage,
+                    "cluster_inter_query",
+                    target_node,
+                    err,
+                    {"gateway_vm": append_node.vm, "log_id": log_id},
+                )
+                raise err
+        print(f"[ok] {stage}: append/query log_id={log_id} matched on service and cluster inter routes")
         return log_id
 
     def record_rpc_error(
@@ -418,6 +550,7 @@ def main() -> int:
     parser.add_argument("--restart-timeout", type=float, default=float(os.environ.get("KLOG_3OOD_VM_RESTART_TIMEOUT", "150")))
     parser.add_argument("--soak-seconds", type=float, default=float(os.environ.get("KLOG_3OOD_VM_SOAK_SECONDS", "300")))
     parser.add_argument("--soak-interval", type=float, default=float(os.environ.get("KLOG_3OOD_VM_SOAK_INTERVAL", "5")))
+    parser.add_argument("--log-lines", type=int, default=int(os.environ.get("KLOG_3OOD_VM_LOG_LINES", "300")))
     parser.add_argument("--skip-restarts", action="store_true", help="Only run readiness and append/query checks.")
     args = parser.parse_args()
 
@@ -427,20 +560,25 @@ def main() -> int:
     print(f"[diag] report_dir={args.report_dir}")
 
     states = smoke.wait_cluster_ready("initial", args.ready_timeout)
+    smoke.collect_klog_logs("initial", args.log_lines)
     smoke.validate_gateway_routes("initial")
+    smoke.wait_json_rpc_ready("initial", args.ready_timeout)
     smoke.append_and_query("initial")
 
     if not args.skip_restarts:
         follower = find_follower_node(states, nodes)
         states = smoke.restart_klog(follower, "after_follower_restart", args.restart_timeout)
+        smoke.wait_json_rpc_ready("after_follower_restart", args.restart_timeout)
         smoke.append_and_query("after_follower_restart")
 
         leader = find_leader_node(states, nodes)
         states = smoke.restart_klog(leader, "after_leader_restart", args.restart_timeout)
+        smoke.wait_json_rpc_ready("after_leader_restart", args.restart_timeout)
         smoke.append_and_query("after_leader_restart")
 
     smoke.soak(args.soak_seconds, args.soak_interval)
     states = smoke.wait_cluster_ready("final", args.ready_timeout)
+    smoke.collect_klog_logs("final", args.log_lines)
     assert_ready(states, len(nodes))
     print("[ok] klog three-OOD VM smoke completed")
     return 0
