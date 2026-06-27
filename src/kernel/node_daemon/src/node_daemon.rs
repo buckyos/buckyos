@@ -1914,6 +1914,7 @@ async fn node_daemon_main_loop(
                 break;
             }
             let mut gateway_info_keep_tunnels: Vec<String> = Vec::new();
+            let mut gateway_info_changed = false;
             let new_node_gateway_info =
                 load_node_gateway_info(node_host_name, &system_config_client).await;
             if let Ok(new_node_gateway_info) = new_node_gateway_info {
@@ -1944,6 +1945,7 @@ async fn node_daemon_main_loop(
                     info!("node gateway_info changed, will write to node_gateway_info.json");
                     std::fs::write(gateway_info_path, new_node_gateway_info_str.as_bytes())
                         .unwrap();
+                    gateway_info_changed = true;
                 }
             } else {
                 error!("load node gateway_info from system_config failed!");
@@ -1956,6 +1958,7 @@ async fn node_daemon_main_loop(
             if new_node_gateway_config.is_ok() {
                 let mut need_reload = false;
                 let mut need_restart = false;
+                let mut gateway_config_changed = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
                 let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
                 info!("*** keep cyfs-gateway service with sn: {:?}", sn);
@@ -1991,17 +1994,24 @@ async fn node_daemon_main_loop(
                     build_named_object_by_json("nodeconfig", &new_node_gateway_config);
                 if node_gateway_config_id.is_none() {
                     need_reload = true;
+                    gateway_config_changed = true;
                     node_gateway_config_id = Some(new_node_gateway_config_id);
                 } else {
                     if node_gateway_config_id.as_ref().unwrap() == &new_node_gateway_config_id {
                         need_reload = false;
                     } else {
                         need_reload = true;
+                        gateway_config_changed = true;
                         node_gateway_config_id = Some(new_node_gateway_config_id);
                     }
                 }
 
-                if need_reload {
+                if gateway_info_changed {
+                    info!("node gateway_info changed, will reload cyfs_gateway");
+                    need_reload = true;
+                }
+
+                if gateway_config_changed {
                     info!(
                         "node gateway_config changed, will write to node_gateway.json and reload"
                     );
