@@ -20,7 +20,7 @@
     "install": [
       "sudo chmod +x /opt/web3-gateway/web3_gateway"
     ],
-    "start": ["sudo mkdir -p /opt/buckyos/etc && sudo cp /opt/web3-gateway/etc/machine.json /opt/buckyos/etc/machine.json && sudo python3 /opt/web3-gateway/start.py"],
+    "start": ["sudo mkdir -p /opt/buckyos/etc /opt/buckyos/logs/web3_gateway && sudo cp /opt/web3-gateway/etc/machine.json /opt/buckyos/etc/machine.json && sudo sh -c 'pgrep -x web3_gateway >/dev/null || setsid -f python3 /opt/web3-gateway/start.py >> /opt/buckyos/logs/web3_gateway/start.log 2>&1'"],
     "stop": ["sudo python3 /opt/web3-gateway/stop.py"]
   }
 }

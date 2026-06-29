@@ -30,7 +30,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { isIP } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 import {
@@ -57,7 +56,6 @@ const LEGACY_SN_DB_FILE = "sn_db.sqlite3";
 const SN_DB_FILE = "sn.sqlite3";
 const SN_AUTH_DATA_DIR = "sn_token_key";
 const WEB3_GATEWAY_CONFIG_FILE = "web3_gateway.yaml";
-const PROVISIONED_DEVICE_EXPIRES_AT = 2058838939;
 
 type SqliteValue = string | number | bigint | null;
 type SqliteRow = Record<string, SqliteValue>;
@@ -399,62 +397,6 @@ function initializeSnDatabaseSchema(db: DatabaseSync): void {
   migrateLegacyUserAuthTable(db);
 }
 
-function isPrivateIpv4(ip: string): boolean {
-  const parts = ip.split(".").map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) {
-    return false;
-  }
-  const [a, b] = parts;
-  return a === 10 ||
-    a === 127 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168);
-}
-
-function isPublicIp(ip: string): boolean {
-  if (isIP(ip) === 4) {
-    return !isPrivateIpv4(ip);
-  }
-  if (isIP(ip) === 6) {
-    const normalized = ip.toLowerCase();
-    return !normalized.startsWith("fe80:") && normalized !== "::1";
-  }
-  return false;
-}
-
-function addValidIp(result: string[], value: unknown): void {
-  if (typeof value !== "string") {
-    return;
-  }
-  const ip = value.trim();
-  if (isIP(ip) !== 0 && !result.includes(ip)) {
-    result.push(ip);
-  }
-}
-
-function collectProvisionedDeviceIps(
-  ip: string,
-  description: string,
-): string[] {
-  const result: string[] = [];
-  addValidIp(result, ip);
-  try {
-    const value = JSON.parse(description) as Record<string, unknown>;
-    for (const key of ["ip", "ips", "all_ip", "addresses"]) {
-      const candidate = value[key];
-      if (Array.isArray(candidate)) {
-        for (const item of candidate) {
-          addValidIp(result, item);
-        }
-      } else {
-        addValidIp(result, candidate);
-      }
-    }
-  } catch {}
-  return result;
-}
-
 function backfillSnDerivedTables(db: DatabaseSync): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(`
@@ -501,32 +443,32 @@ function backfillSnDerivedTables(db: DatabaseSync): void {
       (did, state, reported_ip, reported_ips, from_ip, wan_ip, lan_ips, nat_type,
        is_wan_device, last_seen_at, last_report_at, expires_at, report_seq,
        raw_report, created_at, updated_at)
-    VALUES (?, 'online', ?, ?, NULL, ?, ?, 'unknown', ?, ?, ?, ?, NULL, ?, ?, ?)
+    VALUES (?, 'offline', NULL, '[]', NULL, NULL, '[]', 'unknown', 0,
+            NULL, NULL, NULL, NULL, NULL, ?, ?)
     ON CONFLICT(did) DO UPDATE SET
-      state = 'online',
-      reported_ip = excluded.reported_ip,
-      reported_ips = excluded.reported_ips,
-      wan_ip = excluded.wan_ip,
-      lan_ips = excluded.lan_ips,
-      is_wan_device = excluded.is_wan_device,
-      last_seen_at = excluded.last_seen_at,
-      last_report_at = excluded.last_report_at,
-      expires_at = excluded.expires_at,
-      raw_report = excluded.raw_report,
+      state = 'offline',
+      reported_ip = NULL,
+      reported_ips = '[]',
+      from_ip = NULL,
+      wan_ip = NULL,
+      lan_ips = '[]',
+      nat_type = 'unknown',
+      is_wan_device = 0,
+      last_seen_at = NULL,
+      last_report_at = NULL,
+      expires_at = NULL,
+      report_seq = NULL,
+      raw_report = NULL,
       updated_at = excluded.updated_at
   `);
-  const insertEndpoint = db.prepare(`
-    INSERT INTO device_endpoints
-      (did, endpoint_id, protocol, host, port, scope, priority, source, state,
-       last_seen_at, expires_at, created_at, updated_at)
-    VALUES (?, 'provisioned', 'tcp', ?, NULL, ?, 100, 'admin', 'active', ?, ?, ?, ?)
-    ON CONFLICT(did, endpoint_id) DO UPDATE SET
-      host = excluded.host,
-      scope = excluded.scope,
-      state = 'active',
-      last_seen_at = excluded.last_seen_at,
-      expires_at = excluded.expires_at,
-      updated_at = excluded.updated_at
+  const deleteProvisionedEndpoint = db.prepare(`
+    DELETE FROM device_endpoints
+    WHERE did = ? AND endpoint_id = 'provisioned' AND source = 'admin'
+  `);
+  const hasDeviceReportEndpoint = db.prepare(`
+    SELECT 1 FROM device_endpoints
+    WHERE did = ? AND source = 'device_report'
+    LIMIT 1
   `);
 
   for (const device of devices) {
@@ -539,47 +481,11 @@ function backfillSnDerivedTables(db: DatabaseSync): void {
     const createdAt = Number(device.created_at ?? 0) || now;
     const updatedAt = Number(device.updated_at ?? 0) || now;
     const role = deviceName === "ood1" ? "ood" : "normal";
-    const ip = String(device.ip ?? "");
-    const description = String(device.description ?? "");
-    const ips = collectProvisionedDeviceIps(ip, description);
-    const reportedIp = ips[0] ?? null;
-    const reportedIps = ips.slice(1);
-    const publicIp = ips.find(isPublicIp) ?? null;
-    const lanIps = ips.filter((candidate) => !isPublicIp(candidate));
-    const rawReport = (() => {
-      try {
-        JSON.parse(description);
-        return description;
-      } catch {
-        return null;
-      }
-    })();
 
     insertIndex.run(did, owner, deviceName, role, createdAt, updatedAt);
-    insertState.run(
-      did,
-      reportedIp,
-      JSON.stringify(reportedIps),
-      publicIp,
-      JSON.stringify(lanIps),
-      publicIp ? 1 : 0,
-      now,
-      now,
-      PROVISIONED_DEVICE_EXPIRES_AT,
-      rawReport,
-      createdAt,
-      updatedAt,
-    );
-    if (reportedIp) {
-      insertEndpoint.run(
-        did,
-        reportedIp,
-        isPublicIp(reportedIp) ? "public" : "private",
-        now,
-        PROVISIONED_DEVICE_EXPIRES_AT,
-        createdAt,
-        updatedAt,
-      );
+    deleteProvisionedEndpoint.run(did);
+    if (!hasDeviceReportEndpoint.get(did)) {
+      insertState.run(did, createdAt, updatedAt);
     }
   }
 }
