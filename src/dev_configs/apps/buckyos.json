@@ -25,6 +25,12 @@
     ],
     "start": ["sudo nohup /opt/buckyos/bin/node-daemon/node_daemon --enable_active > /dev/null 2>&1 &"],
     "stop": ["sudo python3 /opt/buckyos/bin/stop.py"],
+    "uninstall": [
+      "sudo python3 /opt/buckyos/bin/stop.py || true",
+      "sudo rm -f /usr/local/share/ca-certificates/buckyos_ca.crt",
+      "if command -v update-ca-certificates >/dev/null 2>&1; then sudo update-ca-certificates; fi",
+      "sudo rm -rf /opt/buckyos"
+    ],
     "check_dns": ["cat {{sn.ip}}"]
   }
 }
