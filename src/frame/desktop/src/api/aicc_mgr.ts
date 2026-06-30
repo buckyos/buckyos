@@ -213,6 +213,7 @@ interface RawUsageQueryResponse {
 
 interface RawTraceQueryResponse {
   traces?: unknown[]
+  next_cursor?: unknown
 }
 
 interface AiccDataProvider {
@@ -227,6 +228,7 @@ interface AiccDataProvider {
   getUsageTrend(granularity?: string): UsageTrendPoint[]
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView>
+  queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage>
 }
 
 export interface AICCMgr {
@@ -244,6 +246,7 @@ export interface AICCMgr {
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView>
+  queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage>
 }
 
 export interface UsageTimeRange {
@@ -274,6 +277,16 @@ export interface UsageEventsPage {
 export interface RoutingDirectoryView {
   routingView: GlobalRoutingView
   models: ModelMetadata[]
+}
+
+export interface RouteTracesQuery {
+  cursor?: string
+  limit: number
+}
+
+export interface RouteTracesPage {
+  traces: RouteTrace[]
+  nextCursor?: string
 }
 
 export class AICCModelStore implements AICCMgr {
@@ -359,6 +372,10 @@ export class AICCModelStore implements AICCMgr {
     return this.provider.queryRoutingDirectory(path)
   }
 
+  queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
+    return this.provider.queryRouteTraces(params)
+  }
+
   private emit() {
     this.listeners.forEach((listener) => listener())
   }
@@ -430,6 +447,18 @@ class MockAiccProvider implements AiccDataProvider {
     }
   }
 
+  async queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
+    const traces = this.store.getSnapshot().routeTraces
+    const cursor = Number(params.cursor ?? 0)
+    const offset = Number.isFinite(cursor) && cursor > 0 ? cursor : 0
+    const page = traces.slice(offset, offset + params.limit)
+    const nextOffset = offset + page.length
+    return {
+      traces: page,
+      nextCursor: nextOffset < traces.length ? nextOffset.toString() : undefined,
+    }
+  }
+
   async queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView> {
     const snapshot = this.store.getSnapshot()
     return {
@@ -493,7 +522,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
         filters: {},
         output_mode: 'summary',
       }),
-      this.queryRouteTraces(20),
+      this.queryRouteTraces({ limit: 20 }),
     ])
     this.usageSummary = toUsageSummary({
       byModel: usageByModel,
@@ -504,7 +533,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     })
     this.usageTrend = toUsageTrend(usageTrend)
     const rawProviders = Array.isArray(directory.providers) ? directory.providers : []
-    return toStoreSnapshot(directory, rawProviders, [], toRouteTraces(traceQuery))
+    return toStoreSnapshot(directory, rawProviders, [], traceQuery.traces)
   }
 
   async addProvider(draft: WizardDraft): Promise<void> {
@@ -653,12 +682,19 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     }
   }
 
-  private async queryRouteTraces(limit: number): Promise<RawTraceQueryResponse> {
+  async queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
     try {
-      return await this.call<RawTraceQueryResponse>('trace.query', { limit })
+      const raw = await this.call<RawTraceQueryResponse>('trace.query', {
+        limit: params.limit,
+        cursor: params.cursor,
+      })
+      return {
+        traces: toRouteTraces(raw),
+        nextCursor: asOptionalString(raw.next_cursor),
+      }
     } catch (error) {
       console.error('aicc.trace.query failed', error)
-      return {}
+      return { traces: [] }
     }
   }
 

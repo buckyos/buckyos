@@ -82,12 +82,13 @@ function defaultRoutingFilters(): RoutingFilters {
 }
 
 const USE_CASE_ORDER: UseCaseKind[] = ['chat', 'code', 'plan', 'image', 'embed', 'vision', 'audio', 'other']
+const ROUTE_TRACE_PAGE_SIZE = 20
 
 export function RoutingPage() {
   const { t } = useI18n()
   const store = useAICCStore()
   const routingView = useGlobalRoutingView()
-  const traces = useRouteTraces()
+  const snapshotTraces = useRouteTraces()
   const providers = useProviders()
   const localModels = useLocalModels()
   const isMobile = useMediaQuery('(max-width: 767px)')
@@ -95,6 +96,10 @@ export function RoutingPage() {
   const [filters, setFilters] = useState<RoutingFilters>(() => defaultRoutingFilters())
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [currentPath, setCurrentPath] = useState<string | null>(null)
+  const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
+  const [traceCursor, setTraceCursor] = useState<string | undefined>()
+  const [traceLoading, setTraceLoading] = useState(false)
+  const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
 
   const snapshotModels = useMemo(() => [
     ...providers.flatMap((provider) => provider.status.discovered_models),
@@ -131,6 +136,31 @@ export function RoutingPage() {
       cancelled = true
     }
   }, [currentPath, routingView, snapshotModels, store])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadInitialTraces() {
+      try {
+        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE })
+        if (!cancelled) {
+          setTraces(page.traces)
+          setTraceCursor(page.nextCursor)
+          setTraceError(null)
+        }
+      } catch (error) {
+        console.error('aicc.trace.query initial page failed', error)
+        if (!cancelled) {
+          setTraces(snapshotTraces)
+          setTraceCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
+          setTraceError('initial')
+        }
+      }
+    }
+    void loadInitialTraces()
+    return () => {
+      cancelled = true
+    }
+  }, [snapshotTraces, store])
 
   const activeRoutingView = directoryView.routingView
   const models = directoryView.models
@@ -182,6 +212,25 @@ export function RoutingPage() {
     setFilters((current) => ({ ...current, [key]: value }))
   }
 
+  const loadMoreTraces = async () => {
+    if (!traceCursor || traceLoading) return
+    setTraceLoading(true)
+    setTraceError(null)
+    try {
+      const page = await store.queryRouteTraces({
+        limit: ROUTE_TRACE_PAGE_SIZE,
+        cursor: traceCursor,
+      })
+      setTraces((current) => mergeRouteTraces(current, page.traces))
+      setTraceCursor(page.nextCursor)
+    } catch (error) {
+      console.error('aicc.trace.query next page failed', error)
+      setTraceError('more')
+    } finally {
+      setTraceLoading(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <RoutingHeader revision={activeRoutingView.revision} scenarioCount={visibleScenarios.length} />
@@ -229,7 +278,14 @@ export function RoutingPage() {
           {selectedScenario && (
             <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
           )}
-          <TraceExplorer traces={traces} compact={isMobile} />
+          <TraceExplorer
+            traces={traces}
+            compact={isMobile}
+            hasMore={Boolean(traceCursor)}
+            loading={traceLoading}
+            error={traceError}
+            onLoadMore={loadMoreTraces}
+          />
         </aside>
       </div>
     </div>
@@ -681,7 +737,21 @@ function ModelGroupRow({
   )
 }
 
-function TraceExplorer({ traces, compact }: { traces: RouteTrace[]; compact: boolean }) {
+function TraceExplorer({
+  traces,
+  compact,
+  hasMore,
+  loading,
+  error,
+  onLoadMore,
+}: {
+  traces: RouteTrace[]
+  compact: boolean
+  hasMore: boolean
+  loading: boolean
+  error: 'initial' | 'more' | null
+  onLoadMore: () => void
+}) {
   const { t } = useI18n()
   return (
     <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
@@ -726,6 +796,27 @@ function TraceExplorer({ traces, compact }: { traces: RouteTrace[]; compact: boo
           </article>
         ))}
       </div>
+      {error && (
+        <div className="mt-3 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--cp-warning)', background: 'var(--cp-bg)' }}>
+          {error === 'more'
+            ? t('aiCenter.routing.traceLoadMoreFailed', 'Failed to load more route traces')
+            : t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces')}
+        </div>
+      )}
+      {hasMore && (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          disabled={loading}
+          className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium disabled:opacity-60"
+          style={{ color: 'var(--cp-accent)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
+        >
+          <ChevronDown size={15} />
+          {loading
+            ? t('aiCenter.routing.traceLoading', 'Loading...')
+            : t('aiCenter.routing.traceLoadMore', 'Load more')}
+        </button>
+      )}
     </section>
   )
 }
@@ -814,6 +905,18 @@ function buildScenarios(nodes: LogicalNode[], models: ModelMetadata[], traces: R
     })
 
   return scenarios
+}
+
+function mergeRouteTraces(current: RouteTrace[], next: RouteTrace[]): RouteTrace[] {
+  const seen = new Set(current.map((trace) => trace.request_id))
+  const merged = [...current]
+  for (const trace of next) {
+    if (!seen.has(trace.request_id)) {
+      seen.add(trace.request_id)
+      merged.push(trace)
+    }
+  }
+  return merged
 }
 
 function scenarioCandidates(node: LogicalNode, models: ModelMetadata[], trace?: RouteTrace): ModelMetadata[] {
