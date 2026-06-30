@@ -26,7 +26,7 @@ use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
 pub const AICC_USAGE_LOG_RDB_INSTANCE_ID: &str = "aicc-usage-log";
 
 /// Version of the usage-log schema. Bump whenever the DDL changes.
-pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 1;
+pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 2;
 
 /// Sqlite DDL for the usage-log database. The only required table in v1 is
 /// `aicc_usage_event`; summary tables can be added later when SQL aggregation
@@ -62,6 +62,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_task
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_idem
     ON aicc_usage_event(tenant_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS aicc_route_trace (
+    trace_id                 TEXT PRIMARY KEY,
+    tenant_id                TEXT NOT NULL,
+    caller_app_id            TEXT,
+    task_id                  TEXT NOT NULL,
+    request_model            TEXT NOT NULL,
+    selected_exact_model     TEXT,
+    provider_instance_name   TEXT,
+    api_type                 TEXT NOT NULL,
+    route_trace_json         TEXT NOT NULL,
+    created_at_ms            INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_time
+    ON aicc_route_trace(created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_tenant_time
+    ON aicc_route_trace(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_request_model_time
+    ON aicc_route_trace(request_model, created_at_ms);
 "#;
 
 /// Postgres DDL mirroring the sqlite schema above.
@@ -96,6 +114,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_task
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_idem
     ON aicc_usage_event(tenant_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS aicc_route_trace (
+    trace_id                 TEXT PRIMARY KEY,
+    tenant_id                TEXT NOT NULL,
+    caller_app_id            TEXT,
+    task_id                  TEXT NOT NULL,
+    request_model            TEXT NOT NULL,
+    selected_exact_model     TEXT,
+    provider_instance_name   TEXT,
+    api_type                 TEXT NOT NULL,
+    route_trace_json         TEXT NOT NULL,
+    created_at_ms            BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_time
+    ON aicc_route_trace(created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_tenant_time
+    ON aicc_route_trace(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_request_model_time
+    ON aicc_route_trace(request_model, created_at_ms);
 "#;
 
 /// Default rdb-instance config for the aicc usage-log. The scheduler drops
@@ -150,6 +186,39 @@ pub struct AiccUsageEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finance_snapshot_json: Option<Value>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AiccRouteTraceEvent {
+    pub trace_id: String,
+    pub tenant_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_app_id: Option<String>,
+    pub task_id: String,
+    pub request_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_exact_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_instance_name: Option<String>,
+    pub api_type: String,
+    pub route_trace_json: Value,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QueryRouteTraceRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct QueryRouteTraceResponse {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub traces: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// Time-range selector for `query_usage`.

@@ -14,7 +14,7 @@ use crate::model_types::{
     LatencyClass, LogicalModelDefinition, ModelAttributes, ModelCandidate, ModelCapabilities,
     ModelHealth, ModelMetadata, ModelPricing, PolicyConfig, PricingMode, PrivacyClass,
     ProviderInventory, ProviderOrigin, ProviderType, ProviderTypeTrustedSource, QuotaState,
-    RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy, RouteTrace,
+    RequestedModelType, RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy, RouteTrace,
     UserFacingProviderOrigin, UserFacingRouteSummary,
 };
 use ::kRPC::*;
@@ -24,11 +24,11 @@ use base64::Engine as _;
 use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, AiContent, AiMethodRequest, AiMethodResponse,
     AiMethodStatus, AiPayload, AiResponse, AiccComputeProgress, AiccComputeTaskData,
-    AiccComputeTaskRequest, AiccHandler, AiccRouteOverlay, AiccUsageEvent, CancelResponse,
-    Capability, CreateTaskOptions, Feature, LlmChatInvokeRequest, LlmChatInvokeResponse, ModelSpec,
-    Requirements, ResourceRef, RouteFallbackAttempt, RouteResolveRequest, RouteResolveResponse,
-    TaskManagerClient, TaskStatus, TextToImageInvokeRequest, TextToImageInvokeResponse,
-    TypedTaskData, AICC_SERVICE_SERVICE_NAME,
+    AiccComputeTaskRequest, AiccHandler, AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent,
+    CancelResponse, Capability, CreateTaskOptions, Feature, LlmChatInvokeRequest,
+    LlmChatInvokeResponse, ModelSpec, Requirements, ResourceRef, RouteFallbackAttempt,
+    RouteResolveRequest, RouteResolveResponse, TaskManagerClient, TaskStatus,
+    TextToImageInvokeRequest, TextToImageInvokeResponse, TypedTaskData, AICC_SERVICE_SERVICE_NAME,
 };
 use log::{debug, error, info, warn};
 use ndn_lib::{
@@ -2965,6 +2965,68 @@ impl AIComputeCenter {
         self.usage_log_db.clone()
     }
 
+    fn record_route_trace(
+        &self,
+        decision: &RouteDecision,
+        tenant_id: &str,
+        caller_app_id: Option<String>,
+    ) {
+        let Some(db) = self.usage_log_db.clone() else {
+            return;
+        };
+        let Ok(trace) = decision.route_trace.lock() else {
+            return;
+        };
+        if trace.requested_model_type != RequestedModelType::Logical {
+            return;
+        }
+        let Ok(trace) = serde_json::to_value(&*trace) else {
+            return;
+        };
+        let trace_id = trace
+            .get("request_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if trace_id.is_empty() {
+            return;
+        }
+        let event = AiccRouteTraceEvent {
+            trace_id: trace_id.clone(),
+            tenant_id: tenant_id.to_string(),
+            caller_app_id,
+            task_id: trace_id,
+            request_model: trace
+                .get("requested_model")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            selected_exact_model: trace
+                .get("selected_exact_model")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            provider_instance_name: trace
+                .get("selected_provider_instance_name")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            api_type: trace
+                .get("api_type")
+                .and_then(Value::as_str)
+                .unwrap_or("llm")
+                .to_string(),
+            route_trace_json: trace,
+            created_at_ms: now_ms_i64(),
+        };
+        tokio::spawn(async move {
+            if let Err(err) = db.insert_route_trace_event(&event).await {
+                warn!(
+                    "aicc.route_trace_log write_failed: trace_id={} tenant={} err={}",
+                    event.trace_id, event.tenant_id, err
+                );
+            }
+        });
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -3718,7 +3780,13 @@ impl AIComputeCenter {
             &route_cfg,
             request_id.as_str(),
         )?;
-        self.route_decision_response(&decision)
+        let response = self.route_decision_response(&decision)?;
+        self.record_route_trace(
+            &decision,
+            invoke_ctx.tenant_id.as_str(),
+            invoke_ctx.caller_app_id.clone(),
+        );
+        Ok(response)
     }
 
     pub async fn create_chat_completion(
@@ -4025,6 +4093,11 @@ impl AIComputeCenter {
                 event_sink.clone(),
             )
             .await;
+        self.record_route_trace(
+            &decision,
+            invoke_ctx.tenant_id.as_str(),
+            invoke_ctx.caller_app_id.clone(),
+        );
         match start_result {
             Ok((ProviderStartResult::Immediate(mut summary), instance_id)) => {
                 let prepared_task = self

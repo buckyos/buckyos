@@ -15,9 +15,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Once};
 
 use buckyos_api::{
-    aicc_usage_log_default_rdb_instance_config, get_rdb_instance, AiccUsageEvent,
-    QueryUsageRequest, QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow,
-    UsageGroupedRow, UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
+    aicc_usage_log_default_rdb_instance_config, get_rdb_instance, AiccRouteTraceEvent,
+    AiccUsageEvent, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
+    QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow,
+    UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
     AICC_SERVICE_SERVICE_NAME, AICC_USAGE_LOG_RDB_INSTANCE_ID, AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
     AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
 };
@@ -116,14 +117,17 @@ impl AiccUsageLogDb {
     }
 
     async fn apply_schema(&self, override_ddl: Option<&str>) -> Result<(), RPCErrors> {
-        let ddl: &str =
-            override_ddl
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or(match self.backend() {
-                    RdbBackend::Sqlite => AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
-                    RdbBackend::Postgres => AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
-                });
-        for statement in split_sql_statements(ddl) {
+        let default_ddl = match self.backend() {
+            RdbBackend::Sqlite => AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
+            RdbBackend::Postgres => AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
+        };
+        let ddl = override_ddl
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(default_ddl);
+        for statement in split_sql_statements(ddl)
+            .into_iter()
+            .chain(split_sql_statements(default_ddl).into_iter())
+        {
             self.pool().execute(statement.as_str()).await.map_err(|e| {
                 RPCErrors::ReasonError(format!("apply aicc usage-log schema failed: {}", e))
             })?;
@@ -209,6 +213,57 @@ ON CONFLICT DO NOTHING
                 RPCErrors::ReasonError(format!(
                     "failed to insert aicc usage event {}: {}",
                     event.event_id, error
+                ))
+            })?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn insert_route_trace_event(
+        &self,
+        event: &AiccRouteTraceEvent,
+    ) -> Result<bool, RPCErrors> {
+        let route_trace_json = serde_json::to_string(&event.route_trace_json).map_err(|err| {
+            RPCErrors::ReasonError(format!(
+                "serialize route_trace_json for event {} failed: {}",
+                event.trace_id, err
+            ))
+        })?;
+        let sql = self.render_sql(
+            r#"
+INSERT INTO aicc_route_trace (
+    trace_id,
+    tenant_id,
+    caller_app_id,
+    task_id,
+    request_model,
+    selected_exact_model,
+    provider_instance_name,
+    api_type,
+    route_trace_json,
+    created_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT DO NOTHING
+"#,
+        );
+
+        let result = sqlx::query(&sql)
+            .bind(event.trace_id.clone())
+            .bind(event.tenant_id.clone())
+            .bind(event.caller_app_id.clone())
+            .bind(event.task_id.clone())
+            .bind(event.request_model.clone())
+            .bind(event.selected_exact_model.clone())
+            .bind(event.provider_instance_name.clone())
+            .bind(event.api_type.clone())
+            .bind(route_trace_json)
+            .bind(event.created_at_ms)
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to insert aicc route trace event {}: {}",
+                    event.trace_id, error
                 ))
             })?;
 
@@ -357,6 +412,44 @@ WHERE created_at_ms >= ? AND created_at_ms < ?
 
         Ok(response)
     }
+
+    pub async fn query_route_traces(
+        &self,
+        req: &QueryRouteTraceRequest,
+    ) -> Result<QueryRouteTraceResponse, RPCErrors> {
+        let limit = req.limit.unwrap_or(20).clamp(1, 128) as usize;
+        let offset = parse_cursor(req.cursor.as_deref())?;
+        let sql = self.render_sql(
+            r#"
+SELECT route_trace_json
+FROM aicc_route_trace
+ORDER BY created_at_ms DESC, trace_id DESC
+LIMIT ? OFFSET ?
+"#,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(to_sql_i64(limit as u64))
+            .bind(to_sql_i64(offset as u64))
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to query aicc route traces: {}", error))
+            })?;
+
+        let traces = rows
+            .iter()
+            .map(decode_route_trace_row)
+            .collect::<Result<Vec<Value>, RPCErrors>>()?;
+        let next_cursor = if traces.len() == limit {
+            Some(offset.saturating_add(traces.len()).to_string())
+        } else {
+            None
+        };
+        Ok(QueryRouteTraceResponse {
+            traces,
+            next_cursor,
+        })
+    }
 }
 
 fn resolve_time_window(range: &UsageQueryTimeRange, now_ms: i64) -> (i64, i64) {
@@ -495,6 +588,18 @@ fn decode_row(row: &AnyRow) -> Result<AiccUsageEvent, RPCErrors> {
         usage_json,
         finance_snapshot_json,
         created_at_ms,
+    })
+}
+
+fn decode_route_trace_row(row: &AnyRow) -> Result<Value, RPCErrors> {
+    let raw: String = row.try_get("route_trace_json").map_err(|err| {
+        RPCErrors::ReasonError(format!(
+            "failed to decode aicc_route_trace.route_trace_json: {}",
+            err
+        ))
+    })?;
+    serde_json::from_str(&raw).map_err(|err| {
+        RPCErrors::ReasonError(format!("failed to parse route_trace_json: {}", err))
     })
 }
 
@@ -699,7 +804,8 @@ mod tests {
     async fn setup() -> (AiccUsageLogDb, tempfile::TempDir) {
         let dir = tempdir().unwrap();
         let path = dir.path().join("usage.db");
-        let conn = format!("sqlite://{}?mode=rwc", path.to_str().unwrap());
+        let db_path = path.to_string_lossy().replace('\\', "/");
+        let conn = format!("sqlite:///{}?mode=rwc", db_path);
         let db = AiccUsageLogDb::open_default_sqlite(&conn).await.unwrap();
         (db, dir)
     }
@@ -881,6 +987,45 @@ mod tests {
             .unwrap();
         assert_eq!(second.events.len(), 2);
         assert!(second.next_cursor.is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn insert_and_query_route_traces() {
+        let (db, _tmp) = setup().await;
+        let now = current_time_ms();
+        let trace = AiccRouteTraceEvent {
+            trace_id: "trace-one".to_string(),
+            tenant_id: "alice".to_string(),
+            caller_app_id: Some("sys_test".to_string()),
+            task_id: "trace-one".to_string(),
+            request_model: "llm.plan.default".to_string(),
+            selected_exact_model: Some("gpt-5@test".to_string()),
+            provider_instance_name: Some("test".to_string()),
+            api_type: "llm".to_string(),
+            route_trace_json: json!({
+                "request_id": "trace-one",
+                "api_type": "llm",
+                "requested_model": "llm.plan.default",
+                "selected_exact_model": "gpt-5@test"
+            }),
+            created_at_ms: now,
+        };
+
+        assert!(db.insert_route_trace_event(&trace).await.unwrap());
+        assert!(!db.insert_route_trace_event(&trace).await.unwrap());
+
+        let resp = db
+            .query_route_traces(&QueryRouteTraceRequest {
+                limit: Some(20),
+                cursor: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.traces.len(), 1);
+        assert_eq!(
+            resp.traces[0].get("request_id").and_then(Value::as_str),
+            Some("trace-one")
+        );
     }
 
     #[test]
