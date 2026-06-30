@@ -7,6 +7,7 @@ import {
   Box,
   Braces,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ChevronUp,
   Cloud,
@@ -97,7 +98,8 @@ export function RoutingPage() {
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [currentPath, setCurrentPath] = useState<string | null>(null)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
-  const [traceCursor, setTraceCursor] = useState<string | undefined>()
+  const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
+  const [tracePageIndex, setTracePageIndex] = useState(0)
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
 
@@ -144,14 +146,16 @@ export function RoutingPage() {
         const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE })
         if (!cancelled) {
           setTraces(page.traces)
-          setTraceCursor(page.nextCursor)
+          setTraceNextCursor(page.nextCursor)
+          setTracePageIndex(0)
           setTraceError(null)
         }
       } catch (error) {
         console.error('aicc.trace.query initial page failed', error)
         if (!cancelled) {
           setTraces(snapshotTraces)
-          setTraceCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
+          setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
+          setTracePageIndex(0)
           setTraceError('initial')
         }
       }
@@ -212,17 +216,38 @@ export function RoutingPage() {
     setFilters((current) => ({ ...current, [key]: value }))
   }
 
-  const loadMoreTraces = async () => {
-    if (!traceCursor || traceLoading) return
+  const loadTracePage = async (pageIndex: number) => {
+    if (traceLoading) return
+    const nextPageIndex = Math.max(0, pageIndex)
     setTraceLoading(true)
     setTraceError(null)
     try {
       const page = await store.queryRouteTraces({
         limit: ROUTE_TRACE_PAGE_SIZE,
-        cursor: traceCursor,
+        cursor: nextPageIndex > 0 ? String(nextPageIndex * ROUTE_TRACE_PAGE_SIZE) : undefined,
+      })
+      setTraces(page.traces)
+      setTraceNextCursor(page.nextCursor)
+      setTracePageIndex(nextPageIndex)
+    } catch (error) {
+      console.error('aicc.trace.query page failed', error)
+      setTraceError('initial')
+    } finally {
+      setTraceLoading(false)
+    }
+  }
+
+  const loadMoreTraces = async () => {
+    if (!traceNextCursor || traceLoading) return
+    setTraceLoading(true)
+    setTraceError(null)
+    try {
+      const page = await store.queryRouteTraces({
+        limit: ROUTE_TRACE_PAGE_SIZE,
+        cursor: traceNextCursor,
       })
       setTraces((current) => mergeRouteTraces(current, page.traces))
-      setTraceCursor(page.nextCursor)
+      setTraceNextCursor(page.nextCursor)
     } catch (error) {
       console.error('aicc.trace.query next page failed', error)
       setTraceError('more')
@@ -281,10 +306,15 @@ export function RoutingPage() {
           <TraceExplorer
             traces={traces}
             compact={isMobile}
-            hasMore={Boolean(traceCursor)}
+            hasMore={isMobile && Boolean(traceNextCursor)}
+            pageIndex={tracePageIndex}
+            canGoPrevious={!isMobile && tracePageIndex > 0}
+            canGoNext={!isMobile && Boolean(traceNextCursor)}
             loading={traceLoading}
             error={traceError}
             onLoadMore={loadMoreTraces}
+            onPreviousPage={() => void loadTracePage(tracePageIndex - 1)}
+            onNextPage={() => void loadTracePage(tracePageIndex + 1)}
           />
         </aside>
       </div>
@@ -741,16 +771,26 @@ function TraceExplorer({
   traces,
   compact,
   hasMore,
+  pageIndex,
+  canGoPrevious,
+  canGoNext,
   loading,
   error,
   onLoadMore,
+  onPreviousPage,
+  onNextPage,
 }: {
   traces: RouteTrace[]
   compact: boolean
   hasMore: boolean
+  pageIndex: number
+  canGoPrevious: boolean
+  canGoNext: boolean
   loading: boolean
   error: 'initial' | 'more' | null
   onLoadMore: () => void
+  onPreviousPage: () => void
+  onNextPage: () => void
 }) {
   const { t } = useI18n()
   return (
@@ -803,7 +843,7 @@ function TraceExplorer({
             : t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces')}
         </div>
       )}
-      {hasMore && (
+      {compact && hasMore && (
         <button
           type="button"
           onClick={onLoadMore}
@@ -816,6 +856,35 @@ function TraceExplorer({
             ? t('aiCenter.routing.traceLoading', 'Loading...')
             : t('aiCenter.routing.traceLoadMore', 'Load more')}
         </button>
+      )}
+      {!compact && (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-lg px-3 py-2" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
+          <button
+            type="button"
+            onClick={onPreviousPage}
+            disabled={!canGoPrevious || loading}
+            className="inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium disabled:opacity-50"
+            style={{ color: 'var(--cp-accent)' }}
+          >
+            <ChevronLeft size={14} />
+            {t('aiCenter.routing.tracePreviousPage', 'Previous')}
+          </button>
+          <div className="text-xs tabular-nums" style={{ color: 'var(--cp-muted)' }}>
+            {loading
+              ? t('aiCenter.routing.traceLoading', 'Loading...')
+              : t('aiCenter.routing.tracePage', 'Page {{page}}', { page: pageIndex + 1 })}
+          </div>
+          <button
+            type="button"
+            onClick={onNextPage}
+            disabled={!canGoNext || loading}
+            className="inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium disabled:opacity-50"
+            style={{ color: 'var(--cp-accent)' }}
+          >
+            {t('aiCenter.routing.traceNextPage', 'Next')}
+            <ChevronRight size={14} />
+          </button>
+        </div>
       )}
     </section>
   )
