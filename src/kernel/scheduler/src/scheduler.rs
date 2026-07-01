@@ -147,6 +147,7 @@ pub enum ServiceSpecType {
     Kernel,  //kernel service 无owner_user_id
     Service, //系统服务
     App,     // 无状态的app服务，有owner_user_id
+    Agent,
 }
 
 impl From<String> for ServiceSpecType {
@@ -155,9 +156,16 @@ impl From<String> for ServiceSpecType {
             "kernel" => ServiceSpecType::Kernel,
             "service" => ServiceSpecType::Service,
             "frame" => ServiceSpecType::Service,
+            "agent" => ServiceSpecType::Agent,
             "app" => ServiceSpecType::App,
             _ => ServiceSpecType::App,
         }
+    }
+}
+
+impl ServiceSpecType {
+    pub fn is_app_like(&self) -> bool {
+        matches!(self, ServiceSpecType::App | ServiceSpecType::Agent)
     }
 }
 
@@ -882,7 +890,7 @@ impl NodeScheduler {
                     ));
                 }
                 ServiceSpecState::Disable => {
-                    if spec_snapshot.spec_type != ServiceSpecType::App {
+                    if !spec_snapshot.spec_type.is_app_like() {
                         continue;
                     }
 
