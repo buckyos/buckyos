@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, ChevronDown, CreditCard, DollarSign, HelpCircle, Route, Wallet } from 'lucide-react'
+import { Activity, ChevronDown, ChevronUp, CreditCard, DollarSign, HelpCircle, Route, Wallet } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useAIStatus, useProviders, useRouteTraces, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
 import { SummaryCard } from '../shared/SummaryCard'
@@ -133,6 +133,7 @@ type MultiFilter = {
   selected: string[]
 }
 const PAGE_SIZE = 10
+const HOME_TRACE_LIMIT = 5
 const EMPTY_MULTI_FILTER: MultiFilter = { query: '', selected: [] }
 
 export function UsageDashboard() {
@@ -155,7 +156,13 @@ export function UsageDashboard() {
   const [usagePage, setUsagePage] = useState<UsageEventsPage>({ events: [], totalRequests: 0 })
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
+  const [linkedTraceTaskId, setLinkedTraceTaskId] = useState<string | null>(null)
+  const [linkedTraces, setLinkedTraces] = useState<RouteTrace[]>([])
+  const [linkedTraceCursor, setLinkedTraceCursor] = useState<string | undefined>()
+  const [linkedTraceLoading, setLinkedTraceLoading] = useState(false)
+  const [linkedTraceError, setLinkedTraceError] = useState<string | null>(null)
   const detailRef = useRef<HTMLElement | null>(null)
+  const linkedTraceRef = useRef<HTMLElement | null>(null)
 
   const snProvider = providers.find((p) => p.config.provider_type === 'sn_router')
   const snCredit = snProvider?.account.balance_value
@@ -189,6 +196,7 @@ export function UsageDashboard() {
     appQuery: appAgentFilter.query,
   }), [appAgentFilter, modelFilter, providerFilter])
   const currentCursor = pageCursors[detailPage]
+  const recentTraces = traces.slice(0, HOME_TRACE_LIMIT)
   const effectiveDetailPage = detailPage
   const pageStart = (effectiveDetailPage - 1) * PAGE_SIZE
   const pagedEvents = usagePage.events
@@ -289,6 +297,35 @@ export function UsageDashboard() {
     window.requestAnimationFrame(() => {
       detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
+  }
+
+  const loadLinkedTraces = async (taskId: string, cursor?: string) => {
+    const normalizedTaskId = taskId.trim()
+    if (!normalizedTaskId || linkedTraceLoading) return
+    setLinkedTraceLoading(true)
+    setLinkedTraceError(null)
+    try {
+      const page = await store.queryRouteTraces({
+        limit: 20,
+        cursor,
+        taskIds: [normalizedTaskId],
+        requestIds: [normalizedTaskId],
+      })
+      setLinkedTraceTaskId(normalizedTaskId)
+      setLinkedTraces((current) => cursor ? mergeRouteTraces(current, page.traces) : page.traces)
+      setLinkedTraceCursor(page.nextCursor)
+      window.requestAnimationFrame(() => {
+        linkedTraceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
+    } catch (error) {
+      console.error('aicc.trace.query linked task failed', error)
+      setLinkedTraceTaskId(normalizedTaskId)
+      setLinkedTraces([])
+      setLinkedTraceCursor(undefined)
+      setLinkedTraceError(t('aiCenter.home.linkedTraceLoadFailed', 'Could not load route traces for this task.'))
+    } finally {
+      setLinkedTraceLoading(false)
+    }
   }
 
   return (
@@ -411,35 +448,21 @@ export function UsageDashboard() {
         />
       </div>
 
-      {traces[0] && (
+      {recentTraces.length > 0 && (
         <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-          <div className="flex items-center gap-2 mb-3">
-            <Route size={16} style={{ color: 'var(--cp-accent)' }} />
-            <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-              {t('aiCenter.home.recentRouteTrace', 'Recent Route Trace')}
-            </h3>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Route size={16} style={{ color: 'var(--cp-accent)' }} />
+              <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
+                {t('aiCenter.home.recentRouteTrace', 'Recent Route Traces')}
+              </h3>
+            </div>
+            <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>{recentTraces.length}</span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-[1.2fr_2fr] gap-4">
-            <div>
-              <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{traces[0].requested_model} → {traces[0].selected_exact_model}</div>
-              <div className="text-sm mt-1" style={{ color: 'var(--cp-text)' }}>
-                {traces[0].user_summary?.reason_short}
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {traces[0].ranked_candidates.map((candidate) => (
-                <span
-                  key={candidate.exact_model}
-                  className="text-xs rounded-md px-2 py-1"
-                  style={{
-                    background: candidate.selected ? 'color-mix(in oklch, var(--cp-accent), transparent 84%)' : 'var(--cp-bg)',
-                    color: candidate.selected ? 'var(--cp-accent)' : 'var(--cp-muted)',
-                  }}
-                >
-                  {candidate.exact_model} · {candidate.final_score?.toFixed(2)} · {candidateWeightSummary(candidate)}
-                </span>
-              ))}
-            </div>
+          <div className="grid grid-cols-1 gap-2">
+            {recentTraces.map((trace) => (
+              <RecentTraceCard key={trace.request_id} trace={trace} />
+            ))}
           </div>
         </section>
       )}
@@ -545,7 +568,21 @@ export function UsageDashboard() {
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>
                       <TruncatedText value={`${event.app_id ?? 'system'}${event.agent_id ? ` / ${event.agent_id}` : ''}`} className="max-w-[180px]" />
                     </td>
-                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-muted)' }}>{event.session_id}</td>
+                    <td className="px-4 py-2 text-xs">
+                      {event.session_id ? (
+                        <button
+                          type="button"
+                          onClick={() => void loadLinkedTraces(event.session_id ?? '')}
+                          className="max-w-[180px] truncate font-mono underline-offset-2 hover:underline"
+                          style={{ color: 'var(--cp-accent)' }}
+                          title={t('aiCenter.home.viewTaskRouteTraces', 'View route traces for this task')}
+                        >
+                          {event.session_id}
+                        </button>
+                      ) : (
+                        <span style={{ color: 'var(--cp-muted)' }}>-</span>
+                      )}
+                    </td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatTokens(tokens)}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatUsd(usageFinanceAmount(event))}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{event.status}</td>
@@ -598,8 +635,155 @@ export function UsageDashboard() {
           </div>
         )}
       </section>
+
+      {linkedTraceTaskId && (
+        <section ref={linkedTraceRef} className="rounded-xl p-4 scroll-mt-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <Route size={16} style={{ color: 'var(--cp-accent)' }} />
+              <h3 className="min-w-0 truncate text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
+                {t('aiCenter.home.linkedRouteTraces', 'Route Traces for Task / Session')}
+              </h3>
+            </div>
+            <span className="text-xs font-mono" style={{ color: 'var(--cp-muted)' }}>{linkedTraceTaskId}</span>
+          </div>
+          <div className="grid grid-cols-1 gap-2">
+            {linkedTraces.map((trace) => (
+              <RecentTraceCard key={trace.request_id} trace={trace} />
+            ))}
+            {!linkedTraceLoading && linkedTraces.length === 0 && (
+              <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
+                {t('aiCenter.home.noLinkedRouteTraces', 'No route traces were found for this task/session.')}
+              </div>
+            )}
+          </div>
+          {linkedTraceError && (
+            <div className="mt-3 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--cp-warning)', background: 'var(--cp-bg)' }}>
+              {linkedTraceError}
+            </div>
+          )}
+          {linkedTraceCursor && (
+            <button
+              type="button"
+              onClick={() => void loadLinkedTraces(linkedTraceTaskId, linkedTraceCursor)}
+              disabled={linkedTraceLoading}
+              className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium disabled:opacity-60"
+              style={{ color: 'var(--cp-accent)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
+            >
+              <ChevronDown size={15} />
+              {linkedTraceLoading
+                ? t('aiCenter.home.traceLoading', 'Loading...')
+                : t('aiCenter.home.traceLoadMore', 'Load more')}
+            </button>
+          )}
+        </section>
+      )}
     </div>
   )
+}
+
+function RecentTraceCard({ trace }: { trace: RouteTrace }) {
+  const { t } = useI18n()
+  const [expanded, setExpanded] = useState(false)
+  const selectedCandidate = selectedTraceCandidate(trace)
+  const visibleCandidates = expanded
+    ? trace.ranked_candidates
+    : selectedCandidate ? [selectedCandidate] : []
+  const hiddenCandidateCount = Math.max(0, trace.ranked_candidates.length - visibleCandidates.length)
+
+  return (
+    <article className="rounded-lg p-3" style={{ background: 'var(--cp-bg)' }}>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(260px,1.2fr)]">
+        <div className="min-w-0">
+          <div className="truncate text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {trace.requested_model}{' -> '}{trace.selected_exact_model ?? t('aiCenter.home.noExactResolved', 'unresolved')}
+          </div>
+          <div className="mt-1 text-sm" style={{ color: 'var(--cp-text)' }}>
+            {trace.user_summary?.reason_short}
+          </div>
+        </div>
+        <div className="min-w-0 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
+          <div className="mb-1 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+            {t('aiCenter.home.traceFinalSelection', 'Final selection')}
+          </div>
+          {selectedCandidate ? (
+            <RecentTraceCandidate candidate={selectedCandidate} selected />
+          ) : (
+            <div className="truncate text-xs" style={{ color: trace.selected_exact_model ? 'var(--cp-text)' : 'var(--cp-warning)' }}>
+              {trace.selected_exact_model ?? t('aiCenter.home.noExactResolved', 'No exact model resolved')}
+            </div>
+          )}
+        </div>
+      </div>
+      {expanded && visibleCandidates.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1">
+          {visibleCandidates.map((candidate) => (
+            <RecentTraceCandidate key={candidate.exact_model} candidate={candidate} selected={candidate.selected} />
+          ))}
+        </div>
+      )}
+      {expanded && trace.filtered_candidates.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1">
+          {trace.filtered_candidates.map((candidate) => (
+            <div key={candidate.exact_model} className="flex flex-col gap-0.5 text-xs">
+              <span style={{ color: 'var(--cp-warning)' }}>{candidate.exact_model}</span>
+              <span style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {(trace.ranked_candidates.length > 1 || trace.filtered_candidates.length > 0) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-3 inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium"
+          style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+        >
+          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          {expanded
+            ? t('aiCenter.home.traceHideCandidates', 'Hide candidates')
+            : t('aiCenter.home.traceShowCandidates', 'Show candidates ({{count}})', { count: hiddenCandidateCount + trace.filtered_candidates.length })}
+        </button>
+      )}
+    </article>
+  )
+}
+
+function RecentTraceCandidate({
+  candidate,
+  selected,
+}: {
+  candidate: RouteTrace['ranked_candidates'][number]
+  selected: boolean
+}) {
+  return (
+    <div className="flex justify-between gap-3 text-xs">
+      <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-muted)' }}>
+        <span className="block truncate">{candidate.exact_model}</span>
+        <span className="block" style={{ color: 'var(--cp-muted)' }}>
+          {candidateWeightSummary(candidate)}
+        </span>
+      </span>
+      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{candidate.final_score?.toFixed(2)}</span>
+    </div>
+  )
+}
+
+function selectedTraceCandidate(trace: RouteTrace): RouteTrace['ranked_candidates'][number] | undefined {
+  return trace.ranked_candidates.find((candidate) => candidate.selected)
+    ?? trace.ranked_candidates.find((candidate) => candidate.exact_model === trace.selected_exact_model)
+}
+
+function mergeRouteTraces(current: RouteTrace[], next: RouteTrace[]): RouteTrace[] {
+  const seen = new Set(current.map((trace) => trace.request_id))
+  const merged = [...current]
+  for (const trace of next) {
+    if (!seen.has(trace.request_id)) {
+      seen.add(trace.request_id)
+      merged.push(trace)
+    }
+  }
+  return merged
 }
 
 function TimeRangeFilterControl({

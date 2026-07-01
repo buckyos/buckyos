@@ -18,6 +18,7 @@ import type {
   ProviderStatus,
   ProviderType,
   ProviderView,
+  RouteTrace,
   RoutePolicy,
   SchedulerProfile,
   GlobalRoutingView,
@@ -210,6 +211,11 @@ interface RawUsageQueryResponse {
   next_cursor?: unknown
 }
 
+interface RawTraceQueryResponse {
+  traces?: unknown[]
+  next_cursor?: unknown
+}
+
 interface AiccDataProvider {
   fetchSnapshot(): Promise<StoreSnapshot>
   addProvider(draft: WizardDraft): Promise<void>
@@ -222,6 +228,7 @@ interface AiccDataProvider {
   getUsageTrend(granularity?: string): UsageTrendPoint[]
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView>
+  queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage>
 }
 
 export interface AICCMgr {
@@ -239,6 +246,7 @@ export interface AICCMgr {
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView>
+  queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage>
 }
 
 export interface UsageTimeRange {
@@ -269,6 +277,18 @@ export interface UsageEventsPage {
 export interface RoutingDirectoryView {
   routingView: GlobalRoutingView
   models: ModelMetadata[]
+}
+
+export interface RouteTracesQuery {
+  cursor?: string
+  limit: number
+  taskIds?: string[]
+  requestIds?: string[]
+}
+
+export interface RouteTracesPage {
+  traces: RouteTrace[]
+  nextCursor?: string
 }
 
 export class AICCModelStore implements AICCMgr {
@@ -354,6 +374,10 @@ export class AICCModelStore implements AICCMgr {
     return this.provider.queryRoutingDirectory(path)
   }
 
+  queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
+    return this.provider.queryRouteTraces(params)
+  }
+
   private emit() {
     this.listeners.forEach((listener) => listener())
   }
@@ -425,6 +449,19 @@ class MockAiccProvider implements AiccDataProvider {
     }
   }
 
+  async queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
+    const traces = this.store.getSnapshot().routeTraces
+      .filter((trace) => routeTraceMatchesQuery(trace, params))
+    const cursor = Number(params.cursor ?? 0)
+    const offset = Number.isFinite(cursor) && cursor > 0 ? cursor : 0
+    const page = traces.slice(offset, offset + params.limit)
+    const nextOffset = offset + page.length
+    return {
+      traces: page,
+      nextCursor: nextOffset < traces.length ? nextOffset.toString() : undefined,
+    }
+  }
+
   async queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView> {
     const snapshot = this.store.getSnapshot()
     return {
@@ -452,7 +489,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     const dashboardRange = localTrailingDaysRange(30)
     const todayRange = localTodayRange()
     const monthRange = localCurrentMonthRange()
-    const [directory, usageByModel, usageByCapability, usageByApp, usageTrend, usageToday, usageThisMonth] = await Promise.all([
+    const [directory, usageByModel, usageByCapability, usageByApp, usageTrend, usageToday, usageThisMonth, traceQuery] = await Promise.all([
       this.call<RawModelDirectory>('models.list', {}),
       this.queryUsage({
         time_range: toRawTimeRange(dashboardRange),
@@ -488,6 +525,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
         filters: {},
         output_mode: 'summary',
       }),
+      this.queryRouteTraces({ limit: 20 }),
     ])
     this.usageSummary = toUsageSummary({
       byModel: usageByModel,
@@ -498,7 +536,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     })
     this.usageTrend = toUsageTrend(usageTrend)
     const rawProviders = Array.isArray(directory.providers) ? directory.providers : []
-    return toStoreSnapshot(directory, rawProviders, [])
+    return toStoreSnapshot(directory, rawProviders, [], traceQuery.traces)
   }
 
   async addProvider(draft: WizardDraft): Promise<void> {
@@ -644,6 +682,24 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     } catch (error) {
       console.error('aicc.usage.query failed', error)
       return {}
+    }
+  }
+
+  async queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
+    try {
+      const raw = await this.call<RawTraceQueryResponse>('trace.query', {
+        limit: params.limit,
+        cursor: params.cursor,
+        task_ids: params.taskIds,
+        request_ids: params.requestIds,
+      })
+      return {
+        traces: toRouteTraces(raw),
+        nextCursor: asOptionalString(raw.next_cursor),
+      }
+    } catch (error) {
+      console.error('aicc.trace.query failed', error)
+      return { traces: [] }
     }
   }
 
@@ -928,6 +984,129 @@ function toUsageFinanceSnapshot(value: unknown): StoreSnapshot['usageEvents'][nu
   }
 }
 
+function toRouteTraces(raw: RawTraceQueryResponse): RouteTrace[] {
+  const traces = Array.isArray(raw.traces) ? raw.traces : []
+  return traces
+    .map((trace, index) => toRouteTrace(trace, index))
+    .filter((trace): trace is RouteTrace => trace !== null)
+}
+
+function toRouteTrace(value: unknown, index: number): RouteTrace | null {
+  const trace = asRecord(value)
+  const requestedModel = asOptionalString(trace.requested_model)
+  if (!requestedModel) return null
+  const selectedExactModel = asOptionalString(trace.selected_exact_model)
+  return {
+    request_id: asNonEmptyString(trace.request_id, `route-trace-${index}`),
+    session_id: asOptionalString(trace.session_id),
+    api_type: normalizeApiType(trace.api_type),
+    requested_model: requestedModel,
+    requested_model_type: trace.requested_model_type === 'exact' ? 'exact' : 'logical',
+    resolved_logical_path: asOptionalString(trace.resolved_logical_path),
+    selected_exact_model: selectedExactModel,
+    selected_provider_instance_name: asOptionalString(trace.selected_provider_instance_name)
+      ?? (selectedExactModel ? providerInstanceFromExactModel(selectedExactModel) : undefined),
+    ranked_candidates: toRankedCandidates(trace.ranked_candidates),
+    filtered_candidates: toFilteredCandidates(trace.filtered_candidates),
+    fallback_applied: asBoolean(trace.fallback_applied, false),
+    fallback_chain: toFallbackChain(trace.fallback_chain),
+    session_sticky_hit: asBoolean(trace.session_sticky_hit, false),
+    scheduler_profile: normalizeSchedulerProfile(trace.scheduler_profile) ?? 'balanced',
+    runtime_failover_count: asNumber(trace.runtime_failover_count, 0),
+    user_summary: toRouteUserSummary(trace.user_summary),
+    warnings: toStringArray(trace.warnings),
+  }
+}
+
+function toRankedCandidates(value: unknown): RouteTrace['ranked_candidates'] {
+  return Array.isArray(value)
+    ? value.map((item) => {
+      const candidate = asRecord(item)
+      return {
+        exact_model: asNonEmptyString(candidate.exact_model, 'unknown-model'),
+        final_score: asOptionalNumber(candidate.final_score),
+        selected: asBoolean(candidate.selected, false),
+        exact_model_weight: asOptionalNumber(candidate.exact_model_weight),
+        provider_weight: asOptionalNumber(candidate.provider_weight),
+        preference_score_inputs: toPreferenceScoreInputs(candidate.preference_score_inputs),
+      }
+    })
+    : []
+}
+
+function toPreferenceScoreInputs(value: unknown): RouteTrace['ranked_candidates'][number]['preference_score_inputs'] {
+  const inputs = asRecord(value)
+  const exactModelWeight = asOptionalNumber(inputs.exact_model_weight)
+  const providerWeight = asOptionalNumber(inputs.provider_weight)
+  const combinedWeight = asOptionalNumber(inputs.combined_weight)
+  const preferencePenalty = asOptionalNumber(inputs.preference_penalty)
+  if (
+    exactModelWeight == null ||
+    providerWeight == null ||
+    combinedWeight == null ||
+    preferencePenalty == null
+  ) {
+    return undefined
+  }
+  return {
+    exact_model_weight: exactModelWeight,
+    provider_weight: providerWeight,
+    combined_weight: combinedWeight,
+    preference_penalty: preferencePenalty,
+    exact_model_weight_effect: asNonEmptyString(inputs.exact_model_weight_effect, 'neutral'),
+    provider_weight_effect: asNonEmptyString(inputs.provider_weight_effect, 'neutral'),
+  }
+}
+
+function toFilteredCandidates(value: unknown): RouteTrace['filtered_candidates'] {
+  return Array.isArray(value)
+    ? value.map((item) => {
+      const candidate = asRecord(item)
+      return {
+        exact_model: asNonEmptyString(candidate.exact_model, 'unknown-model'),
+        reason: asNonEmptyString(candidate.reason, 'filtered'),
+      }
+    })
+    : []
+}
+
+function toFallbackChain(value: unknown): RouteTrace['fallback_chain'] {
+  return Array.isArray(value)
+    ? value.map((item) => {
+      const fallback = asRecord(item)
+      return {
+        from: asNonEmptyString(fallback.from, ''),
+        to: asNonEmptyString(fallback.to, ''),
+        reason: asNonEmptyString(fallback.reason, 'fallback'),
+      }
+    })
+    : []
+}
+
+function toRouteUserSummary(value: unknown): RouteTrace['user_summary'] {
+  const summary = asRecord(value)
+  const displayName = asOptionalString(summary.display_name)
+  const modelFamily = asOptionalString(summary.model_family)
+  const reasonShort = asOptionalString(summary.reason_short)
+  if (!displayName || !modelFamily || !reasonShort) return undefined
+  const providerOrigin = summary.provider_origin === 'local' || summary.provider_origin === 'proxy_unknown'
+    ? summary.provider_origin
+    : 'cloud'
+  return {
+    display_name: displayName,
+    model_family: modelFamily,
+    provider_origin: providerOrigin,
+    reason_short: reasonShort,
+    was_fallback: asBoolean(summary.was_fallback, false),
+    was_failover: asBoolean(summary.was_failover, false),
+  }
+}
+
+function normalizeApiType(value: unknown): ApiType {
+  const apiType = asOptionalString(value)
+  return apiType && API_TYPES.includes(apiType as ApiType) ? apiType as ApiType : 'llm'
+}
+
 function aggregateTokens(raw?: RawUsageAggregate): number {
   if (!raw) return 0
   return asNumber(raw.total_tokens, 0)
@@ -1011,6 +1190,15 @@ function usageEventMatchesQuery(event: StoreSnapshot['usageEvents'][number], par
   return true
 }
 
+function routeTraceMatchesQuery(trace: RouteTrace, params: RouteTracesQuery): boolean {
+  const taskIds = params.taskIds?.filter(Boolean) ?? []
+  const requestIds = params.requestIds?.filter(Boolean) ?? []
+  if (taskIds.length === 0 && requestIds.length === 0) return true
+  return taskIds.includes(trace.request_id) ||
+    (trace.session_id != null && taskIds.includes(trace.session_id)) ||
+    requestIds.includes(trace.request_id)
+}
+
 function includesFuzzy(value: string, query: string): boolean {
   return value.toLowerCase().includes(query.trim().toLowerCase())
 }
@@ -1039,6 +1227,7 @@ function toStoreSnapshot(
   directory: RawModelDirectory,
   rawProviders: RawProviderInventory[],
   usageEvents: StoreSnapshot['usageEvents'] = [],
+  routeTraces: RouteTrace[] = [],
 ): StoreSnapshot {
   const inventories = rawProviders.map(toProviderInventory)
   const cloudProviders = inventories
@@ -1062,7 +1251,7 @@ function toStoreSnapshot(
     providers: cloudProviders,
     usageEvents,
     routingView,
-    routeTraces: [],
+    routeTraces,
     localModels,
     aiStatus: computeAIStatus(cloudProviders, localModels, routingView),
   }

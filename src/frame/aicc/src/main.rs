@@ -21,8 +21,8 @@ use ::kRPC::*;
 use anyhow::Result;
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiccServerHandler,
-    BuckyOSRuntimeType, QueryUsageRequest, QueryUsageResponse, SystemConfigClient,
-    SystemConfigError, AICC_SERVICE_SERVICE_NAME,
+    BuckyOSRuntimeType, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
+    QueryUsageResponse, SystemConfigClient, SystemConfigError, AICC_SERVICE_SERVICE_NAME,
 };
 use buckyos_http_server::Runner;
 use buckyos_http_server::{
@@ -63,6 +63,7 @@ const METHOD_PROVIDER_ADD: &str = "provider.add";
 const METHOD_PROVIDER_DELETE: &str = "provider.delete";
 const METHOD_PROVIDER_REFRESH_MODELS: &str = "provider.refresh_models";
 const METHOD_USAGE_QUERY: &str = "usage.query";
+const METHOD_TRACE_QUERY: &str = "trace.query";
 const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
 const REDACTED_SECRET: &str = "***";
 const PROVIDER_VALIDATION_CACHE_TTL: Duration = Duration::from_secs(300);
@@ -1206,6 +1207,18 @@ impl AiccHttpServer {
         serde_json::to_value(response)
             .map_err(|err| RPCErrors::ReasonError(format!("serialize usage response: {}", err)))
     }
+
+    async fn handle_trace_query(&self, params: &Value) -> std::result::Result<Value, RPCErrors> {
+        let query: QueryRouteTraceRequest = serde_json::from_value(params.clone()).map_err(|err| {
+            RPCErrors::ReasonError(format!("invalid trace.query request: {}", err))
+        })?;
+        let response = match self.rpc_handler.0.usage_log_db() {
+            Some(db) => db.query_route_traces(&query).await?,
+            None => QueryRouteTraceResponse::default(),
+        };
+        serde_json::to_value(response)
+            .map_err(|err| RPCErrors::ReasonError(format!("serialize trace response: {}", err)))
+    }
 }
 
 fn filter_model_directory_by_path(mut value: Value, logical_path: &str) -> Value {
@@ -1320,6 +1333,10 @@ impl RPCHandler for AiccHttpServer {
         }
         if req.method == METHOD_USAGE_QUERY {
             let result = self.handle_usage_query(&req.params).await?;
+            return Ok(rpc_success(&req, result));
+        }
+        if req.method == METHOD_TRACE_QUERY {
+            let result = self.handle_trace_query(&req.params).await?;
             return Ok(rpc_success(&req, result));
         }
         self.rpc_handler.handle_rpc_call(req, ip_from).await

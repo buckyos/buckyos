@@ -66,8 +66,9 @@ fn create_service_spec_by_app_config(
     app_config: &AppServiceSpec,
 ) -> ServiceSpec {
     let spec_state = ServiceSpecState::from(app_config.state.clone());
+    let is_agent = app_config.app_doc.get_app_type() == AppType::Agent;
 
-    let mut need_container = app_config.app_doc.get_app_type() == AppType::Agent;
+    let mut need_container = is_agent;
     if !need_container {
         need_container = true;
         if app_config
@@ -90,7 +91,11 @@ fn create_service_spec_by_app_config(
         app_index: app_config.app_index,
         app_id: app_config.app_id().to_string(),
         owner_id: owner_user_id.to_string(),
-        spec_type: ServiceSpecType::App,
+        spec_type: if is_agent {
+            ServiceSpecType::Agent
+        } else {
+            ServiceSpecType::App
+        },
         state: spec_state,
         need_container,
         best_instance_count: app_config.expected_instance_count,
@@ -316,7 +321,7 @@ pub(crate) fn schedule_action_to_tx_actions(
             }
             let service_spec = service_spec.unwrap();
             match service_spec.spec_type {
-                ServiceSpecType::App => {
+                ServiceSpecType::App | ServiceSpecType::Agent => {
                     let set_state_action =
                         set_app_service_state(spec_id.as_str(), spec_status, input_config)?;
                     info!(
@@ -345,7 +350,7 @@ pub(crate) fn schedule_action_to_tx_actions(
             let service_spec = service_spec.unwrap();
             need_update_gateway_node_list.insert(new_instance.node_id.clone());
             match service_spec.spec_type {
-                ServiceSpecType::App => {
+                ServiceSpecType::App | ServiceSpecType::Agent => {
                     let instance_action =
                         instance_app_service(new_instance, &device_list, &input_config)?;
                     info!("will instance app pod: {}", new_instance.spec_id);
@@ -400,7 +405,7 @@ pub(crate) fn schedule_action_to_tx_actions(
                     }
                 });
             match service_spec.spec_type {
-                ServiceSpecType::App => {
+                ServiceSpecType::App | ServiceSpecType::Agent => {
                     info!("will uninstance app service: {}", instance.spec_id);
                     let uninstance_action = uninstance_app_service(&instance)?;
                     result.extend(uninstance_action);
@@ -422,7 +427,7 @@ pub(crate) fn schedule_action_to_tx_actions(
             }
             let service_spec = service_spec_opt.unwrap();
             match service_spec.spec_type {
-                ServiceSpecType::App => {
+                ServiceSpecType::App | ServiceSpecType::Agent => {
                     let update_action = update_app_service_instance(instance)?;
                     info!("will update app service instance: {}", instance.spec_id);
                     result.extend(update_action);
@@ -1304,6 +1309,12 @@ async fn update_rbac(
             ServiceSpecType::App => {
                 push_policy_line(&mut rbac_policy, format!("g, {}, app", service_spec.app_id));
             }
+            ServiceSpecType::Agent => {
+                push_policy_line(
+                    &mut rbac_policy,
+                    format!("g, {}, agent", service_spec.app_id),
+                );
+            }
             ServiceSpecType::Service => {
                 push_policy_line(
                     &mut rbac_policy,
@@ -1947,6 +1958,48 @@ mod tests {
         assert!(!policy.lines().any(|line| line.trim() == "g, bob, user"));
     }
 
+    #[tokio::test]
+    async fn test_build_schedule_plan_generates_agent_rbac_group() {
+        let zone_config = create_test_zone_config();
+        let device_ood1 = create_test_device_info("ood1", None);
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serde_json::to_string(&zone_config).unwrap(),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/settings".to_string(),
+            serde_json::to_string(&json!({
+                "type": "admin",
+                "user_id": "alice",
+                "password": "hashed",
+                "state": "active",
+                "res_pool_id": "default",
+                "is_local": true
+            }))
+            .unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/agents/buckyos_jarvis/spec".to_string(),
+            serde_json::to_string(&create_test_agent_spec()).unwrap(),
+        );
+
+        let plan = build_schedule_plan(&input_system_config, true)
+            .await
+            .expect("boot plan should build");
+        let policy = match plan.tx_actions.get("system/rbac/policy").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected rbac kv action: {:?}", other),
+        };
+
+        assert!(policy.contains("g, buckyos_jarvis, agent"));
+        assert!(!policy.contains("g, buckyos_jarvis, app"));
+    }
+
     #[test]
     fn test_create_scheduler_by_system_config_loads_agent_specs() {
         let zone_config = create_test_zone_config();
@@ -1986,7 +2039,7 @@ mod tests {
 
         assert_eq!(spec.app_id, "buckyos_jarvis");
         assert_eq!(spec.owner_id, "alice");
-        assert_eq!(spec.spec_type, ServiceSpecType::App);
+        assert_eq!(spec.spec_type, ServiceSpecType::Agent);
         assert!(spec.need_container);
     }
 
