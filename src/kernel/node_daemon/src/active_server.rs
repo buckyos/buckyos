@@ -4,7 +4,7 @@ use bns_client::{
     default_document_update, BnsApplyMutationsReq, BnsClientError, BnsEvmClientConfig,
     BnsEvmControllerClient, BnsEvmRawTxSubmitter, BnsEvmTxSubmission, BnsIndexerApi,
     BnsIndexerClient, BnsRegisterNameReq, CallAuthority, DocumentRef, DocumentUpdate,
-    MutationGuard, Principal, RegisterOptions, ZERO_HASH,
+    MutationGuard, OwnerPolicyUpdate, Principal, RegisterOptions, ZERO_HASH,
 };
 use buckyos_api::*;
 use buckyos_http_server::*;
@@ -562,6 +562,7 @@ impl ActiveServer {
                         name: zone_name.to_string(),
                         authority_key_updates: Vec::new(),
                         documents: updates,
+                        owner_policy: OwnerPolicyUpdate::none(),
                         authority: CallAuthority::owner(signer_principal, ""),
                         guard: MutationGuard {
                             expected_name_seq: name_state.name_seq,
