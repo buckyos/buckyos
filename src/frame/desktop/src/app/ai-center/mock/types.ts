@@ -243,6 +243,11 @@ export interface RouteTrace {
   resolved_logical_path?: string
   selected_exact_model?: string
   selected_provider_instance_name?: string
+  selected_provider_model_id?: string
+  provider_trace_id?: string
+  created_at_ms?: number
+  latency_ms?: number
+  duration_ms?: number
   ranked_candidates: Array<{
     exact_model: string
     final_score?: number

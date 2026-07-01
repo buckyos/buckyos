@@ -7,11 +7,13 @@ import {
   ArrowLeft,
   Box,
   Braces,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   Cloud,
   Code2,
+  Copy,
   Cpu,
   DollarSign,
   FileText,
@@ -66,7 +68,8 @@ type ModelGroup = {
 }
 
 type UseCaseKind = 'chat' | 'code' | 'plan' | 'image' | 'embed' | 'vision' | 'audio' | 'other'
-type TraceOutcomeFilter = 'all' | 'selected' | 'fallback' | 'unresolved' | 'warning'
+type TraceOutcomeFilter = 'all' | 'fallback' | 'failed' | 'warning'
+type TraceEmptyStateKind = 'none-yet' | 'load-failed' | 'no-matches'
 
 function emptyMultiFilter(): MultiFilter {
   return { query: '', selected: [] }
@@ -105,9 +108,8 @@ export function RoutingPage() {
   const [tracePageIndex, setTracePageIndex] = useState(0)
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
-  const [traceQuery, setTraceQuery] = useState('')
   const [traceOutcomeFilter, setTraceOutcomeFilter] = useState<TraceOutcomeFilter>('all')
-  const [traceProviderFilter, setTraceProviderFilter] = useState('')
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
 
   const snapshotModels = useMemo(() => [
     ...providers.flatMap((provider) => provider.status.discovered_models),
@@ -201,24 +203,33 @@ export function RoutingPage() {
     () => new Map(visibleScenarios.map((scenario) => [scenario.node.path, scenario])),
     [visibleScenarios],
   )
+  const allScenarioByPath = useMemo(
+    () => new Map(scenarios.map((scenario) => [scenario.node.path, scenario])),
+    [scenarios],
+  )
   const queryActive = query.trim().length > 0 || Object.values(filters).some((value) => value.query.trim().length > 0 || value.selected.length > 0)
   const directoryEntries = visibleScenarios
   const selectedScenario = visibleScenarios.find((scenario) => scenario.node.path === selectedPath)
     ?? directoryEntries[0]
     ?? visibleScenarios[0]
-  const traceProviderOptions = useMemo(
-    () => uniqueSorted(traces
-      .map((trace) => trace.selected_provider_instance_name)
-      .filter((provider): provider is string => Boolean(provider))),
-    [traces],
-  )
+  const selectedTracePath = selectedTraceId
+    ? traceLogicalPath(traces.find((trace) => trace.request_id === selectedTraceId))
+    : null
+  const activeTracePath = selectedTracePath ?? selectedPath
   const visibleTraces = useMemo(
     () => traces
-      .filter((trace) => traceMatchesQuery(trace, traceQuery))
-      .filter((trace) => traceMatchesOutcome(trace, traceOutcomeFilter))
-      .filter((trace) => !traceProviderFilter || trace.selected_provider_instance_name === traceProviderFilter),
-    [traceOutcomeFilter, traceProviderFilter, traceQuery, traces],
+      .filter((trace) => !activeTracePath || traceMatchesScenarioPath(trace, activeTracePath))
+      .filter((trace) => traceMatchesOutcome(trace, traceOutcomeFilter)),
+    [activeTracePath, traceOutcomeFilter, traces],
   )
+  const traceEmptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, Boolean(activeTracePath), traceOutcomeFilter)
+  const retryTraceLoad = () => {
+    if (traceError === 'initial') {
+      void loadTracePage(tracePageIndex)
+    } else {
+      void loadMoreTraces()
+    }
+  }
 
   if (routingView.logical_tree.length === 0) {
     return (
@@ -313,25 +324,34 @@ export function RoutingPage() {
           <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
           <TraceExplorer
             traces={visibleTraces}
-            totalCount={traces.length}
+            loadedCount={traces.length}
             compact={isMobile}
-            query={traceQuery}
             outcomeFilter={traceOutcomeFilter}
-            providerFilter={traceProviderFilter}
-            providerOptions={traceProviderOptions}
+            activeLogicalPath={activeTracePath}
+            activeTraceId={selectedTraceId}
             hasMore={Boolean(traceNextCursor)}
             pageIndex={tracePageIndex}
             canGoPrevious={false}
             canGoNext={false}
             loading={traceLoading}
             error={traceError}
-            onQueryChange={setTraceQuery}
             onOutcomeFilterChange={setTraceOutcomeFilter}
-            onProviderFilterChange={setTraceProviderFilter}
             onLoadMore={loadMoreTraces}
-            onRetry={loadMoreTraces}
+            onRetry={retryTraceLoad}
             onPreviousPage={() => undefined}
             onNextPage={() => undefined}
+            onTraceSelect={(trace) => {
+              const logicalPath = traceLogicalPath(trace)
+              setSelectedTraceId(trace.request_id)
+              if (logicalPath && allScenarioByPath.has(logicalPath)) {
+                setSelectedPath(logicalPath)
+              }
+            }}
+            onClearScenarioFilter={() => {
+              setSelectedTraceId(null)
+              setSelectedPath(null)
+            }}
+            emptyState={traceEmptyState}
           />
         </div>
       ) : (
@@ -346,6 +366,7 @@ export function RoutingPage() {
               selected={selectedScenario?.node.path === scenario.node.path}
               onSelect={() => {
                 setSelectedPath(scenario.node.path)
+                setSelectedTraceId(null)
                 if (isMobile) setShowMobileScenarioDetail(true)
               }}
               onOpen={() => {
@@ -369,25 +390,34 @@ export function RoutingPage() {
 
       {!isMobile && <TraceExplorer
         traces={visibleTraces}
-        totalCount={traces.length}
+        loadedCount={traces.length}
         compact={isMobile}
-        query={traceQuery}
         outcomeFilter={traceOutcomeFilter}
-        providerFilter={traceProviderFilter}
-        providerOptions={traceProviderOptions}
+        activeLogicalPath={activeTracePath}
+        activeTraceId={selectedTraceId}
         hasMore={isMobile && Boolean(traceNextCursor)}
         pageIndex={tracePageIndex}
         canGoPrevious={!isMobile && tracePageIndex > 0}
         canGoNext={!isMobile && Boolean(traceNextCursor)}
         loading={traceLoading}
         error={traceError}
-        onQueryChange={setTraceQuery}
         onOutcomeFilterChange={setTraceOutcomeFilter}
-        onProviderFilterChange={setTraceProviderFilter}
         onLoadMore={loadMoreTraces}
-        onRetry={loadMoreTraces}
+        onRetry={retryTraceLoad}
         onPreviousPage={() => void loadTracePage(tracePageIndex - 1)}
         onNextPage={() => void loadTracePage(tracePageIndex + 1)}
+        onTraceSelect={(trace) => {
+          const logicalPath = traceLogicalPath(trace)
+          setSelectedTraceId(trace.request_id)
+          if (logicalPath && allScenarioByPath.has(logicalPath)) {
+            setSelectedPath(logicalPath)
+          }
+        }}
+        onClearScenarioFilter={() => {
+          setSelectedTraceId(null)
+          setSelectedPath(null)
+        }}
+        emptyState={traceEmptyState}
       />}
     </div>
   )
@@ -840,48 +870,54 @@ function ModelGroupRow({
 
 function TraceExplorer({
   traces,
-  totalCount,
+  loadedCount,
   compact,
-  query,
   outcomeFilter,
-  providerFilter,
-  providerOptions,
+  activeLogicalPath,
+  activeTraceId,
   hasMore,
   pageIndex,
   canGoPrevious,
   canGoNext,
   loading,
   error,
-  onQueryChange,
   onOutcomeFilterChange,
-  onProviderFilterChange,
   onLoadMore,
   onRetry,
   onPreviousPage,
   onNextPage,
+  onTraceSelect,
+  onClearScenarioFilter,
+  emptyState,
 }: {
   traces: RouteTrace[]
-  totalCount: number
+  loadedCount: number
   compact: boolean
-  query: string
   outcomeFilter: TraceOutcomeFilter
-  providerFilter: string
-  providerOptions: string[]
+  activeLogicalPath: string | null
+  activeTraceId: string | null
   hasMore: boolean
   pageIndex: number
   canGoPrevious: boolean
   canGoNext: boolean
   loading: boolean
   error: 'initial' | 'more' | null
-  onQueryChange: (value: string) => void
   onOutcomeFilterChange: (value: TraceOutcomeFilter) => void
-  onProviderFilterChange: (value: string) => void
   onLoadMore: () => void
   onRetry: () => void
   onPreviousPage: () => void
   onNextPage: () => void
+  onTraceSelect: (trace: RouteTrace) => void
+  onClearScenarioFilter: () => void
+  emptyState: TraceEmptyStateKind
 }) {
   const { t } = useI18n()
+  const segmentOptions: Array<{ key: TraceOutcomeFilter; label: string }> = [
+    { key: 'all', label: t('aiCenter.routing.traceSegmentAll', 'All') },
+    { key: 'fallback', label: t('aiCenter.routing.traceSegmentFallback', 'Fallback') },
+    { key: 'failed', label: t('aiCenter.routing.traceSegmentFailed', 'Failed') },
+    { key: 'warning', label: t('aiCenter.routing.traceSegmentWarnings', 'Warnings') },
+  ]
   return (
     <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
@@ -890,54 +926,51 @@ function TraceExplorer({
           <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.routeTraceAudit', 'Route Trace Audit')}</h3>
         </div>
         <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-          {t('aiCenter.routing.traceVisibleCount', '{{visible}} / {{total}} traces', { visible: traces.length, total: totalCount })}
+          {t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: pageIndex + 1, count: loadedCount })}
         </div>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-[minmax(220px,1fr)_180px_220px] gap-2 mb-3">
-        <div className="flex min-h-9 items-center gap-2 rounded-md px-2" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
-          <Search size={15} style={{ color: 'var(--cp-muted)' }} />
-          <input
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            placeholder={t('aiCenter.routing.traceSearch', 'Search path, model, provider, reason...')}
-            className="min-w-0 flex-1 bg-transparent text-sm outline-none"
-            style={{ color: 'var(--cp-text)' }}
-          />
-        </div>
-        <select
-          value={outcomeFilter}
-          onChange={(event) => onOutcomeFilterChange(event.target.value as TraceOutcomeFilter)}
-          className="min-h-9 rounded-md px-2 text-sm outline-none"
-          style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-        >
-          <option value="all">{t('aiCenter.routing.traceOutcomeAll', 'All outcomes')}</option>
-          <option value="selected">{t('aiCenter.routing.traceOutcomeSelected', 'Selected')}</option>
-          <option value="fallback">{t('aiCenter.routing.traceOutcomeFallback', 'Fallback')}</option>
-          <option value="unresolved">{t('aiCenter.routing.traceOutcomeUnresolved', 'Unresolved')}</option>
-          <option value="warning">{t('aiCenter.routing.traceOutcomeWarning', 'Warnings')}</option>
-        </select>
-        <select
-          value={providerFilter}
-          onChange={(event) => onProviderFilterChange(event.target.value)}
-          className="min-h-9 rounded-md px-2 text-sm outline-none"
-          style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-        >
-          <option value="">{t('aiCenter.routing.traceProviderAll', 'All providers')}</option>
-          {providerFilter && !providerOptions.includes(providerFilter) && (
-            <option value={providerFilter}>{providerFilter}</option>
-          )}
-          {providerOptions.map((provider) => (
-            <option key={provider} value={provider}>{provider}</option>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-h-9 flex-wrap items-center gap-1 rounded-lg p-1" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
+          {segmentOptions.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => onOutcomeFilterChange(option.key)}
+              className="rounded-md px-3 py-1.5 text-xs font-medium"
+              style={{
+                background: outcomeFilter === option.key ? 'var(--cp-surface-2)' : 'transparent',
+                color: outcomeFilter === option.key ? 'var(--cp-text)' : 'var(--cp-muted)',
+                border: outcomeFilter === option.key ? '1px solid var(--cp-border)' : '1px solid transparent',
+              }}
+            >
+              {option.label}
+            </button>
           ))}
-        </select>
+        </div>
+        {activeLogicalPath && (
+          <button
+            type="button"
+            onClick={onClearScenarioFilter}
+            className="min-h-9 rounded-md px-3 text-xs font-medium"
+            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+            title={activeLogicalPath}
+          >
+            {t('aiCenter.routing.traceLinkedScenario', 'Scenario')}: {activeLogicalPath}
+          </button>
+        )}
       </div>
       <div className={compact ? 'flex flex-col gap-3' : 'grid grid-cols-1 gap-3'}>
         {traces.map((trace) => (
-          <TraceCard key={trace.request_id} trace={trace} />
+          <TraceCard
+            key={trace.request_id}
+            trace={trace}
+            active={trace.request_id === activeTraceId}
+            onSelect={() => onTraceSelect(trace)}
+          />
         ))}
         {traces.length === 0 && (
           <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
-            {t('aiCenter.routing.traceNoMatches', 'No route traces match the current search and filters.')}
+            {traceEmptyStateLabel(emptyState, t)}
           </div>
         )}
       </div>
@@ -956,7 +989,7 @@ function TraceExplorer({
         canGoNext={canGoNext}
         pageIndex={pageIndex}
         loadedCount={traces.length}
-        totalCount={totalCount}
+        totalCount={loadedCount}
         labels={{
           previous: t('aiCenter.routing.tracePreviousPage', 'Previous'),
           next: t('aiCenter.routing.traceNextPage', 'Next'),
@@ -965,71 +998,169 @@ function TraceExplorer({
           loadMore: t('aiCenter.routing.traceLoadMore', 'Load more'),
           retry: t('common.retry', 'Retry'),
           error: t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces'),
-          loaded: t('aiCenter.routing.traceVisibleCount', '{{visible}} / {{total}} traces', { visible: traces.length, total: totalCount }),
+          loaded: t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: pageIndex + 1, count: loadedCount }),
         }}
       />
     </section>
   )
 }
 
-function TraceCard({ trace }: { trace: RouteTrace }) {
+function TraceCard({
+  trace,
+  active,
+  onSelect,
+}: {
+  trace: RouteTrace
+  active: boolean
+  onSelect: () => void
+}) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const selectedCandidate = selectedTraceCandidate(trace)
-  const visibleCandidates = expanded
+  const visibleRankedCandidates = expanded
     ? trace.ranked_candidates
-    : selectedCandidate ? [selectedCandidate] : []
-  const hiddenCandidateCount = Math.max(0, trace.ranked_candidates.length - visibleCandidates.length)
+    : selectedCandidate ? [selectedCandidate] : trace.ranked_candidates.slice(0, 2)
+  const hiddenCandidateCount = Math.max(0, trace.ranked_candidates.length - visibleRankedCandidates.length)
+  const status = traceStatus(trace)
+  const providerTraceId = trace.provider_trace_id
+  const metaItems = [
+    trace.selected_provider_instance_name ? `${t('aiCenter.routing.provider', 'Provider')}: ${trace.selected_provider_instance_name}` : '',
+    trace.selected_provider_model_id ? `${t('aiCenter.routing.providerModel', 'Provider model')}: ${trace.selected_provider_model_id}` : '',
+    `${t('aiCenter.routing.profile', 'Profile')}: ${trace.scheduler_profile}`,
+    trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '',
+    formatTraceDuration(trace),
+  ].filter(Boolean)
+  const copyFields = [
+    { key: 'request_id', label: 'request_id', value: trace.request_id },
+    { key: 'requested_model', label: 'requested_model', value: trace.requested_model },
+    { key: 'selected_exact_model', label: 'selected_exact_model', value: trace.selected_exact_model },
+    { key: 'provider_trace_id', label: 'provider trace id', value: providerTraceId },
+  ].filter((item): item is { key: string; label: string; value: string } => Boolean(item.value))
+
+  const copyField = async (key: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopiedKey(key)
+      window.setTimeout(() => setCopiedKey(null), 1200)
+    } catch {
+      setCopiedKey(null)
+    }
+  }
 
   return (
-    <article className="rounded-lg p-3" style={{ background: 'var(--cp-bg)' }}>
+    <article
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect()
+        }
+      }}
+      className="rounded-lg p-3 text-left"
+      style={{
+        background: active ? 'var(--cp-surface-2)' : 'var(--cp-bg)',
+        border: `1px solid ${active ? 'var(--cp-accent)' : 'transparent'}`,
+      }}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="truncate text-sm font-mono" style={{ color: 'var(--cp-text)' }}>{trace.requested_model}</div>
-          <div className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {trace.selected_exact_model
-              ? `${trace.selected_exact_model} / ${trace.selected_provider_instance_name}`
-              : t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="max-w-full truncate text-sm font-mono" style={{ color: 'var(--cp-text)' }}>{trace.requested_model}</span>
+            <span style={{ color: 'var(--cp-muted)' }}>{'->'}</span>
+            <span className="max-w-full truncate text-sm font-mono" style={{ color: trace.selected_exact_model ? 'var(--cp-text)' : 'var(--cp-danger)' }}>
+              {trace.selected_exact_model ?? t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
+            </span>
           </div>
+          <div className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>{metaItems.join(' / ')}</div>
         </div>
-        <StatusBadge status={trace.selected_exact_model ? (trace.fallback_applied ? 'warning' : 'ok') : 'error'} label={trace.scheduler_profile} />
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {trace.warnings.length > 0 && (
+            <StatusBadge status="warning" label={t('aiCenter.routing.traceWarnings', '{{count}} warnings', { count: trace.warnings.length })} />
+          )}
+          <StatusBadge status={status === 'selected' ? 'ok' : status === 'fallback' ? 'warning' : 'error'} label={status} />
+        </div>
       </div>
       <p className="text-sm mt-2" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
 
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {copyFields.map((field) => (
+          <button
+            key={field.key}
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              void copyField(field.key, field.value)
+            }}
+            className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-md px-2 text-xs"
+            style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}
+            title={field.value}
+          >
+            {copiedKey === field.key ? <Check size={13} /> : <Copy size={13} />}
+            <span className="truncate">{field.label}</span>
+          </button>
+        ))}
+      </div>
+
       <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
-        <div className="mb-1 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-          {t('aiCenter.routing.traceFinalSelection', 'Final selection')}
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+            {t('aiCenter.routing.rankedCandidates', 'Ranked candidates')}
+          </div>
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {trace.ranked_candidates.length}
+          </div>
         </div>
-        {selectedCandidate ? (
-          <TraceCandidateRow candidate={selectedCandidate} selected />
+        {visibleRankedCandidates.length > 0 ? (
+          <div className="flex flex-col gap-1">
+            {visibleRankedCandidates.map((candidate, index) => (
+              <TraceCandidateRow
+                key={candidate.exact_model}
+                candidate={candidate}
+                rank={rankedCandidateRank(trace, candidate, index)}
+                selected={candidate.selected}
+                reason={candidate.selected ? 'selected' : trace.fallback_applied && candidate.exact_model === trace.selected_exact_model ? 'fallback' : 'ranked'}
+              />
+            ))}
+          </div>
         ) : (
-          <div className="text-xs" style={{ color: trace.selected_exact_model ? 'var(--cp-text)' : 'var(--cp-warning)' }}>
-            {trace.selected_exact_model ?? t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {t('aiCenter.routing.noRankedCandidates', 'No ranked candidates.')}
           </div>
         )}
       </div>
 
-      {expanded && visibleCandidates.length > 0 && (
-        <div className="mt-3 flex flex-col gap-1">
-          {visibleCandidates.map((candidate) => (
-            <TraceCandidateRow key={candidate.exact_model} candidate={candidate} selected={candidate.selected} />
-          ))}
+      <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+            {t('aiCenter.routing.filteredOut', 'Filtered out')}
+          </div>
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {trace.filtered_candidates.length}
+          </div>
         </div>
-      )}
-      {expanded && trace.filtered_candidates.length > 0 && (
-        <div className="mt-3 flex flex-col gap-1">
-          {trace.filtered_candidates.map((candidate) => (
-            <div key={candidate.exact_model} className="flex flex-col gap-0.5 text-xs">
-              <span style={{ color: 'var(--cp-warning)' }}>{candidate.exact_model}</span>
-              <span style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
-            </div>
-          ))}
-        </div>
-      )}
+        {trace.filtered_candidates.length > 0 ? (
+          <div className="flex flex-col gap-1">
+            {trace.filtered_candidates.map((candidate) => (
+              <TraceFilteredCandidateRow key={candidate.exact_model} candidate={candidate} />
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {t('aiCenter.routing.noFilteredCandidates', 'No candidates were filtered out.')}
+          </div>
+        )}
+      </div>
+
       {(trace.ranked_candidates.length > 1 || trace.filtered_candidates.length > 0) && (
         <button
           type="button"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={(event) => {
+            event.stopPropagation()
+            setExpanded((value) => !value)
+          }}
           className="mt-3 inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium"
           style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
         >
@@ -1040,7 +1171,13 @@ function TraceCard({ trace }: { trace: RouteTrace }) {
         </button>
       )}
       {trace.warnings.length > 0 && (
-        <div className="text-xs mt-2" style={{ color: 'var(--cp-warning)' }}>{trace.warnings.join(' / ')}</div>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {trace.warnings.map((warning) => (
+            <span key={warning} className="rounded-md px-2 py-1 text-xs" style={{ color: 'var(--cp-warning)', background: 'var(--cp-surface)' }}>
+              {warning}
+            </span>
+          ))}
+        </div>
       )}
     </article>
   )
@@ -1048,20 +1185,47 @@ function TraceCard({ trace }: { trace: RouteTrace }) {
 
 function TraceCandidateRow({
   candidate,
+  rank,
   selected,
+  reason,
 }: {
   candidate: RouteTrace['ranked_candidates'][number]
+  rank: number
   selected: boolean
+  reason: string
 }) {
   return (
-    <div className="flex justify-between gap-3 text-xs">
-      <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-muted)' }}>
-        <span className="block truncate">{candidate.exact_model}</span>
+    <div
+      className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs"
+      style={{
+        background: selected ? 'var(--cp-bg)' : 'transparent',
+        border: `1px solid ${selected ? 'var(--cp-accent)' : 'transparent'}`,
+      }}
+    >
+      <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-text)' }}>
+        <span className="block truncate">
+          #{rank} {candidate.exact_model}
+        </span>
         <span className="block" style={{ color: 'var(--cp-muted)' }}>
           {candidateWeightSummary(candidate)}
         </span>
       </span>
-      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{candidate.final_score?.toFixed(2)}</span>
+      <span className="shrink-0 text-right" style={{ color: 'var(--cp-muted)' }}>
+        <span className="block">{candidate.final_score != null ? candidate.final_score.toFixed(2) : '-'}</span>
+        <span className="block">{reason}</span>
+      </span>
+    </div>
+  )
+}
+
+function TraceFilteredCandidateRow({ candidate }: { candidate: RouteTrace['filtered_candidates'][number] }) {
+  return (
+    <div className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs">
+      <span className="min-w-0">
+        <span className="block truncate" style={{ color: 'var(--cp-warning)' }}>{candidate.exact_model}</span>
+        <span className="block" style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
+      </span>
+      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>filtered</span>
     </div>
   )
 }
@@ -1482,31 +1646,66 @@ function selectedTraceCandidate(trace: RouteTrace): RouteTrace['ranked_candidate
     ?? trace.ranked_candidates.find((candidate) => candidate.exact_model === trace.selected_exact_model)
 }
 
-function traceMatchesQuery(trace: RouteTrace, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase()
-  if (!normalizedQuery) return true
-  const haystack = [
-    trace.request_id,
-    trace.requested_model,
-    trace.resolved_logical_path ?? '',
-    trace.selected_exact_model ?? '',
-    trace.selected_provider_instance_name ?? '',
-    trace.scheduler_profile,
-    trace.user_summary?.reason_short ?? '',
-    ...trace.warnings,
-    ...trace.ranked_candidates.map((candidate) => candidate.exact_model),
-    ...trace.filtered_candidates.flatMap((candidate) => [candidate.exact_model, candidate.reason]),
-  ].join(' ').toLowerCase()
-  return haystack.includes(normalizedQuery)
-}
-
 function traceMatchesOutcome(trace: RouteTrace, filter: TraceOutcomeFilter): boolean {
   if (filter === 'all') return true
-  if (filter === 'selected') return Boolean(trace.selected_exact_model)
   if (filter === 'fallback') return trace.fallback_applied
-  if (filter === 'unresolved') return !trace.selected_exact_model
+  if (filter === 'failed') return !trace.selected_exact_model
   if (filter === 'warning') return trace.warnings.length > 0
   return true
+}
+
+function traceMatchesScenarioPath(trace: RouteTrace, path: string): boolean {
+  return traceLogicalPath(trace) === path
+}
+
+function traceLogicalPath(trace?: RouteTrace): string | null {
+  if (!trace) return null
+  return trace.resolved_logical_path ?? (trace.requested_model_type === 'logical' ? trace.requested_model : null)
+}
+
+function traceStatus(trace: RouteTrace): 'selected' | 'fallback' | 'failed' {
+  if (!trace.selected_exact_model) return 'failed'
+  return trace.fallback_applied ? 'fallback' : 'selected'
+}
+
+function rankedCandidateRank(
+  trace: RouteTrace,
+  candidate: RouteTrace['ranked_candidates'][number],
+  fallbackIndex: number,
+): number {
+  const index = trace.ranked_candidates.findIndex((item) => item.exact_model === candidate.exact_model)
+  return (index >= 0 ? index : fallbackIndex) + 1
+}
+
+function traceEmptyStateKind(
+  loadedCount: number,
+  visibleCount: number,
+  error: 'initial' | 'more' | null,
+  hasScenarioFilter: boolean,
+  outcomeFilter: TraceOutcomeFilter,
+): TraceEmptyStateKind {
+  if (loadedCount === 0 && error === 'initial') return 'load-failed'
+  if (loadedCount === 0) return 'none-yet'
+  if (visibleCount === 0 && (hasScenarioFilter || outcomeFilter !== 'all')) return 'no-matches'
+  return 'no-matches'
+}
+
+function traceEmptyStateLabel(kind: TraceEmptyStateKind, t: (key: string, fallback: string) => string): string {
+  if (kind === 'load-failed') return t('aiCenter.routing.traceLoadFailed', 'Failed to load traces')
+  if (kind === 'none-yet') return t('aiCenter.routing.traceNoneYet', 'No route traces yet')
+  return t('aiCenter.routing.traceNoMatches', 'No traces match current scenario/filter')
+}
+
+function formatTraceTime(createdAtMs: number): string {
+  const date = new Date(createdAtMs)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString()
+}
+
+function formatTraceDuration(trace: RouteTrace): string {
+  const value = trace.duration_ms ?? trace.latency_ms
+  if (value == null) return ''
+  return `${value}ms`
 }
 
 function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number]): string {

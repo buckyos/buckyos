@@ -1006,6 +1006,11 @@ function toRouteTrace(value: unknown, index: number): RouteTrace | null {
     selected_exact_model: selectedExactModel,
     selected_provider_instance_name: asOptionalString(trace.selected_provider_instance_name)
       ?? (selectedExactModel ? providerInstanceFromExactModel(selectedExactModel) : undefined),
+    selected_provider_model_id: asOptionalString(trace.selected_provider_model_id),
+    provider_trace_id: asOptionalString(trace.provider_trace_id),
+    created_at_ms: asOptionalNumber(trace.created_at_ms),
+    latency_ms: asOptionalNumber(trace.latency_ms),
+    duration_ms: asOptionalNumber(trace.duration_ms),
     ranked_candidates: toRankedCandidates(trace.ranked_candidates),
     filtered_candidates: toFilteredCandidates(trace.filtered_candidates),
     fallback_applied: asBoolean(trace.fallback_applied, false),
