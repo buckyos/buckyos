@@ -1538,6 +1538,26 @@ async fn generate_device_session_token(
     return Ok(device_session_token_jwt);
 }
 
+async fn add_discovered_device_info_cache(discovered_oods: &HashMap<String, DiscoveredNode>) {
+    for node in discovered_oods.values() {
+        let device_did = node.device_doc.id.clone();
+        if let Err(err) =
+            name_client::add_device_info_cache(device_did.clone(), node.device_info.clone()).await
+        {
+            warn!(
+                "add discovered device info cache failed, did={:?}, err={}",
+                device_did, err
+            );
+        } else {
+            info!(
+                "add discovered device info cache, did={:?}, ips={:?}",
+                device_did,
+                node.device_info.merged_ips()
+            );
+        }
+    }
+}
+
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");
@@ -1730,22 +1750,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         HashMap::new()
     };
 
-    // 把发现到的设备文档塞进 DID cache，让后续 RTCP / name-client 解析能直接拿到 endpoint。
-    for node in discovered_oods.values() {
-        let device_did = node.device_doc.id.clone();
-        let device_doc_enc = EncodedDocument::Jwt(node.device_doc_jwt.clone());
-        if let Err(err) = update_did_cache(device_did.clone(), None, device_doc_enc).await {
-            warn!(
-                "update did cache for discovered device failed, did={:?}, err={}",
-                device_did, err
-            );
-        } else {
-            info!(
-                "update did cache for discovered device, did={:?}, ips={:?}",
-                device_did, node.device_doc.ips
-            );
-        }
-    }
+    add_discovered_device_info_cache(&discovered_oods).await;
 
     // SN host name 解析（wan 系节点不需要 SN keep_tunnel）。
     let sn_host_name =
@@ -2036,6 +2041,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(path);
     }
 
+    struct EmptyNameProvider;
+
+    #[async_trait::async_trait]
+    impl name_client::NsProvider for EmptyNameProvider {
+        fn get_id(&self) -> String {
+            "empty-test-provider".to_string()
+        }
+
+        async fn query(
+            &self,
+            name: &str,
+            _record_type: Option<name_client::RecordType>,
+            _from_ip: Option<std::net::IpAddr>,
+        ) -> name_lib::NSResult<name_client::NameInfo> {
+            Ok(name_client::NameInfo::new(name))
+        }
+
+        async fn query_did(
+            &self,
+            did: &DID,
+            doc_type: Option<&str>,
+            _from_ip: Option<std::net::IpAddr>,
+        ) -> name_lib::NSResult<EncodedDocument> {
+            Err(name_lib::NSError::NotFound(format!(
+                "{}#{}",
+                did.to_string(),
+                doc_type.unwrap_or("")
+            )))
+        }
+    }
+
+    async fn ensure_name_client_for_tests() {
+        if name_client::GLOBAL_NAME_CLIENT.get().is_none() {
+            let client = name_client::NameClient::new(name_client::NameClientConfig {
+                enable_cache: true,
+                cache_backend: name_client::CacheBackend::Memory,
+                ..Default::default()
+            });
+            let _ = name_client::GLOBAL_NAME_CLIENT.set(client);
+            let _ = name_client::IS_NAME_LIB_INITED.set(true);
+        }
+        name_client::GLOBAL_NAME_CLIENT
+            .get()
+            .unwrap()
+            .add_provider(Box::new(EmptyNameProvider), Some(-100))
+            .await;
+    }
+
+    fn unique_test_id(prefix: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("{}-{}", prefix, nanos)
+    }
+
+    fn discovered_node_for_cache(peer_did: DID, endpoint_ip: std::net::IpAddr) -> DiscoveredNode {
+        let mut device_doc = DeviceConfig::new(
+            "ood2",
+            "Bb325f2ed0XSxrPS5sKQaX7ylY9Jh9rfevXiidKA1zc".to_string(),
+        );
+        device_doc.id = peer_did;
+        device_doc.zone_did = Some(DID::new("bns", "alice"));
+        device_doc.owner = DID::new("bns", "alice");
+        let mut device_info = DeviceInfo::from_device_doc(&device_doc);
+        device_info.arch.clear();
+        device_info.os.clear();
+        device_info.update_time = buckyos_get_unix_timestamp();
+        device_info.device_doc.ips.push(endpoint_ip);
+        device_info.all_ip.push(endpoint_ip);
+
+        DiscoveredNode {
+            node_id: "ood2".to_string(),
+            device_doc,
+            device_info,
+            device_doc_jwt: String::new(),
+            addr: std::net::SocketAddr::new(endpoint_ip, 2980),
+            rtcp_port: 2980,
+            last_seen: buckyos_get_unix_timestamp(),
+            from_cache: false,
+        }
+    }
+
     fn index_test_pkg(pkg_env_path: &Path, unique_name: &str, version: &str) -> (String, String) {
         let owner = DID::from_str("did:bns:test").unwrap();
         let pkg_name = format!("{}.{}", PackageEnvConfig::get_default_prefix(), unique_name);
@@ -2106,6 +2194,43 @@ mod tests {
             .await;
 
         store_mgr
+    }
+
+    #[tokio::test]
+    async fn test_discovered_device_info_cache_updates_resolve_ips_only() {
+        ensure_name_client_for_tests().await;
+        let peer_did = DID::new("finder-test", unique_test_id("node-daemon-peer").as_str());
+        let endpoint_ip = "192.168.1.22".parse().unwrap();
+        let node = discovered_node_for_cache(peer_did.clone(), endpoint_ip);
+        let mut discovered = HashMap::new();
+        discovered.insert(node.node_id.clone(), node);
+
+        assert!(name_client::resolve_ips(peer_did.to_string().as_str())
+            .await
+            .is_err());
+
+        add_discovered_device_info_cache(&discovered).await;
+
+        assert_eq!(
+            name_client::resolve_ips(peer_did.to_string().as_str())
+                .await
+                .unwrap(),
+            vec![endpoint_ip]
+        );
+        assert!(name_client::resolve_did(&peer_did, None).await.is_err());
+
+        let resolved_info = name_client::resolve_did_ex(
+            &peer_did,
+            Some(name_client::DOC_TYPE_INFO),
+            name_client::ResolvePolicy::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resolved_info.document_metadata.buckyos.document_status,
+            None
+        );
+        assert_eq!(resolved_info.document_metadata.deactivated, None);
     }
 
     #[tokio::test]

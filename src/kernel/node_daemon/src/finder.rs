@@ -1,7 +1,7 @@
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_service_local_data_dir};
 use log::*;
 use name_lib::{
-    decode_jwt_claim_without_verify, DIDDocumentTrait, DeviceConfig, EncodedDocument,
+    decode_jwt_claim_without_verify, DIDDocumentTrait, DeviceConfig, DeviceInfo, EncodedDocument,
     ZoneBootConfig,
 };
 use serde::{Deserialize, Serialize};
@@ -77,6 +77,7 @@ impl LookingForResp {
 pub struct DiscoveredNode {
     pub node_id: String,
     pub device_doc: DeviceConfig,
+    pub device_info: DeviceInfo,
     pub device_doc_jwt: String,
     pub addr: SocketAddr,
     pub rtcp_port: u16,
@@ -115,6 +116,7 @@ pub struct FinderCacheEntry {
     pub node_id: String,
     pub device_did: String,
     pub device_doc_jwt: String,
+    pub device_info: Option<DeviceInfo>,
     pub net_id: Option<String>,
     pub rtcp_port: Option<u32>,
     pub endpoints: Vec<FinderEndpoint>,
@@ -235,9 +237,8 @@ impl NodeFinder {
                     }
                 };
 
-                let identity = match verify_finder_identity(
+                let identity = match verify_finder_request_identity(
                     req.iam.as_str(),
-                    FINDER_REQ_TYPE,
                     req.seq,
                     &context.zone_boot_config,
                     context.owner_public_key.as_ref(),
@@ -389,12 +390,14 @@ impl NodeFinderClient {
         let context = self.context.as_ref().ok_or_else(|| {
             anyhow!("NodeFinderClient requires new_for_zone before loading cache")
         })?;
-        load_valid_cache_entries(
+        let discovered = load_valid_cache_entries(
             self.cache_path.as_path(),
             &context.zone_boot_config,
             context.owner_public_key.as_ref(),
             self.cache_ttl_secs,
-        )
+        )?;
+        add_discovered_device_info_cache(&discovered);
+        Ok(discovered)
     }
 
     pub async fn looking_oods_by_udpv4(
@@ -520,6 +523,7 @@ impl NodeFinderClient {
             zone_id.as_str(),
             discovered.values(),
         )?;
+        add_discovered_device_info_cache(&discovered);
         Ok(discovered)
     }
 
@@ -544,9 +548,8 @@ impl NodeFinderClient {
         if resp.seq != seq {
             return Err(anyhow!("response seq mismatch"));
         }
-        let identity = verify_finder_identity(
+        let identity = verify_finder_response_identity(
             resp.resp.as_str(),
-            FINDER_RESP_TYPE,
             seq,
             &context.zone_boot_config,
             context.owner_public_key.as_ref(),
@@ -561,13 +564,16 @@ impl NodeFinderClient {
             .rtcp_port
             .and_then(|port| u16::try_from(port).ok())
             .unwrap_or(DEFAULT_RTCP_PORT);
+        let now = buckyos_get_unix_timestamp();
+        let device_info = build_discovered_device_info(&identity.device_doc, addr.ip(), now);
         Ok(DiscoveredNode {
             node_id: identity.device_doc.name.clone(),
             device_doc_jwt: identity.claims.device_doc_jwt,
             device_doc: identity.device_doc,
+            device_info,
             addr: SocketAddr::new(addr.ip(), rtcp_port),
             rtcp_port,
-            last_seen: buckyos_get_unix_timestamp(),
+            last_seen: now,
             from_cache: false,
         })
     }
@@ -628,12 +634,45 @@ fn build_finder_identity_jwt(
         .map_err(|err| anyhow!("encode finder identity jwt failed: {}", err))
 }
 
+fn verify_finder_request_identity(
+    jwt: &str,
+    expected_seq: u64,
+    zone_boot_config: &ZoneBootConfig,
+    owner_public_key: &DecodingKey,
+) -> Result<VerifiedFinderIdentity> {
+    verify_finder_identity(
+        jwt,
+        FINDER_REQ_TYPE,
+        expected_seq,
+        zone_boot_config,
+        owner_public_key,
+        false,
+    )
+}
+
+fn verify_finder_response_identity(
+    jwt: &str,
+    expected_seq: u64,
+    zone_boot_config: &ZoneBootConfig,
+    owner_public_key: &DecodingKey,
+) -> Result<VerifiedFinderIdentity> {
+    verify_finder_identity(
+        jwt,
+        FINDER_RESP_TYPE,
+        expected_seq,
+        zone_boot_config,
+        owner_public_key,
+        true,
+    )
+}
+
 fn verify_finder_identity(
     jwt: &str,
     expected_msg_type: &str,
     expected_seq: u64,
     zone_boot_config: &ZoneBootConfig,
     owner_public_key: &DecodingKey,
+    require_ood: bool,
 ) -> Result<VerifiedFinderIdentity> {
     let claims_value = decode_jwt_claim_without_verify(jwt)?;
     let claims: FinderIdentityClaims = serde_json::from_value(claims_value)?;
@@ -661,7 +700,10 @@ fn verify_finder_identity(
     if device_doc.name != claims.node_id {
         return Err(anyhow!("finder node_id does not match device doc"));
     }
-    validate_ood_device(&device_doc, zone_boot_config)?;
+    validate_zone_device(&device_doc, zone_boot_config)?;
+    if require_ood {
+        validate_ood_device(&device_doc, zone_boot_config)?;
+    }
 
     let (device_public_key, _) = device_doc
         .get_auth_key(None)
@@ -680,13 +722,10 @@ fn decode_device_doc(device_doc_jwt: &str, owner_public_key: &DecodingKey) -> Re
     Ok(device_doc)
 }
 
-fn validate_ood_device(device_doc: &DeviceConfig, zone_boot_config: &ZoneBootConfig) -> Result<()> {
-    if !zone_boot_config.device_is_ood(device_doc.name.as_str()) {
-        return Err(anyhow!(
-            "device {} is not an OOD in ZoneBootConfig",
-            device_doc.name
-        ));
-    }
+fn validate_zone_device(
+    device_doc: &DeviceConfig,
+    zone_boot_config: &ZoneBootConfig,
+) -> Result<()> {
     if let Some(zone_did) = zone_boot_config.id.as_ref() {
         if device_doc.zone_did.as_ref() != Some(zone_did) {
             return Err(anyhow!("device {} zone_did mismatch", device_doc.name));
@@ -696,6 +735,17 @@ fn validate_ood_device(device_doc: &DeviceConfig, zone_boot_config: &ZoneBootCon
         if &device_doc.owner != owner {
             return Err(anyhow!("device {} owner mismatch", device_doc.name));
         }
+    }
+    Ok(())
+}
+
+fn validate_ood_device(device_doc: &DeviceConfig, zone_boot_config: &ZoneBootConfig) -> Result<()> {
+    validate_zone_device(device_doc, zone_boot_config)?;
+    if !zone_boot_config.device_is_ood(device_doc.name.as_str()) {
+        return Err(anyhow!(
+            "device {} is not an OOD in ZoneBootConfig",
+            device_doc.name
+        ));
     }
     Ok(())
 }
@@ -715,6 +765,44 @@ fn expected_ood_names(zone_boot_config: &ZoneBootConfig) -> HashSet<String> {
         .filter(|ood| ood.node_type.is_ood())
         .map(|ood| ood.name.clone())
         .collect()
+}
+
+fn push_unique_ip(ips: &mut Vec<IpAddr>, ip: IpAddr) {
+    if !ips.contains(&ip) {
+        ips.push(ip);
+    }
+}
+
+fn build_discovered_device_info(
+    device_doc: &DeviceConfig,
+    endpoint_ip: IpAddr,
+    seen_at: u64,
+) -> DeviceInfo {
+    let mut device_doc = device_doc.clone();
+    push_unique_ip(&mut device_doc.ips, endpoint_ip);
+    let mut device_info = DeviceInfo::from_device_doc(&device_doc);
+    device_info.arch.clear();
+    device_info.os.clear();
+    device_info.update_time = seen_at;
+    push_unique_ip(&mut device_info.all_ip, endpoint_ip);
+    device_info
+}
+
+fn add_discovered_device_info_cache(discovered: &HashMap<String, DiscoveredNode>) {
+    let Some(name_client) = name_client::GLOBAL_NAME_CLIENT.get() else {
+        return;
+    };
+    for node in discovered.values() {
+        let device_did = node.device_doc.id.clone();
+        if let Err(err) =
+            name_client.add_device_info_cache(device_did.clone(), node.device_info.clone())
+        {
+            warn!(
+                "add discovered device info cache failed, did={:?}, err={}",
+                device_did, err
+            );
+        }
+    }
 }
 
 fn load_valid_cache_entries(
@@ -762,11 +850,19 @@ fn load_valid_cache_entries(
             .rtcp_port
             .and_then(|port| u16::try_from(port).ok())
             .unwrap_or(endpoint.rtcp_port);
+        let mut device_info = entry.device_info.clone().unwrap_or_else(|| {
+            build_discovered_device_info(&device_doc, endpoint.ip, entry.last_seen)
+        });
+        device_info.device_doc = device_doc.clone();
+        push_unique_ip(&mut device_info.device_doc.ips, endpoint.ip);
+        push_unique_ip(&mut device_info.all_ip, endpoint.ip);
+        device_info.update_time = entry.last_seen;
         result.insert(
             entry.node_id.clone(),
             DiscoveredNode {
                 node_id: entry.node_id.clone(),
                 device_doc,
+                device_info,
                 device_doc_jwt: entry.device_doc_jwt.clone(),
                 addr: SocketAddr::new(endpoint.ip, rtcp_port),
                 rtcp_port,
@@ -796,6 +892,7 @@ fn save_finder_cache<'a>(
                 node_id: node.node_id.clone(),
                 device_did: node.device_doc.id.to_string(),
                 device_doc_jwt: node.device_doc_jwt.clone(),
+                device_info: Some(node.device_info.clone()),
                 net_id: node.device_doc.net_id.clone(),
                 rtcp_port: node.device_doc.rtcp_port,
                 endpoints: vec![endpoint],
@@ -818,6 +915,7 @@ mod tests {
     use jsonwebtoken::jwk::Jwk;
     use name_lib::{DeviceNodeType, OODDescriptionString, DID};
     use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     const OWNER_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
@@ -864,14 +962,83 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         }
     }
 
-    fn signed_device_doc(name: &str, public_x: &str) -> String {
+    struct EmptyNameProvider;
+
+    #[async_trait::async_trait]
+    impl name_client::NsProvider for EmptyNameProvider {
+        fn get_id(&self) -> String {
+            "empty-test-provider".to_string()
+        }
+
+        async fn query(
+            &self,
+            name: &str,
+            _record_type: Option<name_client::RecordType>,
+            _from_ip: Option<IpAddr>,
+        ) -> name_lib::NSResult<name_client::NameInfo> {
+            Ok(name_client::NameInfo::new(name))
+        }
+
+        async fn query_did(
+            &self,
+            did: &DID,
+            doc_type: Option<&str>,
+            _from_ip: Option<IpAddr>,
+        ) -> name_lib::NSResult<EncodedDocument> {
+            Err(name_lib::NSError::NotFound(format!(
+                "{}#{}",
+                did.to_string(),
+                doc_type.unwrap_or("")
+            )))
+        }
+    }
+
+    async fn ensure_name_client_for_tests() {
+        if name_client::GLOBAL_NAME_CLIENT.get().is_none() {
+            let client = name_client::NameClient::new(name_client::NameClientConfig {
+                enable_cache: true,
+                cache_backend: name_client::CacheBackend::Memory,
+                ..Default::default()
+            });
+            let _ = name_client::GLOBAL_NAME_CLIENT.set(client);
+            let _ = name_client::IS_NAME_LIB_INITED.set(true);
+        }
+        name_client::GLOBAL_NAME_CLIENT
+            .get()
+            .unwrap()
+            .add_provider(Box::new(EmptyNameProvider), Some(-100))
+            .await;
+    }
+
+    fn unique_test_id(prefix: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("{}-{}", prefix, nanos)
+    }
+
+    fn signed_device_doc_with(
+        name: &str,
+        public_x: &str,
+        device_type: &str,
+        did: Option<DID>,
+    ) -> String {
         let mut device_doc = DeviceConfig::new(name, public_x.to_string());
+        if let Some(did) = did {
+            device_doc.id = did;
+        }
+        device_doc.device_type = device_type.to_string();
         device_doc.zone_did = Some(DID::new("bns", "alice"));
         device_doc.owner = DID::new("bns", "alice");
         device_doc
             .encode(Some(&encoding_key(OWNER_PRIVATE_KEY)))
             .unwrap()
             .to_string()
+    }
+
+    fn signed_device_doc(name: &str, public_x: &str) -> String {
+        signed_device_doc_with(name, public_x, "ood", None)
     }
 
     #[test]
@@ -889,9 +1056,8 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         )
         .unwrap();
 
-        let verified = verify_finder_identity(
+        let verified = verify_finder_response_identity(
             jwt.as_str(),
-            FINDER_RESP_TYPE,
             42,
             &zone_boot_config,
             &decoding_key(OWNER_PUBLIC_X),
@@ -901,9 +1067,34 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
     }
 
     #[test]
-    fn finder_identity_rejects_non_ood_device() {
+    fn finder_request_accepts_non_ood_zone_device() {
         let zone_boot_config = test_zone_boot_config();
-        let node_doc_jwt = signed_device_doc("node1", OOD2_PUBLIC_X);
+        let node_doc_jwt = signed_device_doc_with("node1", OOD2_PUBLIC_X, "node", None);
+        let jwt = build_finder_identity_jwt(
+            FINDER_REQ_TYPE,
+            zone_id_string(&zone_boot_config).as_str(),
+            "node1",
+            Some(FINDER_TARGET_ALL),
+            42,
+            node_doc_jwt.as_str(),
+            &encoding_key(OOD2_PRIVATE_KEY),
+        )
+        .unwrap();
+
+        let verified = verify_finder_request_identity(
+            jwt.as_str(),
+            42,
+            &zone_boot_config,
+            &decoding_key(OWNER_PUBLIC_X),
+        )
+        .unwrap();
+        assert_eq!(verified.device_doc.name, "node1");
+    }
+
+    #[test]
+    fn finder_response_rejects_non_ood_device() {
+        let zone_boot_config = test_zone_boot_config();
+        let node_doc_jwt = signed_device_doc_with("node1", OOD2_PUBLIC_X, "node", None);
         let jwt = build_finder_identity_jwt(
             FINDER_RESP_TYPE,
             zone_id_string(&zone_boot_config).as_str(),
@@ -915,9 +1106,8 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         )
         .unwrap();
 
-        let err = verify_finder_identity(
+        let err = verify_finder_response_identity(
             jwt.as_str(),
-            FINDER_RESP_TYPE,
             42,
             &zone_boot_config,
             &decoding_key(OWNER_PUBLIC_X),
@@ -926,20 +1116,79 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         assert!(err.to_string().contains("not an OOD"));
     }
 
+    #[tokio::test]
+    async fn finder_load_cached_oods_adds_device_info_cache() {
+        ensure_name_client_for_tests().await;
+        let temp_dir = std::env::temp_dir().join(unique_test_id("buckyos-finder-cache-load"));
+        let cache_path = temp_dir.join(FINDER_CACHE_FILE);
+        let zone_boot_config = test_zone_boot_config();
+        let peer_did = DID::new("finder-test", unique_test_id("cached-ood2").as_str());
+        let ood1_doc_jwt = signed_device_doc("ood1", OOD1_PUBLIC_X);
+        let ood2_doc_jwt =
+            signed_device_doc_with("ood2", OOD2_PUBLIC_X, "ood", Some(peer_did.clone()));
+        let ood2_doc =
+            decode_device_doc(ood2_doc_jwt.as_str(), &decoding_key(OWNER_PUBLIC_X)).unwrap();
+        let endpoint_ip: IpAddr = "192.168.1.21".parse().unwrap();
+        let device_info =
+            build_discovered_device_info(&ood2_doc, endpoint_ip, buckyos_get_unix_timestamp());
+        let node = DiscoveredNode {
+            node_id: "ood2".to_string(),
+            device_doc: ood2_doc,
+            device_info,
+            device_doc_jwt: ood2_doc_jwt,
+            addr: SocketAddr::new(endpoint_ip, DEFAULT_RTCP_PORT),
+            rtcp_port: DEFAULT_RTCP_PORT,
+            last_seen: buckyos_get_unix_timestamp(),
+            from_cache: false,
+        };
+
+        save_finder_cache(
+            cache_path.as_path(),
+            zone_id_string(&zone_boot_config).as_str(),
+            [&node],
+        )
+        .unwrap();
+        assert!(name_client::resolve_ips(peer_did.to_string().as_str())
+            .await
+            .is_err());
+
+        let client = NodeFinderClient::new_for_zone(
+            ood1_doc_jwt,
+            encoding_key(OOD1_PRIVATE_KEY),
+            zone_boot_config,
+            decoding_key(OWNER_PUBLIC_X),
+        )
+        .unwrap()
+        .with_cache_path(cache_path);
+        let cached = client.load_cached_oods().unwrap();
+
+        assert!(cached.get("ood2").unwrap().from_cache);
+        assert_eq!(
+            name_client::resolve_ips(peer_did.to_string().as_str())
+                .await
+                .unwrap(),
+            vec![endpoint_ip]
+        );
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
     #[test]
     fn finder_cache_round_trip_keeps_verified_nodes() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "buckyos-finder-test-{}",
-            buckyos_get_unix_timestamp()
-        ));
+        let temp_dir = std::env::temp_dir().join(unique_test_id("buckyos-finder-test"));
         let cache_path = temp_dir.join(FINDER_CACHE_FILE);
         let zone_boot_config = test_zone_boot_config();
         let ood2_doc_jwt = signed_device_doc("ood2", OOD2_PUBLIC_X);
         let ood2_doc =
             decode_device_doc(ood2_doc_jwt.as_str(), &decoding_key(OWNER_PUBLIC_X)).unwrap();
+        let device_info = build_discovered_device_info(
+            &ood2_doc,
+            "192.168.1.20".parse().unwrap(),
+            buckyos_get_unix_timestamp(),
+        );
         let node = DiscoveredNode {
             node_id: "ood2".to_string(),
             device_doc: ood2_doc,
+            device_info,
             device_doc_jwt: ood2_doc_jwt,
             addr: "192.168.1.20:2980".parse().unwrap(),
             rtcp_port: DEFAULT_RTCP_PORT,
@@ -966,6 +1215,10 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
             cached_node.addr.ip(),
             "192.168.1.20".parse::<IpAddr>().unwrap()
         );
+        assert!(cached_node
+            .device_info
+            .merged_ips()
+            .contains(&"192.168.1.20".parse::<IpAddr>().unwrap()));
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 
