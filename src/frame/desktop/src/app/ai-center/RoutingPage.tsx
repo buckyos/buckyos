@@ -98,6 +98,7 @@ export function RoutingPage() {
   const providers = useProviders()
   const localModels = useLocalModels()
   const isMobile = useMediaQuery('(max-width: 767px)')
+  const isCompactDesktop = useMediaQuery('(min-width: 768px) and (max-width: 1100px)')
   const [query, setQuery] = useState('')
   const [filters, setFilters] = useState<RoutingFilters>(() => defaultRoutingFilters())
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -355,8 +356,34 @@ export function RoutingPage() {
           />
         </div>
       ) : (
-      <div className={isMobile ? 'flex flex-col gap-4' : 'grid grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)] gap-5 items-start'}>
-        <section className="flex flex-col gap-3">
+      <div className={isMobile || isCompactDesktop ? 'flex flex-col gap-4' : 'grid grid-cols-[220px_minmax(0,1fr)_360px] gap-4 items-start'}>
+        {!isMobile && (
+          <DirectoryNavigator
+            nodes={routingView.logical_tree}
+            currentPath={currentPath}
+            selectedPath={selectedPath}
+            onNavigate={(path) => {
+              setCurrentPath(path)
+              setSelectedPath(path)
+              setSelectedTraceId(null)
+              setShowMobileScenarioDetail(false)
+            }}
+          />
+        )}
+        <section className="flex min-w-0 flex-col gap-3">
+          <div className="flex items-center justify-between gap-3 rounded-xl px-3 py-2" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+            <div className="min-w-0">
+              <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+                {t('aiCenter.routing.currentDirectory', 'Current directory')}
+              </div>
+              <div className="truncate text-sm font-mono" title={currentPath ?? 'Routing'} style={{ color: 'var(--cp-text)' }}>
+                {currentPath ?? 'Routing'}
+              </div>
+            </div>
+            <span className="shrink-0 text-xs" style={{ color: 'var(--cp-muted)' }}>
+              {directoryEntries.length} {t('aiCenter.routing.scenarios', 'scenarios')}
+            </span>
+          </div>
           {directoryEntries.length > 0 ? directoryEntries.map((scenario) => (
             <ScenarioCard
               key={scenario.node.path}
@@ -380,45 +407,44 @@ export function RoutingPage() {
           )}
         </section>
 
-        <aside className="flex flex-col gap-4">
+        <aside className="flex min-w-0 flex-col gap-4">
           {selectedScenario && (
             <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
           )}
+          {!isMobile && <TraceExplorer
+            traces={visibleTraces}
+            loadedCount={traces.length}
+            compact={false}
+            outcomeFilter={traceOutcomeFilter}
+            activeLogicalPath={activeTracePath}
+            activeTraceId={selectedTraceId}
+            hasMore={Boolean(traceNextCursor)}
+            pageIndex={tracePageIndex}
+            canGoPrevious={tracePageIndex > 0}
+            canGoNext={Boolean(traceNextCursor)}
+            loading={traceLoading}
+            error={traceError}
+            onOutcomeFilterChange={setTraceOutcomeFilter}
+            onLoadMore={loadMoreTraces}
+            onRetry={retryTraceLoad}
+            onPreviousPage={() => void loadTracePage(tracePageIndex - 1)}
+            onNextPage={() => void loadTracePage(tracePageIndex + 1)}
+            onTraceSelect={(trace) => {
+              const logicalPath = traceLogicalPath(trace)
+              setSelectedTraceId(trace.request_id)
+              if (logicalPath && allScenarioByPath.has(logicalPath)) {
+                setSelectedPath(logicalPath)
+              }
+            }}
+            onClearScenarioFilter={() => {
+              setSelectedTraceId(null)
+              setSelectedPath(null)
+            }}
+            emptyState={traceEmptyState}
+          />}
         </aside>
       </div>
       )}
-
-      {!isMobile && <TraceExplorer
-        traces={visibleTraces}
-        loadedCount={traces.length}
-        compact={isMobile}
-        outcomeFilter={traceOutcomeFilter}
-        activeLogicalPath={activeTracePath}
-        activeTraceId={selectedTraceId}
-        hasMore={isMobile && Boolean(traceNextCursor)}
-        pageIndex={tracePageIndex}
-        canGoPrevious={!isMobile && tracePageIndex > 0}
-        canGoNext={!isMobile && Boolean(traceNextCursor)}
-        loading={traceLoading}
-        error={traceError}
-        onOutcomeFilterChange={setTraceOutcomeFilter}
-        onLoadMore={loadMoreTraces}
-        onRetry={retryTraceLoad}
-        onPreviousPage={() => void loadTracePage(tracePageIndex - 1)}
-        onNextPage={() => void loadTracePage(tracePageIndex + 1)}
-        onTraceSelect={(trace) => {
-          const logicalPath = traceLogicalPath(trace)
-          setSelectedTraceId(trace.request_id)
-          if (logicalPath && allScenarioByPath.has(logicalPath)) {
-            setSelectedPath(logicalPath)
-          }
-        }}
-        onClearScenarioFilter={() => {
-          setSelectedTraceId(null)
-          setSelectedPath(null)
-        }}
-        emptyState={traceEmptyState}
-      />}
     </div>
   )
 }
@@ -573,6 +599,100 @@ function MultiSelectFilter({
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function DirectoryNavigator({
+  nodes,
+  currentPath,
+  selectedPath,
+  onNavigate,
+}: {
+  nodes: LogicalNode[]
+  currentPath: string | null
+  selectedPath: string | null
+  onNavigate: (path: string | null) => void
+}) {
+  const { t } = useI18n()
+  return (
+    <aside className="sticky top-4 flex max-h-[calc(100dvh-10rem)] min-w-0 flex-col overflow-hidden rounded-xl" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      <div className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderBottom: '1px solid var(--cp-border)' }}>
+        <div className="flex min-w-0 items-center gap-2">
+          <FolderTree size={15} style={{ color: 'var(--cp-accent)' }} />
+          <span className="truncate text-xs font-medium" style={{ color: 'var(--cp-text)' }}>
+            {t('aiCenter.routing.logicalDirectory', 'Logical directory')}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => onNavigate(null)}
+          className="shrink-0 rounded-md px-2 py-1 text-xs"
+          style={{ color: currentPath == null ? 'var(--cp-text)' : 'var(--cp-accent)' }}
+        >
+          {t('aiCenter.routing.root', 'Root')}
+        </button>
+      </div>
+      <div className="min-h-0 overflow-y-auto p-2">
+        <DirectoryNodeList
+          nodes={nodes}
+          depth={0}
+          currentPath={currentPath}
+          selectedPath={selectedPath}
+          onNavigate={onNavigate}
+        />
+      </div>
+    </aside>
+  )
+}
+
+function DirectoryNodeList({
+  nodes,
+  depth,
+  currentPath,
+  selectedPath,
+  onNavigate,
+}: {
+  nodes: LogicalNode[]
+  depth: number
+  currentPath: string | null
+  selectedPath: string | null
+  onNavigate: (path: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      {nodes.filter(isLogicalDirectoryNode).map((node) => {
+        const active = node.path === currentPath || node.path === selectedPath
+        const children = (node.children ?? []).filter(isLogicalDirectoryNode)
+        return (
+          <div key={node.path} className="min-w-0">
+            <button
+              type="button"
+              onClick={() => onNavigate(node.path)}
+              className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-xs"
+              title={node.path}
+              style={{
+                paddingLeft: `${8 + depth * 12}px`,
+                background: active ? 'var(--cp-surface-2)' : 'transparent',
+                color: active ? 'var(--cp-text)' : 'var(--cp-muted)',
+                border: active ? '1px solid var(--cp-border)' : '1px solid transparent',
+              }}
+            >
+              {children.length > 0 ? <FolderTree size={13} className="shrink-0" /> : <Box size={13} className="shrink-0" />}
+              <span className="min-w-0 truncate font-mono">{lastPathSegment(node.path)}</span>
+            </button>
+            {children.length > 0 && depth < 3 && (
+              <DirectoryNodeList
+                nodes={children}
+                depth={depth + 1}
+                currentPath={currentPath}
+                selectedPath={selectedPath}
+                onNavigate={onNavigate}
+              />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

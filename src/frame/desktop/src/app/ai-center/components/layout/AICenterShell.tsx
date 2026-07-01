@@ -26,7 +26,7 @@ export function AICenterShell({ children }: AICenterShellProps) {
           style={{ background: 'var(--cp-bg)' }}
         >
           <div
-            className={isMobile ? 'px-4 py-4' : 'px-8 py-6 max-w-5xl mx-auto'}
+            className={isMobile ? 'px-4 py-4' : 'px-8 py-6 max-w-[1440px] mx-auto'}
             style={isMobile ? { paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' } : undefined}
           >
             {children(currentPage, setCurrentPage)}

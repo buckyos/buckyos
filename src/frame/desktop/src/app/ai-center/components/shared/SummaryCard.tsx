@@ -7,6 +7,7 @@ interface SummaryCardProps {
   subtitle?: string
   variant?: 'default' | 'warning' | 'error'
   action?: { label: string; onClick: () => void }
+  onClick?: () => void
 }
 
 const variantBorderColor: Record<string, string> = {
@@ -22,10 +23,21 @@ export function SummaryCard({
   subtitle,
   variant = 'default',
   action,
+  onClick,
 }: SummaryCardProps) {
   return (
     <div
-      className="rounded-xl p-4 min-h-[124px] flex flex-col gap-1"
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (!onClick) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onClick()
+        }
+      }}
+      className={`rounded-xl p-4 min-h-[124px] flex flex-col gap-1 text-left outline-none transition ${onClick ? 'cursor-pointer hover:shadow-sm focus-visible:ring-2 focus-visible:ring-[color:var(--cp-accent)]' : ''}`}
       style={{
         background: 'var(--cp-surface)',
         border: '1px solid var(--cp-border)',

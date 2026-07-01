@@ -8,6 +8,7 @@ import type { AuthStatus, ModelMetadata, ProviderView } from '../../../../api/ai
 
 type TFn = (k: string, f: string) => string
 type FilterKey = 'apiType' | 'logicalMount' | 'health' | 'costClass' | 'latencyClass' | 'tier'
+type ProviderDetailSection = 'overview' | 'routing' | 'inventory'
 type MultiFilter = {
   query: string
   selected: string[]
@@ -73,7 +74,7 @@ export function ProviderDetailPanel({ provider, routingWeight, onDeleted }: Prov
 function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: ProviderDetailPanelProps) {
   const { t } = useI18n()
   const store = useAICCStore()
-  const [showModels, setShowModels] = useState(true)
+  const [activeSection, setActiveSection] = useState<ProviderDetailSection>('overview')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -263,6 +264,30 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
         </div>
       </div>
 
+      <div className="flex min-h-10 flex-wrap items-center gap-1 rounded-xl p-1" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+        {([
+          ['overview', t('aiCenter.providers.overview', 'Overview')],
+          ['routing', t('aiCenter.providers.routing', 'Routing')],
+          ['inventory', t('aiCenter.providers.inventory', 'Inventory')],
+        ] as Array<[ProviderDetailSection, string]>).map(([section, label]) => (
+          <button
+            key={section}
+            type="button"
+            onClick={() => setActiveSection(section)}
+            className="min-h-8 rounded-lg px-3 text-xs font-medium"
+            style={{
+              background: activeSection === section ? 'var(--cp-surface-2)' : 'transparent',
+              color: activeSection === section ? 'var(--cp-text)' : 'var(--cp-muted)',
+              border: activeSection === section ? '1px solid var(--cp-border)' : '1px solid transparent',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeSection === 'overview' && (
+      <>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,2fr)]">
         <div className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <div className="min-w-0 text-xs" style={{ color: 'var(--cp-muted)' }}>
@@ -315,7 +340,11 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
           value={config.auto_sync_models ? t('common.on', 'On') : t('common.off', 'Off')}
         />
       </div>
+      </>
+      )}
 
+      {activeSection === 'routing' && (
+      <>
       <div
         className="rounded-xl p-4 flex flex-col gap-3"
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
@@ -386,18 +415,10 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
         </InlineNotice>
       )}
       {refreshError && <InlineNotice tone="error">{refreshError}</InlineNotice>}
+      </>
+      )}
 
-      <button
-        type="button"
-        onClick={() => setShowModels(!showModels)}
-        className="inline-flex items-center gap-1 text-sm self-start"
-        style={{ color: 'var(--cp-accent)' }}
-      >
-        {showModels ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        {t('aiCenter.providers.inventory', 'Provider Inventory')}
-      </button>
-
-      {showModels && (
+      {activeSection === 'inventory' && (
         <div className="flex flex-col gap-3">
           <InventoryToolbar
             t={t}

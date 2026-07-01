@@ -17,6 +17,7 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
   const providers = useProviders()
   const routingView = useGlobalRoutingView()
   const isMobile = useMediaQuery('(max-width: 767px)')
+  const isCompactDesktop = useMediaQuery('(min-width: 768px) and (max-width: 1100px)')
   const [selectedId, setSelectedId] = useState<string | null>(
     providers.length > 0 ? providers[0].config.id : null,
   )
@@ -89,10 +90,10 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
 
   // Desktop: split view
   return (
-    <div className="flex gap-6 -mx-8 -my-6 h-full">
+    <div className={`${isCompactDesktop ? 'flex flex-col' : 'flex'} gap-6 -mx-8 -my-6 h-full`}>
       <div
-        className="w-80 shrink-0 py-4 px-4 overflow-y-auto"
-        style={{ borderRight: '1px solid var(--cp-border)' }}
+        className={isCompactDesktop ? 'max-h-72 shrink-0 overflow-y-auto px-4 py-4' : 'w-80 shrink-0 overflow-y-auto px-4 py-4'}
+        style={isCompactDesktop ? { borderBottom: '1px solid var(--cp-border)' } : { borderRight: '1px solid var(--cp-border)' }}
       >
         <ProviderList
           providers={providers}

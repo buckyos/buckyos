@@ -381,24 +381,28 @@ export function UsageDashboard() {
             title: t('aiCenter.home.credit', 'SN Credit'),
             value: snCredit != null ? `${snCredit} Credit` : '-',
             subtitle: snProvider ? `${snProvider.account.pricing_mode} / top up available` : undefined,
+            onClick: () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
           },
           {
             icon: <DollarSign size={18} />,
             title: t('aiCenter.home.estimatedCost', 'Est. Cost'),
             value: formatUsd(summary.total_estimated_cost, true),
             subtitle: t('aiCenter.home.costEstimated', 'Estimated from usage events'),
+            onClick: () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
           },
           {
             icon: <Wallet size={18} />,
             title: t('aiCenter.home.balanceOverview', 'Balance Overview'),
             value: balanceOverviewValue,
             subtitle: balanceOverviewSubtitle,
+            onClick: () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
           },
           {
             icon: <Activity size={18} />,
             title: t('aiCenter.home.requests', 'Requests'),
             value: summary.total_requests.toString(),
             subtitle: t('aiCenter.home.totalRequests', 'Total requests'),
+            onClick: () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
           },
         ]}
       />
@@ -484,61 +488,6 @@ export function UsageDashboard() {
           <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatUsd(summary.total_estimated_cost, true)} />
         </div>
       </section>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Breakdown
-          title={t('aiCenter.home.byProvider', 'By Provider Instance')}
-          rows={sortedEntries(summary.by_provider)}
-          total={summary.total_tokens}
-          activeLabel={providerFilter.selected.length === 1 && !providerFilter.query ? providerFilter.selected[0] : undefined}
-          onSelect={(label) => applyBreakdownFilter('provider', label)}
-          viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
-          showLessLabel={t('aiCenter.home.showLess', 'Show less')}
-          filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
-          emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
-        />
-        <Breakdown
-          title={t('aiCenter.home.byModel', 'By Exact Model')}
-          rows={sortedEntries(summary.by_model)}
-          total={summary.total_tokens}
-          activeLabel={modelFilter.selected.length === 1 && !modelFilter.query ? modelFilter.selected[0] : undefined}
-          onSelect={(label) => applyBreakdownFilter('model', label)}
-          viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
-          showLessLabel={t('aiCenter.home.showLess', 'Show less')}
-          filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
-          emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
-        />
-        <Breakdown
-          title={t('aiCenter.home.byApp', 'By App / Agent')}
-          rows={sortedEntries(summary.by_app)}
-          total={summary.total_tokens}
-          activeLabel={appAgentFilter.selected.length === 1 && !appAgentFilter.query ? appAgentFilter.selected[0] : undefined}
-          onSelect={(label) => applyBreakdownFilter('appAgent', label)}
-          viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
-          showLessLabel={t('aiCenter.home.showLess', 'Show less')}
-          filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
-          emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
-        />
-      </div>
-
-      {recentTraces.length > 0 && (
-        <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Route size={16} style={{ color: 'var(--cp-accent)' }} />
-              <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-                {t('aiCenter.home.recentRouteTrace', 'Recent Route Traces')}
-              </h3>
-            </div>
-            <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>{recentTraces.length}</span>
-          </div>
-          <div className="grid grid-cols-1 gap-2">
-            {recentTraces.map((trace) => (
-              <RecentTraceCard key={trace.request_id} trace={trace} />
-            ))}
-          </div>
-        </section>
-      )}
 
       <section ref={detailRef} className="rounded-xl overflow-hidden scroll-mt-4" style={{ border: '1px solid var(--cp-border)' }}>
         <div className="px-4 py-3 flex flex-col gap-3" style={{ background: 'var(--cp-surface)' }}>
@@ -636,10 +585,21 @@ export function UsageDashboard() {
             />
           </div>
         </div>
-        <div className="hidden overflow-x-auto md:block">
-          <table className="w-full min-w-[940px]">
-            <thead>
-              <tr style={{ background: 'var(--cp-bg)' }}>
+        <div className="hidden max-h-[560px] overflow-auto md:block">
+          <table className="w-full min-w-[1120px] table-fixed">
+            <colgroup>
+              <col className="w-[108px]" />
+              <col className="w-[160px]" />
+              <col className="w-[250px]" />
+              <col className="w-[108px]" />
+              <col className="w-[180px]" />
+              <col className="w-[210px]" />
+              <col className="w-[90px]" />
+              <col className="w-[86px]" />
+              <col className="w-[82px]" />
+            </colgroup>
+            <thead className="sticky top-0 z-10">
+              <tr style={{ background: 'var(--cp-bg)', boxShadow: '0 1px 0 var(--cp-border)' }}>
                 {['Time', 'Provider', 'Exact Model', 'API Type', 'App / Agent', 'Task / Session', 'Tokens', 'Cost', 'Status'].map((h) => (
                   <th key={h} className="text-left text-xs font-medium px-4 py-2" style={{ color: 'var(--cp-muted)' }}>
                     <span className="inline-flex items-center gap-1">
@@ -664,29 +624,28 @@ export function UsageDashboard() {
                 const providerDisplayName = usageProviderDisplayName(event, providerNames)
                 return (
                   <tr key={event.id} style={{ borderTop: '1px solid var(--cp-border)' }}>
-                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp)}</td>
+                    <td className="px-4 py-2 text-xs whitespace-nowrap" style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp)}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>
-                      <TruncatedText
+                      <CopyableText
                         value={providerDisplayName}
                         title={providerDisplayName === providerIdentifier ? providerDisplayName : `${providerDisplayName} (${providerIdentifier})`}
-                        className="max-w-[160px]"
                       />
                     </td>
                     <td className="px-4 py-2 text-xs font-mono" style={{ color: 'var(--cp-text)' }}>
-                      <TruncatedText value={event.exact_model} className="max-w-[220px]" />
+                      <CopyableText value={event.exact_model} mono />
                     </td>
-                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{event.api_type}</td>
+                    <td className="px-4 py-2 text-xs truncate" style={{ color: 'var(--cp-text)' }} title={event.api_type}>{event.api_type}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>
-                      <TruncatedText value={`${event.app_id ?? 'system'}${event.agent_id ? ` / ${event.agent_id}` : ''}`} className="max-w-[180px]" />
+                      <CopyableText value={`${event.app_id ?? 'system'}${event.agent_id ? ` / ${event.agent_id}` : ''}`} />
                     </td>
                     <td className="px-4 py-2 text-xs">
                       {event.session_id ? (
                         <button
                           type="button"
                           onClick={() => void loadLinkedTraces(event.session_id ?? '')}
-                          className="max-w-[180px] truncate font-mono underline-offset-2 hover:underline"
+                          className="block max-w-full truncate font-mono underline-offset-2 hover:underline"
                           style={{ color: 'var(--cp-accent)' }}
-                          title={t('aiCenter.home.viewTaskRouteTraces', 'View route traces for this task')}
+                          title={`${t('aiCenter.home.viewTaskRouteTraces', 'View route traces for this task')}: ${event.session_id}`}
                         >
                           {event.session_id}
                         </button>
@@ -858,6 +817,67 @@ export function UsageDashboard() {
           )}
         </section>
       )}
+
+      <details className="group rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
+          <span>{t('aiCenter.home.secondaryBreakdowns', 'Provider / Model / App breakdown')}</span>
+          <ChevronDown size={16} className="transition group-open:rotate-180" style={{ color: 'var(--cp-muted)' }} />
+        </summary>
+        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <Breakdown
+            title={t('aiCenter.home.byProvider', 'By Provider Instance')}
+            rows={sortedEntries(summary.by_provider)}
+            total={summary.total_tokens}
+            activeLabel={providerFilter.selected.length === 1 && !providerFilter.query ? providerFilter.selected[0] : undefined}
+            onSelect={(label) => applyBreakdownFilter('provider', label)}
+            viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
+            showLessLabel={t('aiCenter.home.showLess', 'Show less')}
+            filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
+            emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
+          />
+          <Breakdown
+            title={t('aiCenter.home.byModel', 'By Exact Model')}
+            rows={sortedEntries(summary.by_model)}
+            total={summary.total_tokens}
+            activeLabel={modelFilter.selected.length === 1 && !modelFilter.query ? modelFilter.selected[0] : undefined}
+            onSelect={(label) => applyBreakdownFilter('model', label)}
+            viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
+            showLessLabel={t('aiCenter.home.showLess', 'Show less')}
+            filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
+            emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
+          />
+          <Breakdown
+            title={t('aiCenter.home.byApp', 'By App / Agent')}
+            rows={sortedEntries(summary.by_app)}
+            total={summary.total_tokens}
+            activeLabel={appAgentFilter.selected.length === 1 && !appAgentFilter.query ? appAgentFilter.selected[0] : undefined}
+            onSelect={(label) => applyBreakdownFilter('appAgent', label)}
+            viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
+            showLessLabel={t('aiCenter.home.showLess', 'Show less')}
+            filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
+            emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
+          />
+        </div>
+      </details>
+
+      {recentTraces.length > 0 && (
+        <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Route size={16} style={{ color: 'var(--cp-accent)' }} />
+              <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
+                {t('aiCenter.home.recentRouteTrace', 'Recent Route Traces')}
+              </h3>
+            </div>
+            <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>{recentTraces.length}</span>
+          </div>
+          <div className="grid grid-cols-1 gap-2">
+            {recentTraces.map((trace) => (
+              <RecentTraceCard key={trace.request_id} trace={trace} />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -881,7 +901,7 @@ function StatusAndKpiHeader({
   providerCount: number
   modelCount: number
   issueCount: number
-  kpis: Array<{ icon: ReactNode; title: string; value: string; subtitle?: string }>
+  kpis: Array<{ icon: ReactNode; title: string; value: string; subtitle?: string; onClick?: () => void }>
 }) {
   return (
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,2fr)]">
@@ -906,7 +926,7 @@ function StatusAndKpiHeader({
         <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 pr-12">
           {kpis.map((kpi) => (
             <div key={kpi.title} className="min-w-[72%] snap-start sm:min-w-[240px] lg:min-w-[220px]">
-              <SummaryCard icon={kpi.icon} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} />
+              <SummaryCard icon={kpi.icon} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} onClick={kpi.onClick} />
             </div>
           ))}
         </div>
@@ -1565,5 +1585,37 @@ function TruncatedText({ value, title, className = '' }: { value: string; title?
     <span title={title ?? value} className={`block min-w-0 truncate ${className}`} style={{ color: 'var(--cp-text)' }}>
       {value}
     </span>
+  )
+}
+
+function CopyableText({ value, title, mono }: { value: string; title?: string; mono?: boolean }) {
+  const { t } = useI18n()
+  const [copied, setCopied] = useState(false)
+  const copyValue = title ?? value
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(copyValue)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void copy()}
+      title={copied ? t('common.copied', 'Copied') : copyValue}
+      className={`group flex max-w-full items-center gap-1 text-left ${mono ? 'font-mono' : ''}`}
+      style={{ color: 'var(--cp-text)' }}
+    >
+      <span className="min-w-0 truncate">{value}</span>
+      {copied ? (
+        <Check size={12} className="shrink-0" style={{ color: 'var(--cp-success)' }} />
+      ) : (
+        <Copy size={12} className="shrink-0 opacity-0 transition group-hover:opacity-70 group-focus-visible:opacity-100" style={{ color: 'var(--cp-muted)' }} />
+      )}
+    </button>
   )
 }
