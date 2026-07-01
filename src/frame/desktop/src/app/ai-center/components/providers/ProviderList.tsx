@@ -26,7 +26,7 @@ export function ProviderList({ providers, selectedId, onSelect, onAdd }: Provide
       <button
         type="button"
         onClick={onAdd}
-        className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm mt-2 transition-opacity hover:opacity-70"
+        className="mt-2 flex min-h-11 items-center gap-2 rounded-lg px-3 py-2.5 text-sm transition-opacity hover:opacity-70"
         style={{ color: 'var(--cp-accent)' }}
       >
         <Plus size={16} />

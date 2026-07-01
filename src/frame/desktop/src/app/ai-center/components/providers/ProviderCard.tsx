@@ -36,7 +36,7 @@ export function ProviderCard({ provider, selected, onClick }: ProviderCardProps)
     <button
       type="button"
       onClick={onClick}
-      className="flex items-center gap-3 w-full px-3 py-3 rounded-lg text-left transition-colors"
+      className="flex min-h-14 w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors"
       style={{
         background: selected ? 'var(--cp-surface-2)' : 'transparent',
       }}

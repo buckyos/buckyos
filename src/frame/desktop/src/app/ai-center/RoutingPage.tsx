@@ -4,10 +4,10 @@ import { useMediaQuery } from '@mui/material'
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   Box,
   Braces,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   ChevronUp,
   Cloud,
@@ -35,6 +35,7 @@ import {
 } from './hooks/use-aicc-store'
 import { StatusBadge } from './components/shared/StatusBadge'
 import type { LogicalNode, ModelMetadata, RouteTrace, RoutingDirectoryView } from '../../api/aicc_mgr'
+import { PagedListFooter } from './components/shared/paged-list'
 
 type FilterKey = 'provider' | 'apiType' | 'capability' | 'cost' | 'latency' | 'health' | 'location'
 
@@ -98,6 +99,7 @@ export function RoutingPage() {
   const [filters, setFilters] = useState<RoutingFilters>(() => defaultRoutingFilters())
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [currentPath, setCurrentPath] = useState<string | null>(null)
+  const [showMobileScenarioDetail, setShowMobileScenarioDetail] = useState(false)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
   const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
   const [tracePageIndex, setTracePageIndex] = useState(0)
@@ -292,10 +294,47 @@ export function RoutingPage() {
           onNavigate={(path) => {
             setCurrentPath(path)
             setSelectedPath(path)
+            setShowMobileScenarioDetail(false)
           }}
         />
       )}
 
+      {isMobile && showMobileScenarioDetail && selectedScenario ? (
+        <div className="flex flex-col gap-4">
+          <button
+            type="button"
+            onClick={() => setShowMobileScenarioDetail(false)}
+            className="inline-flex min-h-11 w-fit items-center gap-2 rounded-lg px-3 text-sm font-medium"
+            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+          >
+            <ArrowLeft size={16} />
+            {t('common.back', 'Back')}
+          </button>
+          <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
+          <TraceExplorer
+            traces={visibleTraces}
+            totalCount={traces.length}
+            compact={isMobile}
+            query={traceQuery}
+            outcomeFilter={traceOutcomeFilter}
+            providerFilter={traceProviderFilter}
+            providerOptions={traceProviderOptions}
+            hasMore={Boolean(traceNextCursor)}
+            pageIndex={tracePageIndex}
+            canGoPrevious={false}
+            canGoNext={false}
+            loading={traceLoading}
+            error={traceError}
+            onQueryChange={setTraceQuery}
+            onOutcomeFilterChange={setTraceOutcomeFilter}
+            onProviderFilterChange={setTraceProviderFilter}
+            onLoadMore={loadMoreTraces}
+            onRetry={loadMoreTraces}
+            onPreviousPage={() => undefined}
+            onNextPage={() => undefined}
+          />
+        </div>
+      ) : (
       <div className={isMobile ? 'flex flex-col gap-4' : 'grid grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)] gap-5 items-start'}>
         <section className="flex flex-col gap-3">
           {directoryEntries.length > 0 ? directoryEntries.map((scenario) => (
@@ -305,10 +344,14 @@ export function RoutingPage() {
               providerNames={providerNames}
               hasChildren={!queryActive && canNavigateIntoPath(routingView.logical_tree, scenario.node.path)}
               selected={selectedScenario?.node.path === scenario.node.path}
-              onSelect={() => setSelectedPath(scenario.node.path)}
+              onSelect={() => {
+                setSelectedPath(scenario.node.path)
+                if (isMobile) setShowMobileScenarioDetail(true)
+              }}
               onOpen={() => {
                 setCurrentPath(scenario.node.path)
                 setSelectedPath(scenario.node.path)
+                setShowMobileScenarioDetail(false)
               }}
             />
           )) : (
@@ -322,8 +365,9 @@ export function RoutingPage() {
           )}
         </aside>
       </div>
+      )}
 
-      <TraceExplorer
+      {!isMobile && <TraceExplorer
         traces={visibleTraces}
         totalCount={traces.length}
         compact={isMobile}
@@ -341,9 +385,10 @@ export function RoutingPage() {
         onOutcomeFilterChange={setTraceOutcomeFilter}
         onProviderFilterChange={setTraceProviderFilter}
         onLoadMore={loadMoreTraces}
+        onRetry={loadMoreTraces}
         onPreviousPage={() => void loadTracePage(tracePageIndex - 1)}
         onNextPage={() => void loadTracePage(tracePageIndex + 1)}
-      />
+      />}
     </div>
   )
 }
@@ -811,6 +856,7 @@ function TraceExplorer({
   onOutcomeFilterChange,
   onProviderFilterChange,
   onLoadMore,
+  onRetry,
   onPreviousPage,
   onNextPage,
 }: {
@@ -831,6 +877,7 @@ function TraceExplorer({
   onOutcomeFilterChange: (value: TraceOutcomeFilter) => void
   onProviderFilterChange: (value: string) => void
   onLoadMore: () => void
+  onRetry: () => void
   onPreviousPage: () => void
   onNextPage: () => void
 }) {
@@ -894,56 +941,33 @@ function TraceExplorer({
           </div>
         )}
       </div>
-      {error && (
-        <div className="mt-3 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--cp-warning)', background: 'var(--cp-bg)' }}>
-          {error === 'more'
-            ? t('aiCenter.routing.traceLoadMoreFailed', 'Failed to load more route traces')
-            : t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces')}
-        </div>
-      )}
-      {compact && hasMore && (
-        <button
-          type="button"
-          onClick={onLoadMore}
-          disabled={loading}
-          className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium disabled:opacity-60"
-          style={{ color: 'var(--cp-accent)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
-        >
-          <ChevronDown size={15} />
-          {loading
-            ? t('aiCenter.routing.traceLoading', 'Loading...')
-            : t('aiCenter.routing.traceLoadMore', 'Load more')}
-        </button>
-      )}
-      {!compact && (
-        <div className="mt-3 flex items-center justify-between gap-3 rounded-lg px-3 py-2" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
-          <button
-            type="button"
-            onClick={onPreviousPage}
-            disabled={!canGoPrevious || loading}
-            className="inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium disabled:opacity-50"
-            style={{ color: 'var(--cp-accent)' }}
-          >
-            <ChevronLeft size={14} />
-            {t('aiCenter.routing.tracePreviousPage', 'Previous')}
-          </button>
-          <div className="text-xs tabular-nums" style={{ color: 'var(--cp-muted)' }}>
-            {loading
-              ? t('aiCenter.routing.traceLoading', 'Loading...')
-              : t('aiCenter.routing.tracePage', 'Page {{page}}', { page: pageIndex + 1 })}
-          </div>
-          <button
-            type="button"
-            onClick={onNextPage}
-            disabled={!canGoNext || loading}
-            className="inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium disabled:opacity-50"
-            style={{ color: 'var(--cp-accent)' }}
-          >
-            {t('aiCenter.routing.traceNextPage', 'Next')}
-            <ChevronRight size={14} />
-          </button>
-        </div>
-      )}
+      <PagedListFooter
+        mode={compact ? 'infinite' : 'pagination'}
+        loading={loading}
+        error={error ? (error === 'more'
+          ? t('aiCenter.routing.traceLoadMoreFailed', 'Failed to load more route traces')
+          : t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces')) : null}
+        hasMore={hasMore}
+        onLoadMore={onLoadMore}
+        onRetry={onRetry}
+        onPreviousPage={onPreviousPage}
+        onNextPage={onNextPage}
+        canGoPrevious={canGoPrevious}
+        canGoNext={canGoNext}
+        pageIndex={pageIndex}
+        loadedCount={traces.length}
+        totalCount={totalCount}
+        labels={{
+          previous: t('aiCenter.routing.tracePreviousPage', 'Previous'),
+          next: t('aiCenter.routing.traceNextPage', 'Next'),
+          page: t('aiCenter.routing.tracePage', 'Page {{page}}'),
+          loading: t('aiCenter.routing.traceLoading', 'Loading...'),
+          loadMore: t('aiCenter.routing.traceLoadMore', 'Load more'),
+          retry: t('common.retry', 'Retry'),
+          error: t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces'),
+          loaded: t('aiCenter.routing.traceVisibleCount', '{{visible}} / {{total}} traces', { visible: traces.length, total: totalCount }),
+        }}
+      />
     </section>
   )
 }

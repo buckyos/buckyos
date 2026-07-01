@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, ChevronDown, ChevronUp, CreditCard, DollarSign, HelpCircle, Route, Wallet } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, HelpCircle, Route, Wallet, X } from 'lucide-react'
+import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useAIStatus, useProviders, useRouteTraces, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
 import { SummaryCard } from '../shared/SummaryCard'
+import { PagedListFooter } from '../shared/paged-list'
 import type { RouteTrace, UsageEvent, UsageEventsPage, UsageTimeRange } from '../../../../api/aicc_mgr'
 
 function formatTokens(n: number): string {
@@ -144,6 +146,7 @@ export function UsageDashboard() {
   const summary = useUsageSummary()
   const trend = useUsageTrend('day')
   const traces = useRouteTraces()
+  const isMobile = useMediaQuery('(max-width: 767px)')
   const [timeRange, setTimeRange] = useState<TimeRangeFilter>('all')
   const [providerFilter, setProviderFilter] = useState<MultiFilter>(EMPTY_MULTI_FILTER)
   const [modelFilter, setModelFilter] = useState<MultiFilter>(EMPTY_MULTI_FILTER)
@@ -156,11 +159,13 @@ export function UsageDashboard() {
   const [usagePage, setUsagePage] = useState<UsageEventsPage>({ events: [], totalRequests: 0 })
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
+  const [usageRetryKey, setUsageRetryKey] = useState(0)
   const [linkedTraceTaskId, setLinkedTraceTaskId] = useState<string | null>(null)
   const [linkedTraces, setLinkedTraces] = useState<RouteTrace[]>([])
   const [linkedTraceCursor, setLinkedTraceCursor] = useState<string | undefined>()
   const [linkedTraceLoading, setLinkedTraceLoading] = useState(false)
   const [linkedTraceError, setLinkedTraceError] = useState<string | null>(null)
+  const [filtersSheetOpen, setFiltersSheetOpen] = useState(false)
   const detailRef = useRef<HTMLElement | null>(null)
   const linkedTraceRef = useRef<HTMLElement | null>(null)
 
@@ -202,6 +207,18 @@ export function UsageDashboard() {
   const pagedEvents = usagePage.events
   const detailPageCount = Math.max(1, Math.ceil(usagePage.totalRequests / PAGE_SIZE))
   const canGoNext = effectiveDetailPage < detailPageCount && pageCursors[effectiveDetailPage + 1] != null
+  const hasUsageMore = Boolean(pageCursors[effectiveDetailPage + 1])
+  const timeRangeOptions: Array<[TimeRangeFilter, string]> = useMemo(() => [
+    ['all', t('aiCenter.home.allTime', 'All time')],
+    ['24h', t('aiCenter.home.last24Hours', 'Last 24 hours')],
+    ['7d', t('aiCenter.home.last7Days', 'Last 7 days')],
+    ['30d', t('aiCenter.home.last30Days', 'Last 30 days')],
+    ['custom', t('aiCenter.home.customRange', 'Custom range')],
+  ], [t])
+  const activeFilterChips = useMemo(
+    () => usageFilterChips(timeRange, providerFilter, modelFilter, appAgentFilter, timeRangeOptions),
+    [appAgentFilter, modelFilter, providerFilter, timeRange, timeRangeOptions],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -216,7 +233,16 @@ export function UsageDashboard() {
           limit: PAGE_SIZE,
         })
         if (cancelled) return
-        setUsagePage(page)
+        setUsagePage((current) => {
+          if (isMobile && detailPage > 1) {
+            return {
+              ...page,
+              events: mergeUsageEvents(current.events, page.events),
+              totalRequests: page.totalRequests,
+            }
+          }
+          return page
+        })
         setPageCursors((current) => {
           if (current[detailPage + 1] === page.nextCursor) return current
           return {
@@ -227,7 +253,6 @@ export function UsageDashboard() {
       } catch (error) {
         if (cancelled) return
         console.error('aicc.usage.query events failed', error)
-        setUsagePage({ events: [], totalRequests: 0 })
         setUsageError(t('aiCenter.home.usageLoadFailed', 'Could not load usage events.'))
       } finally {
         if (!cancelled) {
@@ -239,11 +264,22 @@ export function UsageDashboard() {
     return () => {
       cancelled = true
     }
-  }, [currentCursor, detailPage, store, t, usageQueryFilters, usageQueryRange])
+  }, [currentCursor, detailPage, isMobile, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
 
   const resetUsagePaging = () => {
     setDetailPage(1)
     setPageCursors({ 1: undefined })
+    setUsageError(null)
+  }
+
+  const clearUsageFilters = () => {
+    setTimeRange('all')
+    setProviderFilter(EMPTY_MULTI_FILTER)
+    setModelFilter(EMPTY_MULTI_FILTER)
+    setAppAgentFilter(EMPTY_MULTI_FILTER)
+    setCustomStartDate('')
+    setCustomEndDate('')
+    resetUsagePaging()
   }
 
   const updateTimeRange = (value: TimeRangeFilter) => {
@@ -330,7 +366,44 @@ export function UsageDashboard() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <StatusAndKpiHeader
+        statusTitle={t('aiCenter.home.status', 'AI Status')}
+        statusValue={status.state === 'disabled' ? t('aiCenter.home.disabled', 'Disabled') : t('aiCenter.home.enabled', 'Enabled')}
+        providerLabel={t('aiCenter.home.providers', 'Providers')}
+        modelLabel={t('aiCenter.home.models', 'Models')}
+        issueLabel={t('aiCenter.home.issues', 'Issues')}
+        providerCount={status.provider_count}
+        modelCount={status.model_count}
+        issueCount={status.health_counts.degraded + status.health_counts.unavailable + status.quota_warnings}
+        kpis={[
+          {
+            icon: <CreditCard size={18} />,
+            title: t('aiCenter.home.credit', 'SN Credit'),
+            value: snCredit != null ? `${snCredit} Credit` : '-',
+            subtitle: snProvider ? `${snProvider.account.pricing_mode} / top up available` : undefined,
+          },
+          {
+            icon: <DollarSign size={18} />,
+            title: t('aiCenter.home.estimatedCost', 'Est. Cost'),
+            value: formatUsd(summary.total_estimated_cost, true),
+            subtitle: t('aiCenter.home.costEstimated', 'Estimated from usage events'),
+          },
+          {
+            icon: <Wallet size={18} />,
+            title: t('aiCenter.home.balanceOverview', 'Balance Overview'),
+            value: balanceOverviewValue,
+            subtitle: balanceOverviewSubtitle,
+          },
+          {
+            icon: <Activity size={18} />,
+            title: t('aiCenter.home.requests', 'Requests'),
+            value: summary.total_requests.toString(),
+            subtitle: t('aiCenter.home.totalRequests', 'Total requests'),
+          },
+        ]}
+      />
+
+      <div className="hidden">
         <SummaryCard
           icon={<Activity size={18} />}
           title={t('aiCenter.home.status', 'AI Status')}
@@ -477,7 +550,45 @@ export function UsageDashboard() {
               {usageLoading ? t('common.loading', 'Loading') : usagePage.totalRequests}
             </span>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+          {isMobile && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFiltersSheetOpen(true)}
+                  className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium"
+                  style={{ color: 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
+                >
+                  <Filter size={16} />
+                  {t('aiCenter.home.filters', 'Filters')}
+                </button>
+                {activeFilterChips.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearUsageFilters}
+                    className="inline-flex min-h-11 items-center justify-center rounded-lg px-3 text-sm"
+                    style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+                  >
+                    {t('common.clear', 'Clear')}
+                  </button>
+                )}
+              </div>
+              {activeFilterChips.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {activeFilterChips.map((chip) => (
+                    <span
+                      key={chip}
+                      className="shrink-0 rounded-full px-2.5 py-1 text-xs"
+                      style={{ color: 'var(--cp-accent)', background: 'color-mix(in oklch, var(--cp-accent), transparent 88%)' }}
+                    >
+                      {chip}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="hidden grid-cols-1 gap-2 md:grid sm:grid-cols-2 xl:grid-cols-4">
             <TimeRangeFilterControl
               label={t('aiCenter.home.filterTimeRange', 'Time Range')}
               value={timeRange}
@@ -525,7 +636,7 @@ export function UsageDashboard() {
             />
           </div>
         </div>
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[940px]">
             <thead>
               <tr style={{ background: 'var(--cp-bg)' }}>
@@ -599,42 +710,111 @@ export function UsageDashboard() {
             </tbody>
           </table>
         </div>
-        {usageError && (
+        {isMobile && (
+          <div className="flex flex-col gap-3 p-3" style={{ background: 'var(--cp-bg)' }}>
+            {pagedEvents.map((event) => (
+              <UsageEventCard
+                key={event.id}
+                event={event}
+                providerNames={providerNames}
+                onOpenTrace={(taskId) => void loadLinkedTraces(taskId)}
+              />
+            ))}
+            {!usageLoading && pagedEvents.length === 0 && (
+              <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
+                {t('aiCenter.home.noUsageEvents', 'No usage events match the current filters.')}
+              </div>
+            )}
+          </div>
+        )}
+        {usageError && !isMobile && (
           <div className="px-4 py-3 text-xs" style={{ color: 'var(--cp-danger)', background: 'var(--cp-surface)', borderTop: '1px solid var(--cp-border)' }}>
             {usageError}
           </div>
         )}
-        {usagePage.totalRequests > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3" style={{ background: 'var(--cp-surface)', borderTop: '1px solid var(--cp-border)' }}>
-            <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-              {pageStart + 1}-{Math.min(pageStart + pagedEvents.length, usagePage.totalRequests)} / {usagePage.totalRequests}
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setDetailPage((page) => Math.max(1, page - 1))}
-                disabled={effectiveDetailPage <= 1}
-                className="h-8 rounded-md px-3 text-xs disabled:opacity-45"
-                style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-              >
-                {t('common.prev', 'Prev')}
-              </button>
-              <span className="text-xs tabular-nums" style={{ color: 'var(--cp-muted)' }}>
-                {effectiveDetailPage} / {detailPageCount}
-              </span>
-              <button
-                type="button"
-                onClick={() => setDetailPage((page) => Math.min(detailPageCount, page + 1))}
-                disabled={!canGoNext}
-                className="h-8 rounded-md px-3 text-xs disabled:opacity-45"
-                style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-              >
-                {t('common.next', 'Next')}
-              </button>
-            </div>
-          </div>
+        {(usagePage.totalRequests > 0 || isMobile) && (
+          <PagedListFooter
+            mode={isMobile ? 'infinite' : 'pagination'}
+            loading={usageLoading}
+            error={isMobile ? usageError : null}
+            hasMore={isMobile ? hasUsageMore : canGoNext}
+            onLoadMore={() => {
+              if (hasUsageMore) setDetailPage((page) => page + 1)
+            }}
+            onRetry={() => {
+              setUsageError(null)
+              setUsageRetryKey((value) => value + 1)
+            }}
+            onPreviousPage={() => setDetailPage((page) => Math.max(1, page - 1))}
+            onNextPage={() => setDetailPage((page) => Math.min(detailPageCount, page + 1))}
+            canGoPrevious={effectiveDetailPage > 1}
+            canGoNext={canGoNext}
+            pageIndex={effectiveDetailPage - 1}
+            loadedCount={isMobile ? pagedEvents.length : Math.min(pageStart + pagedEvents.length, usagePage.totalRequests)}
+            totalCount={usagePage.totalRequests}
+            labels={{
+              previous: t('common.previous', 'Previous'),
+              next: t('common.next', 'Next'),
+              page: t('aiCenter.home.pageNumber', 'Page {{page}}'),
+              loading: t('common.loading', 'Loading'),
+              loadMore: t('common.loadMore', 'Load more'),
+              retry: t('common.retry', 'Retry'),
+              error: t('aiCenter.home.usageLoadFailed', 'Could not load usage events.'),
+              loaded: `${isMobile ? pagedEvents.length : `${pageStart + 1}-${Math.min(pageStart + pagedEvents.length, usagePage.totalRequests)}`} / ${usagePage.totalRequests}`,
+            }}
+          />
         )}
       </section>
+
+      {filtersSheetOpen && (
+        <UsageFiltersSheet
+          onClose={() => setFiltersSheetOpen(false)}
+          onClear={clearUsageFilters}
+          clearLabel={t('common.clear', 'Clear')}
+          closeLabel={t('common.close', 'Close')}
+          title={t('aiCenter.home.filters', 'Filters')}
+        >
+          <TimeRangeFilterControl
+            label={t('aiCenter.home.filterTimeRange', 'Time Range')}
+            value={timeRange}
+            onChange={updateTimeRange}
+            customStartDate={customStartDate}
+            customEndDate={customEndDate}
+            customStartLabel={t('aiCenter.home.filterStartDate', 'Start Date')}
+            customEndLabel={t('aiCenter.home.filterEndDate', 'End Date')}
+            onCustomStartDateChange={(value) => {
+              setCustomStartDate(value)
+              resetUsagePaging()
+            }}
+            onCustomEndDateChange={(value) => {
+              setCustomEndDate(value)
+              resetUsagePaging()
+            }}
+            options={timeRangeOptions}
+          />
+          <MultiSelectFilter
+            label={t('aiCenter.home.filterProvider', 'Provider')}
+            value={providerFilter}
+            onChange={updateProviderFilter}
+            options={providerOptions}
+            allLabel={t('aiCenter.home.allProviders', 'All providers')}
+          />
+          <MultiSelectFilter
+            label={t('aiCenter.home.filterModel', 'Model')}
+            value={modelFilter}
+            onChange={updateModelFilter}
+            options={modelOptions}
+            allLabel={t('aiCenter.home.allModels', 'All models')}
+          />
+          <MultiSelectFilter
+            label={t('aiCenter.home.filterAppAgent', 'App / Agent')}
+            value={appAgentFilter}
+            onChange={updateAppAgentFilter}
+            options={appAgentOptions}
+            allLabel={t('aiCenter.home.allAppsAgents', 'All apps / agents')}
+          />
+        </UsageFiltersSheet>
+      )}
 
       {linkedTraceTaskId && (
         <section ref={linkedTraceRef} className="rounded-xl p-4 scroll-mt-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
@@ -678,6 +858,228 @@ export function UsageDashboard() {
           )}
         </section>
       )}
+    </div>
+  )
+}
+
+function StatusAndKpiHeader({
+  statusTitle,
+  statusValue,
+  providerLabel,
+  modelLabel,
+  issueLabel,
+  providerCount,
+  modelCount,
+  issueCount,
+  kpis,
+}: {
+  statusTitle: string
+  statusValue: string
+  providerLabel: string
+  modelLabel: string
+  issueLabel: string
+  providerCount: number
+  modelCount: number
+  issueCount: number
+  kpis: Array<{ icon: ReactNode; title: string; value: string; subtitle?: string }>
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,2fr)]">
+      <div
+        className="rounded-xl p-4"
+        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+      >
+        <div className="flex items-center gap-2 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+          <Activity size={18} style={{ color: 'var(--cp-accent)' }} />
+          {statusTitle}
+        </div>
+        <div className="mt-3 text-2xl font-semibold leading-tight" style={{ color: 'var(--cp-text)' }}>
+          {statusValue}
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <StatusMiniMetric label={providerLabel} value={providerCount} />
+          <StatusMiniMetric label={modelLabel} value={modelCount} />
+          <StatusMiniMetric label={issueLabel} value={issueCount} warning={issueCount > 0} />
+        </div>
+      </div>
+      <div className="relative min-w-0">
+        <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 pr-12">
+          {kpis.map((kpi) => (
+            <div key={kpi.title} className="min-w-[72%] snap-start sm:min-w-[240px] lg:min-w-[220px]">
+              <SummaryCard icon={kpi.icon} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} />
+            </div>
+          ))}
+        </div>
+        <div
+          className="pointer-events-none absolute bottom-1 right-0 top-0 w-16"
+          style={{ background: 'linear-gradient(90deg, transparent, var(--cp-bg))' }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function StatusMiniMetric({ label, value, warning }: { label: string; value: number; warning?: boolean }) {
+  return (
+    <div className="min-w-0 rounded-lg px-2 py-2" style={{ background: 'var(--cp-bg)' }}>
+      <div className="truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>{label}</div>
+      <div className="mt-1 text-base font-semibold tabular-nums" style={{ color: warning ? 'var(--cp-warning)' : 'var(--cp-text)' }}>
+        {value}
+      </div>
+    </div>
+  )
+}
+
+function UsageFiltersSheet({
+  title,
+  clearLabel,
+  closeLabel,
+  children,
+  onClear,
+  onClose,
+}: {
+  title: string
+  clearLabel: string
+  closeLabel: string
+  children: ReactNode
+  onClear: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 md:hidden">
+      <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.35)' }} onClick={onClose} />
+      <div
+        className="absolute inset-x-0 bottom-0 max-h-[82vh] overflow-y-auto rounded-t-xl p-4"
+        style={{
+          background: 'var(--cp-surface)',
+          borderTop: '1px solid var(--cp-border)',
+          paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))',
+        }}
+      >
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{title}</h3>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={onClear} className="min-h-11 rounded-lg px-3 text-sm" style={{ color: 'var(--cp-accent)' }}>
+              {clearLabel}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex min-h-11 min-w-11 items-center justify-center rounded-lg"
+              style={{ color: 'var(--cp-muted)', border: '1px solid var(--cp-border)' }}
+              aria-label={closeLabel}
+            >
+              <X size={17} />
+            </button>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+function UsageEventCard({
+  event,
+  providerNames,
+  onOpenTrace,
+}: {
+  event: UsageEvent
+  providerNames: Map<string, string>
+  onOpenTrace: (taskId: string) => void
+}) {
+  const { t } = useI18n()
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const tokens = usageTokens(event)
+  const providerIdentifier = readableUsageProviderIdentifier(event)
+  const providerDisplayName = usageProviderDisplayName(event, providerNames)
+  const appAgent = `${event.app_id ?? 'system'}${event.agent_id ? ` / ${event.agent_id}` : ''}`
+  const longValues = [
+    providerDisplayName,
+    event.exact_model,
+    appAgent,
+    event.session_id ?? '',
+  ].filter(Boolean)
+  const copyValue = longValues.join('\n')
+
+  const copyDetails = async () => {
+    try {
+      await navigator.clipboard.writeText(copyValue)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <article className="rounded-lg p-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp)}</div>
+          <div className="mt-1 text-sm font-medium" style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>
+            {event.status}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>{formatUsd(usageFinanceAmount(event))}</div>
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{formatTokens(tokens)} tokens</div>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-1 gap-2 text-xs">
+        <UsageCardRow label={t('aiCenter.home.filterProvider', 'Provider')} value={providerDisplayName} title={providerDisplayName === providerIdentifier ? providerDisplayName : `${providerDisplayName} (${providerIdentifier})`} expanded={expanded} />
+        <UsageCardRow label={t('aiCenter.home.filterModel', 'Model')} value={event.exact_model} expanded={expanded} mono />
+        <UsageCardRow label={t('aiCenter.home.filterAppAgent', 'App / Agent')} value={appAgent} expanded={expanded} />
+        {event.session_id && (
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.taskSession', 'Task / Session')}</span>
+            <button
+              type="button"
+              onClick={() => onOpenTrace(event.session_id ?? '')}
+              className={`${expanded ? 'break-all text-right' : 'truncate'} min-w-0 font-mono underline-offset-2 hover:underline`}
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {event.session_id}
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="inline-flex min-h-11 flex-1 items-center justify-center gap-1 rounded-lg px-3 text-xs font-medium"
+          style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+        >
+          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          {expanded ? t('aiCenter.home.collapseFields', 'Collapse') : t('aiCenter.home.expandFields', 'Expand')}
+        </button>
+        <button
+          type="button"
+          onClick={() => void copyDetails()}
+          className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg px-3 text-xs font-medium"
+          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+        >
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+          {copied ? t('common.copied', 'Copied') : t('common.copy', 'Copy')}
+        </button>
+      </div>
+    </article>
+  )
+}
+
+function UsageCardRow({ label, value, title, expanded, mono }: { label: string; value: string; title?: string; expanded: boolean; mono?: boolean }) {
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-2">
+      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{label}</span>
+      <span
+        title={title ?? value}
+        className={`${expanded ? 'break-all text-right' : 'truncate'} min-w-0 ${mono ? 'font-mono' : ''}`}
+        style={{ color: 'var(--cp-text)' }}
+      >
+        {value}
+      </span>
     </div>
   )
 }
@@ -784,6 +1186,41 @@ function mergeRouteTraces(current: RouteTrace[], next: RouteTrace[]): RouteTrace
     }
   }
   return merged
+}
+
+function mergeUsageEvents(current: UsageEvent[], next: UsageEvent[]): UsageEvent[] {
+  const seen = new Set(current.map((event) => event.id))
+  const merged = [...current]
+  for (const event of next) {
+    if (!seen.has(event.id)) {
+      seen.add(event.id)
+      merged.push(event)
+    }
+  }
+  return merged
+}
+
+function usageFilterChips(
+  timeRange: TimeRangeFilter,
+  providerFilter: MultiFilter,
+  modelFilter: MultiFilter,
+  appAgentFilter: MultiFilter,
+  timeOptions: Array<[TimeRangeFilter, string]>,
+): string[] {
+  const chips: string[] = []
+  if (timeRange !== 'all') {
+    chips.push(timeOptions.find(([value]) => value === timeRange)?.[1] ?? timeRange)
+  }
+  chips.push(...filterChips(providerFilter))
+  chips.push(...filterChips(modelFilter))
+  chips.push(...filterChips(appAgentFilter))
+  return chips
+}
+
+function filterChips(filter: MultiFilter): string[] {
+  const chips = [...filter.selected]
+  if (filter.query.trim()) chips.push(filter.query.trim())
+  return chips
 }
 
 function TimeRangeFilterControl({

@@ -263,11 +263,31 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-stretch">
-        <Metric label={t('aiCenter.providers.inventoryModels', 'Inventory Models')} value={models.length.toString()} detail={inventory.inventory_revision} />
-        <Metric label={t('aiCenter.providers.health', 'Health')} value={`${models.length - degradedCount}/${models.length}`} detail={t('aiCenter.providers.availableModels', 'available models')} />
-        <Metric label={t('aiCenter.providers.quota', 'Quota')} value={quotaWarningCount ? `${quotaWarningCount}` : '0'} detail={quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal')} />
-        <Metric label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={formatWeight(routingWeight)} detail={routingWeightLabel} />
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,2fr)]">
+        <div className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+          <div className="min-w-0 text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {t('aiCenter.providers.providerStatus', 'Provider Status')}
+          </div>
+          <div className="mt-2 truncate text-xl font-semibold" style={{ color: 'var(--cp-text)' }}>{config.name}</div>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <StatusTile label={t('aiCenter.providers.auth', 'Authentication')} value={authStatusLabel(status.auth_status, t)} tone={authStatusVariant(status.auth_status)} />
+            <StatusTile label={t('aiCenter.providers.health', 'Health')} value={`${models.length - degradedCount}/${models.length}`} tone={degradedCount > 0 ? 'warning' : 'ok'} />
+            <StatusTile label={t('aiCenter.providers.models', 'Models')} value={models.length.toString()} />
+            <StatusTile label={t('aiCenter.providers.issues', 'Issues')} value={(degradedCount + quotaWarningCount).toString()} tone={degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok'} />
+          </div>
+        </div>
+        <div className="relative min-w-0">
+          <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 pr-12 md:grid md:grid-cols-4 md:overflow-visible md:pr-0">
+            <Metric label={t('aiCenter.providers.inventoryModels', 'Inventory Models')} value={models.length.toString()} detail={inventory.inventory_revision} />
+            <Metric label={t('aiCenter.providers.health', 'Health')} value={`${models.length - degradedCount}/${models.length}`} detail={t('aiCenter.providers.availableModels', 'available models')} />
+            <Metric label={t('aiCenter.providers.quota', 'Quota')} value={quotaWarningCount ? `${quotaWarningCount}` : '0'} detail={quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal')} />
+            <Metric label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={formatWeight(routingWeight)} detail={routingWeightLabel} />
+          </div>
+          <div
+            className="pointer-events-none absolute bottom-1 right-0 top-0 w-14 md:hidden"
+            style={{ background: 'linear-gradient(90deg, transparent, var(--cp-bg))' }}
+          />
+        </div>
       </div>
 
       <div
@@ -446,12 +466,28 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
 function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (
     <div
-      className="rounded-xl p-3 min-h-[92px] h-full grid grid-rows-[2rem_1.75rem_1rem] gap-1 content-start"
+      className="grid h-full min-h-[92px] min-w-[72%] snap-start grid-rows-[2rem_1.75rem_1rem] content-start gap-1 rounded-xl p-3 sm:min-w-[220px] md:min-w-0"
       style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
     >
       <div className="text-xs leading-4" style={{ color: 'var(--cp-muted)' }}>{label}</div>
       <div className="text-xl font-semibold leading-tight" style={{ color: 'var(--cp-text)' }}>{value}</div>
       <div className="text-[11px] truncate" style={{ color: 'var(--cp-muted)' }}>{detail ?? ''}</div>
+    </div>
+  )
+}
+
+function StatusTile({ label, value, tone = 'unknown' }: { label: string; value: string; tone?: 'ok' | 'warning' | 'error' | 'unknown' }) {
+  const color = tone === 'ok'
+    ? 'var(--cp-success)'
+    : tone === 'warning'
+      ? 'var(--cp-warning)'
+      : tone === 'error'
+        ? 'var(--cp-danger)'
+        : 'var(--cp-text)'
+  return (
+    <div className="min-w-0 rounded-lg px-2 py-2" style={{ background: 'var(--cp-bg)' }}>
+      <div className="truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>{label}</div>
+      <div className="mt-1 truncate text-sm font-semibold" style={{ color }}>{value}</div>
     </div>
   )
 }

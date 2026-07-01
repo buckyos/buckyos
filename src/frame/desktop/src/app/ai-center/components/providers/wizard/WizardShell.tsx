@@ -166,13 +166,16 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
 
       {/* Footer */}
       <div
-        className="flex justify-between items-center px-4 md:px-6 py-3 shrink-0"
-        style={{ borderTop: '1px solid var(--cp-border)' }}
+        className="flex shrink-0 items-center justify-between px-4 py-3 md:px-6"
+        style={{
+          borderTop: '1px solid var(--cp-border)',
+          paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
+        }}
       >
         <button
           type="button"
           onClick={handlePrev}
-          className="px-4 py-2 rounded-lg text-sm"
+          className="min-h-11 rounded-lg px-4 py-2 text-sm"
           style={{ color: 'var(--cp-muted)' }}
         >
           {step === 0 ? t('aiCenter.wizard.back', 'Back') : t('aiCenter.wizard.prev', 'Previous')}
@@ -182,7 +185,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
           <button
             type="button"
             onClick={() => { setValidation(null); setStep(1) }}
-            className="px-4 py-2 rounded-lg text-sm font-medium"
+            className="min-h-11 rounded-lg px-4 py-2 text-sm font-medium"
             style={{ background: 'var(--cp-warning)', color: '#fff' }}
           >
             {t('aiCenter.wizard.goBackToFix', 'Go Back to Fix')}
@@ -192,7 +195,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
             type="button"
             onClick={handleNext}
             disabled={!canNext() || creating}
-            className="px-5 py-2 rounded-lg text-sm font-medium transition-opacity disabled:opacity-40"
+            className="min-h-11 rounded-lg px-5 py-2 text-sm font-medium transition-opacity disabled:opacity-40"
             style={{ background: 'var(--cp-accent)', color: '#fff' }}
           >
             {step === 3

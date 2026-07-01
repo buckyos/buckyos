@@ -25,7 +25,10 @@ export function AICenterShell({ children }: AICenterShellProps) {
           className="flex-1 overflow-y-auto"
           style={{ background: 'var(--cp-bg)' }}
         >
-          <div className={isMobile ? 'px-4 py-4' : 'px-8 py-6 max-w-5xl mx-auto'}>
+          <div
+            className={isMobile ? 'px-4 py-4' : 'px-8 py-6 max-w-5xl mx-auto'}
+            style={isMobile ? { paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' } : undefined}
+          >
             {children(currentPage, setCurrentPage)}
           </div>
         </main>
