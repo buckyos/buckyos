@@ -5,7 +5,7 @@ import { useProviders, useGlobalRoutingView } from './hooks/use-aicc-store'
 import { ProviderList } from './components/providers/ProviderList'
 import { ProviderDetailPanel } from './components/providers/ProviderDetailPanel'
 import { EmptyState } from './components/shared/EmptyState'
-import { Plug } from 'lucide-react'
+import { ArrowLeft, Plug } from 'lucide-react'
 import type { AICenterPage } from './components/layout/Sidebar'
 
 interface ProvidersPageProps {
@@ -52,14 +52,21 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
     if (showMobileDetail && selectedProvider) {
       return (
         <div>
-          <button
-            type="button"
-            onClick={() => setShowMobileDetail(false)}
-            className="mb-3 inline-flex min-h-11 items-center rounded-lg px-3 text-sm font-medium"
-            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-          >
-            {t('common.back', 'Back')}
-          </button>
+          <div className="mb-3 grid min-h-11 grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowMobileDetail(false)}
+              className="flex h-11 w-11 items-center justify-center rounded-lg"
+              style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+              aria-label={t('common.back', 'Back')}
+            >
+              <ArrowLeft size={18} />
+            </button>
+            <div className="min-w-0 text-center text-sm font-semibold truncate" style={{ color: 'var(--cp-text)' }}>
+              {selectedProvider.config.name || t('aiCenter.providers.detail', 'Provider Detail')}
+            </div>
+            <div className="h-11 w-11" aria-hidden />
+          </div>
           <ProviderDetailPanel
             provider={selectedProvider}
             routingWeight={routingView.provider_weights[selectedProvider.config.provider_instance_name] ?? 1}

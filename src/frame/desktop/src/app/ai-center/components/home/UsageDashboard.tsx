@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, HelpCircle, Route, Wallet, X } from 'lucide-react'
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../../i18n/provider'
-import { useAICCStore, useAIStatus, useProviders, useRouteTraces, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
+import { useAICCStore, useAIStatus, useProviders, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
 import { SummaryCard } from '../shared/SummaryCard'
 import { PagedListFooter } from '../shared/paged-list'
+import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
 import type { RouteTrace, UsageEvent, UsageEventsPage, UsageTimeRange } from '../../../../api/aicc_mgr'
 
 function formatTokens(n: number): string {
@@ -135,17 +136,16 @@ type MultiFilter = {
   selected: string[]
 }
 const PAGE_SIZE = 10
-const HOME_TRACE_LIMIT = 5
+const HOME_USAGE_LIMIT = 5
 const EMPTY_MULTI_FILTER: MultiFilter = { query: '', selected: [] }
 
-export function UsageDashboard() {
+export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
   const { t } = useI18n()
   const store = useAICCStore()
   const status = useAIStatus()
   const providers = useProviders()
   const summary = useUsageSummary()
   const trend = useUsageTrend('day')
-  const traces = useRouteTraces()
   const isMobile = useMediaQuery('(max-width: 767px)')
   const [timeRange, setTimeRange] = useState<TimeRangeFilter>('all')
   const [providerFilter, setProviderFilter] = useState<MultiFilter>(EMPTY_MULTI_FILTER)
@@ -166,8 +166,11 @@ export function UsageDashboard() {
   const [linkedTraceLoading, setLinkedTraceLoading] = useState(false)
   const [linkedTraceError, setLinkedTraceError] = useState<string | null>(null)
   const [filtersSheetOpen, setFiltersSheetOpen] = useState(false)
+  const [usageTab, setUsageTab] = useState<'usage' | 'trace'>('usage')
   const detailRef = useRef<HTMLElement | null>(null)
   const linkedTraceRef = useRef<HTMLElement | null>(null)
+  const isUsagePage = mode === 'usage'
+  const pageLimit = isUsagePage ? PAGE_SIZE : HOME_USAGE_LIMIT
 
   const snProvider = providers.find((p) => p.config.provider_type === 'sn_router')
   const snCredit = snProvider?.account.balance_value
@@ -201,11 +204,11 @@ export function UsageDashboard() {
     appQuery: appAgentFilter.query,
   }), [appAgentFilter, modelFilter, providerFilter])
   const currentCursor = pageCursors[detailPage]
-  const recentTraces = traces.slice(0, HOME_TRACE_LIMIT)
   const effectiveDetailPage = detailPage
-  const pageStart = (effectiveDetailPage - 1) * PAGE_SIZE
+  const pageStart = (effectiveDetailPage - 1) * pageLimit
   const pagedEvents = usagePage.events
-  const detailPageCount = Math.max(1, Math.ceil(usagePage.totalRequests / PAGE_SIZE))
+  const recentUsageEvents = pagedEvents.slice(0, HOME_USAGE_LIMIT)
+  const detailPageCount = Math.max(1, Math.ceil(usagePage.totalRequests / pageLimit))
   const canGoNext = effectiveDetailPage < detailPageCount && pageCursors[effectiveDetailPage + 1] != null
   const hasUsageMore = Boolean(pageCursors[effectiveDetailPage + 1])
   const timeRangeOptions: Array<[TimeRangeFilter, string]> = useMemo(() => [
@@ -230,11 +233,11 @@ export function UsageDashboard() {
           timeRange: usageQueryRange,
           filters: usageQueryFilters,
           cursor: currentCursor,
-          limit: PAGE_SIZE,
+          limit: pageLimit,
         })
         if (cancelled) return
         setUsagePage((current) => {
-          if (isMobile && detailPage > 1) {
+          if (isUsagePage && isMobile && detailPage > 1) {
             return {
               ...page,
               events: mergeUsageEvents(current.events, page.events),
@@ -264,7 +267,7 @@ export function UsageDashboard() {
     return () => {
       cancelled = true
     }
-  }, [currentCursor, detailPage, isMobile, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
+  }, [currentCursor, detailPage, isMobile, isUsagePage, pageLimit, store, t, usageQueryFilters, usageQueryRange, usageRetryKey])
 
   const resetUsagePaging = () => {
     setDetailPage(1)
@@ -381,28 +384,28 @@ export function UsageDashboard() {
             title: t('aiCenter.home.credit', 'SN Credit'),
             value: snCredit != null ? `${snCredit} Credit` : '-',
             subtitle: snProvider ? `${snProvider.account.pricing_mode} / top up available` : undefined,
-            onClick: () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+            onClick: isUsagePage ? () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : undefined,
           },
           {
             icon: <DollarSign size={18} />,
             title: t('aiCenter.home.estimatedCost', 'Est. Cost'),
             value: formatUsd(summary.total_estimated_cost, true),
             subtitle: t('aiCenter.home.costEstimated', 'Estimated from usage events'),
-            onClick: () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+            onClick: isUsagePage ? () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : undefined,
           },
           {
             icon: <Wallet size={18} />,
             title: t('aiCenter.home.balanceOverview', 'Balance Overview'),
             value: balanceOverviewValue,
             subtitle: balanceOverviewSubtitle,
-            onClick: () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+            onClick: isUsagePage ? () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : undefined,
           },
           {
             icon: <Activity size={18} />,
             title: t('aiCenter.home.requests', 'Requests'),
             value: summary.total_requests.toString(),
             subtitle: t('aiCenter.home.totalRequests', 'Total requests'),
-            onClick: () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+            onClick: isUsagePage ? () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : undefined,
           },
         ]}
       />
@@ -489,6 +492,57 @@ export function UsageDashboard() {
         </div>
       </section>
 
+      {!isUsagePage && (
+        <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
+              {t('aiCenter.home.recentUsage', 'Recent Usage')}
+            </h3>
+            <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+              {recentUsageEvents.length} / 5
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-2">
+            {recentUsageEvents.map((event) => (
+              <RecentUsageRow
+                key={event.id}
+                event={event}
+                providerNames={providerNames}
+              />
+            ))}
+            {!usageLoading && recentUsageEvents.length === 0 && (
+              <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
+                {t('aiCenter.home.noUsageEvents', 'No usage events match the current filters.')}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {isUsagePage && (
+        <div className="flex min-h-10 flex-wrap items-center gap-1 rounded-xl p-1" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+          {([
+            ['usage', t('aiCenter.usage.usageDetail', 'Usage Detail')],
+            ['trace', t('aiCenter.usage.routeTraceAudit', 'Route Trace Audit')],
+          ] as Array<['usage' | 'trace', string]>).map(([tab, label]) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setUsageTab(tab)}
+              className="min-h-8 rounded-lg px-3 text-xs font-medium"
+              style={{
+                background: usageTab === tab ? 'var(--cp-surface-2)' : 'transparent',
+                color: usageTab === tab ? 'var(--cp-text)' : 'var(--cp-muted)',
+                border: usageTab === tab ? '1px solid var(--cp-border)' : '1px solid transparent',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {isUsagePage && usageTab === 'usage' && (
       <section ref={detailRef} className="rounded-xl overflow-hidden scroll-mt-4" style={{ border: '1px solid var(--cp-border)' }}>
         <div className="px-4 py-3 flex flex-col gap-3" style={{ background: 'var(--cp-surface)' }}>
           <div className="flex items-center justify-between gap-3">
@@ -724,8 +778,9 @@ export function UsageDashboard() {
           />
         )}
       </section>
+      )}
 
-      {filtersSheetOpen && (
+      {isUsagePage && filtersSheetOpen && (
         <UsageFiltersSheet
           onClose={() => setFiltersSheetOpen(false)}
           onClear={clearUsageFilters}
@@ -775,7 +830,7 @@ export function UsageDashboard() {
         </UsageFiltersSheet>
       )}
 
-      {linkedTraceTaskId && (
+      {isUsagePage && usageTab === 'usage' && linkedTraceTaskId && (
         <section ref={linkedTraceRef} className="rounded-xl p-4 scroll-mt-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
@@ -818,6 +873,11 @@ export function UsageDashboard() {
         </section>
       )}
 
+      {isUsagePage && usageTab === 'trace' && (
+        <RouteTraceAuditPanel compact={isMobile} />
+      )}
+
+      {(!isUsagePage || usageTab === 'usage') && (
       <details className="group rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
           <span>{t('aiCenter.home.secondaryBreakdowns', 'Provider / Model / App breakdown')}</span>
@@ -859,24 +919,6 @@ export function UsageDashboard() {
           />
         </div>
       </details>
-
-      {recentTraces.length > 0 && (
-        <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Route size={16} style={{ color: 'var(--cp-accent)' }} />
-              <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-                {t('aiCenter.home.recentRouteTrace', 'Recent Route Traces')}
-              </h3>
-            </div>
-            <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>{recentTraces.length}</span>
-          </div>
-          <div className="grid grid-cols-1 gap-2">
-            {recentTraces.map((trace) => (
-              <RecentTraceCard key={trace.request_id} trace={trace} />
-            ))}
-          </div>
-        </section>
       )}
     </div>
   )
@@ -922,19 +964,54 @@ function StatusAndKpiHeader({
           <StatusMiniMetric label={issueLabel} value={issueCount} warning={issueCount > 0} />
         </div>
       </div>
-      <div className="relative min-w-0">
-        <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 pr-12">
-          {kpis.map((kpi) => (
-            <div key={kpi.title} className="min-w-[72%] snap-start sm:min-w-[240px] lg:min-w-[220px]">
-              <SummaryCard icon={kpi.icon} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} onClick={kpi.onClick} />
+      <KpiCarousel kpis={kpis} />
+    </div>
+  )
+}
+
+function KpiCarousel({
+  kpis,
+}: {
+  kpis: Array<{ icon: ReactNode; title: string; value: string; subtitle?: string; onClick?: () => void }>
+}) {
+  const [activeIndex, setActiveIndex] = useState(0)
+  if (kpis.length === 0) return null
+  if (kpis.length === 1) {
+    const kpi = kpis[0]
+    return <SummaryCard icon={kpi.icon} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} onClick={kpi.onClick} />
+  }
+  const previousIndex = (activeIndex - 1 + kpis.length) % kpis.length
+  const nextIndex = (activeIndex + 1) % kpis.length
+  const slots = kpis.length === 1
+    ? [{ index: activeIndex, role: 'active' as const }]
+    : [
+      { index: previousIndex, role: 'previous' as const },
+      { index: activeIndex, role: 'active' as const },
+      { index: nextIndex, role: 'next' as const },
+    ]
+
+  return (
+    <div className="grid min-w-0 grid-cols-[minmax(18px,0.16fr)_minmax(0,1fr)_minmax(18px,0.16fr)] gap-2 overflow-hidden">
+      {slots.map(({ index, role }) => {
+        const kpi = kpis[index]
+        const active = role === 'active'
+        return (
+          <button
+            key={`${role}-${kpi.title}`}
+            type="button"
+            onClick={() => {
+              if (active) kpi.onClick?.()
+              else setActiveIndex(index)
+            }}
+            className={`${active ? 'col-span-1 opacity-100' : 'overflow-hidden opacity-55'} min-w-0 text-left transition-opacity`}
+            aria-label={kpi.title}
+          >
+            <div className={active ? '' : role === 'previous' ? 'w-[360px] -translate-x-[300px]' : 'w-[360px]'}>
+              <SummaryCard icon={kpi.icon} title={kpi.title} value={kpi.value} subtitle={active ? kpi.subtitle : undefined} />
             </div>
-          ))}
-        </div>
-        <div
-          className="pointer-events-none absolute bottom-1 right-0 top-0 w-16"
-          style={{ background: 'linear-gradient(90deg, transparent, var(--cp-bg))' }}
-        />
-      </div>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -1009,19 +1086,20 @@ function UsageEventCard({
   onOpenTrace: (taskId: string) => void
 }) {
   const { t } = useI18n()
-  const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
   const tokens = usageTokens(event)
   const providerIdentifier = readableUsageProviderIdentifier(event)
   const providerDisplayName = usageProviderDisplayName(event, providerNames)
   const appAgent = `${event.app_id ?? 'system'}${event.agent_id ? ` / ${event.agent_id}` : ''}`
-  const longValues = [
-    providerDisplayName,
-    event.exact_model,
-    appAgent,
-    event.session_id ?? '',
-  ].filter(Boolean)
-  const copyValue = longValues.join('\n')
+  const copyValue = [
+    `provider: ${providerDisplayName}`,
+    `model: ${event.exact_model}`,
+    `tokens: ${formatTokens(tokens)}`,
+    `cost: ${formatUsd(usageFinanceAmount(event))}`,
+    `time: ${formatLocalTime(event.timestamp)}`,
+    `status: ${event.status}`,
+    event.session_id ? `task/session: ${event.session_id}` : '',
+  ].filter(Boolean).join('\n')
 
   const copyDetails = async () => {
     try {
@@ -1034,7 +1112,20 @@ function UsageEventCard({
   }
 
   return (
-    <article className="rounded-lg p-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+    <article
+      role="button"
+      tabIndex={0}
+      onClick={() => void copyDetails()}
+      onKeyDown={(eventKey) => {
+        if (eventKey.key === 'Enter' || eventKey.key === ' ') {
+          eventKey.preventDefault()
+          void copyDetails()
+        }
+      }}
+      className="rounded-lg p-3 text-left"
+      style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+      title={copied ? t('common.copied', 'Copied') : t('common.copy', 'Copy')}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp)}</div>
@@ -1048,16 +1139,19 @@ function UsageEventCard({
         </div>
       </div>
       <div className="mt-3 grid grid-cols-1 gap-2 text-xs">
-        <UsageCardRow label={t('aiCenter.home.filterProvider', 'Provider')} value={providerDisplayName} title={providerDisplayName === providerIdentifier ? providerDisplayName : `${providerDisplayName} (${providerIdentifier})`} expanded={expanded} />
-        <UsageCardRow label={t('aiCenter.home.filterModel', 'Model')} value={event.exact_model} expanded={expanded} mono />
-        <UsageCardRow label={t('aiCenter.home.filterAppAgent', 'App / Agent')} value={appAgent} expanded={expanded} />
+        <UsageCardRow label={t('aiCenter.home.filterProvider', 'Provider')} value={providerDisplayName} title={providerDisplayName === providerIdentifier ? providerDisplayName : `${providerDisplayName} (${providerIdentifier})`} />
+        <UsageCardRow label={t('aiCenter.home.filterModel', 'Model')} value={event.exact_model} mono allowWrap />
+        <UsageCardRow label={t('aiCenter.home.filterAppAgent', 'App / Agent')} value={appAgent} />
         {event.session_id && (
           <div className="flex min-w-0 items-center justify-between gap-2">
             <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.taskSession', 'Task / Session')}</span>
             <button
               type="button"
-              onClick={() => onOpenTrace(event.session_id ?? '')}
-              className={`${expanded ? 'break-all text-right' : 'truncate'} min-w-0 font-mono underline-offset-2 hover:underline`}
+              onClick={(clickEvent) => {
+                clickEvent.stopPropagation()
+                onOpenTrace(event.session_id ?? '')
+              }}
+              className="min-w-0 truncate font-mono underline-offset-2 hover:underline"
               style={{ color: 'var(--cp-accent)' }}
             >
               {event.session_id}
@@ -1068,17 +1162,11 @@ function UsageEventCard({
       <div className="mt-3 flex items-center gap-2">
         <button
           type="button"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={(clickEvent) => {
+            clickEvent.stopPropagation()
+            void copyDetails()
+          }}
           className="inline-flex min-h-11 flex-1 items-center justify-center gap-1 rounded-lg px-3 text-xs font-medium"
-          style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-        >
-          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          {expanded ? t('aiCenter.home.collapseFields', 'Collapse') : t('aiCenter.home.expandFields', 'Expand')}
-        </button>
-        <button
-          type="button"
-          onClick={() => void copyDetails()}
-          className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg px-3 text-xs font-medium"
           style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
         >
           {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -1089,14 +1177,42 @@ function UsageEventCard({
   )
 }
 
-function UsageCardRow({ label, value, title, expanded, mono }: { label: string; value: string; title?: string; expanded: boolean; mono?: boolean }) {
+function RecentUsageRow({
+  event,
+  providerNames,
+}: {
+  event: UsageEvent
+  providerNames: Map<string, string>
+}) {
+  const tokens = usageTokens(event)
+  const providerDisplayName = usageProviderDisplayName(event, providerNames)
+  return (
+    <div className="grid grid-cols-1 gap-2 rounded-lg px-3 py-2 text-xs md:grid-cols-[108px_minmax(120px,0.8fr)_minmax(180px,1.2fr)_80px_80px]" style={{ background: 'var(--cp-bg)' }}>
+      <span style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp)}</span>
+      <span className="truncate" title={providerDisplayName} style={{ color: 'var(--cp-text)' }}>{providerDisplayName}</span>
+      <span className="truncate font-mono" title={event.exact_model} style={{ color: 'var(--cp-text)' }}>{event.exact_model}</span>
+      <span style={{ color: 'var(--cp-muted)' }}>{formatTokens(tokens)}</span>
+      <span style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{event.status}</span>
+    </div>
+  )
+}
+
+function UsageCardRow({ label, value, title, mono, allowWrap }: { label: string; value: string; title?: string; mono?: boolean; allowWrap?: boolean }) {
   return (
     <div className="flex min-w-0 items-center justify-between gap-2">
       <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{label}</span>
       <span
         title={title ?? value}
-        className={`${expanded ? 'break-all text-right' : 'truncate'} min-w-0 ${mono ? 'font-mono' : ''}`}
-        style={{ color: 'var(--cp-text)' }}
+        className={`${allowWrap ? 'break-all text-right leading-4' : 'truncate'} min-w-0 ${mono ? 'font-mono' : ''}`}
+        style={allowWrap
+          ? {
+            color: 'var(--cp-text)',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+          }
+          : { color: 'var(--cp-text)' }}
       >
         {value}
       </span>
@@ -1369,9 +1485,15 @@ function MultiSelectFilter({
   options: string[]
   allLabel: string
 }) {
+  const { t } = useI18n()
   const selectedCount = value.selected.length
   const [open, setOpen] = useState(false)
+  const [showAllOptions, setShowAllOptions] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const visibleOptions = showAllOptions
+    ? options
+    : Array.from(new Set([...options.slice(0, 6), ...value.selected]))
+  const hiddenOptionCount = Math.max(0, options.length - visibleOptions.length)
   const toggleOption = (option: string) => {
     const selected = value.selected.includes(option)
       ? value.selected.filter((item) => item !== option)
@@ -1436,7 +1558,7 @@ function MultiSelectFilter({
           >
             {allLabel}
           </button>
-          {options.map((option) => (
+          {visibleOptions.map((option) => (
             <label key={option} className="flex min-h-7 items-center gap-2 rounded px-2 py-1 text-xs" style={{ color: 'var(--cp-text)' }}>
               <input
                 type="checkbox"
@@ -1446,6 +1568,26 @@ function MultiSelectFilter({
               <span className="truncate" title={option}>{option}</span>
             </label>
           ))}
+          {hiddenOptionCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(true)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.home.showMoreOptions', 'Show more')} ({hiddenOptionCount})
+            </button>
+          )}
+          {showAllOptions && options.length > 6 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(false)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.home.showLess', 'Show less')}
+            </button>
+          )}
         </div>
       )}
     </div>

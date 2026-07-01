@@ -93,6 +93,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
   const [searchQuery, setSearchQuery] = useState('')
   const [filters, setFilters] = useState<InventoryFilters>(() => emptyInventoryFilters())
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set())
+  const actionsRef = useRef<HTMLDivElement | null>(null)
 
   const { config, status, account, inventory } = provider
   const models = status.discovered_models
@@ -113,6 +114,26 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
     setWeightDraft(value)
     setWeightError(null)
   }
+
+  useEffect(() => {
+    if (!actionsOpen) return
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!actionsRef.current?.contains(event.target as Node)) {
+        setActionsOpen(false)
+      }
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setActionsOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [actionsOpen])
 
   const handleSaveWeight = () => {
     if (!weightValid) {
@@ -215,7 +236,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
             {config.provider_instance_name} / {config.provider_runtime_type} / {config.provider_origin}
           </div>
         </div>
-        <div className="relative shrink-0">
+        <div ref={actionsRef} className="relative shrink-0">
           <button
             type="button"
             onClick={() => setActionsOpen((value) => !value)}
@@ -301,18 +322,14 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
             <StatusTile label={t('aiCenter.providers.issues', 'Issues')} value={(degradedCount + quotaWarningCount).toString()} tone={degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok'} />
           </div>
         </div>
-        <div className="relative min-w-0">
-          <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 pr-12 md:grid md:grid-cols-4 md:overflow-visible md:pr-0">
-            <Metric label={t('aiCenter.providers.inventoryModels', 'Inventory Models')} value={models.length.toString()} detail={inventory.inventory_revision} />
-            <Metric label={t('aiCenter.providers.health', 'Health')} value={`${models.length - degradedCount}/${models.length}`} detail={t('aiCenter.providers.availableModels', 'available models')} />
-            <Metric label={t('aiCenter.providers.quota', 'Quota')} value={quotaWarningCount ? `${quotaWarningCount}` : '0'} detail={quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal')} />
-            <Metric label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={formatWeight(routingWeight)} detail={routingWeightLabel} />
-          </div>
-          <div
-            className="pointer-events-none absolute bottom-1 right-0 top-0 w-14 md:hidden"
-            style={{ background: 'linear-gradient(90deg, transparent, var(--cp-bg))' }}
-          />
-        </div>
+        <MetricCarousel
+          metrics={[
+            { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision },
+            { label: t('aiCenter.providers.health', 'Health'), value: `${models.length - degradedCount}/${models.length}`, detail: t('aiCenter.providers.availableModels', 'available models') },
+            { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal') },
+            { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel },
+          ]}
+        />
       </div>
 
       <div
@@ -497,6 +514,44 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   )
 }
 
+function MetricCarousel({ metrics }: { metrics: Array<{ label: string; value: string; detail?: string }> }) {
+  const [activeIndex, setActiveIndex] = useState(0)
+  if (metrics.length === 0) return null
+  if (metrics.length === 1) {
+    const metric = metrics[0]
+    return <Metric label={metric.label} value={metric.value} detail={metric.detail} />
+  }
+  const previousIndex = (activeIndex - 1 + metrics.length) % metrics.length
+  const nextIndex = (activeIndex + 1) % metrics.length
+  const slots = [
+    { index: previousIndex, role: 'previous' as const },
+    { index: activeIndex, role: 'active' as const },
+    { index: nextIndex, role: 'next' as const },
+  ]
+
+  return (
+    <div className="grid min-w-0 grid-cols-[minmax(18px,0.16fr)_minmax(0,1fr)_minmax(18px,0.16fr)] gap-2 overflow-hidden">
+      {slots.map(({ index, role }) => {
+        const metric = metrics[index]
+        const active = role === 'active'
+        return (
+          <button
+            key={`${role}-${metric.label}`}
+            type="button"
+            onClick={() => setActiveIndex(index)}
+            className={`${active ? 'opacity-100' : 'overflow-hidden opacity-55'} min-w-0 text-left transition-opacity`}
+            aria-label={metric.label}
+          >
+            <div className={active ? '' : role === 'previous' ? 'w-[360px] -translate-x-[300px]' : 'w-[360px]'}>
+              <Metric label={metric.label} value={metric.value} detail={active ? metric.detail : undefined} />
+            </div>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function StatusTile({ label, value, tone = 'unknown' }: { label: string; value: string; tone?: 'ok' | 'warning' | 'error' | 'unknown' }) {
   const color = tone === 'ok'
     ? 'var(--cp-success)'
@@ -553,9 +608,15 @@ function InventoryToolbar({
 }
 
 function MultiSelectFilter({ label, value, options, onChange }: { label: string; value: MultiFilter; options: string[]; onChange: (value: MultiFilter) => void }) {
+  const { t } = useI18n()
   const selectedCount = value.selected.length
   const [open, setOpen] = useState(false)
+  const [showAllOptions, setShowAllOptions] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const visibleOptions = showAllOptions
+    ? options
+    : Array.from(new Set([...options.slice(0, 6), ...value.selected]))
+  const hiddenOptionCount = Math.max(0, options.length - visibleOptions.length)
   const toggleOption = (option: string) => {
     const selected = value.selected.includes(option)
       ? value.selected.filter((item) => item !== option)
@@ -620,7 +681,7 @@ function MultiSelectFilter({ label, value, options, onChange }: { label: string;
           >
             All
           </button>
-          {options.map((option) => (
+          {visibleOptions.map((option) => (
             <label key={option} className="flex min-h-7 items-center gap-2 rounded px-2 py-1 text-xs" style={{ color: 'var(--cp-text)' }}>
               <input
                 type="checkbox"
@@ -630,6 +691,26 @@ function MultiSelectFilter({ label, value, options, onChange }: { label: string;
               <span className="truncate" title={option}>{option}</span>
             </label>
           ))}
+          {hiddenOptionCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(true)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.providers.showMoreOptions', 'Show more')} ({hiddenOptionCount})
+            </button>
+          )}
+          {showAllOptions && options.length > 6 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(false)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.providers.showLessOptions', 'Show less')}
+            </button>
+          )}
         </div>
       )}
     </div>

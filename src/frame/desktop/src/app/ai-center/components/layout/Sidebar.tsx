@@ -1,8 +1,9 @@
-import { Home, Plug, HardDrive, GitFork } from 'lucide-react'
+import { BarChart3, Home, Plug, HardDrive, GitFork } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 
 const navItems = [
   { key: 'home', icon: Home, labelKey: 'aiCenter.nav.home', label: 'Home' },
+  { key: 'usage', icon: BarChart3, labelKey: 'aiCenter.nav.usage', label: 'Usage' },
   { key: 'providers', icon: Plug, labelKey: 'aiCenter.nav.providers', label: 'Providers' },
   { key: 'models', icon: HardDrive, labelKey: 'aiCenter.nav.models', label: 'Models' },
   { key: 'routing', icon: GitFork, labelKey: 'aiCenter.nav.routing', label: 'Routing' },

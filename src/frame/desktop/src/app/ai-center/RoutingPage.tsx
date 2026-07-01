@@ -520,9 +520,15 @@ function MultiSelectFilter({
   options: string[]
   onChange: (value: MultiFilter) => void
 }) {
+  const { t } = useI18n()
   const selectedCount = value.selected.length
   const [open, setOpen] = useState(false)
+  const [showAllOptions, setShowAllOptions] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const visibleOptions = showAllOptions
+    ? options
+    : Array.from(new Set([...options.slice(0, 6), ...value.selected]))
+  const hiddenOptionCount = Math.max(0, options.length - visibleOptions.length)
   const toggleOption = (option: string) => {
     const selected = value.selected.includes(option)
       ? value.selected.filter((item) => item !== option)
@@ -587,7 +593,7 @@ function MultiSelectFilter({
           >
             All
           </button>
-          {options.map((option) => (
+          {visibleOptions.map((option) => (
             <label key={option} className="flex min-h-7 items-center gap-2 rounded px-2 py-1 text-xs" style={{ color: 'var(--cp-text)' }}>
               <input
                 type="checkbox"
@@ -597,6 +603,26 @@ function MultiSelectFilter({
               <span className="truncate" title={option}>{option}</span>
             </label>
           ))}
+          {hiddenOptionCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(true)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.routing.showMoreOptions', 'Show more')} ({hiddenOptionCount})
+            </button>
+          )}
+          {showAllOptions && options.length > 6 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(false)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.routing.showLessOptions', 'Show less')}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -1136,6 +1162,7 @@ function TraceCard({
 }) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
+  const [filteredExpanded, setFilteredExpanded] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const selectedCandidate = selectedTraceCandidate(trace)
   const visibleRankedCandidates = expanded
@@ -1253,25 +1280,52 @@ function TraceCard({
       </div>
 
       <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
-        <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
             {t('aiCenter.routing.filteredOut', 'Filtered out')}
           </div>
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {trace.filtered_candidates.length}
-          </div>
+          <button
+            type="button"
+            disabled={trace.filtered_candidates.length === 0}
+            onClick={(event) => {
+              event.stopPropagation()
+              setFilteredExpanded((value) => !value)
+            }}
+            className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 text-xs font-medium disabled:opacity-50"
+            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+          >
+            {filteredExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            {filteredExpanded
+              ? t('common.collapse', 'Collapse')
+              : t('aiCenter.routing.traceShowFilteredCandidates', 'Show {{count}}', { count: trace.filtered_candidates.length })}
+          </button>
         </div>
-        {trace.filtered_candidates.length > 0 ? (
+        {!filteredExpanded && (
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {trace.filtered_candidates.length > 0
+              ? t('aiCenter.routing.filteredOutCollapsed', '{{count}} candidates hidden', { count: trace.filtered_candidates.length })
+              : t('aiCenter.routing.noFilteredCandidates', 'No candidates were filtered out.')}
+          </div>
+        )}
+        {filteredExpanded && trace.filtered_candidates.length > 0 ? (
           <div className="flex flex-col gap-1">
             {trace.filtered_candidates.map((candidate) => (
               <TraceFilteredCandidateRow key={candidate.exact_model} candidate={candidate} />
             ))}
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                setFilteredExpanded(false)
+              }}
+              className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1 rounded-md px-2 text-xs font-medium"
+              style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+            >
+              <ChevronUp size={13} />
+              {t('common.collapse', 'Collapse')}
+            </button>
           </div>
-        ) : (
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.routing.noFilteredCandidates', 'No candidates were filtered out.')}
-          </div>
-        )}
+        ) : null}
       </div>
 
       {(trace.ranked_candidates.length > 1 || trace.filtered_candidates.length > 0) && (
