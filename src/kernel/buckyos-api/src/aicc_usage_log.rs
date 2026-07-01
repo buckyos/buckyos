@@ -26,7 +26,7 @@ use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
 pub const AICC_USAGE_LOG_RDB_INSTANCE_ID: &str = "aicc-usage-log";
 
 /// Version of the usage-log schema. Bump whenever the DDL changes.
-pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 2;
+pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 3;
 
 /// Sqlite DDL for the usage-log database. The only required table in v1 is
 /// `aicc_usage_event`; summary tables can be added later when SQL aggregation
@@ -80,6 +80,8 @@ CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_tenant_time
     ON aicc_route_trace(tenant_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_request_model_time
     ON aicc_route_trace(request_model, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_task_time
+    ON aicc_route_trace(task_id, created_at_ms);
 "#;
 
 /// Postgres DDL mirroring the sqlite schema above.
@@ -132,6 +134,8 @@ CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_tenant_time
     ON aicc_route_trace(tenant_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_request_model_time
     ON aicc_route_trace(request_model, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_task_time
+    ON aicc_route_trace(task_id, created_at_ms);
 "#;
 
 /// Default rdb-instance config for the aicc usage-log. The scheduler drops
@@ -211,6 +215,10 @@ pub struct QueryRouteTraceRequest {
     pub limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub request_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

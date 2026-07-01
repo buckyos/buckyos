@@ -282,6 +282,8 @@ export interface RoutingDirectoryView {
 export interface RouteTracesQuery {
   cursor?: string
   limit: number
+  taskIds?: string[]
+  requestIds?: string[]
 }
 
 export interface RouteTracesPage {
@@ -449,6 +451,7 @@ class MockAiccProvider implements AiccDataProvider {
 
   async queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
     const traces = this.store.getSnapshot().routeTraces
+      .filter((trace) => routeTraceMatchesQuery(trace, params))
     const cursor = Number(params.cursor ?? 0)
     const offset = Number.isFinite(cursor) && cursor > 0 ? cursor : 0
     const page = traces.slice(offset, offset + params.limit)
@@ -687,6 +690,8 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       const raw = await this.call<RawTraceQueryResponse>('trace.query', {
         limit: params.limit,
         cursor: params.cursor,
+        task_ids: params.taskIds,
+        request_ids: params.requestIds,
       })
       return {
         traces: toRouteTraces(raw),
@@ -1183,6 +1188,15 @@ function usageEventMatchesQuery(event: StoreSnapshot['usageEvents'][number], par
   if (filters.appIds?.length && !filters.appIds.some((id) => id === (event.app_id ?? 'system') || id === event.agent_id)) return false
   if (filters.appQuery?.trim() && !includesFuzzy(appValue, filters.appQuery)) return false
   return true
+}
+
+function routeTraceMatchesQuery(trace: RouteTrace, params: RouteTracesQuery): boolean {
+  const taskIds = params.taskIds?.filter(Boolean) ?? []
+  const requestIds = params.requestIds?.filter(Boolean) ?? []
+  if (taskIds.length === 0 && requestIds.length === 0) return true
+  return taskIds.includes(trace.request_id) ||
+    (trace.session_id != null && taskIds.includes(trace.session_id)) ||
+    requestIds.includes(trace.request_id)
 }
 
 function includesFuzzy(value: string, query: string): boolean {

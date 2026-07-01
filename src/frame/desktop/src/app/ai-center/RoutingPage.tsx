@@ -65,6 +65,7 @@ type ModelGroup = {
 }
 
 type UseCaseKind = 'chat' | 'code' | 'plan' | 'image' | 'embed' | 'vision' | 'audio' | 'other'
+type TraceOutcomeFilter = 'all' | 'selected' | 'fallback' | 'unresolved' | 'warning'
 
 function emptyMultiFilter(): MultiFilter {
   return { query: '', selected: [] }
@@ -102,6 +103,9 @@ export function RoutingPage() {
   const [tracePageIndex, setTracePageIndex] = useState(0)
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
+  const [traceQuery, setTraceQuery] = useState('')
+  const [traceOutcomeFilter, setTraceOutcomeFilter] = useState<TraceOutcomeFilter>('all')
+  const [traceProviderFilter, setTraceProviderFilter] = useState('')
 
   const snapshotModels = useMemo(() => [
     ...providers.flatMap((provider) => provider.status.discovered_models),
@@ -200,6 +204,19 @@ export function RoutingPage() {
   const selectedScenario = visibleScenarios.find((scenario) => scenario.node.path === selectedPath)
     ?? directoryEntries[0]
     ?? visibleScenarios[0]
+  const traceProviderOptions = useMemo(
+    () => uniqueSorted(traces
+      .map((trace) => trace.selected_provider_instance_name)
+      .filter((provider): provider is string => Boolean(provider))),
+    [traces],
+  )
+  const visibleTraces = useMemo(
+    () => traces
+      .filter((trace) => traceMatchesQuery(trace, traceQuery))
+      .filter((trace) => traceMatchesOutcome(trace, traceOutcomeFilter))
+      .filter((trace) => !traceProviderFilter || trace.selected_provider_instance_name === traceProviderFilter),
+    [traceOutcomeFilter, traceProviderFilter, traceQuery, traces],
+  )
 
   if (routingView.logical_tree.length === 0) {
     return (
@@ -303,21 +320,30 @@ export function RoutingPage() {
           {selectedScenario && (
             <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
           )}
-          <TraceExplorer
-            traces={traces}
-            compact={isMobile}
-            hasMore={isMobile && Boolean(traceNextCursor)}
-            pageIndex={tracePageIndex}
-            canGoPrevious={!isMobile && tracePageIndex > 0}
-            canGoNext={!isMobile && Boolean(traceNextCursor)}
-            loading={traceLoading}
-            error={traceError}
-            onLoadMore={loadMoreTraces}
-            onPreviousPage={() => void loadTracePage(tracePageIndex - 1)}
-            onNextPage={() => void loadTracePage(tracePageIndex + 1)}
-          />
         </aside>
       </div>
+
+      <TraceExplorer
+        traces={visibleTraces}
+        totalCount={traces.length}
+        compact={isMobile}
+        query={traceQuery}
+        outcomeFilter={traceOutcomeFilter}
+        providerFilter={traceProviderFilter}
+        providerOptions={traceProviderOptions}
+        hasMore={isMobile && Boolean(traceNextCursor)}
+        pageIndex={tracePageIndex}
+        canGoPrevious={!isMobile && tracePageIndex > 0}
+        canGoNext={!isMobile && Boolean(traceNextCursor)}
+        loading={traceLoading}
+        error={traceError}
+        onQueryChange={setTraceQuery}
+        onOutcomeFilterChange={setTraceOutcomeFilter}
+        onProviderFilterChange={setTraceProviderFilter}
+        onLoadMore={loadMoreTraces}
+        onPreviousPage={() => void loadTracePage(tracePageIndex - 1)}
+        onNextPage={() => void loadTracePage(tracePageIndex + 1)}
+      />
     </div>
   )
 }
@@ -769,25 +795,41 @@ function ModelGroupRow({
 
 function TraceExplorer({
   traces,
+  totalCount,
   compact,
+  query,
+  outcomeFilter,
+  providerFilter,
+  providerOptions,
   hasMore,
   pageIndex,
   canGoPrevious,
   canGoNext,
   loading,
   error,
+  onQueryChange,
+  onOutcomeFilterChange,
+  onProviderFilterChange,
   onLoadMore,
   onPreviousPage,
   onNextPage,
 }: {
   traces: RouteTrace[]
+  totalCount: number
   compact: boolean
+  query: string
+  outcomeFilter: TraceOutcomeFilter
+  providerFilter: string
+  providerOptions: string[]
   hasMore: boolean
   pageIndex: number
   canGoPrevious: boolean
   canGoNext: boolean
   loading: boolean
   error: 'initial' | 'more' | null
+  onQueryChange: (value: string) => void
+  onOutcomeFilterChange: (value: TraceOutcomeFilter) => void
+  onProviderFilterChange: (value: string) => void
   onLoadMore: () => void
   onPreviousPage: () => void
   onNextPage: () => void
@@ -795,46 +837,62 @@ function TraceExplorer({
   const { t } = useI18n()
   return (
     <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-      <div className="flex items-center gap-2 mb-3">
-        <Route size={16} style={{ color: 'var(--cp-accent)' }} />
-        <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.routeTrace', 'Route Trace')}</h3>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2">
+          <Route size={16} style={{ color: 'var(--cp-accent)' }} />
+          <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.routeTraceAudit', 'Route Trace Audit')}</h3>
+        </div>
+        <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+          {t('aiCenter.routing.traceVisibleCount', '{{visible}} / {{total}} traces', { visible: traces.length, total: totalCount })}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(220px,1fr)_180px_220px] gap-2 mb-3">
+        <div className="flex min-h-9 items-center gap-2 rounded-md px-2" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
+          <Search size={15} style={{ color: 'var(--cp-muted)' }} />
+          <input
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder={t('aiCenter.routing.traceSearch', 'Search path, model, provider, reason...')}
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+            style={{ color: 'var(--cp-text)' }}
+          />
+        </div>
+        <select
+          value={outcomeFilter}
+          onChange={(event) => onOutcomeFilterChange(event.target.value as TraceOutcomeFilter)}
+          className="min-h-9 rounded-md px-2 text-sm outline-none"
+          style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+        >
+          <option value="all">{t('aiCenter.routing.traceOutcomeAll', 'All outcomes')}</option>
+          <option value="selected">{t('aiCenter.routing.traceOutcomeSelected', 'Selected')}</option>
+          <option value="fallback">{t('aiCenter.routing.traceOutcomeFallback', 'Fallback')}</option>
+          <option value="unresolved">{t('aiCenter.routing.traceOutcomeUnresolved', 'Unresolved')}</option>
+          <option value="warning">{t('aiCenter.routing.traceOutcomeWarning', 'Warnings')}</option>
+        </select>
+        <select
+          value={providerFilter}
+          onChange={(event) => onProviderFilterChange(event.target.value)}
+          className="min-h-9 rounded-md px-2 text-sm outline-none"
+          style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+        >
+          <option value="">{t('aiCenter.routing.traceProviderAll', 'All providers')}</option>
+          {providerFilter && !providerOptions.includes(providerFilter) && (
+            <option value={providerFilter}>{providerFilter}</option>
+          )}
+          {providerOptions.map((provider) => (
+            <option key={provider} value={provider}>{provider}</option>
+          ))}
+        </select>
       </div>
       <div className={compact ? 'flex flex-col gap-3' : 'grid grid-cols-1 gap-3'}>
         {traces.map((trace) => (
-          <article key={trace.request_id} className="rounded-lg p-3" style={{ background: 'var(--cp-bg)' }}>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-mono" style={{ color: 'var(--cp-text)' }}>{trace.requested_model}</div>
-              <StatusBadge status={trace.selected_exact_model ? (trace.fallback_applied ? 'warning' : 'ok') : 'error'} label={trace.scheduler_profile} />
-            </div>
-            <div className="text-xs mt-1" style={{ color: 'var(--cp-muted)' }}>
-              {trace.selected_exact_model
-                ? `${trace.selected_exact_model} / ${trace.selected_provider_instance_name}`
-                : t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
-            </div>
-            <p className="text-sm mt-2" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
-            <div className="flex flex-col gap-1 mt-3">
-              {trace.ranked_candidates.length > 0 ? trace.ranked_candidates.map((candidate) => (
-                <div key={candidate.exact_model} className="flex justify-between gap-3 text-xs">
-                  <span className="min-w-0" style={{ color: candidate.selected ? 'var(--cp-accent)' : 'var(--cp-muted)' }}>
-                    <span className="block truncate">{candidate.exact_model}</span>
-                    <span className="block" style={{ color: 'var(--cp-muted)' }}>
-                      {candidateWeightSummary(candidate)}
-                    </span>
-                  </span>
-                  <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{candidate.final_score?.toFixed(2)}</span>
-                </div>
-              )) : trace.filtered_candidates.map((candidate) => (
-                <div key={candidate.exact_model} className="flex flex-col gap-0.5 text-xs">
-                  <span style={{ color: 'var(--cp-warning)' }}>{candidate.exact_model}</span>
-                  <span style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
-                </div>
-              ))}
-            </div>
-            {trace.warnings.length > 0 && (
-              <div className="text-xs mt-2" style={{ color: 'var(--cp-warning)' }}>{trace.warnings.join(' / ')}</div>
-            )}
-          </article>
+          <TraceCard key={trace.request_id} trace={trace} />
         ))}
+        {traces.length === 0 && (
+          <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
+            {t('aiCenter.routing.traceNoMatches', 'No route traces match the current search and filters.')}
+          </div>
+        )}
       </div>
       {error && (
         <div className="mt-3 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--cp-warning)', background: 'var(--cp-bg)' }}>
@@ -887,6 +945,100 @@ function TraceExplorer({
         </div>
       )}
     </section>
+  )
+}
+
+function TraceCard({ trace }: { trace: RouteTrace }) {
+  const { t } = useI18n()
+  const [expanded, setExpanded] = useState(false)
+  const selectedCandidate = selectedTraceCandidate(trace)
+  const visibleCandidates = expanded
+    ? trace.ranked_candidates
+    : selectedCandidate ? [selectedCandidate] : []
+  const hiddenCandidateCount = Math.max(0, trace.ranked_candidates.length - visibleCandidates.length)
+
+  return (
+    <article className="rounded-lg p-3" style={{ background: 'var(--cp-bg)' }}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-mono" style={{ color: 'var(--cp-text)' }}>{trace.requested_model}</div>
+          <div className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {trace.selected_exact_model
+              ? `${trace.selected_exact_model} / ${trace.selected_provider_instance_name}`
+              : t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
+          </div>
+        </div>
+        <StatusBadge status={trace.selected_exact_model ? (trace.fallback_applied ? 'warning' : 'ok') : 'error'} label={trace.scheduler_profile} />
+      </div>
+      <p className="text-sm mt-2" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
+
+      <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
+        <div className="mb-1 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+          {t('aiCenter.routing.traceFinalSelection', 'Final selection')}
+        </div>
+        {selectedCandidate ? (
+          <TraceCandidateRow candidate={selectedCandidate} selected />
+        ) : (
+          <div className="text-xs" style={{ color: trace.selected_exact_model ? 'var(--cp-text)' : 'var(--cp-warning)' }}>
+            {trace.selected_exact_model ?? t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
+          </div>
+        )}
+      </div>
+
+      {expanded && visibleCandidates.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1">
+          {visibleCandidates.map((candidate) => (
+            <TraceCandidateRow key={candidate.exact_model} candidate={candidate} selected={candidate.selected} />
+          ))}
+        </div>
+      )}
+      {expanded && trace.filtered_candidates.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1">
+          {trace.filtered_candidates.map((candidate) => (
+            <div key={candidate.exact_model} className="flex flex-col gap-0.5 text-xs">
+              <span style={{ color: 'var(--cp-warning)' }}>{candidate.exact_model}</span>
+              <span style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {(trace.ranked_candidates.length > 1 || trace.filtered_candidates.length > 0) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-3 inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium"
+          style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+        >
+          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          {expanded
+            ? t('aiCenter.routing.traceHideCandidates', 'Hide candidates')
+            : t('aiCenter.routing.traceShowCandidates', 'Show candidates ({{count}})', { count: hiddenCandidateCount + trace.filtered_candidates.length })}
+        </button>
+      )}
+      {trace.warnings.length > 0 && (
+        <div className="text-xs mt-2" style={{ color: 'var(--cp-warning)' }}>{trace.warnings.join(' / ')}</div>
+      )}
+    </article>
+  )
+}
+
+function TraceCandidateRow({
+  candidate,
+  selected,
+}: {
+  candidate: RouteTrace['ranked_candidates'][number]
+  selected: boolean
+}) {
+  return (
+    <div className="flex justify-between gap-3 text-xs">
+      <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-muted)' }}>
+        <span className="block truncate">{candidate.exact_model}</span>
+        <span className="block" style={{ color: 'var(--cp-muted)' }}>
+          {candidateWeightSummary(candidate)}
+        </span>
+      </span>
+      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{candidate.final_score?.toFixed(2)}</span>
+    </div>
   )
 }
 
@@ -1299,6 +1451,38 @@ function formatLatency(model: ModelMetadata): string {
 
 function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean))).sort((left, right) => left.localeCompare(right))
+}
+
+function selectedTraceCandidate(trace: RouteTrace): RouteTrace['ranked_candidates'][number] | undefined {
+  return trace.ranked_candidates.find((candidate) => candidate.selected)
+    ?? trace.ranked_candidates.find((candidate) => candidate.exact_model === trace.selected_exact_model)
+}
+
+function traceMatchesQuery(trace: RouteTrace, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) return true
+  const haystack = [
+    trace.request_id,
+    trace.requested_model,
+    trace.resolved_logical_path ?? '',
+    trace.selected_exact_model ?? '',
+    trace.selected_provider_instance_name ?? '',
+    trace.scheduler_profile,
+    trace.user_summary?.reason_short ?? '',
+    ...trace.warnings,
+    ...trace.ranked_candidates.map((candidate) => candidate.exact_model),
+    ...trace.filtered_candidates.flatMap((candidate) => [candidate.exact_model, candidate.reason]),
+  ].join(' ').toLowerCase()
+  return haystack.includes(normalizedQuery)
+}
+
+function traceMatchesOutcome(trace: RouteTrace, filter: TraceOutcomeFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'selected') return Boolean(trace.selected_exact_model)
+  if (filter === 'fallback') return trace.fallback_applied
+  if (filter === 'unresolved') return !trace.selected_exact_model
+  if (filter === 'warning') return trace.warnings.length > 0
+  return true
 }
 
 function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number]): string {

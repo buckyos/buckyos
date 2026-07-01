@@ -419,15 +419,27 @@ WHERE created_at_ms >= ? AND created_at_ms < ?
     ) -> Result<QueryRouteTraceResponse, RPCErrors> {
         let limit = req.limit.unwrap_or(20).clamp(1, 128) as usize;
         let offset = parse_cursor(req.cursor.as_deref())?;
-        let sql = self.render_sql(
+        let mut sql = String::from(
             r#"
 SELECT route_trace_json
 FROM aicc_route_trace
+WHERE 1 = 1
+"#,
+        );
+        let mut string_binds: Vec<String> = vec![];
+        push_trace_id_filter(&mut sql, &mut string_binds, req);
+        sql.push_str(
+            r#"
 ORDER BY created_at_ms DESC, trace_id DESC
 LIMIT ? OFFSET ?
 "#,
         );
-        let rows = sqlx::query(&sql)
+        let sql = self.render_sql(&sql);
+        let mut query = sqlx::query(&sql);
+        for value in string_binds {
+            query = query.bind(value);
+        }
+        let rows = query
             .bind(to_sql_i64(limit as u64))
             .bind(to_sql_i64(offset as u64))
             .fetch_all(self.pool())
@@ -450,6 +462,43 @@ LIMIT ? OFFSET ?
             next_cursor,
         })
     }
+}
+
+fn push_trace_id_filter(sql: &mut String, binds: &mut Vec<String>, req: &QueryRouteTraceRequest) {
+    let task_ids = normalized_values(&req.task_ids);
+    let request_ids = normalized_values(&req.request_ids);
+    if task_ids.is_empty() && request_ids.is_empty() {
+        return;
+    }
+
+    let mut clauses = Vec::new();
+    if !task_ids.is_empty() {
+        clauses.push(format!("task_id IN ({})", placeholders(task_ids.len())));
+        binds.extend(task_ids);
+    }
+    if !request_ids.is_empty() {
+        clauses.push(format!("trace_id IN ({})", placeholders(request_ids.len())));
+        binds.extend(request_ids);
+    }
+    sql.push_str("\nAND (");
+    sql.push_str(&clauses.join(" OR "));
+    sql.push_str(")\n");
+}
+
+fn normalized_values(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn placeholders(count: usize) -> String {
+    std::iter::repeat("?")
+        .take(count)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn resolve_time_window(range: &UsageQueryTimeRange, now_ms: i64) -> (i64, i64) {
@@ -1013,18 +1062,63 @@ mod tests {
 
         assert!(db.insert_route_trace_event(&trace).await.unwrap());
         assert!(!db.insert_route_trace_event(&trace).await.unwrap());
+        let sibling = AiccRouteTraceEvent {
+            trace_id: "trace-two".to_string(),
+            task_id: "trace-one".to_string(),
+            route_trace_json: json!({
+                "request_id": "trace-two",
+                "api_type": "llm",
+                "requested_model": "llm.plan.default",
+                "selected_exact_model": "gpt-5-mini@test"
+            }),
+            created_at_ms: now + 1,
+            ..trace.clone()
+        };
+        assert!(db.insert_route_trace_event(&sibling).await.unwrap());
 
         let resp = db
             .query_route_traces(&QueryRouteTraceRequest {
                 limit: Some(20),
                 cursor: None,
+                task_ids: vec![],
+                request_ids: vec![],
             })
             .await
             .unwrap();
-        assert_eq!(resp.traces.len(), 1);
+        assert_eq!(resp.traces.len(), 2);
         assert_eq!(
             resp.traces[0].get("request_id").and_then(Value::as_str),
+            Some("trace-two")
+        );
+        assert_eq!(
+            resp.traces[1].get("request_id").and_then(Value::as_str),
             Some("trace-one")
+        );
+
+        let task_resp = db
+            .query_route_traces(&QueryRouteTraceRequest {
+                limit: Some(20),
+                cursor: None,
+                task_ids: vec!["trace-one".to_string()],
+                request_ids: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(task_resp.traces.len(), 2);
+
+        let request_resp = db
+            .query_route_traces(&QueryRouteTraceRequest {
+                limit: Some(20),
+                cursor: None,
+                task_ids: vec![],
+                request_ids: vec!["trace-two".to_string()],
+            })
+            .await
+            .unwrap();
+        assert_eq!(request_resp.traces.len(), 1);
+        assert_eq!(
+            request_resp.traces[0].get("request_id").and_then(Value::as_str),
+            Some("trace-two")
         );
     }
 
