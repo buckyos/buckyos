@@ -714,7 +714,7 @@ mod test {
         async fn query_did(
             &self,
             did: &DID,
-            _fragment: Option<&str>,
+            _doc_type: Option<name_client::DidDocType>,
             _from_ip: Option<IpAddr>,
         ) -> name_lib::NSResult<EncodedDocument> {
             let host = did.to_host_name();

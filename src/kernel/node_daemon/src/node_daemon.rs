@@ -141,7 +141,7 @@ async fn looking_zone_boot_config(
         // let zone_jwt = zone_jwt.did_document.unwrap();
         // info!("zone_jwt: {:?}",zone_jwt);
 
-        let zone_doc = resolve_did(&node_identity.zone_did, Some("boot"))
+        let zone_doc = resolve_did(&node_identity.zone_did, Some(DidDocType::Boot))
             .await
             .map_err(|err| {
                 error!("resolve zone did failed! {}", err);
@@ -2061,13 +2061,16 @@ mod tests {
         async fn query_did(
             &self,
             did: &DID,
-            doc_type: Option<&str>,
+            doc_type: Option<name_client::DidDocType>,
             _from_ip: Option<std::net::IpAddr>,
         ) -> name_lib::NSResult<EncodedDocument> {
             Err(name_lib::NSError::NotFound(format!(
                 "{}#{}",
                 did.to_string(),
-                doc_type.unwrap_or("")
+                doc_type
+                    .as_ref()
+                    .map(name_client::DidDocType::as_str)
+                    .unwrap_or("")
             )))
         }
     }

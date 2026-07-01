@@ -106,7 +106,7 @@ pub fn device_identity_paths_for_roots(
         .public_file(
             device_did_str.as_str(),
             IdentityUsage::Authentication,
-            IdentityMaterial::DidJson,
+            IdentityMaterial::DidDocJson(None),
         )
         .map_err(|err| format!("build did.json path failed: {}", err))?;
     let authentication_private_key = roots

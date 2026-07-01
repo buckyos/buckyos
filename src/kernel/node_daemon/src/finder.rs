@@ -982,13 +982,16 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         async fn query_did(
             &self,
             did: &DID,
-            doc_type: Option<&str>,
+            doc_type: Option<name_client::DidDocType>,
             _from_ip: Option<IpAddr>,
         ) -> name_lib::NSResult<EncodedDocument> {
             Err(name_lib::NSError::NotFound(format!(
                 "{}#{}",
                 did.to_string(),
-                doc_type.unwrap_or("")
+                doc_type
+                    .as_ref()
+                    .map(name_client::DidDocType::as_str)
+                    .unwrap_or("")
             )))
         }
     }

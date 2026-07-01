@@ -109,7 +109,9 @@ impl ActiveServer {
             }
         };
 
-        if let Err(err) = update_did_cache(zone_did.clone(), Some("boot"), zone_boot_doc).await {
+        if let Err(err) =
+            update_did_cache(zone_did.clone(), Some(DidDocType::Boot), zone_boot_doc).await
+        {
             warn!(
                 "update zone boot did cache failed, zone_did={:?}, err={}",
                 zone_did, err
