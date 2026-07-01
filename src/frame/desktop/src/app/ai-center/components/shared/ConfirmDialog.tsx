@@ -26,14 +26,14 @@ export function ConfirmDialog({
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-end justify-center md:items-center">
       <div
         className="absolute inset-0"
         style={{ background: 'rgba(0,0,0,0.4)' }}
         onClick={onCancel}
       />
       <div
-        className="relative rounded-xl p-6 max-w-sm w-full mx-4 shadow-lg"
+        className="relative max-h-[calc(100dvh-1rem)] w-full overflow-y-auto rounded-t-xl p-6 shadow-lg md:mx-4 md:max-w-sm md:rounded-xl"
         style={{ background: 'var(--cp-surface)' }}
       >
         <h3
@@ -45,12 +45,12 @@ export function ConfirmDialog({
         <p className="text-sm mb-6" style={{ color: 'var(--cp-muted)' }}>
           {message}
         </p>
-        <div className="flex justify-end gap-3">
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-3">
           <button
             type="button"
             onClick={onCancel}
             disabled={confirming}
-            className="px-4 py-2 rounded-lg text-sm"
+            className="min-h-11 px-4 py-2 rounded-lg text-sm"
             style={{ color: 'var(--cp-muted)' }}
           >
             {t('common.cancel', 'Cancel')}
@@ -59,7 +59,7 @@ export function ConfirmDialog({
             type="button"
             onClick={onConfirm}
             disabled={confirming}
-            className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-60"
+            className="min-h-11 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-60"
             style={{ background: 'var(--cp-danger)', color: '#fff' }}
           >
             {confirming ? t('common.deleting', 'Deleting') : confirmLabel ?? t('common.confirm', 'Confirm')}

@@ -4,6 +4,7 @@ import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useRouteTraces } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
 import { PagedListFooter } from '../shared/paged-list'
+import { LongField } from '../shared/LongField'
 import type { RouteTrace } from '../../../../api/aicc_mgr'
 
 type TraceOutcomeFilter = 'all' | 'fallback' | 'failed' | 'warning'
@@ -157,6 +158,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
       </div>
 
       <div className={compact ? 'flex flex-col gap-3' : 'grid grid-cols-1 gap-3'}>
+        {traceLoading && visibleTraces.length === 0 && <TraceAuditSkeletonRows />}
         {visibleTraces.map((trace) => (
           <TraceAuditCard
             key={trace.request_id}
@@ -165,7 +167,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
             onSelect={() => setSelectedTraceId(trace.request_id)}
           />
         ))}
-        {visibleTraces.length === 0 && (
+        {!traceLoading && visibleTraces.length === 0 && (
           <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
             {traceEmptyStateLabel(emptyState, t)}
           </div>
@@ -258,13 +260,18 @@ function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="max-w-full truncate text-sm font-mono" style={{ color: 'var(--cp-text)' }}>{trace.requested_model}</span>
+            <LongField value={trace.requested_model} className="text-sm" mono />
             <span style={{ color: 'var(--cp-muted)' }}>{'->'}</span>
-            <span className="max-w-full truncate text-sm font-mono" style={{ color: trace.selected_exact_model ? 'var(--cp-text)' : 'var(--cp-danger)' }}>
-              {trace.selected_exact_model ?? t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
-            </span>
+            <LongField
+              value={trace.selected_exact_model}
+              fallback={t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
+              className="text-sm"
+              mono
+              tone={trace.selected_exact_model ? 'default' : 'danger'}
+              expandable
+            />
           </div>
-          <div className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>{metaItems.join(' / ')}</div>
+          <LongField value={metaItems.join(' / ')} className="mt-1 text-xs" tone="muted" copyable={false} expandable />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           {trace.warnings.length > 0 && (
@@ -419,7 +426,7 @@ function TraceCandidateRow({
     >
       <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-text)' }}>
         <span className="block truncate">
-          #{rank} {candidate.exact_model}
+          <LongField value={`#${rank} ${candidate.exact_model}`} copyable={false} />
         </span>
         <span className="block" style={{ color: 'var(--cp-muted)' }}>
           {candidateWeightSummary(candidate)}
@@ -437,11 +444,30 @@ function TraceFilteredCandidateRow({ candidate }: { candidate: RouteTrace['filte
   return (
     <div className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs">
       <span className="min-w-0">
-        <span className="block truncate" style={{ color: 'var(--cp-warning)' }}>{candidate.exact_model}</span>
+        <LongField value={candidate.exact_model} tone="warning" />
         <span className="block" style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
       </span>
       <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>filtered</span>
     </div>
+  )
+}
+
+function TraceAuditSkeletonRows() {
+  return (
+    <>
+      {[0, 1].map((index) => (
+        <div
+          key={index}
+          className="min-h-[220px] animate-pulse rounded-lg p-3"
+          style={{ background: 'var(--cp-bg)', border: '1px solid transparent' }}
+        >
+          <div className="mb-3 h-4 w-3/4 rounded" style={{ background: 'var(--cp-border)' }} />
+          <div className="mb-4 h-3 w-1/2 rounded" style={{ background: 'var(--cp-border)' }} />
+          <div className="mb-3 h-16 rounded-md" style={{ background: 'var(--cp-surface)' }} />
+          <div className="h-16 rounded-md" style={{ background: 'var(--cp-surface)' }} />
+        </div>
+      ))}
+    </>
   )
 }
 

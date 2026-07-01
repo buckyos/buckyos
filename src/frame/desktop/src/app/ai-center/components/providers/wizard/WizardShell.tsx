@@ -108,7 +108,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   }
 
   return (
-    <div className="flex flex-col h-full -mx-4 md:-mx-8 -my-4 md:-my-6">
+    <div className="flex h-full min-h-0 flex-col -mx-4 md:-mx-8 -my-4 md:-my-6">
       {/* Header */}
       <div
         className="flex items-center gap-3 px-4 md:px-6 py-3 shrink-0"
@@ -133,7 +133,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-28 md:px-6 md:pb-6">
         {step === 0 && (
           <StepChooseType selected={draft.provider_type} onSelect={handleTypeSelect} />
         )}
@@ -166,9 +166,10 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
 
       {/* Footer */}
       <div
-        className="flex shrink-0 items-center justify-between px-4 py-3 md:px-6"
+        className="sticky bottom-0 z-10 flex shrink-0 items-center justify-between px-4 py-3 md:px-6"
         style={{
           borderTop: '1px solid var(--cp-border)',
+          background: 'var(--cp-surface)',
           paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
         }}
       >

@@ -5,6 +5,7 @@ import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useAIStatus, useProviders, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
 import { SummaryCard } from '../shared/SummaryCard'
 import { PagedListFooter } from '../shared/paged-list'
+import { LongField } from '../shared/LongField'
 import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
 import type { RouteTrace, UsageEvent, UsageEventsPage, UsageTimeRange } from '../../../../api/aicc_mgr'
 
@@ -713,6 +714,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
                   </tr>
                 )
               })}
+              {usageLoading && pagedEvents.length === 0 && <UsageTableSkeletonRows />}
               {!usageLoading && pagedEvents.length === 0 && (
                 <tr style={{ borderTop: '1px solid var(--cp-border)' }}>
                   <td className="px-4 py-8 text-center text-xs" colSpan={9} style={{ color: 'var(--cp-muted)' }}>
@@ -733,6 +735,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
                 onOpenTrace={(taskId) => void loadLinkedTraces(taskId)}
               />
             ))}
+            {usageLoading && pagedEvents.length === 0 && <UsageCardSkeletonRows />}
             {!usageLoading && pagedEvents.length === 0 && (
               <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
                 {t('aiCenter.home.noUsageEvents', 'No usage events match the current filters.')}
@@ -1201,22 +1204,39 @@ function UsageCardRow({ label, value, title, mono, allowWrap }: { label: string;
   return (
     <div className="flex min-w-0 items-center justify-between gap-2">
       <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{label}</span>
-      <span
-        title={title ?? value}
-        className={`${allowWrap ? 'break-all text-right leading-4' : 'truncate'} min-w-0 ${mono ? 'font-mono' : ''}`}
-        style={allowWrap
-          ? {
-            color: 'var(--cp-text)',
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-          }
-          : { color: 'var(--cp-text)' }}
-      >
-        {value}
-      </span>
+      <LongField value={value} title={title} mono={mono} expandable={allowWrap} className="justify-end text-right" />
     </div>
+  )
+}
+
+function UsageTableSkeletonRows() {
+  return (
+    <>
+      {[0, 1, 2, 3].map((index) => (
+        <tr key={index} style={{ borderTop: '1px solid var(--cp-border)' }}>
+          {Array.from({ length: 9 }).map((_, cellIndex) => (
+            <td key={cellIndex} className="px-4 py-3">
+              <div className="h-3 animate-pulse rounded" style={{ background: 'var(--cp-border)', width: `${cellIndex === 2 ? 90 : 62}%` }} />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  )
+}
+
+function UsageCardSkeletonRows() {
+  return (
+    <>
+      {[0, 1, 2].map((index) => (
+        <div key={index} className="min-h-[172px] animate-pulse rounded-lg p-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+          <div className="mb-4 h-4 w-1/2 rounded" style={{ background: 'var(--cp-border)' }} />
+          <div className="mb-2 h-3 w-4/5 rounded" style={{ background: 'var(--cp-border)' }} />
+          <div className="mb-2 h-3 w-3/5 rounded" style={{ background: 'var(--cp-border)' }} />
+          <div className="mt-5 h-10 rounded-lg" style={{ background: 'var(--cp-bg)' }} />
+        </div>
+      ))}
+    </>
   )
 }
 

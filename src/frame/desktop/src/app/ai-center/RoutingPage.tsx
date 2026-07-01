@@ -38,6 +38,7 @@ import {
 import { StatusBadge } from './components/shared/StatusBadge'
 import type { LogicalNode, ModelMetadata, RouteTrace, RoutingDirectoryView } from '../../api/aicc_mgr'
 import { PagedListFooter } from './components/shared/paged-list'
+import { LongField } from './components/shared/LongField'
 
 type FilterKey = 'provider' | 'apiType' | 'capability' | 'cost' | 'latency' | 'health' | 'location'
 
@@ -376,9 +377,7 @@ export function RoutingPage() {
               <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
                 {t('aiCenter.routing.currentDirectory', 'Current directory')}
               </div>
-              <div className="truncate text-sm font-mono" title={currentPath ?? 'Routing'} style={{ color: 'var(--cp-text)' }}>
-                {currentPath ?? 'Routing'}
-              </div>
+              <LongField value={currentPath ?? 'Routing'} className="text-sm" mono copyable={Boolean(currentPath)} />
             </div>
             <span className="shrink-0 text-xs" style={{ color: 'var(--cp-muted)' }}>
               {directoryEntries.length} {t('aiCenter.routing.scenarios', 'scenarios')}
@@ -843,7 +842,7 @@ function ScenarioCard({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>{scenario.title}</h3>
-              <span className="text-xs font-mono" style={{ color: 'var(--cp-muted)' }}>{scenario.node.path}</span>
+              <LongField value={scenario.node.path} className="text-xs" mono tone="muted" copyable={false} />
             </div>
             <p className="text-sm mt-1" style={{ color: 'var(--cp-muted)' }}>{scenario.description}</p>
           </div>
@@ -859,12 +858,18 @@ function ScenarioCard({
             <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
               {t('aiCenter.routing.currentPreferred', 'Current preferred model')}
             </div>
-            <div className="text-sm font-medium truncate" style={{ color: 'var(--cp-text)' }}>
-              {primary?.provider_model_id ?? scenario.selectedExactModel ?? t('aiCenter.routing.noModel', 'No model resolved')}
-            </div>
-            <div className="text-xs font-mono truncate" style={{ color: 'var(--cp-muted)' }}>
-              {primary ? `${providerNames.get(providerFromExact(primary.exact_model)) ?? providerFromExact(primary.exact_model)} / ${primary.exact_model}` : scenario.node.fallback?.target ?? '-'}
-            </div>
+            <LongField
+              value={primary?.provider_model_id ?? scenario.selectedExactModel ?? t('aiCenter.routing.noModel', 'No model resolved')}
+              className="text-sm font-medium"
+              copyable={Boolean(primary?.provider_model_id ?? scenario.selectedExactModel)}
+            />
+            <LongField
+              value={primary ? `${providerNames.get(providerFromExact(primary.exact_model)) ?? providerFromExact(primary.exact_model)} / ${primary.exact_model}` : scenario.node.fallback?.target ?? '-'}
+              className="text-xs"
+              mono
+              tone="muted"
+              expandable
+            />
           </div>
           {primary && (
             <div className="flex flex-wrap items-center gap-2">
@@ -911,9 +916,7 @@ function ScenarioInspector({
               {t('aiCenter.routing.scenarioDetail', 'Scenario Detail')}
             </h3>
           </div>
-          <div className="text-xs font-mono truncate mt-1" style={{ color: 'var(--cp-muted)' }}>
-            {scenario.node.path}
-          </div>
+          <LongField value={scenario.node.path} className="mt-1 text-xs" mono tone="muted" />
         </div>
         <StatusBadge status={scenario.selectedModel ? 'ok' : 'warning'} label={scenario.selectedModel ? 'resolved' : 'unresolved'} />
       </div>
@@ -991,11 +994,15 @@ function ModelGroupRow({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-xs tabular-nums" style={{ color: 'var(--cp-muted)' }}>#{index + 1}</span>
-            <span className="text-sm font-medium truncate" style={{ color: 'var(--cp-text)' }}>{model.provider_model_id}</span>
+            <LongField value={model.provider_model_id} className="text-sm font-medium" />
           </div>
-          <div className="text-xs font-mono truncate mt-1" style={{ color: 'var(--cp-muted)' }}>
-            {providerNames.get(providerFromExact(model.exact_model)) ?? providerFromExact(model.exact_model)} / {model.exact_model}
-          </div>
+          <LongField
+            value={`${providerNames.get(providerFromExact(model.exact_model)) ?? providerFromExact(model.exact_model)} / ${model.exact_model}`}
+            className="mt-1 text-xs"
+            mono
+            tone="muted"
+            expandable
+          />
         </div>
         <StatusBadge status={model.health.status === 'available' ? 'ok' : model.health.status === 'degraded' ? 'warning' : 'error'} label={model.health.status} />
       </div>
@@ -1007,7 +1014,7 @@ function ModelGroupRow({
       </div>
       {group.variants.length > 0 && (
         <div className="mt-2 text-xs truncate" style={{ color: 'var(--cp-muted)' }}>
-          {group.variants.map((variant) => variant.provider_model_id).join(', ')}
+          <LongField value={group.variants.map((variant) => variant.provider_model_id).join(', ')} tone="muted" copyable={false} expandable />
         </div>
       )}
     </article>
@@ -1106,6 +1113,7 @@ function TraceExplorer({
         )}
       </div>
       <div className={compact ? 'flex flex-col gap-3' : 'grid grid-cols-1 gap-3'}>
+        {loading && traces.length === 0 && <TraceSkeletonRows />}
         {traces.map((trace) => (
           <TraceCard
             key={trace.request_id}
@@ -1114,7 +1122,7 @@ function TraceExplorer({
             onSelect={() => onTraceSelect(trace)}
           />
         ))}
-        {traces.length === 0 && (
+        {!loading && traces.length === 0 && (
           <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
             {traceEmptyStateLabel(emptyState, t)}
           </div>
@@ -1215,13 +1223,18 @@ function TraceCard({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="max-w-full truncate text-sm font-mono" style={{ color: 'var(--cp-text)' }}>{trace.requested_model}</span>
+            <LongField value={trace.requested_model} className="text-sm" mono />
             <span style={{ color: 'var(--cp-muted)' }}>{'->'}</span>
-            <span className="max-w-full truncate text-sm font-mono" style={{ color: trace.selected_exact_model ? 'var(--cp-text)' : 'var(--cp-danger)' }}>
-              {trace.selected_exact_model ?? t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
-            </span>
+            <LongField
+              value={trace.selected_exact_model}
+              fallback={t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
+              className="text-sm"
+              mono
+              tone={trace.selected_exact_model ? 'default' : 'danger'}
+              expandable
+            />
           </div>
-          <div className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>{metaItems.join(' / ')}</div>
+          <LongField value={metaItems.join(' / ')} className="mt-1 text-xs" tone="muted" copyable={false} expandable />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           {trace.warnings.length > 0 && (
@@ -1378,7 +1391,7 @@ function TraceCandidateRow({
     >
       <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-text)' }}>
         <span className="block truncate">
-          #{rank} {candidate.exact_model}
+          <LongField value={`#${rank} ${candidate.exact_model}`} copyable={false} />
         </span>
         <span className="block" style={{ color: 'var(--cp-muted)' }}>
           {candidateWeightSummary(candidate)}
@@ -1396,7 +1409,7 @@ function TraceFilteredCandidateRow({ candidate }: { candidate: RouteTrace['filte
   return (
     <div className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs">
       <span className="min-w-0">
-        <span className="block truncate" style={{ color: 'var(--cp-warning)' }}>{candidate.exact_model}</span>
+        <LongField value={candidate.exact_model} tone="warning" />
         <span className="block" style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
       </span>
       <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>filtered</span>
@@ -1454,9 +1467,7 @@ function Fact({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-3 rounded-lg px-3 py-2" style={{ background: 'var(--cp-bg)' }}>
       <span className="text-xs shrink-0" style={{ color: 'var(--cp-muted)' }}>{label}</span>
-      <span className="text-xs text-right break-words" style={{ color: 'var(--cp-text)' }}>
-        {value}
-      </span>
+      <LongField value={value} className="justify-end text-right text-xs" expandable />
     </div>
   )
 }
@@ -1488,6 +1499,25 @@ function buildScenarios(nodes: LogicalNode[], models: ModelMetadata[], traces: R
     })
 
   return scenarios
+}
+
+function TraceSkeletonRows() {
+  return (
+    <>
+      {[0, 1].map((index) => (
+        <div
+          key={index}
+          className="min-h-[220px] animate-pulse rounded-lg p-3"
+          style={{ background: 'var(--cp-bg)', border: '1px solid transparent' }}
+        >
+          <div className="mb-3 h-4 w-3/4 rounded" style={{ background: 'var(--cp-border)' }} />
+          <div className="mb-4 h-3 w-1/2 rounded" style={{ background: 'var(--cp-border)' }} />
+          <div className="mb-3 h-16 rounded-md" style={{ background: 'var(--cp-surface)' }} />
+          <div className="h-16 rounded-md" style={{ background: 'var(--cp-surface)' }} />
+        </div>
+      ))}
+    </>
+  )
 }
 
 function mergeRouteTraces(current: RouteTrace[], next: RouteTrace[]): RouteTrace[] {

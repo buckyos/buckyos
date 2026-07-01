@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useMediaQuery } from '@mui/material'
 import { AlertTriangle, ChevronDown, ChevronRight, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
+import { LongField } from '../shared/LongField'
 import type { AuthStatus, ModelMetadata, ProviderView } from '../../../../api/aicc_mgr'
 
 type TFn = (k: string, f: string) => string
@@ -74,6 +76,7 @@ export function ProviderDetailPanel({ provider, routingWeight, onDeleted }: Prov
 function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: ProviderDetailPanelProps) {
   const { t } = useI18n()
   const store = useAICCStore()
+  const isMobile = useMediaQuery('(max-width: 767px)')
   const [activeSection, setActiveSection] = useState<ProviderDetailSection>('overview')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -205,6 +208,17 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
     setFilters((current) => ({ ...current, [key]: value }))
   }
 
+  const openInventoryWithFilter = (key: FilterKey, selected: string[]) => {
+    setActiveSection('inventory')
+    setSearchQuery('')
+    setFilters((current) => ({ ...current, [key]: { query: '', selected } }))
+  }
+
+  const openInventoryQuotaWarnings = () => {
+    setActiveSection('inventory')
+    setSearchQuery('near_limit exhausted')
+  }
+
   const toggleGroup = (groupKey: string) => {
     setExpandedGroups((current) => {
       const next = new Set(current)
@@ -232,9 +246,12 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
           <h2 className="truncate text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
             {config.name}
           </h2>
-          <div className="truncate text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {config.provider_instance_name} / {config.provider_runtime_type} / {config.provider_origin}
-          </div>
+          <LongField
+            value={`${config.provider_instance_name} / ${config.provider_runtime_type} / ${config.provider_origin}`}
+            className="text-xs"
+            tone="muted"
+            copyable
+          />
         </div>
         <div ref={actionsRef} className="relative shrink-0">
           <button
@@ -247,6 +264,45 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
             <MoreHorizontal size={18} />
           </button>
           {actionsOpen && (
+            isMobile ? (
+              <div className="fixed inset-0 z-40 flex items-end justify-center">
+                <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.35)' }} onClick={() => setActionsOpen(false)} />
+                <div className="relative w-full rounded-t-xl p-3 shadow-lg" style={{ background: 'var(--cp-surface)', borderTop: '1px solid var(--cp-border)' }}>
+                  <div className="mx-auto mb-3 h-1 w-10 rounded-full" style={{ background: 'var(--cp-border)' }} />
+                  <div className="flex flex-col gap-1 pb-[env(safe-area-inset-bottom)]">
+                    <MenuAction
+                      icon={<ShieldCheck size={16} />}
+                      label={t('aiCenter.providers.updateKey', 'Update Key')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        setShowKeyDialog(true)
+                        setKeyError(null)
+                        setKeyFeedback(null)
+                      }}
+                    />
+                    <MenuAction
+                      icon={<RefreshCw size={16} className={refreshingModels ? 'animate-spin' : ''} />}
+                      label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        void handleRefreshModels()
+                      }}
+                      disabled={refreshingModels}
+                    />
+                    <MenuAction
+                      icon={<Trash2 size={16} />}
+                      label={t('aiCenter.providers.delete', 'Delete')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        setConfirmDelete(true)
+                        setDeleteError(null)
+                      }}
+                      danger
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : (
             <div
               className="absolute right-0 top-10 z-10 flex w-48 flex-col rounded-lg p-1 shadow-lg"
               style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
@@ -281,6 +337,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
                 danger
               />
             </div>
+            )
           )}
         </div>
       </div>
@@ -316,10 +373,27 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
           </div>
           <div className="mt-2 truncate text-xl font-semibold" style={{ color: 'var(--cp-text)' }}>{config.name}</div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <StatusTile label={t('aiCenter.providers.auth', 'Authentication')} value={authStatusLabel(status.auth_status, t)} tone={authStatusVariant(status.auth_status)} />
-            <StatusTile label={t('aiCenter.providers.health', 'Health')} value={`${models.length - degradedCount}/${models.length}`} tone={degradedCount > 0 ? 'warning' : 'ok'} />
+            <StatusTile
+              label={t('aiCenter.providers.auth', 'Authentication')}
+              value={authStatusLabel(status.auth_status, t)}
+              tone={authStatusVariant(status.auth_status)}
+              onClick={status.auth_status === 'expired' || status.auth_status === 'invalid' ? () => setShowKeyDialog(true) : undefined}
+            />
+            <StatusTile
+              label={t('aiCenter.providers.health', 'Health')}
+              value={`${models.length - degradedCount}/${models.length}`}
+              tone={degradedCount > 0 ? 'warning' : 'ok'}
+              onClick={degradedCount > 0 ? () => openInventoryWithFilter('health', ['degraded']) : undefined}
+            />
             <StatusTile label={t('aiCenter.providers.models', 'Models')} value={models.length.toString()} />
-            <StatusTile label={t('aiCenter.providers.issues', 'Issues')} value={(degradedCount + quotaWarningCount).toString()} tone={degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok'} />
+            <StatusTile
+              label={t('aiCenter.providers.issues', 'Issues')}
+              value={(degradedCount + quotaWarningCount).toString()}
+              tone={degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok'}
+              onClick={quotaWarningCount > 0
+                ? openInventoryQuotaWarnings
+                : degradedCount > 0 ? () => openInventoryWithFilter('health', ['degraded']) : undefined}
+            />
           </div>
         </div>
         <MetricCarousel
@@ -336,10 +410,10 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
         className="rounded-xl p-4 flex flex-col gap-3"
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
       >
-        <Row label={t('aiCenter.providers.driver', 'Driver')} value={config.provider_driver} />
+        <Row label={t('aiCenter.providers.driver', 'Driver')} value={config.provider_driver} copyValue={config.provider_driver} />
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
-        <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} />
-        <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} />
+        <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} copyValue={config.provider_runtime_type} />
+        <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} copyValue={config.endpoint} expandable />
         <Row
           label={t('aiCenter.providers.auth', 'Authentication')}
           value={
@@ -552,7 +626,17 @@ function MetricCarousel({ metrics }: { metrics: Array<{ label: string; value: st
   )
 }
 
-function StatusTile({ label, value, tone = 'unknown' }: { label: string; value: string; tone?: 'ok' | 'warning' | 'error' | 'unknown' }) {
+function StatusTile({
+  label,
+  value,
+  tone = 'unknown',
+  onClick,
+}: {
+  label: string
+  value: string
+  tone?: 'ok' | 'warning' | 'error' | 'unknown'
+  onClick?: () => void
+}) {
   const color = tone === 'ok'
     ? 'var(--cp-success)'
     : tone === 'warning'
@@ -560,11 +644,24 @@ function StatusTile({ label, value, tone = 'unknown' }: { label: string; value: 
       : tone === 'error'
         ? 'var(--cp-danger)'
         : 'var(--cp-text)'
-  return (
-    <div className="min-w-0 rounded-lg px-2 py-2" style={{ background: 'var(--cp-bg)' }}>
+  const content = (
+    <>
       <div className="truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>{label}</div>
       <div className="mt-1 truncate text-sm font-semibold" style={{ color }}>{value}</div>
-    </div>
+    </>
+  )
+  if (!onClick) {
+    return <div className="min-w-0 rounded-lg px-2 py-2" style={{ background: 'var(--cp-bg)' }}>{content}</div>
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="min-w-0 rounded-lg px-2 py-2 text-left transition-opacity hover:opacity-85"
+      style={{ background: 'var(--cp-bg)', border: `1px solid ${tone === 'error' ? 'var(--cp-danger)' : tone === 'warning' ? 'var(--cp-warning)' : 'transparent'}` }}
+    >
+      {content}
+    </button>
   )
 }
 
@@ -756,10 +853,14 @@ function ModelInventoryRow({ model, t, compact = false, groupLabel }: { model: M
     <div className={compact ? 'rounded-lg p-3' : 'p-3'} style={compact ? { background: 'var(--cp-bg)' } : undefined}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-sm font-medium truncate" style={{ color: 'var(--cp-text)' }}>{model.provider_model_id}</div>
-          <div className="text-xs truncate" style={{ color: 'var(--cp-muted)' }}>
-            {groupLabel ? `${groupLabel} / ` : ''}{model.logical_mounts.join(', ')} / {model.api_types.join(', ')}
-          </div>
+          <LongField value={model.provider_model_id} className="text-sm font-medium" />
+          <LongField
+            value={`${groupLabel ? `${groupLabel} / ` : ''}${model.logical_mounts.join(', ')} / ${model.api_types.join(', ')}`}
+            className="text-xs"
+            tone="muted"
+            copyable={false}
+            expandable
+          />
         </div>
         <StatusBadge status={modelHealthVariant(model.health.status)} label={model.health.status} />
       </div>
@@ -795,9 +896,13 @@ function UpdateKeyDialog({
 }) {
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-end justify-center md:items-center">
       <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={onCancel} />
-      <div className="relative rounded-xl p-6 max-w-md w-full mx-4 shadow-lg" style={{ background: 'var(--cp-surface)' }}>
+      <div
+        className="relative flex max-h-[calc(100dvh-1rem)] w-full flex-col overflow-hidden rounded-t-xl shadow-lg md:mx-4 md:max-w-md md:rounded-xl"
+        style={{ background: 'var(--cp-surface)' }}
+      >
+        <div className="overflow-y-auto p-6 pb-4">
         <h3 className="text-base font-semibold mb-2" style={{ color: 'var(--cp-text)' }}>
           {t('aiCenter.providers.updateKey', 'Update Key')}
         </h3>
@@ -816,15 +921,23 @@ function UpdateKeyDialog({
           />
         </label>
         {error && <div className="mt-3 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</div>}
-        <div className="flex justify-end gap-3 mt-6">
-          <button type="button" onClick={onCancel} disabled={loading} className="px-4 py-2 rounded-lg text-sm disabled:opacity-60" style={{ color: 'var(--cp-muted)' }}>
+        </div>
+        <div
+          className="sticky bottom-0 flex flex-col-reverse gap-2 p-4 sm:flex-row sm:justify-end sm:gap-3"
+          style={{
+            background: 'var(--cp-surface)',
+            borderTop: '1px solid var(--cp-border)',
+            paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))',
+          }}
+        >
+          <button type="button" onClick={onCancel} disabled={loading} className="min-h-11 px-4 py-2 rounded-lg text-sm disabled:opacity-60" style={{ color: 'var(--cp-muted)' }}>
             {t('common.cancel', 'Cancel')}
           </button>
           <button
             type="button"
             onClick={onConfirm}
             disabled={loading}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-60"
+            className="inline-flex min-h-11 items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-60"
             style={{ background: 'var(--cp-accent)', color: '#fff' }}
           >
             {loading && <RefreshCw size={14} className="animate-spin" />}
@@ -855,16 +968,30 @@ function Chip({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md px-2 py-1 min-w-0" style={{ background: 'var(--cp-bg)' }}>
       <span style={{ color: 'var(--cp-muted)' }}>{label}: </span>
-      <span className="break-all" style={{ color: 'var(--cp-text)' }}>{value}</span>
+      <LongField value={value} copyable={false} className="align-bottom" />
     </div>
   )
 }
 
-function Row({ label, value }: { label: string; value: ReactNode }) {
+function Row({
+  label,
+  value,
+  copyValue,
+  expandable,
+}: {
+  label: string
+  value: ReactNode
+  copyValue?: string
+  expandable?: boolean
+}) {
   return (
-    <div className="flex justify-between gap-4 items-center text-sm">
-      <span style={{ color: 'var(--cp-muted)' }}>{label}</span>
-      <span className="font-medium text-right break-all" style={{ color: 'var(--cp-text)' }}>{value}</span>
+    <div className="grid grid-cols-[minmax(7rem,0.45fr)_minmax(0,1fr)] items-center gap-4 text-sm">
+      <span className="truncate" title={label} style={{ color: 'var(--cp-muted)' }}>{label}</span>
+      <span className="min-w-0 justify-self-end text-right font-medium" style={{ color: 'var(--cp-text)' }}>
+        {typeof value === 'string' ? (
+          <LongField value={copyValue ?? value} title={value} expandable={expandable} />
+        ) : value}
+      </span>
     </div>
   )
 }
@@ -875,7 +1002,7 @@ function MenuAction({ icon, label, onClick, danger, disabled }: { icon: ReactNod
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-50"
+      className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-opacity hover:opacity-80 disabled:opacity-50 md:min-h-0 md:text-xs"
       style={{
         color: danger ? 'var(--cp-danger)' : 'var(--cp-text)',
       }}
@@ -927,8 +1054,9 @@ function modelMatchesQuery(model: ModelMetadata, query: string): boolean {
     model.attributes.cost_class,
     model.attributes.latency_class,
     model.health.status,
+    model.health.quota_state,
   ].join(' ').toLowerCase()
-  return haystack.includes(query)
+  return query.split(/\s+/).some((item) => item && haystack.includes(item))
 }
 
 function modelMatchesFilters(model: ModelMetadata, filters: InventoryFilters): boolean {

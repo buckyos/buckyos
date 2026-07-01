@@ -9,19 +9,19 @@ interface EmptyStateProps {
 
 export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
-      <div className="mb-4" style={{ color: 'var(--cp-muted)' }}>
+    <div className="flex flex-col items-center justify-center px-4 py-8 text-center md:py-16">
+      <div className="mb-3 md:mb-4" style={{ color: 'var(--cp-muted)' }}>
         {icon}
       </div>
       <h2
-        className="text-xl font-semibold mb-2"
+        className="text-base font-semibold mb-2 md:text-xl"
         style={{ color: 'var(--cp-text)' }}
       >
         {title}
       </h2>
       {description && (
         <p
-          className="text-sm max-w-md mb-6"
+          className="text-sm max-w-md mb-5 md:mb-6"
           style={{ color: 'var(--cp-muted)' }}
         >
           {description}
