@@ -117,6 +117,7 @@ p, admin,obj://config/users/{admin}/profile,read|write,allow
 p, admin,obj://config/users/{admin}/apps/{app}/{key},read|write,allow
 p, admin,obj://config/users/{admin}/agents/{agent}/{key},read|write,allow
 p, admin,obj://config/services/aicc/settings,read|write,allow
+p, admin,obj://config/services/msg-center/settings,read|write,allow
 p, admin,obj://config/services/*,read,allow
 
 p, users,obj://config/boot/*, read,allow
@@ -502,7 +503,7 @@ g, bob, users
             .await
         );
         assert!(
-            !rbac::enforce(
+            rbac::enforce(
                 "alice",
                 "control-panel",
                 "obj://config/services/msg-center/settings",
