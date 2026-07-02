@@ -240,7 +240,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
     { label: t('aiCenter.providers.providerStatus', 'Provider Status'), value: config.name, detail: `${models.length} ${t('aiCenter.providers.models', 'Models')} / ${degradedCount + quotaWarningCount} ${t('aiCenter.providers.issues', 'Issues')}`, tone: degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok' },
     { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision, tone: 'accent' },
     { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal'), tone: quotaWarningCount ? 'warning' : 'ok' },
-    { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel, tone: routingWeight === 0 ? 'warning' : 'default' },
+    { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel, tone: routingWeight === 0 ? 'warning' : 'accent' },
   ]
   const desktopMetrics = [
     { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision, tone: 'accent' as const },
@@ -608,7 +608,7 @@ function MetricCarousel({ metrics }: { metrics: ProviderMetric[] }) {
 
   return (
     <div className="overflow-hidden">
-      <div className="relative h-[224px]">
+      <div className="relative h-[208px]">
         {visible.map(({ index, position }) => (
           <div
             key={`${metrics[index].label}-${position}`}
@@ -678,7 +678,7 @@ function MobileMetricCard({
     <button
       type="button"
       onClick={preview ? onPreviewClick : undefined}
-      className="h-[216px] w-full rounded-xl p-4 text-left"
+      className="h-[200px] w-full rounded-xl p-4 text-left"
       style={{
         background: preview ? 'var(--cp-surface)' : 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 88%), var(--cp-bg))',
         border: `1px solid ${metric.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
@@ -696,7 +696,7 @@ function MobileMetricCard({
           {index + 1}/{total}
         </div>
       </div>
-      <div className="mt-4 line-clamp-4 min-h-16 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+      <div className="mt-4 line-clamp-3 min-h-12 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
         {metric.detail ?? ''}
       </div>
     </button>

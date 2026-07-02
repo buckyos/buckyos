@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronUp, Filter, HelpCircle, Route, Search } from 'lucide-react'
+import { ChevronUp, Filter, Route, Search } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useRouteTraces } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
@@ -316,10 +316,6 @@ function TraceAuditCard({
   const selectedCandidate = selectedTraceCandidate(trace)
   const selectedPricingSnapshot = trace.pricing_snapshot ?? selectedCandidate?.pricing_snapshot
   const status = traceStatus(trace)
-  const preCallEstimateHint = t(
-    'aiCenter.routing.preCallEstimateHint',
-    'Estimated before the model call from routing inputs. Usage Detail cost is calculated after the call with actual token usage, so the two can differ.',
-  )
   const metaItems = [
     trace.selected_provider_instance_name ? `${t('aiCenter.routing.provider', 'Provider')}: ${trace.selected_provider_instance_name}` : '',
     trace.selected_provider_model_id ? `${t('aiCenter.routing.providerModel', 'Provider model')}: ${trace.selected_provider_model_id}` : '',
@@ -335,9 +331,7 @@ function TraceAuditCard({
       key: 'pre_call_estimate',
       label: t('aiCenter.routing.estimatedCost', 'Estimated cost'),
       value: formatPreCallEstimate(selectedPricingSnapshot),
-      title: preCallEstimateHint,
     },
-    { key: 'unit_price', label: t('aiCenter.routing.unitPrice', 'Unit price'), value: formatUnitPrice(selectedPricingSnapshot) },
   ]
   const detailItems = [
     { key: 'time', label: t('aiCenter.routing.time', 'Time'), value: trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '-' },
@@ -382,34 +376,21 @@ function TraceAuditCard({
         </div>
       )}
 
-      <table className="mt-3 w-full table-fixed rounded-md text-xs" style={{ background: 'var(--cp-surface)' }}>
-        <tbody>
-          {detailItems.map((field) => (
-            <tr key={field.key} style={{ borderTop: field.key === 'time' ? '0' : '1px solid var(--cp-border)' }}>
-              <td className="w-32 py-1.5 pl-3 pr-2 align-top sm:w-40">
-                <span className="inline-flex min-w-0 items-center gap-1" style={{ color: 'var(--cp-muted)' }}>
-                  {field.label}
-                  {field.title && (
-                    <span title={field.title}>
-                      <HelpCircle size={12} />
-                    </span>
-                  )}
-                </span>
-              </td>
-              <td className="min-w-0 py-1.5 pl-2 pr-3 align-top">
-                <LongField
-                  value={field.value}
-                  fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
-                  mono={field.key !== 'unit_price' && field.key !== 'time' && field.key !== 'pre_call_estimate'}
-                  tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
-                  copyable={field.key !== 'time' && field.key !== 'unit_price' && field.key !== 'pre_call_estimate'}
-                  expandable
-                />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="mt-3 flex flex-col gap-1 text-xs">
+        {detailItems.map((field) => (
+          <div key={field.key} className="flex min-w-0 items-start gap-2">
+            <span className="w-32 shrink-0 sm:w-40" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
+            <LongField
+              value={field.value}
+              fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+              mono={field.key !== 'time' && field.key !== 'pre_call_estimate'}
+              tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+              copyable={field.key !== 'time' && field.key !== 'pre_call_estimate'}
+              expandable
+            />
+          </div>
+        ))}
+      </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <select
@@ -512,10 +493,8 @@ function TraceCandidateRow({
   reason: string
 }) {
   const { t } = useI18n()
-  const priceLine = formatUnitPrice(candidate.pricing_snapshot)
   const estimateLine = formatPreCallEstimate(candidate.pricing_snapshot)
   const pricingLine = [
-    priceLine !== '-' ? `${t('aiCenter.routing.unitPrice', 'Unit price')}: ${priceLine}` : '',
     estimateLine !== '-' ? `${t('aiCenter.routing.preCallEstimate', 'Pre-call estimate')}: ${estimateLine}` : '',
   ].filter(Boolean).join(' / ')
   const preCallEstimateHint = t(
@@ -597,26 +576,16 @@ function uniqueTraceOptions(values: Array<string | undefined>): Array<[string, s
     .map((value) => [value, value])
 }
 
-function formatUsd(amount: number): string {
-  if (amount === 0) return '$0.0'
+function formatCostAmount(amount: number): string {
+  if (amount === 0) return '0.0'
   const abs = Math.abs(amount)
-  if (abs < 0.0001) return amount < 0 ? '-$<0.0001' : '$<0.0001'
-  if (abs < 0.01) return `$${amount.toFixed(4)}`
-  return `$${amount.toFixed(2)}`
-}
-
-function formatUnitPrice(snapshot: RouteTrace['pricing_snapshot']): string {
-  if (!snapshot) return '-'
-  const parts = [
-    snapshot.input_token_usd != null ? `in ${formatUsd(snapshot.input_token_usd)}` : '',
-    snapshot.output_token_usd != null ? `out ${formatUsd(snapshot.output_token_usd)}` : '',
-    snapshot.cache_input_token_usd != null ? `cache ${formatUsd(snapshot.cache_input_token_usd)}` : '',
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join(' / ') : '-'
+  if (abs < 0.0001) return amount < 0 ? '-<0.0001' : '<0.0001'
+  if (abs < 0.01) return amount.toFixed(4)
+  return amount.toFixed(2)
 }
 
 function formatPreCallEstimate(snapshot: RouteTrace['pricing_snapshot']): string {
-  return snapshot?.estimated_cost_usd == null ? '-' : formatUsd(snapshot.estimated_cost_usd)
+  return snapshot?.estimated_cost_usd == null ? '-' : formatCostAmount(snapshot.estimated_cost_usd)
 }
 
 function TraceTimeRangeFilter({

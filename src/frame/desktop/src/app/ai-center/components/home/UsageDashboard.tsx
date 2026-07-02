@@ -453,7 +453,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
               title: t('aiCenter.home.balanceOverview', 'Balance Overview'),
               value: balanceOverviewValue,
               subtitle: balanceOverviewSubtitle,
-              tone: balanceProviders.length > 0 ? 'ok' : 'default',
+              tone: 'accent',
             },
           ]}
         />
@@ -954,7 +954,7 @@ function KpiCarousel({
 
   return (
     <div className="overflow-hidden">
-      <div className="relative h-[232px]">
+      <div className="relative h-[216px]">
         {visible.map(({ index, position }) => (
           <div
             key={`${kpis[index].title}-${position}`}
@@ -1025,7 +1025,7 @@ function MobileKpiCard({
       type="button"
       onClick={preview ? onPreviewClick : kpi.onClick}
       disabled={!preview && !kpi.onClick}
-      className="h-[224px] w-full rounded-xl p-4 text-left disabled:cursor-default"
+      className="h-[208px] w-full rounded-xl p-4 text-left disabled:cursor-default"
       style={{
         background: preview ? 'var(--cp-surface)' : 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 88%), var(--cp-bg))',
         border: `1px solid ${kpi.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
@@ -1046,7 +1046,7 @@ function MobileKpiCard({
           {index + 1}/{total}
         </div>
       </div>
-      <div className="mt-4 line-clamp-4 min-h-20 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+      <div className="mt-4 line-clamp-4 min-h-16 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
         {kpi.subtitle ?? ''}
       </div>
     </button>

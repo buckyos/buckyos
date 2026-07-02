@@ -20,7 +20,6 @@ import {
   Filter,
   FolderTree,
   GitBranch,
-  HelpCircle,
   Image,
   Layers,
   MessageSquare,
@@ -1231,13 +1230,8 @@ function TraceCard({
   const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const selectedCandidate = selectedTraceCandidate(trace)
-  const selectedPricingSnapshot = trace.pricing_snapshot ?? selectedCandidate?.pricing_snapshot
   const status = traceStatus(trace)
   const providerTraceId = trace.provider_trace_id
-  const preCallEstimateHint = t(
-    'aiCenter.routing.preCallEstimateHint',
-    'Estimated before the model call from routing inputs. Usage Detail cost is calculated after the call with actual token usage, so the two can differ.',
-  )
   const metaItems = [
     trace.selected_provider_instance_name ? `${t('aiCenter.routing.provider', 'Provider')}: ${trace.selected_provider_instance_name}` : '',
     trace.selected_provider_model_id ? `${t('aiCenter.routing.providerModel', 'Provider model')}: ${trace.selected_provider_model_id}` : '',
@@ -1245,26 +1239,18 @@ function TraceCard({
     trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '',
     formatTraceDuration(trace),
   ].filter(Boolean)
-  const traceFields = [
+  const copyFields = [
     { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
     { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
     { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
-    { key: 'unit_price', label: t('aiCenter.routing.unitPrice', 'Unit price'), value: formatUnitPrice(selectedPricingSnapshot) },
-    {
-      key: 'pre_call_estimate',
-      label: t('aiCenter.routing.preCallEstimate', 'Pre-call estimate'),
-      value: formatPreCallEstimate(selectedPricingSnapshot),
-      title: preCallEstimateHint,
-    },
-  ]
-  const detailItems = [
-    { key: 'time', label: t('aiCenter.routing.time', 'Time'), value: trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '-' },
-    ...traceFields,
-  ]
-  const copyFields = [
-    ...traceFields.filter((item): item is { key: string; label: string; value: string } => Boolean(item.value && item.value !== '-')),
     { key: 'provider_trace_id', label: 'provider trace id', value: providerTraceId },
   ].filter((item): item is { key: string; label: string; value: string } => Boolean(item.value))
+  const detailItems: Array<{ key: string; label: string; value: string }> = [
+    { key: 'time', label: t('aiCenter.routing.time', 'Time'), value: trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '-' },
+  ]
+  if (providerTraceId) {
+    detailItems.push({ key: 'provider_trace_id', label: t('aiCenter.routing.providerTraceId', 'Provider trace ID'), value: providerTraceId })
+  }
 
   const copyField = async (key: string, value: string) => {
     try {
@@ -1311,22 +1297,14 @@ function TraceCard({
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-1 gap-1.5 text-xs sm:grid-cols-2">
+      <div className="mt-3 flex flex-col gap-1 text-xs">
         {detailItems.map((field) => (
-          <div key={field.key} className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5" style={{ background: 'var(--cp-surface)' }}>
-            <span className="inline-flex shrink-0 items-center gap-1" style={{ color: 'var(--cp-muted)' }}>
-              {field.label}
-              {field.title && (
-                <span title={field.title}>
-                  <HelpCircle size={12} />
-                </span>
-              )}
-            </span>
+          <div key={field.key} className="flex min-w-0 items-start gap-2">
+            <span className="w-28 shrink-0" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
             <LongField
               value={field.value}
-              fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
-              mono={field.key !== 'unit_price' && field.key !== 'time' && field.key !== 'pre_call_estimate'}
-              tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+              fallback="-"
+              mono={field.key !== 'time'}
               expandable
             />
           </div>
@@ -1426,10 +1404,8 @@ function TraceCandidateRow({
   reason: string
 }) {
   const { t } = useI18n()
-  const priceLine = formatUnitPrice(candidate.pricing_snapshot)
   const estimateLine = formatPreCallEstimate(candidate.pricing_snapshot)
   const pricingLine = [
-    priceLine !== '-' ? `${t('aiCenter.routing.unitPrice', 'Unit price')}: ${priceLine}` : '',
     estimateLine !== '-' ? `${t('aiCenter.routing.preCallEstimate', 'Pre-call estimate')}: ${estimateLine}` : '',
   ].filter(Boolean).join(' / ')
   const preCallEstimateHint = t(
@@ -1950,26 +1926,16 @@ function traceStatus(trace: RouteTrace): 'selected' | 'fallback' | 'failed' {
   return trace.fallback_applied ? 'fallback' : 'selected'
 }
 
-function formatUsd(amount: number): string {
-  if (amount === 0) return '$0.0'
+function formatCostAmount(amount: number): string {
+  if (amount === 0) return '0.0'
   const abs = Math.abs(amount)
-  if (abs < 0.0001) return amount < 0 ? '-$<0.0001' : '$<0.0001'
-  if (abs < 0.01) return `$${amount.toFixed(4)}`
-  return `$${amount.toFixed(2)}`
-}
-
-function formatUnitPrice(snapshot: RouteTrace['pricing_snapshot']): string {
-  if (!snapshot) return '-'
-  const parts = [
-    snapshot.input_token_usd != null ? `in ${formatUsd(snapshot.input_token_usd)}` : '',
-    snapshot.output_token_usd != null ? `out ${formatUsd(snapshot.output_token_usd)}` : '',
-    snapshot.cache_input_token_usd != null ? `cache ${formatUsd(snapshot.cache_input_token_usd)}` : '',
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join(' / ') : '-'
+  if (abs < 0.0001) return amount < 0 ? '-<0.0001' : '<0.0001'
+  if (abs < 0.01) return amount.toFixed(4)
+  return amount.toFixed(2)
 }
 
 function formatPreCallEstimate(snapshot: RouteTrace['pricing_snapshot']): string {
-  return snapshot?.estimated_cost_usd == null ? '-' : formatUsd(snapshot.estimated_cost_usd)
+  return snapshot?.estimated_cost_usd == null ? '-' : formatCostAmount(snapshot.estimated_cost_usd)
 }
 
 function rankedCandidateRank(
