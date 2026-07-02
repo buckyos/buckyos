@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, HelpCircle, Route, Wallet, X } from 'lucide-react'
+import { Activity, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, CreditCard, DollarSign, Filter, HelpCircle, Route, Wallet } from 'lucide-react'
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useAIStatus, useProviders, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
@@ -156,6 +156,14 @@ type HomeBreakdownKey = 'provider' | 'model' | 'appAgent' | 'apiType'
 type MultiFilter = {
   query: string
   selected: string[]
+}
+type KpiCard = {
+  icon: ReactNode
+  title: string
+  value: string
+  subtitle?: string
+  onClick?: () => void
+  tone?: 'default' | 'ok' | 'warning' | 'accent'
 }
 const PAGE_SIZE = 10
 const HOME_USAGE_LIMIT = 5
@@ -429,48 +437,42 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
 
   return (
     <div className="flex flex-col gap-6">
-      <StatusAndKpiHeader
-        statusTitle={t('aiCenter.home.status', 'AI Status')}
-        statusValue={status.state === 'disabled' ? t('aiCenter.home.disabled', 'Disabled') : t('aiCenter.home.enabled', 'Enabled')}
-        providerLabel={t('aiCenter.home.providers', 'Providers')}
-        modelLabel={t('aiCenter.home.models', 'Models')}
-        issueLabel={t('aiCenter.home.issues', 'Issues')}
-        providerCount={status.provider_count}
-        modelCount={status.model_count}
-        issueCount={status.health_counts.degraded + status.health_counts.unavailable + status.quota_warnings}
-        kpis={[
-          {
-            icon: <CreditCard size={18} />,
-            title: t('aiCenter.home.credit', 'SN Credit'),
-            value: snCredit != null ? `${snCredit} Credit` : '-',
-            subtitle: snProvider ? `${snProvider.account.pricing_mode} / top up available` : undefined,
-            onClick: isUsagePage ? () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : undefined,
-          },
-          {
-            icon: <DollarSign size={18} />,
-            title: t('aiCenter.home.estimatedCost', 'Est. Cost'),
-            value: formatUsd(summary.total_estimated_cost),
-            subtitle: t('aiCenter.home.costEstimated', 'Estimated from usage events'),
-            onClick: isUsagePage ? () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : undefined,
-          },
-          {
-            icon: <Wallet size={18} />,
-            title: t('aiCenter.home.balanceOverview', 'Balance Overview'),
-            value: balanceOverviewValue,
-            subtitle: balanceOverviewSubtitle,
-            onClick: isUsagePage ? () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : undefined,
-          },
-          {
-            icon: <Activity size={18} />,
-            title: t('aiCenter.home.requests', 'Requests'),
-            value: summary.total_requests.toString(),
-            subtitle: t('aiCenter.home.totalRequests', 'Total requests'),
-            onClick: isUsagePage ? () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : undefined,
-          },
-        ]}
-      />
+      {!isUsagePage && (
+        <StatusAndKpiHeader
+          cards={[
+            {
+              icon: <Activity size={18} />,
+              title: t('aiCenter.home.status', 'AI Status'),
+              value: status.state === 'disabled' ? t('aiCenter.home.disabled', 'Disabled') : t('aiCenter.home.enabled', 'Enabled'),
+              subtitle: `${status.provider_count} Provider instances / ${status.model_count} Models / ${status.health_counts.degraded} degraded`,
+              tone: status.health_counts.degraded > 0 || status.health_counts.unavailable > 0 || status.quota_warnings > 0 ? 'warning' : 'ok',
+            },
+            {
+              icon: <CreditCard size={18} />,
+              title: t('aiCenter.home.credit', 'SN Credit'),
+              value: snCredit != null ? `${snCredit} Credit` : '-',
+              subtitle: snProvider ? `${snProvider.account.pricing_mode} / top up available` : undefined,
+              tone: 'accent',
+            },
+            {
+              icon: <DollarSign size={18} />,
+              title: t('aiCenter.home.estimatedCost', 'Est. Cost'),
+              value: formatUsd(summary.total_estimated_cost),
+              subtitle: t('aiCenter.home.costEstimated', 'Estimated from usage events'),
+              tone: summary.total_estimated_cost > 0 ? 'warning' : 'default',
+            },
+            {
+              icon: <Wallet size={18} />,
+              title: t('aiCenter.home.balanceOverview', 'Balance Overview'),
+              value: balanceOverviewValue,
+              subtitle: balanceOverviewSubtitle,
+              tone: balanceProviders.length > 0 ? 'ok' : 'default',
+            },
+          ]}
+        />
+      )}
 
-      <div className="hidden">
+      {!isUsagePage && <div className="hidden">
         <SummaryCard
           icon={<Activity size={18} />}
           title={t('aiCenter.home.status', 'AI Status')}
@@ -495,9 +497,9 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
           value={balanceOverviewValue}
           subtitle={balanceOverviewSubtitle}
         />
-      </div>
+      </div>}
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)] gap-4">
+      {!isUsagePage && <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)] gap-4">
         <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
@@ -507,14 +509,14 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
               {t('aiCenter.home.last30Days', 'Last 30 days')}
             </span>
           </div>
-          <div className="flex items-end gap-1 h-52">
+          <div className="flex items-end gap-1 h-40 md:h-52">
             {trend.map((point) => (
               <div key={point.timestamp} className="flex-1 flex flex-col items-center gap-1 min-w-0">
                 <div
                   className="w-full rounded-t-sm"
                   title={`${point.timestamp}: ${formatTokens(point.tokens)} tokens / $${point.estimated_cost.toFixed(4)}`}
                   style={{
-                    height: `${Math.max(4, (point.tokens / maxTrendTokens) * 180)}px`,
+                    height: `${Math.max(4, (point.tokens / maxTrendTokens) * (isMobile ? 132 : 180))}px`,
                     background: point.tokens > 0 ? 'var(--cp-accent)' : 'var(--cp-border)',
                     opacity: point.tokens > 0 ? 0.78 : 0.4,
                   }}
@@ -538,9 +540,9 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatUsd(summary.total_estimated_cost)} />
           </div>
         </section>
-      </div>
+      </div>}
 
-      <section className="hidden rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      {!isUsagePage && <section className="hidden rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
         <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--cp-text)' }}>
           {t('aiCenter.home.usageSummary', 'Usage Summary')}
         </h3>
@@ -551,13 +553,13 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
           <Stat label={t('aiCenter.home.requests', 'Requests')} value={summary.total_requests.toString()} />
           <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatUsd(summary.total_estimated_cost)} />
         </div>
-      </section>
+      </section>}
 
       {!isUsagePage && (
         <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-              {t('aiCenter.home.secondaryBreakdowns', 'Provider / Model / App breakdown')}
+              {t('aiCenter.home.secondaryBreakdowns', 'Cost Breakdown by Provider, Model, App, and API')}
             </h3>
             {isMobile && (
               <label className="relative min-w-[180px]">
@@ -667,7 +669,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             {isMobile ? (
               <button
                 type="button"
-                onClick={() => setFiltersSheetOpen(true)}
+                onClick={() => setFiltersSheetOpen((value) => !value)}
                 className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium"
                 style={{ color: activeFilterChips.length > 0 ? 'var(--cp-accent)' : 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
                 aria-label={t('aiCenter.home.filters', 'Filters')}
@@ -706,6 +708,49 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
                       {chip}
                     </span>
                   ))}
+                </div>
+              )}
+              {filtersSheetOpen && (
+                <div className="grid grid-cols-1 gap-2 rounded-lg p-2" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
+                  <TimeRangeFilterControl
+                    label={t('aiCenter.home.filterTimeRange', 'Time Range')}
+                    value={timeRange}
+                    onChange={updateTimeRange}
+                    customStartDate={customStartDate}
+                    customEndDate={customEndDate}
+                    customStartLabel={t('aiCenter.home.filterStartDate', 'Start Date')}
+                    customEndLabel={t('aiCenter.home.filterEndDate', 'End Date')}
+                    onCustomStartDateChange={(value) => {
+                      setCustomStartDate(value)
+                      resetUsagePaging()
+                    }}
+                    onCustomEndDateChange={(value) => {
+                      setCustomEndDate(value)
+                      resetUsagePaging()
+                    }}
+                    options={timeRangeOptions}
+                  />
+                  <MultiSelectFilter
+                    label={t('aiCenter.home.filterProvider', 'Provider')}
+                    value={providerFilter}
+                    onChange={updateProviderFilter}
+                    options={providerOptions}
+                    allLabel={t('aiCenter.home.allProviders', 'All providers')}
+                  />
+                  <MultiSelectFilter
+                    label={t('aiCenter.home.filterModel', 'Model')}
+                    value={modelFilter}
+                    onChange={updateModelFilter}
+                    options={modelOptions}
+                    allLabel={t('aiCenter.home.allModels', 'All models')}
+                  />
+                  <MultiSelectFilter
+                    label={t('aiCenter.home.filterAppAgent', 'App / Agent')}
+                    value={appAgentFilter}
+                    onChange={updateAppAgentFilter}
+                    options={appAgentOptions}
+                    allLabel={t('aiCenter.home.allAppsAgents', 'All apps / agents')}
+                  />
                 </div>
               )}
             </div>
@@ -901,56 +946,6 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
       </section>
       )}
 
-      {isUsagePage && filtersSheetOpen && (
-        <UsageFiltersSheet
-          onClose={() => setFiltersSheetOpen(false)}
-          onClear={clearUsageFilters}
-          clearLabel={t('common.clear', 'Clear')}
-          closeLabel={t('common.close', 'Close')}
-          title={t('aiCenter.home.filters', 'Filters')}
-        >
-          <TimeRangeFilterControl
-            label={t('aiCenter.home.filterTimeRange', 'Time Range')}
-            value={timeRange}
-            onChange={updateTimeRange}
-            customStartDate={customStartDate}
-            customEndDate={customEndDate}
-            customStartLabel={t('aiCenter.home.filterStartDate', 'Start Date')}
-            customEndLabel={t('aiCenter.home.filterEndDate', 'End Date')}
-            onCustomStartDateChange={(value) => {
-              setCustomStartDate(value)
-              resetUsagePaging()
-            }}
-            onCustomEndDateChange={(value) => {
-              setCustomEndDate(value)
-              resetUsagePaging()
-            }}
-            options={timeRangeOptions}
-          />
-          <MultiSelectFilter
-            label={t('aiCenter.home.filterProvider', 'Provider')}
-            value={providerFilter}
-            onChange={updateProviderFilter}
-            options={providerOptions}
-            allLabel={t('aiCenter.home.allProviders', 'All providers')}
-          />
-          <MultiSelectFilter
-            label={t('aiCenter.home.filterModel', 'Model')}
-            value={modelFilter}
-            onChange={updateModelFilter}
-            options={modelOptions}
-            allLabel={t('aiCenter.home.allModels', 'All models')}
-          />
-          <MultiSelectFilter
-            label={t('aiCenter.home.filterAppAgent', 'App / Agent')}
-            value={appAgentFilter}
-            onChange={updateAppAgentFilter}
-            options={appAgentOptions}
-            allLabel={t('aiCenter.home.allAppsAgents', 'All apps / agents')}
-          />
-        </UsageFiltersSheet>
-      )}
-
       {isUsagePage && usageTab === 'usage' && linkedTraceTaskId && (
         <section ref={linkedTraceRef} className="rounded-xl p-4 scroll-mt-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -1003,53 +998,17 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
 }
 
 function StatusAndKpiHeader({
-  statusTitle,
-  statusValue,
-  providerLabel,
-  modelLabel,
-  issueLabel,
-  providerCount,
-  modelCount,
-  issueCount,
-  kpis,
+  cards,
 }: {
-  statusTitle: string
-  statusValue: string
-  providerLabel: string
-  modelLabel: string
-  issueLabel: string
-  providerCount: number
-  modelCount: number
-  issueCount: number
-  kpis: Array<{ icon: ReactNode; title: string; value: string; subtitle?: string; onClick?: () => void }>
+  cards: KpiCard[]
 }) {
-  const statusSubtitle = `${providerCount} ${providerLabel} / ${modelCount} ${modelLabel} / ${issueCount} ${issueLabel}`
-  const carouselCards = [
-    {
-      icon: <Activity size={18} />,
-      title: statusTitle,
-      value: statusValue,
-      subtitle: statusSubtitle,
-    },
-    ...kpis,
-  ]
   return (
     <div>
       <div className="md:hidden">
-        <KpiCarousel kpis={carouselCards} />
+        <KpiCarousel kpis={cards} />
       </div>
-      <div className="hidden grid-cols-4 gap-3 md:grid">
-        <StatusSummaryCard
-          title={statusTitle}
-          value={statusValue}
-          providerLabel={providerLabel}
-          modelLabel={modelLabel}
-          issueLabel={issueLabel}
-          providerCount={providerCount}
-          modelCount={modelCount}
-          issueCount={issueCount}
-        />
-        {kpis.slice(0, 3).map((kpi) => (
+      <div className="hidden grid-cols-4 gap-4 md:grid">
+        {cards.map((kpi) => (
           <SummaryCard
             key={kpi.title}
             icon={kpi.icon}
@@ -1064,150 +1023,102 @@ function StatusAndKpiHeader({
   )
 }
 
-function StatusSummaryCard({
-  title,
-  value,
-  providerLabel,
-  modelLabel,
-  issueLabel,
-  providerCount,
-  modelCount,
-  issueCount,
-}: {
-  title: string
-  value: string
-  providerLabel: string
-  modelLabel: string
-  issueLabel: string
-  providerCount: number
-  modelCount: number
-  issueCount: number
-}) {
-  return (
-    <div
-      className="rounded-xl p-4"
-      style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-    >
-      <div className="flex items-center gap-2 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-        <Activity size={18} style={{ color: 'var(--cp-accent)' }} />
-        {title}
-      </div>
-      <div className="mt-3 text-2xl font-semibold leading-tight" style={{ color: 'var(--cp-text)' }}>
-        {value}
-      </div>
-      <div className="mt-4 grid grid-cols-3 gap-2">
-        <StatusMiniMetric label={providerLabel} value={providerCount} />
-        <StatusMiniMetric label={modelLabel} value={modelCount} />
-        <StatusMiniMetric label={issueLabel} value={issueCount} warning={issueCount > 0} />
-      </div>
-    </div>
-  )
-}
-
 function KpiCarousel({
   kpis,
 }: {
-  kpis: Array<{ icon: ReactNode; title: string; value: string; subtitle?: string; onClick?: () => void }>
+  kpis: KpiCard[]
 }) {
+  const { t } = useI18n()
   const [activeIndex, setActiveIndex] = useState(0)
   if (kpis.length === 0) return null
   if (kpis.length === 1) {
     const kpi = kpis[0]
-    return <SummaryCard icon={kpi.icon} title={kpi.title} value={kpi.value} subtitle={kpi.subtitle} onClick={kpi.onClick} />
+    return <MobileKpiCard kpi={kpi} index={0} total={1} />
   }
-  const previousIndex = (activeIndex - 1 + kpis.length) % kpis.length
-  const nextIndex = (activeIndex + 1) % kpis.length
-  const slots = kpis.length === 1
-    ? [{ index: activeIndex, role: 'active' as const }]
-    : [
-      { index: previousIndex, role: 'previous' as const },
-      { index: activeIndex, role: 'active' as const },
-      { index: nextIndex, role: 'next' as const },
-    ]
+  const activeKpi = kpis[activeIndex]
+  const previousIndex = () => setActiveIndex((current) => (current - 1 + kpis.length) % kpis.length)
+  const nextIndex = () => setActiveIndex((current) => (current + 1) % kpis.length)
 
   return (
-    <div className="grid min-w-0 grid-cols-[minmax(18px,0.16fr)_minmax(0,1fr)_minmax(18px,0.16fr)] gap-2 overflow-hidden">
-      {slots.map(({ index, role }) => {
-        const kpi = kpis[index]
-        const active = role === 'active'
-        return (
+    <div className="flex flex-col gap-3 rounded-xl p-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      <MobileKpiCard kpi={activeKpi} index={activeIndex} total={kpis.length} />
+      <div className="flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={previousIndex}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-bg)' }}
+          aria-label={t('common.previous', 'Previous')}
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
+          {kpis.map((kpi, index) => (
           <button
-            key={`${role}-${kpi.title}`}
+            key={kpi.title}
             type="button"
-            onClick={() => {
-              if (active) kpi.onClick?.()
-              else setActiveIndex(index)
+            onClick={() => setActiveIndex(index)}
+            className="h-2.5 rounded-full transition-all"
+            style={{
+              width: index === activeIndex ? 22 : 10,
+              background: index === activeIndex ? 'var(--cp-accent)' : 'var(--cp-border)',
             }}
-            className={`${active ? 'col-span-1 opacity-100' : 'overflow-hidden opacity-55'} min-w-0 text-left transition-opacity`}
             aria-label={kpi.title}
-          >
-            <div className={active ? '' : role === 'previous' ? 'w-[360px] -translate-x-[300px]' : 'w-[360px]'}>
-              <SummaryCard icon={kpi.icon} title={kpi.title} value={kpi.value} subtitle={active ? kpi.subtitle : undefined} />
-            </div>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-function StatusMiniMetric({ label, value, warning }: { label: string; value: number; warning?: boolean }) {
-  return (
-    <div className="min-w-0 rounded-lg px-2 py-2" style={{ background: 'var(--cp-bg)' }}>
-      <div className="truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>{label}</div>
-      <div className="mt-1 text-base font-semibold tabular-nums" style={{ color: warning ? 'var(--cp-warning)' : 'var(--cp-text)' }}>
-        {value}
+          />
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={nextIndex}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-bg)' }}
+          aria-label={t('common.next', 'Next')}
+        >
+          <ChevronRight size={16} />
+        </button>
       </div>
     </div>
   )
 }
 
-function UsageFiltersSheet({
-  title,
-  clearLabel,
-  closeLabel,
-  children,
-  onClear,
-  onClose,
-}: {
-  title: string
-  clearLabel: string
-  closeLabel: string
-  children: ReactNode
-  onClear: () => void
-  onClose: () => void
-}) {
+function MobileKpiCard({ kpi, index, total }: { kpi: KpiCard; index: number; total: number }) {
+  const toneColor = kpi.tone === 'ok'
+    ? 'var(--cp-success)'
+    : kpi.tone === 'warning'
+      ? 'var(--cp-warning)'
+      : kpi.tone === 'accent'
+        ? 'var(--cp-accent)'
+        : 'var(--cp-text)'
+
   return (
-    <div className="fixed inset-0 z-50 md:hidden">
-      <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.35)' }} onClick={onClose} />
-      <div
-        className="absolute inset-x-0 bottom-0 max-h-[82vh] overflow-y-auto rounded-t-xl p-4"
-        style={{
-          background: 'var(--cp-surface)',
-          borderTop: '1px solid var(--cp-border)',
-          paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))',
-        }}
-      >
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{title}</h3>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={onClear} className="min-h-11 rounded-lg px-3 text-sm" style={{ color: 'var(--cp-accent)' }}>
-              {clearLabel}
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex min-h-11 min-w-11 items-center justify-center rounded-lg"
-              style={{ color: 'var(--cp-muted)', border: '1px solid var(--cp-border)' }}
-              aria-label={closeLabel}
-            >
-              <X size={17} />
-            </button>
+    <button
+      type="button"
+      onClick={kpi.onClick}
+      disabled={!kpi.onClick}
+      className="min-h-[142px] w-full rounded-xl p-4 text-left disabled:cursor-default"
+      style={{
+        background: 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 92%), var(--cp-bg))',
+        border: `1px solid ${kpi.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
+      }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-xs font-medium uppercase" style={{ color: 'var(--cp-muted)' }}>
+            <span className="shrink-0" style={{ color: toneColor }}>{kpi.icon}</span>
+            <span className="truncate">{kpi.title}</span>
+          </div>
+          <div className="mt-3 break-words text-3xl font-semibold leading-tight" style={{ color: toneColor }}>
+            {kpi.value}
           </div>
         </div>
-        <div className="grid grid-cols-1 gap-3">{children}</div>
+        <div className="shrink-0 rounded-full px-2 py-1 text-[11px] tabular-nums" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
+          {index + 1}/{total}
+        </div>
       </div>
-    </div>
+      <div className="mt-4 min-h-5 text-sm leading-5" style={{ color: 'var(--cp-muted)' }}>
+        {kpi.subtitle ?? ''}
+      </div>
+    </button>
   )
 }
 

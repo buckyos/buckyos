@@ -71,6 +71,7 @@ type ModelGroup = {
 
 type UseCaseKind = 'chat' | 'code' | 'plan' | 'image' | 'embed' | 'vision' | 'audio' | 'other'
 type TraceOutcomeFilter = 'all' | 'fallback' | 'failed' | 'warning'
+type TraceCandidateSection = 'none' | 'ranked' | 'filtered'
 type TraceEmptyStateKind = 'none-yet' | 'load-failed' | 'no-matches'
 
 function emptyMultiFilter(): MultiFilter {
@@ -227,6 +228,13 @@ export function RoutingPage() {
       .filter((trace) => traceMatchesOutcome(trace, traceOutcomeFilter)),
     [activeTracePath, traceOutcomeFilter, traces],
   )
+  const traceCostByExactModel = useMemo(
+    () => new Map(models.map((model) => [
+      model.exact_model,
+      (model.pricing.input_token_usd ?? 0) + (model.pricing.output_token_usd ?? 0),
+    ] as const)),
+    [models],
+  )
   const traceEmptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, Boolean(activeTracePath), traceOutcomeFilter)
   const retryTraceLoad = () => {
     if (traceError === 'initial') {
@@ -381,6 +389,7 @@ export function RoutingPage() {
                 setSelectedPath(null)
               }}
               emptyState={traceEmptyState}
+              costByExactModel={traceCostByExactModel}
             />
           )}
         </div>
@@ -471,6 +480,7 @@ export function RoutingPage() {
               setSelectedPath(null)
             }}
             emptyState={traceEmptyState}
+            costByExactModel={traceCostByExactModel}
           />}
         </aside>
       </div>
@@ -1091,6 +1101,7 @@ function TraceExplorer({
   onTraceSelect,
   onClearScenarioFilter,
   emptyState,
+  costByExactModel,
 }: {
   traces: RouteTrace[]
   loadedCount: number
@@ -1112,6 +1123,7 @@ function TraceExplorer({
   onTraceSelect: (trace: RouteTrace) => void
   onClearScenarioFilter: () => void
   emptyState: TraceEmptyStateKind
+  costByExactModel: Map<string, number>
 }) {
   const { t } = useI18n()
   const segmentOptions: Array<{ key: TraceOutcomeFilter; label: string }> = [
@@ -1127,7 +1139,7 @@ function TraceExplorer({
           <Route size={16} style={{ color: 'var(--cp-accent)' }} />
           <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.routeTraceAudit', 'Route Trace Audit')}</h3>
         </div>
-        <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+        <div className={compact ? 'hidden' : 'text-xs'} style={{ color: 'var(--cp-muted)' }}>
           {t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: pageIndex + 1, count: loadedCount })}
         </div>
       </div>
@@ -1169,6 +1181,7 @@ function TraceExplorer({
             trace={trace}
             active={trace.request_id === activeTraceId}
             onSelect={() => onTraceSelect(trace)}
+            estimatedCost={estimatedTraceCost(trace, costByExactModel)}
           />
         ))}
         {!loading && traces.length === 0 && (
@@ -1212,20 +1225,17 @@ function TraceCard({
   trace,
   active,
   onSelect,
+  estimatedCost,
 }: {
   trace: RouteTrace
   active: boolean
   onSelect: () => void
+  estimatedCost?: number
 }) {
   const { t } = useI18n()
-  const [expanded, setExpanded] = useState(false)
-  const [filteredExpanded, setFilteredExpanded] = useState(false)
+  const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const selectedCandidate = selectedTraceCandidate(trace)
-  const visibleRankedCandidates = expanded
-    ? trace.ranked_candidates
-    : selectedCandidate ? [selectedCandidate] : trace.ranked_candidates.slice(0, 2)
-  const hiddenCandidateCount = Math.max(0, trace.ranked_candidates.length - visibleRankedCandidates.length)
   const status = traceStatus(trace)
   const providerTraceId = trace.provider_trace_id
   const metaItems = [
@@ -1235,10 +1245,14 @@ function TraceCard({
     trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '',
     formatTraceDuration(trace),
   ].filter(Boolean)
+  const traceFields = [
+    { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
+    { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
+    { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
+    { key: 'estimated_cost', label: t('aiCenter.routing.estimatedCost', 'Estimated cost'), value: estimatedCost == null ? '-' : formatUsd(estimatedCost) },
+  ]
   const copyFields = [
-    { key: 'request_id', label: 'request_id', value: trace.request_id },
-    { key: 'requested_model', label: 'requested_model', value: trace.requested_model },
-    { key: 'selected_exact_model', label: 'selected_exact_model', value: trace.selected_exact_model },
+    ...traceFields.filter((item): item is { key: string; label: string; value: string } => Boolean(item.value && item.value !== '-')),
     { key: 'provider_trace_id', label: 'provider trace id', value: providerTraceId },
   ].filter((item): item is { key: string; label: string; value: string } => Boolean(item.value))
 
@@ -1269,20 +1283,8 @@ function TraceCard({
         border: `1px solid ${active ? 'var(--cp-accent)' : 'transparent'}`,
       }}
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <LongField value={trace.requested_model} className="text-sm" mono />
-            <span style={{ color: 'var(--cp-muted)' }}>{'->'}</span>
-            <LongField
-              value={trace.selected_exact_model}
-              fallback={t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
-              className="text-sm"
-              mono
-              tone={trace.selected_exact_model ? 'default' : 'danger'}
-              expandable
-            />
-          </div>
           <LongField value={metaItems.join(' / ')} className="mt-1 text-xs" tone="muted" copyable={false} expandable />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -1293,8 +1295,34 @@ function TraceCard({
         </div>
       </div>
       <p className="text-sm mt-2" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
+      {selectedCandidate && (
+        <div className="mt-2 rounded-md px-2 py-1.5 text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
+          {candidateWeightSummary(selectedCandidate)}
+        </div>
+      )}
 
-      <div className="mt-3 flex flex-wrap gap-1.5">
+      <div className="mt-3 overflow-hidden rounded-md" style={{ border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}>
+        <table className="w-full table-fixed text-xs">
+          <tbody>
+            {traceFields.map((field) => (
+              <tr key={field.key} style={{ borderTop: '1px solid var(--cp-border)' }}>
+                <th className="w-36 px-2 py-2 text-left font-medium" style={{ color: 'var(--cp-muted)' }}>{field.label}</th>
+                <td className="min-w-0 px-2 py-2" style={{ color: 'var(--cp-text)' }}>
+                  <LongField
+                    value={field.value}
+                    fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+                    mono={field.key !== 'estimated_cost'}
+                    tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+                    expandable
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1.5">
         {copyFields.map((field) => (
           <button
             key={field.key}
@@ -1313,98 +1341,54 @@ function TraceCard({
         ))}
       </div>
 
-      <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.routing.rankedCandidates', 'Ranked candidates')}
-          </div>
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {trace.ranked_candidates.length}
-          </div>
-        </div>
-        {visibleRankedCandidates.length > 0 ? (
-          <div className="flex flex-col gap-1">
-            {visibleRankedCandidates.map((candidate, index) => (
-              <TraceCandidateRow
-                key={candidate.exact_model}
-                candidate={candidate}
-                rank={rankedCandidateRank(trace, candidate, index)}
-                selected={candidate.selected}
-                reason={candidate.selected ? 'selected' : trace.fallback_applied && candidate.exact_model === trace.selected_exact_model ? 'fallback' : 'ranked'}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.routing.noRankedCandidates', 'No ranked candidates.')}
-          </div>
-        )}
-      </div>
-
-      <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.routing.filteredOut', 'Filtered out')}
-          </div>
-          <button
-            type="button"
-            disabled={trace.filtered_candidates.length === 0}
-            onClick={(event) => {
-              event.stopPropagation()
-              setFilteredExpanded((value) => !value)
-            }}
-            className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 text-xs font-medium disabled:opacity-50"
-            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-          >
-            {filteredExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            {filteredExpanded
-              ? t('common.collapse', 'Collapse')
-              : t('aiCenter.routing.traceShowFilteredCandidates', 'Show {{count}}', { count: trace.filtered_candidates.length })}
-          </button>
-        </div>
-        {!filteredExpanded && (
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {trace.filtered_candidates.length > 0
-              ? t('aiCenter.routing.filteredOutCollapsed', '{{count}} candidates hidden', { count: trace.filtered_candidates.length })
-              : t('aiCenter.routing.noFilteredCandidates', 'No candidates were filtered out.')}
-          </div>
-        )}
-        {filteredExpanded && trace.filtered_candidates.length > 0 ? (
-          <div className="flex flex-col gap-1">
-            {trace.filtered_candidates.map((candidate) => (
-              <TraceFilteredCandidateRow key={candidate.exact_model} candidate={candidate} />
-            ))}
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation()
-                setFilteredExpanded(false)
-              }}
-              className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1 rounded-md px-2 text-xs font-medium"
-              style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-            >
-              <ChevronUp size={13} />
-              {t('common.collapse', 'Collapse')}
-            </button>
-          </div>
-        ) : null}
-      </div>
-
-      {(trace.ranked_candidates.length > 1 || trace.filtered_candidates.length > 0) && (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation()
-            setExpanded((value) => !value)
-          }}
-          className="mt-3 inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium"
-          style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+      <div className="mt-3">
+        <select
+          value={candidateSection}
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => setCandidateSection(event.target.value as TraceCandidateSection)}
+          className="h-9 rounded-md px-2 text-xs outline-none"
+          style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
         >
-          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          {expanded
-            ? t('aiCenter.routing.traceHideCandidates', 'Hide candidates')
-            : t('aiCenter.routing.traceShowCandidates', 'Show candidates ({{count}})', { count: hiddenCandidateCount + trace.filtered_candidates.length })}
-        </button>
+          <option value="none">{t('common.collapse', 'Collapse')}</option>
+          <option value="ranked">{t('aiCenter.routing.traceShowRankedCandidates', 'Show ranked candidates ({{count}})', { count: trace.ranked_candidates.length })}</option>
+          <option value="filtered">{t('aiCenter.routing.traceShowFilteredCandidates', 'Show filtered out ({{count}})', { count: trace.filtered_candidates.length })}</option>
+        </select>
+      </div>
+
+      {candidateSection === 'ranked' && (
+        <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
+          {trace.ranked_candidates.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              {trace.ranked_candidates.map((candidate, index) => (
+                <TraceCandidateRow
+                  key={candidate.exact_model}
+                  candidate={candidate}
+                  rank={rankedCandidateRank(trace, candidate, index)}
+                  selected={candidate.selected}
+                  reason={candidate.selected ? 'selected' : trace.fallback_applied && candidate.exact_model === trace.selected_exact_model ? 'fallback' : 'ranked'}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.routing.noRankedCandidates', 'No ranked candidates.')}</div>
+          )}
+          <CollapseCandidatesButton onClick={() => setCandidateSection('none')} />
+        </div>
+      )}
+
+      {candidateSection === 'filtered' && (
+        <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
+          {trace.filtered_candidates.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              {trace.filtered_candidates.map((candidate) => (
+                <TraceFilteredCandidateRow key={candidate.exact_model} candidate={candidate} />
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.routing.noFilteredCandidates', 'No candidates were filtered out.')}</div>
+          )}
+          <CollapseCandidatesButton onClick={() => setCandidateSection('none')} />
+        </div>
       )}
       {trace.warnings.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1463,6 +1447,24 @@ function TraceFilteredCandidateRow({ candidate }: { candidate: RouteTrace['filte
       </span>
       <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>filtered</span>
     </div>
+  )
+}
+
+function CollapseCandidatesButton({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n()
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick()
+      }}
+      className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1 rounded-md px-2 text-xs font-medium"
+      style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+    >
+      <ChevronUp size={13} />
+      {t('common.collapse', 'Collapse')}
+    </button>
   )
 }
 
@@ -1919,6 +1921,19 @@ function traceLogicalPath(trace?: RouteTrace): string | null {
 function traceStatus(trace: RouteTrace): 'selected' | 'fallback' | 'failed' {
   if (!trace.selected_exact_model) return 'failed'
   return trace.fallback_applied ? 'fallback' : 'selected'
+}
+
+function estimatedTraceCost(trace: RouteTrace, costByExactModel: Map<string, number>): number | undefined {
+  if (!trace.selected_exact_model) return undefined
+  return costByExactModel.get(trace.selected_exact_model)
+}
+
+function formatUsd(amount: number): string {
+  if (amount === 0) return '$0.0'
+  const abs = Math.abs(amount)
+  if (abs < 0.0001) return amount < 0 ? '>-$0.0001' : '<$0.0001'
+  if (abs < 0.01) return `$${amount.toFixed(4)}`
+  return `$${amount.toFixed(2)}`
 }
 
 function rankedCandidateRank(

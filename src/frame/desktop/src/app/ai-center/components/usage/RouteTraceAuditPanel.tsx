@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronUp, Copy, Filter, Route, Search } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
-import { useAICCStore, useRouteTraces } from '../../hooks/use-aicc-store'
+import { useAICCStore, useLocalModels, useProviders, useRouteTraces } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
 import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
@@ -10,6 +10,12 @@ import type { RouteTrace } from '../../../../api/aicc_mgr'
 type TraceOutcomeFilter = 'all' | 'fallback' | 'failed' | 'warning'
 type TraceCandidateSection = 'none' | 'ranked' | 'filtered'
 type TraceEmptyStateKind = 'none-yet' | 'load-failed' | 'no-matches'
+type TraceFilters = {
+  apiType: string
+  provider: string
+  model: string
+  profile: string
+}
 
 const ROUTE_TRACE_PAGE_SIZE = 20
 
@@ -37,8 +43,11 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
   const { t } = useI18n()
   const store = useAICCStore()
   const snapshotTraces = useRouteTraces()
+  const providers = useProviders()
+  const localModels = useLocalModels()
   const [query, setQuery] = useState('')
   const [outcomeFilter, setOutcomeFilter] = useState<TraceOutcomeFilter>('all')
+  const [traceFilters, setTraceFilters] = useState<TraceFilters>({ apiType: '', provider: '', model: '', profile: '' })
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
   const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
@@ -81,8 +90,20 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
     const normalizedQuery = query.trim().toLowerCase()
     return traces
       .filter((trace) => traceMatchesOutcome(trace, outcomeFilter))
+      .filter((trace) => traceMatchesFilters(trace, traceFilters))
       .filter((trace) => traceMatchesQuery(trace, normalizedQuery))
-  }, [outcomeFilter, query, traces])
+  }, [outcomeFilter, query, traceFilters, traces])
+  const filterOptions = useMemo(() => traceFilterOptions(traces), [traces])
+  const traceCostByExactModel = useMemo(() => {
+    const entries = [
+      ...providers.flatMap((provider) => provider.status.discovered_models),
+      ...localModels,
+    ].map((model) => [
+      model.exact_model,
+      (model.pricing.input_token_usd ?? 0) + (model.pricing.output_token_usd ?? 0),
+    ] as const)
+    return new Map(entries)
+  }, [localModels, providers])
   const emptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, query.trim().length > 0, outcomeFilter)
 
   const loadTracePage = async (pageIndex: number) => {
@@ -144,7 +165,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
           <Route size={16} style={{ color: 'var(--cp-accent)' }} />
           <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.routeTraceAudit', 'Route Trace Audit')}</h3>
         </div>
-        <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+        <div className={compact ? 'hidden' : 'text-xs'} style={{ color: 'var(--cp-muted)' }}>
           {t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: tracePageIndex + 1, count: traces.length })}
         </div>
       </div>
@@ -172,23 +193,21 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
             <Filter size={15} />
           </button>
         </label>
-        {filtersOpen && <div className="flex min-h-10 flex-wrap items-center gap-1 rounded-lg p-1" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
-          {segmentOptions.map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              onClick={() => setOutcomeFilter(option.key)}
-              className="rounded-md px-3 py-1.5 text-xs font-medium"
-              style={{
-                background: outcomeFilter === option.key ? 'var(--cp-surface-2)' : 'transparent',
-                color: outcomeFilter === option.key ? 'var(--cp-text)' : 'var(--cp-muted)',
-                border: outcomeFilter === option.key ? '1px solid var(--cp-border)' : '1px solid transparent',
-              }}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>}
+        {filtersOpen && (
+          <div className="grid grid-cols-1 gap-2 rounded-lg p-2 sm:grid-cols-2 xl:grid-cols-5" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
+            <TraceSelectFilter
+              label={t('aiCenter.routing.outcome', 'Outcome')}
+              value={outcomeFilter}
+              options={segmentOptions.map((option) => [option.key, option.label])}
+              allValue="all"
+              onChange={(value) => setOutcomeFilter(value as TraceOutcomeFilter)}
+            />
+            <TraceSelectFilter label={t('aiCenter.routing.apiType', 'API Type')} value={traceFilters.apiType} options={filterOptions.apiType} onChange={(value) => setTraceFilters((current) => ({ ...current, apiType: value }))} />
+            <TraceSelectFilter label={t('aiCenter.routing.provider', 'Provider')} value={traceFilters.provider} options={filterOptions.provider} onChange={(value) => setTraceFilters((current) => ({ ...current, provider: value }))} />
+            <TraceSelectFilter label={t('aiCenter.routing.model', 'Model')} value={traceFilters.model} options={filterOptions.model} onChange={(value) => setTraceFilters((current) => ({ ...current, model: value }))} />
+            <TraceSelectFilter label={t('aiCenter.routing.profile', 'Profile')} value={traceFilters.profile} options={filterOptions.profile} onChange={(value) => setTraceFilters((current) => ({ ...current, profile: value }))} />
+          </div>
+        )}
       </div>
 
       <div className={compact ? 'flex flex-col gap-3' : 'grid grid-cols-1 gap-3'}>
@@ -199,6 +218,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
             trace={trace}
             active={trace.request_id === selectedTraceId}
             onSelect={() => setSelectedTraceId(trace.request_id)}
+            estimatedCost={estimatedTraceCost(trace, traceCostByExactModel)}
           />
         ))}
         {!traceLoading && visibleTraces.length === 0 && (
@@ -239,7 +259,17 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
   )
 }
 
-function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active: boolean; onSelect: () => void }) {
+function TraceAuditCard({
+  trace,
+  active,
+  onSelect,
+  estimatedCost,
+}: {
+  trace: RouteTrace
+  active: boolean
+  onSelect: () => void
+  estimatedCost?: number
+}) {
   const { t } = useI18n()
   const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
@@ -252,10 +282,14 @@ function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active
     trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '',
     formatTraceDuration(trace),
   ].filter(Boolean)
-  const copyFields = [
+  const traceFields = [
     { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
     { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
     { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
+    { key: 'estimated_cost', label: t('aiCenter.routing.estimatedCost', 'Estimated cost'), value: estimatedCost == null ? '-' : formatUsd(estimatedCost) },
+  ]
+  const copyFields = [
+    ...traceFields.filter((item): item is { key: string; label: string; value: string } => Boolean(item.value && item.value !== '-')),
     { key: 'provider_trace_id', label: t('aiCenter.routing.providerTraceId', 'Provider trace ID'), value: trace.provider_trace_id },
   ].filter((item): item is { key: string; label: string; value: string } => Boolean(item.value))
 
@@ -288,21 +322,6 @@ function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-            <TraceField label={t('aiCenter.routing.requestId', 'Request ID')} value={trace.request_id} />
-            <TraceField label={t('aiCenter.routing.requestedModel', 'Requested model')} value={trace.requested_model} />
-            <div className="min-w-0">
-              <div className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.routing.selectedExactModel', 'Selected exact model')}</div>
-              <LongField
-                value={trace.selected_exact_model}
-                fallback={t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
-                className="text-sm"
-                mono
-                tone={trace.selected_exact_model ? 'default' : 'danger'}
-                expandable
-              />
-            </div>
-          </div>
           <LongField value={metaItems.join(' / ')} className="mt-1 text-xs" tone="muted" copyable={false} expandable />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -319,7 +338,28 @@ function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-3 overflow-hidden rounded-md" style={{ border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}>
+        <table className="w-full table-fixed text-xs">
+          <tbody>
+            {traceFields.map((field) => (
+              <tr key={field.key} style={{ borderTop: '1px solid var(--cp-border)' }}>
+                <th className="w-36 px-2 py-2 text-left font-medium" style={{ color: 'var(--cp-muted)' }}>{field.label}</th>
+                <td className="min-w-0 px-2 py-2" style={{ color: 'var(--cp-text)' }}>
+                  <LongField
+                    value={field.value}
+                    fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+                    mono={field.key !== 'estimated_cost'}
+                    tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+                    expandable
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1.5">
         {copyFields.map((field) => (
           <button
             key={field.key}
@@ -328,15 +368,12 @@ function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active
               event.stopPropagation()
               void copyField(field.key, field.value)
             }}
-            className="flex min-h-11 max-w-full items-center gap-2 rounded-md px-2 text-left text-xs"
+            className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-md px-2 text-xs"
             style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}
             title={field.value}
           >
             {copiedKey === field.key ? <Check size={13} /> : <Copy size={13} />}
-            <span className="min-w-0">
-              <span className="block text-[11px]" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
-              <span className="block truncate font-mono">{field.value}</span>
-            </span>
+            <span className="truncate">{field.label}</span>
           </button>
         ))}
       </div>
@@ -465,15 +502,6 @@ function TraceCandidateRow({
   )
 }
 
-function TraceField({ label, value }: { label: string; value?: string | null }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>{label}</div>
-      <LongField value={value} className="text-sm" mono expandable />
-    </div>
-  )
-}
-
 function TraceFilteredCandidateRow({ candidate }: { candidate: RouteTrace['filtered_candidates'][number] }) {
   return (
     <div className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs">
@@ -529,6 +557,76 @@ function traceMatchesOutcome(trace: RouteTrace, filter: TraceOutcomeFilter): boo
   if (filter === 'failed') return !trace.selected_exact_model
   if (filter === 'warning') return trace.warnings.length > 0
   return true
+}
+
+function traceMatchesFilters(trace: RouteTrace, filters: TraceFilters): boolean {
+  if (filters.apiType && trace.api_type !== filters.apiType) return false
+  if (filters.provider && trace.selected_provider_instance_name !== filters.provider) return false
+  if (filters.model && trace.selected_exact_model !== filters.model && trace.requested_model !== filters.model) return false
+  if (filters.profile && trace.scheduler_profile !== filters.profile) return false
+  return true
+}
+
+function traceFilterOptions(traces: RouteTrace[]): Record<keyof TraceFilters, Array<[string, string]>> {
+  return {
+    apiType: uniqueTraceOptions(traces.map((trace) => trace.api_type)),
+    provider: uniqueTraceOptions(traces.map((trace) => trace.selected_provider_instance_name)),
+    model: uniqueTraceOptions(traces.flatMap((trace) => [trace.requested_model, trace.selected_exact_model])),
+    profile: uniqueTraceOptions(traces.map((trace) => trace.scheduler_profile)),
+  }
+}
+
+function uniqueTraceOptions(values: Array<string | undefined>): Array<[string, string]> {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value))))
+    .sort((left, right) => left.localeCompare(right))
+    .map((value) => [value, value])
+}
+
+function estimatedTraceCost(trace: RouteTrace, costByExactModel: Map<string, number>): number | undefined {
+  if (!trace.selected_exact_model) return undefined
+  return costByExactModel.get(trace.selected_exact_model)
+}
+
+function formatUsd(amount: number): string {
+  if (amount === 0) return '$0.0'
+  const abs = Math.abs(amount)
+  if (abs < 0.0001) return amount < 0 ? '>-$0.0001' : '<$0.0001'
+  if (abs < 0.01) return `$${amount.toFixed(4)}`
+  return `$${amount.toFixed(2)}`
+}
+
+function TraceSelectFilter({
+  label,
+  value,
+  options,
+  allValue = '',
+  onChange,
+}: {
+  label: string
+  value: string
+  options: Array<[string, string]>
+  allValue?: string
+  onChange: (value: string) => void
+}) {
+  const { t } = useI18n()
+  return (
+    <label className="flex min-w-0 flex-col gap-1 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
+      <span className="truncate" title={label}>{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-9 rounded-md px-2 text-xs outline-none"
+        style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+      >
+        <option value={allValue}>{t('common.all', 'All')}</option>
+        {options
+          .filter(([optionValue]) => optionValue !== allValue)
+          .map(([optionValue, optionLabel]) => (
+            <option key={optionValue} value={optionValue}>{optionLabel}</option>
+          ))}
+      </select>
+    </label>
+  )
 }
 
 function selectedTraceCandidate(trace: RouteTrace): RouteTrace['ranked_candidates'][number] | undefined {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type FocusEvent } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import { useAICCStore } from '../../../hooks/use-aicc-store'
@@ -107,6 +107,15 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     })
   }
 
+  const keepFocusedFieldVisible = (event: FocusEvent<HTMLDivElement>) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+    if (!target.matches('input, textarea, select')) return
+    window.setTimeout(() => {
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 250)
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col -mx-4 md:-mx-8 -my-4 md:-my-6">
       {/* Header */}
@@ -133,7 +142,10 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       </div>
 
       {/* Content */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-36 [scroll-padding-bottom:9rem] md:px-6 md:pb-6">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-52 [scroll-padding-bottom:14rem] md:px-6 md:pb-6"
+        onFocusCapture={keepFocusedFieldVisible}
+      >
         {step === 0 && (
           <StepChooseType selected={draft.provider_type} onSelect={handleTypeSelect} />
         )}

@@ -437,7 +437,9 @@ class MockAiccProvider implements AiccDataProvider {
 
   async queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage> {
     const events = this.store.getSnapshot().usageEvents
-    const filtered = events.filter((event) => usageEventMatchesQuery(event, params))
+    const filtered = events
+      .filter((event) => usageEventMatchesQuery(event, params))
+      .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
     const cursor = Number(params.cursor ?? 0)
     const offset = Number.isFinite(cursor) && cursor > 0 ? cursor : 0
     const page = filtered.slice(offset, offset + params.limit)

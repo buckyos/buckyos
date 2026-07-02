@@ -364,7 +364,7 @@ WHERE created_at_ms >= ? AND created_at_ms < ?
             &req.filters.idempotency_keys,
         );
 
-        sql.push_str("\nORDER BY created_at_ms ASC, event_id ASC\n");
+        sql.push_str("\nORDER BY created_at_ms DESC, event_id DESC\n");
 
         let sql = self.render_sql(&sql);
 
@@ -1020,6 +1020,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.events.len(), 2);
+        assert!(first.events[0].created_at_ms > first.events[1].created_at_ms);
         let cursor = first.next_cursor.clone().expect("cursor after first page");
 
         let second = db

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Filter, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Filter, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
@@ -16,6 +16,12 @@ type MultiFilter = {
   selected: string[]
 }
 type InventoryFilters = Record<FilterKey, MultiFilter>
+type ProviderMetric = {
+  label: string
+  value: string
+  detail?: string
+  tone?: 'default' | 'ok' | 'warning' | 'accent'
+}
 
 function emptyMultiFilter(): MultiFilter {
   return { query: '', selected: [] }
@@ -211,17 +217,6 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
     setFilters((current) => ({ ...current, [key]: value }))
   }
 
-  const openInventoryWithFilter = (key: FilterKey, selected: string[]) => {
-    setActiveSection('inventory')
-    setSearchQuery('')
-    setFilters((current) => ({ ...current, [key]: { query: '', selected } }))
-  }
-
-  const openInventoryQuotaWarnings = () => {
-    setActiveSection('inventory')
-    setSearchQuery('near_limit exhausted')
-  }
-
   const toggleGroup = (groupKey: string) => {
     setExpandedGroups((current) => {
       const next = new Set(current)
@@ -241,17 +236,23 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       : routingWeight > 1
         ? t('aiCenter.providers.routingUpweighted', 'Upweighted')
         : t('aiCenter.providers.routingDefault', 'Default')
-  const providerMetrics = [
-    { label: t('aiCenter.providers.providerStatus', 'Provider Status'), value: config.name, detail: `${models.length} ${t('aiCenter.providers.models', 'Models')} / ${degradedCount + quotaWarningCount} ${t('aiCenter.providers.issues', 'Issues')}` },
+  const providerMetrics: ProviderMetric[] = [
+    { label: t('aiCenter.providers.providerStatus', 'Provider Status'), value: config.name, detail: `${models.length} ${t('aiCenter.providers.models', 'Models')} / ${degradedCount + quotaWarningCount} ${t('aiCenter.providers.issues', 'Issues')}`, tone: degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok' },
+    { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision, tone: 'accent' },
+    { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal'), tone: quotaWarningCount ? 'warning' : 'ok' },
+    { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel, tone: routingWeight === 0 ? 'warning' : 'default' },
+  ]
+  const desktopMetrics = [
     { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision },
+    { label: t('aiCenter.providers.health', 'Health'), value: `${models.length - degradedCount}/${models.length}`, detail: t('aiCenter.providers.availableModels', 'available models') },
     { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal') },
     { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel },
   ]
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {isMobile && onBack && (
             <button
               type="button"
@@ -263,17 +264,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
               <ArrowLeft size={18} />
             </button>
           )}
-          <div className="flex min-w-0 flex-col gap-1">
-          <h2 className="truncate text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
+          <h2 className="min-w-0 flex-1 truncate text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
             {config.name}
           </h2>
-          <LongField
-            value={`${config.provider_instance_name} / ${config.provider_runtime_type} / ${config.provider_origin}`}
-            className="text-xs"
-            tone="muted"
-            copyable
-          />
-          </div>
         </div>
         <div ref={actionsRef} className="relative shrink-0">
           <button
@@ -363,6 +356,12 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
           )}
         </div>
       </div>
+      <LongField
+        value={`${config.provider_instance_name} / ${config.provider_runtime_type} / ${config.provider_origin}`}
+        className="-mt-2 text-xs"
+        tone="muted"
+        copyable
+      />
 
       <div className="flex min-h-10 flex-wrap items-center gap-1 rounded-xl p-1" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
         {([
@@ -392,36 +391,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         <MetricCarousel metrics={providerMetrics} />
       </div>
       <div className="hidden grid-cols-4 gap-3 md:grid">
-        <div className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-          <div className="min-w-0 text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.providers.providerStatus', 'Provider Status')}
-          </div>
-          <div className="mt-2 truncate text-xl font-semibold" style={{ color: 'var(--cp-text)' }}>{config.name}</div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <StatusTile
-              label={t('aiCenter.providers.auth', 'Authentication')}
-              value={authStatusLabel(status.auth_status, t)}
-              tone={authStatusVariant(status.auth_status)}
-              onClick={status.auth_status === 'expired' || status.auth_status === 'invalid' ? () => setShowKeyDialog(true) : undefined}
-            />
-            <StatusTile
-              label={t('aiCenter.providers.health', 'Health')}
-              value={`${models.length - degradedCount}/${models.length}`}
-              tone={degradedCount > 0 ? 'warning' : 'ok'}
-              onClick={degradedCount > 0 ? () => openInventoryWithFilter('health', ['degraded']) : undefined}
-            />
-            <StatusTile label={t('aiCenter.providers.models', 'Models')} value={models.length.toString()} />
-            <StatusTile
-              label={t('aiCenter.providers.issues', 'Issues')}
-              value={(degradedCount + quotaWarningCount).toString()}
-              tone={degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok'}
-              onClick={quotaWarningCount > 0
-                ? openInventoryQuotaWarnings
-                : degradedCount > 0 ? () => openInventoryWithFilter('health', ['degraded']) : undefined}
-            />
-          </div>
-        </div>
-        {providerMetrics.slice(1).map((metric) => (
+        {desktopMetrics.map((metric) => (
           <Metric key={metric.label} label={metric.label} value={metric.value} detail={metric.detail} />
         ))}
       </div>
@@ -610,80 +580,92 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   )
 }
 
-function MetricCarousel({ metrics }: { metrics: Array<{ label: string; value: string; detail?: string }> }) {
+function MetricCarousel({ metrics }: { metrics: ProviderMetric[] }) {
+  const { t } = useI18n()
   const [activeIndex, setActiveIndex] = useState(0)
   if (metrics.length === 0) return null
   if (metrics.length === 1) {
     const metric = metrics[0]
-    return <Metric label={metric.label} value={metric.value} detail={metric.detail} />
+    return <MobileMetricCard metric={metric} index={0} total={1} />
   }
-  const previousIndex = (activeIndex - 1 + metrics.length) % metrics.length
-  const nextIndex = (activeIndex + 1) % metrics.length
-  const slots = [
-    { index: previousIndex, role: 'previous' as const },
-    { index: activeIndex, role: 'active' as const },
-    { index: nextIndex, role: 'next' as const },
-  ]
+  const previousIndex = () => setActiveIndex((current) => (current - 1 + metrics.length) % metrics.length)
+  const nextIndex = () => setActiveIndex((current) => (current + 1) % metrics.length)
+  const activeMetric = metrics[activeIndex]
 
   return (
-    <div className="grid min-w-0 grid-cols-[minmax(18px,0.16fr)_minmax(0,1fr)_minmax(18px,0.16fr)] gap-2 overflow-hidden">
-      {slots.map(({ index, role }) => {
-        const metric = metrics[index]
-        const active = role === 'active'
-        return (
+    <div className="flex flex-col gap-3 rounded-xl p-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      <MobileMetricCard metric={activeMetric} index={activeIndex} total={metrics.length} />
+      <div className="flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={previousIndex}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-bg)' }}
+          aria-label={t('common.previous', 'Previous')}
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
+          {metrics.map((metric, index) => (
           <button
-            key={`${role}-${metric.label}`}
+            key={metric.label}
             type="button"
             onClick={() => setActiveIndex(index)}
-            className={`${active ? 'opacity-100' : 'overflow-hidden opacity-55'} min-w-0 text-left transition-opacity`}
+            className="h-2.5 rounded-full transition-all"
+            style={{
+              width: index === activeIndex ? 22 : 10,
+              background: index === activeIndex ? 'var(--cp-accent)' : 'var(--cp-border)',
+            }}
             aria-label={metric.label}
-          >
-            <div className={active ? '' : role === 'previous' ? 'w-[360px] -translate-x-[300px]' : 'w-[360px]'}>
-              <Metric label={metric.label} value={metric.value} detail={active ? metric.detail : undefined} />
-            </div>
-          </button>
-        )
-      })}
+          />
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={nextIndex}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-bg)' }}
+          aria-label={t('common.next', 'Next')}
+        >
+          <ChevronRight size={16} />
+        </button>
+      </div>
     </div>
   )
 }
 
-function StatusTile({
-  label,
-  value,
-  tone = 'unknown',
-  onClick,
-}: {
-  label: string
-  value: string
-  tone?: 'ok' | 'warning' | 'error' | 'unknown'
-  onClick?: () => void
-}) {
-  const color = tone === 'ok'
+function MobileMetricCard({ metric, index, total }: { metric: ProviderMetric; index: number; total: number }) {
+  const toneColor = metric.tone === 'ok'
     ? 'var(--cp-success)'
-    : tone === 'warning'
+    : metric.tone === 'warning'
       ? 'var(--cp-warning)'
-      : tone === 'error'
-        ? 'var(--cp-danger)'
+      : metric.tone === 'accent'
+        ? 'var(--cp-accent)'
         : 'var(--cp-text)'
-  const content = (
-    <>
-      <div className="truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>{label}</div>
-      <div className="mt-1 truncate text-sm font-semibold" style={{ color }}>{value}</div>
-    </>
-  )
-  if (!onClick) {
-    return <div className="min-w-0 rounded-lg px-2 py-2" style={{ background: 'var(--cp-bg)' }}>{content}</div>
-  }
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="min-w-0 rounded-lg px-2 py-2 text-left transition-opacity hover:opacity-85"
-      style={{ background: 'var(--cp-bg)', border: `1px solid ${tone === 'error' ? 'var(--cp-danger)' : tone === 'warning' ? 'var(--cp-warning)' : 'transparent'}` }}
+    <div
+      className="min-h-[142px] rounded-xl p-4"
+      style={{
+        background: 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 92%), var(--cp-bg))',
+        border: `1px solid ${metric.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
+      }}
     >
-      {content}
-    </button>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs font-medium uppercase" style={{ color: 'var(--cp-muted)' }}>{metric.label}</div>
+          <div className="mt-3 break-words text-3xl font-semibold leading-tight" style={{ color: toneColor }}>
+            {metric.value}
+          </div>
+        </div>
+        <div className="shrink-0 rounded-full px-2 py-1 text-[11px] tabular-nums" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
+          {index + 1}/{total}
+        </div>
+      </div>
+      <div className="mt-4 min-h-5 text-sm leading-5" style={{ color: 'var(--cp-muted)' }}>
+        {metric.detail ?? ''}
+      </div>
+    </div>
   )
 }
 
