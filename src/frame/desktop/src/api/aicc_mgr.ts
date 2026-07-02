@@ -214,6 +214,8 @@ interface RawUsageQueryResponse {
 interface RawTraceQueryResponse {
   traces?: unknown[]
   next_cursor?: unknown
+  total_count?: unknown
+  total?: unknown
 }
 
 interface AiccDataProvider {
@@ -284,11 +286,13 @@ export interface RouteTracesQuery {
   limit: number
   taskIds?: string[]
   requestIds?: string[]
+  timeRange?: UsageTimeRange
 }
 
 export interface RouteTracesPage {
   traces: RouteTrace[]
   nextCursor?: string
+  totalCount?: number
 }
 
 export class AICCModelStore implements AICCMgr {
@@ -461,6 +465,7 @@ class MockAiccProvider implements AiccDataProvider {
     return {
       traces: page,
       nextCursor: nextOffset < traces.length ? nextOffset.toString() : undefined,
+      totalCount: traces.length,
     }
   }
 
@@ -694,10 +699,14 @@ class BuckyOSAiccProvider implements AiccDataProvider {
         cursor: params.cursor,
         task_ids: params.taskIds,
         request_ids: params.requestIds,
+        start_time_ms: params.timeRange?.startTimeMs,
+        end_time_ms: params.timeRange?.endTimeMs,
       })
+      const traces = toRouteTraces(raw)
       return {
-        traces: toRouteTraces(raw),
+        traces,
         nextCursor: asOptionalString(raw.next_cursor),
+        totalCount: asOptionalNumber(raw.total_count) ?? asOptionalNumber(raw.total) ?? traces.length,
       }
     } catch (error) {
       console.error('aicc.trace.query failed', error)
@@ -1010,6 +1019,7 @@ function toRouteTrace(value: unknown, index: number): RouteTrace | null {
       ?? (selectedExactModel ? providerInstanceFromExactModel(selectedExactModel) : undefined),
     selected_provider_model_id: asOptionalString(trace.selected_provider_model_id),
     provider_trace_id: asOptionalString(trace.provider_trace_id),
+    pricing_snapshot: toRoutePricingSnapshot(trace.pricing_snapshot),
     created_at_ms: asOptionalNumber(trace.created_at_ms),
     latency_ms: asOptionalNumber(trace.latency_ms),
     duration_ms: asOptionalNumber(trace.duration_ms),
@@ -1025,6 +1035,25 @@ function toRouteTrace(value: unknown, index: number): RouteTrace | null {
   }
 }
 
+function toRoutePricingSnapshot(value: unknown): RouteTrace['pricing_snapshot'] {
+  const pricing = asRecord(value)
+  const snapshot = {
+    input_token_usd: asOptionalNumber(pricing.input_token_usd),
+    output_token_usd: asOptionalNumber(pricing.output_token_usd),
+    cache_input_token_usd: asOptionalNumber(pricing.cache_input_token_usd),
+    estimated_cost_usd: asOptionalNumber(pricing.estimated_cost_usd),
+  }
+  if (
+    snapshot.input_token_usd == null &&
+    snapshot.output_token_usd == null &&
+    snapshot.cache_input_token_usd == null &&
+    snapshot.estimated_cost_usd == null
+  ) {
+    return undefined
+  }
+  return snapshot
+}
+
 function toRankedCandidates(value: unknown): RouteTrace['ranked_candidates'] {
   return Array.isArray(value)
     ? value.map((item) => {
@@ -1033,6 +1062,7 @@ function toRankedCandidates(value: unknown): RouteTrace['ranked_candidates'] {
         exact_model: asNonEmptyString(candidate.exact_model, 'unknown-model'),
         final_score: asOptionalNumber(candidate.final_score),
         selected: asBoolean(candidate.selected, false),
+        pricing_snapshot: toRoutePricingSnapshot(candidate.pricing_snapshot),
         exact_model_weight: asOptionalNumber(candidate.exact_model_weight),
         provider_weight: asOptionalNumber(candidate.provider_weight),
         preference_score_inputs: toPreferenceScoreInputs(candidate.preference_score_inputs),
@@ -1200,10 +1230,16 @@ function usageEventMatchesQuery(event: StoreSnapshot['usageEvents'][number], par
 function routeTraceMatchesQuery(trace: RouteTrace, params: RouteTracesQuery): boolean {
   const taskIds = params.taskIds?.filter(Boolean) ?? []
   const requestIds = params.requestIds?.filter(Boolean) ?? []
-  if (taskIds.length === 0 && requestIds.length === 0) return true
-  return taskIds.includes(trace.request_id) ||
+  const inTaskScope = taskIds.length === 0 && requestIds.length === 0 ? true : taskIds.includes(trace.request_id) ||
     (trace.session_id != null && taskIds.includes(trace.session_id)) ||
     requestIds.includes(trace.request_id)
+  if (!inTaskScope) return false
+  if (params.timeRange) {
+    if (trace.created_at_ms == null) return false
+    if (trace.created_at_ms < params.timeRange.startTimeMs) return false
+    if (trace.created_at_ms > params.timeRange.endTimeMs) return false
+  }
+  return true
 }
 
 function includesFuzzy(value: string, query: string): boolean {

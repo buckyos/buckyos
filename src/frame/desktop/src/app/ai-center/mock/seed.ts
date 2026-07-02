@@ -641,11 +641,23 @@ const routeTraces: RouteTrace[] = [
     resolved_logical_path: 'llm.plan',
     selected_exact_model: 'claude-opus-4.7@anthropic-work',
     selected_provider_instance_name: 'anthropic-work',
+    pricing_snapshot: {
+      input_token_usd: 0.00001,
+      output_token_usd: 0.00004,
+      cache_input_token_usd: 0.0000025,
+      estimated_cost_usd: 0.023,
+    },
     ranked_candidates: [
       {
         exact_model: 'claude-opus-4.7@anthropic-work',
         final_score: 0.94,
         selected: true,
+        pricing_snapshot: {
+          input_token_usd: 0.00001,
+          output_token_usd: 0.00004,
+          cache_input_token_usd: 0.0000025,
+          estimated_cost_usd: 0.023,
+        },
         exact_model_weight: 1,
         provider_weight: 1,
         preference_score_inputs: {
@@ -661,6 +673,12 @@ const routeTraces: RouteTrace[] = [
         exact_model: 'gpt-5.1@openai-main',
         final_score: 0.9,
         selected: false,
+        pricing_snapshot: {
+          input_token_usd: 0.000003,
+          output_token_usd: 0.000012,
+          cache_input_token_usd: 0.00000075,
+          estimated_cost_usd: 0.008,
+        },
         exact_model_weight: 1,
         provider_weight: 0.3,
         preference_score_inputs: {
@@ -676,6 +694,9 @@ const routeTraces: RouteTrace[] = [
         exact_model: 'qwen2.5-coder-32b@local',
         final_score: 0.62,
         selected: false,
+        pricing_snapshot: {
+          estimated_cost_usd: 0.0,
+        },
         exact_model_weight: 1.2,
         provider_weight: 1,
         preference_score_inputs: {

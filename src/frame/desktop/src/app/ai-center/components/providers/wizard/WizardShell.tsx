@@ -1,4 +1,4 @@
-import { useState, type FocusEvent } from 'react'
+import { useEffect, useState, type FocusEvent } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import { useAICCStore } from '../../../hooks/use-aicc-store'
@@ -33,6 +33,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const [validation, setValidation] = useState<ValidationResult | null>(null)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [keyboardInset, setKeyboardInset] = useState(0)
 
   const steps = [
     t('aiCenter.wizard.step.chooseType', 'Choose Type'),
@@ -116,6 +117,22 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     }, 250)
   }
 
+  useEffect(() => {
+    const viewport = window.visualViewport
+    if (!viewport) return
+    const updateKeyboardInset = () => {
+      const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+      setKeyboardInset(inset)
+    }
+    updateKeyboardInset()
+    viewport.addEventListener('resize', updateKeyboardInset)
+    viewport.addEventListener('scroll', updateKeyboardInset)
+    return () => {
+      viewport.removeEventListener('resize', updateKeyboardInset)
+      viewport.removeEventListener('scroll', updateKeyboardInset)
+    }
+  }, [])
+
   return (
     <div className="flex h-full min-h-0 flex-col -mx-4 md:-mx-8 -my-4 md:-my-6">
       {/* Header */}
@@ -144,6 +161,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       {/* Content */}
       <div
         className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-52 [scroll-padding-bottom:14rem] md:px-6 md:pb-6"
+        style={keyboardInset > 0 ? { paddingBottom: `calc(14rem + ${keyboardInset}px)` } : undefined}
         onFocusCapture={keepFocusedFieldVisible}
       >
         {step === 0 && (

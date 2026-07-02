@@ -245,6 +245,12 @@ export interface RouteTrace {
   selected_provider_instance_name?: string
   selected_provider_model_id?: string
   provider_trace_id?: string
+  pricing_snapshot?: {
+    input_token_usd?: number
+    output_token_usd?: number
+    cache_input_token_usd?: number
+    estimated_cost_usd?: number
+  }
   created_at_ms?: number
   latency_ms?: number
   duration_ms?: number
@@ -252,6 +258,7 @@ export interface RouteTrace {
     exact_model: string
     final_score?: number
     selected: boolean
+    pricing_snapshot?: RouteTrace['pricing_snapshot']
     exact_model_weight?: number
     provider_weight?: number
     preference_score_inputs?: {

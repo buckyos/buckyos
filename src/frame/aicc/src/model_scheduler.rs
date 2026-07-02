@@ -1,6 +1,6 @@
 use crate::model_types::{
     ModelCandidate, PreferenceScoreInputs, ProviderType, RankedCandidateTrace, RoutePolicy,
-    SchedulerProfile, SchedulerProfileWeights,
+    RoutePricingSnapshot, SchedulerProfile, SchedulerProfileWeights,
 };
 use std::cmp::Ordering;
 
@@ -241,6 +241,7 @@ fn ranked_trace(
             RankedCandidateTrace {
                 exact_model: candidate.exact_model.clone(),
                 provider_instance_name: candidate.provider_instance_name.clone(),
+                pricing_snapshot: RoutePricingSnapshot::from_candidate(candidate),
                 priority_path: candidate.priority_path.clone(),
                 exact_model_weight: candidate.exact_model_weight,
                 provider_weight: candidate.provider_weight,

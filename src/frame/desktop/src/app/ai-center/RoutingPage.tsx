@@ -20,6 +20,7 @@ import {
   Filter,
   FolderTree,
   GitBranch,
+  HelpCircle,
   Image,
   Layers,
   MessageSquare,
@@ -111,6 +112,7 @@ export function RoutingPage() {
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
   const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
+  const [traceTotalCount, setTraceTotalCount] = useState(snapshotTraces.length)
   const [tracePageIndex, setTracePageIndex] = useState(0)
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
@@ -161,6 +163,7 @@ export function RoutingPage() {
         if (!cancelled) {
           setTraces(page.traces)
           setTraceNextCursor(page.nextCursor)
+          setTraceTotalCount(page.totalCount ?? page.traces.length)
           setTracePageIndex(0)
           setTraceError(null)
         }
@@ -169,6 +172,7 @@ export function RoutingPage() {
         if (!cancelled) {
           setTraces(snapshotTraces)
           setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
+          setTraceTotalCount(snapshotTraces.length)
           setTracePageIndex(0)
           setTraceError('initial')
         }
@@ -228,13 +232,6 @@ export function RoutingPage() {
       .filter((trace) => traceMatchesOutcome(trace, traceOutcomeFilter)),
     [activeTracePath, traceOutcomeFilter, traces],
   )
-  const traceCostByExactModel = useMemo(
-    () => new Map(models.map((model) => [
-      model.exact_model,
-      (model.pricing.input_token_usd ?? 0) + (model.pricing.output_token_usd ?? 0),
-    ] as const)),
-    [models],
-  )
   const traceEmptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, Boolean(activeTracePath), traceOutcomeFilter)
   const retryTraceLoad = () => {
     if (traceError === 'initial') {
@@ -271,6 +268,7 @@ export function RoutingPage() {
       })
       setTraces(page.traces)
       setTraceNextCursor(page.nextCursor)
+      setTraceTotalCount(page.totalCount ?? page.traces.length)
       setTracePageIndex(nextPageIndex)
     } catch (error) {
       console.error('aicc.trace.query page failed', error)
@@ -291,6 +289,7 @@ export function RoutingPage() {
       })
       setTraces((current) => mergeRouteTraces(current, page.traces))
       setTraceNextCursor(page.nextCursor)
+      setTraceTotalCount((current) => page.totalCount ?? Math.max(current, traces.length + page.traces.length))
     } catch (error) {
       console.error('aicc.trace.query next page failed', error)
       setTraceError('more')
@@ -307,6 +306,7 @@ export function RoutingPage() {
         query={query}
         filters={filters}
         options={filterOptions}
+        resultCount={visibleScenarios.length}
         onQueryChange={setQuery}
         onFilterChange={updateFilter}
         filtersOpen={filtersOpen}
@@ -361,7 +361,7 @@ export function RoutingPage() {
           ) : (
             <TraceExplorer
               traces={visibleTraces}
-              loadedCount={traces.length}
+              totalCount={traceTotalCount}
               compact={isMobile}
               outcomeFilter={traceOutcomeFilter}
               activeLogicalPath={activeTracePath}
@@ -389,7 +389,6 @@ export function RoutingPage() {
                 setSelectedPath(null)
               }}
               emptyState={traceEmptyState}
-              costByExactModel={traceCostByExactModel}
             />
           )}
         </div>
@@ -452,7 +451,7 @@ export function RoutingPage() {
           )}
           {!isMobile && <TraceExplorer
             traces={visibleTraces}
-            loadedCount={traces.length}
+            totalCount={traceTotalCount}
             compact={false}
             outcomeFilter={traceOutcomeFilter}
             activeLogicalPath={activeTracePath}
@@ -480,7 +479,6 @@ export function RoutingPage() {
               setSelectedPath(null)
             }}
             emptyState={traceEmptyState}
-            costByExactModel={traceCostByExactModel}
           />}
         </aside>
       </div>
@@ -510,6 +508,7 @@ function RoutingFiltersBar({
   query,
   filters,
   options,
+  resultCount,
   onQueryChange,
   onFilterChange,
   filtersOpen,
@@ -518,6 +517,7 @@ function RoutingFiltersBar({
   query: string
   filters: RoutingFilters
   options: Record<FilterKey, string[]>
+  resultCount: number
   onQueryChange: (value: string) => void
   onFilterChange: (key: FilterKey, value: MultiFilter) => void
   filtersOpen: boolean
@@ -550,7 +550,7 @@ function RoutingFiltersBar({
           aria-label={t('aiCenter.routing.filters', 'Filters')}
         >
           <Filter size={14} />
-          {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+          <span>{resultCount}</span>
         </button>
       </div>
 
@@ -1082,7 +1082,7 @@ function ModelGroupRow({
 
 function TraceExplorer({
   traces,
-  loadedCount,
+  totalCount,
   compact,
   outcomeFilter,
   activeLogicalPath,
@@ -1101,10 +1101,9 @@ function TraceExplorer({
   onTraceSelect,
   onClearScenarioFilter,
   emptyState,
-  costByExactModel,
 }: {
   traces: RouteTrace[]
-  loadedCount: number
+  totalCount: number
   compact: boolean
   outcomeFilter: TraceOutcomeFilter
   activeLogicalPath: string | null
@@ -1123,7 +1122,6 @@ function TraceExplorer({
   onTraceSelect: (trace: RouteTrace) => void
   onClearScenarioFilter: () => void
   emptyState: TraceEmptyStateKind
-  costByExactModel: Map<string, number>
 }) {
   const { t } = useI18n()
   const segmentOptions: Array<{ key: TraceOutcomeFilter; label: string }> = [
@@ -1140,7 +1138,7 @@ function TraceExplorer({
           <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.routeTraceAudit', 'Route Trace Audit')}</h3>
         </div>
         <div className={compact ? 'hidden' : 'text-xs'} style={{ color: 'var(--cp-muted)' }}>
-          {t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: pageIndex + 1, count: loadedCount })}
+          {t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: pageIndex + 1, count: totalCount })}
         </div>
       </div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1181,7 +1179,6 @@ function TraceExplorer({
             trace={trace}
             active={trace.request_id === activeTraceId}
             onSelect={() => onTraceSelect(trace)}
-            estimatedCost={estimatedTraceCost(trace, costByExactModel)}
           />
         ))}
         {!loading && traces.length === 0 && (
@@ -1205,7 +1202,7 @@ function TraceExplorer({
         canGoNext={canGoNext}
         pageIndex={pageIndex}
         loadedCount={traces.length}
-        totalCount={loadedCount}
+        totalCount={totalCount}
         labels={{
           previous: t('aiCenter.routing.tracePreviousPage', 'Previous'),
           next: t('aiCenter.routing.traceNextPage', 'Next'),
@@ -1214,7 +1211,7 @@ function TraceExplorer({
           loadMore: t('aiCenter.routing.traceLoadMore', 'Load more'),
           retry: t('common.retry', 'Retry'),
           error: t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces'),
-          loaded: t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: pageIndex + 1, count: loadedCount }),
+          loaded: t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: pageIndex + 1, count: totalCount }),
         }}
       />
     </section>
@@ -1225,19 +1222,22 @@ function TraceCard({
   trace,
   active,
   onSelect,
-  estimatedCost,
 }: {
   trace: RouteTrace
   active: boolean
   onSelect: () => void
-  estimatedCost?: number
 }) {
   const { t } = useI18n()
   const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const selectedCandidate = selectedTraceCandidate(trace)
+  const selectedPricingSnapshot = trace.pricing_snapshot ?? selectedCandidate?.pricing_snapshot
   const status = traceStatus(trace)
   const providerTraceId = trace.provider_trace_id
+  const preCallEstimateHint = t(
+    'aiCenter.routing.preCallEstimateHint',
+    'Estimated before the model call from routing inputs. Usage Detail cost is calculated after the call with actual token usage, so the two can differ.',
+  )
   const metaItems = [
     trace.selected_provider_instance_name ? `${t('aiCenter.routing.provider', 'Provider')}: ${trace.selected_provider_instance_name}` : '',
     trace.selected_provider_model_id ? `${t('aiCenter.routing.providerModel', 'Provider model')}: ${trace.selected_provider_model_id}` : '',
@@ -1249,7 +1249,17 @@ function TraceCard({
     { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
     { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
     { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
-    { key: 'estimated_cost', label: t('aiCenter.routing.estimatedCost', 'Estimated cost'), value: estimatedCost == null ? '-' : formatUsd(estimatedCost) },
+    { key: 'unit_price', label: t('aiCenter.routing.unitPrice', 'Unit price'), value: formatUnitPrice(selectedPricingSnapshot) },
+    {
+      key: 'pre_call_estimate',
+      label: t('aiCenter.routing.preCallEstimate', 'Pre-call estimate'),
+      value: formatPreCallEstimate(selectedPricingSnapshot),
+      title: preCallEstimateHint,
+    },
+  ]
+  const detailItems = [
+    { key: 'time', label: t('aiCenter.routing.time', 'Time'), value: trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '-' },
+    ...traceFields,
   ]
   const copyFields = [
     ...traceFields.filter((item): item is { key: string; label: string; value: string } => Boolean(item.value && item.value !== '-')),
@@ -1301,25 +1311,26 @@ function TraceCard({
         </div>
       )}
 
-      <div className="mt-3 overflow-hidden rounded-md" style={{ border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}>
-        <table className="w-full table-fixed text-xs">
-          <tbody>
-            {traceFields.map((field) => (
-              <tr key={field.key} style={{ borderTop: '1px solid var(--cp-border)' }}>
-                <th className="w-36 px-2 py-2 text-left font-medium" style={{ color: 'var(--cp-muted)' }}>{field.label}</th>
-                <td className="min-w-0 px-2 py-2" style={{ color: 'var(--cp-text)' }}>
-                  <LongField
-                    value={field.value}
-                    fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
-                    mono={field.key !== 'estimated_cost'}
-                    tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
-                    expandable
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mt-3 grid grid-cols-1 gap-1.5 text-xs sm:grid-cols-2">
+        {detailItems.map((field) => (
+          <div key={field.key} className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5" style={{ background: 'var(--cp-surface)' }}>
+            <span className="inline-flex shrink-0 items-center gap-1" style={{ color: 'var(--cp-muted)' }}>
+              {field.label}
+              {field.title && (
+                <span title={field.title}>
+                  <HelpCircle size={12} />
+                </span>
+              )}
+            </span>
+            <LongField
+              value={field.value}
+              fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+              mono={field.key !== 'unit_price' && field.key !== 'time' && field.key !== 'pre_call_estimate'}
+              tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+              expandable
+            />
+          </div>
+        ))}
       </div>
 
       <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1414,6 +1425,17 @@ function TraceCandidateRow({
   selected: boolean
   reason: string
 }) {
+  const { t } = useI18n()
+  const priceLine = formatUnitPrice(candidate.pricing_snapshot)
+  const estimateLine = formatPreCallEstimate(candidate.pricing_snapshot)
+  const pricingLine = [
+    priceLine !== '-' ? `${t('aiCenter.routing.unitPrice', 'Unit price')}: ${priceLine}` : '',
+    estimateLine !== '-' ? `${t('aiCenter.routing.preCallEstimate', 'Pre-call estimate')}: ${estimateLine}` : '',
+  ].filter(Boolean).join(' / ')
+  const preCallEstimateHint = t(
+    'aiCenter.routing.preCallEstimateHint',
+    'Estimated before the model call from routing inputs. Usage Detail cost is calculated after the call with actual token usage, so the two can differ.',
+  )
   return (
     <div
       className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs"
@@ -1429,6 +1451,11 @@ function TraceCandidateRow({
         <span className="block" style={{ color: 'var(--cp-muted)' }}>
           {candidateWeightSummary(candidate)}
         </span>
+        {pricingLine && (
+          <span className="block" style={{ color: 'var(--cp-muted)' }} title={preCallEstimateHint}>
+            {pricingLine}
+          </span>
+        )}
       </span>
       <span className="shrink-0 text-right" style={{ color: 'var(--cp-muted)' }}>
         <span className="block">{candidate.final_score != null ? candidate.final_score.toFixed(2) : '-'}</span>
@@ -1923,17 +1950,26 @@ function traceStatus(trace: RouteTrace): 'selected' | 'fallback' | 'failed' {
   return trace.fallback_applied ? 'fallback' : 'selected'
 }
 
-function estimatedTraceCost(trace: RouteTrace, costByExactModel: Map<string, number>): number | undefined {
-  if (!trace.selected_exact_model) return undefined
-  return costByExactModel.get(trace.selected_exact_model)
-}
-
 function formatUsd(amount: number): string {
   if (amount === 0) return '$0.0'
   const abs = Math.abs(amount)
-  if (abs < 0.0001) return amount < 0 ? '>-$0.0001' : '<$0.0001'
+  if (abs < 0.0001) return amount < 0 ? '-$<0.0001' : '$<0.0001'
   if (abs < 0.01) return `$${amount.toFixed(4)}`
   return `$${amount.toFixed(2)}`
+}
+
+function formatUnitPrice(snapshot: RouteTrace['pricing_snapshot']): string {
+  if (!snapshot) return '-'
+  const parts = [
+    snapshot.input_token_usd != null ? `in ${formatUsd(snapshot.input_token_usd)}` : '',
+    snapshot.output_token_usd != null ? `out ${formatUsd(snapshot.output_token_usd)}` : '',
+    snapshot.cache_input_token_usd != null ? `cache ${formatUsd(snapshot.cache_input_token_usd)}` : '',
+  ].filter(Boolean)
+  return parts.length > 0 ? parts.join(' / ') : '-'
+}
+
+function formatPreCallEstimate(snapshot: RouteTrace['pricing_snapshot']): string {
+  return snapshot?.estimated_cost_usd == null ? '-' : formatUsd(snapshot.estimated_cost_usd)
 }
 
 function rankedCandidateRank(

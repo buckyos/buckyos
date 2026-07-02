@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, ChevronUp, Copy, Filter, Route, Search } from 'lucide-react'
+import { Check, ChevronUp, Copy, Filter, HelpCircle, Route, Search } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
-import { useAICCStore, useLocalModels, useProviders, useRouteTraces } from '../../hooks/use-aicc-store'
+import { useAICCStore, useRouteTraces } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
 import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
@@ -16,8 +16,45 @@ type TraceFilters = {
   model: string
   profile: string
 }
+type TimeRangeFilter = 'all' | '24h' | '7d' | '30d' | 'custom'
 
 const ROUTE_TRACE_PAGE_SIZE = 20
+
+function dateInputStart(value: string): number | null {
+  if (!value) return null
+  const date = new Date(`${value}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? null : date.getTime()
+}
+
+function dateInputEnd(value: string): number | null {
+  if (!value) return null
+  const date = new Date(`${value}T23:59:59.999`)
+  return Number.isNaN(date.getTime()) ? null : date.getTime()
+}
+
+function localTrailingDaysRange(days: number): { startTimeMs: number; endTimeMs: number } {
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  start.setDate(start.getDate() - Math.max(0, days - 1))
+  return { startTimeMs: start.getTime(), endTimeMs: Date.now() }
+}
+
+function timeRangeToQuery(value: TimeRangeFilter, customStartDate: string, customEndDate: string): { startTimeMs: number; endTimeMs: number } | undefined {
+  if (value === 'all') return undefined
+  if (value === 'custom') {
+    const fallback = localTrailingDaysRange(30)
+    return {
+      startTimeMs: dateInputStart(customStartDate) ?? fallback.startTimeMs,
+      endTimeMs: dateInputEnd(customEndDate) ?? Date.now(),
+    }
+  }
+  const duration = value === '24h'
+    ? 24 * 60 * 60 * 1000
+    : value === '7d'
+      ? 7 * 24 * 60 * 60 * 1000
+      : 30 * 24 * 60 * 60 * 1000
+  return { startTimeMs: Date.now() - duration, endTimeMs: Date.now() }
+}
 
 async function writeClipboard(value: string): Promise<void> {
   try {
@@ -43,28 +80,43 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
   const { t } = useI18n()
   const store = useAICCStore()
   const snapshotTraces = useRouteTraces()
-  const providers = useProviders()
-  const localModels = useLocalModels()
   const [query, setQuery] = useState('')
   const [outcomeFilter, setOutcomeFilter] = useState<TraceOutcomeFilter>('all')
   const [traceFilters, setTraceFilters] = useState<TraceFilters>({ apiType: '', provider: '', model: '', profile: '' })
+  const [timeRange, setTimeRange] = useState<TimeRangeFilter>('all')
+  const [customStartDate, setCustomStartDate] = useState('')
+  const [customEndDate, setCustomEndDate] = useState('')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
   const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
+  const [traceTotalCount, setTraceTotalCount] = useState(snapshotTraces.length)
   const [tracePageIndex, setTracePageIndex] = useState(0)
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+
+  const traceQueryRange = useMemo(
+    () => timeRangeToQuery(timeRange, customStartDate, customEndDate),
+    [customEndDate, customStartDate, timeRange],
+  )
+  const timeRangeOptions: Array<[TimeRangeFilter, string]> = useMemo(() => [
+    ['all', t('aiCenter.home.allTime', 'All time')],
+    ['24h', t('aiCenter.home.last24Hours', 'Last 24 hours')],
+    ['7d', t('aiCenter.home.last7Days', 'Last 7 days')],
+    ['30d', t('aiCenter.home.last30Days', 'Last 30 days')],
+    ['custom', t('aiCenter.home.customRange', 'Custom range')],
+  ], [t])
 
   useEffect(() => {
     let cancelled = false
     async function loadInitialTraces() {
       setTraceLoading(true)
       try {
-        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE })
+        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE, timeRange: traceQueryRange })
         if (!cancelled) {
           setTraces(page.traces)
           setTraceNextCursor(page.nextCursor)
+          setTraceTotalCount(page.totalCount ?? page.traces.length)
           setTracePageIndex(0)
           setTraceError(null)
         }
@@ -73,6 +125,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
         if (!cancelled) {
           setTraces(snapshotTraces)
           setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
+          setTraceTotalCount(snapshotTraces.length)
           setTracePageIndex(0)
           setTraceError('initial')
         }
@@ -84,7 +137,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
     return () => {
       cancelled = true
     }
-  }, [snapshotTraces, store])
+  }, [snapshotTraces, store, traceQueryRange])
 
   const visibleTraces = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -94,17 +147,8 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
       .filter((trace) => traceMatchesQuery(trace, normalizedQuery))
   }, [outcomeFilter, query, traceFilters, traces])
   const filterOptions = useMemo(() => traceFilterOptions(traces), [traces])
-  const traceCostByExactModel = useMemo(() => {
-    const entries = [
-      ...providers.flatMap((provider) => provider.status.discovered_models),
-      ...localModels,
-    ].map((model) => [
-      model.exact_model,
-      (model.pricing.input_token_usd ?? 0) + (model.pricing.output_token_usd ?? 0),
-    ] as const)
-    return new Map(entries)
-  }, [localModels, providers])
-  const emptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, query.trim().length > 0, outcomeFilter)
+  const traceFiltersActive = Object.values(traceFilters).some(Boolean)
+  const emptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, query.trim().length > 0 || timeRange !== 'all' || traceFiltersActive, outcomeFilter)
 
   const loadTracePage = async (pageIndex: number) => {
     if (traceLoading) return
@@ -115,9 +159,11 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
       const page = await store.queryRouteTraces({
         limit: ROUTE_TRACE_PAGE_SIZE,
         cursor: nextPageIndex > 0 ? String(nextPageIndex * ROUTE_TRACE_PAGE_SIZE) : undefined,
+        timeRange: traceQueryRange,
       })
       setTraces(page.traces)
       setTraceNextCursor(page.nextCursor)
+      setTraceTotalCount(page.totalCount ?? page.traces.length)
       setTracePageIndex(nextPageIndex)
     } catch (error) {
       console.error('aicc.trace.query usage audit page failed', error)
@@ -135,9 +181,11 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
       const page = await store.queryRouteTraces({
         limit: ROUTE_TRACE_PAGE_SIZE,
         cursor: traceNextCursor,
+        timeRange: traceQueryRange,
       })
       setTraces((current) => mergeRouteTraces(current, page.traces))
       setTraceNextCursor(page.nextCursor)
+      setTraceTotalCount((current) => page.totalCount ?? Math.max(current, traces.length + page.traces.length))
     } catch (error) {
       console.error('aicc.trace.query usage audit more failed', error)
       setTraceError('more')
@@ -166,7 +214,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
           <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.routeTraceAudit', 'Route Trace Audit')}</h3>
         </div>
         <div className={compact ? 'hidden' : 'text-xs'} style={{ color: 'var(--cp-muted)' }}>
-          {t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: tracePageIndex + 1, count: traces.length })}
+          {t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: tracePageIndex + 1, count: traceTotalCount })}
         </div>
       </div>
 
@@ -183,18 +231,31 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
           <button
             type="button"
             onClick={() => setFiltersOpen((value) => !value)}
-            className="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md"
+            className="absolute right-1.5 top-1/2 flex h-7 min-w-7 -translate-y-1/2 items-center justify-center gap-1 rounded-md px-1.5"
             style={{
-              color: filtersOpen || outcomeFilter !== 'all' ? 'var(--cp-accent)' : 'var(--cp-muted)',
+              color: filtersOpen || outcomeFilter !== 'all' || timeRange !== 'all' || traceFiltersActive ? 'var(--cp-accent)' : 'var(--cp-muted)',
               background: filtersOpen ? 'var(--cp-surface)' : 'transparent',
             }}
             aria-label={t('aiCenter.routing.filters', 'Filters')}
           >
             <Filter size={15} />
+            <span className="text-xs">{query.trim() || outcomeFilter !== 'all' || traceFiltersActive ? visibleTraces.length : traceTotalCount}</span>
           </button>
         </label>
         {filtersOpen && (
-          <div className="grid grid-cols-1 gap-2 rounded-lg p-2 sm:grid-cols-2 xl:grid-cols-5" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
+          <div className="grid grid-cols-1 gap-2 rounded-lg p-2 sm:grid-cols-2 xl:grid-cols-6" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
+            <TraceTimeRangeFilter
+              label={t('aiCenter.home.filterTimeRange', 'Time Range')}
+              value={timeRange}
+              options={timeRangeOptions}
+              customStartDate={customStartDate}
+              customEndDate={customEndDate}
+              customStartLabel={t('aiCenter.home.filterStartDate', 'Start Date')}
+              customEndLabel={t('aiCenter.home.filterEndDate', 'End Date')}
+              onChange={setTimeRange}
+              onCustomStartDateChange={setCustomStartDate}
+              onCustomEndDateChange={setCustomEndDate}
+            />
             <TraceSelectFilter
               label={t('aiCenter.routing.outcome', 'Outcome')}
               value={outcomeFilter}
@@ -218,7 +279,6 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
             trace={trace}
             active={trace.request_id === selectedTraceId}
             onSelect={() => setSelectedTraceId(trace.request_id)}
-            estimatedCost={estimatedTraceCost(trace, traceCostByExactModel)}
           />
         ))}
         {!traceLoading && visibleTraces.length === 0 && (
@@ -243,7 +303,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
         canGoNext={!compact && Boolean(traceNextCursor)}
         pageIndex={tracePageIndex}
         loadedCount={visibleTraces.length}
-        totalCount={traces.length}
+        totalCount={traceTotalCount}
         labels={{
           previous: t('aiCenter.routing.tracePreviousPage', 'Previous'),
           next: t('aiCenter.routing.traceNextPage', 'Next'),
@@ -252,7 +312,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
           loadMore: t('aiCenter.routing.traceLoadMore', 'Load more'),
           retry: t('common.retry', 'Retry'),
           error: t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces'),
-          loaded: t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: tracePageIndex + 1, count: traces.length }),
+          loaded: t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: tracePageIndex + 1, count: traceTotalCount }),
         }}
       />
     </section>
@@ -263,18 +323,21 @@ function TraceAuditCard({
   trace,
   active,
   onSelect,
-  estimatedCost,
 }: {
   trace: RouteTrace
   active: boolean
   onSelect: () => void
-  estimatedCost?: number
 }) {
   const { t } = useI18n()
   const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const selectedCandidate = selectedTraceCandidate(trace)
+  const selectedPricingSnapshot = trace.pricing_snapshot ?? selectedCandidate?.pricing_snapshot
   const status = traceStatus(trace)
+  const preCallEstimateHint = t(
+    'aiCenter.routing.preCallEstimateHint',
+    'Estimated before the model call from routing inputs. Usage Detail cost is calculated after the call with actual token usage, so the two can differ.',
+  )
   const metaItems = [
     trace.selected_provider_instance_name ? `${t('aiCenter.routing.provider', 'Provider')}: ${trace.selected_provider_instance_name}` : '',
     trace.selected_provider_model_id ? `${t('aiCenter.routing.providerModel', 'Provider model')}: ${trace.selected_provider_model_id}` : '',
@@ -286,7 +349,17 @@ function TraceAuditCard({
     { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
     { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
     { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
-    { key: 'estimated_cost', label: t('aiCenter.routing.estimatedCost', 'Estimated cost'), value: estimatedCost == null ? '-' : formatUsd(estimatedCost) },
+    { key: 'unit_price', label: t('aiCenter.routing.unitPrice', 'Unit price'), value: formatUnitPrice(selectedPricingSnapshot) },
+    {
+      key: 'pre_call_estimate',
+      label: t('aiCenter.routing.preCallEstimate', 'Pre-call estimate'),
+      value: formatPreCallEstimate(selectedPricingSnapshot),
+      title: preCallEstimateHint,
+    },
+  ]
+  const detailItems = [
+    { key: 'time', label: t('aiCenter.routing.time', 'Time'), value: trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '-' },
+    ...traceFields,
   ]
   const copyFields = [
     ...traceFields.filter((item): item is { key: string; label: string; value: string } => Boolean(item.value && item.value !== '-')),
@@ -338,25 +411,26 @@ function TraceAuditCard({
         </div>
       )}
 
-      <div className="mt-3 overflow-hidden rounded-md" style={{ border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}>
-        <table className="w-full table-fixed text-xs">
-          <tbody>
-            {traceFields.map((field) => (
-              <tr key={field.key} style={{ borderTop: '1px solid var(--cp-border)' }}>
-                <th className="w-36 px-2 py-2 text-left font-medium" style={{ color: 'var(--cp-muted)' }}>{field.label}</th>
-                <td className="min-w-0 px-2 py-2" style={{ color: 'var(--cp-text)' }}>
-                  <LongField
-                    value={field.value}
-                    fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
-                    mono={field.key !== 'estimated_cost'}
-                    tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
-                    expandable
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mt-3 grid grid-cols-1 gap-1.5 text-xs sm:grid-cols-2">
+        {detailItems.map((field) => (
+          <div key={field.key} className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5" style={{ background: 'var(--cp-surface)' }}>
+            <span className="inline-flex shrink-0 items-center gap-1" style={{ color: 'var(--cp-muted)' }}>
+              {field.label}
+              {field.title && (
+                <span title={field.title}>
+                  <HelpCircle size={12} />
+                </span>
+              )}
+            </span>
+            <LongField
+              value={field.value}
+              fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+              mono={field.key !== 'unit_price' && field.key !== 'time' && field.key !== 'pre_call_estimate'}
+              tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+              expandable
+            />
+          </div>
+        ))}
       </div>
 
       <div className="mt-2 flex flex-wrap gap-1.5">
@@ -478,6 +552,17 @@ function TraceCandidateRow({
   selected: boolean
   reason: string
 }) {
+  const { t } = useI18n()
+  const priceLine = formatUnitPrice(candidate.pricing_snapshot)
+  const estimateLine = formatPreCallEstimate(candidate.pricing_snapshot)
+  const pricingLine = [
+    priceLine !== '-' ? `${t('aiCenter.routing.unitPrice', 'Unit price')}: ${priceLine}` : '',
+    estimateLine !== '-' ? `${t('aiCenter.routing.preCallEstimate', 'Pre-call estimate')}: ${estimateLine}` : '',
+  ].filter(Boolean).join(' / ')
+  const preCallEstimateHint = t(
+    'aiCenter.routing.preCallEstimateHint',
+    'Estimated before the model call from routing inputs. Usage Detail cost is calculated after the call with actual token usage, so the two can differ.',
+  )
   return (
     <div
       className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs"
@@ -493,6 +578,11 @@ function TraceCandidateRow({
         <span className="block" style={{ color: 'var(--cp-muted)' }}>
           {candidateWeightSummary(candidate)}
         </span>
+        {pricingLine && (
+          <span className="block" style={{ color: 'var(--cp-muted)' }} title={preCallEstimateHint}>
+            {pricingLine}
+          </span>
+        )}
       </span>
       <span className="shrink-0 text-right" style={{ color: 'var(--cp-muted)' }}>
         <span className="block">{candidate.final_score != null ? formatPreciseDecimal(candidate.final_score) : '-'}</span>
@@ -582,17 +672,86 @@ function uniqueTraceOptions(values: Array<string | undefined>): Array<[string, s
     .map((value) => [value, value])
 }
 
-function estimatedTraceCost(trace: RouteTrace, costByExactModel: Map<string, number>): number | undefined {
-  if (!trace.selected_exact_model) return undefined
-  return costByExactModel.get(trace.selected_exact_model)
-}
-
 function formatUsd(amount: number): string {
   if (amount === 0) return '$0.0'
   const abs = Math.abs(amount)
-  if (abs < 0.0001) return amount < 0 ? '>-$0.0001' : '<$0.0001'
+  if (abs < 0.0001) return amount < 0 ? '-$<0.0001' : '$<0.0001'
   if (abs < 0.01) return `$${amount.toFixed(4)}`
   return `$${amount.toFixed(2)}`
+}
+
+function formatUnitPrice(snapshot: RouteTrace['pricing_snapshot']): string {
+  if (!snapshot) return '-'
+  const parts = [
+    snapshot.input_token_usd != null ? `in ${formatUsd(snapshot.input_token_usd)}` : '',
+    snapshot.output_token_usd != null ? `out ${formatUsd(snapshot.output_token_usd)}` : '',
+    snapshot.cache_input_token_usd != null ? `cache ${formatUsd(snapshot.cache_input_token_usd)}` : '',
+  ].filter(Boolean)
+  return parts.length > 0 ? parts.join(' / ') : '-'
+}
+
+function formatPreCallEstimate(snapshot: RouteTrace['pricing_snapshot']): string {
+  return snapshot?.estimated_cost_usd == null ? '-' : formatUsd(snapshot.estimated_cost_usd)
+}
+
+function TraceTimeRangeFilter({
+  label,
+  value,
+  options,
+  customStartDate,
+  customEndDate,
+  customStartLabel,
+  customEndLabel,
+  onChange,
+  onCustomStartDateChange,
+  onCustomEndDateChange,
+}: {
+  label: string
+  value: TimeRangeFilter
+  options: Array<[TimeRangeFilter, string]>
+  customStartDate: string
+  customEndDate: string
+  customStartLabel: string
+  customEndLabel: string
+  onChange: (value: TimeRangeFilter) => void
+  onCustomStartDateChange: (value: string) => void
+  onCustomEndDateChange: (value: string) => void
+}) {
+  return (
+    <label className="flex min-w-0 flex-col gap-1 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
+      <span className="truncate" title={label}>{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value as TimeRangeFilter)}
+        className="h-9 rounded-md px-2 text-xs outline-none"
+        style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+      >
+        {options.map(([optionValue, optionLabel]) => (
+          <option key={optionValue} value={optionValue}>{optionLabel}</option>
+        ))}
+      </select>
+      {value === 'custom' && (
+        <div className="grid grid-cols-2 gap-1">
+          <input
+            type="date"
+            value={customStartDate}
+            onChange={(event) => onCustomStartDateChange(event.target.value)}
+            aria-label={customStartLabel}
+            className="h-9 min-w-0 rounded-md px-2 text-xs outline-none"
+            style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+          />
+          <input
+            type="date"
+            value={customEndDate}
+            onChange={(event) => onCustomEndDateChange(event.target.value)}
+            aria-label={customEndLabel}
+            className="h-9 min-w-0 rounded-md px-2 text-xs outline-none"
+            style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+          />
+        </div>
+      )}
+    </label>
+  )
 }
 
 function TraceSelectFilter({

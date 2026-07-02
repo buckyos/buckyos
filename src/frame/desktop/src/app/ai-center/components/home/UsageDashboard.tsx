@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Activity, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, CreditCard, DollarSign, Filter, HelpCircle, Route, Wallet } from 'lucide-react'
+import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, Filter, HelpCircle, Route, Wallet } from 'lucide-react'
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useAIStatus, useProviders, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
@@ -82,7 +82,7 @@ function usageProviderDisplayName(event: UsageEvent, providerNames: Map<string, 
 function formatUsd(amount: number): string {
   if (amount === 0) return '$0.0'
   const abs = Math.abs(amount)
-  if (abs < 0.0001) return amount < 0 ? '>-$0.0001' : '<$0.0001'
+  if (abs < 0.0001) return amount < 0 ? '-$<0.0001' : '$<0.0001'
   if (abs < 0.01) return `$${amount.toFixed(4)}`
   return `$${amount.toFixed(2)}`
 }
@@ -559,7 +559,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
         <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-              {t('aiCenter.home.secondaryBreakdowns', 'Cost Breakdown by Provider, Model, App, and API')}
+              {t('aiCenter.home.secondaryBreakdowns', 'AI Spend Breakdown')}
             </h3>
             {isMobile && (
               <label className="relative min-w-[180px]">
@@ -666,39 +666,29 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
               {t('aiCenter.home.detailTable', 'Usage Detail')}
             </h3>
-            {isMobile ? (
-              <button
-                type="button"
-                onClick={() => setFiltersSheetOpen((value) => !value)}
-                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium"
-                style={{ color: activeFilterChips.length > 0 ? 'var(--cp-accent)' : 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
-                aria-label={t('aiCenter.home.filters', 'Filters')}
-              >
-                <Filter size={15} />
-                <span>{activeFilterChips.length}</span>
-              </button>
-            ) : (
-              <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-                {usageLoading ? t('common.loading', 'Loading') : usagePage.totalRequests}
-              </span>
-            )}
+            <button
+              type="button"
+              onClick={() => setFiltersSheetOpen((value) => !value)}
+              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium"
+              style={{ color: filtersSheetOpen || activeFilterChips.length > 0 ? 'var(--cp-accent)' : 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
+              aria-label={t('aiCenter.home.filters', 'Filters')}
+            >
+              <Filter size={15} />
+              <span>{usageLoading ? '-' : usagePage.totalRequests}</span>
+            </button>
           </div>
-          {isMobile && (
-            <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2">
+            {activeFilterChips.length > 0 && (
               <div className="flex items-center gap-2">
-                {activeFilterChips.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={clearUsageFilters}
-                    className="inline-flex min-h-11 items-center justify-center rounded-lg px-3 text-sm"
-                    style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-                  >
-                    {t('common.clear', 'Clear')}
-                  </button>
-                )}
-              </div>
-              {activeFilterChips.length > 0 && (
-                <div className="flex gap-2 overflow-x-auto pb-1">
+                <button
+                  type="button"
+                  onClick={clearUsageFilters}
+                  className="inline-flex min-h-9 items-center justify-center rounded-lg px-3 text-xs"
+                  style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+                >
+                  {t('common.clear', 'Clear')}
+                </button>
+                <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1">
                   {activeFilterChips.map((chip) => (
                     <span
                       key={chip}
@@ -709,98 +699,51 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
                     </span>
                   ))}
                 </div>
-              )}
-              {filtersSheetOpen && (
-                <div className="grid grid-cols-1 gap-2 rounded-lg p-2" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
-                  <TimeRangeFilterControl
-                    label={t('aiCenter.home.filterTimeRange', 'Time Range')}
-                    value={timeRange}
-                    onChange={updateTimeRange}
-                    customStartDate={customStartDate}
-                    customEndDate={customEndDate}
-                    customStartLabel={t('aiCenter.home.filterStartDate', 'Start Date')}
-                    customEndLabel={t('aiCenter.home.filterEndDate', 'End Date')}
-                    onCustomStartDateChange={(value) => {
-                      setCustomStartDate(value)
-                      resetUsagePaging()
-                    }}
-                    onCustomEndDateChange={(value) => {
-                      setCustomEndDate(value)
-                      resetUsagePaging()
-                    }}
-                    options={timeRangeOptions}
-                  />
-                  <MultiSelectFilter
-                    label={t('aiCenter.home.filterProvider', 'Provider')}
-                    value={providerFilter}
-                    onChange={updateProviderFilter}
-                    options={providerOptions}
-                    allLabel={t('aiCenter.home.allProviders', 'All providers')}
-                  />
-                  <MultiSelectFilter
-                    label={t('aiCenter.home.filterModel', 'Model')}
-                    value={modelFilter}
-                    onChange={updateModelFilter}
-                    options={modelOptions}
-                    allLabel={t('aiCenter.home.allModels', 'All models')}
-                  />
-                  <MultiSelectFilter
-                    label={t('aiCenter.home.filterAppAgent', 'App / Agent')}
-                    value={appAgentFilter}
-                    onChange={updateAppAgentFilter}
-                    options={appAgentOptions}
-                    allLabel={t('aiCenter.home.allAppsAgents', 'All apps / agents')}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-          <div className="hidden grid-cols-1 gap-2 md:grid sm:grid-cols-2 xl:grid-cols-4">
-            <TimeRangeFilterControl
-              label={t('aiCenter.home.filterTimeRange', 'Time Range')}
-              value={timeRange}
-              onChange={updateTimeRange}
-              customStartDate={customStartDate}
-              customEndDate={customEndDate}
-              customStartLabel={t('aiCenter.home.filterStartDate', 'Start Date')}
-              customEndLabel={t('aiCenter.home.filterEndDate', 'End Date')}
-              onCustomStartDateChange={(value) => {
-                setCustomStartDate(value)
-                resetUsagePaging()
-              }}
-              onCustomEndDateChange={(value) => {
-                setCustomEndDate(value)
-                resetUsagePaging()
-              }}
-              options={[
-                ['all', t('aiCenter.home.allTime', 'All time')],
-                ['24h', t('aiCenter.home.last24Hours', 'Last 24 hours')],
-                ['7d', t('aiCenter.home.last7Days', 'Last 7 days')],
-                ['30d', t('aiCenter.home.last30Days', 'Last 30 days')],
-                ['custom', t('aiCenter.home.customRange', 'Custom range')],
-              ]}
-            />
-            <MultiSelectFilter
-              label={t('aiCenter.home.filterProvider', 'Provider')}
-              value={providerFilter}
-              onChange={updateProviderFilter}
-              options={providerOptions}
-              allLabel={t('aiCenter.home.allProviders', 'All providers')}
-            />
-            <MultiSelectFilter
-              label={t('aiCenter.home.filterModel', 'Model')}
-              value={modelFilter}
-              onChange={updateModelFilter}
-              options={modelOptions}
-              allLabel={t('aiCenter.home.allModels', 'All models')}
-            />
-            <MultiSelectFilter
-              label={t('aiCenter.home.filterAppAgent', 'App / Agent')}
-              value={appAgentFilter}
-              onChange={updateAppAgentFilter}
-              options={appAgentOptions}
-              allLabel={t('aiCenter.home.allAppsAgents', 'All apps / agents')}
-            />
+              </div>
+            )}
+            {filtersSheetOpen && (
+              <div className="grid grid-cols-1 gap-2 rounded-lg p-2 sm:grid-cols-2 xl:grid-cols-4" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
+                <TimeRangeFilterControl
+                  label={t('aiCenter.home.filterTimeRange', 'Time Range')}
+                  value={timeRange}
+                  onChange={updateTimeRange}
+                  customStartDate={customStartDate}
+                  customEndDate={customEndDate}
+                  customStartLabel={t('aiCenter.home.filterStartDate', 'Start Date')}
+                  customEndLabel={t('aiCenter.home.filterEndDate', 'End Date')}
+                  onCustomStartDateChange={(value) => {
+                    setCustomStartDate(value)
+                    resetUsagePaging()
+                  }}
+                  onCustomEndDateChange={(value) => {
+                    setCustomEndDate(value)
+                    resetUsagePaging()
+                  }}
+                  options={timeRangeOptions}
+                />
+                <MultiSelectFilter
+                  label={t('aiCenter.home.filterProvider', 'Provider')}
+                  value={providerFilter}
+                  onChange={updateProviderFilter}
+                  options={providerOptions}
+                  allLabel={t('aiCenter.home.allProviders', 'All providers')}
+                />
+                <MultiSelectFilter
+                  label={t('aiCenter.home.filterModel', 'Model')}
+                  value={modelFilter}
+                  onChange={updateModelFilter}
+                  options={modelOptions}
+                  allLabel={t('aiCenter.home.allModels', 'All models')}
+                />
+                <MultiSelectFilter
+                  label={t('aiCenter.home.filterAppAgent', 'App / Agent')}
+                  value={appAgentFilter}
+                  onChange={updateAppAgentFilter}
+                  options={appAgentOptions}
+                  allLabel={t('aiCenter.home.allAppsAgents', 'All apps / agents')}
+                />
+              </div>
+            )}
           </div>
         </div>
         <div className="hidden max-h-[560px] overflow-auto md:block">
@@ -1028,32 +971,52 @@ function KpiCarousel({
 }: {
   kpis: KpiCard[]
 }) {
-  const { t } = useI18n()
   const [activeIndex, setActiveIndex] = useState(0)
   if (kpis.length === 0) return null
   if (kpis.length === 1) {
     const kpi = kpis[0]
     return <MobileKpiCard kpi={kpi} index={0} total={1} />
   }
-  const activeKpi = kpis[activeIndex]
   const previousIndex = () => setActiveIndex((current) => (current - 1 + kpis.length) % kpis.length)
   const nextIndex = () => setActiveIndex((current) => (current + 1) % kpis.length)
+  const previous = (activeIndex - 1 + kpis.length) % kpis.length
+  const next = (activeIndex + 1) % kpis.length
+  const visible = [
+    { index: previous, position: 'left' as const },
+    { index: activeIndex, position: 'center' as const },
+    { index: next, position: 'right' as const },
+  ]
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl p-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-      <MobileKpiCard kpi={activeKpi} index={activeIndex} total={kpis.length} />
-      <div className="flex items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={previousIndex}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-bg)' }}
-          aria-label={t('common.previous', 'Previous')}
-        >
-          <ChevronLeft size={16} />
-        </button>
-        <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
-          {kpis.map((kpi, index) => (
+    <div className="overflow-hidden">
+      <div className="relative h-[166px]">
+        {visible.map(({ index, position }) => (
+          <div
+            key={`${kpis[index].title}-${position}`}
+            className="absolute top-0 h-full w-[78%] max-w-[320px] transition-all duration-200"
+            style={{
+              left: position === 'left' ? '0%' : position === 'center' ? '50%' : '100%',
+              transform: position === 'center'
+                ? 'translateX(-50%)'
+                : position === 'left'
+                  ? 'translateX(-78%) scale(0.92)'
+                  : 'translateX(-22%) scale(0.92)',
+              opacity: position === 'center' ? 1 : 0.72,
+              zIndex: position === 'center' ? 2 : 1,
+            }}
+          >
+            <MobileKpiCard
+              kpi={kpis[index]}
+              index={index}
+              total={kpis.length}
+              preview={position !== 'center'}
+              onPreviewClick={position === 'left' ? previousIndex : position === 'right' ? nextIndex : undefined}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex min-w-0 items-center justify-center gap-1.5">
+        {kpis.map((kpi, index) => (
           <button
             key={kpi.title}
             type="button"
@@ -1065,23 +1028,25 @@ function KpiCarousel({
             }}
             aria-label={kpi.title}
           />
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={nextIndex}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-bg)' }}
-          aria-label={t('common.next', 'Next')}
-        >
-          <ChevronRight size={16} />
-        </button>
+        ))}
       </div>
     </div>
   )
 }
 
-function MobileKpiCard({ kpi, index, total }: { kpi: KpiCard; index: number; total: number }) {
+function MobileKpiCard({
+  kpi,
+  index,
+  total,
+  preview = false,
+  onPreviewClick,
+}: {
+  kpi: KpiCard
+  index: number
+  total: number
+  preview?: boolean
+  onPreviewClick?: () => void
+}) {
   const toneColor = kpi.tone === 'ok'
     ? 'var(--cp-success)'
     : kpi.tone === 'warning'
@@ -1093,12 +1058,13 @@ function MobileKpiCard({ kpi, index, total }: { kpi: KpiCard; index: number; tot
   return (
     <button
       type="button"
-      onClick={kpi.onClick}
-      disabled={!kpi.onClick}
-      className="min-h-[142px] w-full rounded-xl p-4 text-left disabled:cursor-default"
+      onClick={preview ? onPreviewClick : kpi.onClick}
+      disabled={!preview && !kpi.onClick}
+      className="h-[158px] w-full rounded-xl p-4 text-left disabled:cursor-default"
       style={{
-        background: 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 92%), var(--cp-bg))',
+        background: preview ? 'var(--cp-surface)' : 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 88%), var(--cp-bg))',
         border: `1px solid ${kpi.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
+        boxShadow: preview ? 'none' : '0 8px 22px color-mix(in oklch, var(--cp-accent), transparent 88%)',
       }}
     >
       <div className="flex items-start justify-between gap-3">
@@ -1107,7 +1073,7 @@ function MobileKpiCard({ kpi, index, total }: { kpi: KpiCard; index: number; tot
             <span className="shrink-0" style={{ color: toneColor }}>{kpi.icon}</span>
             <span className="truncate">{kpi.title}</span>
           </div>
-          <div className="mt-3 break-words text-3xl font-semibold leading-tight" style={{ color: toneColor }}>
+          <div className="mt-3 line-clamp-2 break-words text-2xl font-semibold leading-tight" style={{ color: toneColor }}>
             {kpi.value}
           </div>
         </div>
@@ -1115,7 +1081,7 @@ function MobileKpiCard({ kpi, index, total }: { kpi: KpiCard; index: number; tot
           {index + 1}/{total}
         </div>
       </div>
-      <div className="mt-4 min-h-5 text-sm leading-5" style={{ color: 'var(--cp-muted)' }}>
+      <div className="mt-4 line-clamp-2 min-h-10 text-sm leading-5" style={{ color: 'var(--cp-muted)' }}>
         {kpi.subtitle ?? ''}
       </div>
     </button>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Filter, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Filter, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
@@ -251,8 +251,8 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className={isMobile ? 'grid grid-cols-[2.25rem_minmax(0,1fr)_2.25rem] items-center gap-2' : 'flex items-center justify-between gap-3'}>
+        <div className={isMobile ? 'flex items-center' : 'flex min-w-0 flex-1 items-center gap-2'}>
           {isMobile && onBack && (
             <button
               type="button"
@@ -264,10 +264,11 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
               <ArrowLeft size={18} />
             </button>
           )}
-          <h2 className="min-w-0 flex-1 truncate text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
+          {!isMobile && <h2 className="min-w-0 flex-1 truncate text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
             {config.name}
-          </h2>
+          </h2>}
         </div>
+        {isMobile && <h2 className="min-w-0 truncate text-center text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>{config.name}</h2>}
         <div ref={actionsRef} className="relative shrink-0">
           <button
             type="button"
@@ -358,7 +359,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       </div>
       <LongField
         value={`${config.provider_instance_name} / ${config.provider_runtime_type} / ${config.provider_origin}`}
-        className="-mt-2 text-xs"
+        className={isMobile ? 'text-left text-xs' : '-mt-2 text-xs'}
         tone="muted"
         copyable
       />
@@ -507,6 +508,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
             onSearchChange={setSearchQuery}
             filters={filters}
             filterOptions={filterOptions}
+            resultCount={groupedModels.reduce((count, group) => count + 1 + group.variants.length, 0)}
             onFilterChange={setFilter}
             filtersOpen={inventoryFiltersOpen}
             onToggleFilters={() => setInventoryFiltersOpen((value) => !value)}
@@ -581,7 +583,6 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 }
 
 function MetricCarousel({ metrics }: { metrics: ProviderMetric[] }) {
-  const { t } = useI18n()
   const [activeIndex, setActiveIndex] = useState(0)
   if (metrics.length === 0) return null
   if (metrics.length === 1) {
@@ -590,23 +591,44 @@ function MetricCarousel({ metrics }: { metrics: ProviderMetric[] }) {
   }
   const previousIndex = () => setActiveIndex((current) => (current - 1 + metrics.length) % metrics.length)
   const nextIndex = () => setActiveIndex((current) => (current + 1) % metrics.length)
-  const activeMetric = metrics[activeIndex]
+  const previous = (activeIndex - 1 + metrics.length) % metrics.length
+  const next = (activeIndex + 1) % metrics.length
+  const visible = [
+    { index: previous, position: 'left' as const },
+    { index: activeIndex, position: 'center' as const },
+    { index: next, position: 'right' as const },
+  ]
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl p-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-      <MobileMetricCard metric={activeMetric} index={activeIndex} total={metrics.length} />
-      <div className="flex items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={previousIndex}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-bg)' }}
-          aria-label={t('common.previous', 'Previous')}
-        >
-          <ChevronLeft size={16} />
-        </button>
-        <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
-          {metrics.map((metric, index) => (
+    <div className="overflow-hidden">
+      <div className="relative h-[166px]">
+        {visible.map(({ index, position }) => (
+          <div
+            key={`${metrics[index].label}-${position}`}
+            className="absolute top-0 h-full w-[78%] max-w-[320px] transition-all duration-200"
+            style={{
+              left: position === 'left' ? '0%' : position === 'center' ? '50%' : '100%',
+              transform: position === 'center'
+                ? 'translateX(-50%)'
+                : position === 'left'
+                  ? 'translateX(-78%) scale(0.92)'
+                  : 'translateX(-22%) scale(0.92)',
+              opacity: position === 'center' ? 1 : 0.72,
+              zIndex: position === 'center' ? 2 : 1,
+            }}
+          >
+            <MobileMetricCard
+              metric={metrics[index]}
+              index={index}
+              total={metrics.length}
+              preview={position !== 'center'}
+              onPreviewClick={position === 'left' ? previousIndex : position === 'right' ? nextIndex : undefined}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex min-w-0 items-center justify-center gap-1.5">
+        {metrics.map((metric, index) => (
           <button
             key={metric.label}
             type="button"
@@ -618,23 +640,25 @@ function MetricCarousel({ metrics }: { metrics: ProviderMetric[] }) {
             }}
             aria-label={metric.label}
           />
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={nextIndex}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-bg)' }}
-          aria-label={t('common.next', 'Next')}
-        >
-          <ChevronRight size={16} />
-        </button>
+        ))}
       </div>
     </div>
   )
 }
 
-function MobileMetricCard({ metric, index, total }: { metric: ProviderMetric; index: number; total: number }) {
+function MobileMetricCard({
+  metric,
+  index,
+  total,
+  preview = false,
+  onPreviewClick,
+}: {
+  metric: ProviderMetric
+  index: number
+  total: number
+  preview?: boolean
+  onPreviewClick?: () => void
+}) {
   const toneColor = metric.tone === 'ok'
     ? 'var(--cp-success)'
     : metric.tone === 'warning'
@@ -644,17 +668,20 @@ function MobileMetricCard({ metric, index, total }: { metric: ProviderMetric; in
         : 'var(--cp-text)'
 
   return (
-    <div
-      className="min-h-[142px] rounded-xl p-4"
+    <button
+      type="button"
+      onClick={preview ? onPreviewClick : undefined}
+      className="h-[158px] w-full rounded-xl p-4 text-left"
       style={{
-        background: 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 92%), var(--cp-bg))',
+        background: preview ? 'var(--cp-surface)' : 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 88%), var(--cp-bg))',
         border: `1px solid ${metric.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
+        boxShadow: preview ? 'none' : '0 8px 22px color-mix(in oklch, var(--cp-accent), transparent 88%)',
       }}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs font-medium uppercase" style={{ color: 'var(--cp-muted)' }}>{metric.label}</div>
-          <div className="mt-3 break-words text-3xl font-semibold leading-tight" style={{ color: toneColor }}>
+          <div className="mt-3 line-clamp-2 break-words text-2xl font-semibold leading-tight" style={{ color: toneColor }}>
             {metric.value}
           </div>
         </div>
@@ -662,10 +689,10 @@ function MobileMetricCard({ metric, index, total }: { metric: ProviderMetric; in
           {index + 1}/{total}
         </div>
       </div>
-      <div className="mt-4 min-h-5 text-sm leading-5" style={{ color: 'var(--cp-muted)' }}>
+      <div className="mt-4 line-clamp-2 min-h-10 text-sm leading-5" style={{ color: 'var(--cp-muted)' }}>
         {metric.detail ?? ''}
       </div>
-    </div>
+    </button>
   )
 }
 
@@ -675,6 +702,7 @@ function InventoryToolbar({
   onSearchChange,
   filters,
   filterOptions,
+  resultCount,
   onFilterChange,
   filtersOpen,
   onToggleFilters,
@@ -684,6 +712,7 @@ function InventoryToolbar({
   onSearchChange: (value: string) => void
   filters: InventoryFilters
   filterOptions: Record<FilterKey, string[]>
+  resultCount: number
   onFilterChange: (key: FilterKey, value: MultiFilter) => void
   filtersOpen: boolean
   onToggleFilters: () => void
@@ -711,7 +740,7 @@ function InventoryToolbar({
           aria-label={t('aiCenter.providers.filters', 'Filters')}
         >
           <Filter size={14} />
-          {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+          <span>{resultCount}</span>
         </button>
       </label>
       {filtersOpen && <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-2">

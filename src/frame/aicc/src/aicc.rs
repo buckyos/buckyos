@@ -14,8 +14,8 @@ use crate::model_types::{
     LatencyClass, LogicalModelDefinition, ModelAttributes, ModelCandidate, ModelCapabilities,
     ModelHealth, ModelMetadata, ModelPricing, PolicyConfig, PricingMode, PrivacyClass,
     ProviderInventory, ProviderOrigin, ProviderType, ProviderTypeTrustedSource, QuotaState,
-    RequestedModelType, RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy, RouteTrace,
-    UserFacingProviderOrigin, UserFacingRouteSummary,
+    RequestedModelType, RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy,
+    RoutePricingSnapshot, RouteTrace, UserFacingProviderOrigin, UserFacingRouteSummary,
 };
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -1577,6 +1577,7 @@ struct RouteAttempt {
     provider_model: String,
     provider_options: Option<Value>,
     exact_model: String,
+    pricing_snapshot: Option<RoutePricingSnapshot>,
 }
 
 #[derive(Clone, Debug)]
@@ -1787,6 +1788,7 @@ impl Router {
                 instance_id: item.instance_id,
                 provider_model: item.provider_model,
                 provider_options: None,
+                pricing_snapshot: None,
             })
             .collect::<Vec<_>>();
 
@@ -1834,6 +1836,7 @@ fn legacy_route_trace(model: String, api_type: ApiType) -> RouteTrace {
         selected_provider_instance_name: None,
         selected_provider_model_id: None,
         provider_options: None,
+        pricing_snapshot: None,
         candidate_count_before_filter: 0,
         candidate_count_after_filter: 0,
         filtered_candidates: Vec::new(),
@@ -3384,6 +3387,7 @@ impl AIComputeCenter {
             provider_call_from_candidate(&scheduled.selected);
         resolution.trace.selected_provider_model_id = Some(selected_provider_model.clone());
         resolution.trace.provider_options = selected_provider_options.clone();
+        resolution.trace.pricing_snapshot = RoutePricingSnapshot::from_candidate(&scheduled.selected);
         resolution.trace.ranked_candidates = scheduled.ranked_candidates;
         mark_selected_session_overlay(&mut resolution.trace, &scheduled.selected);
         resolution.trace.user_summary = Some(user_summary_for_route(
@@ -3417,6 +3421,7 @@ impl AIComputeCenter {
             provider_model: selected_provider_model.clone(),
             provider_options: selected_provider_options.clone(),
             exact_model: scheduled.selected.exact_model.clone(),
+            pricing_snapshot: RoutePricingSnapshot::from_candidate(&scheduled.selected),
         }];
         if policy.runtime_failover {
             let fallback_limit = route_cfg.fallback_limit;
@@ -3447,6 +3452,7 @@ impl AIComputeCenter {
                     provider_model,
                     provider_options,
                     exact_model: candidate.exact_model.clone(),
+                    pricing_snapshot: RoutePricingSnapshot::from_candidate(&candidate),
                 });
             }
         }
@@ -4346,6 +4352,7 @@ impl AIComputeCenter {
                     trace.selected_provider_instance_name = Some(attempt.instance_id.clone());
                     trace.selected_provider_model_id = Some(attempt.provider_model.clone());
                     trace.provider_options = attempt.provider_options.clone();
+                    trace.pricing_snapshot = attempt.pricing_snapshot.clone();
                     if let Some(summary) = trace.user_summary.as_mut() {
                         summary.display_name = attempt
                             .exact_model
