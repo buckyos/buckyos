@@ -70,8 +70,7 @@ stacks:
   node_rtcp:
     protocol: rtcp
     bind: 0.0.0.0:2980
-    key_path: ./node_private_key.pem
-    device_config_path: ./node_device_config.json
+    device_did: "{{device_did}}"
     keep_tunnel:
       - sn.devtests.org/
       - ood2.test.buckyos.io/

@@ -73,8 +73,9 @@ fn windows_hidden_process_creation_flags() -> u32 {
 const METRICS_DISK_REFRESH_INTERVAL_SECS: u64 = 5;
 const NETWORK_TIMELINE_LIMIT: usize = 300;
 const DOCKER_OVERVIEW_CACHE_TTL_SECS: u64 = 15;
-const GATEWAY_CONFIG_FILES: [&str; 5] = [
+const GATEWAY_CONFIG_FILES: [&str; 6] = [
     "cyfs_gateway.json",
+    "node_gateway_params.json",
     "boot_gateway.yaml",
     "node_gateway.json",
     "user_gateway.yaml",

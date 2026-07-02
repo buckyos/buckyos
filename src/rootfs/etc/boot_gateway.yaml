@@ -1,3 +1,6 @@
+includes:
+  - path: node_gateway_params.json
+
 collections:
   APP_INFO:
     type: json_map
@@ -28,8 +31,7 @@ stacks:
   node_rtcp:
     protocol: rtcp
     bind: 0.0.0.0:2980
-    key_path: "__BUCKYOS_DEVICE_AUTH_PRIVATE_KEY__"
-    device_config_path: "__BUCKYOS_DEVICE_DID_JSON__"
+    device_did: "{{device_did}}"
     keep_tunnel: []
     hook_point:
       main:

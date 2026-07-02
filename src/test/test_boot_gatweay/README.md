@@ -24,7 +24,7 @@ uv run src/test/test_boot_gatweay/run_debug_tests.py --binary ~/cyfs-gateway/src
 
 ## 说明
 
-- runner 每次会创建临时目录，并复制当前仓库的 `src/rootfs/etc/boot_gateway.yaml`
+- runner 每次会创建临时目录，并复制当前仓库的 `src/rootfs/etc/boot_gateway.yaml` 和 gateway params
 - `node_gateway_info.json` 由 runner 在测试时直接构造，不依赖运行态 `src/rootfs/etc/node_gateway_info.json`
 - 目前覆盖：
   - 本地 app 转发

@@ -521,16 +521,42 @@ function replaceGeneratedSnDb(targetDir: string): string {
   return snDbPath;
 }
 
+function readStagedParams(targetDir: string): Record<string, unknown> {
+  const paramsPath = path.join(targetDir, "params.json");
+  if (!fs.existsSync(paramsPath)) {
+    return {};
+  }
+  try {
+    const json = readJson(paramsPath);
+    return (json.params && typeof json.params === "object")
+      ? json.params as Record<string, unknown>
+      : {};
+  } catch (err) {
+    console.warn(`read staged params.json failed, ignore: ${err}`);
+    return {};
+  }
+}
+
 function updateParamsJson(
   targetDir: string,
   snDbPath: string,
   authDataDir: string,
+  stagedParams: Record<string, unknown>,
 ): void {
   const paramsPath = path.join(targetDir, "params.json");
   const json = readJson(paramsPath);
   const params = (json.params && typeof json.params === "object")
     ? json.params as Record<string, unknown>
     : {};
+  // createSnConfigs 重写 params.json 时会丢掉仓库模板新增的参数
+  // (例如 bns_server_url),这里把 staged(仓库)里有而生成结果缺失的
+  // key 补回来;身份类参数以生成结果为准。
+  for (const [key, value] of Object.entries(stagedParams)) {
+    if (!(key in params)) {
+      console.log(`# params.json: restore staged param ${key}`);
+      params[key] = value;
+    }
+  }
   params.sn_db_path = snDbPath;
   delete params.sn_v2_auth_data_dir;
   params.sn_auth_data_dir = authDataDir;
@@ -656,6 +682,10 @@ async function makeSnConfigs(
   console.log("# Step 1: Create SN machine configuration...");
   makeMachineConfig(targetDir, `web3.${snBaseHost}`, DEFAULT_TRUST_DID, false);
 
+  // createSnConfigs 会生成新的 params.json 并覆盖 buckyos-install 从仓库
+  // staged 过来的那份;先快照 staged 参数,稍后在 updateParamsJson 里补回。
+  const stagedParams = readStagedParams(targetDir);
+
   // 2. SN device identity configuration (written under <targetDir>/sn_server)
   console.log("# Step 2: Create SN device identity configuration...");
   await createSnConfigs({ outputDir: targetDir, snIp, snBaseHost });
@@ -677,7 +707,7 @@ async function makeSnConfigs(
 
   const snDbPath = replaceGeneratedSnDb(targetDir);
   const authDataDir = ensureDir(path.join(targetDir, SN_AUTH_DATA_DIR));
-  updateParamsJson(targetDir, snDbPath, authDataDir);
+  updateParamsJson(targetDir, snDbPath, authDataDir, stagedParams);
   patchWeb3GatewayConfig(targetDir);
 
   // 3. TLS certificates for sn.$base and *.web3.$base

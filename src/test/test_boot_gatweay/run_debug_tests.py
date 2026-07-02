@@ -121,6 +121,9 @@ def stage_runtime(config: Path, node_gateway_info: dict) -> tuple[tempfile.Tempo
     etc_dir.mkdir(parents=True, exist_ok=True)
     (runtime_root / "data" / "srv" / "publish").mkdir(parents=True, exist_ok=True)
     shutil.copy2(config, etc_dir / "boot_gateway.yaml")
+    params_src = config.parent / "node_gateway_params.json"
+    if params_src.exists():
+        shutil.copy2(params_src, etc_dir / "node_gateway_params.json")
     (etc_dir / "node_gateway_info.json").write_text(
         json.dumps(node_gateway_info, indent=2),
         encoding="utf-8",

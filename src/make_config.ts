@@ -493,6 +493,11 @@ function writeLocalDeviceIdentityFiles(
     device_did: deviceDid,
     zone_iat: zoneIat,
   });
+  writeJson(path.join(etcDir, "node_gateway_params.json"), {
+    params: {
+      device_did: deviceDid,
+    },
+  });
   writeJson(didJsonPath, deviceConfig);
   writeText(path.join(publicDir, DEVICE_DOC_JWT_FILE_NAME), deviceDocJwt);
   writeText(
@@ -502,6 +507,7 @@ function writeLocalDeviceIdentityFiles(
   writeText(privateKeyPath, devicePrivateKeyPem);
   requireFiles([
     path.join(etcDir, "node_identity.json"),
+    path.join(etcDir, "node_gateway_params.json"),
     didJsonPath,
     path.join(publicDir, DEVICE_DOC_JWT_FILE_NAME),
     path.join(publicDir, DEVICE_MINI_DOC_JWT_FILE_NAME),

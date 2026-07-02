@@ -14,6 +14,7 @@ use serde_json::Value;
 pub const NODE_IDENTITY_SCHEMA_V2: &str = "buckyos.node_identity.v2";
 pub const DEVICE_DOC_JWT_FILE_NAME: &str = "device_doc.jwt";
 pub const DEVICE_MINI_DOC_JWT_FILE_NAME: &str = "device_mini_doc.jwt";
+pub const NODE_GATEWAY_PARAMS_FILE_NAME: &str = "node_gateway_params.json";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LocalNodeIdentityConfig {
@@ -301,6 +302,7 @@ pub fn save_local_device_identity_for_roots(
 
     let node_identity_path = etc_dir.join("node_identity.json");
     write_json_pretty(node_identity_path.as_path(), node_identity)?;
+    save_node_gateway_params(etc_dir, &node_identity.device_did)?;
     write_json_pretty(paths.did_json.as_path(), device_config)?;
     fs::write(paths.device_doc_jwt.as_path(), device_doc_jwt.as_bytes()).map_err(|err| {
         format!(
@@ -333,6 +335,21 @@ pub fn save_local_device_identity_for_roots(
     })?;
 
     Ok(paths)
+}
+
+pub fn save_node_gateway_params(
+    etc_dir: &Path,
+    device_did: &DID,
+) -> std::result::Result<(), String> {
+    let params_path = etc_dir.join(NODE_GATEWAY_PARAMS_FILE_NAME);
+    write_json_pretty(
+        params_path.as_path(),
+        &serde_json::json!({
+            "params": {
+                "device_did": device_did.to_string()
+            }
+        }),
+    )
 }
 
 pub fn save_local_device_identity_for_buckyos_root(

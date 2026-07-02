@@ -867,63 +867,6 @@ async fn wait_sysmte_config_sync() -> std::result::Result<(), String> {
     return Ok(());
 }
 
-fn write_boot_gateway_identity_paths(device_did: &DID) -> std::result::Result<(), String> {
-    let paths = device_identity_paths(device_did)?;
-    let boot_gateway_path = get_buckyos_system_etc_dir().join("boot_gateway.yaml");
-    let content = std::fs::read_to_string(boot_gateway_path.as_path()).map_err(|err| {
-        format!(
-            "read boot gateway config {} failed: {}",
-            boot_gateway_path.display(),
-            err
-        )
-    })?;
-
-    let private_key_path = paths.authentication_private_key.display().to_string();
-    let did_json_path = paths.did_json.display().to_string();
-    let mut changed = false;
-    let mut rewritten = Vec::new();
-    for line in content.lines() {
-        let trimmed = line.trim_start();
-        let indent_len = line.len() - trimmed.len();
-        let indent = &line[..indent_len];
-        if trimmed.starts_with("key_path:") {
-            rewritten.push(format!("{}key_path: \"{}\"", indent, private_key_path));
-            changed = true;
-        } else if trimmed.starts_with("device_config_path:") {
-            rewritten.push(format!(
-                "{}device_config_path: \"{}\"",
-                indent, did_json_path
-            ));
-            changed = true;
-        } else {
-            rewritten.push(line.to_string());
-        }
-    }
-
-    if !changed {
-        return Err(format!(
-            "boot gateway config {} does not contain key_path/device_config_path",
-            boot_gateway_path.display()
-        ));
-    }
-
-    let new_content = format!("{}\n", rewritten.join("\n"));
-    if new_content != content {
-        std::fs::write(boot_gateway_path.as_path(), new_content.as_bytes()).map_err(|err| {
-            format!(
-                "write boot gateway config {} failed: {}",
-                boot_gateway_path.display(),
-                err
-            )
-        })?;
-        info!(
-            "updated boot_gateway.yaml identity paths, key={}, did={}",
-            private_key_path, did_json_path
-        );
-    }
-    Ok(())
-}
-
 async fn keep_system_config_service(
     node_id: &str,
     device_doc: &DeviceConfig,
@@ -1664,10 +1607,12 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             );
             return String::from("load device private key failed!");
         })?;
-    write_boot_gateway_identity_paths(&node_identity.device_did).map_err(|error| {
-        error!("update boot_gateway.yaml identity paths failed! {}", error);
-        return String::from("update boot_gateway.yaml identity paths failed!");
-    })?;
+    save_node_gateway_params(&get_buckyos_system_etc_dir(), &node_identity.device_did).map_err(
+        |error| {
+            error!("write node_gateway_params.json failed! {}", error);
+            return String::from("write node_gateway_params.json failed!");
+        },
+    )?;
 
     //lookup zone config
     info!(

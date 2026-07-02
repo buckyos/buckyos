@@ -23,7 +23,8 @@
           "sudo iptables -I INPUT -p tcp --dport 53 -j ACCEPT"
         ],
         "instance_commands": [
-            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\""
+            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"echo '{{sn.ip}} web3.devtests.org' >> /etc/hosts\""
           ],
         "directories": {
           "logs": "/opt/buckyos/logs"

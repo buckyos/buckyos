@@ -199,6 +199,13 @@ const mockGatewayOverview: GatewayOverview = {
       modifiedAt: '',
     },
     {
+      name: 'node_gateway_params.json',
+      path: '/opt/buckyos/etc/node_gateway_params.json',
+      exists: true,
+      sizeBytes: 96,
+      modifiedAt: '',
+    },
+    {
       name: 'node_gateway.json',
       path: '/opt/buckyos/etc/node_gateway.json',
       exists: true,
@@ -206,7 +213,13 @@ const mockGatewayOverview: GatewayOverview = {
       modifiedAt: '',
     },
   ],
-  includes: ['user_gateway.yaml', 'boot_gateway.yaml', 'node_gateway.json', 'post_gateway.yaml'],
+  includes: [
+    'node_gateway_params.json',
+    'user_gateway.yaml',
+    'boot_gateway.yaml',
+    'node_gateway.json',
+    'post_gateway.yaml',
+  ],
   stacks: [
     { name: 'zone_gateway_http', id: 'zone_gateway_http', protocol: 'tcp', bind: '0.0.0.0:80' },
     { name: 'node_gateway_http', id: 'node_gateway_http', protocol: 'tcp', bind: '0.0.0.0:3180' },
