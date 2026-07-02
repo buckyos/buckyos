@@ -39,7 +39,7 @@ const SESSION_FIELD: &str = "session";
 
 #[derive(Clone, Debug, PartialEq)]
 struct VerifyServiceConfig {
-    zone_config: ZoneConfig,
+    zone_config: ZoneDocument,
     device_id: String,
     node_did: DID,
     start_time: u64,

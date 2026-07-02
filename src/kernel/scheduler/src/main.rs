@@ -34,7 +34,7 @@ use system_config_agent::schedule_loop;
 use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 
 async fn create_init_list_by_template(
-    zone_boot_config: &ZoneBootConfig,
+    zone_boot_config: &ZoneBootDocument,
 ) -> Result<HashMap<String, String>> {
     //load start_parms from active_service.
     let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
@@ -142,7 +142,7 @@ async fn do_boot_scheduler() -> Result<()> {
         zone_boot_config_str.as_ref().unwrap()
     );
     let zone_boot_config_json = zone_boot_config_str.unwrap();
-    let zone_boot_config: ZoneBootConfig = serde_json::from_str(&zone_boot_config_json).unwrap();
+    let zone_boot_config: ZoneBootDocument = serde_json::from_str(&zone_boot_config_json).unwrap();
     let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
@@ -171,12 +171,12 @@ async fn do_boot_scheduler() -> Result<()> {
     }
     let boot_config_str = boot_config_str.unwrap();
     info!("after boot_config_str: {}", boot_config_str);
-    let mut zone_config: ZoneConfig =
+    let mut zone_config: ZoneDocument =
         serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
-            error!("load ZoneConfig from boot/config failed: {:?}", e);
+            error!("load ZoneDocument from boot/config failed: {:?}", e);
             e
         })?;
-    zone_config.init_by_boot_config(&zone_boot_config, &zone_boot_config_json);
+    zone_config.init_by_boot_document(&zone_boot_config, &zone_boot_config_json);
     init_list.insert(
         "boot/config".to_string(),
         serde_json::to_string_pretty(&zone_config).unwrap(),
@@ -312,7 +312,7 @@ mod test {
         NameClient, NameClientConfig, NameInfo, NsProvider, RecordType, GLOBAL_NAME_CLIENT,
     };
     use name_lib::{
-        DeviceConfig, DeviceInfo, EncodedDocument, NSError, OODDescriptionString,
+        DeviceDocument, DeviceInfo, EncodedDocument, NSError, OODDescriptionString,
         DEFAULT_EXPIRE_TIME,
     };
     use package_lib::PackageId;
@@ -515,7 +515,7 @@ mod test {
         fs::write(scheduler_dir.join("boot.template.toml"), template).unwrap();
     }
 
-    async fn prepare_scheduler_test_configs(root: &Path) -> ZoneBootConfig {
+    async fn prepare_scheduler_test_configs(root: &Path) -> ZoneBootDocument {
         let output_dir = root.join("dev_env");
         fs::create_dir_all(&output_dir).unwrap();
         let output_dir_str = output_dir.to_string_lossy().to_string();
@@ -549,7 +549,7 @@ mod test {
 
         let zone_config_file = format!("{}.zone.json", TEST_HOSTNAME);
         let zone_boot_path = output_dir.join(zone_config_file);
-        let mut zone_boot_config: ZoneBootConfig = serde_json::from_str(
+        let mut zone_boot_config: ZoneBootDocument = serde_json::from_str(
             &fs::read_to_string(zone_boot_path).expect("failed to read zone boot config"),
         )
         .expect("failed to parse zone boot config");
@@ -588,7 +588,7 @@ mod test {
             .map_err(|e| format!("invalid encoded doc: {:?}", e))?;
         let decoding_key =
             DecodingKey::from_jwk(owner_key).map_err(|e| format!("invalid owner jwk: {}", e))?;
-        let device_config = DeviceConfig::decode(&encoded_doc, Some(&decoding_key))
+        let device_config = DeviceDocument::decode(&encoded_doc, Some(&decoding_key))
             .map_err(|e| format!("failed to decode device document: {}", e))?;
         let mut device_info = serde_json::to_value(DeviceInfo::from_device_doc(&device_config))
             .map_err(|e| format!("serialize device info: {}", e))?;

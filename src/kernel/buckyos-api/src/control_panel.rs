@@ -3,7 +3,7 @@ use crate::system_config::*;
 use crate::{AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use name_lib::{
-    DIDDocumentTrait, DeviceConfig, DeviceInfo, EncodedDocument, OwnerConfig, ZoneConfig, DID,
+    DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument, OwnerDocument, ZoneDocument, DID,
 };
 pub use name_lib::{
     ProfileContact, ProfileLink, ProfilePrivacyRule, ProfileVisibility, UserPrivateProfile,
@@ -195,7 +195,7 @@ impl ControlPanelClient {
         Ok((rbac_config.model, rbac_config.policy))
     }
 
-    pub async fn load_zone_config(&self) -> Result<ZoneConfig> {
+    pub async fn load_zone_config(&self) -> Result<ZoneDocument> {
         let zone_config_path = "boot/config";
         let zone_config_result = self.system_config_client.get(zone_config_path).await;
         if zone_config_result.is_err() {
@@ -205,7 +205,7 @@ impl ControlPanelClient {
             )));
         }
         let zone_config_result = zone_config_result.unwrap();
-        let zone_config: ZoneConfig = serde_json::from_str(&zone_config_result.value)
+        let zone_config: ZoneDocument = serde_json::from_str(&zone_config_result.value)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(zone_config)
     }
@@ -226,7 +226,7 @@ impl ControlPanelClient {
         Ok(device_info)
     }
 
-    pub async fn get_device_config(&self, device_id: &str) -> Result<DeviceConfig> {
+    pub async fn get_device_config(&self, device_id: &str) -> Result<DeviceDocument> {
         let device_doc_path = format!("devices/{}/doc", device_id);
         let get_result = self
             .system_config_client
@@ -239,13 +239,13 @@ impl ControlPanelClient {
         let get_result = get_result.unwrap();
         let device_doc: EncodedDocument = EncodedDocument::from_str(get_result.value.clone())
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-        let device_doc: DeviceConfig = DeviceConfig::decode(&device_doc, None)
+        let device_doc: DeviceDocument = DeviceDocument::decode(&device_doc, None)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
         Ok(device_doc)
     }
 
-    pub async fn get_user_config(&self, user_id: &str) -> Result<OwnerConfig> {
+    pub async fn get_user_config(&self, user_id: &str) -> Result<OwnerDocument> {
         let user_doc_path = format!("users/{}/doc", user_id);
         let get_result = self.system_config_client.get(user_doc_path.as_str()).await;
         if get_result.is_err() {
@@ -253,7 +253,7 @@ impl ControlPanelClient {
         }
 
         let get_result = get_result.unwrap();
-        let user_doc: OwnerConfig = serde_json::from_str(&get_result.value)
+        let user_doc: OwnerDocument = serde_json::from_str(&get_result.value)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
         Ok(user_doc)

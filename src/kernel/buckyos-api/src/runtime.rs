@@ -169,10 +169,10 @@ pub struct BuckyOSRuntime {
 
     pub user_id: Option<String>,
     pub authenticated_user_id: Option<String>,
-    pub user_config: Option<OwnerConfig>,
+    pub user_config: Option<OwnerDocument>,
     pub user_private_key: Option<EncodingKey>,
 
-    pub device_config: Option<DeviceConfig>,
+    pub device_config: Option<DeviceDocument>,
     pub device_private_key: Option<EncodingKey>,
     pub device_info: Option<DeviceInfo>,
 
@@ -180,7 +180,7 @@ pub struct BuckyOSRuntime {
     pub node_gateway_port: u16,
 
     //pub is_token_iss_by_self:bool,
-    pub zone_config: Option<ZoneConfig>,
+    pub zone_config: Option<ZoneDocument>,
     pub session_token: Arc<RwLock<String>>,
     pub refresh_token: Arc<RwLock<String>>,
     trust_keys: Arc<RwLock<HashMap<String, DecodingKey>>>,
@@ -292,7 +292,7 @@ impl BuckyOSRuntime {
     pub async fn fill_by_env_var(&mut self) -> Result<()> {
         // let zone_boot_config = env::var("BUCKYOS_ZONE_BOOT_CONFIG");
         // if zone_boot_config.is_ok() {
-        //     let zone_boot_config:ZoneBootConfig = serde_json::from_str(zone_boot_config.unwrap().as_str())
+        //     let zone_boot_config:ZoneBootDocument = serde_json::from_str(zone_boot_config.unwrap().as_str())
         //         .map_err(|e| {
         //             error!("Failed to parse zone boot config: {}", e);
         //             RPCErrors::ReasonError(format!("Failed to parse zone boot config: {}", e))
@@ -314,7 +314,7 @@ impl BuckyOSRuntime {
                     "zone_config_str format error".to_string(),
                 ));
             }
-            let zone_config: ZoneConfig = zone_config.unwrap();
+            let zone_config: ZoneDocument = zone_config.unwrap();
             self.zone_id = zone_config.id.clone();
             self.zone_config = Some(zone_config);
         }
@@ -342,7 +342,7 @@ impl BuckyOSRuntime {
                     "device_doc format error".to_string(),
                 ));
             }
-            let device_config: DeviceConfig = device_config.unwrap();
+            let device_config: DeviceDocument = device_config.unwrap();
             self.device_config = Some(device_config.clone());
         }
 
@@ -593,7 +593,7 @@ impl BuckyOSRuntime {
             let user_private_key_file = config_root_dir.join("user_private_key.pem");
             if user_config_file.exists() {
                 let owner_config =
-                    OwnerConfig::load_owner_config(&user_config_file).map_err(|e| {
+                    OwnerDocument::load_owner_document(&user_config_file).map_err(|e| {
                         error!("Failed to load owner config: {}", e);
                         RPCErrors::ReasonError(format!("Failed to load owner config: {}", e))
                     })?;
@@ -1683,7 +1683,7 @@ impl BuckyOSRuntime {
         self.app_owner_id.clone()
     }
 
-    pub fn get_zone_config(&self) -> Option<&ZoneConfig> {
+    pub fn get_zone_config(&self) -> Option<&ZoneDocument> {
         self.zone_config.as_ref()
     }
 

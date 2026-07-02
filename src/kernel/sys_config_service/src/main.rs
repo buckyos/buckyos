@@ -660,7 +660,7 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
         if zone_config.is_some() {
             let zone_config_str = zone_config.unwrap();
             //info!("boot_info: {}",boot_info_str);
-            let zone_config: ZoneConfig =
+            let zone_config: ZoneDocument =
                 serde_json::from_str(&zone_config_str).map_err(|err| {
                     error!("Failed to parse zone config from boot/config: {}", err);
                     RPCErrors::ReasonError(err.to_string())
@@ -709,7 +709,7 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
     let device_doc_str = std::env::var("BUCKYOS_THIS_DEVICE");
     if device_doc_str.is_ok() {
         let device_doc_str = device_doc_str.unwrap();
-        let device_doc: DeviceConfig = serde_json::from_str(&device_doc_str).unwrap();
+        let device_doc: DeviceDocument = serde_json::from_str(&device_doc_str).unwrap();
         //device_doc.iss
         let devcie_key = device_doc.get_default_key();
 
@@ -911,7 +911,7 @@ impl HttpServer for SystemConfigServer {
     }
 }
 
-async fn load_device_doc(device_name: &str) -> Result<DeviceConfig> {
+async fn load_device_doc(device_name: &str) -> Result<DeviceDocument> {
     let store = SYS_STORE.lock().await;
     let device_doc = store
         .get(format!("devices/{}/doc", device_name))
@@ -926,7 +926,7 @@ async fn load_device_doc(device_name: &str) -> Result<DeviceConfig> {
     let device_doc_str = device_doc.unwrap();
     let device_doc: EncodedDocument = EncodedDocument::from_str(device_doc_str.clone())
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-    let device_doc: DeviceConfig = DeviceConfig::decode(&device_doc, None)
+    let device_doc: DeviceDocument = DeviceDocument::decode(&device_doc, None)
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     return Ok(device_doc);
 }
@@ -954,7 +954,7 @@ fn user_has_privileged_role_in_policy(policy: &str, user_name: &str) -> bool {
     })
 }
 
-async fn load_privileged_user_doc(user_name: &str) -> Result<OwnerConfig> {
+async fn load_privileged_user_doc(user_name: &str) -> Result<OwnerDocument> {
     let store = SYS_STORE.lock().await;
     let mut is_privileged = false;
 
@@ -1003,7 +1003,7 @@ async fn load_privileged_user_doc(user_name: &str) -> Result<OwnerConfig> {
         owner_doc.ok_or_else(|| RPCErrors::KeyNotExist(format!("users/{}/doc", user_name)))?;
     let encoded_doc = EncodedDocument::from_str(owner_doc)
         .map_err(|err| RPCErrors::ReasonError(format!("parse owner doc failed: {}", err)))?;
-    let owner_config = OwnerConfig::decode(&encoded_doc, None)
+    let owner_config = OwnerDocument::decode(&encoded_doc, None)
         .map_err(|err| RPCErrors::ReasonError(format!("decode owner doc failed: {}", err)))?;
     Ok(owner_config)
 }
@@ -1129,7 +1129,7 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<RPCSessionToken> {
 
 // }
 
-async fn init_by_boot_config() -> Result<()> {
+async fn init_by_boot_document() -> Result<()> {
     let r = handle_refresh_trust_keys().await;
     if r.is_err() {
         error!("Failed to refresh trust keys: {}", r.err().unwrap());
@@ -1138,7 +1138,7 @@ async fn init_by_boot_config() -> Result<()> {
     let device_doc_str = std::env::var("BUCKYOS_THIS_DEVICE");
     if device_doc_str.is_ok() {
         let device_doc_str = device_doc_str.unwrap();
-        let device_doc: DeviceConfig = serde_json::from_str(&device_doc_str).unwrap();
+        let device_doc: DeviceDocument = serde_json::from_str(&device_doc_str).unwrap();
         //device_doc.iss
         let devcie_key = device_doc.get_default_key();
 
@@ -1176,7 +1176,7 @@ async fn service_main() {
     //std::env::set_var("BUCKY_LOG","debug");
     init_logging("system_config_service", true);
     info!("Starting system config service............................");
-    init_by_boot_config().await.unwrap();
+    init_by_boot_document().await.unwrap();
 
     let server = SystemConfigServer::new();
     const SYSTEM_CONFIG_SERVICE_MAIN_PORT: u16 = 3200;

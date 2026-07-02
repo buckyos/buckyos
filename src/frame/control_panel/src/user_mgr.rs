@@ -8,7 +8,7 @@ use buckyos_api::{
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use jsonwebtoken::jwk::Jwk;
 use log::*;
-use name_lib::{generate_ed25519_key_pair, AgentDocument, OwnerConfig, DID};
+use name_lib::{generate_ed25519_key_pair, AgentDocument, OwnerDocument, DID};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -208,7 +208,7 @@ fn public_profile_from_parts(
     }
 }
 
-fn profile_from_owner_config(owner_config: &OwnerConfig) -> UserPrivateProfile {
+fn profile_from_owner_config(owner_config: &OwnerDocument) -> UserPrivateProfile {
     UserPrivateProfile::from(public_profile_from_parts(
         owner_config.id.clone(),
         Some(owner_config.name.clone()),
@@ -278,7 +278,7 @@ fn profile_value_from_doc(doc: &Value) -> Option<Value> {
         .filter(|value| value.is_object())
 }
 
-fn parse_owner_config_value(value: &Value) -> Result<OwnerConfig, RPCErrors> {
+fn parse_owner_config_value(value: &Value) -> Result<OwnerDocument, RPCErrors> {
     match value {
         Value::String(raw) => serde_json::from_str(raw)
             .map_err(|e| RPCErrors::ParseRequestError(format!("Invalid owner_config: {}", e))),
@@ -319,7 +319,7 @@ fn value_contains_zone(value: &Value, zone_did: &str) -> bool {
     }
 }
 
-fn owner_is_bound_to_zone(owner_config: &OwnerConfig, zone_did: &DID) -> bool {
+fn owner_is_bound_to_zone(owner_config: &OwnerDocument, zone_did: &DID) -> bool {
     if owner_config.id == *zone_did {
         return true;
     }
@@ -339,7 +339,7 @@ fn generated_owner_config(
     user_id: &str,
     show_name: &str,
     zone_did: &DID,
-) -> Result<(OwnerConfig, String), RPCErrors> {
+) -> Result<(OwnerDocument, String), RPCErrors> {
     let (private_key, public_key) = generate_ed25519_key_pair();
     let public_key: Jwk = serde_json::from_value(public_key)
         .map_err(|e| RPCErrors::ReasonError(format!("Invalid generated public key: {}", e)))?;
@@ -347,7 +347,7 @@ fn generated_owner_config(
         zone_did.method.as_str(),
         format!("{}.{}", user_id, zone_did.id).as_str(),
     );
-    let mut owner_config = OwnerConfig::new(
+    let mut owner_config = OwnerDocument::new(
         user_did,
         user_id.to_string(),
         show_name.to_string(),
@@ -1271,7 +1271,7 @@ impl ControlPanelServer {
         let runtime = get_buckyos_api_runtime()?;
         if !owner_is_bound_to_zone(&owner_config, &runtime.zone_id) {
             return Err(RPCErrors::ReasonError(format!(
-                "OwnerConfig '{}' is not bound to zone '{}'",
+                "OwnerDocument '{}' is not bound to zone '{}'",
                 owner_config.id.to_string(),
                 runtime.zone_id.to_string()
             )));

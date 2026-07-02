@@ -4,7 +4,7 @@ use std::net::IpAddr;
 use buckyos_api::network_observation::{
     NetworkObservation, ProbeInfo, DEFAULT_RTCP_PORT, NETWORK_OBSERVATION_KEY,
 };
-use name_lib::{DeviceInfo, OODDescriptionString, ZoneConfig};
+use name_lib::{DeviceInfo, OODDescriptionString, ZoneDocument};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -232,7 +232,7 @@ fn can_use_as_zone_gateway_relay(ood: &OODDescriptionString) -> bool {
         && (ood.ip.is_some() || is_publicly_reachable_net_id(ood.net_id.as_ref()))
 }
 
-fn get_default_zone_gateway_relay(zone_config: &ZoneConfig) -> Option<String> {
+fn get_default_zone_gateway_relay(zone_config: &ZoneDocument) -> Option<String> {
     zone_config
         .oods
         .iter()
@@ -361,7 +361,7 @@ fn direct_probe_to<'a>(
 }
 
 fn shared_ood_direct_probe(
-    zone_config: &ZoneConfig,
+    zone_config: &ZoneDocument,
     probe_targets: &HashMap<String, HashMap<String, ProbeInfo>>,
     source_node_id: &str,
     target_node_id: &str,
@@ -464,7 +464,7 @@ fn direct_evidence_for(
     target_device: &DeviceInfo,
     this_node_id: &str,
     target_node_id: &str,
-    zone_config: &ZoneConfig,
+    zone_config: &ZoneDocument,
     probe_targets: &HashMap<String, HashMap<String, ProbeInfo>>,
     source_obs: Option<&NetworkObservation>,
     target_obs: Option<&NetworkObservation>,
@@ -662,7 +662,7 @@ fn did_ip_hints_for_target(
 
 pub(crate) fn build_forward_plan(
     this_node_id: &str,
-    zone_config: &ZoneConfig,
+    zone_config: &ZoneDocument,
     zone_host: &str,
     device_list: &HashMap<String, DeviceInfo>,
 ) -> ForwardPlan {
@@ -796,7 +796,7 @@ mod tests {
     use super::*;
     use jsonwebtoken::jwk::Jwk;
     use name_lib::{
-        generate_ed25519_key_pair, get_x_from_jwk, DeviceConfig, DeviceNodeType,
+        generate_ed25519_key_pair, get_x_from_jwk, DeviceDocument, DeviceNodeType,
         OODDescriptionString, VerifyHubInfo, DID,
     };
     use serde_json::json;
@@ -805,7 +805,7 @@ mod tests {
         let (_, public_key_jwk) = generate_ed25519_key_pair();
         let public_key_jwk: Jwk = serde_json::from_value(public_key_jwk).unwrap();
         let pkx = get_x_from_jwk(&public_key_jwk).unwrap();
-        let mut device = DeviceConfig::new(name, pkx);
+        let mut device = DeviceDocument::new(name, pkx);
         device.owner = DID::new("bns", "owner");
         DeviceInfo::from_device_doc(&device)
     }
@@ -870,13 +870,13 @@ mod tests {
         );
     }
 
-    fn create_test_zone_config() -> ZoneConfig {
+    fn create_test_zone_config() -> ZoneDocument {
         let (_, owner_key_jwk) = generate_ed25519_key_pair();
         let owner_key_jwk: Jwk = serde_json::from_value(owner_key_jwk).unwrap();
         let (_, verify_hub_key_jwk) = generate_ed25519_key_pair();
         let verify_hub_key_jwk: Jwk = serde_json::from_value(verify_hub_key_jwk).unwrap();
 
-        let mut zone_config = ZoneConfig::new(
+        let mut zone_config = ZoneDocument::new(
             DID::new("web", "test.buckyos.io"),
             DID::new("bns", "owner"),
             owner_key_jwk,

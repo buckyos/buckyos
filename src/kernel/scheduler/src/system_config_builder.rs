@@ -25,8 +25,8 @@ use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{
-    generate_ed25519_key_pair, AgentDocument, OwnerConfig, VerifyHubInfo, ZoneBootConfig,
-    ZoneConfig, DID,
+    generate_ed25519_key_pair, AgentDocument, OwnerDocument, VerifyHubInfo, ZoneBootDocument,
+    ZoneDocument, DID,
 };
 use package_lib::PackageId;
 use reqwest::Client;
@@ -142,7 +142,7 @@ impl SystemConfigBuilder {
         let user_did = DID::new("bns", &config.user_name);
         let owner_jwk = config.public_key.clone();
 
-        let owner_config = OwnerConfig::new(
+        let owner_config = OwnerDocument::new(
             user_did,
             config.user_name.clone(),
             config.user_name.clone(),
@@ -543,12 +543,12 @@ impl SystemConfigBuilder {
         &mut self,
         config: &StartConfigSummary,
         verify_hub_public_key: &Jwk,
-        zone_boot_config: &ZoneBootConfig,
+        zone_boot_config: &ZoneBootDocument,
     ) -> Result<&mut Self> {
         let public_key_value = verify_hub_public_key.clone();
         //TODO: add zoone did here:
         let zone_did = DID::from_str(&config.zone_name)?;
-        let mut zone_config = ZoneConfig::new(
+        let mut zone_config = ZoneDocument::new(
             zone_did,
             DID::new("bns", &config.user_name),
             config.public_key.clone(),
@@ -558,7 +558,7 @@ impl SystemConfigBuilder {
             public_key: public_key_value,
         };
         let boot_jwt = config.ood_jwt.clone().unwrap_or_default();
-        zone_config.init_by_boot_config(zone_boot_config, &boot_jwt);
+        zone_config.init_by_boot_document(zone_boot_config, &boot_jwt);
         zone_config.verify_hub_info = Some(verify_hub_info);
         info!(
             "add_boot_config: zone_config: {}",

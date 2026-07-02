@@ -202,7 +202,7 @@ async fn create_queue_parses_params_and_preserves_rpc_metadata() {
     assert_eq!(observed.ctx.token.as_deref(), Some("session-token"));
     assert_eq!(observed.ctx.trace_id.as_deref(), Some("trace-1"));
     assert_eq!(observed.ctx.from_ip, Some(localhost()));
-    assert!(observed.ctx.is_rpc);
+    assert!(observed.ctx.start_time > 0);
 }
 
 #[tokio::test]

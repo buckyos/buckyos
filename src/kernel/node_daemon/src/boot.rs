@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
-use name_lib::{DeviceConfig, ZoneBootConfig};
+use name_lib::{DeviceDocument, ZoneBootDocument};
 use serde_json::{json, Value};
 
 use crate::finder::{DiscoveredNode, NodeFinderClient};
@@ -25,7 +25,7 @@ pub enum NodeRole {
 }
 
 impl NodeRole {
-    pub fn from_zone_boot_config(zone_boot_config: &ZoneBootConfig, device_name: &str) -> Self {
+    pub fn from_zone_boot_config(zone_boot_config: &ZoneBootDocument, device_name: &str) -> Self {
         if zone_boot_config.device_is_ood(device_name) {
             NodeRole::Ood
         } else if zone_boot_config.device_is_gateway(device_name) {
@@ -53,7 +53,7 @@ impl NodeRole {
 pub async fn discover_oods_in_lan(
     this_device_jwt: String,
     device_private_key: EncodingKey,
-    zone_boot_config: ZoneBootConfig,
+    zone_boot_config: ZoneBootDocument,
     owner_public_key: DecodingKey,
     role: NodeRole,
 ) -> HashMap<String, DiscoveredNode> {
@@ -118,7 +118,7 @@ pub async fn discover_oods_in_lan(
 pub fn build_boot_node_gateway_info(
     this_node_id: &str,
     zone_host: &str,
-    zone_boot_config: &ZoneBootConfig,
+    zone_boot_config: &ZoneBootDocument,
     discovered_oods: &HashMap<String, DiscoveredNode>,
     sn_host_name: Option<&str>,
 ) -> Value {
@@ -309,8 +309,8 @@ fn format_relay_rtcp_url(
 // 其它 OOD：作为 RTCP direct 的 keep_tunnel 目标。
 pub fn build_keep_tunnel_targets(
     role: NodeRole,
-    device_doc: &DeviceConfig,
-    zone_boot_config: &ZoneBootConfig,
+    device_doc: &DeviceDocument,
+    zone_boot_config: &ZoneBootDocument,
     zone_host: &str,
     sn_host_name: Option<&str>,
 ) -> Vec<String> {

@@ -6,7 +6,8 @@ use buckyos_kit::get_buckyos_system_etc_dir;
 use clap::ArgMatches;
 use jsonwebtoken::EncodingKey;
 use name_lib::{
-    generate_ed25519_key_pair, DIDDocumentTrait, DeviceMiniConfig, OwnerConfig, ZoneBootConfig, DID,
+    generate_ed25519_key_pair, DIDDocumentTrait, DeviceMiniDocument, OwnerDocument,
+    ZoneBootDocument, DID,
 };
 use ndn_lib::named_obj_to_jwt;
 use std::fs::File;
@@ -158,7 +159,7 @@ fn did_create_user_config(name: &str, owner_jwk: &str) {
     let owner_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk.clone()).unwrap();
 
     // Create user configuration object
-    let owner_config = OwnerConfig::new(
+    let owner_config = OwnerDocument::new(
         user_did.clone(),
         user_name.clone(),
         user_name.clone(),
@@ -212,7 +213,7 @@ fn did_create_device_config(
     println!("user_private_key: {}", user_private_key);
     let encode_key = EncodingKey::from_ed_pem(user_private_key.as_bytes()).unwrap();
     let device_jwt = device_config.encode(Some(&encode_key)).unwrap();
-    let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
+    let device_mini_config = DeviceMiniDocument::new_by_device_document(&device_config);
     let device_mini_doc_jwt = device_mini_config.to_jwt(&encode_key).unwrap();
     // Create node identity configuration
     let node_identity_config = LocalNodeIdentityConfig::new(
@@ -246,7 +247,7 @@ fn did_create_zoneboot(oods: Vec<String>, sn_host: Option<String>) {
         .as_secs();
     let exp = now + 3600 * 24 * 365 * 10;
 
-    let zone_boot_config = ZoneBootConfig {
+    let zone_boot_config = ZoneBootDocument {
         id: None,
         oods: oods.into_iter().map(|ood| ood.parse().unwrap()).collect(),
         sn: sn_host,

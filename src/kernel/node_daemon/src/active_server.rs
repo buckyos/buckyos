@@ -97,7 +97,7 @@ impl ActiveServer {
         }
     }
 
-    async fn update_zone_boot_cache(zone_did: &DID, zone_boot_config: &ZoneBootConfig) {
+    async fn update_zone_boot_cache(zone_did: &DID, zone_boot_config: &ZoneBootDocument) {
         let zone_boot_doc = match serde_json::to_value(zone_boot_config) {
             Ok(doc) => EncodedDocument::JsonLd(doc),
             Err(err) => {
@@ -270,7 +270,11 @@ impl ActiveServer {
             if let Some(number) = value.as_u64() {
                 return Ok(Some(number));
             }
-            if let Some(text) = value.as_str().map(str::trim).filter(|value| !value.is_empty()) {
+            if let Some(text) = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
                 return text.parse::<u64>().map(Some).map_err(|e| {
                     RPCErrors::ParseRequestError(format!("Invalid {}: {}", field, e))
                 });
@@ -304,7 +308,11 @@ impl ActiveServer {
             if let Some(number) = value.as_u64() {
                 return Ok(Some(number as u128));
             }
-            if let Some(text) = value.as_str().map(str::trim).filter(|value| !value.is_empty()) {
+            if let Some(text) = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
                 return text.parse::<u128>().map(Some).map_err(|e| {
                     RPCErrors::ParseRequestError(format!("Invalid {}: {}", field, e))
                 });
@@ -332,10 +340,7 @@ impl ActiveServer {
     fn derive_bns_url_from_sn_url(sn_url: &str) -> Option<String> {
         let trimmed = sn_url.trim().trim_end_matches('/');
         if trimmed.ends_with("/kapi/sn") {
-            return Some(format!(
-                "{}/kapi/bns",
-                trimmed.trim_end_matches("/kapi/sn")
-            ));
+            return Some(format!("{}/kapi/bns", trimmed.trim_end_matches("/kapi/sn")));
         }
         None
     }
@@ -354,26 +359,23 @@ impl ActiveServer {
             })
     }
 
-    fn parse_bns_publish_config(
-        req_params: &Value,
-    ) -> Result<Option<BnsPublishConfig>, RPCErrors> {
+    fn parse_bns_publish_config(req_params: &Value) -> Result<Option<BnsPublishConfig>, RPCErrors> {
         let Some(private_key) = Self::bns_evm_private_key(req_params) else {
             return Ok(None);
         };
 
         let server_url = Self::bns_server_url(req_params).ok_or_else(|| {
             RPCErrors::ParseRequestError(
-                "bns_url or BNS_SERVER_URL is required when bns_evm_private_key is set"
-                    .to_string(),
+                "bns_url or BNS_SERVER_URL is required when bns_evm_private_key is set".to_string(),
             )
         })?;
         let rpc_endpoint =
             Self::bns_evm_string_param(req_params, "rpc_endpoint", Some("BNS_RPC_URL"))
                 .ok_or_else(|| {
                     RPCErrors::ParseRequestError(
-                        "bns_evm.rpc_endpoint or BNS_RPC_URL is required when bns_evm_private_key is set"
-                            .to_string(),
-                    )
+                "bns_evm.rpc_endpoint or BNS_RPC_URL is required when bns_evm_private_key is set"
+                    .to_string(),
+            )
                 })?;
         let contract_address = Self::bns_evm_string_param(
             req_params,
@@ -514,14 +516,16 @@ impl ActiveServer {
             return Ok(None);
         };
 
-        let bns_client: Arc<dyn BnsIndexerApi> =
-            Arc::new(BnsIndexerClient::new_bns_server_url(&config.server_url, None));
+        let bns_client: Arc<dyn BnsIndexerApi> = Arc::new(BnsIndexerClient::new_bns_server_url(
+            &config.server_url,
+            None,
+        ));
         let evm_controller = BnsEvmControllerClient::new(config.evm_config, &config.private_key)
             .map_err(|e| Self::bns_error("Failed to create BNS EVM controller", e))?
             .with_raw_tx_submitter(BnsEvmRawTxSubmitter::BnsServer(bns_client.clone()));
-        let signer_address = evm_controller
-            .default_signer_address()
-            .ok_or_else(|| RPCErrors::ReasonError("BNS EVM signer address is missing".to_string()))?;
+        let signer_address = evm_controller.default_signer_address().ok_or_else(|| {
+            RPCErrors::ReasonError("BNS EVM signer address is missing".to_string())
+        })?;
         let signer_principal = Principal::chain_account(format!("{signer_address:#x}"));
 
         let zone_document = Self::bns_zone_document(
@@ -544,12 +548,9 @@ impl ActiveServer {
                 let boot_version =
                     Self::bns_document_version(bns_client.as_ref(), zone_name, BNS_DOC_BOOT)
                         .await?;
-                let device_mini_version = Self::bns_document_version(
-                    bns_client.as_ref(),
-                    zone_name,
-                    BNS_DOC_DEVICE_MINI,
-                )
-                .await?;
+                let device_mini_version =
+                    Self::bns_document_version(bns_client.as_ref(), zone_name, BNS_DOC_DEVICE_MINI)
+                        .await?;
                 let updates = vec![
                     Self::bns_inline_json_update(BNS_DOC_ZONE, zone_version, &zone_document)?,
                     Self::bns_inline_json_update(BNS_DOC_BOOT, boot_version, &boot_document)?,
@@ -683,7 +684,7 @@ impl ActiveServer {
         // First decode without verification to get owner public key hint, then verify
         // For now, we'll decode without verification first to extract owner info
         // In production, owner_public_key should be provided or extracted from zone config
-        let device_config = DeviceConfig::decode(&encoded_device_doc, None).map_err(|e| {
+        let device_config = DeviceDocument::decode(&encoded_device_doc, None).map_err(|e| {
             warn!("Failed to decode device_doc_jwt: {}", e);
             RPCErrors::ParseRequestError(format!("Failed to decode device_doc_jwt: {}", e))
         })?;
@@ -714,10 +715,12 @@ impl ActiveServer {
 
         // Re-decode with verification
         let _verified_device_config =
-            DeviceConfig::decode(&encoded_device_doc, Some(&owner_decoding_key)).map_err(|e| {
-                warn!("Failed to verify device_doc_jwt: {}", e);
-                RPCErrors::ParseRequestError(format!("Failed to verify device_doc_jwt: {}", e))
-            })?;
+            DeviceDocument::decode(&encoded_device_doc, Some(&owner_decoding_key)).map_err(
+                |e| {
+                    warn!("Failed to verify device_doc_jwt: {}", e);
+                    RPCErrors::ParseRequestError(format!("Failed to verify device_doc_jwt: {}", e))
+                },
+            )?;
 
         let device_private_key_pem = EncodingKey::from_ed_pem(device_private_key.as_bytes())
             .map_err(|e| {
@@ -776,12 +779,8 @@ impl ActiveServer {
 
             let sn_req =
                 Self::build_sn_device_online_report(&device_name, &device_did, &device_info)?;
-            let sn_result = sn_register_device_online(
-                sn_url.as_str(),
-                sn_device_proof,
-                sn_req,
-            )
-            .await;
+            let sn_result =
+                sn_register_device_online(sn_url.as_str(), sn_device_proof, sn_req).await;
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!(
                     "Failed to register device to sn: {}",
@@ -792,7 +791,7 @@ impl ActiveServer {
             info!("NO SN mode: Check if the zone txt records is already exists ...");
             // let zone_boot = resolve_did(&zone_did, None).await
             //     .map_err(|e|RPCErrors::ReasonError(format!("Failed to resolve zone did: {}", e)))?;
-            // let zone_boot_config = ZoneBootConfig::decode(&zone_boot, Some(&owner_decoding_key))
+            // let zone_boot_config = ZoneBootDocument::decode(&zone_boot, Some(&owner_decoding_key))
             //     .map_err(|e|RPCErrors::ReasonError(format!("Failed to decode zone boot config: {}", e)))?;
             info!("verify zone boot config success");
         }
@@ -859,7 +858,7 @@ impl ActiveServer {
                 )));
             }
         };
-        let zone_boot_config = ZoneBootConfig::decode(&zone_boot_doc, None).map_err(|err| {
+        let zone_boot_config = ZoneBootDocument::decode(&zone_boot_doc, None).map_err(|err| {
             RPCErrors::ReasonError(format!("Failed to decode zone boot config: {}", err))
         })?;
         Self::update_zone_boot_cache(&zone_did, &zone_boot_config).await;
@@ -1129,12 +1128,8 @@ impl ActiveServer {
             info!("Register device ood1(zone-gateway) to sn: {}", sn_url);
 
             let sn_req = Self::build_sn_device_online_report("ood1", &device_did, &device_info)?;
-            let sn_result = sn_register_device_online(
-                sn_url.as_str(),
-                sn_device_proof,
-                sn_req,
-            )
-            .await;
+            let sn_result =
+                sn_register_device_online(sn_url.as_str(), sn_device_proof, sn_req).await;
             if sn_result.is_err() {
                 warn!(
                     "Failed to register device to sn: {}",
@@ -1171,7 +1166,7 @@ impl ActiveServer {
             .and_then(|url| url::Url::parse(url).ok())
             .and_then(|url| url.host_str().map(|host| host.to_string()));
 
-        let zone_boot_config = ZoneBootConfig {
+        let zone_boot_config = ZoneBootDocument {
             id: None,
             oods: vec![ood],
             sn: zone_boot_sn,
@@ -1190,7 +1185,7 @@ impl ActiveServer {
         let write_dir = get_buckyos_system_etc_dir();
         let owner_public_key: Jwk = serde_json::from_value(owner_public_key.clone()).unwrap();
 
-        let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
+        let device_mini_config = DeviceMiniDocument::new_by_device_document(&device_config);
         let device_mini_doc_jwt = device_mini_config.to_jwt(&owner_private_key_pem).unwrap();
         let bns_submission = self
             .publish_bns_zone_documents(
@@ -1307,7 +1302,7 @@ impl ActiveServer {
         let private_key = private_key.unwrap().as_str().unwrap();
 
         info!("will sign zone config, bytes={}", zone_config.len());
-        let mut zone_boot_config: ZoneBootConfig =
+        let mut zone_boot_config: ZoneBootDocument =
             serde_json::from_str(zone_config).map_err(|e| {
                 RPCErrors::ParseRequestError(format!("Invalid zone config: {}", e.to_string()))
             })?;
@@ -1333,13 +1328,10 @@ impl ActiveServer {
             "will sign device mini config, bytes={}",
             device_mini_config_str.len()
         );
-        let device_mini_config: DeviceMiniConfig = serde_json::from_str(device_mini_config_str)
+        let device_mini_config: DeviceMiniDocument = serde_json::from_str(device_mini_config_str)
             .map_err(|e| {
-                RPCErrors::ParseRequestError(format!(
-                    "Invalid device mini config: {}",
-                    e.to_string()
-                ))
-            })?;
+            RPCErrors::ParseRequestError(format!("Invalid device mini config: {}", e.to_string()))
+        })?;
         let device_mini_config_jwt = device_mini_config.to_jwt(&private_key_pem).map_err(|e| {
             RPCErrors::ParseRequestError(format!(
                 "Failed to encode device mini config: {}",

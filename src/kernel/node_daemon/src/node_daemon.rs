@@ -65,7 +65,7 @@ type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
 async fn looking_zone_boot_config(
     node_identity: &LocalNodeIdentityConfig,
-) -> Result<ZoneBootConfig> {
+) -> Result<ZoneBootDocument> {
     //If local files exist, priority loads local files
     let etc_dir = get_buckyos_system_etc_dir();
     let json_config_path = etc_dir.join(format!(
@@ -76,7 +76,7 @@ async fn looking_zone_boot_config(
         "check  {} is exist for debug ...",
         json_config_path.display()
     );
-    let mut zone_boot_config: ZoneBootConfig;
+    let mut zone_boot_config: ZoneBootDocument;
     //在离线环境中，可以利用下面机制来绕开DNS查询
     if json_config_path.exists() {
         info!(
@@ -149,7 +149,7 @@ async fn looking_zone_boot_config(
             })?;
 
         zone_boot_config =
-            ZoneBootConfig::decode(&zone_doc, Some(&owner_public_key)).map_err(|err| {
+            ZoneBootDocument::decode(&zone_doc, Some(&owner_public_key)).map_err(|err| {
                 error!("parse zone config failed! {}", err);
                 return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
             })?;
@@ -780,7 +780,7 @@ fn device_info_report_ip(device_info: &DeviceInfo) -> String {
 async fn report_ood_info_to_sn(
     device_info: &DeviceInfo,
     device_token_jwt: &str,
-    zone_config: &ZoneConfig,
+    zone_config: &ZoneDocument,
 ) -> std::result::Result<(), String> {
     let mut need_sn = false;
     let mut sn_url = zone_config.get_sn_api_url();
@@ -825,13 +825,9 @@ async fn report_ood_info_to_sn(
         report_seq: None,
         ttl: None,
     };
-    sn_update_device_online(
-        sn_url.as_str(),
-        device_token_jwt.to_string(),
-        req,
-    )
-    .await
-    .map_err(|err| format!("update device online info to sn failed: {}", err))?;
+    sn_update_device_online(sn_url.as_str(), device_token_jwt.to_string(), req)
+        .await
+        .map_err(|err| format!("update device online info to sn failed: {}", err))?;
 
     info!(
         "update {}'s info to sn {} success!",
@@ -869,7 +865,7 @@ async fn wait_sysmte_config_sync() -> std::result::Result<(), String> {
 
 async fn keep_system_config_service(
     node_id: &str,
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
     device_private_key: &EncodingKey,
     is_restart: bool,
 ) -> std::result::Result<(), String> {
@@ -921,7 +917,7 @@ async fn keep_system_config_service(
 
 async fn keep_cyfs_gateway_service(
     node_id: &str,
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
     node_private_key: &EncodingKey,
     is_reload: bool,
     is_restart: bool,
@@ -995,10 +991,10 @@ async fn keep_cyfs_gateway_service(
     Ok(())
 }
 
-// 把 ZoneBootConfig.sn 解析成 cyfs-gateway keep_tunnel 直接可用的 host name。
+// 把 ZoneBootDocument.sn 解析成 cyfs-gateway keep_tunnel 直接可用的 host name。
 // wan 系节点不需要走 SN，返回 None。
 async fn resolve_sn_host_for_keep_tunnel(
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
     sn: Option<&str>,
 ) -> Option<String> {
     let sn = sn?;
@@ -1089,7 +1085,7 @@ async fn node_main(
     is_ood: bool,
     is_desktop: bool,
     buckyos_api_client: &SystemConfigClient,
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
 ) -> Result<bool> {
     //control replica instance to target state
     let node_config = load_node_config(node_host_name, buckyos_api_client)
@@ -1445,7 +1441,7 @@ async fn node_daemon_main_loop(
 }
 
 async fn generate_device_session_token(
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
     device_private_key: &EncodingKey,
     is_boot: bool,
 ) -> std::result::Result<String, String> {
@@ -1570,7 +1566,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     //     let owner_config = resolve_did(&node_identity.owner_did,None).await;
     //     match owner_config {
     //         Ok(owner_config) => {
-    //             let owner_config = OwnerConfig::decode(&owner_config,None);
+    //             let owner_config = OwnerDocument::decode(&owner_config,None);
     //             if owner_config.is_ok() {
     //                 let owner_config = owner_config.unwrap();
     //                 let default_key = owner_config.get_default_key();
@@ -1846,7 +1842,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             }
         }
 
-        let zone_config: ZoneConfig = serde_json::from_str(boot_config_result_str.as_str())
+        let zone_config: ZoneDocument = serde_json::from_str(boot_config_result_str.as_str())
             .map_err(|err| {
                 error!("parse zone config from boot/config failed! {}", err);
                 return String::from("parse zone config from boot/config failed!");
@@ -2046,7 +2042,7 @@ mod tests {
     }
 
     fn discovered_node_for_cache(peer_did: DID, endpoint_ip: std::net::IpAddr) -> DiscoveredNode {
-        let mut device_doc = DeviceConfig::new(
+        let mut device_doc = DeviceDocument::new(
             "ood2",
             "Bb325f2ed0XSxrPS5sKQaX7ylY9Jh9rfevXiidKA1zc".to_string(),
         );

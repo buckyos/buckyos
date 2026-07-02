@@ -5,7 +5,7 @@ use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use name_client::{IdentityMaterial, IdentityRoots, IdentityUsage};
 use name_lib::{
-    decode_jwt_claim_without_verify, load_private_key, DIDDocumentTrait, DeviceConfig,
+    decode_jwt_claim_without_verify, load_private_key, DIDDocumentTrait, DeviceDocument,
     EncodedDocument, DID,
 };
 use serde::{Deserialize, Serialize};
@@ -160,9 +160,9 @@ pub fn build_device_did(device_name: &str, zone_did: &DID) -> std::result::Resul
 }
 
 pub fn bind_device_config_did(
-    device_config: DeviceConfig,
+    device_config: DeviceDocument,
     device_did: &DID,
-) -> std::result::Result<DeviceConfig, String> {
+) -> std::result::Result<DeviceDocument, String> {
     let mut value = serde_json::to_value(device_config)
         .map_err(|err| format!("serialize device config failed: {}", err))?;
     let device_did_str = device_did.to_string();
@@ -190,8 +190,8 @@ pub fn new_device_config_by_jwk_with_did(
     name: &str,
     public_key: Jwk,
     device_did: &DID,
-) -> std::result::Result<DeviceConfig, String> {
-    bind_device_config_did(DeviceConfig::new_by_jwk(name, public_key), device_did)
+) -> std::result::Result<DeviceDocument, String> {
+    bind_device_config_did(DeviceDocument::new_by_jwk(name, public_key), device_did)
 }
 
 pub fn load_device_doc_jwt(device_did: &DID) -> std::result::Result<String, String> {
@@ -219,7 +219,7 @@ pub fn load_device_mini_doc_jwt(device_did: &DID) -> std::result::Result<String,
 pub fn load_local_device_config(
     node_identity: &LocalNodeIdentityConfig,
     verify: bool,
-) -> std::result::Result<(String, DeviceConfig), String> {
+) -> std::result::Result<(String, DeviceDocument), String> {
     let device_doc_jwt = load_device_doc_jwt(&node_identity.device_did)?;
     let encoded_doc = EncodedDocument::from_str(device_doc_jwt.clone())
         .map_err(|err| format!("parse device_doc.jwt failed: {}", err))?;
@@ -231,7 +231,7 @@ pub fn load_local_device_config(
     } else {
         None
     };
-    let device_config = DeviceConfig::decode(&encoded_doc, owner_key.as_ref())
+    let device_config = DeviceDocument::decode(&encoded_doc, owner_key.as_ref())
         .map_err(|err| format!("decode device_doc.jwt failed: {}", err))?;
     if device_config.id != node_identity.device_did {
         return Err(format!(
@@ -258,7 +258,7 @@ pub fn load_local_device_private_key(device_did: &DID) -> std::result::Result<En
 pub fn save_local_device_identity(
     etc_dir: &Path,
     node_identity: &LocalNodeIdentityConfig,
-    device_config: &DeviceConfig,
+    device_config: &DeviceDocument,
     device_doc_jwt: &str,
     device_mini_doc_jwt: &str,
     device_private_key_pem: &str,
@@ -279,7 +279,7 @@ pub fn save_local_device_identity_for_roots(
     etc_dir: &Path,
     roots: &IdentityRoots,
     node_identity: &LocalNodeIdentityConfig,
-    device_config: &DeviceConfig,
+    device_config: &DeviceDocument,
     device_doc_jwt: &str,
     device_mini_doc_jwt: &str,
     device_private_key_pem: &str,
@@ -356,7 +356,7 @@ pub fn save_local_device_identity_for_buckyos_root(
     root_dir: &Path,
     etc_dir: &Path,
     node_identity: &LocalNodeIdentityConfig,
-    device_config: &DeviceConfig,
+    device_config: &DeviceDocument,
     device_doc_jwt: &str,
     device_mini_doc_jwt: &str,
     device_private_key_pem: &str,
@@ -375,7 +375,7 @@ pub fn save_local_device_identity_for_buckyos_root(
 
 pub fn decode_device_config_without_verify(
     device_doc_jwt: &str,
-) -> std::result::Result<DeviceConfig, String> {
+) -> std::result::Result<DeviceDocument, String> {
     let value = decode_jwt_claim_without_verify(device_doc_jwt)
         .map_err(|err| format!("decode device doc jwt failed: {}", err))?;
     serde_json::from_value(value).map_err(|err| format!("parse device doc jwt failed: {}", err))

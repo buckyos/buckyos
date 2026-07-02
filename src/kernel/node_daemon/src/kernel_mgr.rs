@@ -6,7 +6,7 @@ use buckyos_api::*;
 use buckyos_kit::*;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
-use name_lib::DeviceConfig;
+use name_lib::DeviceDocument;
 use ndn_lib::ObjId;
 use package_lib::*;
 use serde::{Deserialize, Serialize};

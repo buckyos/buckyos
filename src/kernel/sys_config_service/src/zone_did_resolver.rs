@@ -1,7 +1,7 @@
 // ZoneProvider 是 BuckyOS Zone Provider 目标是统一支持Zone内的名字解析和URL构造:
 // 1. 核心功能 查询Zone内Device的实时信息）
-// 2. 最小配置是ZoneConfig,但在连上SystemConfig后，可以做到更多事情
-// 3. 未连接上SystemConfig时，基于ZoneConfig或ZoneSN进行查询。一旦连接上SystemConfig,则基于后者进行查询
+// 2. 最小配置是ZoneDocument,但在连上SystemConfig后，可以做到更多事情
+// 3. 未连接上SystemConfig时，基于ZoneDocument或ZoneSN进行查询。一旦连接上SystemConfig,则基于后者进行查询
 // 4. 查询的输入:
 //        device_short_name （friendly name）
 //        device_did
@@ -87,7 +87,7 @@ impl ZoneDidResolver {
         Some(did.id)
     }
 
-    async fn load_device_doc(&self, device_id: &str) -> NSResult<(DeviceConfig, String)> {
+    async fn load_device_doc(&self, device_id: &str) -> NSResult<(DeviceDocument, String)> {
         let obj_path = format!("devices/{}/doc", device_id);
         let store = SYS_STORE.lock().await;
         let obj_config_str = store.get(obj_path.clone()).await.map_err(|e| {
@@ -103,8 +103,8 @@ impl ZoneDidResolver {
             warn!("ZoneDidResolver parse device config failed: {}", e);
             NSError::Failed(format!("parse device config failed: {}", e))
         })?;
-        let device_config: DeviceConfig =
-            DeviceConfig::decode(&encoded_doc, None).map_err(|e| {
+        let device_config: DeviceDocument =
+            DeviceDocument::decode(&encoded_doc, None).map_err(|e| {
                 warn!("ZoneDidResolver decode device config failed: {}", e);
                 NSError::Failed(format!("decode device config failed: {}", e))
             })?;
@@ -112,7 +112,7 @@ impl ZoneDidResolver {
         Ok((device_config, obj_config_str))
     }
 
-    async fn load_owner_doc(&self, owner_id: &str) -> NSResult<(OwnerConfig, String)> {
+    async fn load_owner_doc(&self, owner_id: &str) -> NSResult<(OwnerDocument, String)> {
         let obj_path = format!("users/{}/doc", owner_id);
         let store = SYS_STORE.lock().await;
         let obj_config_str = store.get(obj_path.clone()).await.map_err(|e| {
@@ -128,10 +128,11 @@ impl ZoneDidResolver {
             warn!("ZoneDidResolver parse owner config failed: {}", e);
             NSError::Failed(format!("parse owner config failed: {}", e))
         })?;
-        let owner_config: OwnerConfig = OwnerConfig::decode(&encoded_doc, None).map_err(|e| {
-            warn!("ZoneDidResolver decode owner config failed: {}", e);
-            NSError::Failed(format!("decode owner config failed: {}", e))
-        })?;
+        let owner_config: OwnerDocument =
+            OwnerDocument::decode(&encoded_doc, None).map_err(|e| {
+                warn!("ZoneDidResolver decode owner config failed: {}", e);
+                NSError::Failed(format!("decode owner config failed: {}", e))
+            })?;
 
         Ok((owner_config, obj_config_str))
     }

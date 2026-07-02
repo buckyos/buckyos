@@ -20,7 +20,7 @@ use buckyos_api::{
 };
 use buckyos_kit::*;
 use name_client::*;
-use name_lib::{get_x_from_jwk, DeviceInfo, ZoneConfig};
+use name_lib::{get_x_from_jwk, DeviceInfo, ZoneDocument};
 
 const SYSTEM_CONFIG_SERVICE_PORT: u16 = 3200;
 const FIXED_SERVICE_WEIGHT: u32 = 100;
@@ -303,7 +303,7 @@ pub(crate) fn schedule_action_to_tx_actions(
         return Err(anyhow::anyhow!("zone_config not found"));
     }
     let zone_config = zone_config.unwrap();
-    let zone_config: ZoneConfig = serde_json::from_str(zone_config.as_str())?;
+    let zone_config: ZoneDocument = serde_json::from_str(zone_config.as_str())?;
     let zone_gateway = zone_config.get_default_zone_gateway();
     match action {
         SchedulerAction::ChangeNodeStatus(node_id, node_status) => {
@@ -530,15 +530,15 @@ fn should_skip_app_service_info_deletion(
     Ok(is_legacy_docker_app_service(&app_spec) && is_service_info_empty)
 }
 
-pub fn get_zone_config(input_system_config: &HashMap<String, String>) -> Result<ZoneConfig> {
+pub fn get_zone_config(input_system_config: &HashMap<String, String>) -> Result<ZoneDocument> {
     let key = "boot/config";
     let zone_config = input_system_config.get(key);
     if zone_config.is_none() {
         return Err(anyhow::anyhow!("zone_config not found"));
     }
     let zone_config = zone_config.unwrap();
-    let zone_config: ZoneConfig = serde_json::from_str(zone_config.as_str()).map_err(|e| {
-        error!("ZoneConfig::from_str failed: {:?}", e);
+    let zone_config: ZoneDocument = serde_json::from_str(zone_config.as_str()).map_err(|e| {
+        error!("ZoneDocument::from_str failed: {:?}", e);
         e
     })?;
     Ok(zone_config)
@@ -924,7 +924,7 @@ fn insert_trust_key(
 
 fn build_trust_keys(
     node_id: &str,
-    zone_config: &ZoneConfig,
+    zone_config: &ZoneDocument,
     device_list: &HashMap<String, DeviceInfo>,
 ) -> HashMap<String, String> {
     let mut trust_key = HashMap::new();
@@ -954,7 +954,7 @@ fn build_trust_keys(
 }
 
 fn build_fixed_selector_from_oods(
-    zone_config: &ZoneConfig,
+    zone_config: &ZoneDocument,
     port: u16,
 ) -> HashMap<String, NodeGatewaySelectorTarget> {
     let mut selector = HashMap::new();
@@ -1603,7 +1603,7 @@ mod tests {
     };
     use jsonwebtoken::jwk::Jwk;
     use name_lib::generate_ed25519_key_pair;
-    use name_lib::{DeviceConfig, DeviceNodeType, OODDescriptionString, VerifyHubInfo, DID};
+    use name_lib::{DeviceDocument, DeviceNodeType, OODDescriptionString, VerifyHubInfo, DID};
 
     fn create_test_replica_instance(
         spec_id: &str,
@@ -1639,13 +1639,13 @@ mod tests {
         DeviceInfo::from_device_doc(&device)
     }
 
-    fn create_test_zone_config() -> ZoneConfig {
+    fn create_test_zone_config() -> ZoneDocument {
         let (_, owner_key_jwk) = generate_ed25519_key_pair();
         let owner_key_jwk: Jwk = serde_json::from_value(owner_key_jwk).unwrap();
         let (_, verify_hub_key_jwk) = generate_ed25519_key_pair();
         let verify_hub_key_jwk: Jwk = serde_json::from_value(verify_hub_key_jwk).unwrap();
 
-        let mut zone_config = ZoneConfig::new(
+        let mut zone_config = ZoneDocument::new(
             DID::new("web", "test.buckyos.io"),
             DID::new("bns", "owner"),
             owner_key_jwk,
@@ -1769,7 +1769,7 @@ mod tests {
     }
 
     fn create_expected_node_gateway_info_for_files_app(
-        zone_config: &ZoneConfig,
+        zone_config: &ZoneDocument,
         input_system_config: &HashMap<String, String>,
     ) -> NodeGatewayInfo {
         let zone_host = zone_config.id.to_host_name();

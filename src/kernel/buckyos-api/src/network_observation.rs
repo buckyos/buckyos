@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
-use name_lib::{DeviceConfig, DeviceInfo};
+use name_lib::{DeviceDocument, DeviceInfo};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::net::TcpStream;
@@ -133,7 +133,7 @@ impl NetworkObserver {
 
     pub async fn observe(
         &mut self,
-        device_doc: &DeviceConfig,
+        device_doc: &DeviceDocument,
         all_ip: &[IpAddr],
         peers: &HashMap<String, DeviceInfo>,
     ) -> NetworkObservation {
@@ -544,7 +544,7 @@ mod tests {
             direct_probe_freshness_ttl_secs: 600,
             probe_source: "test".to_string(),
         });
-        let mut device_doc = name_lib::DeviceConfig::new("ood1", "x".to_string());
+        let mut device_doc = name_lib::DeviceDocument::new("ood1", "x".to_string());
         device_doc.rtcp_port = Some(2980);
         let peers = HashMap::new();
         let lan = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 23));

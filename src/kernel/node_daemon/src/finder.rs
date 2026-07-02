@@ -1,8 +1,8 @@
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_service_local_data_dir};
 use log::*;
 use name_lib::{
-    decode_jwt_claim_without_verify, DIDDocumentTrait, DeviceConfig, DeviceInfo, EncodedDocument,
-    ZoneBootConfig,
+    decode_jwt_claim_without_verify, DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument,
+    ZoneBootDocument,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -76,7 +76,7 @@ impl LookingForResp {
 #[derive(Clone, Debug)]
 pub struct DiscoveredNode {
     pub node_id: String,
-    pub device_doc: DeviceConfig,
+    pub device_doc: DeviceDocument,
     pub device_info: DeviceInfo,
     pub device_doc_jwt: String,
     pub addr: SocketAddr,
@@ -101,7 +101,7 @@ struct FinderIdentityClaims {
 #[derive(Clone, Debug)]
 struct VerifiedFinderIdentity {
     claims: FinderIdentityClaims,
-    device_doc: DeviceConfig,
+    device_doc: DeviceDocument,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -144,9 +144,9 @@ impl FinderCache {
 
 #[derive(Clone)]
 struct FinderContext {
-    zone_boot_config: ZoneBootConfig,
+    zone_boot_config: ZoneBootDocument,
     owner_public_key: Arc<DecodingKey>,
-    this_device_doc: DeviceConfig,
+    this_device_doc: DeviceDocument,
 }
 
 pub struct NodeFinder {
@@ -169,7 +169,7 @@ impl NodeFinder {
     pub fn new_for_zone(
         this_device_jwt: String,
         device_private_key: EncodingKey,
-        zone_boot_config: ZoneBootConfig,
+        zone_boot_config: ZoneBootDocument,
         owner_public_key: DecodingKey,
     ) -> Result<Self> {
         let owner_public_key = Arc::new(owner_public_key);
@@ -321,7 +321,7 @@ impl NodeFinderClient {
     pub fn new_for_zone(
         this_device_jwt: String,
         this_device_private_key: EncodingKey,
-        zone_boot_config: ZoneBootConfig,
+        zone_boot_config: ZoneBootDocument,
         owner_public_key: DecodingKey,
     ) -> Result<Self> {
         Self::new_for_zone_inner(
@@ -338,7 +338,7 @@ impl NodeFinderClient {
     pub fn new_as_lan_client(
         this_device_jwt: String,
         this_device_private_key: EncodingKey,
-        zone_boot_config: ZoneBootConfig,
+        zone_boot_config: ZoneBootDocument,
         owner_public_key: DecodingKey,
     ) -> Result<Self> {
         Self::new_for_zone_inner(
@@ -353,7 +353,7 @@ impl NodeFinderClient {
     fn new_for_zone_inner(
         this_device_jwt: String,
         this_device_private_key: EncodingKey,
-        zone_boot_config: ZoneBootConfig,
+        zone_boot_config: ZoneBootDocument,
         owner_public_key: DecodingKey,
         require_self_ood: bool,
     ) -> Result<Self> {
@@ -637,7 +637,7 @@ fn build_finder_identity_jwt(
 fn verify_finder_request_identity(
     jwt: &str,
     expected_seq: u64,
-    zone_boot_config: &ZoneBootConfig,
+    zone_boot_config: &ZoneBootDocument,
     owner_public_key: &DecodingKey,
 ) -> Result<VerifiedFinderIdentity> {
     verify_finder_identity(
@@ -653,7 +653,7 @@ fn verify_finder_request_identity(
 fn verify_finder_response_identity(
     jwt: &str,
     expected_seq: u64,
-    zone_boot_config: &ZoneBootConfig,
+    zone_boot_config: &ZoneBootDocument,
     owner_public_key: &DecodingKey,
 ) -> Result<VerifiedFinderIdentity> {
     verify_finder_identity(
@@ -670,7 +670,7 @@ fn verify_finder_identity(
     jwt: &str,
     expected_msg_type: &str,
     expected_seq: u64,
-    zone_boot_config: &ZoneBootConfig,
+    zone_boot_config: &ZoneBootDocument,
     owner_public_key: &DecodingKey,
     require_ood: bool,
 ) -> Result<VerifiedFinderIdentity> {
@@ -716,15 +716,18 @@ fn verify_finder_identity(
     Ok(VerifiedFinderIdentity { claims, device_doc })
 }
 
-fn decode_device_doc(device_doc_jwt: &str, owner_public_key: &DecodingKey) -> Result<DeviceConfig> {
+fn decode_device_doc(
+    device_doc_jwt: &str,
+    owner_public_key: &DecodingKey,
+) -> Result<DeviceDocument> {
     let encoded_doc = EncodedDocument::from_str(device_doc_jwt.to_string())?;
-    let device_doc = DeviceConfig::decode(&encoded_doc, Some(owner_public_key))?;
+    let device_doc = DeviceDocument::decode(&encoded_doc, Some(owner_public_key))?;
     Ok(device_doc)
 }
 
 fn validate_zone_device(
-    device_doc: &DeviceConfig,
-    zone_boot_config: &ZoneBootConfig,
+    device_doc: &DeviceDocument,
+    zone_boot_config: &ZoneBootDocument,
 ) -> Result<()> {
     if let Some(zone_did) = zone_boot_config.id.as_ref() {
         if device_doc.zone_did.as_ref() != Some(zone_did) {
@@ -739,18 +742,21 @@ fn validate_zone_device(
     Ok(())
 }
 
-fn validate_ood_device(device_doc: &DeviceConfig, zone_boot_config: &ZoneBootConfig) -> Result<()> {
+fn validate_ood_device(
+    device_doc: &DeviceDocument,
+    zone_boot_config: &ZoneBootDocument,
+) -> Result<()> {
     validate_zone_device(device_doc, zone_boot_config)?;
     if !zone_boot_config.device_is_ood(device_doc.name.as_str()) {
         return Err(anyhow!(
-            "device {} is not an OOD in ZoneBootConfig",
+            "device {} is not an OOD in ZoneBootDocument",
             device_doc.name
         ));
     }
     Ok(())
 }
 
-fn zone_id_string(zone_boot_config: &ZoneBootConfig) -> String {
+fn zone_id_string(zone_boot_config: &ZoneBootDocument) -> String {
     zone_boot_config
         .id
         .as_ref()
@@ -758,7 +764,7 @@ fn zone_id_string(zone_boot_config: &ZoneBootConfig) -> String {
         .unwrap_or_default()
 }
 
-fn expected_ood_names(zone_boot_config: &ZoneBootConfig) -> HashSet<String> {
+fn expected_ood_names(zone_boot_config: &ZoneBootDocument) -> HashSet<String> {
     zone_boot_config
         .oods
         .iter()
@@ -774,7 +780,7 @@ fn push_unique_ip(ips: &mut Vec<IpAddr>, ip: IpAddr) {
 }
 
 fn build_discovered_device_info(
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
     endpoint_ip: IpAddr,
     seen_at: u64,
 ) -> DeviceInfo {
@@ -807,7 +813,7 @@ fn add_discovered_device_info_cache(discovered: &HashMap<String, DiscoveredNode>
 
 fn load_valid_cache_entries(
     cache_path: &Path,
-    zone_boot_config: &ZoneBootConfig,
+    zone_boot_config: &ZoneBootDocument,
     owner_public_key: &DecodingKey,
     cache_ttl_secs: u64,
 ) -> Result<HashMap<String, DiscoveredNode>> {
@@ -947,8 +953,8 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         DecodingKey::from_jwk(&jwk(public_x)).unwrap()
     }
 
-    fn test_zone_boot_config() -> ZoneBootConfig {
-        ZoneBootConfig {
+    fn test_zone_boot_config() -> ZoneBootDocument {
+        ZoneBootDocument {
             id: Some(DID::new("bns", "alice")),
             owner: Some(DID::new("bns", "alice")),
             owner_key: Some(jwk(OWNER_PUBLIC_X)),
@@ -1027,7 +1033,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         device_type: &str,
         did: Option<DID>,
     ) -> String {
-        let mut device_doc = DeviceConfig::new(name, public_x.to_string());
+        let mut device_doc = DeviceDocument::new(name, public_x.to_string());
         if let Some(did) = did {
             device_doc.id = did;
         }
