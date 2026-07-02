@@ -287,6 +287,12 @@ export interface RouteTracesQuery {
   taskIds?: string[]
   requestIds?: string[]
   timeRange?: UsageTimeRange
+  query?: string
+  outcome?: 'fallback' | 'failed' | 'warning'
+  apiTypes?: string[]
+  providerInstanceNames?: string[]
+  selectedExactModels?: string[]
+  schedulerProfiles?: string[]
 }
 
 export interface RouteTracesPage {
@@ -701,6 +707,12 @@ class BuckyOSAiccProvider implements AiccDataProvider {
         request_ids: params.requestIds,
         start_time_ms: params.timeRange?.startTimeMs,
         end_time_ms: params.timeRange?.endTimeMs,
+        query: params.query?.trim() || undefined,
+        outcome: params.outcome,
+        api_types: params.apiTypes,
+        provider_instance_names: params.providerInstanceNames,
+        selected_exact_models: params.selectedExactModels,
+        scheduler_profiles: params.schedulerProfiles,
       })
       const traces = toRouteTraces(raw)
       return {
@@ -1007,6 +1019,10 @@ function toRouteTrace(value: unknown, index: number): RouteTrace | null {
   const requestedModel = asOptionalString(trace.requested_model)
   if (!requestedModel) return null
   const selectedExactModel = asOptionalString(trace.selected_exact_model)
+  const rankedCandidates = toRankedCandidates(trace.ranked_candidates)
+  const selectedPricingSnapshot = toRoutePricingSnapshot(trace.pricing_snapshot ?? trace.pricing)
+    ?? rankedCandidates.find((candidate) => candidate.selected)?.pricing_snapshot
+    ?? rankedCandidates.find((candidate) => candidate.exact_model === selectedExactModel)?.pricing_snapshot
   return {
     request_id: asNonEmptyString(trace.request_id, `route-trace-${index}`),
     session_id: asOptionalString(trace.session_id),
@@ -1019,11 +1035,11 @@ function toRouteTrace(value: unknown, index: number): RouteTrace | null {
       ?? (selectedExactModel ? providerInstanceFromExactModel(selectedExactModel) : undefined),
     selected_provider_model_id: asOptionalString(trace.selected_provider_model_id),
     provider_trace_id: asOptionalString(trace.provider_trace_id),
-    pricing_snapshot: toRoutePricingSnapshot(trace.pricing_snapshot),
+    pricing_snapshot: selectedPricingSnapshot,
     created_at_ms: asOptionalNumber(trace.created_at_ms),
     latency_ms: asOptionalNumber(trace.latency_ms),
     duration_ms: asOptionalNumber(trace.duration_ms),
-    ranked_candidates: toRankedCandidates(trace.ranked_candidates),
+    ranked_candidates: rankedCandidates,
     filtered_candidates: toFilteredCandidates(trace.filtered_candidates),
     fallback_applied: asBoolean(trace.fallback_applied, false),
     fallback_chain: toFallbackChain(trace.fallback_chain),
@@ -1036,12 +1052,13 @@ function toRouteTrace(value: unknown, index: number): RouteTrace | null {
 }
 
 function toRoutePricingSnapshot(value: unknown): RouteTrace['pricing_snapshot'] {
-  const pricing = asRecord(value)
+  const source = asRecord(value)
+  const pricing = Object.keys(source).length > 0 ? source : asRecord(asRecord(value).pricing)
   const snapshot = {
-    input_token_usd: asOptionalNumber(pricing.input_token_usd),
-    output_token_usd: asOptionalNumber(pricing.output_token_usd),
-    cache_input_token_usd: asOptionalNumber(pricing.cache_input_token_usd),
-    estimated_cost_usd: asOptionalNumber(pricing.estimated_cost_usd),
+    input_token_usd: asOptionalNumber(pricing.input_token_usd) ?? asOptionalNumber(pricing.input),
+    output_token_usd: asOptionalNumber(pricing.output_token_usd) ?? asOptionalNumber(pricing.output),
+    cache_input_token_usd: asOptionalNumber(pricing.cache_input_token_usd) ?? asOptionalNumber(pricing.cache_input),
+    estimated_cost_usd: asOptionalNumber(pricing.estimated_cost_usd) ?? asOptionalNumber(pricing.cost),
   }
   if (
     snapshot.input_token_usd == null &&
@@ -1062,7 +1079,7 @@ function toRankedCandidates(value: unknown): RouteTrace['ranked_candidates'] {
         exact_model: asNonEmptyString(candidate.exact_model, 'unknown-model'),
         final_score: asOptionalNumber(candidate.final_score),
         selected: asBoolean(candidate.selected, false),
-        pricing_snapshot: toRoutePricingSnapshot(candidate.pricing_snapshot),
+        pricing_snapshot: toRoutePricingSnapshot(candidate.pricing_snapshot ?? candidate.pricing),
         exact_model_weight: asOptionalNumber(candidate.exact_model_weight),
         provider_weight: asOptionalNumber(candidate.provider_weight),
         preference_score_inputs: toPreferenceScoreInputs(candidate.preference_score_inputs),
@@ -1239,7 +1256,38 @@ function routeTraceMatchesQuery(trace: RouteTrace, params: RouteTracesQuery): bo
     if (trace.created_at_ms < params.timeRange.startTimeMs) return false
     if (trace.created_at_ms > params.timeRange.endTimeMs) return false
   }
+  if (params.outcome === 'fallback' && !trace.fallback_applied) return false
+  if (params.outcome === 'failed' && trace.selected_exact_model) return false
+  if (params.outcome === 'warning' && trace.warnings.length === 0) return false
+  if (params.apiTypes?.length && !params.apiTypes.includes(trace.api_type)) return false
+  if (
+    params.providerInstanceNames?.length &&
+    !params.providerInstanceNames.includes(trace.selected_provider_instance_name ?? '')
+  ) return false
+  if (
+    params.selectedExactModels?.length &&
+    !params.selectedExactModels.some((model) => model === trace.selected_exact_model || model === trace.requested_model)
+  ) return false
+  if (params.schedulerProfiles?.length && !params.schedulerProfiles.includes(trace.scheduler_profile)) return false
+  if (params.query?.trim() && !routeTraceIncludesQuery(trace, params.query)) return false
   return true
+}
+
+function routeTraceIncludesQuery(trace: RouteTrace, query: string): boolean {
+  return [
+    trace.request_id,
+    trace.requested_model,
+    trace.resolved_logical_path ?? '',
+    trace.selected_exact_model ?? '',
+    trace.selected_provider_instance_name ?? '',
+    trace.selected_provider_model_id ?? '',
+    trace.provider_trace_id ?? '',
+    trace.scheduler_profile,
+    trace.user_summary?.reason_short ?? '',
+    ...trace.warnings,
+    ...trace.ranked_candidates.map((candidate) => candidate.exact_model),
+    ...trace.filtered_candidates.flatMap((candidate) => [candidate.exact_model, candidate.reason]),
+  ].join(' ').toLowerCase().includes(query.trim().toLowerCase())
 }
 
 function includesFuzzy(value: string, query: string): boolean {

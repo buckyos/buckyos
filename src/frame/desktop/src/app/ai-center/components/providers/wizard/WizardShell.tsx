@@ -113,10 +113,19 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     if (!(target instanceof HTMLElement)) return
     if (!target.matches('input, textarea, select')) return
     const scrollFocusedTarget = () => {
+      const viewport = window.visualViewport
+      const rect = target.getBoundingClientRect()
+      const visibleBottom = viewport
+        ? viewport.offsetTop + viewport.height - 112
+        : window.innerHeight - 112
+      if (rect.bottom > visibleBottom) {
+        window.scrollBy({ top: rect.bottom - visibleBottom + 24, behavior: 'smooth' })
+      }
       target.scrollIntoView({ block: 'center', behavior: 'smooth' })
     }
-    window.setTimeout(scrollFocusedTarget, 250)
-    window.setTimeout(scrollFocusedTarget, 650)
+    window.setTimeout(scrollFocusedTarget, 120)
+    window.setTimeout(scrollFocusedTarget, 360)
+    window.setTimeout(scrollFocusedTarget, 780)
   }
 
   useEffect(() => {
@@ -163,7 +172,10 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       {/* Content */}
       <div
         className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-52 [scroll-padding-bottom:14rem] md:px-6 md:pb-6"
-        style={keyboardInset > 0 ? { paddingBottom: `calc(14rem + ${keyboardInset}px)` } : undefined}
+        style={keyboardInset > 0 ? {
+          paddingBottom: `calc(14rem + ${keyboardInset}px)`,
+          scrollPaddingBottom: `calc(14rem + ${keyboardInset}px)`,
+        } : undefined}
         onFocusCapture={keepFocusedFieldVisible}
       >
         {step === 0 && (

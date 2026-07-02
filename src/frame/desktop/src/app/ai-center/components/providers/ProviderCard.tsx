@@ -43,7 +43,7 @@ export function ProviderCard({ provider, selected, onClick }: ProviderCardProps)
       }}
     >
       <Icon size={18} className="mt-0.5 shrink-0" style={{ color: 'var(--cp-muted)' }} />
-      <div className="flex-1 min-w-0">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <LongField value={provider.config.name} className="text-sm font-medium" copyable={false} />
         <LongField
           value={`${provider.config.provider_instance_name}/${provider.config.provider_driver}`}

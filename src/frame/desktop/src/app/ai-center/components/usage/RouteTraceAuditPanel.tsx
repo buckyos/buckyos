@@ -79,6 +79,15 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
     () => timeRangeToQuery(timeRange, customStartDate, customEndDate),
     [customEndDate, customStartDate, timeRange],
   )
+  const traceQueryParams = useMemo(() => ({
+    timeRange: traceQueryRange,
+    query: query.trim() || undefined,
+    outcome: outcomeFilter === 'all' ? undefined : outcomeFilter,
+    apiTypes: traceFilters.apiType ? [traceFilters.apiType] : undefined,
+    providerInstanceNames: traceFilters.provider ? [traceFilters.provider] : undefined,
+    selectedExactModels: traceFilters.model ? [traceFilters.model] : undefined,
+    schedulerProfiles: traceFilters.profile ? [traceFilters.profile] : undefined,
+  }), [outcomeFilter, query, traceFilters, traceQueryRange])
   const timeRangeOptions: Array<[TimeRangeFilter, string]> = useMemo(() => [
     ['all', t('aiCenter.home.allTime', 'All time')],
     ['24h', t('aiCenter.home.last24Hours', 'Last 24 hours')],
@@ -92,7 +101,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
     async function loadInitialTraces() {
       setTraceLoading(true)
       try {
-        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE, timeRange: traceQueryRange })
+        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE, ...traceQueryParams })
         if (!cancelled) {
           setTraces(page.traces)
           setTraceNextCursor(page.nextCursor)
@@ -117,15 +126,9 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
     return () => {
       cancelled = true
     }
-  }, [snapshotTraces, store, traceQueryRange])
+  }, [snapshotTraces, store, traceQueryParams])
 
-  const visibleTraces = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase()
-    return traces
-      .filter((trace) => traceMatchesOutcome(trace, outcomeFilter))
-      .filter((trace) => traceMatchesFilters(trace, traceFilters))
-      .filter((trace) => traceMatchesQuery(trace, normalizedQuery))
-  }, [outcomeFilter, query, traceFilters, traces])
+  const visibleTraces = traces
   const filterOptions = useMemo(() => traceFilterOptions(traces), [traces])
   const traceFiltersActive = Object.values(traceFilters).some(Boolean)
   const emptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, query.trim().length > 0 || timeRange !== 'all' || traceFiltersActive, outcomeFilter)
@@ -139,7 +142,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
       const page = await store.queryRouteTraces({
         limit: ROUTE_TRACE_PAGE_SIZE,
         cursor: nextPageIndex > 0 ? String(nextPageIndex * ROUTE_TRACE_PAGE_SIZE) : undefined,
-        timeRange: traceQueryRange,
+        ...traceQueryParams,
       })
       setTraces(page.traces)
       setTraceNextCursor(page.nextCursor)
@@ -161,7 +164,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
       const page = await store.queryRouteTraces({
         limit: ROUTE_TRACE_PAGE_SIZE,
         cursor: traceNextCursor,
-        timeRange: traceQueryRange,
+        ...traceQueryParams,
       })
       setTraces((current) => mergeRouteTraces(current, page.traces))
       setTraceNextCursor(page.nextCursor)
@@ -219,7 +222,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
             aria-label={t('aiCenter.routing.filters', 'Filters')}
           >
             <Filter size={15} />
-            <span className="text-xs">{query.trim() || outcomeFilter !== 'all' || traceFiltersActive ? visibleTraces.length : traceTotalCount}</span>
+            <span className="text-xs">{traceLoading ? '-' : traceTotalCount}</span>
           </button>
         </label>
         {filtersOpen && (
@@ -379,28 +382,34 @@ function TraceAuditCard({
         </div>
       )}
 
-      <div className="mt-3 rounded-md px-3 py-2 text-xs" style={{ background: 'var(--cp-surface)' }}>
-        {detailItems.map((field) => (
-          <div key={field.key} className="grid min-w-0 grid-cols-[8.5rem_minmax(0,1fr)] gap-3 py-1.5" style={{ borderTop: field.key === 'time' ? '0' : '1px solid var(--cp-border)' }}>
-            <span className="inline-flex min-w-0 items-center gap-1" style={{ color: 'var(--cp-muted)' }}>
-              {field.label}
-              {field.title && (
-                <span title={field.title}>
-                  <HelpCircle size={12} />
+      <table className="mt-3 w-full table-fixed rounded-md text-xs" style={{ background: 'var(--cp-surface)' }}>
+        <tbody>
+          {detailItems.map((field) => (
+            <tr key={field.key} style={{ borderTop: field.key === 'time' ? '0' : '1px solid var(--cp-border)' }}>
+              <td className="w-32 py-1.5 pl-3 pr-2 align-top sm:w-40">
+                <span className="inline-flex min-w-0 items-center gap-1" style={{ color: 'var(--cp-muted)' }}>
+                  {field.label}
+                  {field.title && (
+                    <span title={field.title}>
+                      <HelpCircle size={12} />
+                    </span>
+                  )}
                 </span>
-              )}
-            </span>
-            <LongField
-              value={field.value}
-              fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
-              mono={field.key !== 'unit_price' && field.key !== 'time' && field.key !== 'pre_call_estimate'}
-              tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
-              copyable={field.key !== 'time' && field.key !== 'unit_price' && field.key !== 'pre_call_estimate'}
-              expandable
-            />
-          </div>
-        ))}
-      </div>
+              </td>
+              <td className="min-w-0 py-1.5 pl-2 pr-3 align-top">
+                <LongField
+                  value={field.value}
+                  fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+                  mono={field.key !== 'unit_price' && field.key !== 'time' && field.key !== 'pre_call_estimate'}
+                  tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+                  copyable={field.key !== 'time' && field.key !== 'unit_price' && field.key !== 'pre_call_estimate'}
+                  expandable
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <select
@@ -573,40 +582,6 @@ function TraceAuditSkeletonRows() {
   )
 }
 
-function traceMatchesQuery(trace: RouteTrace, query: string): boolean {
-  if (!query) return true
-  return [
-    trace.request_id,
-    trace.requested_model,
-    trace.resolved_logical_path ?? '',
-    trace.selected_exact_model ?? '',
-    trace.selected_provider_instance_name ?? '',
-    trace.selected_provider_model_id ?? '',
-    trace.provider_trace_id ?? '',
-    trace.scheduler_profile,
-    trace.user_summary?.reason_short ?? '',
-    ...trace.warnings,
-    ...trace.ranked_candidates.map((candidate) => candidate.exact_model),
-    ...trace.filtered_candidates.flatMap((candidate) => [candidate.exact_model, candidate.reason]),
-  ].join(' ').toLowerCase().includes(query)
-}
-
-function traceMatchesOutcome(trace: RouteTrace, filter: TraceOutcomeFilter): boolean {
-  if (filter === 'all') return true
-  if (filter === 'fallback') return trace.fallback_applied
-  if (filter === 'failed') return !trace.selected_exact_model
-  if (filter === 'warning') return trace.warnings.length > 0
-  return true
-}
-
-function traceMatchesFilters(trace: RouteTrace, filters: TraceFilters): boolean {
-  if (filters.apiType && trace.api_type !== filters.apiType) return false
-  if (filters.provider && trace.selected_provider_instance_name !== filters.provider) return false
-  if (filters.model && trace.selected_exact_model !== filters.model && trace.requested_model !== filters.model) return false
-  if (filters.profile && trace.scheduler_profile !== filters.profile) return false
-  return true
-}
-
 function traceFilterOptions(traces: RouteTrace[]): Record<keyof TraceFilters, Array<[string, string]>> {
   return {
     apiType: uniqueTraceOptions(traces.map((trace) => trace.api_type)),
@@ -761,6 +736,7 @@ function traceEmptyStateKind(
   outcomeFilter: TraceOutcomeFilter,
 ): TraceEmptyStateKind {
   if (loadedCount === 0 && error === 'initial') return 'load-failed'
+  if (loadedCount === 0 && (hasSearch || outcomeFilter !== 'all')) return 'no-matches'
   if (loadedCount === 0) return 'none-yet'
   if (visibleCount === 0 && (hasSearch || outcomeFilter !== 'all')) return 'no-matches'
   return 'no-matches'

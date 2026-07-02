@@ -243,10 +243,10 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
     { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel, tone: routingWeight === 0 ? 'warning' : 'default' },
   ]
   const desktopMetrics = [
-    { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision },
-    { label: t('aiCenter.providers.health', 'Health'), value: `${models.length - degradedCount}/${models.length}`, detail: t('aiCenter.providers.availableModels', 'available models') },
-    { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal') },
-    { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel },
+    { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision, tone: 'accent' as const },
+    { label: t('aiCenter.providers.health', 'Health'), value: `${models.length - degradedCount}/${models.length}`, detail: t('aiCenter.providers.availableModels', 'available models'), tone: degradedCount > 0 ? 'warning' as const : 'ok' as const },
+    { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal'), tone: quotaWarningCount ? 'warning' as const : 'ok' as const },
+    { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel, tone: routingWeight === 0 ? 'warning' as const : 'accent' as const },
   ]
 
   return (
@@ -393,7 +393,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       </div>
       <div className="hidden grid-cols-4 gap-3 md:grid">
         {desktopMetrics.map((metric) => (
-          <Metric key={metric.label} label={metric.label} value={metric.value} detail={metric.detail} />
+          <Metric key={metric.label} label={metric.label} value={metric.value} detail={metric.detail} tone={metric.tone} />
         ))}
       </div>
 
@@ -569,14 +569,21 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
   )
 }
 
-function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+function Metric({ label, value, detail, tone = 'default' }: { label: string; value: string; detail?: string; tone?: ProviderMetric['tone'] }) {
+  const valueColor = tone === 'ok'
+    ? 'var(--cp-success)'
+    : tone === 'warning'
+      ? 'var(--cp-warning)'
+      : tone === 'accent'
+        ? 'var(--cp-accent)'
+        : 'var(--cp-text)'
   return (
     <div
-      className="grid h-full min-h-[92px] min-w-[72%] snap-start grid-rows-[2rem_1.75rem_1rem] content-start gap-1 rounded-xl p-3 sm:min-w-[220px] md:min-w-0"
+      className="grid h-full min-h-[84px] min-w-[72%] snap-start grid-rows-[1.5rem_1.75rem_1rem] content-start gap-1 rounded-xl p-3 sm:min-w-[220px] md:min-w-0"
       style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
     >
       <div className="text-xs leading-4" style={{ color: 'var(--cp-muted)' }}>{label}</div>
-      <div className="text-xl font-semibold leading-tight" style={{ color: 'var(--cp-text)' }}>{value}</div>
+      <div className="text-xl font-semibold leading-tight" style={{ color: valueColor }}>{value}</div>
       <div className="text-[11px] truncate" style={{ color: 'var(--cp-muted)' }}>{detail ?? ''}</div>
     </div>
   )
@@ -601,18 +608,18 @@ function MetricCarousel({ metrics }: { metrics: ProviderMetric[] }) {
 
   return (
     <div className="overflow-hidden">
-      <div className="relative h-[204px]">
+      <div className="relative h-[224px]">
         {visible.map(({ index, position }) => (
           <div
             key={`${metrics[index].label}-${position}`}
-            className="absolute top-0 h-full w-[86%] max-w-[360px] transition-all duration-200"
+            className="absolute top-0 h-full w-[92%] max-w-[420px] transition-all duration-200"
             style={{
               left: position === 'left' ? '0%' : position === 'center' ? '50%' : '100%',
               transform: position === 'center'
                 ? 'translateX(-50%)'
                 : position === 'left'
-                  ? 'translateX(-86%) scale(0.9)'
-                  : 'translateX(-14%) scale(0.9)',
+                  ? 'translateX(-92%) scale(0.9)'
+                  : 'translateX(-8%) scale(0.9)',
               opacity: position === 'center' ? 1 : 0.72,
               zIndex: position === 'center' ? 2 : 1,
             }}
@@ -671,7 +678,7 @@ function MobileMetricCard({
     <button
       type="button"
       onClick={preview ? onPreviewClick : undefined}
-      className="h-[196px] w-full rounded-xl p-4 text-left"
+      className="h-[216px] w-full rounded-xl p-4 text-left"
       style={{
         background: preview ? 'var(--cp-surface)' : 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 88%), var(--cp-bg))',
         border: `1px solid ${metric.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
@@ -681,7 +688,7 @@ function MobileMetricCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs font-medium uppercase" style={{ color: 'var(--cp-muted)' }}>{metric.label}</div>
-          <div className="mt-3 line-clamp-3 break-words text-xl font-semibold leading-tight" style={{ color: toneColor }}>
+          <div className="mt-3 line-clamp-4 break-words text-xl font-semibold leading-tight" style={{ color: toneColor }}>
             {metric.value}
           </div>
         </div>
@@ -689,7 +696,7 @@ function MobileMetricCard({
           {index + 1}/{total}
         </div>
       </div>
-      <div className="mt-4 line-clamp-3 min-h-14 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+      <div className="mt-4 line-clamp-4 min-h-16 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
         {metric.detail ?? ''}
       </div>
     </button>

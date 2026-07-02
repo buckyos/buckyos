@@ -923,6 +923,7 @@ function StatusAndKpiHeader({
             value={kpi.value}
             subtitle={kpi.subtitle}
             onClick={kpi.onClick}
+            tone={kpi.tone}
           />
         ))}
       </div>
@@ -953,18 +954,18 @@ function KpiCarousel({
 
   return (
     <div className="overflow-hidden">
-      <div className="relative h-[204px]">
+      <div className="relative h-[232px]">
         {visible.map(({ index, position }) => (
           <div
             key={`${kpis[index].title}-${position}`}
-            className="absolute top-0 h-full w-[86%] max-w-[360px] transition-all duration-200"
+            className="absolute top-0 h-full w-[92%] max-w-[420px] transition-all duration-200"
             style={{
               left: position === 'left' ? '0%' : position === 'center' ? '50%' : '100%',
               transform: position === 'center'
                 ? 'translateX(-50%)'
                 : position === 'left'
-                  ? 'translateX(-86%) scale(0.9)'
-                  : 'translateX(-14%) scale(0.9)',
+                  ? 'translateX(-92%) scale(0.9)'
+                  : 'translateX(-8%) scale(0.9)',
               opacity: position === 'center' ? 1 : 0.72,
               zIndex: position === 'center' ? 2 : 1,
             }}
@@ -1024,7 +1025,7 @@ function MobileKpiCard({
       type="button"
       onClick={preview ? onPreviewClick : kpi.onClick}
       disabled={!preview && !kpi.onClick}
-      className="h-[196px] w-full rounded-xl p-4 text-left disabled:cursor-default"
+      className="h-[224px] w-full rounded-xl p-4 text-left disabled:cursor-default"
       style={{
         background: preview ? 'var(--cp-surface)' : 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 88%), var(--cp-bg))',
         border: `1px solid ${kpi.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
@@ -1037,7 +1038,7 @@ function MobileKpiCard({
             <span className="shrink-0" style={{ color: toneColor }}>{kpi.icon}</span>
             <span className="truncate">{kpi.title}</span>
           </div>
-          <div className="mt-3 line-clamp-3 whitespace-pre-line break-words text-xl font-semibold leading-tight" style={{ color: toneColor }}>
+          <div className="mt-3 line-clamp-4 whitespace-pre-line break-words text-xl font-semibold leading-tight" style={{ color: toneColor }}>
             {kpi.value}
           </div>
         </div>
@@ -1045,7 +1046,7 @@ function MobileKpiCard({
           {index + 1}/{total}
         </div>
       </div>
-      <div className="mt-4 line-clamp-3 min-h-14 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+      <div className="mt-4 line-clamp-4 min-h-20 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
         {kpi.subtitle ?? ''}
       </div>
     </button>
