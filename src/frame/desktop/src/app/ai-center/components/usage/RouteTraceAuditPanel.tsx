@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, ChevronDown, ChevronUp, Copy, Route, Search } from 'lucide-react'
+import { Check, ChevronUp, Copy, Filter, Route, Search } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useRouteTraces } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
@@ -8,9 +8,30 @@ import { LongField } from '../shared/LongField'
 import type { RouteTrace } from '../../../../api/aicc_mgr'
 
 type TraceOutcomeFilter = 'all' | 'fallback' | 'failed' | 'warning'
+type TraceCandidateSection = 'none' | 'ranked' | 'filtered'
 type TraceEmptyStateKind = 'none-yet' | 'load-failed' | 'no-matches'
 
 const ROUTE_TRACE_PAGE_SIZE = 20
+
+async function writeClipboard(value: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(value)
+    return
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = value
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+    } finally {
+      document.body.removeChild(textarea)
+    }
+  }
+}
 
 export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
   const { t } = useI18n()
@@ -18,6 +39,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
   const snapshotTraces = useRouteTraces()
   const [query, setQuery] = useState('')
   const [outcomeFilter, setOutcomeFilter] = useState<TraceOutcomeFilter>('all')
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
   const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
   const [tracePageIndex, setTracePageIndex] = useState(0)
@@ -127,18 +149,30 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
         </div>
       </div>
 
-      <div className="mb-3 grid grid-cols-1 gap-2 lg:grid-cols-[minmax(260px,1fr)_auto]">
+      <div className="mb-3 flex flex-col gap-2">
         <label className="relative block">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--cp-muted)' }} />
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t('aiCenter.routing.traceSearch', 'Search request, model, provider, scenario...')}
-            className="min-h-10 w-full rounded-lg py-2 pl-9 pr-3 text-sm outline-none"
+            className="min-h-10 w-full rounded-lg py-2 pl-9 pr-12 text-sm outline-none"
             style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
           />
+          <button
+            type="button"
+            onClick={() => setFiltersOpen((value) => !value)}
+            className="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md"
+            style={{
+              color: filtersOpen || outcomeFilter !== 'all' ? 'var(--cp-accent)' : 'var(--cp-muted)',
+              background: filtersOpen ? 'var(--cp-surface)' : 'transparent',
+            }}
+            aria-label={t('aiCenter.routing.filters', 'Filters')}
+          >
+            <Filter size={15} />
+          </button>
         </label>
-        <div className="flex min-h-10 flex-wrap items-center gap-1 rounded-lg p-1" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
+        {filtersOpen && <div className="flex min-h-10 flex-wrap items-center gap-1 rounded-lg p-1" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
           {segmentOptions.map((option) => (
             <button
               key={option.key}
@@ -154,7 +188,7 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
               {option.label}
             </button>
           ))}
-        </div>
+        </div>}
       </div>
 
       <div className={compact ? 'flex flex-col gap-3' : 'grid grid-cols-1 gap-3'}>
@@ -207,14 +241,9 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
 
 function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active: boolean; onSelect: () => void }) {
   const { t } = useI18n()
-  const [rankedExpanded, setRankedExpanded] = useState(false)
-  const [filteredExpanded, setFilteredExpanded] = useState(false)
+  const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const selectedCandidate = selectedTraceCandidate(trace)
-  const visibleRankedCandidates = rankedExpanded
-    ? trace.ranked_candidates
-    : selectedCandidate ? [selectedCandidate] : trace.ranked_candidates.slice(0, 2)
-  const hiddenRankedCount = Math.max(0, trace.ranked_candidates.length - visibleRankedCandidates.length)
   const status = traceStatus(trace)
   const metaItems = [
     trace.selected_provider_instance_name ? `${t('aiCenter.routing.provider', 'Provider')}: ${trace.selected_provider_instance_name}` : '',
@@ -224,15 +253,15 @@ function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active
     formatTraceDuration(trace),
   ].filter(Boolean)
   const copyFields = [
-    { key: 'request_id', label: 'request_id', value: trace.request_id },
-    { key: 'requested_model', label: 'requested_model', value: trace.requested_model },
-    { key: 'selected_exact_model', label: 'selected_exact_model', value: trace.selected_exact_model },
-    { key: 'provider_trace_id', label: 'provider trace id', value: trace.provider_trace_id },
+    { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
+    { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
+    { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
+    { key: 'provider_trace_id', label: t('aiCenter.routing.providerTraceId', 'Provider trace ID'), value: trace.provider_trace_id },
   ].filter((item): item is { key: string; label: string; value: string } => Boolean(item.value))
 
   const copyField = async (key: string, value: string) => {
     try {
-      await navigator.clipboard.writeText(value)
+      await writeClipboard(value)
       setCopiedKey(key)
       window.setTimeout(() => setCopiedKey(null), 1200)
     } catch {
@@ -259,17 +288,20 @@ function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <LongField value={trace.requested_model} className="text-sm" mono />
-            <span style={{ color: 'var(--cp-muted)' }}>{'->'}</span>
-            <LongField
-              value={trace.selected_exact_model}
-              fallback={t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
-              className="text-sm"
-              mono
-              tone={trace.selected_exact_model ? 'default' : 'danger'}
-              expandable
-            />
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            <TraceField label={t('aiCenter.routing.requestId', 'Request ID')} value={trace.request_id} />
+            <TraceField label={t('aiCenter.routing.requestedModel', 'Requested model')} value={trace.requested_model} />
+            <div className="min-w-0">
+              <div className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.routing.selectedExactModel', 'Selected exact model')}</div>
+              <LongField
+                value={trace.selected_exact_model}
+                fallback={t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
+                className="text-sm"
+                mono
+                tone={trace.selected_exact_model ? 'default' : 'danger'}
+                expandable
+              />
+            </div>
           </div>
           <LongField value={metaItems.join(' / ')} className="mt-1 text-xs" tone="muted" copyable={false} expandable />
         </div>
@@ -281,8 +313,13 @@ function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active
         </div>
       </div>
       <p className="mt-2 text-sm" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
+      {selectedCandidate && (
+        <div className="mt-2 rounded-md px-2 py-1.5 text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
+          {candidateWeightSummary(selectedCandidate)}
+        </div>
+      )}
 
-      <div className="mt-3 flex flex-wrap gap-1.5">
+      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
         {copyFields.map((field) => (
           <button
             key={field.key}
@@ -291,106 +328,94 @@ function TraceAuditCard({ trace, active, onSelect }: { trace: RouteTrace; active
               event.stopPropagation()
               void copyField(field.key, field.value)
             }}
-            className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-md px-2 text-xs"
+            className="flex min-h-11 max-w-full items-center gap-2 rounded-md px-2 text-left text-xs"
             style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}
             title={field.value}
           >
             {copiedKey === field.key ? <Check size={13} /> : <Copy size={13} />}
-            <span className="truncate">{field.label}</span>
+            <span className="min-w-0">
+              <span className="block text-[11px]" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
+              <span className="block truncate font-mono">{field.value}</span>
+            </span>
           </button>
         ))}
       </div>
 
-      <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.routing.rankedCandidates', 'Ranked candidates')}
-          </div>
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{trace.ranked_candidates.length}</div>
-        </div>
-        {visibleRankedCandidates.length > 0 ? (
-          <div className="flex flex-col gap-1">
-            {visibleRankedCandidates.map((candidate, index) => (
-              <TraceCandidateRow
-                key={candidate.exact_model}
-                candidate={candidate}
-                rank={rankedCandidateRank(trace, candidate, index)}
-                selected={candidate.selected}
-                reason={candidate.selected ? 'selected' : trace.fallback_applied && candidate.exact_model === trace.selected_exact_model ? 'fallback' : 'ranked'}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.routing.noRankedCandidates', 'No ranked candidates.')}
-          </div>
-        )}
-        {hiddenRankedCount > 0 && (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              setRankedExpanded((value) => !value)
-            }}
-            className="mt-2 inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium"
-            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-          >
-            {rankedExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            {rankedExpanded
-              ? t('aiCenter.routing.traceHideCandidates', 'Hide candidates')
-              : t('aiCenter.routing.traceShowRankedCandidates', 'Show ranked candidates ({{count}})', { count: hiddenRankedCount })}
-          </button>
-        )}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <select
+          value={candidateSection}
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => setCandidateSection(event.target.value as TraceCandidateSection)}
+          className="h-9 rounded-md px-2 text-xs outline-none"
+          style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+        >
+          <option value="none">{t('common.collapse', 'Collapse')}</option>
+          <option value="ranked">{t('aiCenter.routing.traceShowRankedCandidates', 'Show ranked candidates ({{count}})', { count: trace.ranked_candidates.length })}</option>
+          <option value="filtered">{t('aiCenter.routing.traceShowFilteredCandidates', 'Show filtered out ({{count}})', { count: trace.filtered_candidates.length })}</option>
+        </select>
       </div>
 
-      <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.routing.filteredOut', 'Filtered out')}
-          </div>
+      {candidateSection === 'ranked' && (
+        <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
+          {trace.ranked_candidates.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              {trace.ranked_candidates.map((candidate, index) => (
+                <TraceCandidateRow
+                  key={candidate.exact_model}
+                  candidate={candidate}
+                  rank={rankedCandidateRank(trace, candidate, index)}
+                  selected={candidate.selected}
+                  reason={candidate.selected ? 'selected' : trace.fallback_applied && candidate.exact_model === trace.selected_exact_model ? 'fallback' : 'ranked'}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+              {t('aiCenter.routing.noRankedCandidates', 'No ranked candidates.')}
+            </div>
+          )}
           <button
             type="button"
-            disabled={trace.filtered_candidates.length === 0}
             onClick={(event) => {
               event.stopPropagation()
-              setFilteredExpanded((value) => !value)
+              setCandidateSection('none')
             }}
-            className="inline-flex min-h-7 items-center gap-1 rounded-md px-2 text-xs font-medium disabled:opacity-50"
+            className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1 rounded-md px-2 text-xs font-medium"
             style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
           >
-            {filteredExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            {filteredExpanded
-              ? t('common.collapse', 'Collapse')
-              : t('aiCenter.routing.traceShowFilteredCandidates', 'Show {{count}}', { count: trace.filtered_candidates.length })}
+            <ChevronUp size={13} />
+            {t('common.collapse', 'Collapse')}
           </button>
         </div>
-        {!filteredExpanded && (
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {trace.filtered_candidates.length > 0
-              ? t('aiCenter.routing.filteredOutCollapsed', '{{count}} candidates hidden', { count: trace.filtered_candidates.length })
-              : t('aiCenter.routing.noFilteredCandidates', 'No candidates were filtered out.')}
-          </div>
-        )}
-        {filteredExpanded && (
-          <div className="flex flex-col gap-1">
-            {trace.filtered_candidates.map((candidate) => (
-              <TraceFilteredCandidateRow key={candidate.exact_model} candidate={candidate} />
-            ))}
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation()
-                setFilteredExpanded(false)
-              }}
-              className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1 rounded-md px-2 text-xs font-medium"
-              style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-            >
-              <ChevronUp size={13} />
-              {t('common.collapse', 'Collapse')}
-            </button>
-          </div>
-        )}
-      </div>
+      )}
+
+      {candidateSection === 'filtered' && (
+        <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
+          {trace.filtered_candidates.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              {trace.filtered_candidates.map((candidate) => (
+                <TraceFilteredCandidateRow key={candidate.exact_model} candidate={candidate} />
+              ))}
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setCandidateSection('none')
+                }}
+                className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1 rounded-md px-2 text-xs font-medium"
+                style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+              >
+                <ChevronUp size={13} />
+                {t('common.collapse', 'Collapse')}
+              </button>
+            </div>
+          ) : (
+            <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+              {t('aiCenter.routing.noFilteredCandidates', 'No candidates were filtered out.')}
+            </div>
+          )}
+        </div>
+      )}
 
       {trace.warnings.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
@@ -433,9 +458,18 @@ function TraceCandidateRow({
         </span>
       </span>
       <span className="shrink-0 text-right" style={{ color: 'var(--cp-muted)' }}>
-        <span className="block">{candidate.final_score != null ? candidate.final_score.toFixed(2) : '-'}</span>
+        <span className="block">{candidate.final_score != null ? formatPreciseDecimal(candidate.final_score) : '-'}</span>
         <span className="block">{reason}</span>
       </span>
+    </div>
+  )
+}
+
+function TraceField({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>{label}</div>
+      <LongField value={value} className="text-sm" mono expandable />
     </div>
   )
 }
@@ -572,4 +606,12 @@ function weightEffect(weight: number): string {
 
 function formatWeight(weight: number): string {
   return weight.toFixed(2).replace(/\.?0+$/, '')
+}
+
+function formatPreciseDecimal(value: number): string {
+  if (value === 0) return '0.0'
+  const abs = Math.abs(value)
+  if (abs < 0.0001) return value < 0 ? '>-0.0001' : '<0.0001'
+  if (abs < 0.01) return value.toFixed(4)
+  return value.toFixed(2)
 }

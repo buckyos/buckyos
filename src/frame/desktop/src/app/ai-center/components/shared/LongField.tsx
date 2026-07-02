@@ -21,6 +21,26 @@ function toneColor(tone: LongFieldProps['tone']): string {
   return 'var(--cp-text)'
 }
 
+async function writeClipboard(value: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(value)
+    return
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = value
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+    } finally {
+      document.body.removeChild(textarea)
+    }
+  }
+}
+
 export function LongField({
   value,
   fallback = '-',
@@ -42,7 +62,7 @@ export function LongField({
   const copy = async () => {
     if (!value) return
     try {
-      await navigator.clipboard.writeText(value)
+      await writeClipboard(value)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     } catch {

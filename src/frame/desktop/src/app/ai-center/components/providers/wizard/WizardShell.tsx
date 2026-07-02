@@ -133,7 +133,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       </div>
 
       {/* Content */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-28 md:px-6 md:pb-6">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-36 [scroll-padding-bottom:9rem] md:px-6 md:pb-6">
         {step === 0 && (
           <StepChooseType selected={draft.provider_type} onSelect={handleTypeSelect} />
         )}
@@ -170,6 +170,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         style={{
           borderTop: '1px solid var(--cp-border)',
           background: 'var(--cp-surface)',
+          bottom: 'env(keyboard-inset-height, 0px)',
           paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
         }}
       >

@@ -40,6 +40,26 @@ function usageTokens(event: UsageEvent): number {
   return event.token_equivalent ?? (event.tokens_in ?? 0) + (event.tokens_out ?? 0)
 }
 
+async function writeClipboard(value: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(value)
+    return
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = value
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+    } finally {
+      document.body.removeChild(textarea)
+    }
+  }
+}
+
 function providerInstanceFromExactModel(model: string): string | undefined {
   const at = model.lastIndexOf('@')
   if (at < 0 || at === model.length - 1) return undefined
@@ -59,12 +79,12 @@ function usageProviderDisplayName(event: UsageEvent, providerNames: Map<string, 
   return providerNames.get(identifier) ?? identifier
 }
 
-function formatUsd(amount: number, compact = false): string {
-  if (amount === 0) return '$0'
+function formatUsd(amount: number): string {
+  if (amount === 0) return '$0.0'
   const abs = Math.abs(amount)
   if (abs < 0.0001) return amount < 0 ? '>-$0.0001' : '<$0.0001'
   if (abs < 0.01) return `$${amount.toFixed(4)}`
-  return `$${amount.toFixed(compact ? 2 : 4)}`
+  return `$${amount.toFixed(2)}`
 }
 
 function formatLocalTime(value: string): string {
@@ -132,6 +152,7 @@ function uniqueSorted(values: Array<string | undefined>): string[] {
 
 type TimeRangeFilter = 'all' | '24h' | '7d' | '30d' | 'custom'
 type BreakdownFilterTarget = 'provider' | 'model' | 'appAgent'
+type HomeBreakdownKey = 'provider' | 'model' | 'appAgent' | 'apiType'
 type MultiFilter = {
   query: string
   selected: string[]
@@ -168,6 +189,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
   const [linkedTraceError, setLinkedTraceError] = useState<string | null>(null)
   const [filtersSheetOpen, setFiltersSheetOpen] = useState(false)
   const [usageTab, setUsageTab] = useState<'usage' | 'trace'>('usage')
+  const [homeBreakdownKey, setHomeBreakdownKey] = useState<HomeBreakdownKey>('provider')
   const detailRef = useRef<HTMLElement | null>(null)
   const linkedTraceRef = useRef<HTMLElement | null>(null)
   const isUsagePage = mode === 'usage'
@@ -208,7 +230,12 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
   const effectiveDetailPage = detailPage
   const pageStart = (effectiveDetailPage - 1) * pageLimit
   const pagedEvents = usagePage.events
-  const recentUsageEvents = pagedEvents.slice(0, HOME_USAGE_LIMIT)
+  const recentUsageEvents = useMemo(
+    () => [...pagedEvents]
+      .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+      .slice(0, HOME_USAGE_LIMIT),
+    [pagedEvents],
+  )
   const detailPageCount = Math.max(1, Math.ceil(usagePage.totalRequests / pageLimit))
   const canGoNext = effectiveDetailPage < detailPageCount && pageCursors[effectiveDetailPage + 1] != null
   const hasUsageMore = Boolean(pageCursors[effectiveDetailPage + 1])
@@ -338,6 +365,38 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
       detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
   }
+  const homeBreakdowns = [
+    {
+      key: 'provider' as const,
+      title: t('aiCenter.home.byProvider', 'By Provider Instance'),
+      rows: sortedEntries(summary.by_provider),
+      activeLabel: providerFilter.selected.length === 1 && !providerFilter.query ? providerFilter.selected[0] : undefined,
+    },
+    {
+      key: 'model' as const,
+      title: t('aiCenter.home.byModel', 'By Exact Model'),
+      rows: sortedEntries(summary.by_model),
+      activeLabel: modelFilter.selected.length === 1 && !modelFilter.query ? modelFilter.selected[0] : undefined,
+    },
+    {
+      key: 'appAgent' as const,
+      title: t('aiCenter.home.byApp', 'By App / Agent'),
+      rows: sortedEntries(summary.by_app),
+      activeLabel: appAgentFilter.selected.length === 1 && !appAgentFilter.query ? appAgentFilter.selected[0] : undefined,
+    },
+    {
+      key: 'apiType' as const,
+      title: t('aiCenter.home.byApiType', 'By API Type'),
+      rows: sortedEntries(summary.by_api_namespace),
+      activeLabel: undefined,
+    },
+  ]
+  const activeHomeBreakdown = homeBreakdowns.find((item) => item.key === homeBreakdownKey) ?? homeBreakdowns[0]
+  const selectHomeBreakdown = (key: HomeBreakdownKey, label: string) => {
+    if (key === 'provider') applyBreakdownFilter('provider', label)
+    if (key === 'model') applyBreakdownFilter('model', label)
+    if (key === 'appAgent') applyBreakdownFilter('appAgent', label)
+  }
 
   const loadLinkedTraces = async (taskId: string, cursor?: string) => {
     const normalizedTaskId = taskId.trim()
@@ -390,7 +449,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
           {
             icon: <DollarSign size={18} />,
             title: t('aiCenter.home.estimatedCost', 'Est. Cost'),
-            value: formatUsd(summary.total_estimated_cost, true),
+            value: formatUsd(summary.total_estimated_cost),
             subtitle: t('aiCenter.home.costEstimated', 'Estimated from usage events'),
             onClick: isUsagePage ? () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : undefined,
           },
@@ -427,7 +486,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
         <SummaryCard
           icon={<DollarSign size={18} />}
           title={t('aiCenter.home.estimatedCost', 'Est. Cost')}
-          value={formatUsd(summary.total_estimated_cost, true)}
+          value={formatUsd(summary.total_estimated_cost)}
           subtitle={t('aiCenter.home.costEstimated', 'Estimated from usage events')}
         />
         <SummaryCard
@@ -470,17 +529,18 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
 
         <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--cp-text)' }}>
-            {t('aiCenter.home.categoryTitle', 'API Type Breakdown')}
+            {t('aiCenter.home.usageSummary', 'Usage Summary')}
           </h3>
-          <div className="flex flex-col gap-2">
-            {sortedEntries(summary.by_api_namespace, 8).map(([namespace, tokens]) => (
-              <MeterRow key={namespace} label={namespace} value={tokens} max={summary.total_tokens} />
-            ))}
+          <div className="grid grid-cols-2 gap-4 items-stretch">
+            <Stat label={t('aiCenter.home.today', 'Today')} value={`${formatTokens(summary.today_tokens)} tokens`} />
+            <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={`${formatTokens(summary.this_month_tokens)} tokens`} />
+            <Stat label={t('aiCenter.home.total', 'Total')} value={`${formatTokens(summary.total_tokens)} tokens`} />
+            <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatUsd(summary.total_estimated_cost)} />
           </div>
         </section>
       </div>
 
-      <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      <section className="hidden rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
         <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--cp-text)' }}>
           {t('aiCenter.home.usageSummary', 'Usage Summary')}
         </h3>
@@ -489,9 +549,63 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
           <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={`${formatTokens(summary.this_month_tokens)} tokens`} />
           <Stat label={t('aiCenter.home.total', 'Total')} value={`${formatTokens(summary.total_tokens)} tokens`} />
           <Stat label={t('aiCenter.home.requests', 'Requests')} value={summary.total_requests.toString()} />
-          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatUsd(summary.total_estimated_cost, true)} />
+          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatUsd(summary.total_estimated_cost)} />
         </div>
       </section>
+
+      {!isUsagePage && (
+        <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
+              {t('aiCenter.home.secondaryBreakdowns', 'Provider / Model / App breakdown')}
+            </h3>
+            {isMobile && (
+              <label className="relative min-w-[180px]">
+                <select
+                  value={homeBreakdownKey}
+                  onChange={(event) => setHomeBreakdownKey(event.target.value as HomeBreakdownKey)}
+                  className="h-9 w-full appearance-none rounded-lg px-3 pr-8 text-xs outline-none"
+                  style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+                >
+                  {homeBreakdowns.map((item) => (
+                    <option key={item.key} value={item.key}>{item.title}</option>
+                  ))}
+                </select>
+                <ChevronDown size={14} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" style={{ color: 'var(--cp-muted)' }} />
+              </label>
+            )}
+          </div>
+          <div className="hidden grid-cols-4 gap-4 md:grid">
+            {homeBreakdowns.map((item) => (
+              <Breakdown
+                key={item.key}
+                title={item.title}
+                rows={item.rows}
+                total={summary.total_tokens}
+                activeLabel={item.activeLabel}
+                onSelect={item.key === 'apiType' ? undefined : (label) => selectHomeBreakdown(item.key, label)}
+                viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
+                showLessLabel={t('aiCenter.home.showLess', 'Show less')}
+                filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
+                emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
+              />
+            ))}
+          </div>
+          <div className="md:hidden">
+            <Breakdown
+              title={activeHomeBreakdown.title}
+              rows={activeHomeBreakdown.rows}
+              total={summary.total_tokens}
+              activeLabel={activeHomeBreakdown.activeLabel}
+              onSelect={activeHomeBreakdown.key === 'apiType' ? undefined : (label) => selectHomeBreakdown(activeHomeBreakdown.key, label)}
+              viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
+              showLessLabel={t('aiCenter.home.showLess', 'Show less')}
+              filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
+              emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
+            />
+          </div>
+        </section>
+      )}
 
       {!isUsagePage && (
         <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
@@ -550,22 +664,26 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
               {t('aiCenter.home.detailTable', 'Usage Detail')}
             </h3>
-            <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-              {usageLoading ? t('common.loading', 'Loading') : usagePage.totalRequests}
-            </span>
+            {isMobile ? (
+              <button
+                type="button"
+                onClick={() => setFiltersSheetOpen(true)}
+                className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium"
+                style={{ color: activeFilterChips.length > 0 ? 'var(--cp-accent)' : 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
+                aria-label={t('aiCenter.home.filters', 'Filters')}
+              >
+                <Filter size={15} />
+                <span>{activeFilterChips.length}</span>
+              </button>
+            ) : (
+              <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
+                {usageLoading ? t('common.loading', 'Loading') : usagePage.totalRequests}
+              </span>
+            )}
           </div>
           {isMobile && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setFiltersSheetOpen(true)}
-                  className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium"
-                  style={{ color: 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
-                >
-                  <Filter size={16} />
-                  {t('aiCenter.home.filters', 'Filters')}
-                </button>
                 {activeFilterChips.length > 0 && (
                   <button
                     type="button"
@@ -880,49 +998,6 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
         <RouteTraceAuditPanel compact={isMobile} />
       )}
 
-      {(!isUsagePage || usageTab === 'usage') && (
-      <details className="group rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-          <span>{t('aiCenter.home.secondaryBreakdowns', 'Provider / Model / App breakdown')}</span>
-          <ChevronDown size={16} className="transition group-open:rotate-180" style={{ color: 'var(--cp-muted)' }} />
-        </summary>
-        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <Breakdown
-            title={t('aiCenter.home.byProvider', 'By Provider Instance')}
-            rows={sortedEntries(summary.by_provider)}
-            total={summary.total_tokens}
-            activeLabel={providerFilter.selected.length === 1 && !providerFilter.query ? providerFilter.selected[0] : undefined}
-            onSelect={(label) => applyBreakdownFilter('provider', label)}
-            viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
-            showLessLabel={t('aiCenter.home.showLess', 'Show less')}
-            filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
-            emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
-          />
-          <Breakdown
-            title={t('aiCenter.home.byModel', 'By Exact Model')}
-            rows={sortedEntries(summary.by_model)}
-            total={summary.total_tokens}
-            activeLabel={modelFilter.selected.length === 1 && !modelFilter.query ? modelFilter.selected[0] : undefined}
-            onSelect={(label) => applyBreakdownFilter('model', label)}
-            viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
-            showLessLabel={t('aiCenter.home.showLess', 'Show less')}
-            filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
-            emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
-          />
-          <Breakdown
-            title={t('aiCenter.home.byApp', 'By App / Agent')}
-            rows={sortedEntries(summary.by_app)}
-            total={summary.total_tokens}
-            activeLabel={appAgentFilter.selected.length === 1 && !appAgentFilter.query ? appAgentFilter.selected[0] : undefined}
-            onSelect={(label) => applyBreakdownFilter('appAgent', label)}
-            viewAllLabel={t('aiCenter.home.viewAll', 'View all')}
-            showLessLabel={t('aiCenter.home.showLess', 'Show less')}
-            filterLabel={t('aiCenter.home.filterToDetail', 'Filter Usage Detail')}
-            emptyLabel={t('aiCenter.home.noBreakdownData', 'No usage data yet.')}
-          />
-        </div>
-      </details>
-      )}
     </div>
   )
 }
@@ -948,26 +1023,83 @@ function StatusAndKpiHeader({
   issueCount: number
   kpis: Array<{ icon: ReactNode; title: string; value: string; subtitle?: string; onClick?: () => void }>
 }) {
+  const statusSubtitle = `${providerCount} ${providerLabel} / ${modelCount} ${modelLabel} / ${issueCount} ${issueLabel}`
+  const carouselCards = [
+    {
+      icon: <Activity size={18} />,
+      title: statusTitle,
+      value: statusValue,
+      subtitle: statusSubtitle,
+    },
+    ...kpis,
+  ]
   return (
-    <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,2fr)]">
-      <div
-        className="rounded-xl p-4"
-        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-      >
-        <div className="flex items-center gap-2 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-          <Activity size={18} style={{ color: 'var(--cp-accent)' }} />
-          {statusTitle}
-        </div>
-        <div className="mt-3 text-2xl font-semibold leading-tight" style={{ color: 'var(--cp-text)' }}>
-          {statusValue}
-        </div>
-        <div className="mt-4 grid grid-cols-3 gap-2">
-          <StatusMiniMetric label={providerLabel} value={providerCount} />
-          <StatusMiniMetric label={modelLabel} value={modelCount} />
-          <StatusMiniMetric label={issueLabel} value={issueCount} warning={issueCount > 0} />
-        </div>
+    <div>
+      <div className="md:hidden">
+        <KpiCarousel kpis={carouselCards} />
       </div>
-      <KpiCarousel kpis={kpis} />
+      <div className="hidden grid-cols-4 gap-3 md:grid">
+        <StatusSummaryCard
+          title={statusTitle}
+          value={statusValue}
+          providerLabel={providerLabel}
+          modelLabel={modelLabel}
+          issueLabel={issueLabel}
+          providerCount={providerCount}
+          modelCount={modelCount}
+          issueCount={issueCount}
+        />
+        {kpis.slice(0, 3).map((kpi) => (
+          <SummaryCard
+            key={kpi.title}
+            icon={kpi.icon}
+            title={kpi.title}
+            value={kpi.value}
+            subtitle={kpi.subtitle}
+            onClick={kpi.onClick}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function StatusSummaryCard({
+  title,
+  value,
+  providerLabel,
+  modelLabel,
+  issueLabel,
+  providerCount,
+  modelCount,
+  issueCount,
+}: {
+  title: string
+  value: string
+  providerLabel: string
+  modelLabel: string
+  issueLabel: string
+  providerCount: number
+  modelCount: number
+  issueCount: number
+}) {
+  return (
+    <div
+      className="rounded-xl p-4"
+      style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+    >
+      <div className="flex items-center gap-2 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+        <Activity size={18} style={{ color: 'var(--cp-accent)' }} />
+        {title}
+      </div>
+      <div className="mt-3 text-2xl font-semibold leading-tight" style={{ color: 'var(--cp-text)' }}>
+        {value}
+      </div>
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        <StatusMiniMetric label={providerLabel} value={providerCount} />
+        <StatusMiniMetric label={modelLabel} value={modelCount} />
+        <StatusMiniMetric label={issueLabel} value={issueCount} warning={issueCount > 0} />
+      </div>
     </div>
   )
 }
@@ -1106,7 +1238,7 @@ function UsageEventCard({
 
   const copyDetails = async () => {
     try {
-      await navigator.clipboard.writeText(copyValue)
+      await writeClipboard(copyValue)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     } catch {
@@ -1687,7 +1819,7 @@ function Breakdown({
   rows: Array<[string, number]>
   total: number
   activeLabel?: string
-  onSelect: (label: string) => void
+  onSelect?: (label: string) => void
   viewAllLabel: string
   showLessLabel: string
   filterLabel: string
@@ -1716,7 +1848,7 @@ function Breakdown({
             max={total}
             active={activeLabel === label}
             actionLabel={filterLabel}
-            onClick={() => onSelect(label)}
+            onClick={onSelect ? () => onSelect(label) : undefined}
           />
         ))}
         {rows.length === 0 && (
@@ -1756,7 +1888,7 @@ function CopyableText({ value, title, mono }: { value: string; title?: string; m
   const copyValue = title ?? value
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(copyValue)
+      await writeClipboard(copyValue)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     } catch {

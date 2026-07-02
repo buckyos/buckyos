@@ -17,6 +17,7 @@ import {
   Cpu,
   DollarSign,
   FileText,
+  Filter,
   FolderTree,
   GitBranch,
   Image,
@@ -105,6 +106,8 @@ export function RoutingPage() {
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [currentPath, setCurrentPath] = useState<string | null>(null)
   const [showMobileScenarioDetail, setShowMobileScenarioDetail] = useState(false)
+  const [mobileScenarioPane, setMobileScenarioPane] = useState<'scenario' | 'trace'>('scenario')
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
   const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
   const [tracePageIndex, setTracePageIndex] = useState(0)
@@ -298,6 +301,8 @@ export function RoutingPage() {
         options={filterOptions}
         onQueryChange={setQuery}
         onFilterChange={updateFilter}
+        filtersOpen={filtersOpen}
+        onToggleFilters={() => setFiltersOpen((value) => !value)}
       />
 
       {!queryActive && (
@@ -314,47 +319,70 @@ export function RoutingPage() {
 
       {isMobile && showMobileScenarioDetail && selectedScenario ? (
         <div className="flex flex-col gap-4">
-          <button
-            type="button"
-            onClick={() => setShowMobileScenarioDetail(false)}
-            className="inline-flex min-h-11 w-fit items-center gap-2 rounded-lg px-3 text-sm font-medium"
-            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-          >
-            <ArrowLeft size={16} />
-            {t('common.back', 'Back')}
-          </button>
-          <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
-          <TraceExplorer
-            traces={visibleTraces}
-            loadedCount={traces.length}
-            compact={isMobile}
-            outcomeFilter={traceOutcomeFilter}
-            activeLogicalPath={activeTracePath}
-            activeTraceId={selectedTraceId}
-            hasMore={Boolean(traceNextCursor)}
-            pageIndex={tracePageIndex}
-            canGoPrevious={false}
-            canGoNext={false}
-            loading={traceLoading}
-            error={traceError}
-            onOutcomeFilterChange={setTraceOutcomeFilter}
-            onLoadMore={loadMoreTraces}
-            onRetry={retryTraceLoad}
-            onPreviousPage={() => undefined}
-            onNextPage={() => undefined}
-            onTraceSelect={(trace) => {
-              const logicalPath = traceLogicalPath(trace)
-              setSelectedTraceId(trace.request_id)
-              if (logicalPath && allScenarioByPath.has(logicalPath)) {
-                setSelectedPath(logicalPath)
-              }
-            }}
-            onClearScenarioFilter={() => {
-              setSelectedTraceId(null)
-              setSelectedPath(null)
-            }}
-            emptyState={traceEmptyState}
-          />
+          <div className="flex min-h-11 items-center gap-1 rounded-xl p-1" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+            <button
+              type="button"
+              onClick={() => setShowMobileScenarioDetail(false)}
+              className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-medium"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              <ArrowLeft size={15} />
+              {t('aiCenter.routing.mainPage', 'Routing')}
+            </button>
+            {([
+              ['scenario', t('aiCenter.routing.scenarioInfo', 'Scenario')],
+              ['trace', t('aiCenter.routing.tracePage', 'Trace')],
+            ] as Array<['scenario' | 'trace', string]>).map(([pane, label]) => (
+              <button
+                key={pane}
+                type="button"
+                onClick={() => setMobileScenarioPane(pane)}
+                className="min-h-9 flex-1 rounded-lg px-2 text-xs font-medium"
+                style={{
+                  background: mobileScenarioPane === pane ? 'var(--cp-surface-2)' : 'transparent',
+                  color: mobileScenarioPane === pane ? 'var(--cp-text)' : 'var(--cp-muted)',
+                  border: mobileScenarioPane === pane ? '1px solid var(--cp-border)' : '1px solid transparent',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {mobileScenarioPane === 'scenario' ? (
+            <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
+          ) : (
+            <TraceExplorer
+              traces={visibleTraces}
+              loadedCount={traces.length}
+              compact={isMobile}
+              outcomeFilter={traceOutcomeFilter}
+              activeLogicalPath={activeTracePath}
+              activeTraceId={selectedTraceId}
+              hasMore={Boolean(traceNextCursor)}
+              pageIndex={tracePageIndex}
+              canGoPrevious={false}
+              canGoNext={false}
+              loading={traceLoading}
+              error={traceError}
+              onOutcomeFilterChange={setTraceOutcomeFilter}
+              onLoadMore={loadMoreTraces}
+              onRetry={retryTraceLoad}
+              onPreviousPage={() => undefined}
+              onNextPage={() => undefined}
+              onTraceSelect={(trace) => {
+                const logicalPath = traceLogicalPath(trace)
+                setSelectedTraceId(trace.request_id)
+                if (logicalPath && allScenarioByPath.has(logicalPath)) {
+                  setSelectedPath(logicalPath)
+                }
+              }}
+              onClearScenarioFilter={() => {
+                setSelectedTraceId(null)
+                setSelectedPath(null)
+              }}
+              emptyState={traceEmptyState}
+            />
+          )}
         </div>
       ) : (
       <div className={isMobile || isCompactDesktop ? 'flex flex-col gap-4' : 'grid grid-cols-[220px_minmax(0,1fr)_360px] gap-4 items-start'}>
@@ -393,7 +421,10 @@ export function RoutingPage() {
               onSelect={() => {
                 setSelectedPath(scenario.node.path)
                 setSelectedTraceId(null)
-                if (isMobile) setShowMobileScenarioDetail(true)
+                if (isMobile) {
+                  setMobileScenarioPane('scenario')
+                  setShowMobileScenarioDetail(true)
+                }
               }}
               onOpen={() => {
                 setCurrentPath(scenario.node.path)
@@ -471,31 +502,49 @@ function RoutingFiltersBar({
   options,
   onQueryChange,
   onFilterChange,
+  filtersOpen,
+  onToggleFilters,
 }: {
   query: string
   filters: RoutingFilters
   options: Record<FilterKey, string[]>
   onQueryChange: (value: string) => void
   onFilterChange: (key: FilterKey, value: MultiFilter) => void
+  filtersOpen: boolean
+  onToggleFilters: () => void
 }) {
   const { t } = useI18n()
+  const activeFilterCount = Object.values(filters).reduce((count, filter) => count + filter.selected.length + (filter.query.trim() ? 1 : 0), 0)
   return (
     <section
       className="rounded-xl p-3 flex flex-col gap-3"
       style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
     >
-      <div className="flex items-center gap-2">
+      <div className="relative flex items-center gap-2">
         <Search size={17} style={{ color: 'var(--cp-muted)' }} />
         <input
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder={t('aiCenter.routing.search', 'Search logical path, model, provider, capability...')}
-          className="min-h-10 flex-1 rounded-lg px-3 text-sm outline-none"
+          className="min-h-10 flex-1 rounded-lg px-3 pr-12 text-sm outline-none"
           style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
         />
+        <button
+          type="button"
+          onClick={onToggleFilters}
+          className="absolute right-1.5 top-1/2 flex h-7 min-w-7 -translate-y-1/2 items-center justify-center gap-1 rounded-md px-1.5 text-xs"
+          style={{
+            color: filtersOpen || activeFilterCount > 0 ? 'var(--cp-accent)' : 'var(--cp-muted)',
+            background: filtersOpen ? 'var(--cp-surface)' : 'transparent',
+          }}
+          aria-label={t('aiCenter.routing.filters', 'Filters')}
+        >
+          <Filter size={14} />
+          {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+      {filtersOpen && <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
         <MultiSelectFilter label={t('aiCenter.routing.provider', 'Provider')} value={filters.provider} options={options.provider} onChange={(value) => onFilterChange('provider', value)} />
         <MultiSelectFilter label={t('aiCenter.routing.apiType', 'API Type')} value={filters.apiType} options={options.apiType} onChange={(value) => onFilterChange('apiType', value)} />
         <MultiSelectFilter label={t('aiCenter.routing.capability', 'Capability')} value={filters.capability} options={options.capability} onChange={(value) => onFilterChange('capability', value)} />
@@ -503,7 +552,7 @@ function RoutingFiltersBar({
         <MultiSelectFilter label={t('aiCenter.routing.latency', 'Latency')} value={filters.latency} options={options.latency} onChange={(value) => onFilterChange('latency', value)} />
         <MultiSelectFilter label={t('aiCenter.routing.health', 'Health')} value={filters.health} options={options.health} onChange={(value) => onFilterChange('health', value)} />
         <MultiSelectFilter label={t('aiCenter.routing.location', 'Local/Cloud')} value={filters.location} options={options.location} onChange={(value) => onFilterChange('location', value)} />
-      </div>
+      </div>}
     </section>
   )
 }

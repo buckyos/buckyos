@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { AlertTriangle, ChevronDown, ChevronRight, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Filter, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
@@ -60,20 +60,22 @@ interface ProviderDetailPanelProps {
   provider: ProviderView
   routingWeight: number
   onDeleted: () => void
+  onBack?: () => void
 }
 
-export function ProviderDetailPanel({ provider, routingWeight, onDeleted }: ProviderDetailPanelProps) {
+export function ProviderDetailPanel({ provider, routingWeight, onDeleted, onBack }: ProviderDetailPanelProps) {
   return (
     <ProviderDetailPanelBody
       key={provider.config.provider_instance_name}
       provider={provider}
       routingWeight={routingWeight}
       onDeleted={onDeleted}
+      onBack={onBack}
     />
   )
 }
 
-function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: ProviderDetailPanelProps) {
+function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }: ProviderDetailPanelProps) {
   const { t } = useI18n()
   const store = useAICCStore()
   const isMobile = useMediaQuery('(max-width: 767px)')
@@ -95,6 +97,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
   const [actionsOpen, setActionsOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [filters, setFilters] = useState<InventoryFilters>(() => emptyInventoryFilters())
+  const [inventoryFiltersOpen, setInventoryFiltersOpen] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set())
   const actionsRef = useRef<HTMLDivElement | null>(null)
 
@@ -238,11 +241,29 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
       : routingWeight > 1
         ? t('aiCenter.providers.routingUpweighted', 'Upweighted')
         : t('aiCenter.providers.routingDefault', 'Default')
+  const providerMetrics = [
+    { label: t('aiCenter.providers.providerStatus', 'Provider Status'), value: config.name, detail: `${models.length} ${t('aiCenter.providers.models', 'Models')} / ${degradedCount + quotaWarningCount} ${t('aiCenter.providers.issues', 'Issues')}` },
+    { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision },
+    { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal') },
+    { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel },
+  ]
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex min-w-0 items-start gap-2">
+          {isMobile && onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+              style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+              aria-label={t('common.back', 'Back')}
+            >
+              <ArrowLeft size={18} />
+            </button>
+          )}
+          <div className="flex min-w-0 flex-col gap-1">
           <h2 className="truncate text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
             {config.name}
           </h2>
@@ -252,6 +273,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
             tone="muted"
             copyable
           />
+          </div>
         </div>
         <div ref={actionsRef} className="relative shrink-0">
           <button
@@ -366,7 +388,10 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
 
       {activeSection === 'overview' && (
       <>
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,2fr)]">
+      <div className="md:hidden">
+        <MetricCarousel metrics={providerMetrics} />
+      </div>
+      <div className="hidden grid-cols-4 gap-3 md:grid">
         <div className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
           <div className="min-w-0 text-xs" style={{ color: 'var(--cp-muted)' }}>
             {t('aiCenter.providers.providerStatus', 'Provider Status')}
@@ -396,14 +421,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
             />
           </div>
         </div>
-        <MetricCarousel
-          metrics={[
-            { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision },
-            { label: t('aiCenter.providers.health', 'Health'), value: `${models.length - degradedCount}/${models.length}`, detail: t('aiCenter.providers.availableModels', 'available models') },
-            { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal') },
-            { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel },
-          ]}
-        />
+        {providerMetrics.slice(1).map((metric) => (
+          <Metric key={metric.label} label={metric.label} value={metric.value} detail={metric.detail} />
+        ))}
       </div>
 
       <div
@@ -518,6 +538,8 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
             filters={filters}
             filterOptions={filterOptions}
             onFilterChange={setFilter}
+            filtersOpen={inventoryFiltersOpen}
+            onToggleFilters={() => setInventoryFiltersOpen((value) => !value)}
           />
           {groupedModels.length > 0 ? (
             <div className="grid grid-cols-1 gap-3">
@@ -672,6 +694,8 @@ function InventoryToolbar({
   filters,
   filterOptions,
   onFilterChange,
+  filtersOpen,
+  onToggleFilters,
 }: {
   t: TFn
   searchQuery: string
@@ -679,7 +703,10 @@ function InventoryToolbar({
   filters: InventoryFilters
   filterOptions: Record<FilterKey, string[]>
   onFilterChange: (key: FilterKey, value: MultiFilter) => void
+  filtersOpen: boolean
+  onToggleFilters: () => void
 }) {
+  const activeFilterCount = Object.values(filters).reduce((count, filter) => count + filter.selected.length + (filter.query.trim() ? 1 : 0), 0)
   return (
     <div className="rounded-xl p-3 flex flex-col gap-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
       <label className="relative block">
@@ -688,18 +715,31 @@ function InventoryToolbar({
           value={searchQuery}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder={t('aiCenter.providers.searchModels', 'Search models')}
-          className="w-full rounded-lg py-2 pl-9 pr-3 text-sm"
+          className="w-full rounded-lg py-2 pl-9 pr-12 text-sm"
           style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
         />
+        <button
+          type="button"
+          onClick={onToggleFilters}
+          className="absolute right-1.5 top-1/2 flex h-7 min-w-7 -translate-y-1/2 items-center justify-center gap-1 rounded-md px-1.5 text-xs"
+          style={{
+            color: filtersOpen || activeFilterCount > 0 ? 'var(--cp-accent)' : 'var(--cp-muted)',
+            background: filtersOpen ? 'var(--cp-surface)' : 'transparent',
+          }}
+          aria-label={t('aiCenter.providers.filters', 'Filters')}
+        >
+          <Filter size={14} />
+          {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+        </button>
       </label>
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-2">
+      {filtersOpen && <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-2">
         <MultiSelectFilter label={t('aiCenter.providers.apiType', 'API Type')} value={filters.apiType} options={filterOptions.apiType} onChange={(value) => onFilterChange('apiType', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.logicalMount', 'Logical Mount')} value={filters.logicalMount} options={filterOptions.logicalMount} onChange={(value) => onFilterChange('logicalMount', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.health', 'Health')} value={filters.health} options={filterOptions.health} onChange={(value) => onFilterChange('health', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.costClass', 'Cost Class')} value={filters.costClass} options={filterOptions.costClass} onChange={(value) => onFilterChange('costClass', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.latencyClass', 'Latency Class')} value={filters.latencyClass} options={filterOptions.latencyClass} onChange={(value) => onFilterChange('latencyClass', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.tier', 'Tier')} value={filters.tier} options={filterOptions.tier} onChange={(value) => onFilterChange('tier', value)} />
-      </div>
+      </div>}
     </div>
   )
 }
