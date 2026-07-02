@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, ChevronUp, Copy, Filter, HelpCircle, Route, Search } from 'lucide-react'
+import { ChevronUp, Filter, HelpCircle, Route, Search } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useRouteTraces } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
@@ -54,26 +54,6 @@ function timeRangeToQuery(value: TimeRangeFilter, customStartDate: string, custo
       ? 7 * 24 * 60 * 60 * 1000
       : 30 * 24 * 60 * 60 * 1000
   return { startTimeMs: Date.now() - duration, endTimeMs: Date.now() }
-}
-
-async function writeClipboard(value: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(value)
-    return
-  } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = value
-    textarea.setAttribute('readonly', '')
-    textarea.style.position = 'fixed'
-    textarea.style.left = '-9999px'
-    document.body.appendChild(textarea)
-    textarea.select()
-    try {
-      document.execCommand('copy')
-    } finally {
-      document.body.removeChild(textarea)
-    }
-  }
 }
 
 export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
@@ -330,7 +310,6 @@ function TraceAuditCard({
 }) {
   const { t } = useI18n()
   const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
-  const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const selectedCandidate = selectedTraceCandidate(trace)
   const selectedPricingSnapshot = trace.pricing_snapshot ?? selectedCandidate?.pricing_snapshot
   const status = traceStatus(trace)
@@ -349,31 +328,20 @@ function TraceAuditCard({
     { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
     { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
     { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
-    { key: 'unit_price', label: t('aiCenter.routing.unitPrice', 'Unit price'), value: formatUnitPrice(selectedPricingSnapshot) },
     {
       key: 'pre_call_estimate',
-      label: t('aiCenter.routing.preCallEstimate', 'Pre-call estimate'),
+      label: t('aiCenter.routing.estimatedCost', 'Estimated cost'),
       value: formatPreCallEstimate(selectedPricingSnapshot),
       title: preCallEstimateHint,
     },
+    { key: 'unit_price', label: t('aiCenter.routing.unitPrice', 'Unit price'), value: formatUnitPrice(selectedPricingSnapshot) },
   ]
   const detailItems = [
     { key: 'time', label: t('aiCenter.routing.time', 'Time'), value: trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '-' },
     ...traceFields,
   ]
-  const copyFields = [
-    ...traceFields.filter((item): item is { key: string; label: string; value: string } => Boolean(item.value && item.value !== '-')),
-    { key: 'provider_trace_id', label: t('aiCenter.routing.providerTraceId', 'Provider trace ID'), value: trace.provider_trace_id },
-  ].filter((item): item is { key: string; label: string; value: string } => Boolean(item.value))
-
-  const copyField = async (key: string, value: string) => {
-    try {
-      await writeClipboard(value)
-      setCopiedKey(key)
-      window.setTimeout(() => setCopiedKey(null), 1200)
-    } catch {
-      setCopiedKey(null)
-    }
+  if (trace.provider_trace_id) {
+    detailItems.push({ key: 'provider_trace_id', label: t('aiCenter.routing.providerTraceId', 'Provider trace ID'), value: trace.provider_trace_id })
   }
 
   return (
@@ -411,10 +379,10 @@ function TraceAuditCard({
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-1 gap-1.5 text-xs sm:grid-cols-2">
+      <div className="mt-3 rounded-md px-3 py-2 text-xs" style={{ background: 'var(--cp-surface)' }}>
         {detailItems.map((field) => (
-          <div key={field.key} className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5" style={{ background: 'var(--cp-surface)' }}>
-            <span className="inline-flex shrink-0 items-center gap-1" style={{ color: 'var(--cp-muted)' }}>
+          <div key={field.key} className="grid min-w-0 grid-cols-[8.5rem_minmax(0,1fr)] gap-3 py-1.5" style={{ borderTop: field.key === 'time' ? '0' : '1px solid var(--cp-border)' }}>
+            <span className="inline-flex min-w-0 items-center gap-1" style={{ color: 'var(--cp-muted)' }}>
               {field.label}
               {field.title && (
                 <span title={field.title}>
@@ -427,28 +395,10 @@ function TraceAuditCard({
               fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
               mono={field.key !== 'unit_price' && field.key !== 'time' && field.key !== 'pre_call_estimate'}
               tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+              copyable={field.key !== 'time' && field.key !== 'unit_price' && field.key !== 'pre_call_estimate'}
               expandable
             />
           </div>
-        ))}
-      </div>
-
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        {copyFields.map((field) => (
-          <button
-            key={field.key}
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              void copyField(field.key, field.value)
-            }}
-            className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-md px-2 text-xs"
-            style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}
-            title={field.value}
-          >
-            {copiedKey === field.key ? <Check size={13} /> : <Copy size={13} />}
-            <span className="truncate">{field.label}</span>
-          </button>
         ))}
       </div>
 

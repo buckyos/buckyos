@@ -215,6 +215,10 @@ pub struct QueryRouteTraceRequest {
     pub limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -112,9 +112,11 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     const target = event.target
     if (!(target instanceof HTMLElement)) return
     if (!target.matches('input, textarea, select')) return
-    window.setTimeout(() => {
+    const scrollFocusedTarget = () => {
       target.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    }, 250)
+    }
+    window.setTimeout(scrollFocusedTarget, 250)
+    window.setTimeout(scrollFocusedTarget, 650)
   }
 
   useEffect(() => {
@@ -200,7 +202,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         style={{
           borderTop: '1px solid var(--cp-border)',
           background: 'var(--cp-surface)',
-          bottom: 'env(keyboard-inset-height, 0px)',
+          bottom: keyboardInset > 0 ? `${keyboardInset}px` : 'env(keyboard-inset-height, 0px)',
           paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
         }}
       >

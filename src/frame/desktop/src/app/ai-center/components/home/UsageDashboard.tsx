@@ -254,10 +254,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
     ['30d', t('aiCenter.home.last30Days', 'Last 30 days')],
     ['custom', t('aiCenter.home.customRange', 'Custom range')],
   ], [t])
-  const activeFilterChips = useMemo(
-    () => usageFilterChips(timeRange, providerFilter, modelFilter, appAgentFilter, timeRangeOptions),
-    [appAgentFilter, modelFilter, providerFilter, timeRange, timeRangeOptions],
-  )
+  const activeUsageFilterCount = usageFilterCount(timeRange, providerFilter, modelFilter, appAgentFilter)
 
   useEffect(() => {
     let cancelled = false
@@ -311,16 +308,6 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
     setUsageError(null)
   }
 
-  const clearUsageFilters = () => {
-    setTimeRange('all')
-    setProviderFilter(EMPTY_MULTI_FILTER)
-    setModelFilter(EMPTY_MULTI_FILTER)
-    setAppAgentFilter(EMPTY_MULTI_FILTER)
-    setCustomStartDate('')
-    setCustomEndDate('')
-    resetUsagePaging()
-  }
-
   const updateTimeRange = (value: TimeRangeFilter) => {
     setTimeRange(value)
     resetUsagePaging()
@@ -356,7 +343,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
   )
   const balanceOverviewValue = t(
     'aiCenter.home.balanceOverviewValue',
-    '{{balanceCount}} balance / {{usageOnlyCount}} usage-only',
+    '{{balanceCount}} balance\n{{usageOnlyCount}} usage-only',
     { balanceCount: balanceProviders.length, usageOnlyCount: usageOnlyProviders.length },
   )
   const balanceOverviewSubtitle = balanceProviders.length > 0
@@ -670,7 +657,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
               type="button"
               onClick={() => setFiltersSheetOpen((value) => !value)}
               className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium"
-              style={{ color: filtersSheetOpen || activeFilterChips.length > 0 ? 'var(--cp-accent)' : 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
+              style={{ color: filtersSheetOpen || activeUsageFilterCount > 0 ? 'var(--cp-accent)' : 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
               aria-label={t('aiCenter.home.filters', 'Filters')}
             >
               <Filter size={15} />
@@ -678,29 +665,6 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             </button>
           </div>
           <div className="flex flex-col gap-2">
-            {activeFilterChips.length > 0 && (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={clearUsageFilters}
-                  className="inline-flex min-h-9 items-center justify-center rounded-lg px-3 text-xs"
-                  style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-                >
-                  {t('common.clear', 'Clear')}
-                </button>
-                <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1">
-                  {activeFilterChips.map((chip) => (
-                    <span
-                      key={chip}
-                      className="shrink-0 rounded-full px-2.5 py-1 text-xs"
-                      style={{ color: 'var(--cp-accent)', background: 'color-mix(in oklch, var(--cp-accent), transparent 88%)' }}
-                    >
-                      {chip}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
             {filtersSheetOpen && (
               <div className="grid grid-cols-1 gap-2 rounded-lg p-2 sm:grid-cols-2 xl:grid-cols-4" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
                 <TimeRangeFilterControl
@@ -989,18 +953,18 @@ function KpiCarousel({
 
   return (
     <div className="overflow-hidden">
-      <div className="relative h-[166px]">
+      <div className="relative h-[204px]">
         {visible.map(({ index, position }) => (
           <div
             key={`${kpis[index].title}-${position}`}
-            className="absolute top-0 h-full w-[78%] max-w-[320px] transition-all duration-200"
+            className="absolute top-0 h-full w-[86%] max-w-[360px] transition-all duration-200"
             style={{
               left: position === 'left' ? '0%' : position === 'center' ? '50%' : '100%',
               transform: position === 'center'
                 ? 'translateX(-50%)'
                 : position === 'left'
-                  ? 'translateX(-78%) scale(0.92)'
-                  : 'translateX(-22%) scale(0.92)',
+                  ? 'translateX(-86%) scale(0.9)'
+                  : 'translateX(-14%) scale(0.9)',
               opacity: position === 'center' ? 1 : 0.72,
               zIndex: position === 'center' ? 2 : 1,
             }}
@@ -1060,7 +1024,7 @@ function MobileKpiCard({
       type="button"
       onClick={preview ? onPreviewClick : kpi.onClick}
       disabled={!preview && !kpi.onClick}
-      className="h-[158px] w-full rounded-xl p-4 text-left disabled:cursor-default"
+      className="h-[196px] w-full rounded-xl p-4 text-left disabled:cursor-default"
       style={{
         background: preview ? 'var(--cp-surface)' : 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 88%), var(--cp-bg))',
         border: `1px solid ${kpi.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
@@ -1073,7 +1037,7 @@ function MobileKpiCard({
             <span className="shrink-0" style={{ color: toneColor }}>{kpi.icon}</span>
             <span className="truncate">{kpi.title}</span>
           </div>
-          <div className="mt-3 line-clamp-2 break-words text-2xl font-semibold leading-tight" style={{ color: toneColor }}>
+          <div className="mt-3 line-clamp-3 whitespace-pre-line break-words text-xl font-semibold leading-tight" style={{ color: toneColor }}>
             {kpi.value}
           </div>
         </div>
@@ -1081,7 +1045,7 @@ function MobileKpiCard({
           {index + 1}/{total}
         </div>
       </div>
-      <div className="mt-4 line-clamp-2 min-h-10 text-sm leading-5" style={{ color: 'var(--cp-muted)' }}>
+      <div className="mt-4 line-clamp-3 min-h-14 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
         {kpi.subtitle ?? ''}
       </div>
     </button>
@@ -1365,27 +1329,20 @@ function mergeUsageEvents(current: UsageEvent[], next: UsageEvent[]): UsageEvent
   return merged
 }
 
-function usageFilterChips(
+function usageFilterCount(
   timeRange: TimeRangeFilter,
   providerFilter: MultiFilter,
   modelFilter: MultiFilter,
   appAgentFilter: MultiFilter,
-  timeOptions: Array<[TimeRangeFilter, string]>,
-): string[] {
-  const chips: string[] = []
-  if (timeRange !== 'all') {
-    chips.push(timeOptions.find(([value]) => value === timeRange)?.[1] ?? timeRange)
-  }
-  chips.push(...filterChips(providerFilter))
-  chips.push(...filterChips(modelFilter))
-  chips.push(...filterChips(appAgentFilter))
-  return chips
+): number {
+  return (timeRange !== 'all' ? 1 : 0)
+    + multiFilterCount(providerFilter)
+    + multiFilterCount(modelFilter)
+    + multiFilterCount(appAgentFilter)
 }
 
-function filterChips(filter: MultiFilter): string[] {
-  const chips = [...filter.selected]
-  if (filter.query.trim()) chips.push(filter.query.trim())
-  return chips
+function multiFilterCount(filter: MultiFilter): number {
+  return filter.selected.length + (filter.query.trim() ? 1 : 0)
 }
 
 function TimeRangeFilterControl({

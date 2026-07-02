@@ -421,13 +421,14 @@ WHERE created_at_ms >= ? AND created_at_ms < ?
         let offset = parse_cursor(req.cursor.as_deref())?;
         let mut sql = String::from(
             r#"
-SELECT route_trace_json
+SELECT route_trace_json, created_at_ms
 FROM aicc_route_trace
 WHERE 1 = 1
 "#,
         );
         let mut string_binds: Vec<String> = vec![];
         push_trace_id_filter(&mut sql, &mut string_binds, req);
+        push_trace_time_filter(&mut sql, req);
         sql.push_str(
             r#"
 ORDER BY created_at_ms DESC, trace_id DESC
@@ -438,6 +439,12 @@ LIMIT ? OFFSET ?
         let mut query = sqlx::query(&sql);
         for value in string_binds {
             query = query.bind(value);
+        }
+        if let Some(start_time_ms) = req.start_time_ms {
+            query = query.bind(start_time_ms);
+        }
+        if let Some(end_time_ms) = req.end_time_ms {
+            query = query.bind(end_time_ms);
         }
         let rows = query
             .bind(to_sql_i64(limit as u64))
@@ -483,6 +490,15 @@ fn push_trace_id_filter(sql: &mut String, binds: &mut Vec<String>, req: &QueryRo
     sql.push_str("\nAND (");
     sql.push_str(&clauses.join(" OR "));
     sql.push_str(")\n");
+}
+
+fn push_trace_time_filter(sql: &mut String, req: &QueryRouteTraceRequest) {
+    if req.start_time_ms.is_some() {
+        sql.push_str(" AND created_at_ms >= ?");
+    }
+    if req.end_time_ms.is_some() {
+        sql.push_str(" AND created_at_ms < ?");
+    }
 }
 
 fn normalized_values(values: &[String]) -> Vec<String> {
@@ -647,9 +663,21 @@ fn decode_route_trace_row(row: &AnyRow) -> Result<Value, RPCErrors> {
             err
         ))
     })?;
-    serde_json::from_str(&raw).map_err(|err| {
+    let created_at_ms: i64 = row.try_get("created_at_ms").map_err(|err| {
+        RPCErrors::ReasonError(format!(
+            "failed to decode aicc_route_trace.created_at_ms: {}",
+            err
+        ))
+    })?;
+    let mut value: Value = serde_json::from_str(&raw).map_err(|err| {
         RPCErrors::ReasonError(format!("failed to parse route_trace_json: {}", err))
-    })
+    })?;
+    if let Some(object) = value.as_object_mut() {
+        object
+            .entry("created_at_ms")
+            .or_insert_with(|| Value::from(created_at_ms));
+    }
+    Ok(value)
 }
 
 fn aggregate<'a, I: Iterator<Item = &'a AiccUsageEvent>>(events: I) -> UsageAggregate {
@@ -1081,6 +1109,8 @@ mod tests {
             .query_route_traces(&QueryRouteTraceRequest {
                 limit: Some(20),
                 cursor: None,
+                start_time_ms: None,
+                end_time_ms: None,
                 task_ids: vec![],
                 request_ids: vec![],
             })
@@ -1100,6 +1130,8 @@ mod tests {
             .query_route_traces(&QueryRouteTraceRequest {
                 limit: Some(20),
                 cursor: None,
+                start_time_ms: None,
+                end_time_ms: None,
                 task_ids: vec!["trace-one".to_string()],
                 request_ids: vec![],
             })
@@ -1111,6 +1143,8 @@ mod tests {
             .query_route_traces(&QueryRouteTraceRequest {
                 limit: Some(20),
                 cursor: None,
+                start_time_ms: None,
+                end_time_ms: None,
                 task_ids: vec![],
                 request_ids: vec!["trace-two".to_string()],
             })
@@ -1119,6 +1153,29 @@ mod tests {
         assert_eq!(request_resp.traces.len(), 1);
         assert_eq!(
             request_resp.traces[0].get("request_id").and_then(Value::as_str),
+            Some("trace-two")
+        );
+        assert_eq!(
+            request_resp.traces[0]
+                .get("created_at_ms")
+                .and_then(Value::as_i64),
+            Some(now + 1)
+        );
+
+        let time_resp = db
+            .query_route_traces(&QueryRouteTraceRequest {
+                limit: Some(20),
+                cursor: None,
+                start_time_ms: Some(now + 1),
+                end_time_ms: Some(now + 2),
+                task_ids: vec![],
+                request_ids: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(time_resp.traces.len(), 1);
+        assert_eq!(
+            time_resp.traces[0].get("request_id").and_then(Value::as_str),
             Some("trace-two")
         );
     }

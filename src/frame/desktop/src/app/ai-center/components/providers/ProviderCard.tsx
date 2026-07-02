@@ -37,25 +37,27 @@ export function ProviderCard({ provider, selected, onClick }: ProviderCardProps)
     <button
       type="button"
       onClick={onClick}
-      className="flex min-h-14 w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors"
+      className="flex min-h-16 w-full items-start gap-3 rounded-lg px-3 py-3 text-left transition-colors"
       style={{
         background: selected ? 'var(--cp-surface-2)' : 'transparent',
       }}
     >
-      <Icon size={18} style={{ color: 'var(--cp-muted)' }} />
+      <Icon size={18} className="mt-0.5 shrink-0" style={{ color: 'var(--cp-muted)' }} />
       <div className="flex-1 min-w-0">
         <LongField value={provider.config.name} className="text-sm font-medium" copyable={false} />
         <LongField
-          value={`${provider.config.provider_instance_name} / ${provider.config.provider_driver}`}
+          value={`${provider.config.provider_instance_name}/${provider.config.provider_driver}`}
           className="text-[11px]"
           tone="muted"
           copyable={false}
         />
       </div>
-      <StatusBadge status={authStatusToVariant(provider.status.auth_status)} />
-      <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-        {modelCount}{degradedCount > 0 ? `/${degradedCount}` : ''}
-      </span>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        <StatusBadge status={authStatusToVariant(provider.status.auth_status)} />
+        <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>
+          {modelCount}{degradedCount > 0 ? `/${degradedCount}` : ''}
+        </span>
+      </div>
     </button>
   )
 }

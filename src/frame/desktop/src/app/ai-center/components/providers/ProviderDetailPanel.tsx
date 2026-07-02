@@ -601,18 +601,18 @@ function MetricCarousel({ metrics }: { metrics: ProviderMetric[] }) {
 
   return (
     <div className="overflow-hidden">
-      <div className="relative h-[166px]">
+      <div className="relative h-[204px]">
         {visible.map(({ index, position }) => (
           <div
             key={`${metrics[index].label}-${position}`}
-            className="absolute top-0 h-full w-[78%] max-w-[320px] transition-all duration-200"
+            className="absolute top-0 h-full w-[86%] max-w-[360px] transition-all duration-200"
             style={{
               left: position === 'left' ? '0%' : position === 'center' ? '50%' : '100%',
               transform: position === 'center'
                 ? 'translateX(-50%)'
                 : position === 'left'
-                  ? 'translateX(-78%) scale(0.92)'
-                  : 'translateX(-22%) scale(0.92)',
+                  ? 'translateX(-86%) scale(0.9)'
+                  : 'translateX(-14%) scale(0.9)',
               opacity: position === 'center' ? 1 : 0.72,
               zIndex: position === 'center' ? 2 : 1,
             }}
@@ -671,7 +671,7 @@ function MobileMetricCard({
     <button
       type="button"
       onClick={preview ? onPreviewClick : undefined}
-      className="h-[158px] w-full rounded-xl p-4 text-left"
+      className="h-[196px] w-full rounded-xl p-4 text-left"
       style={{
         background: preview ? 'var(--cp-surface)' : 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 88%), var(--cp-bg))',
         border: `1px solid ${metric.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
@@ -681,7 +681,7 @@ function MobileMetricCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs font-medium uppercase" style={{ color: 'var(--cp-muted)' }}>{metric.label}</div>
-          <div className="mt-3 line-clamp-2 break-words text-2xl font-semibold leading-tight" style={{ color: toneColor }}>
+          <div className="mt-3 line-clamp-3 break-words text-xl font-semibold leading-tight" style={{ color: toneColor }}>
             {metric.value}
           </div>
         </div>
@@ -689,7 +689,7 @@ function MobileMetricCard({
           {index + 1}/{total}
         </div>
       </div>
-      <div className="mt-4 line-clamp-2 min-h-10 text-sm leading-5" style={{ color: 'var(--cp-muted)' }}>
+      <div className="mt-4 line-clamp-3 min-h-14 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
         {metric.detail ?? ''}
       </div>
     </button>
