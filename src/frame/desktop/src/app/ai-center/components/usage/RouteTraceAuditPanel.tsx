@@ -357,9 +357,9 @@ function TraceAuditCard({
     formatTraceDuration(trace),
   ].filter(Boolean)
   const hiddenTraceFields = [
-    { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
-    { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
-    { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
+    { key: 'request_id', label: t('aiCenter.routing.requestIdShort', 'ID'), value: trace.request_id },
+    { key: 'requested_model', label: t('aiCenter.routing.requestedModelShort', 'Model'), value: trace.requested_model },
+    { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModelShort', 'Exact model'), value: trace.selected_exact_model },
   ]
   const traceTitle = metaItems.join(' / ')
   const scoreHint = t(
@@ -384,8 +384,8 @@ function TraceAuditCard({
         border: `1px solid ${active ? 'var(--cp-accent)' : 'transparent'}`,
       }}
     >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-col gap-2">
+        <div className="min-w-0">
           <div className="mt-1 flex min-w-0 items-start gap-1 text-xs">
             <span
               title={traceTitle}
@@ -412,10 +412,11 @@ function TraceAuditCard({
             <div className="mt-2 flex flex-col gap-1 text-xs">
               {hiddenTraceFields.map((field) => (
                 <div key={field.key} className="flex min-w-0 items-start gap-2">
-                  <span className="w-32 shrink-0 sm:w-40" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
+                  <span className="w-20 shrink-0 sm:w-24" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
                   <LongField
                     value={field.value}
                     fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+                    className="flex-1"
                     mono
                     tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
                     expandable
@@ -425,7 +426,7 @@ function TraceAuditCard({
             </div>
           )}
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {trace.warnings.length > 0 && (
             <StatusBadge status="warning" label={t('aiCenter.routing.traceWarnings', '{{count}} warnings', { count: trace.warnings.length })} />
           )}

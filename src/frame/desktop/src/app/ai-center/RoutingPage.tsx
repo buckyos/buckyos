@@ -102,6 +102,7 @@ export function RoutingPage() {
   const [currentPath, setCurrentPath] = useState<string | null>(null)
   const [showMobileScenarioDetail, setShowMobileScenarioDetail] = useState(false)
   const [mobileScenarioPane, setMobileScenarioPane] = useState<'scenario' | 'trace'>('scenario')
+  const [desktopScenarioPane, setDesktopScenarioPane] = useState<'scenario' | 'trace'>('scenario')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
@@ -354,10 +355,32 @@ export function RoutingPage() {
         </section>
 
         <aside className="flex min-w-0 flex-col gap-4">
-          {selectedScenario && (
+          {!isMobile && (
+            <div className="flex min-h-10 flex-wrap items-center gap-1 rounded-xl p-1" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+              {([
+                ['scenario', t('aiCenter.routing.scenarioDetail', 'Scenario Detail')],
+                ['trace', t('aiCenter.routing.tracePage', 'Trace')],
+              ] as Array<['scenario' | 'trace', string]>).map(([pane, label]) => (
+                <button
+                  key={pane}
+                  type="button"
+                  onClick={() => setDesktopScenarioPane(pane)}
+                  className="min-h-8 flex-1 rounded-lg px-3 text-xs font-medium"
+                  style={{
+                    background: desktopScenarioPane === pane ? 'var(--cp-surface-2)' : 'transparent',
+                    color: desktopScenarioPane === pane ? 'var(--cp-text)' : 'var(--cp-muted)',
+                    border: desktopScenarioPane === pane ? '1px solid var(--cp-border)' : '1px solid transparent',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {selectedScenario && desktopScenarioPane === 'scenario' && (
             <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
           )}
-          {!isMobile && <RouteTraceAuditPanel
+          {!isMobile && desktopScenarioPane === 'trace' && <RouteTraceAuditPanel
             compact={false}
             logicalPathFilter={activeTracePath}
             activeTraceId={selectedTraceId}
