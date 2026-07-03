@@ -1,4 +1,4 @@
-import { Home, Plug, HardDrive, GitFork } from 'lucide-react'
+import { BarChart3, Home, Plug, HardDrive, GitFork } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import type { AICenterPage } from './Sidebar'
 
@@ -7,6 +7,7 @@ const tabs = [
   { key: 'providers' as const, icon: Plug, labelKey: 'aiCenter.nav.providers', label: 'Providers' },
   { key: 'models' as const, icon: HardDrive, labelKey: 'aiCenter.nav.models', label: 'Models' },
   { key: 'routing' as const, icon: GitFork, labelKey: 'aiCenter.nav.routing', label: 'Routing' },
+  { key: 'usage' as const, icon: BarChart3, labelKey: 'aiCenter.nav.usage', label: 'Usage' },
 ]
 
 interface MobileTabBarProps {

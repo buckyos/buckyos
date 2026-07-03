@@ -1,4 +1,4 @@
-import { Home, Plug, HardDrive, GitFork } from 'lucide-react'
+import { BarChart3, Home, Plug, HardDrive, GitFork } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 
 const navItems = [
@@ -6,6 +6,7 @@ const navItems = [
   { key: 'providers', icon: Plug, labelKey: 'aiCenter.nav.providers', label: 'Providers' },
   { key: 'models', icon: HardDrive, labelKey: 'aiCenter.nav.models', label: 'Models' },
   { key: 'routing', icon: GitFork, labelKey: 'aiCenter.nav.routing', label: 'Routing' },
+  { key: 'usage', icon: BarChart3, labelKey: 'aiCenter.nav.usage', label: 'Usage' },
 ] as const
 
 export type AICenterPage = (typeof navItems)[number]['key'] | 'providers/add'

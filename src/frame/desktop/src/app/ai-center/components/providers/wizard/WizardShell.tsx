@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState, type FocusEvent } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import { useAICCStore } from '../../../hooks/use-aicc-store'
@@ -33,6 +33,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const [validation, setValidation] = useState<ValidationResult | null>(null)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [keyboardInset, setKeyboardInset] = useState(0)
 
   const steps = [
     t('aiCenter.wizard.step.chooseType', 'Choose Type'),
@@ -107,8 +108,44 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     })
   }
 
+  const keepFocusedFieldVisible = (event: FocusEvent<HTMLDivElement>) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+    if (!target.matches('input, textarea, select')) return
+    const scrollFocusedTarget = () => {
+      const viewport = window.visualViewport
+      const rect = target.getBoundingClientRect()
+      const visibleBottom = viewport
+        ? viewport.offsetTop + viewport.height - 112
+        : window.innerHeight - 112
+      if (rect.bottom > visibleBottom) {
+        window.scrollBy({ top: rect.bottom - visibleBottom + 24, behavior: 'smooth' })
+      }
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+    window.setTimeout(scrollFocusedTarget, 120)
+    window.setTimeout(scrollFocusedTarget, 360)
+    window.setTimeout(scrollFocusedTarget, 780)
+  }
+
+  useEffect(() => {
+    const viewport = window.visualViewport
+    if (!viewport) return
+    const updateKeyboardInset = () => {
+      const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+      setKeyboardInset(inset)
+    }
+    updateKeyboardInset()
+    viewport.addEventListener('resize', updateKeyboardInset)
+    viewport.addEventListener('scroll', updateKeyboardInset)
+    return () => {
+      viewport.removeEventListener('resize', updateKeyboardInset)
+      viewport.removeEventListener('scroll', updateKeyboardInset)
+    }
+  }, [])
+
   return (
-    <div className="flex flex-col h-full -mx-4 md:-mx-8 -my-4 md:-my-6">
+    <div className="flex h-full min-h-0 flex-col -mx-4 md:-mx-8 -my-4 md:-my-6">
       {/* Header */}
       <div
         className="flex items-center gap-3 px-4 md:px-6 py-3 shrink-0"
@@ -133,7 +170,14 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-6 pb-52 [scroll-padding-bottom:14rem] md:px-6 md:pb-6"
+        style={keyboardInset > 0 ? {
+          paddingBottom: `calc(14rem + ${keyboardInset}px)`,
+          scrollPaddingBottom: `calc(14rem + ${keyboardInset}px)`,
+        } : undefined}
+        onFocusCapture={keepFocusedFieldVisible}
+      >
         {step === 0 && (
           <StepChooseType selected={draft.provider_type} onSelect={handleTypeSelect} />
         )}
@@ -166,13 +210,18 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
 
       {/* Footer */}
       <div
-        className="flex justify-between items-center px-4 md:px-6 py-3 shrink-0"
-        style={{ borderTop: '1px solid var(--cp-border)' }}
+        className="sticky bottom-0 z-10 flex shrink-0 items-center justify-between px-4 py-3 md:px-6"
+        style={{
+          borderTop: '1px solid var(--cp-border)',
+          background: 'var(--cp-surface)',
+          bottom: keyboardInset > 0 ? `${keyboardInset}px` : 'env(keyboard-inset-height, 0px)',
+          paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))',
+        }}
       >
         <button
           type="button"
           onClick={handlePrev}
-          className="px-4 py-2 rounded-lg text-sm"
+          className="min-h-11 rounded-lg px-4 py-2 text-sm"
           style={{ color: 'var(--cp-muted)' }}
         >
           {step === 0 ? t('aiCenter.wizard.back', 'Back') : t('aiCenter.wizard.prev', 'Previous')}
@@ -182,7 +231,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
           <button
             type="button"
             onClick={() => { setValidation(null); setStep(1) }}
-            className="px-4 py-2 rounded-lg text-sm font-medium"
+            className="min-h-11 rounded-lg px-4 py-2 text-sm font-medium"
             style={{ background: 'var(--cp-warning)', color: '#fff' }}
           >
             {t('aiCenter.wizard.goBackToFix', 'Go Back to Fix')}
@@ -192,7 +241,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
             type="button"
             onClick={handleNext}
             disabled={!canNext() || creating}
-            className="px-5 py-2 rounded-lg text-sm font-medium transition-opacity disabled:opacity-40"
+            className="min-h-11 rounded-lg px-5 py-2 text-sm font-medium transition-opacity disabled:opacity-40"
             style={{ background: 'var(--cp-accent)', color: '#fff' }}
           >
             {step === 3

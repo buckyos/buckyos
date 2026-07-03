@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n/provider'
 import { useLocalModels } from './hooks/use-aicc-store'
 import { EmptyState } from './components/shared/EmptyState'
 import { StatusBadge } from './components/shared/StatusBadge'
+import { LongField } from './components/shared/LongField'
 import type { LocalModel } from '../../api/aicc_mgr'
 
 const SHOW_LOCAL_MODELS_PAGE = false
@@ -122,13 +123,11 @@ function LocalModelCard({ model }: { model: LocalModel }) {
               <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{model.name}</h3>
               <StatusBadge status={statusVariant(model.health.status)} label={model.health.status} />
             </div>
-            <div className="text-xs font-mono truncate mt-1" style={{ color: 'var(--cp-muted)' }}>
-              {model.exact_model}
-            </div>
+            <LongField value={model.exact_model} className="mt-1 text-xs" mono tone="muted" expandable />
             <div className="flex flex-wrap gap-2 mt-2">
               {model.logical_mounts.map((mount) => (
                 <span key={mount} className="text-[11px] rounded-md px-2 py-1" style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)' }}>
-                  {mount}
+                  <LongField value={mount} copyable={false} />
                 </span>
               ))}
             </div>
@@ -155,7 +154,7 @@ function Fact({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <div style={{ color: 'var(--cp-muted)' }}>{label}</div>
-      <div className="font-medium break-words" style={{ color: 'var(--cp-text)' }}>{value}</div>
+      <LongField value={value} className="font-medium" copyable={false} expandable />
     </div>
   )
 }

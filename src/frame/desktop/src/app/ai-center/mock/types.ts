@@ -243,10 +243,22 @@ export interface RouteTrace {
   resolved_logical_path?: string
   selected_exact_model?: string
   selected_provider_instance_name?: string
+  selected_provider_model_id?: string
+  provider_trace_id?: string
+  pricing_snapshot?: {
+    input_token_usd?: number
+    output_token_usd?: number
+    cache_input_token_usd?: number
+    estimated_cost_usd?: number
+  }
+  created_at_ms?: number
+  latency_ms?: number
+  duration_ms?: number
   ranked_candidates: Array<{
     exact_model: string
     final_score?: number
     selected: boolean
+    pricing_snapshot?: RouteTrace['pricing_snapshot']
     exact_model_weight?: number
     provider_weight?: number
     preference_score_inputs?: {
@@ -256,6 +268,15 @@ export interface RouteTrace {
       preference_penalty: number
       exact_model_weight_effect: string
       provider_weight_effect: string
+    }
+    score_inputs?: {
+      cost: number
+      latency: number
+      reliability: number
+      quality: number
+      preference: number
+      cache: number
+      local: number
     }
   }>
   filtered_candidates: Array<{ exact_model: string; reason: string }>

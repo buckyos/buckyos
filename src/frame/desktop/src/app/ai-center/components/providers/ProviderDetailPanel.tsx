@@ -1,18 +1,27 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, ChevronDown, ChevronRight, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { useMediaQuery } from '@mui/material'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Filter, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
+import { LongField } from '../shared/LongField'
 import type { AuthStatus, ModelMetadata, ProviderView } from '../../../../api/aicc_mgr'
 
 type TFn = (k: string, f: string) => string
 type FilterKey = 'apiType' | 'logicalMount' | 'health' | 'costClass' | 'latencyClass' | 'tier'
+type ProviderDetailSection = 'overview' | 'routing' | 'inventory'
 type MultiFilter = {
   query: string
   selected: string[]
 }
 type InventoryFilters = Record<FilterKey, MultiFilter>
+type ProviderMetric = {
+  label: string
+  value: string
+  detail?: string
+  tone?: 'default' | 'ok' | 'warning' | 'accent'
+}
 
 function emptyMultiFilter(): MultiFilter {
   return { query: '', selected: [] }
@@ -57,23 +66,26 @@ interface ProviderDetailPanelProps {
   provider: ProviderView
   routingWeight: number
   onDeleted: () => void
+  onBack?: () => void
 }
 
-export function ProviderDetailPanel({ provider, routingWeight, onDeleted }: ProviderDetailPanelProps) {
+export function ProviderDetailPanel({ provider, routingWeight, onDeleted, onBack }: ProviderDetailPanelProps) {
   return (
     <ProviderDetailPanelBody
       key={provider.config.provider_instance_name}
       provider={provider}
       routingWeight={routingWeight}
       onDeleted={onDeleted}
+      onBack={onBack}
     />
   )
 }
 
-function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: ProviderDetailPanelProps) {
+function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }: ProviderDetailPanelProps) {
   const { t } = useI18n()
   const store = useAICCStore()
-  const [showModels, setShowModels] = useState(true)
+  const isMobile = useMediaQuery('(max-width: 767px)')
+  const [activeSection, setActiveSection] = useState<ProviderDetailSection>('overview')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -91,7 +103,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
   const [actionsOpen, setActionsOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [filters, setFilters] = useState<InventoryFilters>(() => emptyInventoryFilters())
+  const [inventoryFiltersOpen, setInventoryFiltersOpen] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set())
+  const actionsRef = useRef<HTMLDivElement | null>(null)
 
   const { config, status, account, inventory } = provider
   const models = status.discovered_models
@@ -112,6 +126,26 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
     setWeightDraft(value)
     setWeightError(null)
   }
+
+  useEffect(() => {
+    if (!actionsOpen) return
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!actionsRef.current?.contains(event.target as Node)) {
+        setActionsOpen(false)
+      }
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setActionsOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [actionsOpen])
 
   const handleSaveWeight = () => {
     if (!weightValid) {
@@ -202,19 +236,40 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
       : routingWeight > 1
         ? t('aiCenter.providers.routingUpweighted', 'Upweighted')
         : t('aiCenter.providers.routingDefault', 'Default')
+  const providerMetrics: ProviderMetric[] = [
+    { label: t('aiCenter.providers.providerStatus', 'Provider Status'), value: config.name, detail: `${models.length} ${t('aiCenter.providers.models', 'Models')} / ${degradedCount + quotaWarningCount} ${t('aiCenter.providers.issues', 'Issues')}`, tone: degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok' },
+    { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision, tone: 'accent' },
+    { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal'), tone: quotaWarningCount ? 'warning' : 'ok' },
+    { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel, tone: routingWeight === 0 ? 'warning' : 'accent' },
+  ]
+  const desktopMetrics = [
+    { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision, tone: 'accent' as const },
+    { label: t('aiCenter.providers.health', 'Health'), value: `${models.length - degradedCount}/${models.length}`, detail: t('aiCenter.providers.availableModels', 'available models'), tone: degradedCount > 0 ? 'warning' as const : 'ok' as const },
+    { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal'), tone: quotaWarningCount ? 'warning' as const : 'ok' as const },
+    { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel, tone: routingWeight === 0 ? 'warning' as const : 'accent' as const },
+  ]
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          <h2 className="truncate text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
+      <div className={isMobile ? 'grid grid-cols-[2.25rem_minmax(0,1fr)_2.25rem] items-center gap-2' : 'flex items-center justify-between gap-3'}>
+        <div className={isMobile ? 'flex items-center' : 'flex min-w-0 flex-1 items-center gap-2'}>
+          {isMobile && onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+              style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+              aria-label={t('common.back', 'Back')}
+            >
+              <ArrowLeft size={18} />
+            </button>
+          )}
+          {!isMobile && <h2 className="min-w-0 flex-1 truncate text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
             {config.name}
-          </h2>
-          <div className="truncate text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {config.provider_instance_name} / {config.provider_runtime_type} / {config.provider_origin}
-          </div>
+          </h2>}
         </div>
-        <div className="relative shrink-0">
+        {isMobile && <h2 className="min-w-0 truncate text-center text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>{config.name}</h2>}
+        <div ref={actionsRef} className="relative shrink-0">
           <button
             type="button"
             onClick={() => setActionsOpen((value) => !value)}
@@ -225,6 +280,45 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
             <MoreHorizontal size={18} />
           </button>
           {actionsOpen && (
+            isMobile ? (
+              <div className="fixed inset-0 z-40 flex items-end justify-center">
+                <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.35)' }} onClick={() => setActionsOpen(false)} />
+                <div className="relative w-full rounded-t-xl p-3 shadow-lg" style={{ background: 'var(--cp-surface)', borderTop: '1px solid var(--cp-border)' }}>
+                  <div className="mx-auto mb-3 h-1 w-10 rounded-full" style={{ background: 'var(--cp-border)' }} />
+                  <div className="flex flex-col gap-1 pb-[env(safe-area-inset-bottom)]">
+                    <MenuAction
+                      icon={<ShieldCheck size={16} />}
+                      label={t('aiCenter.providers.updateKey', 'Update Key')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        setShowKeyDialog(true)
+                        setKeyError(null)
+                        setKeyFeedback(null)
+                      }}
+                    />
+                    <MenuAction
+                      icon={<RefreshCw size={16} className={refreshingModels ? 'animate-spin' : ''} />}
+                      label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        void handleRefreshModels()
+                      }}
+                      disabled={refreshingModels}
+                    />
+                    <MenuAction
+                      icon={<Trash2 size={16} />}
+                      label={t('aiCenter.providers.delete', 'Delete')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        setConfirmDelete(true)
+                        setDeleteError(null)
+                      }}
+                      danger
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : (
             <div
               className="absolute right-0 top-10 z-10 flex w-48 flex-col rounded-lg p-1 shadow-lg"
               style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
@@ -259,25 +353,58 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
                 danger
               />
             </div>
+            )
           )}
         </div>
       </div>
+      <LongField
+        value={`${config.provider_instance_name} / ${config.provider_runtime_type} / ${config.provider_origin}`}
+        className={isMobile ? 'text-left text-xs' : '-mt-2 text-xs'}
+        tone="muted"
+        copyable
+      />
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-stretch">
-        <Metric label={t('aiCenter.providers.inventoryModels', 'Inventory Models')} value={models.length.toString()} detail={inventory.inventory_revision} />
-        <Metric label={t('aiCenter.providers.health', 'Health')} value={`${models.length - degradedCount}/${models.length}`} detail={t('aiCenter.providers.availableModels', 'available models')} />
-        <Metric label={t('aiCenter.providers.quota', 'Quota')} value={quotaWarningCount ? `${quotaWarningCount}` : '0'} detail={quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal')} />
-        <Metric label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={formatWeight(routingWeight)} detail={routingWeightLabel} />
+      <div className="flex min-h-10 flex-wrap items-center gap-1 rounded-xl p-1" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+        {([
+          ['overview', t('aiCenter.providers.overview', 'Overview')],
+          ['routing', t('aiCenter.providers.routing', 'Routing')],
+          ['inventory', t('aiCenter.providers.inventory', 'Inventory')],
+        ] as Array<[ProviderDetailSection, string]>).map(([section, label]) => (
+          <button
+            key={section}
+            type="button"
+            onClick={() => setActiveSection(section)}
+            className="min-h-8 rounded-lg px-3 text-xs font-medium"
+            style={{
+              background: activeSection === section ? 'var(--cp-surface-2)' : 'transparent',
+              color: activeSection === section ? 'var(--cp-text)' : 'var(--cp-muted)',
+              border: activeSection === section ? '1px solid var(--cp-border)' : '1px solid transparent',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeSection === 'overview' && (
+      <>
+      <div className="md:hidden">
+        <MetricCarousel metrics={providerMetrics} />
+      </div>
+      <div className="hidden grid-cols-4 gap-3 md:grid">
+        {desktopMetrics.map((metric) => (
+          <Metric key={metric.label} label={metric.label} value={metric.value} detail={metric.detail} tone={metric.tone} />
+        ))}
       </div>
 
       <div
         className="rounded-xl p-4 flex flex-col gap-3"
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
       >
-        <Row label={t('aiCenter.providers.driver', 'Driver')} value={config.provider_driver} />
+        <Row label={t('aiCenter.providers.driver', 'Driver')} value={config.provider_driver} copyValue={config.provider_driver} />
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
-        <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} />
-        <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} />
+        <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} copyValue={config.provider_runtime_type} />
+        <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} copyValue={config.endpoint} expandable />
         <Row
           label={t('aiCenter.providers.auth', 'Authentication')}
           value={
@@ -295,7 +422,11 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
           value={config.auto_sync_models ? t('common.on', 'On') : t('common.off', 'Off')}
         />
       </div>
+      </>
+      )}
 
+      {activeSection === 'routing' && (
+      <>
       <div
         className="rounded-xl p-4 flex flex-col gap-3"
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
@@ -366,18 +497,10 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
         </InlineNotice>
       )}
       {refreshError && <InlineNotice tone="error">{refreshError}</InlineNotice>}
+      </>
+      )}
 
-      <button
-        type="button"
-        onClick={() => setShowModels(!showModels)}
-        className="inline-flex items-center gap-1 text-sm self-start"
-        style={{ color: 'var(--cp-accent)' }}
-      >
-        {showModels ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        {t('aiCenter.providers.inventory', 'Provider Inventory')}
-      </button>
-
-      {showModels && (
+      {activeSection === 'inventory' && (
         <div className="flex flex-col gap-3">
           <InventoryToolbar
             t={t}
@@ -385,7 +508,10 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
             onSearchChange={setSearchQuery}
             filters={filters}
             filterOptions={filterOptions}
+            resultCount={groupedModels.reduce((count, group) => count + 1 + group.variants.length, 0)}
             onFilterChange={setFilter}
+            filtersOpen={inventoryFiltersOpen}
+            onToggleFilters={() => setInventoryFiltersOpen((value) => !value)}
           />
           {groupedModels.length > 0 ? (
             <div className="grid grid-cols-1 gap-3">
@@ -443,16 +569,137 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted }: Provide
   )
 }
 
-function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+function Metric({ label, value, detail, tone = 'default' }: { label: string; value: string; detail?: string; tone?: ProviderMetric['tone'] }) {
+  const valueColor = tone === 'ok'
+    ? 'var(--cp-success)'
+    : tone === 'warning'
+      ? 'var(--cp-warning)'
+      : tone === 'accent'
+        ? 'var(--cp-accent)'
+        : 'var(--cp-text)'
   return (
     <div
-      className="rounded-xl p-3 min-h-[92px] h-full grid grid-rows-[2rem_1.75rem_1rem] gap-1 content-start"
+      className="grid h-full min-h-[84px] min-w-[72%] snap-start grid-rows-[1.5rem_1.75rem_1rem] content-start gap-1 rounded-xl p-3 sm:min-w-[220px] md:min-w-0"
       style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
     >
       <div className="text-xs leading-4" style={{ color: 'var(--cp-muted)' }}>{label}</div>
-      <div className="text-xl font-semibold leading-tight" style={{ color: 'var(--cp-text)' }}>{value}</div>
+      <div className="text-xl font-semibold leading-tight" style={{ color: valueColor }}>{value}</div>
       <div className="text-[11px] truncate" style={{ color: 'var(--cp-muted)' }}>{detail ?? ''}</div>
     </div>
+  )
+}
+
+function MetricCarousel({ metrics }: { metrics: ProviderMetric[] }) {
+  const [activeIndex, setActiveIndex] = useState(0)
+  if (metrics.length === 0) return null
+  if (metrics.length === 1) {
+    const metric = metrics[0]
+    return <MobileMetricCard metric={metric} index={0} total={1} />
+  }
+  const previousIndex = () => setActiveIndex((current) => (current - 1 + metrics.length) % metrics.length)
+  const nextIndex = () => setActiveIndex((current) => (current + 1) % metrics.length)
+  const previous = (activeIndex - 1 + metrics.length) % metrics.length
+  const next = (activeIndex + 1) % metrics.length
+  const visible = [
+    { index: previous, position: 'left' as const },
+    { index: activeIndex, position: 'center' as const },
+    { index: next, position: 'right' as const },
+  ]
+
+  return (
+    <div className="overflow-hidden">
+      <div className="relative h-[208px]">
+        {visible.map(({ index, position }) => (
+          <div
+            key={`${metrics[index].label}-${position}`}
+            className="absolute top-0 h-full w-[92%] max-w-[420px] transition-all duration-200"
+            style={{
+              left: position === 'left' ? '0%' : position === 'center' ? '50%' : '100%',
+              transform: position === 'center'
+                ? 'translateX(-50%)'
+                : position === 'left'
+                  ? 'translateX(-92%) scale(0.9)'
+                  : 'translateX(-8%) scale(0.9)',
+              opacity: position === 'center' ? 1 : 0.72,
+              zIndex: position === 'center' ? 2 : 1,
+            }}
+          >
+            <MobileMetricCard
+              metric={metrics[index]}
+              index={index}
+              total={metrics.length}
+              preview={position !== 'center'}
+              onPreviewClick={position === 'left' ? previousIndex : position === 'right' ? nextIndex : undefined}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex min-w-0 items-center justify-center gap-1.5">
+        {metrics.map((metric, index) => (
+          <button
+            key={metric.label}
+            type="button"
+            onClick={() => setActiveIndex(index)}
+            className="h-2.5 rounded-full transition-all"
+            style={{
+              width: index === activeIndex ? 22 : 10,
+              background: index === activeIndex ? 'var(--cp-accent)' : 'var(--cp-border)',
+            }}
+            aria-label={metric.label}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function MobileMetricCard({
+  metric,
+  index,
+  total,
+  preview = false,
+  onPreviewClick,
+}: {
+  metric: ProviderMetric
+  index: number
+  total: number
+  preview?: boolean
+  onPreviewClick?: () => void
+}) {
+  const toneColor = metric.tone === 'ok'
+    ? 'var(--cp-success)'
+    : metric.tone === 'warning'
+      ? 'var(--cp-warning)'
+      : metric.tone === 'accent'
+        ? 'var(--cp-accent)'
+        : 'var(--cp-text)'
+
+  return (
+    <button
+      type="button"
+      onClick={preview ? onPreviewClick : undefined}
+      className="h-[200px] w-full rounded-xl p-4 text-left"
+      style={{
+        background: preview ? 'var(--cp-surface)' : 'linear-gradient(180deg, color-mix(in oklch, var(--cp-accent), transparent 88%), var(--cp-bg))',
+        border: `1px solid ${metric.tone === 'warning' ? 'var(--cp-warning)' : 'var(--cp-border)'}`,
+        boxShadow: preview ? 'none' : '0 8px 22px color-mix(in oklch, var(--cp-accent), transparent 88%)',
+      }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs font-medium uppercase" style={{ color: 'var(--cp-muted)' }}>{metric.label}</div>
+          <div className="mt-3 line-clamp-4 break-words text-xl font-semibold leading-tight" style={{ color: toneColor }}>
+            {metric.value}
+          </div>
+        </div>
+        <div className="shrink-0 rounded-full px-2 py-1 text-[11px] tabular-nums" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
+          {index + 1}/{total}
+        </div>
+      </div>
+      <div className="mt-4 line-clamp-3 min-h-12 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+        {metric.detail ?? ''}
+      </div>
+    </button>
   )
 }
 
@@ -462,15 +709,22 @@ function InventoryToolbar({
   onSearchChange,
   filters,
   filterOptions,
+  resultCount,
   onFilterChange,
+  filtersOpen,
+  onToggleFilters,
 }: {
   t: TFn
   searchQuery: string
   onSearchChange: (value: string) => void
   filters: InventoryFilters
   filterOptions: Record<FilterKey, string[]>
+  resultCount: number
   onFilterChange: (key: FilterKey, value: MultiFilter) => void
+  filtersOpen: boolean
+  onToggleFilters: () => void
 }) {
+  const activeFilterCount = Object.values(filters).reduce((count, filter) => count + filter.selected.length + (filter.query.trim() ? 1 : 0), 0)
   return (
     <div className="rounded-xl p-3 flex flex-col gap-3" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
       <label className="relative block">
@@ -479,26 +733,45 @@ function InventoryToolbar({
           value={searchQuery}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder={t('aiCenter.providers.searchModels', 'Search models')}
-          className="w-full rounded-lg py-2 pl-9 pr-3 text-sm"
+          className="w-full rounded-lg py-2 pl-9 pr-12 text-sm"
           style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
         />
+        <button
+          type="button"
+          onClick={onToggleFilters}
+          className="absolute right-1.5 top-1/2 flex h-7 min-w-7 -translate-y-1/2 items-center justify-center gap-1 rounded-md px-1.5 text-xs"
+          style={{
+            color: filtersOpen || activeFilterCount > 0 ? 'var(--cp-accent)' : 'var(--cp-muted)',
+            background: filtersOpen ? 'var(--cp-surface)' : 'transparent',
+          }}
+          aria-label={t('aiCenter.providers.filters', 'Filters')}
+        >
+          <Filter size={14} />
+          <span>{resultCount}</span>
+        </button>
       </label>
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-2">
+      {filtersOpen && <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-2">
         <MultiSelectFilter label={t('aiCenter.providers.apiType', 'API Type')} value={filters.apiType} options={filterOptions.apiType} onChange={(value) => onFilterChange('apiType', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.logicalMount', 'Logical Mount')} value={filters.logicalMount} options={filterOptions.logicalMount} onChange={(value) => onFilterChange('logicalMount', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.health', 'Health')} value={filters.health} options={filterOptions.health} onChange={(value) => onFilterChange('health', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.costClass', 'Cost Class')} value={filters.costClass} options={filterOptions.costClass} onChange={(value) => onFilterChange('costClass', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.latencyClass', 'Latency Class')} value={filters.latencyClass} options={filterOptions.latencyClass} onChange={(value) => onFilterChange('latencyClass', value)} />
         <MultiSelectFilter label={t('aiCenter.providers.tier', 'Tier')} value={filters.tier} options={filterOptions.tier} onChange={(value) => onFilterChange('tier', value)} />
-      </div>
+      </div>}
     </div>
   )
 }
 
 function MultiSelectFilter({ label, value, options, onChange }: { label: string; value: MultiFilter; options: string[]; onChange: (value: MultiFilter) => void }) {
+  const { t } = useI18n()
   const selectedCount = value.selected.length
   const [open, setOpen] = useState(false)
+  const [showAllOptions, setShowAllOptions] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const visibleOptions = showAllOptions
+    ? options
+    : Array.from(new Set([...options.slice(0, 6), ...value.selected]))
+  const hiddenOptionCount = Math.max(0, options.length - visibleOptions.length)
   const toggleOption = (option: string) => {
     const selected = value.selected.includes(option)
       ? value.selected.filter((item) => item !== option)
@@ -563,7 +836,7 @@ function MultiSelectFilter({ label, value, options, onChange }: { label: string;
           >
             All
           </button>
-          {options.map((option) => (
+          {visibleOptions.map((option) => (
             <label key={option} className="flex min-h-7 items-center gap-2 rounded px-2 py-1 text-xs" style={{ color: 'var(--cp-text)' }}>
               <input
                 type="checkbox"
@@ -573,6 +846,26 @@ function MultiSelectFilter({ label, value, options, onChange }: { label: string;
               <span className="truncate" title={option}>{option}</span>
             </label>
           ))}
+          {hiddenOptionCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(true)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.providers.showMoreOptions', 'Show more')} ({hiddenOptionCount})
+            </button>
+          )}
+          {showAllOptions && options.length > 6 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(false)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.providers.showLessOptions', 'Show less')}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -618,10 +911,14 @@ function ModelInventoryRow({ model, t, compact = false, groupLabel }: { model: M
     <div className={compact ? 'rounded-lg p-3' : 'p-3'} style={compact ? { background: 'var(--cp-bg)' } : undefined}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-sm font-medium truncate" style={{ color: 'var(--cp-text)' }}>{model.provider_model_id}</div>
-          <div className="text-xs truncate" style={{ color: 'var(--cp-muted)' }}>
-            {groupLabel ? `${groupLabel} / ` : ''}{model.logical_mounts.join(', ')} / {model.api_types.join(', ')}
-          </div>
+          <LongField value={model.provider_model_id} className="text-sm font-medium" />
+          <LongField
+            value={`${groupLabel ? `${groupLabel} / ` : ''}${model.logical_mounts.join(', ')} / ${model.api_types.join(', ')}`}
+            className="text-xs"
+            tone="muted"
+            copyable={false}
+            expandable
+          />
         </div>
         <StatusBadge status={modelHealthVariant(model.health.status)} label={model.health.status} />
       </div>
@@ -657,9 +954,13 @@ function UpdateKeyDialog({
 }) {
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-end justify-center md:items-center">
       <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={onCancel} />
-      <div className="relative rounded-xl p-6 max-w-md w-full mx-4 shadow-lg" style={{ background: 'var(--cp-surface)' }}>
+      <div
+        className="relative flex max-h-[calc(100dvh-1rem)] w-full flex-col overflow-hidden rounded-t-xl shadow-lg md:mx-4 md:max-w-md md:rounded-xl"
+        style={{ background: 'var(--cp-surface)' }}
+      >
+        <div className="overflow-y-auto p-6 pb-4">
         <h3 className="text-base font-semibold mb-2" style={{ color: 'var(--cp-text)' }}>
           {t('aiCenter.providers.updateKey', 'Update Key')}
         </h3>
@@ -678,15 +979,23 @@ function UpdateKeyDialog({
           />
         </label>
         {error && <div className="mt-3 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</div>}
-        <div className="flex justify-end gap-3 mt-6">
-          <button type="button" onClick={onCancel} disabled={loading} className="px-4 py-2 rounded-lg text-sm disabled:opacity-60" style={{ color: 'var(--cp-muted)' }}>
+        </div>
+        <div
+          className="sticky bottom-0 flex flex-col-reverse gap-2 p-4 sm:flex-row sm:justify-end sm:gap-3"
+          style={{
+            background: 'var(--cp-surface)',
+            borderTop: '1px solid var(--cp-border)',
+            paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))',
+          }}
+        >
+          <button type="button" onClick={onCancel} disabled={loading} className="min-h-11 px-4 py-2 rounded-lg text-sm disabled:opacity-60" style={{ color: 'var(--cp-muted)' }}>
             {t('common.cancel', 'Cancel')}
           </button>
           <button
             type="button"
             onClick={onConfirm}
             disabled={loading}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-60"
+            className="inline-flex min-h-11 items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-60"
             style={{ background: 'var(--cp-accent)', color: '#fff' }}
           >
             {loading && <RefreshCw size={14} className="animate-spin" />}
@@ -717,16 +1026,30 @@ function Chip({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md px-2 py-1 min-w-0" style={{ background: 'var(--cp-bg)' }}>
       <span style={{ color: 'var(--cp-muted)' }}>{label}: </span>
-      <span className="break-all" style={{ color: 'var(--cp-text)' }}>{value}</span>
+      <LongField value={value} copyable={false} className="align-bottom" />
     </div>
   )
 }
 
-function Row({ label, value }: { label: string; value: ReactNode }) {
+function Row({
+  label,
+  value,
+  copyValue,
+  expandable,
+}: {
+  label: string
+  value: ReactNode
+  copyValue?: string
+  expandable?: boolean
+}) {
   return (
-    <div className="flex justify-between gap-4 items-center text-sm">
-      <span style={{ color: 'var(--cp-muted)' }}>{label}</span>
-      <span className="font-medium text-right break-all" style={{ color: 'var(--cp-text)' }}>{value}</span>
+    <div className="grid grid-cols-[minmax(7rem,0.45fr)_minmax(0,1fr)] items-center gap-4 text-sm">
+      <span className="truncate" title={label} style={{ color: 'var(--cp-muted)' }}>{label}</span>
+      <span className="min-w-0 justify-self-end text-right font-medium" style={{ color: 'var(--cp-text)' }}>
+        {typeof value === 'string' ? (
+          <LongField value={copyValue ?? value} title={value} expandable={expandable} />
+        ) : value}
+      </span>
     </div>
   )
 }
@@ -737,7 +1060,7 @@ function MenuAction({ icon, label, onClick, danger, disabled }: { icon: ReactNod
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-50"
+      className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-opacity hover:opacity-80 disabled:opacity-50 md:min-h-0 md:text-xs"
       style={{
         color: danger ? 'var(--cp-danger)' : 'var(--cp-text)',
       }}
@@ -789,8 +1112,9 @@ function modelMatchesQuery(model: ModelMetadata, query: string): boolean {
     model.attributes.cost_class,
     model.attributes.latency_class,
     model.health.status,
+    model.health.quota_state,
   ].join(' ').toLowerCase()
-  return haystack.includes(query)
+  return query.split(/\s+/).some((item) => item && haystack.includes(item))
 }
 
 function modelMatchesFilters(model: ModelMetadata, filters: InventoryFilters): boolean {

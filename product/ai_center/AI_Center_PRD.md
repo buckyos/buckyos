@@ -1166,7 +1166,20 @@ type RouteTrace = {
   resolved_logical_path?: string
   selected_exact_model?: string
   selected_provider_instance_name?: string
-  ranked_candidates: Array<{ exact_model: string; final_score?: number; selected: boolean }>
+  ranked_candidates: Array<{
+    exact_model: string
+    final_score?: number
+    score_inputs?: {
+      cost: number
+      latency: number
+      reliability: number
+      quality: number
+      preference: number
+      cache: number
+      local: number
+    }
+    selected: boolean
+  }>
   filtered_candidates: Array<{ exact_model: string; reason: string }>
   fallback_applied: boolean
   fallback_chain: Array<{ from: string; to: string; reason: string }>

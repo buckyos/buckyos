@@ -364,7 +364,7 @@ WHERE created_at_ms >= ? AND created_at_ms < ?
             &req.filters.idempotency_keys,
         );
 
-        sql.push_str("\nORDER BY created_at_ms ASC, event_id ASC\n");
+        sql.push_str("\nORDER BY created_at_ms DESC, event_id DESC\n");
 
         let sql = self.render_sql(&sql);
 
@@ -419,15 +419,64 @@ WHERE created_at_ms >= ? AND created_at_ms < ?
     ) -> Result<QueryRouteTraceResponse, RPCErrors> {
         let limit = req.limit.unwrap_or(20).clamp(1, 128) as usize;
         let offset = parse_cursor(req.cursor.as_deref())?;
-        let mut sql = String::from(
+        let mut where_sql = String::from(
             r#"
-SELECT route_trace_json
-FROM aicc_route_trace
 WHERE 1 = 1
 "#,
         );
         let mut string_binds: Vec<String> = vec![];
-        push_trace_id_filter(&mut sql, &mut string_binds, req);
+        push_trace_id_filter(&mut where_sql, &mut string_binds, req);
+        push_trace_filters(&mut where_sql, &mut string_binds, req);
+        push_trace_time_filter(&mut where_sql, req);
+
+        let count_sql = self.render_sql(&format!(
+            r#"
+SELECT COUNT(*) AS total_count
+FROM aicc_route_trace
+{}
+"#,
+            where_sql
+        ));
+        let mut count_query = sqlx::query(&count_sql);
+        for value in string_binds.iter() {
+            count_query = count_query.bind(value);
+        }
+        if let Some(start_time_ms) = req.start_time_ms {
+            count_query = count_query.bind(start_time_ms);
+        }
+        if let Some(end_time_ms) = req.end_time_ms {
+            count_query = count_query.bind(end_time_ms);
+        }
+        let total_count = count_query
+            .fetch_one(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to count aicc route traces: {}", error))
+            })?
+            .try_get::<i64, _>("total_count")
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to decode aicc route trace total_count: {}",
+                    error
+                ))
+            })
+            .and_then(|value| {
+                u64::try_from(value).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "invalid aicc route trace total_count {}: {}",
+                        value, error
+                    ))
+                })
+            })?;
+
+        let mut sql = format!(
+            r#"
+SELECT route_trace_json, created_at_ms
+FROM aicc_route_trace
+{}
+"#,
+            where_sql
+        );
         sql.push_str(
             r#"
 ORDER BY created_at_ms DESC, trace_id DESC
@@ -438,6 +487,12 @@ LIMIT ? OFFSET ?
         let mut query = sqlx::query(&sql);
         for value in string_binds {
             query = query.bind(value);
+        }
+        if let Some(start_time_ms) = req.start_time_ms {
+            query = query.bind(start_time_ms);
+        }
+        if let Some(end_time_ms) = req.end_time_ms {
+            query = query.bind(end_time_ms);
         }
         let rows = query
             .bind(to_sql_i64(limit as u64))
@@ -460,6 +515,7 @@ LIMIT ? OFFSET ?
         Ok(QueryRouteTraceResponse {
             traces,
             next_cursor,
+            total_count: Some(total_count),
         })
     }
 }
@@ -483,6 +539,76 @@ fn push_trace_id_filter(sql: &mut String, binds: &mut Vec<String>, req: &QueryRo
     sql.push_str("\nAND (");
     sql.push_str(&clauses.join(" OR "));
     sql.push_str(")\n");
+}
+
+fn push_trace_time_filter(sql: &mut String, req: &QueryRouteTraceRequest) {
+    if req.start_time_ms.is_some() {
+        sql.push_str(" AND created_at_ms >= ?");
+    }
+    if req.end_time_ms.is_some() {
+        sql.push_str(" AND created_at_ms < ?");
+    }
+}
+
+fn push_trace_filters(sql: &mut String, binds: &mut Vec<String>, req: &QueryRouteTraceRequest) {
+    push_in_filter(sql, binds, "api_type", &normalized_values(&req.api_types));
+    push_in_filter(
+        sql,
+        binds,
+        "provider_instance_name",
+        &normalized_values(&req.provider_instance_names),
+    );
+    let selected_exact_models = normalized_values(&req.selected_exact_models);
+    if !selected_exact_models.is_empty() {
+        let selected_placeholders = placeholders(selected_exact_models.len());
+        let request_placeholders = placeholders(selected_exact_models.len());
+        sql.push_str(&format!(
+            " AND (selected_exact_model IN ({}) OR request_model IN ({}))",
+            selected_placeholders, request_placeholders
+        ));
+        binds.extend(selected_exact_models.iter().cloned());
+        binds.extend(selected_exact_models);
+    }
+
+    let scheduler_profiles = normalized_values(&req.scheduler_profiles);
+    if !scheduler_profiles.is_empty() {
+        let clauses = std::iter::repeat("LOWER(route_trace_json) LIKE LOWER(?) ESCAPE '\\'")
+            .take(scheduler_profiles.len())
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        sql.push_str(&format!(" AND ({})", clauses));
+        binds.extend(scheduler_profiles.iter().map(|value| {
+            format!("%\"scheduler_profile\":\"{}\"%", escape_like_value(value))
+        }));
+    }
+
+    if let Some(value) = req.query.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        let escaped = escape_like_value(value);
+        sql.push_str(
+            " AND (LOWER(trace_id) LIKE LOWER(?) ESCAPE '\\' \
+             OR LOWER(request_model) LIKE LOWER(?) ESCAPE '\\' \
+             OR LOWER(COALESCE(selected_exact_model, '')) LIKE LOWER(?) ESCAPE '\\' \
+             OR LOWER(COALESCE(provider_instance_name, '')) LIKE LOWER(?) ESCAPE '\\' \
+             OR LOWER(route_trace_json) LIKE LOWER(?) ESCAPE '\\')",
+        );
+        let pattern = format!("%{}%", escaped);
+        binds.extend(std::iter::repeat(pattern).take(5));
+    }
+
+    match req.outcome.as_deref() {
+        Some("fallback") => {
+            sql.push_str(" AND LOWER(route_trace_json) LIKE LOWER(?) ESCAPE '\\'");
+            binds.push("%\"fallback_applied\":true%".to_string());
+        }
+        Some("failed") => {
+            sql.push_str(" AND selected_exact_model IS NULL");
+        }
+        Some("warning") => {
+            sql.push_str(" AND LOWER(route_trace_json) LIKE LOWER(?) ESCAPE '\\'");
+            binds.push("%\"warnings\":[\"%".to_string());
+        }
+        _ => {}
+    }
 }
 
 fn normalized_values(values: &[String]) -> Vec<String> {
@@ -647,9 +773,21 @@ fn decode_route_trace_row(row: &AnyRow) -> Result<Value, RPCErrors> {
             err
         ))
     })?;
-    serde_json::from_str(&raw).map_err(|err| {
+    let created_at_ms: i64 = row.try_get("created_at_ms").map_err(|err| {
+        RPCErrors::ReasonError(format!(
+            "failed to decode aicc_route_trace.created_at_ms: {}",
+            err
+        ))
+    })?;
+    let mut value: Value = serde_json::from_str(&raw).map_err(|err| {
         RPCErrors::ReasonError(format!("failed to parse route_trace_json: {}", err))
-    })
+    })?;
+    if let Some(object) = value.as_object_mut() {
+        object
+            .entry("created_at_ms")
+            .or_insert_with(|| Value::from(created_at_ms));
+    }
+    Ok(value)
 }
 
 fn aggregate<'a, I: Iterator<Item = &'a AiccUsageEvent>>(events: I) -> UsageAggregate {
@@ -1020,6 +1158,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.events.len(), 2);
+        assert!(first.events[0].created_at_ms > first.events[1].created_at_ms);
         let cursor = first.next_cursor.clone().expect("cursor after first page");
 
         let second = db
@@ -1080,8 +1219,16 @@ mod tests {
             .query_route_traces(&QueryRouteTraceRequest {
                 limit: Some(20),
                 cursor: None,
+                start_time_ms: None,
+                end_time_ms: None,
                 task_ids: vec![],
                 request_ids: vec![],
+                api_types: vec![],
+                provider_instance_names: vec![],
+                selected_exact_models: vec![],
+                scheduler_profiles: vec![],
+                query: None,
+                outcome: None,
             })
             .await
             .unwrap();
@@ -1099,8 +1246,16 @@ mod tests {
             .query_route_traces(&QueryRouteTraceRequest {
                 limit: Some(20),
                 cursor: None,
+                start_time_ms: None,
+                end_time_ms: None,
                 task_ids: vec!["trace-one".to_string()],
                 request_ids: vec![],
+                api_types: vec![],
+                provider_instance_names: vec![],
+                selected_exact_models: vec![],
+                scheduler_profiles: vec![],
+                query: None,
+                outcome: None,
             })
             .await
             .unwrap();
@@ -1110,14 +1265,51 @@ mod tests {
             .query_route_traces(&QueryRouteTraceRequest {
                 limit: Some(20),
                 cursor: None,
+                start_time_ms: None,
+                end_time_ms: None,
                 task_ids: vec![],
                 request_ids: vec!["trace-two".to_string()],
+                api_types: vec![],
+                provider_instance_names: vec![],
+                selected_exact_models: vec![],
+                scheduler_profiles: vec![],
+                query: None,
+                outcome: None,
             })
             .await
             .unwrap();
         assert_eq!(request_resp.traces.len(), 1);
         assert_eq!(
             request_resp.traces[0].get("request_id").and_then(Value::as_str),
+            Some("trace-two")
+        );
+        assert_eq!(
+            request_resp.traces[0]
+                .get("created_at_ms")
+                .and_then(Value::as_i64),
+            Some(now + 1)
+        );
+
+        let time_resp = db
+            .query_route_traces(&QueryRouteTraceRequest {
+                limit: Some(20),
+                cursor: None,
+                start_time_ms: Some(now + 1),
+                end_time_ms: Some(now + 2),
+                task_ids: vec![],
+                request_ids: vec![],
+                api_types: vec![],
+                provider_instance_names: vec![],
+                selected_exact_models: vec![],
+                scheduler_profiles: vec![],
+                query: None,
+                outcome: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(time_resp.traces.len(), 1);
+        assert_eq!(
+            time_resp.traces[0].get("request_id").and_then(Value::as_str),
             Some("trace-two")
         );
     }

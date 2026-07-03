@@ -1076,6 +1076,8 @@ pub struct FilteredCandidateTrace {
 pub struct RankedCandidateTrace {
     pub exact_model: String,
     pub provider_instance_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_snapshot: Option<RoutePricingSnapshot>,
     #[serde(default)]
     pub priority_path: Vec<f64>,
     pub exact_model_weight: f64,
@@ -1084,8 +1086,35 @@ pub struct RankedCandidateTrace {
     #[serde(default)]
     pub preference_score_inputs: PreferenceScoreInputs,
     #[serde(default)]
+    pub score_inputs: ScoreInputs,
+    #[serde(default)]
     pub final_score: Option<f64>,
     pub selected: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScoreInputs {
+    pub cost: f64,
+    pub latency: f64,
+    pub reliability: f64,
+    pub quality: f64,
+    pub preference: f64,
+    pub cache: f64,
+    pub local: f64,
+}
+
+impl Default for ScoreInputs {
+    fn default() -> Self {
+        Self {
+            cost: 0.0,
+            latency: 0.0,
+            reliability: 0.0,
+            quality: 0.0,
+            preference: 0.0,
+            cache: 0.0,
+            local: 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1174,6 +1203,54 @@ pub struct SessionOverlayTrace {
     pub selected_from_overlay: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RoutePricingSnapshot {
+    #[serde(default)]
+    pub input_token_usd: Option<f64>,
+    #[serde(default)]
+    pub output_token_usd: Option<f64>,
+    #[serde(default)]
+    pub cache_input_token_usd: Option<f64>,
+    #[serde(default)]
+    pub estimated_cost_usd: Option<f64>,
+}
+
+impl RoutePricingSnapshot {
+    pub fn from_candidate(candidate: &ModelCandidate) -> Option<Self> {
+        Self::from_values(
+            candidate.metadata.pricing.input_token_usd,
+            candidate.metadata.pricing.output_token_usd,
+            candidate.metadata.pricing.cache_input_token_usd,
+            candidate
+                .dynamic_cost_estimate
+                .as_ref()
+                .map(|estimate| estimate.estimated_cost_usd)
+                .or(candidate.metadata.pricing.estimated_cost_usd),
+        )
+    }
+
+    fn from_values(
+        input_token_usd: Option<f64>,
+        output_token_usd: Option<f64>,
+        cache_input_token_usd: Option<f64>,
+        estimated_cost_usd: Option<f64>,
+    ) -> Option<Self> {
+        if input_token_usd.is_none()
+            && output_token_usd.is_none()
+            && cache_input_token_usd.is_none()
+            && estimated_cost_usd.is_none()
+        {
+            return None;
+        }
+        Some(Self {
+            input_token_usd,
+            output_token_usd,
+            cache_input_token_usd,
+            estimated_cost_usd,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RouteTrace {
     pub request_id: String,
@@ -1190,6 +1267,8 @@ pub struct RouteTrace {
     pub selected_provider_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_options: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_snapshot: Option<RoutePricingSnapshot>,
     #[serde(default)]
     pub candidate_count_before_filter: usize,
     #[serde(default)]

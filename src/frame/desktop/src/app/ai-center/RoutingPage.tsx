@@ -4,10 +4,10 @@ import { useMediaQuery } from '@mui/material'
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   Box,
   Braces,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   ChevronUp,
   Cloud,
@@ -15,12 +15,12 @@ import {
   Cpu,
   DollarSign,
   FileText,
+  Filter,
   FolderTree,
   GitBranch,
   Image,
   Layers,
   MessageSquare,
-  Route,
   Search,
   Sparkles,
   Zap,
@@ -35,6 +35,8 @@ import {
 } from './hooks/use-aicc-store'
 import { StatusBadge } from './components/shared/StatusBadge'
 import type { LogicalNode, ModelMetadata, RouteTrace, RoutingDirectoryView } from '../../api/aicc_mgr'
+import { LongField } from './components/shared/LongField'
+import { RouteTraceAuditPanel } from './components/usage/RouteTraceAuditPanel'
 
 type FilterKey = 'provider' | 'apiType' | 'capability' | 'cost' | 'latency' | 'health' | 'location'
 
@@ -65,7 +67,6 @@ type ModelGroup = {
 }
 
 type UseCaseKind = 'chat' | 'code' | 'plan' | 'image' | 'embed' | 'vision' | 'audio' | 'other'
-type TraceOutcomeFilter = 'all' | 'selected' | 'fallback' | 'unresolved' | 'warning'
 
 function emptyMultiFilter(): MultiFilter {
   return { query: '', selected: [] }
@@ -94,18 +95,17 @@ export function RoutingPage() {
   const providers = useProviders()
   const localModels = useLocalModels()
   const isMobile = useMediaQuery('(max-width: 767px)')
+  const isCompactDesktop = useMediaQuery('(min-width: 768px) and (max-width: 1100px)')
   const [query, setQuery] = useState('')
   const [filters, setFilters] = useState<RoutingFilters>(() => defaultRoutingFilters())
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [currentPath, setCurrentPath] = useState<string | null>(null)
+  const [showMobileScenarioDetail, setShowMobileScenarioDetail] = useState(false)
+  const [mobileScenarioPane, setMobileScenarioPane] = useState<'scenario' | 'trace'>('scenario')
+  const [desktopScenarioPane, setDesktopScenarioPane] = useState<'scenario' | 'trace'>('scenario')
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
-  const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
-  const [tracePageIndex, setTracePageIndex] = useState(0)
-  const [traceLoading, setTraceLoading] = useState(false)
-  const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
-  const [traceQuery, setTraceQuery] = useState('')
-  const [traceOutcomeFilter, setTraceOutcomeFilter] = useState<TraceOutcomeFilter>('all')
-  const [traceProviderFilter, setTraceProviderFilter] = useState('')
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
 
   const snapshotModels = useMemo(() => [
     ...providers.flatMap((provider) => provider.status.discovered_models),
@@ -150,17 +150,11 @@ export function RoutingPage() {
         const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE })
         if (!cancelled) {
           setTraces(page.traces)
-          setTraceNextCursor(page.nextCursor)
-          setTracePageIndex(0)
-          setTraceError(null)
         }
       } catch (error) {
         console.error('aicc.trace.query initial page failed', error)
         if (!cancelled) {
           setTraces(snapshotTraces)
-          setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
-          setTracePageIndex(0)
-          setTraceError('initial')
         }
       }
     }
@@ -199,24 +193,19 @@ export function RoutingPage() {
     () => new Map(visibleScenarios.map((scenario) => [scenario.node.path, scenario])),
     [visibleScenarios],
   )
+  const allScenarioByPath = useMemo(
+    () => new Map(scenarios.map((scenario) => [scenario.node.path, scenario])),
+    [scenarios],
+  )
   const queryActive = query.trim().length > 0 || Object.values(filters).some((value) => value.query.trim().length > 0 || value.selected.length > 0)
   const directoryEntries = visibleScenarios
   const selectedScenario = visibleScenarios.find((scenario) => scenario.node.path === selectedPath)
     ?? directoryEntries[0]
     ?? visibleScenarios[0]
-  const traceProviderOptions = useMemo(
-    () => uniqueSorted(traces
-      .map((trace) => trace.selected_provider_instance_name)
-      .filter((provider): provider is string => Boolean(provider))),
-    [traces],
-  )
-  const visibleTraces = useMemo(
-    () => traces
-      .filter((trace) => traceMatchesQuery(trace, traceQuery))
-      .filter((trace) => traceMatchesOutcome(trace, traceOutcomeFilter))
-      .filter((trace) => !traceProviderFilter || trace.selected_provider_instance_name === traceProviderFilter),
-    [traceOutcomeFilter, traceProviderFilter, traceQuery, traces],
-  )
+  const selectedTracePath = selectedTraceId
+    ? traceLogicalPath(traces.find((trace) => trace.request_id === selectedTraceId))
+    : null
+  const activeTracePath = selectedTracePath ?? selectedPath
 
   if (routingView.logical_tree.length === 0) {
     return (
@@ -233,46 +222,6 @@ export function RoutingPage() {
     setFilters((current) => ({ ...current, [key]: value }))
   }
 
-  const loadTracePage = async (pageIndex: number) => {
-    if (traceLoading) return
-    const nextPageIndex = Math.max(0, pageIndex)
-    setTraceLoading(true)
-    setTraceError(null)
-    try {
-      const page = await store.queryRouteTraces({
-        limit: ROUTE_TRACE_PAGE_SIZE,
-        cursor: nextPageIndex > 0 ? String(nextPageIndex * ROUTE_TRACE_PAGE_SIZE) : undefined,
-      })
-      setTraces(page.traces)
-      setTraceNextCursor(page.nextCursor)
-      setTracePageIndex(nextPageIndex)
-    } catch (error) {
-      console.error('aicc.trace.query page failed', error)
-      setTraceError('initial')
-    } finally {
-      setTraceLoading(false)
-    }
-  }
-
-  const loadMoreTraces = async () => {
-    if (!traceNextCursor || traceLoading) return
-    setTraceLoading(true)
-    setTraceError(null)
-    try {
-      const page = await store.queryRouteTraces({
-        limit: ROUTE_TRACE_PAGE_SIZE,
-        cursor: traceNextCursor,
-      })
-      setTraces((current) => mergeRouteTraces(current, page.traces))
-      setTraceNextCursor(page.nextCursor)
-    } catch (error) {
-      console.error('aicc.trace.query next page failed', error)
-      setTraceError('more')
-    } finally {
-      setTraceLoading(false)
-    }
-  }
-
   return (
     <div className="flex flex-col gap-4">
       <RoutingHeader revision={activeRoutingView.revision} scenarioCount={visibleScenarios.length} />
@@ -281,8 +230,11 @@ export function RoutingPage() {
         query={query}
         filters={filters}
         options={filterOptions}
+        resultCount={visibleScenarios.length}
         onQueryChange={setQuery}
         onFilterChange={updateFilter}
+        filtersOpen={filtersOpen}
+        onToggleFilters={() => setFiltersOpen((value) => !value)}
       />
 
       {!queryActive && (
@@ -292,12 +244,90 @@ export function RoutingPage() {
           onNavigate={(path) => {
             setCurrentPath(path)
             setSelectedPath(path)
+            setShowMobileScenarioDetail(false)
           }}
         />
       )}
 
-      <div className={isMobile ? 'flex flex-col gap-4' : 'grid grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)] gap-5 items-start'}>
-        <section className="flex flex-col gap-3">
+      {isMobile && showMobileScenarioDetail && selectedScenario ? (
+        <div className="flex flex-col gap-4">
+          <div className="flex min-h-11 items-center gap-1 rounded-xl p-1" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+            <button
+              type="button"
+              onClick={() => setShowMobileScenarioDetail(false)}
+              className="inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-medium"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              <ArrowLeft size={15} />
+              {t('aiCenter.routing.mainPage', 'Routing')}
+            </button>
+            {([
+              ['scenario', t('aiCenter.routing.scenarioInfo', 'Scenario')],
+              ['trace', t('aiCenter.routing.tracePage', 'Trace')],
+            ] as Array<['scenario' | 'trace', string]>).map(([pane, label]) => (
+              <button
+                key={pane}
+                type="button"
+                onClick={() => setMobileScenarioPane(pane)}
+                className="min-h-9 flex-1 rounded-lg px-2 text-xs font-medium"
+                style={{
+                  background: mobileScenarioPane === pane ? 'var(--cp-surface-2)' : 'transparent',
+                  color: mobileScenarioPane === pane ? 'var(--cp-text)' : 'var(--cp-muted)',
+                  border: mobileScenarioPane === pane ? '1px solid var(--cp-border)' : '1px solid transparent',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {mobileScenarioPane === 'scenario' ? (
+            <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
+          ) : (
+            <RouteTraceAuditPanel
+              compact={isMobile}
+              logicalPathFilter={activeTracePath}
+              activeTraceId={selectedTraceId}
+              onTraceSelect={(trace: RouteTrace) => {
+                const logicalPath = traceLogicalPath(trace)
+                setSelectedTraceId(trace.request_id)
+                if (logicalPath && allScenarioByPath.has(logicalPath)) {
+                  setSelectedPath(logicalPath)
+                }
+              }}
+              onClearLogicalPathFilter={() => {
+                setSelectedTraceId(null)
+                setSelectedPath(null)
+              }}
+            />
+          )}
+        </div>
+      ) : (
+      <div className={isMobile || isCompactDesktop ? 'flex flex-col gap-4' : 'grid grid-cols-[220px_minmax(0,1fr)_360px] gap-4 items-start'}>
+        {!isMobile && (
+          <DirectoryNavigator
+            nodes={routingView.logical_tree}
+            currentPath={currentPath}
+            selectedPath={selectedPath}
+            onNavigate={(path) => {
+              setCurrentPath(path)
+              setSelectedPath(path)
+              setSelectedTraceId(null)
+              setShowMobileScenarioDetail(false)
+            }}
+          />
+        )}
+        <section className="flex min-w-0 flex-col gap-3">
+          <div className="flex items-center justify-between gap-3 rounded-xl px-3 py-2" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+            <div className="min-w-0">
+              <div className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+                {t('aiCenter.routing.currentDirectory', 'Current directory')}
+              </div>
+              <LongField value={currentPath ?? 'Routing'} className="text-sm" mono copyable={Boolean(currentPath)} />
+            </div>
+            <span className="shrink-0 text-xs" style={{ color: 'var(--cp-muted)' }}>
+              {directoryEntries.length} {t('aiCenter.routing.scenarios', 'scenarios')}
+            </span>
+          </div>
           {directoryEntries.length > 0 ? directoryEntries.map((scenario) => (
             <ScenarioCard
               key={scenario.node.path}
@@ -305,10 +335,18 @@ export function RoutingPage() {
               providerNames={providerNames}
               hasChildren={!queryActive && canNavigateIntoPath(routingView.logical_tree, scenario.node.path)}
               selected={selectedScenario?.node.path === scenario.node.path}
-              onSelect={() => setSelectedPath(scenario.node.path)}
+              onSelect={() => {
+                setSelectedPath(scenario.node.path)
+                setSelectedTraceId(null)
+                if (isMobile) {
+                  setMobileScenarioPane('scenario')
+                  setShowMobileScenarioDetail(true)
+                }
+              }}
               onOpen={() => {
                 setCurrentPath(scenario.node.path)
                 setSelectedPath(scenario.node.path)
+                setShowMobileScenarioDetail(false)
               }}
             />
           )) : (
@@ -316,34 +354,51 @@ export function RoutingPage() {
           )}
         </section>
 
-        <aside className="flex flex-col gap-4">
-          {selectedScenario && (
+        <aside className="flex min-w-0 flex-col gap-4">
+          {!isMobile && (
+            <div className="flex min-h-10 flex-wrap items-center gap-1 rounded-xl p-1" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+              {([
+                ['scenario', t('aiCenter.routing.scenarioDetail', 'Scenario Detail')],
+                ['trace', t('aiCenter.routing.tracePage', 'Trace')],
+              ] as Array<['scenario' | 'trace', string]>).map(([pane, label]) => (
+                <button
+                  key={pane}
+                  type="button"
+                  onClick={() => setDesktopScenarioPane(pane)}
+                  className="min-h-8 flex-1 rounded-lg px-3 text-xs font-medium"
+                  style={{
+                    background: desktopScenarioPane === pane ? 'var(--cp-surface-2)' : 'transparent',
+                    color: desktopScenarioPane === pane ? 'var(--cp-text)' : 'var(--cp-muted)',
+                    border: desktopScenarioPane === pane ? '1px solid var(--cp-border)' : '1px solid transparent',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {selectedScenario && desktopScenarioPane === 'scenario' && (
             <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
           )}
+          {!isMobile && desktopScenarioPane === 'trace' && <RouteTraceAuditPanel
+            compact={false}
+            logicalPathFilter={activeTracePath}
+            activeTraceId={selectedTraceId}
+            onTraceSelect={(trace: RouteTrace) => {
+              const logicalPath = traceLogicalPath(trace)
+              setSelectedTraceId(trace.request_id)
+              if (logicalPath && allScenarioByPath.has(logicalPath)) {
+                setSelectedPath(logicalPath)
+              }
+            }}
+            onClearLogicalPathFilter={() => {
+              setSelectedTraceId(null)
+              setSelectedPath(null)
+            }}
+          />}
         </aside>
       </div>
-
-      <TraceExplorer
-        traces={visibleTraces}
-        totalCount={traces.length}
-        compact={isMobile}
-        query={traceQuery}
-        outcomeFilter={traceOutcomeFilter}
-        providerFilter={traceProviderFilter}
-        providerOptions={traceProviderOptions}
-        hasMore={isMobile && Boolean(traceNextCursor)}
-        pageIndex={tracePageIndex}
-        canGoPrevious={!isMobile && tracePageIndex > 0}
-        canGoNext={!isMobile && Boolean(traceNextCursor)}
-        loading={traceLoading}
-        error={traceError}
-        onQueryChange={setTraceQuery}
-        onOutcomeFilterChange={setTraceOutcomeFilter}
-        onProviderFilterChange={setTraceProviderFilter}
-        onLoadMore={loadMoreTraces}
-        onPreviousPage={() => void loadTracePage(tracePageIndex - 1)}
-        onNextPage={() => void loadTracePage(tracePageIndex + 1)}
-      />
+      )}
     </div>
   )
 }
@@ -369,33 +424,53 @@ function RoutingFiltersBar({
   query,
   filters,
   options,
+  resultCount,
   onQueryChange,
   onFilterChange,
+  filtersOpen,
+  onToggleFilters,
 }: {
   query: string
   filters: RoutingFilters
   options: Record<FilterKey, string[]>
+  resultCount: number
   onQueryChange: (value: string) => void
   onFilterChange: (key: FilterKey, value: MultiFilter) => void
+  filtersOpen: boolean
+  onToggleFilters: () => void
 }) {
   const { t } = useI18n()
+  const activeFilterCount = Object.values(filters).reduce((count, filter) => count + filter.selected.length + (filter.query.trim() ? 1 : 0), 0)
   return (
     <section
       className="rounded-xl p-3 flex flex-col gap-3"
       style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
     >
-      <div className="flex items-center gap-2">
+      <div className="relative flex items-center gap-2">
         <Search size={17} style={{ color: 'var(--cp-muted)' }} />
         <input
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder={t('aiCenter.routing.search', 'Search logical path, model, provider, capability...')}
-          className="min-h-10 flex-1 rounded-lg px-3 text-sm outline-none"
+          className="min-h-10 flex-1 rounded-lg px-3 pr-12 text-sm outline-none"
           style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
         />
+        <button
+          type="button"
+          onClick={onToggleFilters}
+          className="absolute right-1.5 top-1/2 flex h-7 min-w-7 -translate-y-1/2 items-center justify-center gap-1 rounded-md px-1.5 text-xs"
+          style={{
+            color: filtersOpen || activeFilterCount > 0 ? 'var(--cp-accent)' : 'var(--cp-muted)',
+            background: filtersOpen ? 'var(--cp-surface)' : 'transparent',
+          }}
+          aria-label={t('aiCenter.routing.filters', 'Filters')}
+        >
+          <Filter size={14} />
+          <span>{resultCount}</span>
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+      {filtersOpen && <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
         <MultiSelectFilter label={t('aiCenter.routing.provider', 'Provider')} value={filters.provider} options={options.provider} onChange={(value) => onFilterChange('provider', value)} />
         <MultiSelectFilter label={t('aiCenter.routing.apiType', 'API Type')} value={filters.apiType} options={options.apiType} onChange={(value) => onFilterChange('apiType', value)} />
         <MultiSelectFilter label={t('aiCenter.routing.capability', 'Capability')} value={filters.capability} options={options.capability} onChange={(value) => onFilterChange('capability', value)} />
@@ -403,7 +478,7 @@ function RoutingFiltersBar({
         <MultiSelectFilter label={t('aiCenter.routing.latency', 'Latency')} value={filters.latency} options={options.latency} onChange={(value) => onFilterChange('latency', value)} />
         <MultiSelectFilter label={t('aiCenter.routing.health', 'Health')} value={filters.health} options={options.health} onChange={(value) => onFilterChange('health', value)} />
         <MultiSelectFilter label={t('aiCenter.routing.location', 'Local/Cloud')} value={filters.location} options={options.location} onChange={(value) => onFilterChange('location', value)} />
-      </div>
+      </div>}
     </section>
   )
 }
@@ -419,9 +494,15 @@ function MultiSelectFilter({
   options: string[]
   onChange: (value: MultiFilter) => void
 }) {
+  const { t } = useI18n()
   const selectedCount = value.selected.length
   const [open, setOpen] = useState(false)
+  const [showAllOptions, setShowAllOptions] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const visibleOptions = showAllOptions
+    ? options
+    : Array.from(new Set([...options.slice(0, 6), ...value.selected]))
+  const hiddenOptionCount = Math.max(0, options.length - visibleOptions.length)
   const toggleOption = (option: string) => {
     const selected = value.selected.includes(option)
       ? value.selected.filter((item) => item !== option)
@@ -486,7 +567,7 @@ function MultiSelectFilter({
           >
             All
           </button>
-          {options.map((option) => (
+          {visibleOptions.map((option) => (
             <label key={option} className="flex min-h-7 items-center gap-2 rounded px-2 py-1 text-xs" style={{ color: 'var(--cp-text)' }}>
               <input
                 type="checkbox"
@@ -496,8 +577,122 @@ function MultiSelectFilter({
               <span className="truncate" title={option}>{option}</span>
             </label>
           ))}
+          {hiddenOptionCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(true)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.routing.showMoreOptions', 'Show more')} ({hiddenOptionCount})
+            </button>
+          )}
+          {showAllOptions && options.length > 6 && (
+            <button
+              type="button"
+              onClick={() => setShowAllOptions(false)}
+              className="rounded px-2 py-1 text-left text-xs"
+              style={{ color: 'var(--cp-accent)' }}
+            >
+              {t('aiCenter.routing.showLessOptions', 'Show less')}
+            </button>
+          )}
         </div>
       )}
+    </div>
+  )
+}
+
+function DirectoryNavigator({
+  nodes,
+  currentPath,
+  selectedPath,
+  onNavigate,
+}: {
+  nodes: LogicalNode[]
+  currentPath: string | null
+  selectedPath: string | null
+  onNavigate: (path: string | null) => void
+}) {
+  const { t } = useI18n()
+  return (
+    <aside className="sticky top-4 flex max-h-[calc(100dvh-10rem)] min-w-0 flex-col overflow-hidden rounded-xl" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+      <div className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderBottom: '1px solid var(--cp-border)' }}>
+        <div className="flex min-w-0 items-center gap-2">
+          <FolderTree size={15} style={{ color: 'var(--cp-accent)' }} />
+          <span className="truncate text-xs font-medium" style={{ color: 'var(--cp-text)' }}>
+            {t('aiCenter.routing.logicalDirectory', 'Logical directory')}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => onNavigate(null)}
+          className="shrink-0 rounded-md px-2 py-1 text-xs"
+          style={{ color: currentPath == null ? 'var(--cp-text)' : 'var(--cp-accent)' }}
+        >
+          {t('aiCenter.routing.root', 'Root')}
+        </button>
+      </div>
+      <div className="min-h-0 overflow-y-auto p-2">
+        <DirectoryNodeList
+          nodes={nodes}
+          depth={0}
+          currentPath={currentPath}
+          selectedPath={selectedPath}
+          onNavigate={onNavigate}
+        />
+      </div>
+    </aside>
+  )
+}
+
+function DirectoryNodeList({
+  nodes,
+  depth,
+  currentPath,
+  selectedPath,
+  onNavigate,
+}: {
+  nodes: LogicalNode[]
+  depth: number
+  currentPath: string | null
+  selectedPath: string | null
+  onNavigate: (path: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      {nodes.filter(isLogicalDirectoryNode).map((node) => {
+        const active = node.path === currentPath || node.path === selectedPath
+        const children = (node.children ?? []).filter(isLogicalDirectoryNode)
+        return (
+          <div key={node.path} className="min-w-0">
+            <button
+              type="button"
+              onClick={() => onNavigate(node.path)}
+              className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-xs"
+              title={node.path}
+              style={{
+                paddingLeft: `${8 + depth * 12}px`,
+                background: active ? 'var(--cp-surface-2)' : 'transparent',
+                color: active ? 'var(--cp-text)' : 'var(--cp-muted)',
+                border: active ? '1px solid var(--cp-border)' : '1px solid transparent',
+              }}
+            >
+              {children.length > 0 ? <FolderTree size={13} className="shrink-0" /> : <Box size={13} className="shrink-0" />}
+              <span className="min-w-0 truncate font-mono">{lastPathSegment(node.path)}</span>
+            </button>
+            {children.length > 0 && depth < 3 && (
+              <DirectoryNodeList
+                nodes={children}
+                depth={depth + 1}
+                currentPath={currentPath}
+                selectedPath={selectedPath}
+                onNavigate={onNavigate}
+              />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -622,7 +817,7 @@ function ScenarioCard({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>{scenario.title}</h3>
-              <span className="text-xs font-mono" style={{ color: 'var(--cp-muted)' }}>{scenario.node.path}</span>
+              <LongField value={scenario.node.path} className="text-xs" mono tone="muted" copyable={false} />
             </div>
             <p className="text-sm mt-1" style={{ color: 'var(--cp-muted)' }}>{scenario.description}</p>
           </div>
@@ -638,12 +833,18 @@ function ScenarioCard({
             <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
               {t('aiCenter.routing.currentPreferred', 'Current preferred model')}
             </div>
-            <div className="text-sm font-medium truncate" style={{ color: 'var(--cp-text)' }}>
-              {primary?.provider_model_id ?? scenario.selectedExactModel ?? t('aiCenter.routing.noModel', 'No model resolved')}
-            </div>
-            <div className="text-xs font-mono truncate" style={{ color: 'var(--cp-muted)' }}>
-              {primary ? `${providerNames.get(providerFromExact(primary.exact_model)) ?? providerFromExact(primary.exact_model)} / ${primary.exact_model}` : scenario.node.fallback?.target ?? '-'}
-            </div>
+            <LongField
+              value={primary?.provider_model_id ?? scenario.selectedExactModel ?? t('aiCenter.routing.noModel', 'No model resolved')}
+              className="text-sm font-medium"
+              copyable={Boolean(primary?.provider_model_id ?? scenario.selectedExactModel)}
+            />
+            <LongField
+              value={primary ? `${providerNames.get(providerFromExact(primary.exact_model)) ?? providerFromExact(primary.exact_model)} / ${primary.exact_model}` : scenario.node.fallback?.target ?? '-'}
+              className="text-xs"
+              mono
+              tone="muted"
+              expandable
+            />
           </div>
           {primary && (
             <div className="flex flex-wrap items-center gap-2">
@@ -690,9 +891,7 @@ function ScenarioInspector({
               {t('aiCenter.routing.scenarioDetail', 'Scenario Detail')}
             </h3>
           </div>
-          <div className="text-xs font-mono truncate mt-1" style={{ color: 'var(--cp-muted)' }}>
-            {scenario.node.path}
-          </div>
+          <LongField value={scenario.node.path} className="mt-1 text-xs" mono tone="muted" />
         </div>
         <StatusBadge status={scenario.selectedModel ? 'ok' : 'warning'} label={scenario.selectedModel ? 'resolved' : 'unresolved'} />
       </div>
@@ -770,11 +969,15 @@ function ModelGroupRow({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-xs tabular-nums" style={{ color: 'var(--cp-muted)' }}>#{index + 1}</span>
-            <span className="text-sm font-medium truncate" style={{ color: 'var(--cp-text)' }}>{model.provider_model_id}</span>
+            <LongField value={model.provider_model_id} className="text-sm font-medium" />
           </div>
-          <div className="text-xs font-mono truncate mt-1" style={{ color: 'var(--cp-muted)' }}>
-            {providerNames.get(providerFromExact(model.exact_model)) ?? providerFromExact(model.exact_model)} / {model.exact_model}
-          </div>
+          <LongField
+            value={`${providerNames.get(providerFromExact(model.exact_model)) ?? providerFromExact(model.exact_model)} / ${model.exact_model}`}
+            className="mt-1 text-xs"
+            mono
+            tone="muted"
+            expandable
+          />
         </div>
         <StatusBadge status={model.health.status === 'available' ? 'ok' : model.health.status === 'degraded' ? 'warning' : 'error'} label={model.health.status} />
       </div>
@@ -786,259 +989,10 @@ function ModelGroupRow({
       </div>
       {group.variants.length > 0 && (
         <div className="mt-2 text-xs truncate" style={{ color: 'var(--cp-muted)' }}>
-          {group.variants.map((variant) => variant.provider_model_id).join(', ')}
+          <LongField value={group.variants.map((variant) => variant.provider_model_id).join(', ')} tone="muted" copyable={false} expandable />
         </div>
       )}
     </article>
-  )
-}
-
-function TraceExplorer({
-  traces,
-  totalCount,
-  compact,
-  query,
-  outcomeFilter,
-  providerFilter,
-  providerOptions,
-  hasMore,
-  pageIndex,
-  canGoPrevious,
-  canGoNext,
-  loading,
-  error,
-  onQueryChange,
-  onOutcomeFilterChange,
-  onProviderFilterChange,
-  onLoadMore,
-  onPreviousPage,
-  onNextPage,
-}: {
-  traces: RouteTrace[]
-  totalCount: number
-  compact: boolean
-  query: string
-  outcomeFilter: TraceOutcomeFilter
-  providerFilter: string
-  providerOptions: string[]
-  hasMore: boolean
-  pageIndex: number
-  canGoPrevious: boolean
-  canGoNext: boolean
-  loading: boolean
-  error: 'initial' | 'more' | null
-  onQueryChange: (value: string) => void
-  onOutcomeFilterChange: (value: TraceOutcomeFilter) => void
-  onProviderFilterChange: (value: string) => void
-  onLoadMore: () => void
-  onPreviousPage: () => void
-  onNextPage: () => void
-}) {
-  const { t } = useI18n()
-  return (
-    <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2">
-          <Route size={16} style={{ color: 'var(--cp-accent)' }} />
-          <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.routeTraceAudit', 'Route Trace Audit')}</h3>
-        </div>
-        <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-          {t('aiCenter.routing.traceVisibleCount', '{{visible}} / {{total}} traces', { visible: traces.length, total: totalCount })}
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-[minmax(220px,1fr)_180px_220px] gap-2 mb-3">
-        <div className="flex min-h-9 items-center gap-2 rounded-md px-2" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
-          <Search size={15} style={{ color: 'var(--cp-muted)' }} />
-          <input
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            placeholder={t('aiCenter.routing.traceSearch', 'Search path, model, provider, reason...')}
-            className="min-w-0 flex-1 bg-transparent text-sm outline-none"
-            style={{ color: 'var(--cp-text)' }}
-          />
-        </div>
-        <select
-          value={outcomeFilter}
-          onChange={(event) => onOutcomeFilterChange(event.target.value as TraceOutcomeFilter)}
-          className="min-h-9 rounded-md px-2 text-sm outline-none"
-          style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-        >
-          <option value="all">{t('aiCenter.routing.traceOutcomeAll', 'All outcomes')}</option>
-          <option value="selected">{t('aiCenter.routing.traceOutcomeSelected', 'Selected')}</option>
-          <option value="fallback">{t('aiCenter.routing.traceOutcomeFallback', 'Fallback')}</option>
-          <option value="unresolved">{t('aiCenter.routing.traceOutcomeUnresolved', 'Unresolved')}</option>
-          <option value="warning">{t('aiCenter.routing.traceOutcomeWarning', 'Warnings')}</option>
-        </select>
-        <select
-          value={providerFilter}
-          onChange={(event) => onProviderFilterChange(event.target.value)}
-          className="min-h-9 rounded-md px-2 text-sm outline-none"
-          style={{ background: 'var(--cp-bg)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-        >
-          <option value="">{t('aiCenter.routing.traceProviderAll', 'All providers')}</option>
-          {providerFilter && !providerOptions.includes(providerFilter) && (
-            <option value={providerFilter}>{providerFilter}</option>
-          )}
-          {providerOptions.map((provider) => (
-            <option key={provider} value={provider}>{provider}</option>
-          ))}
-        </select>
-      </div>
-      <div className={compact ? 'flex flex-col gap-3' : 'grid grid-cols-1 gap-3'}>
-        {traces.map((trace) => (
-          <TraceCard key={trace.request_id} trace={trace} />
-        ))}
-        {traces.length === 0 && (
-          <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
-            {t('aiCenter.routing.traceNoMatches', 'No route traces match the current search and filters.')}
-          </div>
-        )}
-      </div>
-      {error && (
-        <div className="mt-3 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--cp-warning)', background: 'var(--cp-bg)' }}>
-          {error === 'more'
-            ? t('aiCenter.routing.traceLoadMoreFailed', 'Failed to load more route traces')
-            : t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces')}
-        </div>
-      )}
-      {compact && hasMore && (
-        <button
-          type="button"
-          onClick={onLoadMore}
-          disabled={loading}
-          className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium disabled:opacity-60"
-          style={{ color: 'var(--cp-accent)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
-        >
-          <ChevronDown size={15} />
-          {loading
-            ? t('aiCenter.routing.traceLoading', 'Loading...')
-            : t('aiCenter.routing.traceLoadMore', 'Load more')}
-        </button>
-      )}
-      {!compact && (
-        <div className="mt-3 flex items-center justify-between gap-3 rounded-lg px-3 py-2" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
-          <button
-            type="button"
-            onClick={onPreviousPage}
-            disabled={!canGoPrevious || loading}
-            className="inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium disabled:opacity-50"
-            style={{ color: 'var(--cp-accent)' }}
-          >
-            <ChevronLeft size={14} />
-            {t('aiCenter.routing.tracePreviousPage', 'Previous')}
-          </button>
-          <div className="text-xs tabular-nums" style={{ color: 'var(--cp-muted)' }}>
-            {loading
-              ? t('aiCenter.routing.traceLoading', 'Loading...')
-              : t('aiCenter.routing.tracePage', 'Page {{page}}', { page: pageIndex + 1 })}
-          </div>
-          <button
-            type="button"
-            onClick={onNextPage}
-            disabled={!canGoNext || loading}
-            className="inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium disabled:opacity-50"
-            style={{ color: 'var(--cp-accent)' }}
-          >
-            {t('aiCenter.routing.traceNextPage', 'Next')}
-            <ChevronRight size={14} />
-          </button>
-        </div>
-      )}
-    </section>
-  )
-}
-
-function TraceCard({ trace }: { trace: RouteTrace }) {
-  const { t } = useI18n()
-  const [expanded, setExpanded] = useState(false)
-  const selectedCandidate = selectedTraceCandidate(trace)
-  const visibleCandidates = expanded
-    ? trace.ranked_candidates
-    : selectedCandidate ? [selectedCandidate] : []
-  const hiddenCandidateCount = Math.max(0, trace.ranked_candidates.length - visibleCandidates.length)
-
-  return (
-    <article className="rounded-lg p-3" style={{ background: 'var(--cp-bg)' }}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-mono" style={{ color: 'var(--cp-text)' }}>{trace.requested_model}</div>
-          <div className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {trace.selected_exact_model
-              ? `${trace.selected_exact_model} / ${trace.selected_provider_instance_name}`
-              : t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
-          </div>
-        </div>
-        <StatusBadge status={trace.selected_exact_model ? (trace.fallback_applied ? 'warning' : 'ok') : 'error'} label={trace.scheduler_profile} />
-      </div>
-      <p className="text-sm mt-2" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
-
-      <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
-        <div className="mb-1 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-          {t('aiCenter.routing.traceFinalSelection', 'Final selection')}
-        </div>
-        {selectedCandidate ? (
-          <TraceCandidateRow candidate={selectedCandidate} selected />
-        ) : (
-          <div className="text-xs" style={{ color: trace.selected_exact_model ? 'var(--cp-text)' : 'var(--cp-warning)' }}>
-            {trace.selected_exact_model ?? t('aiCenter.routing.noExactResolved', 'No exact model resolved')}
-          </div>
-        )}
-      </div>
-
-      {expanded && visibleCandidates.length > 0 && (
-        <div className="mt-3 flex flex-col gap-1">
-          {visibleCandidates.map((candidate) => (
-            <TraceCandidateRow key={candidate.exact_model} candidate={candidate} selected={candidate.selected} />
-          ))}
-        </div>
-      )}
-      {expanded && trace.filtered_candidates.length > 0 && (
-        <div className="mt-3 flex flex-col gap-1">
-          {trace.filtered_candidates.map((candidate) => (
-            <div key={candidate.exact_model} className="flex flex-col gap-0.5 text-xs">
-              <span style={{ color: 'var(--cp-warning)' }}>{candidate.exact_model}</span>
-              <span style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {(trace.ranked_candidates.length > 1 || trace.filtered_candidates.length > 0) && (
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          className="mt-3 inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium"
-          style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-        >
-          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          {expanded
-            ? t('aiCenter.routing.traceHideCandidates', 'Hide candidates')
-            : t('aiCenter.routing.traceShowCandidates', 'Show candidates ({{count}})', { count: hiddenCandidateCount + trace.filtered_candidates.length })}
-        </button>
-      )}
-      {trace.warnings.length > 0 && (
-        <div className="text-xs mt-2" style={{ color: 'var(--cp-warning)' }}>{trace.warnings.join(' / ')}</div>
-      )}
-    </article>
-  )
-}
-
-function TraceCandidateRow({
-  candidate,
-  selected,
-}: {
-  candidate: RouteTrace['ranked_candidates'][number]
-  selected: boolean
-}) {
-  return (
-    <div className="flex justify-between gap-3 text-xs">
-      <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-muted)' }}>
-        <span className="block truncate">{candidate.exact_model}</span>
-        <span className="block" style={{ color: 'var(--cp-muted)' }}>
-          {candidateWeightSummary(candidate)}
-        </span>
-      </span>
-      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{candidate.final_score?.toFixed(2)}</span>
-    </div>
   )
 }
 
@@ -1092,9 +1046,7 @@ function Fact({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-3 rounded-lg px-3 py-2" style={{ background: 'var(--cp-bg)' }}>
       <span className="text-xs shrink-0" style={{ color: 'var(--cp-muted)' }}>{label}</span>
-      <span className="text-xs text-right break-words" style={{ color: 'var(--cp-text)' }}>
-        {value}
-      </span>
+      <LongField value={value} className="justify-end text-right text-xs" expandable />
     </div>
   )
 }
@@ -1126,18 +1078,6 @@ function buildScenarios(nodes: LogicalNode[], models: ModelMetadata[], traces: R
     })
 
   return scenarios
-}
-
-function mergeRouteTraces(current: RouteTrace[], next: RouteTrace[]): RouteTrace[] {
-  const seen = new Set(current.map((trace) => trace.request_id))
-  const merged = [...current]
-  for (const trace of next) {
-    if (!seen.has(trace.request_id)) {
-      seen.add(trace.request_id)
-      merged.push(trace)
-    }
-  }
-  return merged
 }
 
 function scenarioCandidates(node: LogicalNode, models: ModelMetadata[], trace?: RouteTrace): ModelMetadata[] {
@@ -1453,54 +1393,7 @@ function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean))).sort((left, right) => left.localeCompare(right))
 }
 
-function selectedTraceCandidate(trace: RouteTrace): RouteTrace['ranked_candidates'][number] | undefined {
-  return trace.ranked_candidates.find((candidate) => candidate.selected)
-    ?? trace.ranked_candidates.find((candidate) => candidate.exact_model === trace.selected_exact_model)
-}
-
-function traceMatchesQuery(trace: RouteTrace, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase()
-  if (!normalizedQuery) return true
-  const haystack = [
-    trace.request_id,
-    trace.requested_model,
-    trace.resolved_logical_path ?? '',
-    trace.selected_exact_model ?? '',
-    trace.selected_provider_instance_name ?? '',
-    trace.scheduler_profile,
-    trace.user_summary?.reason_short ?? '',
-    ...trace.warnings,
-    ...trace.ranked_candidates.map((candidate) => candidate.exact_model),
-    ...trace.filtered_candidates.flatMap((candidate) => [candidate.exact_model, candidate.reason]),
-  ].join(' ').toLowerCase()
-  return haystack.includes(normalizedQuery)
-}
-
-function traceMatchesOutcome(trace: RouteTrace, filter: TraceOutcomeFilter): boolean {
-  if (filter === 'all') return true
-  if (filter === 'selected') return Boolean(trace.selected_exact_model)
-  if (filter === 'fallback') return trace.fallback_applied
-  if (filter === 'unresolved') return !trace.selected_exact_model
-  if (filter === 'warning') return trace.warnings.length > 0
-  return true
-}
-
-function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number]): string {
-  const inputs = candidate.preference_score_inputs
-  const exact = inputs?.exact_model_weight ?? candidate.exact_model_weight ?? 1
-  const provider = inputs?.provider_weight ?? candidate.provider_weight ?? 1
-  const combined = inputs?.combined_weight ?? exact * provider
-  const providerEffect = inputs?.provider_weight_effect ?? weightEffect(provider)
-  return `exact ${formatWeight(exact)} / provider ${formatWeight(provider)} ${providerEffect} / combined ${formatWeight(combined)}`
-}
-
-function weightEffect(weight: number): string {
-  if (weight <= 0) return 'disabled'
-  if (weight < 1) return 'downweighted'
-  if (weight > 1) return 'upweighted'
-  return 'neutral'
-}
-
-function formatWeight(weight: number): string {
-  return weight.toFixed(2).replace(/\.?0+$/, '')
+function traceLogicalPath(trace?: RouteTrace): string | null {
+  if (!trace) return null
+  return trace.resolved_logical_path ?? (trace.requested_model_type === 'logical' ? trace.requested_model : null)
 }

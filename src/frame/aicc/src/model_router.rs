@@ -55,6 +55,7 @@ impl<'a> ModelRouter<'a> {
             selected_provider_instance_name: None,
             selected_provider_model_id: None,
             provider_options: None,
+            pricing_snapshot: None,
             candidate_count_before_filter: 0,
             candidate_count_after_filter: 0,
             filtered_candidates: Vec::new(),

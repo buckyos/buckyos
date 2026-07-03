@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../i18n/provider'
 import { useProviders, useGlobalRoutingView } from './hooks/use-aicc-store'
@@ -17,13 +17,23 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
   const providers = useProviders()
   const routingView = useGlobalRoutingView()
   const isMobile = useMediaQuery('(max-width: 767px)')
+  const isCompactDesktop = useMediaQuery('(min-width: 768px) and (max-width: 1100px)')
   const [selectedId, setSelectedId] = useState<string | null>(
     providers.length > 0 ? providers[0].config.id : null,
   )
   // Mobile: detail view shown when a provider is selected and user tapped it
   const [showMobileDetail, setShowMobileDetail] = useState(false)
+  const mobileListRef = useRef<HTMLDivElement | null>(null)
+  const mobileListScrollTop = useRef(0)
 
   const selectedProvider = providers.find((p) => p.config.id === selectedId)
+
+  useEffect(() => {
+    if (!isMobile || showMobileDetail) return
+    const node = mobileListRef.current
+    if (!node) return
+    node.scrollTop = mobileListScrollTop.current
+  }, [isMobile, showMobileDetail])
 
   if (providers.length === 0) {
     return (
@@ -42,17 +52,10 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
     if (showMobileDetail && selectedProvider) {
       return (
         <div>
-          <button
-            type="button"
-            onClick={() => setShowMobileDetail(false)}
-            className="text-sm mb-3"
-            style={{ color: 'var(--cp-accent)' }}
-          >
-            {t('common.back', 'Back')}
-          </button>
           <ProviderDetailPanel
             provider={selectedProvider}
             routingWeight={routingView.provider_weights[selectedProvider.config.provider_instance_name] ?? 1}
+            onBack={() => setShowMobileDetail(false)}
             onDeleted={() => {
               setShowMobileDetail(false)
               setSelectedId(providers.length > 1 ? providers[0].config.id : null)
@@ -63,24 +66,27 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
     }
 
     return (
-      <ProviderList
-        providers={providers}
-        selectedId={selectedId}
-        onSelect={(id) => {
-          setSelectedId(id)
-          setShowMobileDetail(true)
-        }}
-        onAdd={() => navigate('providers/add')}
-      />
+      <div ref={mobileListRef} className="max-h-full overflow-y-auto pb-[calc(1rem+env(safe-area-inset-bottom))]">
+        <ProviderList
+          providers={providers}
+          selectedId={selectedId}
+          onSelect={(id) => {
+            mobileListScrollTop.current = mobileListRef.current?.scrollTop ?? 0
+            setSelectedId(id)
+            setShowMobileDetail(true)
+          }}
+          onAdd={() => navigate('providers/add')}
+        />
+      </div>
     )
   }
 
   // Desktop: split view
   return (
-    <div className="flex gap-6 -mx-8 -my-6 h-full">
+    <div className={`${isCompactDesktop ? 'flex flex-col' : 'flex'} gap-6 -mx-8 -my-6 h-full`}>
       <div
-        className="w-80 shrink-0 py-4 px-4 overflow-y-auto"
-        style={{ borderRight: '1px solid var(--cp-border)' }}
+        className={isCompactDesktop ? 'max-h-72 shrink-0 overflow-y-auto px-4 py-4' : 'w-80 shrink-0 overflow-y-auto px-4 py-4'}
+        style={isCompactDesktop ? { borderBottom: '1px solid var(--cp-border)' } : { borderRight: '1px solid var(--cp-border)' }}
       >
         <ProviderList
           providers={providers}

@@ -631,6 +631,18 @@ function generateUsageEvents(): UsageEvent[] {
   return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
 }
 
+function scoreInputs(cost: number, latency: number, reliability: number, quality: number, preference: number, local: number) {
+  return {
+    cost,
+    latency,
+    reliability,
+    quality,
+    preference,
+    cache: 0,
+    local,
+  }
+}
+
 const routeTraces: RouteTrace[] = [
   {
     request_id: 'trace-llm-plan-001',
@@ -641,11 +653,23 @@ const routeTraces: RouteTrace[] = [
     resolved_logical_path: 'llm.plan',
     selected_exact_model: 'claude-opus-4.7@anthropic-work',
     selected_provider_instance_name: 'anthropic-work',
+    pricing_snapshot: {
+      input_token_usd: 0.00001,
+      output_token_usd: 0.00004,
+      cache_input_token_usd: 0.0000025,
+      estimated_cost_usd: 0.023,
+    },
     ranked_candidates: [
       {
         exact_model: 'claude-opus-4.7@anthropic-work',
         final_score: 0.94,
         selected: true,
+        pricing_snapshot: {
+          input_token_usd: 0.00001,
+          output_token_usd: 0.00004,
+          cache_input_token_usd: 0.0000025,
+          estimated_cost_usd: 0.023,
+        },
         exact_model_weight: 1,
         provider_weight: 1,
         preference_score_inputs: {
@@ -656,11 +680,18 @@ const routeTraces: RouteTrace[] = [
           exact_model_weight_effect: 'neutral',
           provider_weight_effect: 'neutral',
         },
+        score_inputs: scoreInputs(0.6, 0.4, 0.08, 0.02, 0.5, 1),
       },
       {
         exact_model: 'gpt-5.1@openai-main',
         final_score: 0.9,
         selected: false,
+        pricing_snapshot: {
+          input_token_usd: 0.000003,
+          output_token_usd: 0.000012,
+          cache_input_token_usd: 0.00000075,
+          estimated_cost_usd: 0.008,
+        },
         exact_model_weight: 1,
         provider_weight: 0.3,
         preference_score_inputs: {
@@ -671,11 +702,15 @@ const routeTraces: RouteTrace[] = [
           exact_model_weight_effect: 'neutral',
           provider_weight_effect: 'downweighted',
         },
+        score_inputs: scoreInputs(0.2, 0.35, 0.03, 0.04, 1, 1),
       },
       {
         exact_model: 'qwen2.5-coder-32b@local',
         final_score: 0.62,
         selected: false,
+        pricing_snapshot: {
+          estimated_cost_usd: 0.0,
+        },
         exact_model_weight: 1.2,
         provider_weight: 1,
         preference_score_inputs: {
@@ -686,6 +721,7 @@ const routeTraces: RouteTrace[] = [
           exact_model_weight_effect: 'upweighted',
           provider_weight_effect: 'neutral',
         },
+        score_inputs: scoreInputs(0, 0.1, 0.01, 0.18, 0.3, 0),
       },
     ],
     filtered_candidates: [
@@ -716,9 +752,9 @@ const routeTraces: RouteTrace[] = [
     selected_exact_model: 'qwen2.5-coder-32b@local',
     selected_provider_instance_name: 'local',
     ranked_candidates: [
-      { exact_model: 'qwen2.5-coder-32b@local', final_score: 0.88, selected: true },
-      { exact_model: 'claude-sonnet-4.5@anthropic-work', final_score: 0.86, selected: false },
-      { exact_model: 'gpt-5.1@openai-main', final_score: 0.81, selected: false },
+      { exact_model: 'qwen2.5-coder-32b@local', final_score: 0.88, selected: true, score_inputs: scoreInputs(0, 0.1, 0.01, 0.12, 0.4, 0) },
+      { exact_model: 'claude-sonnet-4.5@anthropic-work', final_score: 0.86, selected: false, score_inputs: scoreInputs(0.7, 0.45, 0.05, 0.04, 0.6, 1) },
+      { exact_model: 'gpt-5.1@openai-main', final_score: 0.81, selected: false, score_inputs: scoreInputs(0.35, 0.3, 0.03, 0.08, 0.6, 1) },
     ],
     filtered_candidates: [],
     fallback_applied: false,

@@ -6,7 +6,9 @@ interface SummaryCardProps {
   value: string | number
   subtitle?: string
   variant?: 'default' | 'warning' | 'error'
+  tone?: 'default' | 'ok' | 'warning' | 'accent'
   action?: { label: string; onClick: () => void }
+  onClick?: () => void
 }
 
 const variantBorderColor: Record<string, string> = {
@@ -21,11 +23,30 @@ export function SummaryCard({
   value,
   subtitle,
   variant = 'default',
+  tone = 'default',
   action,
+  onClick,
 }: SummaryCardProps) {
+  const valueColor = tone === 'ok'
+    ? 'var(--cp-success)'
+    : tone === 'warning'
+      ? 'var(--cp-warning)'
+      : tone === 'accent'
+        ? 'var(--cp-accent)'
+        : 'var(--cp-text)'
   return (
     <div
-      className="rounded-xl p-4 min-h-[124px] flex flex-col gap-1"
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (!onClick) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onClick()
+        }
+      }}
+      className={`rounded-xl p-4 min-h-[124px] flex flex-col gap-1 text-left outline-none transition ${onClick ? 'cursor-pointer hover:shadow-sm focus-visible:ring-2 focus-visible:ring-[color:var(--cp-accent)]' : ''}`}
       style={{
         background: 'var(--cp-surface)',
         border: '1px solid var(--cp-border)',
@@ -40,7 +61,7 @@ export function SummaryCard({
           {title}
         </span>
       </div>
-      <div className="text-lg font-semibold leading-7 min-h-7 flex items-center break-words" style={{ color: 'var(--cp-text)' }}>
+      <div className="min-h-7 whitespace-pre-line break-words text-lg font-semibold leading-7" style={{ color: valueColor }}>
         {value}
       </div>
       {subtitle && (

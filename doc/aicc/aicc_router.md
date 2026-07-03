@@ -1180,6 +1180,24 @@ interface RouteTrace {
     provider_instance_name: string;
     priority_path: number[];
     exact_model_weight: number;
+    provider_weight: number;
+    preference_score_inputs?: {
+      exact_model_weight: number;
+      provider_weight: number;
+      combined_weight: number;
+      preference_penalty: number;
+      exact_model_weight_effect: string;
+      provider_weight_effect: string;
+    };
+    score_inputs?: {
+      cost: number;
+      latency: number;
+      reliability: number;
+      quality: number;
+      preference: number;
+      cache: number;
+      local: number;
+    };
     final_score?: number;
     selected: boolean;
   }>;
@@ -1197,6 +1215,7 @@ interface RouteTrace {
     quality: number;
     preference: number;
     cache: number;
+    local: number;
     final_score: number;
   };
   estimated_cost_usd?: number;

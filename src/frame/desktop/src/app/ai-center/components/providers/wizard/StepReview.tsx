@@ -1,5 +1,6 @@
 import { Check } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
+import { LongField } from '../../shared/LongField'
 import type { ValidationResult, WizardDraft } from '../../../../../api/aicc_mgr'
 
 interface StepReviewProps {
@@ -51,7 +52,9 @@ export function StepReview({ draft, validation, onToggleAutoSync }: StepReviewPr
           {rows.map((row) => (
             <div key={row.label} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)] gap-4 text-sm">
               <span className="min-w-0 truncate" style={{ color: 'var(--cp-muted)' }}>{row.label}</span>
-              <span className="min-w-0 text-right font-medium break-words" style={{ color: 'var(--cp-text)' }}>{row.value}</span>
+              <span className="min-w-0 justify-self-end text-right font-medium" style={{ color: 'var(--cp-text)' }}>
+                {typeof row.value === 'string' ? <LongField value={row.value} expandable /> : row.value}
+              </span>
             </div>
           ))}
 
