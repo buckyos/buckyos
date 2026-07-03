@@ -408,6 +408,22 @@ function TraceAuditCard({
               {titleExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
             </button>
           </div>
+          {titleExpanded && (
+            <div className="mt-2 flex flex-col gap-1 text-xs">
+              {hiddenTraceFields.map((field) => (
+                <div key={field.key} className="flex min-w-0 items-start gap-2">
+                  <span className="w-32 shrink-0 sm:w-40" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
+                  <LongField
+                    value={field.value}
+                    fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+                    mono
+                    tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+                    expandable
+                  />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           {trace.warnings.length > 0 && (
@@ -436,23 +452,6 @@ function TraceAuditCard({
               tooltip={scoreHint}
             />
           )}
-        </div>
-      )}
-
-      {titleExpanded && (
-        <div className="mt-2 flex flex-col gap-1 text-xs">
-          {hiddenTraceFields.map((field) => (
-            <div key={field.key} className="flex min-w-0 items-start gap-2">
-              <span className="w-32 shrink-0 sm:w-40" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
-              <LongField
-                value={field.value}
-                fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
-                mono
-                tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
-                expandable
-              />
-            </div>
-          ))}
         </div>
       )}
 
