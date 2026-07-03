@@ -1,6 +1,6 @@
 use crate::model_types::{
     ModelCandidate, PreferenceScoreInputs, ProviderType, RankedCandidateTrace, RoutePolicy,
-    RoutePricingSnapshot, SchedulerProfile, SchedulerProfileWeights,
+    RoutePricingSnapshot, SchedulerProfile, SchedulerProfileWeights, ScoreInputs,
 };
 use std::cmp::Ordering;
 
@@ -44,6 +44,7 @@ impl ModelScheduler {
 struct ScoredCandidate {
     candidate: ModelCandidate,
     score: f64,
+    inputs: ScoreInputs,
 }
 
 fn score_candidates(candidates: &[ModelCandidate], policy: &RoutePolicy) -> Vec<ScoredCandidate> {
@@ -76,15 +77,28 @@ fn score_candidates(candidates: &[ModelCandidate], policy: &RoutePolicy) -> Vec<
                 .unwrap_or_else(|| default_weights(&policy.profile));
             let preference = normalize(preference_penalty(&candidate), preferences);
             let cache = 0.0;
-            let score = weights.cost * cost
-                + weights.latency * latency
-                + weights.reliability * risk
-                + weights.quality * quality
-                + weights.preference * preference
-                + weights.cache * cache
-                + weights.local * local_penalty;
+            let inputs = ScoreInputs {
+                cost,
+                latency,
+                reliability: risk,
+                quality,
+                preference,
+                cache,
+                local: local_penalty,
+            };
+            let score = weights.cost * inputs.cost
+                + weights.latency * inputs.latency
+                + weights.reliability * inputs.reliability
+                + weights.quality * inputs.quality
+                + weights.preference * inputs.preference
+                + weights.cache * inputs.cache
+                + weights.local * inputs.local;
 
-            ScoredCandidate { candidate, score }
+            ScoredCandidate {
+                candidate,
+                score,
+                inputs,
+            }
         })
         .collect()
 }
@@ -238,6 +252,14 @@ fn ranked_trace(
                     .find(|item| item.candidate.exact_model == candidate.exact_model)
                     .map(|item| item.score)
             });
+            let score_inputs = scored
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .find(|item| item.candidate.exact_model == candidate.exact_model)
+                        .map(|item| item.inputs.clone())
+                })
+                .unwrap_or_default();
             RankedCandidateTrace {
                 exact_model: candidate.exact_model.clone(),
                 provider_instance_name: candidate.provider_instance_name.clone(),
@@ -249,6 +271,7 @@ fn ranked_trace(
                     candidate.exact_model_weight,
                     candidate.provider_weight,
                 ),
+                score_inputs,
                 final_score,
                 selected: selected
                     .map(|item| item.exact_model == candidate.exact_model)

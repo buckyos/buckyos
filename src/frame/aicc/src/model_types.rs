@@ -1086,8 +1086,35 @@ pub struct RankedCandidateTrace {
     #[serde(default)]
     pub preference_score_inputs: PreferenceScoreInputs,
     #[serde(default)]
+    pub score_inputs: ScoreInputs,
+    #[serde(default)]
     pub final_score: Option<f64>,
     pub selected: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScoreInputs {
+    pub cost: f64,
+    pub latency: f64,
+    pub reliability: f64,
+    pub quality: f64,
+    pub preference: f64,
+    pub cache: f64,
+    pub local: f64,
+}
+
+impl Default for ScoreInputs {
+    fn default() -> Self {
+        Self {
+            cost: 0.0,
+            latency: 0.0,
+            reliability: 0.0,
+            quality: 0.0,
+            preference: 0.0,
+            cache: 0.0,
+            local: 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

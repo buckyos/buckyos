@@ -20,6 +20,14 @@ type TimeRangeFilter = 'all' | '24h' | '7d' | '30d' | 'custom'
 
 const ROUTE_TRACE_PAGE_SIZE = 20
 
+type RouteTraceAuditPanelProps = {
+  compact: boolean
+  logicalPathFilter?: string | null
+  activeTraceId?: string | null
+  onTraceSelect?: (trace: RouteTrace) => void
+  onClearLogicalPathFilter?: () => void
+}
+
 function dateInputStart(value: string): number | null {
   if (!value) return null
   const date = new Date(`${value}T00:00:00`)
@@ -56,7 +64,13 @@ function timeRangeToQuery(value: TimeRangeFilter, customStartDate: string, custo
   return { startTimeMs: Date.now() - duration, endTimeMs: Date.now() }
 }
 
-export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
+export function RouteTraceAuditPanel({
+  compact,
+  logicalPathFilter = null,
+  activeTraceId,
+  onTraceSelect,
+  onClearLogicalPathFilter,
+}: RouteTraceAuditPanelProps) {
   const { t } = useI18n()
   const store = useAICCStore()
   const snapshotTraces = useRouteTraces()
@@ -128,7 +142,10 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
     }
   }, [snapshotTraces, store, traceQueryParams])
 
-  const visibleTraces = traces
+  const visibleTraces = useMemo(
+    () => traces.filter((trace) => !logicalPathFilter || traceLogicalPath(trace) === logicalPathFilter),
+    [logicalPathFilter, traces],
+  )
   const filterOptions = useMemo(() => traceFilterOptions(traces), [traces])
   const traceFiltersActive = Object.values(traceFilters).some(Boolean)
   const emptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, query.trim().length > 0 || timeRange !== 'all' || traceFiltersActive, outcomeFilter)
@@ -252,6 +269,17 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
             <TraceSelectFilter label={t('aiCenter.routing.profile', 'Profile')} value={traceFilters.profile} options={filterOptions.profile} onChange={(value) => setTraceFilters((current) => ({ ...current, profile: value }))} />
           </div>
         )}
+        {logicalPathFilter && (
+          <button
+            type="button"
+            onClick={onClearLogicalPathFilter}
+            className="self-start rounded-md px-2 py-1 text-xs font-medium"
+            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+            title={logicalPathFilter}
+          >
+            {t('aiCenter.routing.traceLinkedScenario', 'Scenario')}: {logicalPathFilter}
+          </button>
+        )}
       </div>
 
       <div className={compact ? 'flex flex-col gap-3' : 'grid grid-cols-1 gap-3'}>
@@ -260,8 +288,11 @@ export function RouteTraceAuditPanel({ compact }: { compact: boolean }) {
           <TraceAuditCard
             key={trace.request_id}
             trace={trace}
-            active={trace.request_id === selectedTraceId}
-            onSelect={() => setSelectedTraceId(trace.request_id)}
+            active={trace.request_id === (activeTraceId ?? selectedTraceId)}
+            onSelect={() => {
+              setSelectedTraceId(trace.request_id)
+              onTraceSelect?.(trace)
+            }}
           />
         ))}
         {!traceLoading && visibleTraces.length === 0 && (
@@ -313,6 +344,8 @@ function TraceAuditCard({
 }) {
   const { t } = useI18n()
   const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
+  const [scoreExpanded, setScoreExpanded] = useState(false)
+  const [metaExpanded, setMetaExpanded] = useState(false)
   const selectedCandidate = selectedTraceCandidate(trace)
   const selectedPricingSnapshot = trace.pricing_snapshot ?? selectedCandidate?.pricing_snapshot
   const status = traceStatus(trace)
@@ -323,23 +356,18 @@ function TraceAuditCard({
     trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '',
     formatTraceDuration(trace),
   ].filter(Boolean)
-  const traceFields = [
+  const hiddenTraceFields = [
     { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
     { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
     { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
-    {
-      key: 'pre_call_estimate',
-      label: t('aiCenter.routing.estimatedCost', 'Estimated cost'),
-      value: formatPreCallEstimate(selectedPricingSnapshot),
-    },
-  ]
-  const detailItems = [
-    { key: 'time', label: t('aiCenter.routing.time', 'Time'), value: trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '-' },
-    ...traceFields,
   ]
   if (trace.provider_trace_id) {
-    detailItems.push({ key: 'provider_trace_id', label: t('aiCenter.routing.providerTraceId', 'Provider trace ID'), value: trace.provider_trace_id })
+    hiddenTraceFields.push({ key: 'provider_trace_id', label: t('aiCenter.routing.providerTraceId', 'Provider trace ID'), value: trace.provider_trace_id })
   }
+  const scoreHint = t(
+    'aiCenter.routing.scoreHint',
+    'Score is the weighted sum of normalized cost, latency, reliability risk, quality penalty, preference, cache, and local factors for the active scheduler profile. Lower scores rank first.',
+  )
 
   return (
     <article
@@ -371,26 +399,55 @@ function TraceAuditCard({
       </div>
       <p className="mt-2 text-sm" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
       {selectedCandidate && (
-        <div className="mt-2 rounded-md px-2 py-1.5 text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
-          {candidateWeightSummary(selectedCandidate)}
+        <div className="mt-2 rounded-md p-2 text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>{candidateWeightSummary(selectedCandidate)}</span>
+            <ScoreButton
+              score={selectedCandidate.final_score}
+              expanded={scoreExpanded}
+              title={scoreHint}
+              onClick={() => setScoreExpanded((value) => !value)}
+            />
+          </div>
+          {scoreExpanded && (
+            <ScoreDetails
+              candidate={selectedCandidate}
+              estimatedCost={formatPreCallEstimate(selectedPricingSnapshot)}
+              withTooltip
+              tooltip={scoreHint}
+            />
+          )}
         </div>
       )}
 
-      <div className="mt-3 flex flex-col gap-1 text-xs">
-        {detailItems.map((field) => (
-          <div key={field.key} className="flex min-w-0 items-start gap-2">
-            <span className="w-32 shrink-0 sm:w-40" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
-            <LongField
-              value={field.value}
-              fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
-              mono={field.key !== 'time' && field.key !== 'pre_call_estimate'}
-              tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
-              copyable={field.key !== 'time' && field.key !== 'pre_call_estimate'}
-              expandable
-            />
-          </div>
-        ))}
-      </div>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          setMetaExpanded((value) => !value)
+        }}
+        className="mt-3 rounded-md px-2 py-1 text-xs font-medium"
+        style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+      >
+        {metaExpanded ? t('aiCenter.routing.hideTraceMeta', 'Hide trace meta') : t('aiCenter.routing.showTraceMeta', 'Show trace meta')}
+      </button>
+
+      {metaExpanded && (
+        <div className="mt-2 flex flex-col gap-1 text-xs">
+          {hiddenTraceFields.map((field) => (
+            <div key={field.key} className="flex min-w-0 items-start gap-2">
+              <span className="w-32 shrink-0 sm:w-40" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
+              <LongField
+                value={field.value}
+                fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+                mono
+                tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+                expandable
+              />
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <select
@@ -492,15 +549,7 @@ function TraceCandidateRow({
   selected: boolean
   reason: string
 }) {
-  const { t } = useI18n()
-  const estimateLine = formatPreCallEstimate(candidate.pricing_snapshot)
-  const pricingLine = [
-    estimateLine !== '-' ? `${t('aiCenter.routing.preCallEstimate', 'Pre-call estimate')}: ${estimateLine}` : '',
-  ].filter(Boolean).join(' / ')
-  const preCallEstimateHint = t(
-    'aiCenter.routing.preCallEstimateHint',
-    'Estimated before the model call from routing inputs. Usage Detail cost is calculated after the call with actual token usage, so the two can differ.',
-  )
+  const [scoreExpanded, setScoreExpanded] = useState(false)
   return (
     <div
       className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs"
@@ -509,23 +558,118 @@ function TraceCandidateRow({
         border: `1px solid ${selected ? 'var(--cp-accent)' : 'transparent'}`,
       }}
     >
-      <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-text)' }}>
+      <div className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-text)' }}>
         <span className="block truncate">
           <LongField value={`#${rank} ${candidate.exact_model}`} copyable={false} />
         </span>
         <span className="block" style={{ color: 'var(--cp-muted)' }}>
           {candidateWeightSummary(candidate)}
         </span>
-        {pricingLine && (
-          <span className="block" style={{ color: 'var(--cp-muted)' }} title={preCallEstimateHint}>
-            {pricingLine}
-          </span>
+        {scoreExpanded && (
+          <ScoreDetails candidate={candidate} estimatedCost={formatPreCallEstimate(candidate.pricing_snapshot)} />
         )}
-      </span>
+      </div>
       <span className="shrink-0 text-right" style={{ color: 'var(--cp-muted)' }}>
-        <span className="block">{candidate.final_score != null ? formatPreciseDecimal(candidate.final_score) : '-'}</span>
+        <ScoreButton
+          score={candidate.final_score}
+          expanded={scoreExpanded}
+          onClick={() => setScoreExpanded((value) => !value)}
+        />
         <span className="block">{reason}</span>
       </span>
+    </div>
+  )
+}
+
+function ScoreButton({
+  score,
+  expanded,
+  title,
+  onClick,
+}: {
+  score?: number
+  expanded: boolean
+  title?: string
+  onClick: () => void
+}) {
+  const { t } = useI18n()
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick()
+      }}
+      className="rounded-md px-2 py-1 text-xs font-medium"
+      style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+      title={title}
+      aria-expanded={expanded}
+    >
+      {t('aiCenter.routing.score', 'Score')}: {score != null ? formatPreciseDecimal(score) : '-'}
+    </button>
+  )
+}
+
+function ScoreDetails({
+  candidate,
+  estimatedCost,
+  withTooltip = false,
+  tooltip,
+}: {
+  candidate: RouteTrace['ranked_candidates'][number]
+  estimatedCost: string
+  withTooltip?: boolean
+  tooltip?: string
+}) {
+  const { t } = useI18n()
+  const scoreInputs = candidate.score_inputs
+  const rows = [
+    [
+      t('aiCenter.routing.scoreCost', 'cost'),
+      estimatedCost,
+      t('aiCenter.routing.scoreCostHint', 'Estimated pre-call cost for this candidate, shown with currency.'),
+    ],
+    [
+      t('aiCenter.routing.scoreLatency', 'latency'),
+      scoreInputs?.latency,
+      t('aiCenter.routing.scoreLatencyHint', 'Normalized latency factor. Lower values mean faster expected response.'),
+    ],
+    [
+      t('aiCenter.routing.scoreReliability', 'reliability'),
+      scoreInputs?.reliability,
+      t('aiCenter.routing.scoreReliabilityHint', 'Normalized reliability risk from recent health data. Lower values mean lower error risk.'),
+    ],
+    [
+      t('aiCenter.routing.scoreQuality', 'quality'),
+      scoreInputs?.quality,
+      t('aiCenter.routing.scoreQualityHint', 'Normalized quality penalty. Lower values mean higher expected model quality.'),
+    ],
+    [
+      t('aiCenter.routing.scorePreference', 'preference'),
+      scoreInputs?.preference,
+      t('aiCenter.routing.scorePreferenceHint', 'Normalized routing preference penalty from exact model and provider weights.'),
+    ],
+    [
+      t('aiCenter.routing.scoreCache', 'cache'),
+      scoreInputs?.cache,
+      t('aiCenter.routing.scoreCacheHint', 'Normalized cache affinity factor reserved for cache-aware routing.'),
+    ],
+    [
+      t('aiCenter.routing.scoreLocal', 'local'),
+      scoreInputs?.local,
+      t('aiCenter.routing.scoreLocalHint', 'Locality penalty. Local runtime is lower; cloud runtime is higher unless the profile ignores locality.'),
+    ],
+  ] as Array<[string, string | number | undefined, string]>
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-1 rounded-md p-2 sm:grid-cols-4" style={{ background: 'var(--cp-bg)' }} title={withTooltip ? tooltip : undefined}>
+      {rows.map(([label, value, hint]) => (
+        <div key={label} className="min-w-0">
+          <span className="block truncate" style={{ color: 'var(--cp-muted)' }} title={withTooltip ? hint : undefined}>{label}</span>
+          <span className="block truncate" style={{ color: 'var(--cp-text)' }}>
+            {typeof value === 'number' ? formatPreciseDecimal(value) : value ?? '-'}
+          </span>
+        </div>
+      ))}
     </div>
   )
 }
@@ -570,6 +714,10 @@ function traceFilterOptions(traces: RouteTrace[]): Record<keyof TraceFilters, Ar
   }
 }
 
+function traceLogicalPath(trace: RouteTrace): string | null {
+  return trace.resolved_logical_path ?? (trace.requested_model_type === 'logical' ? trace.requested_model : null)
+}
+
 function uniqueTraceOptions(values: Array<string | undefined>): Array<[string, string]> {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value))))
     .sort((left, right) => left.localeCompare(right))
@@ -585,7 +733,9 @@ function formatCostAmount(amount: number): string {
 }
 
 function formatPreCallEstimate(snapshot: RouteTrace['pricing_snapshot']): string {
-  return snapshot?.estimated_cost_usd == null ? '-' : formatCostAmount(snapshot.estimated_cost_usd)
+  if (snapshot?.estimated_cost_usd == null) return '-'
+  const amount = formatCostAmount(snapshot.estimated_cost_usd)
+  return amount.startsWith('-') ? `-$${amount.slice(1)}` : `$${amount}`
 }
 
 function TraceTimeRangeFilter({

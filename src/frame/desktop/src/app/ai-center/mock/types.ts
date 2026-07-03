@@ -269,6 +269,15 @@ export interface RouteTrace {
       exact_model_weight_effect: string
       provider_weight_effect: string
     }
+    score_inputs?: {
+      cost: number
+      latency: number
+      reliability: number
+      quality: number
+      preference: number
+      cache: number
+      local: number
+    }
   }>
   filtered_candidates: Array<{ exact_model: string; reason: string }>
   fallback_applied: boolean

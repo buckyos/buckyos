@@ -1083,9 +1083,41 @@ function toRankedCandidates(value: unknown): RouteTrace['ranked_candidates'] {
         exact_model_weight: asOptionalNumber(candidate.exact_model_weight),
         provider_weight: asOptionalNumber(candidate.provider_weight),
         preference_score_inputs: toPreferenceScoreInputs(candidate.preference_score_inputs),
+        score_inputs: toScoreInputs(candidate.score_inputs),
       }
     })
     : []
+}
+
+function toScoreInputs(value: unknown): RouteTrace['ranked_candidates'][number]['score_inputs'] {
+  const inputs = asRecord(value)
+  const cost = asOptionalNumber(inputs.cost)
+  const latency = asOptionalNumber(inputs.latency)
+  const reliability = asOptionalNumber(inputs.reliability)
+  const quality = asOptionalNumber(inputs.quality)
+  const preference = asOptionalNumber(inputs.preference)
+  const cache = asOptionalNumber(inputs.cache)
+  const local = asOptionalNumber(inputs.local)
+  if (
+    cost == null ||
+    latency == null ||
+    reliability == null ||
+    quality == null ||
+    preference == null ||
+    cache == null ||
+    local == null
+  ) {
+    return undefined
+  }
+  return {
+    cost,
+    latency,
+    reliability,
+    quality,
+    preference,
+    cache,
+    local,
+  }
 }
 
 function toPreferenceScoreInputs(value: unknown): RouteTrace['ranked_candidates'][number]['preference_score_inputs'] {

@@ -7,13 +7,11 @@ import {
   ArrowLeft,
   Box,
   Braces,
-  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   Cloud,
   Code2,
-  Copy,
   Cpu,
   DollarSign,
   FileText,
@@ -23,7 +21,6 @@ import {
   Image,
   Layers,
   MessageSquare,
-  Route,
   Search,
   Sparkles,
   Zap,
@@ -38,8 +35,8 @@ import {
 } from './hooks/use-aicc-store'
 import { StatusBadge } from './components/shared/StatusBadge'
 import type { LogicalNode, ModelMetadata, RouteTrace, RoutingDirectoryView } from '../../api/aicc_mgr'
-import { PagedListFooter } from './components/shared/paged-list'
 import { LongField } from './components/shared/LongField'
+import { RouteTraceAuditPanel } from './components/usage/RouteTraceAuditPanel'
 
 type FilterKey = 'provider' | 'apiType' | 'capability' | 'cost' | 'latency' | 'health' | 'location'
 
@@ -70,9 +67,6 @@ type ModelGroup = {
 }
 
 type UseCaseKind = 'chat' | 'code' | 'plan' | 'image' | 'embed' | 'vision' | 'audio' | 'other'
-type TraceOutcomeFilter = 'all' | 'fallback' | 'failed' | 'warning'
-type TraceCandidateSection = 'none' | 'ranked' | 'filtered'
-type TraceEmptyStateKind = 'none-yet' | 'load-failed' | 'no-matches'
 
 function emptyMultiFilter(): MultiFilter {
   return { query: '', selected: [] }
@@ -110,12 +104,6 @@ export function RoutingPage() {
   const [mobileScenarioPane, setMobileScenarioPane] = useState<'scenario' | 'trace'>('scenario')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [traces, setTraces] = useState<RouteTrace[]>(snapshotTraces)
-  const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
-  const [traceTotalCount, setTraceTotalCount] = useState(snapshotTraces.length)
-  const [tracePageIndex, setTracePageIndex] = useState(0)
-  const [traceLoading, setTraceLoading] = useState(false)
-  const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
-  const [traceOutcomeFilter, setTraceOutcomeFilter] = useState<TraceOutcomeFilter>('all')
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
 
   const snapshotModels = useMemo(() => [
@@ -161,19 +149,11 @@ export function RoutingPage() {
         const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE })
         if (!cancelled) {
           setTraces(page.traces)
-          setTraceNextCursor(page.nextCursor)
-          setTraceTotalCount(page.totalCount ?? page.traces.length)
-          setTracePageIndex(0)
-          setTraceError(null)
         }
       } catch (error) {
         console.error('aicc.trace.query initial page failed', error)
         if (!cancelled) {
           setTraces(snapshotTraces)
-          setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
-          setTraceTotalCount(snapshotTraces.length)
-          setTracePageIndex(0)
-          setTraceError('initial')
         }
       }
     }
@@ -225,20 +205,6 @@ export function RoutingPage() {
     ? traceLogicalPath(traces.find((trace) => trace.request_id === selectedTraceId))
     : null
   const activeTracePath = selectedTracePath ?? selectedPath
-  const visibleTraces = useMemo(
-    () => traces
-      .filter((trace) => !activeTracePath || traceMatchesScenarioPath(trace, activeTracePath))
-      .filter((trace) => traceMatchesOutcome(trace, traceOutcomeFilter)),
-    [activeTracePath, traceOutcomeFilter, traces],
-  )
-  const traceEmptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, Boolean(activeTracePath), traceOutcomeFilter)
-  const retryTraceLoad = () => {
-    if (traceError === 'initial') {
-      void loadTracePage(tracePageIndex)
-    } else {
-      void loadMoreTraces()
-    }
-  }
 
   if (routingView.logical_tree.length === 0) {
     return (
@@ -253,48 +219,6 @@ export function RoutingPage() {
 
   const updateFilter = (key: FilterKey, value: MultiFilter) => {
     setFilters((current) => ({ ...current, [key]: value }))
-  }
-
-  const loadTracePage = async (pageIndex: number) => {
-    if (traceLoading) return
-    const nextPageIndex = Math.max(0, pageIndex)
-    setTraceLoading(true)
-    setTraceError(null)
-    try {
-      const page = await store.queryRouteTraces({
-        limit: ROUTE_TRACE_PAGE_SIZE,
-        cursor: nextPageIndex > 0 ? String(nextPageIndex * ROUTE_TRACE_PAGE_SIZE) : undefined,
-      })
-      setTraces(page.traces)
-      setTraceNextCursor(page.nextCursor)
-      setTraceTotalCount(page.totalCount ?? page.traces.length)
-      setTracePageIndex(nextPageIndex)
-    } catch (error) {
-      console.error('aicc.trace.query page failed', error)
-      setTraceError('initial')
-    } finally {
-      setTraceLoading(false)
-    }
-  }
-
-  const loadMoreTraces = async () => {
-    if (!traceNextCursor || traceLoading) return
-    setTraceLoading(true)
-    setTraceError(null)
-    try {
-      const page = await store.queryRouteTraces({
-        limit: ROUTE_TRACE_PAGE_SIZE,
-        cursor: traceNextCursor,
-      })
-      setTraces((current) => mergeRouteTraces(current, page.traces))
-      setTraceNextCursor(page.nextCursor)
-      setTraceTotalCount((current) => page.totalCount ?? Math.max(current, traces.length + page.traces.length))
-    } catch (error) {
-      console.error('aicc.trace.query next page failed', error)
-      setTraceError('more')
-    } finally {
-      setTraceLoading(false)
-    }
   }
 
   return (
@@ -358,36 +282,21 @@ export function RoutingPage() {
           {mobileScenarioPane === 'scenario' ? (
             <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
           ) : (
-            <TraceExplorer
-              traces={visibleTraces}
-              totalCount={traceTotalCount}
+            <RouteTraceAuditPanel
               compact={isMobile}
-              outcomeFilter={traceOutcomeFilter}
-              activeLogicalPath={activeTracePath}
+              logicalPathFilter={activeTracePath}
               activeTraceId={selectedTraceId}
-              hasMore={Boolean(traceNextCursor)}
-              pageIndex={tracePageIndex}
-              canGoPrevious={false}
-              canGoNext={false}
-              loading={traceLoading}
-              error={traceError}
-              onOutcomeFilterChange={setTraceOutcomeFilter}
-              onLoadMore={loadMoreTraces}
-              onRetry={retryTraceLoad}
-              onPreviousPage={() => undefined}
-              onNextPage={() => undefined}
-              onTraceSelect={(trace) => {
+              onTraceSelect={(trace: RouteTrace) => {
                 const logicalPath = traceLogicalPath(trace)
                 setSelectedTraceId(trace.request_id)
                 if (logicalPath && allScenarioByPath.has(logicalPath)) {
                   setSelectedPath(logicalPath)
                 }
               }}
-              onClearScenarioFilter={() => {
+              onClearLogicalPathFilter={() => {
                 setSelectedTraceId(null)
                 setSelectedPath(null)
               }}
-              emptyState={traceEmptyState}
             />
           )}
         </div>
@@ -448,36 +357,21 @@ export function RoutingPage() {
           {selectedScenario && (
             <ScenarioInspector scenario={selectedScenario} providerNames={providerNames} />
           )}
-          {!isMobile && <TraceExplorer
-            traces={visibleTraces}
-            totalCount={traceTotalCount}
+          {!isMobile && <RouteTraceAuditPanel
             compact={false}
-            outcomeFilter={traceOutcomeFilter}
-            activeLogicalPath={activeTracePath}
+            logicalPathFilter={activeTracePath}
             activeTraceId={selectedTraceId}
-            hasMore={Boolean(traceNextCursor)}
-            pageIndex={tracePageIndex}
-            canGoPrevious={tracePageIndex > 0}
-            canGoNext={Boolean(traceNextCursor)}
-            loading={traceLoading}
-            error={traceError}
-            onOutcomeFilterChange={setTraceOutcomeFilter}
-            onLoadMore={loadMoreTraces}
-            onRetry={retryTraceLoad}
-            onPreviousPage={() => void loadTracePage(tracePageIndex - 1)}
-            onNextPage={() => void loadTracePage(tracePageIndex + 1)}
-            onTraceSelect={(trace) => {
+            onTraceSelect={(trace: RouteTrace) => {
               const logicalPath = traceLogicalPath(trace)
               setSelectedTraceId(trace.request_id)
               if (logicalPath && allScenarioByPath.has(logicalPath)) {
                 setSelectedPath(logicalPath)
               }
             }}
-            onClearScenarioFilter={() => {
+            onClearLogicalPathFilter={() => {
               setSelectedTraceId(null)
               setSelectedPath(null)
             }}
-            emptyState={traceEmptyState}
           />}
         </aside>
       </div>
@@ -1079,398 +973,6 @@ function ModelGroupRow({
   )
 }
 
-function TraceExplorer({
-  traces,
-  totalCount,
-  compact,
-  outcomeFilter,
-  activeLogicalPath,
-  activeTraceId,
-  hasMore,
-  pageIndex,
-  canGoPrevious,
-  canGoNext,
-  loading,
-  error,
-  onOutcomeFilterChange,
-  onLoadMore,
-  onRetry,
-  onPreviousPage,
-  onNextPage,
-  onTraceSelect,
-  onClearScenarioFilter,
-  emptyState,
-}: {
-  traces: RouteTrace[]
-  totalCount: number
-  compact: boolean
-  outcomeFilter: TraceOutcomeFilter
-  activeLogicalPath: string | null
-  activeTraceId: string | null
-  hasMore: boolean
-  pageIndex: number
-  canGoPrevious: boolean
-  canGoNext: boolean
-  loading: boolean
-  error: 'initial' | 'more' | null
-  onOutcomeFilterChange: (value: TraceOutcomeFilter) => void
-  onLoadMore: () => void
-  onRetry: () => void
-  onPreviousPage: () => void
-  onNextPage: () => void
-  onTraceSelect: (trace: RouteTrace) => void
-  onClearScenarioFilter: () => void
-  emptyState: TraceEmptyStateKind
-}) {
-  const { t } = useI18n()
-  const segmentOptions: Array<{ key: TraceOutcomeFilter; label: string }> = [
-    { key: 'all', label: t('aiCenter.routing.traceSegmentAll', 'All') },
-    { key: 'fallback', label: t('aiCenter.routing.traceSegmentFallback', 'Fallback') },
-    { key: 'failed', label: t('aiCenter.routing.traceSegmentFailed', 'Failed') },
-    { key: 'warning', label: t('aiCenter.routing.traceSegmentWarnings', 'Warnings') },
-  ]
-  return (
-    <section className="rounded-xl p-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2">
-          <Route size={16} style={{ color: 'var(--cp-accent)' }} />
-          <h3 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.routing.routeTraceAudit', 'Route Trace Audit')}</h3>
-        </div>
-        <div className={compact ? 'hidden' : 'text-xs'} style={{ color: 'var(--cp-muted)' }}>
-          {t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: pageIndex + 1, count: totalCount })}
-        </div>
-      </div>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-h-9 flex-wrap items-center gap-1 rounded-lg p-1" style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}>
-          {segmentOptions.map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              onClick={() => onOutcomeFilterChange(option.key)}
-              className="rounded-md px-3 py-1.5 text-xs font-medium"
-              style={{
-                background: outcomeFilter === option.key ? 'var(--cp-surface-2)' : 'transparent',
-                color: outcomeFilter === option.key ? 'var(--cp-text)' : 'var(--cp-muted)',
-                border: outcomeFilter === option.key ? '1px solid var(--cp-border)' : '1px solid transparent',
-              }}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        {activeLogicalPath && (
-          <button
-            type="button"
-            onClick={onClearScenarioFilter}
-            className="min-h-9 rounded-md px-3 text-xs font-medium"
-            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-            title={activeLogicalPath}
-          >
-            {t('aiCenter.routing.traceLinkedScenario', 'Scenario')}: {activeLogicalPath}
-          </button>
-        )}
-      </div>
-      <div className={compact ? 'flex flex-col gap-3' : 'grid grid-cols-1 gap-3'}>
-        {loading && traces.length === 0 && <TraceSkeletonRows />}
-        {traces.map((trace) => (
-          <TraceCard
-            key={trace.request_id}
-            trace={trace}
-            active={trace.request_id === activeTraceId}
-            onSelect={() => onTraceSelect(trace)}
-          />
-        ))}
-        {!loading && traces.length === 0 && (
-          <div className="rounded-lg px-3 py-8 text-center text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-bg)' }}>
-            {traceEmptyStateLabel(emptyState, t)}
-          </div>
-        )}
-      </div>
-      <PagedListFooter
-        mode={compact ? 'infinite' : 'pagination'}
-        loading={loading}
-        error={error ? (error === 'more'
-          ? t('aiCenter.routing.traceLoadMoreFailed', 'Failed to load more route traces')
-          : t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces')) : null}
-        hasMore={hasMore}
-        onLoadMore={onLoadMore}
-        onRetry={onRetry}
-        onPreviousPage={onPreviousPage}
-        onNextPage={onNextPage}
-        canGoPrevious={canGoPrevious}
-        canGoNext={canGoNext}
-        pageIndex={pageIndex}
-        loadedCount={traces.length}
-        totalCount={totalCount}
-        labels={{
-          previous: t('aiCenter.routing.tracePreviousPage', 'Previous'),
-          next: t('aiCenter.routing.traceNextPage', 'Next'),
-          page: t('aiCenter.routing.tracePage', 'Page {{page}}'),
-          loading: t('aiCenter.routing.traceLoading', 'Loading...'),
-          loadMore: t('aiCenter.routing.traceLoadMore', 'Load more'),
-          retry: t('common.retry', 'Retry'),
-          error: t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces'),
-          loaded: t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: pageIndex + 1, count: totalCount }),
-        }}
-      />
-    </section>
-  )
-}
-
-function TraceCard({
-  trace,
-  active,
-  onSelect,
-}: {
-  trace: RouteTrace
-  active: boolean
-  onSelect: () => void
-}) {
-  const { t } = useI18n()
-  const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
-  const [copiedKey, setCopiedKey] = useState<string | null>(null)
-  const selectedCandidate = selectedTraceCandidate(trace)
-  const status = traceStatus(trace)
-  const providerTraceId = trace.provider_trace_id
-  const metaItems = [
-    trace.selected_provider_instance_name ? `${t('aiCenter.routing.provider', 'Provider')}: ${trace.selected_provider_instance_name}` : '',
-    trace.selected_provider_model_id ? `${t('aiCenter.routing.providerModel', 'Provider model')}: ${trace.selected_provider_model_id}` : '',
-    `${t('aiCenter.routing.profile', 'Profile')}: ${trace.scheduler_profile}`,
-    trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '',
-    formatTraceDuration(trace),
-  ].filter(Boolean)
-  const copyFields = [
-    { key: 'request_id', label: t('aiCenter.routing.requestId', 'Request ID'), value: trace.request_id },
-    { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
-    { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
-    { key: 'provider_trace_id', label: 'provider trace id', value: providerTraceId },
-  ].filter((item): item is { key: string; label: string; value: string } => Boolean(item.value))
-  const detailItems: Array<{ key: string; label: string; value: string }> = [
-    { key: 'time', label: t('aiCenter.routing.time', 'Time'), value: trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '-' },
-  ]
-  if (providerTraceId) {
-    detailItems.push({ key: 'provider_trace_id', label: t('aiCenter.routing.providerTraceId', 'Provider trace ID'), value: providerTraceId })
-  }
-
-  const copyField = async (key: string, value: string) => {
-    try {
-      await navigator.clipboard.writeText(value)
-      setCopiedKey(key)
-      window.setTimeout(() => setCopiedKey(null), 1200)
-    } catch {
-      setCopiedKey(null)
-    }
-  }
-
-  return (
-    <article
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          onSelect()
-        }
-      }}
-      className="rounded-lg p-3 text-left"
-      style={{
-        background: active ? 'var(--cp-surface-2)' : 'var(--cp-bg)',
-        border: `1px solid ${active ? 'var(--cp-accent)' : 'transparent'}`,
-      }}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <LongField value={metaItems.join(' / ')} className="mt-1 text-xs" tone="muted" copyable={false} expandable />
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-1.5">
-          {trace.warnings.length > 0 && (
-            <StatusBadge status="warning" label={t('aiCenter.routing.traceWarnings', '{{count}} warnings', { count: trace.warnings.length })} />
-          )}
-          <StatusBadge status={status === 'selected' ? 'ok' : status === 'fallback' ? 'warning' : 'error'} label={status} />
-        </div>
-      </div>
-      <p className="text-sm mt-2" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
-      {selectedCandidate && (
-        <div className="mt-2 rounded-md px-2 py-1.5 text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
-          {candidateWeightSummary(selectedCandidate)}
-        </div>
-      )}
-
-      <div className="mt-3 flex flex-col gap-1 text-xs">
-        {detailItems.map((field) => (
-          <div key={field.key} className="flex min-w-0 items-start gap-2">
-            <span className="w-28 shrink-0" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
-            <LongField
-              value={field.value}
-              fallback="-"
-              mono={field.key !== 'time'}
-              expandable
-            />
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        {copyFields.map((field) => (
-          <button
-            key={field.key}
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              void copyField(field.key, field.value)
-            }}
-            className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-md px-2 text-xs"
-            style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}
-            title={field.value}
-          >
-            {copiedKey === field.key ? <Check size={13} /> : <Copy size={13} />}
-            <span className="truncate">{field.label}</span>
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-3">
-        <select
-          value={candidateSection}
-          onClick={(event) => event.stopPropagation()}
-          onChange={(event) => setCandidateSection(event.target.value as TraceCandidateSection)}
-          className="h-9 rounded-md px-2 text-xs outline-none"
-          style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-        >
-          <option value="none">{t('common.collapse', 'Collapse')}</option>
-          <option value="ranked">{t('aiCenter.routing.traceShowRankedCandidates', 'Show ranked candidates ({{count}})', { count: trace.ranked_candidates.length })}</option>
-          <option value="filtered">{t('aiCenter.routing.traceShowFilteredCandidates', 'Show filtered out ({{count}})', { count: trace.filtered_candidates.length })}</option>
-        </select>
-      </div>
-
-      {candidateSection === 'ranked' && (
-        <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
-          {trace.ranked_candidates.length > 0 ? (
-            <div className="flex flex-col gap-1">
-              {trace.ranked_candidates.map((candidate, index) => (
-                <TraceCandidateRow
-                  key={candidate.exact_model}
-                  candidate={candidate}
-                  rank={rankedCandidateRank(trace, candidate, index)}
-                  selected={candidate.selected}
-                  reason={candidate.selected ? 'selected' : trace.fallback_applied && candidate.exact_model === trace.selected_exact_model ? 'fallback' : 'ranked'}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.routing.noRankedCandidates', 'No ranked candidates.')}</div>
-          )}
-          <CollapseCandidatesButton onClick={() => setCandidateSection('none')} />
-        </div>
-      )}
-
-      {candidateSection === 'filtered' && (
-        <div className="mt-3 rounded-md p-2" style={{ background: 'var(--cp-surface)' }}>
-          {trace.filtered_candidates.length > 0 ? (
-            <div className="flex flex-col gap-1">
-              {trace.filtered_candidates.map((candidate) => (
-                <TraceFilteredCandidateRow key={candidate.exact_model} candidate={candidate} />
-              ))}
-            </div>
-          ) : (
-            <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.routing.noFilteredCandidates', 'No candidates were filtered out.')}</div>
-          )}
-          <CollapseCandidatesButton onClick={() => setCandidateSection('none')} />
-        </div>
-      )}
-      {trace.warnings.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {trace.warnings.map((warning) => (
-            <span key={warning} className="rounded-md px-2 py-1 text-xs" style={{ color: 'var(--cp-warning)', background: 'var(--cp-surface)' }}>
-              {warning}
-            </span>
-          ))}
-        </div>
-      )}
-    </article>
-  )
-}
-
-function TraceCandidateRow({
-  candidate,
-  rank,
-  selected,
-  reason,
-}: {
-  candidate: RouteTrace['ranked_candidates'][number]
-  rank: number
-  selected: boolean
-  reason: string
-}) {
-  const { t } = useI18n()
-  const estimateLine = formatPreCallEstimate(candidate.pricing_snapshot)
-  const pricingLine = [
-    estimateLine !== '-' ? `${t('aiCenter.routing.preCallEstimate', 'Pre-call estimate')}: ${estimateLine}` : '',
-  ].filter(Boolean).join(' / ')
-  const preCallEstimateHint = t(
-    'aiCenter.routing.preCallEstimateHint',
-    'Estimated before the model call from routing inputs. Usage Detail cost is calculated after the call with actual token usage, so the two can differ.',
-  )
-  return (
-    <div
-      className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs"
-      style={{
-        background: selected ? 'var(--cp-bg)' : 'transparent',
-        border: `1px solid ${selected ? 'var(--cp-accent)' : 'transparent'}`,
-      }}
-    >
-      <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-text)' }}>
-        <span className="block truncate">
-          <LongField value={`#${rank} ${candidate.exact_model}`} copyable={false} />
-        </span>
-        <span className="block" style={{ color: 'var(--cp-muted)' }}>
-          {candidateWeightSummary(candidate)}
-        </span>
-        {pricingLine && (
-          <span className="block" style={{ color: 'var(--cp-muted)' }} title={preCallEstimateHint}>
-            {pricingLine}
-          </span>
-        )}
-      </span>
-      <span className="shrink-0 text-right" style={{ color: 'var(--cp-muted)' }}>
-        <span className="block">{candidate.final_score != null ? candidate.final_score.toFixed(2) : '-'}</span>
-        <span className="block">{reason}</span>
-      </span>
-    </div>
-  )
-}
-
-function TraceFilteredCandidateRow({ candidate }: { candidate: RouteTrace['filtered_candidates'][number] }) {
-  return (
-    <div className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs">
-      <span className="min-w-0">
-        <LongField value={candidate.exact_model} tone="warning" />
-        <span className="block" style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
-      </span>
-      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>filtered</span>
-    </div>
-  )
-}
-
-function CollapseCandidatesButton({ onClick }: { onClick: () => void }) {
-  const { t } = useI18n()
-  return (
-    <button
-      type="button"
-      onClick={(event) => {
-        event.stopPropagation()
-        onClick()
-      }}
-      className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1 rounded-md px-2 text-xs font-medium"
-      style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-    >
-      <ChevronUp size={13} />
-      {t('common.collapse', 'Collapse')}
-    </button>
-  )
-}
-
 function EmptyResults() {
   const { t } = useI18n()
   return (
@@ -1553,37 +1055,6 @@ function buildScenarios(nodes: LogicalNode[], models: ModelMetadata[], traces: R
     })
 
   return scenarios
-}
-
-function TraceSkeletonRows() {
-  return (
-    <>
-      {[0, 1].map((index) => (
-        <div
-          key={index}
-          className="min-h-[220px] animate-pulse rounded-lg p-3"
-          style={{ background: 'var(--cp-bg)', border: '1px solid transparent' }}
-        >
-          <div className="mb-3 h-4 w-3/4 rounded" style={{ background: 'var(--cp-border)' }} />
-          <div className="mb-4 h-3 w-1/2 rounded" style={{ background: 'var(--cp-border)' }} />
-          <div className="mb-3 h-16 rounded-md" style={{ background: 'var(--cp-surface)' }} />
-          <div className="h-16 rounded-md" style={{ background: 'var(--cp-surface)' }} />
-        </div>
-      ))}
-    </>
-  )
-}
-
-function mergeRouteTraces(current: RouteTrace[], next: RouteTrace[]): RouteTrace[] {
-  const seen = new Set(current.map((trace) => trace.request_id))
-  const merged = [...current]
-  for (const trace of next) {
-    if (!seen.has(trace.request_id)) {
-      seen.add(trace.request_id)
-      merged.push(trace)
-    }
-  }
-  return merged
 }
 
 function scenarioCandidates(node: LogicalNode, models: ModelMetadata[], trace?: RouteTrace): ModelMetadata[] {
@@ -1899,101 +1370,7 @@ function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean))).sort((left, right) => left.localeCompare(right))
 }
 
-function selectedTraceCandidate(trace: RouteTrace): RouteTrace['ranked_candidates'][number] | undefined {
-  return trace.ranked_candidates.find((candidate) => candidate.selected)
-    ?? trace.ranked_candidates.find((candidate) => candidate.exact_model === trace.selected_exact_model)
-}
-
-function traceMatchesOutcome(trace: RouteTrace, filter: TraceOutcomeFilter): boolean {
-  if (filter === 'all') return true
-  if (filter === 'fallback') return trace.fallback_applied
-  if (filter === 'failed') return !trace.selected_exact_model
-  if (filter === 'warning') return trace.warnings.length > 0
-  return true
-}
-
-function traceMatchesScenarioPath(trace: RouteTrace, path: string): boolean {
-  return traceLogicalPath(trace) === path
-}
-
 function traceLogicalPath(trace?: RouteTrace): string | null {
   if (!trace) return null
   return trace.resolved_logical_path ?? (trace.requested_model_type === 'logical' ? trace.requested_model : null)
-}
-
-function traceStatus(trace: RouteTrace): 'selected' | 'fallback' | 'failed' {
-  if (!trace.selected_exact_model) return 'failed'
-  return trace.fallback_applied ? 'fallback' : 'selected'
-}
-
-function formatCostAmount(amount: number): string {
-  if (amount === 0) return '0.0'
-  const abs = Math.abs(amount)
-  if (abs < 0.0001) return amount < 0 ? '-<0.0001' : '<0.0001'
-  if (abs < 0.01) return amount.toFixed(4)
-  return amount.toFixed(2)
-}
-
-function formatPreCallEstimate(snapshot: RouteTrace['pricing_snapshot']): string {
-  return snapshot?.estimated_cost_usd == null ? '-' : formatCostAmount(snapshot.estimated_cost_usd)
-}
-
-function rankedCandidateRank(
-  trace: RouteTrace,
-  candidate: RouteTrace['ranked_candidates'][number],
-  fallbackIndex: number,
-): number {
-  const index = trace.ranked_candidates.findIndex((item) => item.exact_model === candidate.exact_model)
-  return (index >= 0 ? index : fallbackIndex) + 1
-}
-
-function traceEmptyStateKind(
-  loadedCount: number,
-  visibleCount: number,
-  error: 'initial' | 'more' | null,
-  hasScenarioFilter: boolean,
-  outcomeFilter: TraceOutcomeFilter,
-): TraceEmptyStateKind {
-  if (loadedCount === 0 && error === 'initial') return 'load-failed'
-  if (loadedCount === 0) return 'none-yet'
-  if (visibleCount === 0 && (hasScenarioFilter || outcomeFilter !== 'all')) return 'no-matches'
-  return 'no-matches'
-}
-
-function traceEmptyStateLabel(kind: TraceEmptyStateKind, t: (key: string, fallback: string) => string): string {
-  if (kind === 'load-failed') return t('aiCenter.routing.traceLoadFailed', 'Failed to load traces')
-  if (kind === 'none-yet') return t('aiCenter.routing.traceNoneYet', 'No route traces yet')
-  return t('aiCenter.routing.traceNoMatches', 'No traces match current scenario/filter')
-}
-
-function formatTraceTime(createdAtMs: number): string {
-  const date = new Date(createdAtMs)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString()
-}
-
-function formatTraceDuration(trace: RouteTrace): string {
-  const value = trace.duration_ms ?? trace.latency_ms
-  if (value == null) return ''
-  return `${value}ms`
-}
-
-function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number]): string {
-  const inputs = candidate.preference_score_inputs
-  const exact = inputs?.exact_model_weight ?? candidate.exact_model_weight ?? 1
-  const provider = inputs?.provider_weight ?? candidate.provider_weight ?? 1
-  const combined = inputs?.combined_weight ?? exact * provider
-  const providerEffect = inputs?.provider_weight_effect ?? weightEffect(provider)
-  return `exact ${formatWeight(exact)} / provider ${formatWeight(provider)} ${providerEffect} / combined ${formatWeight(combined)}`
-}
-
-function weightEffect(weight: number): string {
-  if (weight <= 0) return 'disabled'
-  if (weight < 1) return 'downweighted'
-  if (weight > 1) return 'upweighted'
-  return 'neutral'
-}
-
-function formatWeight(weight: number): string {
-  return weight.toFixed(2).replace(/\.?0+$/, '')
 }
