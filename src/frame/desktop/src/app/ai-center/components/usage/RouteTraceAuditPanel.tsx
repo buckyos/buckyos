@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronUp, Filter, Route, Search } from 'lucide-react'
+import { ChevronDown, ChevronUp, Filter, Route, Search } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useRouteTraces } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
@@ -345,7 +345,7 @@ function TraceAuditCard({
   const { t } = useI18n()
   const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
   const [scoreExpanded, setScoreExpanded] = useState(false)
-  const [metaExpanded, setMetaExpanded] = useState(false)
+  const [titleExpanded, setTitleExpanded] = useState(false)
   const selectedCandidate = selectedTraceCandidate(trace)
   const selectedPricingSnapshot = trace.pricing_snapshot ?? selectedCandidate?.pricing_snapshot
   const status = traceStatus(trace)
@@ -361,9 +361,7 @@ function TraceAuditCard({
     { key: 'requested_model', label: t('aiCenter.routing.requestedModel', 'Requested model'), value: trace.requested_model },
     { key: 'selected_exact_model', label: t('aiCenter.routing.selectedExactModel', 'Selected exact model'), value: trace.selected_exact_model },
   ]
-  if (trace.provider_trace_id) {
-    hiddenTraceFields.push({ key: 'provider_trace_id', label: t('aiCenter.routing.providerTraceId', 'Provider trace ID'), value: trace.provider_trace_id })
-  }
+  const traceTitle = metaItems.join(' / ')
   const scoreHint = t(
     'aiCenter.routing.scoreHint',
     'Score is the weighted sum of normalized cost, latency, reliability risk, quality penalty, preference, cache, and local factors for the active scheduler profile. Lower scores rank first.',
@@ -387,8 +385,29 @@ function TraceAuditCard({
       }}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <LongField value={metaItems.join(' / ')} className="mt-1 text-xs" tone="muted" copyable={false} expandable />
+        <div className="min-w-0 flex-1">
+          <div className="mt-1 flex min-w-0 items-start gap-1 text-xs">
+            <span
+              title={traceTitle}
+              className={`min-w-0 ${titleExpanded ? 'whitespace-normal break-words' : 'truncate'}`}
+              style={{ color: 'var(--cp-muted)' }}
+            >
+              {traceTitle}
+            </span>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                setTitleExpanded((value) => !value)
+              }}
+              title={titleExpanded ? t('common.collapse', 'Collapse') : t('common.expand', 'Expand')}
+              aria-expanded={titleExpanded}
+              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md opacity-70 hover:opacity-100 focus-visible:opacity-100"
+              style={{ color: 'var(--cp-muted)' }}
+            >
+              {titleExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            </button>
+          </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           {trace.warnings.length > 0 && (
@@ -420,19 +439,7 @@ function TraceAuditCard({
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation()
-          setMetaExpanded((value) => !value)
-        }}
-        className="mt-3 rounded-md px-2 py-1 text-xs font-medium"
-        style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-      >
-        {metaExpanded ? t('aiCenter.routing.hideTraceMeta', 'Hide trace meta') : t('aiCenter.routing.showTraceMeta', 'Show trace meta')}
-      </button>
-
-      {metaExpanded && (
+      {titleExpanded && (
         <div className="mt-2 flex flex-col gap-1 text-xs">
           {hiddenTraceFields.map((field) => (
             <div key={field.key} className="flex min-w-0 items-start gap-2">
