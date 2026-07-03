@@ -385,8 +385,8 @@ function TraceAuditCard({
       }}
     >
       <div className="flex min-w-0 flex-col gap-2">
-        <div className="min-w-0">
-          <div className="mt-1 flex min-w-0 items-start gap-1 text-xs">
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="mt-1 flex min-w-0 flex-1 items-start gap-1 text-xs">
             <span
               title={traceTitle}
               className={`min-w-0 ${titleExpanded ? 'whitespace-normal break-words' : 'truncate'}`}
@@ -408,30 +408,30 @@ function TraceAuditCard({
               {titleExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
             </button>
           </div>
-          {titleExpanded && (
-            <div className="mt-2 flex flex-col gap-1 text-xs">
-              {hiddenTraceFields.map((field) => (
-                <div key={field.key} className="flex min-w-0 items-start gap-2">
-                  <span className="w-20 shrink-0 sm:w-24" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
-                  <LongField
-                    value={field.value}
-                    fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
-                    className="flex-1"
-                    mono
-                    tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
-                    expandable
-                  />
-                </div>
-              ))}
-            </div>
-          )}
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+            {trace.warnings.length > 0 && (
+              <StatusBadge status="warning" label={t('aiCenter.routing.traceWarnings', '{{count}} warnings', { count: trace.warnings.length })} />
+            )}
+            <StatusBadge status={status === 'selected' ? 'ok' : status === 'fallback' ? 'warning' : 'error'} label={status} />
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {trace.warnings.length > 0 && (
-            <StatusBadge status="warning" label={t('aiCenter.routing.traceWarnings', '{{count}} warnings', { count: trace.warnings.length })} />
-          )}
-          <StatusBadge status={status === 'selected' ? 'ok' : status === 'fallback' ? 'warning' : 'error'} label={status} />
-        </div>
+        {titleExpanded && (
+          <div className="flex min-w-0 flex-col gap-1 text-xs">
+            {hiddenTraceFields.map((field) => (
+              <div key={field.key} className="flex min-w-0 items-start gap-2">
+                <span className="w-20 shrink-0 sm:w-24" style={{ color: 'var(--cp-muted)' }}>{field.label}</span>
+                <LongField
+                  value={field.value}
+                  fallback={field.key === 'selected_exact_model' ? t('aiCenter.routing.noExactResolved', 'No exact model resolved') : '-'}
+                  className="flex-1"
+                  mono
+                  tone={field.key === 'selected_exact_model' && !field.value ? 'danger' : 'default'}
+                  expandable
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <p className="mt-2 text-sm" style={{ color: 'var(--cp-text)' }}>{trace.user_summary?.reason_short}</p>
       {selectedCandidate && (
