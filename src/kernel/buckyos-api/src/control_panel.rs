@@ -2,9 +2,7 @@ use crate::app_mgr::*;
 use crate::system_config::*;
 use crate::{AppDoc, AppType, SelectorType};
 use ::kRPC::*;
-use name_lib::{
-    DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument, OwnerDocument, ZoneDocument, DID,
-};
+use name_lib::{DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument, OwnerDocument, DID};
 pub use name_lib::{
     ProfileContact, ProfileLink, ProfilePrivacyRule, ProfileVisibility, UserPrivateProfile,
     UserProfile, UserProfilePrivacy,
@@ -195,7 +193,7 @@ impl ControlPanelClient {
         Ok((rbac_config.model, rbac_config.policy))
     }
 
-    pub async fn load_zone_config(&self) -> Result<ZoneDocument> {
+    pub async fn load_zone_config(&self) -> Result<ZoneConfig> {
         let zone_config_path = "boot/config";
         let zone_config_result = self.system_config_client.get(zone_config_path).await;
         if zone_config_result.is_err() {
@@ -205,7 +203,7 @@ impl ControlPanelClient {
             )));
         }
         let zone_config_result = zone_config_result.unwrap();
-        let zone_config: ZoneDocument = serde_json::from_str(&zone_config_result.value)
+        let zone_config: ZoneConfig = serde_json::from_str(&zone_config_result.value)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(zone_config)
     }

@@ -34,7 +34,8 @@ use system_config_agent::schedule_loop;
 use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 
 async fn create_init_list_by_template(
-    zone_boot_config: &ZoneBootDocument,
+    zone_document: &ZoneDocument,
+    zone_document_str: &str,
 ) -> Result<HashMap<String, String>> {
     //load start_parms from active_service.
     let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
@@ -87,10 +88,10 @@ async fn create_init_list_by_template(
     }
     let mut boot_config: HashMap<String, String> = toml::from_str(&result)?;
 
-    let ood_name = zone_boot_config.oods.first().unwrap().name.as_str();
+    let ood_name = zone_document.oods.first().unwrap().name.as_str();
     let mut builder = SystemConfigBuilder::new(boot_config);
     builder
-        .add_boot_config(&start_config, &verify_hub_public_key, zone_boot_config)?
+        .add_boot_config(&start_config, &verify_hub_public_key, zone_document_str)?
         .add_user_doc(&start_config)?
         .add_default_accounts(&start_config)?
         .add_device_doc(ood_name, &start_config)?
@@ -130,19 +131,16 @@ async fn create_init_list_by_template(
 
 async fn do_boot_scheduler() -> Result<()> {
     let mut init_list: HashMap<String, String> = HashMap::new();
-    let zone_boot_config_str = std::env::var("BUCKYOS_ZONE_BOOT_CONFIG");
+    let zone_document_str = std::env::var("BUCKYOS_ZONE_BOOT_CONFIG");
 
-    if zone_boot_config_str.is_err() {
+    if zone_document_str.is_err() {
         warn!("BUCKYOS_ZONE_BOOT_CONFIG is not set, use default zone config");
         return Err(anyhow::anyhow!("BUCKYOS_ZONE_BOOT_CONFIG is not set"));
     }
 
-    info!(
-        "zone_boot_config_str:{}",
-        zone_boot_config_str.as_ref().unwrap()
-    );
-    let zone_boot_config_json = zone_boot_config_str.unwrap();
-    let zone_boot_config: ZoneBootDocument = serde_json::from_str(&zone_boot_config_json).unwrap();
+    info!("zone_document_str:{}", zone_document_str.as_ref().unwrap());
+    let zone_document_str = zone_document_str.unwrap();
+    let zone_document: ZoneDocument = serde_json::from_str(&zone_document_str).unwrap();
     let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
@@ -158,7 +156,7 @@ async fn do_boot_scheduler() -> Result<()> {
         ));
     }
 
-    let mut init_list = create_init_list_by_template(&zone_boot_config)
+    let mut init_list = create_init_list_by_template(&zone_document, &zone_document_str)
         .await
         .map_err(|e| {
             error!("create_init_list_by_template failed: {:?}", e);
@@ -171,16 +169,10 @@ async fn do_boot_scheduler() -> Result<()> {
     }
     let boot_config_str = boot_config_str.unwrap();
     info!("after boot_config_str: {}", boot_config_str);
-    let mut zone_config: ZoneDocument =
-        serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
-            error!("load ZoneDocument from boot/config failed: {:?}", e);
-            e
-        })?;
-    zone_config.init_by_boot_document(&zone_boot_config, &zone_boot_config_json);
-    init_list.insert(
-        "boot/config".to_string(),
-        serde_json::to_string_pretty(&zone_config).unwrap(),
-    );
+    let _zone_config: ZoneConfig = serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
+        error!("load ZoneConfig from boot/config failed: {:?}", e);
+        e
+    })?;
     //info!("use init list from template {} to do boot scheduler",template_type_str);
     //write to system_config
     for (key, value) in init_list.iter() {
@@ -358,14 +350,15 @@ mod test {
         write_boot_template(temp_root.path());
         init_static_name_client().await;
 
-        let zone_boot_config = prepare_scheduler_test_configs(temp_root.path()).await;
-        let mut init_map = create_init_list_by_template(&zone_boot_config)
+        let zone_document = prepare_scheduler_test_configs(temp_root.path()).await;
+        let zone_document_str = serde_json::to_string(&zone_document).unwrap();
+        let mut init_map = create_init_list_by_template(&zone_document, &zone_document_str)
             .await
             .expect("init list generation should succeed");
         ensure_device_info_entry(
             &mut init_map,
-            zone_boot_config
-                .owner_key
+            zone_document
+                .get_default_key()
                 .as_ref()
                 .expect("owner key missing"),
         )
@@ -515,7 +508,7 @@ mod test {
         fs::write(scheduler_dir.join("boot.template.toml"), template).unwrap();
     }
 
-    async fn prepare_scheduler_test_configs(root: &Path) -> ZoneBootDocument {
+    async fn prepare_scheduler_test_configs(root: &Path) -> ZoneDocument {
         let output_dir = root.join("dev_env");
         fs::create_dir_all(&output_dir).unwrap();
         let output_dir_str = output_dir.to_string_lossy().to_string();
@@ -547,13 +540,6 @@ mod test {
         fs::copy(start_config_src, etc_dir.join("start_config.json"))
             .expect("failed to copy start_config");
 
-        let zone_config_file = format!("{}.zone.json", TEST_HOSTNAME);
-        let zone_boot_path = output_dir.join(zone_config_file);
-        let mut zone_boot_config: ZoneBootDocument = serde_json::from_str(
-            &fs::read_to_string(zone_boot_path).expect("failed to read zone boot config"),
-        )
-        .expect("failed to parse zone boot config");
-
         let owner_config_path = output_dir.join("user_config.json");
         let owner_config_value: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(owner_config_path).expect("failed to read owner config"),
@@ -567,11 +553,18 @@ mod test {
             .expect("owner public key not found");
         let owner_key: Jwk = serde_json::from_value(owner_key_value).expect("invalid owner jwk");
 
-        zone_boot_config.owner_key = Some(owner_key);
-        zone_boot_config.owner = Some(DID::new("bns", TEST_USERNAME));
-        zone_boot_config.id = Some(DID::new("web", TEST_HOSTNAME));
-
-        zone_boot_config
+        let mut zone_document = ZoneDocument::new(
+            DID::new("web", TEST_HOSTNAME),
+            DID::new("bns", TEST_USERNAME),
+            owner_key,
+        );
+        zone_document.oods = vec![OODDescriptionString::new(
+            TEST_DEVICE_NAME.to_string(),
+            DeviceNodeType::OOD,
+            None,
+            None,
+        )];
+        zone_document
     }
 
     fn ensure_device_info_entry(

@@ -39,7 +39,7 @@ const SESSION_FIELD: &str = "session";
 
 #[derive(Clone, Debug, PartialEq)]
 struct VerifyServiceConfig {
-    zone_config: ZoneDocument,
+    zone_document: ZoneDocument,
     device_id: String,
     node_did: DID,
     start_time: u64,
@@ -493,7 +493,7 @@ async fn load_trust_public_key_from_source(iss: &str) -> Result<DecodingKey> {
             .await
             .as_ref()
             .unwrap()
-            .zone_config
+            .zone_document
             .get_auth_key(None)
             .ok_or(RPCErrors::ReasonError(
                 "Owner public key not found".to_string(),
@@ -1084,12 +1084,15 @@ async fn load_service_config() -> Result<()> {
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
     cache_trustkey("verify-hub", verify_hub_pub_key).await;
     info!("verify_hub public key loaded from system config service OK!");
+    let zone_document = zone_config
+        .zone_document()
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
 
     let device_info = control_panel_client
         .get_device_info(device_id.as_str())
         .await?;
     let new_service_config = VerifyServiceConfig {
-        zone_config,
+        zone_document,
         device_id,
         node_did: device_info.id.clone(),
         start_time: buckyos_get_unix_timestamp(),

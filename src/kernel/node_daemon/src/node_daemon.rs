@@ -63,9 +63,43 @@ enum NodeDaemonErrors {
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
-async fn looking_zone_boot_config(
+//这个函数应该返回这个 ZoneDocument 标准的 Zone Boot Document 是从 DNS 上查回来之后，它其实是已经可以直接转换成无损的，转换成这个 Zone Document。
+//实现上，有两次resolve：
+
+//1. 第一次是尝试resolve_did(zone_did,"zone")。
+//2. 如果第一次拿不到，之后才会resolve_did(zone_did,"boot")。
+
+//比如 Zone 是 did:bns:xxx ，它的第一步会走合约查询。因为合约保存信息的能力比 DNS 强，其实能把整个 ZoneDocument都拉回来
+fn normalize_resolved_zone_document(
+    mut zone_document: ZoneDocument,
     node_identity: &LocalNodeIdentityConfig,
-) -> Result<ZoneBootDocument> {
+) -> Result<ZoneDocument> {
+    if zone_document.id != node_identity.zone_did {
+        error!("zone document's id is not match node_identity's zone_did!");
+        return Err(NodeDaemonErrors::ReasonError(
+            "zone id is not match!".to_string(),
+        ));
+    }
+    if zone_document.owner.is_valid() {
+        if zone_document.owner != node_identity.owner_did {
+            error!("zone document's owner is not match node_identity's owner_did!");
+            return Err(NodeDaemonErrors::ReasonError(
+                "zone owner is not match!".to_string(),
+            ));
+        }
+    } else {
+        zone_document.owner = node_identity.owner_did.clone();
+    }
+    if zone_document.get_default_key().is_none() {
+        error!("zone document's owner key is missing!");
+        return Err(NodeDaemonErrors::ReasonError(
+            "zone owner key is missing!".to_string(),
+        ));
+    }
+    Ok(zone_document)
+}
+
+async fn resolve_zone_document(node_identity: &LocalNodeIdentityConfig) -> Result<ZoneDocument> {
     //If local files exist, priority loads local files
     let etc_dir = get_buckyos_system_etc_dir();
     let json_config_path = etc_dir.join(format!(
@@ -76,49 +110,83 @@ async fn looking_zone_boot_config(
         "check  {} is exist for debug ...",
         json_config_path.display()
     );
-    let mut zone_boot_config: ZoneBootDocument;
+    info!(
+        "node_identity.owner_public_key: {:?}",
+        node_identity.owner_public_key
+    );
+    let owner_public_key =
+        DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(|err| {
+            error!("parse owner public key failed! {}", err);
+            return NodeDaemonErrors::ReasonError("parse owner public key failed!".to_string());
+        })?;
+
     //在离线环境中，可以利用下面机制来绕开DNS查询
     if json_config_path.exists() {
         info!(
-            "try load zone boot config from {} for debug",
+            "try load zone document from {} for debug",
             json_config_path.display()
         );
         let json_config = std::fs::read_to_string(json_config_path.clone());
         if json_config.is_ok() {
-            let zone_boot_config_result = serde_json::from_str(&json_config.unwrap());
-            if zone_boot_config_result.is_ok() {
+            let encoded_doc = EncodedDocument::from_str(json_config.unwrap().trim().to_string())
+                .map_err(|err| {
+                    error!(
+                        "parse debug zone document {} failed! {}",
+                        json_config_path.display(),
+                        err
+                    );
+                    return NodeDaemonErrors::ReasonError(
+                        "parse debug zone document from local file failed!".to_string(),
+                    );
+                })?;
+            let zone_document_result = ZoneDocument::decode(&encoded_doc, Some(&owner_public_key));
+            let zone_document = if zone_document_result.is_ok() {
                 warn!(
-                    "debug load zone boot config from {} success!",
+                    "debug load zone document from {} success!",
                     json_config_path.display()
                 );
-                zone_boot_config = zone_boot_config_result.unwrap();
+                zone_document_result.unwrap()
             } else {
-                error!(
-                    "parse debug zone boot config {} failed! {}",
+                let mut zone_boot_document =
+                    ZoneBootDocument::decode(&encoded_doc, Some(&owner_public_key)).map_err(
+                        |err| {
+                            error!(
+                                "parse debug zone document {} failed! {}",
+                                json_config_path.display(),
+                                err
+                            );
+                            return NodeDaemonErrors::ReasonError(
+                                "parse debug zone document from local file failed!".to_string(),
+                            );
+                        },
+                    )?;
+                zone_boot_document.id = Some(node_identity.zone_did.clone());
+                if zone_boot_document.owner.is_some() {
+                    if zone_boot_document.owner.as_ref().unwrap() != &node_identity.owner_did {
+                        error!(
+                            "zone boot document's owner is not match node_identity's owner_did!"
+                        );
+                        return Err(NodeDaemonErrors::ReasonError(
+                            "zone owner is not match!".to_string(),
+                        ));
+                    }
+                } else {
+                    zone_boot_document.owner = Some(node_identity.owner_did.clone());
+                }
+                zone_boot_document.owner_key = Some(node_identity.owner_public_key.clone());
+                warn!(
+                    "debug load zone boot document from {} success, convert to zone document!",
                     json_config_path.display(),
-                    zone_boot_config_result.err().unwrap()
                 );
-                return Err(NodeDaemonErrors::ReasonError(
-                    "parse debug zone boot config from local file failed!".to_string(),
-                ));
-            }
+                zone_boot_document.to_zone_document(&encoded_doc.to_string())
+            };
+            return normalize_resolved_zone_document(zone_document, node_identity);
         } else {
             return Err(NodeDaemonErrors::ReasonError(
-                "parse debug zone boot config from local file failed!".to_string(),
+                "parse debug zone document from local file failed!".to_string(),
             ));
         }
     } else {
-        let mut zone_did = node_identity.zone_did.clone();
-        info!(
-            "node_identity.owner_public_key: {:?}",
-            node_identity.owner_public_key
-        );
-        let owner_public_key =
-            DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(|err| {
-                error!("parse owner public key failed! {}", err);
-                return NodeDaemonErrors::ReasonError("parse owner public key failed!".to_string());
-            })?;
-
         //owner zone is a NAME, need query NameInfo to get DID
         // info!("owner zone is a NAME, try nameclient.query to get did");
         // let zone_jwt = resolve(node_identity.zone_did.as_str(),RecordType::from_str("DID")).await
@@ -141,34 +209,52 @@ async fn looking_zone_boot_config(
         // let zone_jwt = zone_jwt.did_document.unwrap();
         // info!("zone_jwt: {:?}",zone_jwt);
 
-        let zone_doc = resolve_did(&node_identity.zone_did, Some(DidDocType::Boot))
+        match resolve_did(&node_identity.zone_did, Some(DidDocType::Zone)).await {
+            Ok(zone_doc) => {
+                let zone_document = ZoneDocument::decode(&zone_doc, Some(&owner_public_key))
+                    .map_err(|err| {
+                        error!("parse zone document failed! {}", err);
+                        return NodeDaemonErrors::ReasonError(
+                            "parse zone document failed!".to_string(),
+                        );
+                    })?;
+                return normalize_resolved_zone_document(zone_document, node_identity);
+            }
+            Err(err) => {
+                warn!(
+                    "resolve zone document failed! {}, try resolve zone boot document",
+                    err
+                );
+            }
+        }
+
+        let boot_doc = resolve_did(&node_identity.zone_did, Some(DidDocType::Boot))
             .await
             .map_err(|err| {
-                error!("resolve zone did failed! {}", err);
-                return NodeDaemonErrors::ReasonError("resolve zone did failed!".to_string());
+                error!("resolve zone boot did failed! {}", err);
+                return NodeDaemonErrors::ReasonError("resolve zone boot did failed!".to_string());
             })?;
 
-        zone_boot_config =
-            ZoneBootDocument::decode(&zone_doc, Some(&owner_public_key)).map_err(|err| {
-                error!("parse zone config failed! {}", err);
-                return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
-            })?;
-    }
-
-    zone_boot_config.id = Some(node_identity.zone_did.clone());
-    if zone_boot_config.owner.is_some() {
-        if zone_boot_config.owner.as_ref().unwrap() != &node_identity.owner_did {
-            error!("zone boot config's owner is not match node_identity's owner_did!");
-            return Err(NodeDaemonErrors::ReasonError(
-                "zone owner is not match!".to_string(),
-            ));
+        let mut zone_boot_document = ZoneBootDocument::decode(&boot_doc, Some(&owner_public_key))
+            .map_err(|err| {
+            error!("parse zone boot document failed! {}", err);
+            return NodeDaemonErrors::ReasonError("parse zone boot document failed!".to_string());
+        })?;
+        zone_boot_document.id = Some(node_identity.zone_did.clone());
+        if zone_boot_document.owner.is_some() {
+            if zone_boot_document.owner.as_ref().unwrap() != &node_identity.owner_did {
+                error!("zone boot document's owner is not match node_identity's owner_did!");
+                return Err(NodeDaemonErrors::ReasonError(
+                    "zone owner is not match!".to_string(),
+                ));
+            }
+        } else {
+            zone_boot_document.owner = Some(node_identity.owner_did.clone());
         }
-    } else {
-        zone_boot_config.owner = Some(node_identity.owner_did.clone());
+        zone_boot_document.owner_key = Some(node_identity.owner_public_key.clone());
+        let zone_document = zone_boot_document.to_zone_document(&boot_doc.to_string());
+        return normalize_resolved_zone_document(zone_document, node_identity);
     }
-    zone_boot_config.owner_key = Some(node_identity.owner_public_key.clone());
-
-    return Ok(zone_boot_config);
 }
 
 async fn load_app_info(
@@ -991,7 +1077,7 @@ async fn keep_cyfs_gateway_service(
     Ok(())
 }
 
-// 把 ZoneBootDocument.sn 解析成 cyfs-gateway keep_tunnel 直接可用的 host name。
+// 把 ZoneDocument.sn 解析成 cyfs-gateway keep_tunnel 直接可用的 host name。
 // wan 系节点不需要走 SN，返回 None。
 async fn resolve_sn_host_for_keep_tunnel(
     device_doc: &DeviceDocument,
@@ -1261,6 +1347,12 @@ async fn node_daemon_main_loop(
         let system_config_client = system_config_client.unwrap();
         let device_doc = buckyos_runtime.device_config.as_ref().unwrap();
         let zone_config = buckyos_runtime.zone_config.as_ref().unwrap();
+        let zone_document = zone_config.zone_document().map_err(|err| {
+            error!("decode zone document from zone config failed! {}", err);
+            NodeDaemonErrors::SystemConfigError(
+                "decode zone document from zone config failed!".to_string(),
+            )
+        })?;
         let device_private_key = buckyos_runtime.device_private_key.as_ref().unwrap();
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
@@ -1288,8 +1380,12 @@ async fn node_daemon_main_loop(
             publish_device_info_kevent(&device_info).await;
             //TODO：SN的上报频率不用那么快
             let device_session_token_jwt = buckyos_runtime.get_session_token().await;
-            report_ood_info_to_sn(&device_info, device_session_token_jwt.as_str(), zone_config)
-                .await;
+            report_ood_info_to_sn(
+                &device_info,
+                device_session_token_jwt.as_str(),
+                &zone_document,
+            )
+            .await;
             last_register_time = now;
         }
 
@@ -1357,7 +1453,7 @@ async fn node_daemon_main_loop(
                 let mut need_reload = false;
                 let mut need_restart = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
-                let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
+                let sn = zone_document.sn.clone();
                 info!("*** keep cyfs-gateway service with sn: {:?}", sn);
                 let mut keep_tunnels = gateway_info_keep_tunnels;
                 if let Some(host) = resolve_sn_host_for_keep_tunnel(device_doc, sn.as_deref()).await
@@ -1612,25 +1708,23 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     //lookup zone config
     info!(
-        "looking {} zone_boot_config...",
+        "looking {} zone document...",
         node_identity.zone_did.to_host_name()
     );
-    let zone_boot_config = looking_zone_boot_config(&node_identity)
-        .await
-        .map_err(|err| {
-            error!("looking zone config failed! {}", err);
-            String::from("looking zone config failed!")
-        })?;
-    let zone_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
-    info!("Load zone_boot_config OK, {}", zone_config_json_str);
+    let zone_document = resolve_zone_document(&node_identity).await.map_err(|err| {
+        error!("looking zone config failed! {}", err);
+        String::from("looking zone config failed!")
+    })?;
+    let zone_config_json_str = serde_json::to_string_pretty(&zone_document).unwrap();
+    info!("Load zone document OK, {}", zone_config_json_str);
 
     //verify node_name is this device's hostname
     let device_name = device_doc.name.clone();
-    let role = NodeRole::from_zone_boot_config(&zone_boot_config, &device_name);
+    let role = NodeRole::from_zone_document(&zone_document, &device_name);
     let is_ood = matches!(role, NodeRole::Ood);
     info!("Booting {} as {} ...", device_name, role.as_str());
 
-    let multi_ood = zone_boot_config
+    let multi_ood = zone_document
         .oods
         .iter()
         .filter(|ood| ood.node_type.is_ood())
@@ -1649,7 +1743,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         match NodeFinder::new_for_zone(
             device_doc_jwt.clone(),
             device_private_key.clone(),
-            zone_boot_config.clone(),
+            zone_document.clone(),
             owner_public_key,
         ) {
             Ok(finder) => {
@@ -1682,7 +1776,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         discover_oods_in_lan(
             device_doc_jwt.clone(),
             device_private_key.clone(),
-            zone_boot_config.clone(),
+            zone_document.clone(),
             owner_public_key_for_finder,
             role,
         )
@@ -1695,7 +1789,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     // SN host name 解析（wan 系节点不需要 SN keep_tunnel）。
     let sn_host_name =
-        resolve_sn_host_for_keep_tunnel(&device_doc, zone_boot_config.sn.as_deref()).await;
+        resolve_sn_host_for_keep_tunnel(&device_doc, zone_document.sn.as_deref()).await;
 
     // 在启动 cyfs-gateway 前，写入 boot 期 node_gateway_info.json：
     //  - service_info.system_config 让 boot_gateway.yaml 能把 /kapi/system_config 转发到 OOD；
@@ -1705,7 +1799,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let boot_gateway_info = build_boot_node_gateway_info(
         &device_name,
         zone_host.as_str(),
-        &zone_boot_config,
+        &zone_document,
         &discovered_oods,
         sn_host_name.as_deref(),
     );
@@ -1717,7 +1811,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let mut keep_tunnels = build_keep_tunnel_targets(
         role,
         &device_doc,
-        &zone_boot_config,
+        &zone_document,
         zone_host.as_str(),
         sn_host_name.as_deref(),
     );
@@ -1746,7 +1840,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         );
         std::env::set_var(
             "BUCKYOS_ZONE_BOOT_CONFIG",
-            serde_json::to_string(&zone_boot_config).unwrap(),
+            serde_json::to_string(&zone_document).unwrap(),
         );
         std::env::set_var(
             "BUCKYOS_THIS_DEVICE",
@@ -1842,7 +1936,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             }
         }
 
-        let zone_config: ZoneDocument = serde_json::from_str(boot_config_result_str.as_str())
+        let zone_config: ZoneConfig = serde_json::from_str(boot_config_result_str.as_str())
             .map_err(|err| {
                 error!("parse zone config from boot/config failed! {}", err);
                 return String::from("parse zone config from boot/config failed!");

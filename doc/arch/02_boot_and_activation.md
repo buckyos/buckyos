@@ -71,7 +71,8 @@ pub struct ZoneBootConfig {
 ### ZoneBootConfig 在启动链路中的“形态转换”
 有一个容易误解的点：
 - 设计上 ZoneBootConfig 常被描述为“JWT”；
-- 但当前 scheduler `--boot` 的实现是从环境变量读取并按 JSON 反序列化（`serde_json::from_str`），也就是说 `BUCKYOS_ZONE_BOOT_CONFIG` 在当前实现里是“ZoneBootConfig 的 JSON 字符串”，而不是 JWT 字符串（`src/kernel/scheduler/src/main.rs`）。
+- node-daemon 的 `resolve_zone_document()` 会优先 `resolve_did(zone_did, "zone")` 获取完整 ZoneDocument；如果拿不到，才 `resolve_did(zone_did, "boot")` 获取 ZoneBootConfig 并转换成 ZoneDocument。
+- 当前 scheduler `--boot` 的实现是从环境变量读取并按 JSON 反序列化为 `ZoneDocument`，也就是说 `BUCKYOS_ZONE_BOOT_CONFIG` 在当前实现里是“ZoneDocument 的 JSON 字符串”，不是 ZoneBootConfig JSON，也不是 JWT 字符串（`src/kernel/scheduler/src/main.rs`）。
 
 而这个环境变量是在 node-daemon 的启动流程里设置的（同一处还会设置 `BUCKYOS_THIS_DEVICE`）：`src/kernel/node_daemon/src/node_daemon.rs`。
 
@@ -155,11 +156,16 @@ boot/config（KV 路径 `boot/config`）是 system-config 中保存 ZoneConfig �
 - `devices/<ood>/doc`：OOD 的 device doc（JWT，来自 `start_config.json` 的 `ood_jwt`，`src/kernel/scheduler/src/system_config_builder.rs`）。
 - `nodes/<ood>/config`、`nodes/<ood>/gateway_config`：节点初始配置（`src/kernel/scheduler/src/system_config_builder.rs`）。
 
-### 关键数据结构：ZoneConfig（最小字段视图，按“代码可见字段”）
-本仓库内 `ZoneConfig` 的完整字段同样来自 `name_lib`；本节只列出“在当前代码里被直接读取/依赖”的字段：
+### 关键数据结构：ZoneConfig 与 ZoneDocument
+当前实现把内部配置和公开身份文档分开：
 
-- `verify_hub_info.public_key`：system-config 在 `handle_refresh_trust_keys()` 里从 `boot/config` 取出并转换为 `DecodingKey`，用于信任 verify-hub token（`src/kernel/sys_config_service/src/main.rs`）。
-- `owner` + `get_default_key()`：system-config 会把 owner 的默认 key 加入 trust_keys，并额外加入 `root`、`$default`（`src/kernel/sys_config_service/src/main.rs`）。
+- `ZoneConfig`：保存在 `boot/config` 的内部配置。它包含 `zone_document` 字符串，以及 `verify_hub_info.public_key`、`docker_repo_base_url` 等内部字段。
+- `zone_document`：可解码为标准 `ZoneDocument` / DID Document。内部代码通过它读取 `id`、`owner`、owner default key、`oods`、`sn` 等公开身份和发现信息。
+
+代码直接依赖的边界：
+
+- `verify_hub_info.public_key`：system-config 在 `handle_refresh_trust_keys()` 里从 `ZoneConfig` 取出并转换为 `DecodingKey`，用于信任 verify-hub token（`src/kernel/sys_config_service/src/main.rs`）。
+- `zone_document.owner` + `zone_document.get_default_key()`：system-config 会把 owner 的默认 key 加入 trust_keys，并额外加入 `root`、`$default`（`src/kernel/sys_config_service/src/main.rs`）。
 
 ### 伪代码：activation -> boot scheduler -> 写入 boot/config（含 BUCKYOS_ZONE_BOOT_CONFIG）
 这段伪代码以“控制流 + 数据依赖”为核心，刻意忽略实现细节。
@@ -175,9 +181,9 @@ activation_server(3182):                        // src/kernel/node_daemon/src/ac
 node_daemon_boot():                              // src/kernel/node_daemon/src/node_daemon.rs
   node_identity = read /etc/node_identity.json
   device_doc    = decode(node_identity.device_doc_jwt, node_identity.owner_public_key)
-  zone_boot_cfg = looking_zone_boot_config(node_identity)      // resolve via DNS/BNS/SN (impl)
+  zone_document = resolve_zone_document(node_identity)         // resolve zone first, boot fallback
 
-  setenv BUCKYOS_ZONE_BOOT_CONFIG = json(zone_boot_cfg)        // NOT JWT in current impl
+  setenv BUCKYOS_ZONE_BOOT_CONFIG = json(zone_document)        // ZoneDocument JSON in current impl
   setenv BUCKYOS_THIS_DEVICE      = json(device_doc)
 
   start system-config (3200)
@@ -187,21 +193,16 @@ node_daemon_boot():                              // src/kernel/node_daemon/src/n
     run scheduler --boot
 
 scheduler --boot:                                 // src/kernel/scheduler/src/main.rs
-  zone_boot_cfg_json = env[BUCKYOS_ZONE_BOOT_CONFIG]
-  zone_boot_cfg      = json_parse(zone_boot_cfg_json)
+  zone_document_json = env[BUCKYOS_ZONE_BOOT_CONFIG]
+  zone_document      = json_parse(zone_document_json)
 
   assert system_config.get("boot/config") == KeyNotFound
 
   init_list = render(/etc/scheduler/boot.template.toml, /etc/start_config.json)
   builder   = SystemConfigBuilder(init_list)
-  builder.add_boot_config(start_config, verify_hub_public_key, zone_boot_cfg)
+  builder.add_boot_config(start_config, verify_hub_public_key, zone_boot_cfg, zone_boot_cfg_json)
   ... add_verify_hub/add_scheduler/add_repo_service/add_control_panel/add_node ...
   init_list = builder.build()
-
-  // ensure boot/config is a ZoneConfig that carries boot info
-  zone_config = json_parse(init_list["boot/config"])
-  zone_config.init_by_boot_config(zone_boot_cfg, zone_boot_cfg_json)
-  init_list["boot/config"] = json_pretty(zone_config)
 
   for (k, v) in init_list:
     system_config.create(k, v)

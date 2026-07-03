@@ -180,7 +180,7 @@ pub struct BuckyOSRuntime {
     pub node_gateway_port: u16,
 
     //pub is_token_iss_by_self:bool,
-    pub zone_config: Option<ZoneDocument>,
+    pub zone_config: Option<ZoneConfig>,
     pub session_token: Arc<RwLock<String>>,
     pub refresh_token: Arc<RwLock<String>>,
     trust_keys: Arc<RwLock<HashMap<String, DecodingKey>>>,
@@ -314,8 +314,11 @@ impl BuckyOSRuntime {
                     "zone_config_str format error".to_string(),
                 ));
             }
-            let zone_config: ZoneDocument = zone_config.unwrap();
-            self.zone_id = zone_config.id.clone();
+            let zone_config: ZoneConfig = zone_config.unwrap();
+            let zone_document = zone_config
+                .zone_document()
+                .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+            self.zone_id = zone_document.id.clone();
             self.zone_config = Some(zone_config);
         }
 
@@ -1344,6 +1347,10 @@ impl BuckyOSRuntime {
         //session token already set, try to connect to control-panel and get zone config
         let control_panel_client = self.get_control_panel_client().await?;
         let zone_config = control_panel_client.load_zone_config().await?;
+        let zone_document = zone_config
+            .zone_document()
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        self.zone_id = zone_document.id.clone();
         self.zone_config = Some(zone_config);
         self.authenticated_user_id =
             BuckyOSRuntime::resolve_authenticated_user_id(&authenticated_session_token);
@@ -1450,6 +1457,9 @@ impl BuckyOSRuntime {
         //zone_config 中包含trust_keys
         if self.zone_config.is_some() {
             let zone_config = self.zone_config.as_ref().unwrap();
+            let zone_document = zone_config
+                .zone_document()
+                .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
             if zone_config.verify_hub_info.is_some() {
                 let verify_hub_info = zone_config.verify_hub_info.as_ref().unwrap();
@@ -1463,9 +1473,9 @@ impl BuckyOSRuntime {
                 warn!("NO verfiy-hub publick key, system init with errors!");
             }
 
-            if zone_config.owner.is_valid() {
-                let owner_did = zone_config.owner.clone();
-                if let Some(owner_key) = zone_config.get_default_key() {
+            if zone_document.owner.is_valid() {
+                let owner_did = zone_document.owner.clone();
+                if let Some(owner_key) = zone_document.get_default_key() {
                     let owner_public_key = DecodingKey::from_jwk(&owner_key).map_err(|err| {
                         error!("Failed to parse owner_public_key from zone_config: {}", err);
                         RPCErrors::ReasonError(err.to_string())
@@ -1683,7 +1693,7 @@ impl BuckyOSRuntime {
         self.app_owner_id.clone()
     }
 
-    pub fn get_zone_config(&self) -> Option<&ZoneDocument> {
+    pub fn get_zone_config(&self) -> Option<&ZoneConfig> {
         self.zone_config.as_ref()
     }
 

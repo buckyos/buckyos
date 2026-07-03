@@ -2,7 +2,7 @@ use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_service_local_data_dir
 use log::*;
 use name_lib::{
     decode_jwt_claim_without_verify, DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument,
-    ZoneBootDocument,
+    ZoneDocument,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -144,7 +144,7 @@ impl FinderCache {
 
 #[derive(Clone)]
 struct FinderContext {
-    zone_boot_config: ZoneBootDocument,
+    zone_document: ZoneDocument,
     owner_public_key: Arc<DecodingKey>,
     this_device_doc: DeviceDocument,
 }
@@ -169,18 +169,18 @@ impl NodeFinder {
     pub fn new_for_zone(
         this_device_jwt: String,
         device_private_key: EncodingKey,
-        zone_boot_config: ZoneBootDocument,
+        zone_document: ZoneDocument,
         owner_public_key: DecodingKey,
     ) -> Result<Self> {
         let owner_public_key = Arc::new(owner_public_key);
         let this_device_doc = decode_device_doc(&this_device_jwt, owner_public_key.as_ref())
             .map_err(|err| anyhow!("decode local device doc for finder failed: {}", err))?;
-        validate_ood_device(&this_device_doc, &zone_boot_config)?;
+        validate_ood_device(&this_device_doc, &zone_document)?;
         Ok(Self {
             this_device_jwt,
             this_device_private_key: device_private_key,
             context: Some(FinderContext {
-                zone_boot_config,
+                zone_document,
                 owner_public_key,
                 this_device_doc,
             }),
@@ -240,7 +240,7 @@ impl NodeFinder {
                 let identity = match verify_finder_request_identity(
                     req.iam.as_str(),
                     req.seq,
-                    &context.zone_boot_config,
+                    &context.zone_document,
                     context.owner_public_key.as_ref(),
                 ) {
                     Ok(identity) => identity,
@@ -257,7 +257,7 @@ impl NodeFinder {
                     continue;
                 }
 
-                let zone_id = zone_id_string(&context.zone_boot_config);
+                let zone_id = zone_id_string(&context.zone_document);
                 let resp_jwt = match build_finder_identity_jwt(
                     FINDER_RESP_TYPE,
                     zone_id.as_str(),
@@ -321,13 +321,13 @@ impl NodeFinderClient {
     pub fn new_for_zone(
         this_device_jwt: String,
         this_device_private_key: EncodingKey,
-        zone_boot_config: ZoneBootDocument,
+        zone_document: ZoneDocument,
         owner_public_key: DecodingKey,
     ) -> Result<Self> {
         Self::new_for_zone_inner(
             this_device_jwt,
             this_device_private_key,
-            zone_boot_config,
+            zone_document,
             owner_public_key,
             true,
         )
@@ -338,13 +338,13 @@ impl NodeFinderClient {
     pub fn new_as_lan_client(
         this_device_jwt: String,
         this_device_private_key: EncodingKey,
-        zone_boot_config: ZoneBootDocument,
+        zone_document: ZoneDocument,
         owner_public_key: DecodingKey,
     ) -> Result<Self> {
         Self::new_for_zone_inner(
             this_device_jwt,
             this_device_private_key,
-            zone_boot_config,
+            zone_document,
             owner_public_key,
             false,
         )
@@ -353,7 +353,7 @@ impl NodeFinderClient {
     fn new_for_zone_inner(
         this_device_jwt: String,
         this_device_private_key: EncodingKey,
-        zone_boot_config: ZoneBootDocument,
+        zone_document: ZoneDocument,
         owner_public_key: DecodingKey,
         require_self_ood: bool,
     ) -> Result<Self> {
@@ -361,13 +361,13 @@ impl NodeFinderClient {
         let this_device_doc = decode_device_doc(&this_device_jwt, owner_public_key.as_ref())
             .map_err(|err| anyhow!("decode local device doc for finder client failed: {}", err))?;
         if require_self_ood {
-            validate_ood_device(&this_device_doc, &zone_boot_config)?;
+            validate_ood_device(&this_device_doc, &zone_document)?;
         }
         Ok(Self {
             this_device_jwt,
             this_device_private_key,
             context: Some(FinderContext {
-                zone_boot_config,
+                zone_document,
                 owner_public_key,
                 this_device_doc,
             }),
@@ -392,7 +392,7 @@ impl NodeFinderClient {
         })?;
         let discovered = load_valid_cache_entries(
             self.cache_path.as_path(),
-            &context.zone_boot_config,
+            &context.zone_document,
             context.owner_public_key.as_ref(),
             self.cache_ttl_secs,
         )?;
@@ -414,7 +414,7 @@ impl NodeFinderClient {
             HashMap::new()
         });
 
-        let expected_nodes = expected_ood_names(&context.zone_boot_config)
+        let expected_nodes = expected_ood_names(&context.zone_document)
             .into_iter()
             .filter(|node_id| node_id != &context.this_device_doc.name)
             .collect::<HashSet<_>>();
@@ -433,7 +433,7 @@ impl NodeFinderClient {
         }
 
         let seq = buckyos_get_unix_timestamp();
-        let zone_id = zone_id_string(&context.zone_boot_config);
+        let zone_id = zone_id_string(&context.zone_document);
         let req_jwt = build_finder_identity_jwt(
             FINDER_REQ_TYPE,
             zone_id.as_str(),
@@ -551,7 +551,7 @@ impl NodeFinderClient {
         let identity = verify_finder_response_identity(
             resp.resp.as_str(),
             seq,
-            &context.zone_boot_config,
+            &context.zone_document,
             context.owner_public_key.as_ref(),
         )?;
         if identity.claims.target_node_id.as_deref() != Some(context.this_device_doc.name.as_str())
@@ -637,14 +637,14 @@ fn build_finder_identity_jwt(
 fn verify_finder_request_identity(
     jwt: &str,
     expected_seq: u64,
-    zone_boot_config: &ZoneBootDocument,
+    zone_document: &ZoneDocument,
     owner_public_key: &DecodingKey,
 ) -> Result<VerifiedFinderIdentity> {
     verify_finder_identity(
         jwt,
         FINDER_REQ_TYPE,
         expected_seq,
-        zone_boot_config,
+        zone_document,
         owner_public_key,
         false,
     )
@@ -653,14 +653,14 @@ fn verify_finder_request_identity(
 fn verify_finder_response_identity(
     jwt: &str,
     expected_seq: u64,
-    zone_boot_config: &ZoneBootDocument,
+    zone_document: &ZoneDocument,
     owner_public_key: &DecodingKey,
 ) -> Result<VerifiedFinderIdentity> {
     verify_finder_identity(
         jwt,
         FINDER_RESP_TYPE,
         expected_seq,
-        zone_boot_config,
+        zone_document,
         owner_public_key,
         true,
     )
@@ -670,7 +670,7 @@ fn verify_finder_identity(
     jwt: &str,
     expected_msg_type: &str,
     expected_seq: u64,
-    zone_boot_config: &ZoneBootDocument,
+    zone_document: &ZoneDocument,
     owner_public_key: &DecodingKey,
     require_ood: bool,
 ) -> Result<VerifiedFinderIdentity> {
@@ -688,7 +688,7 @@ fn verify_finder_identity(
     if claims.seq != expected_seq {
         return Err(anyhow!("finder seq mismatch"));
     }
-    if claims.zone_did != zone_id_string(zone_boot_config) {
+    if claims.zone_did != zone_id_string(zone_document) {
         return Err(anyhow!("finder zone mismatch"));
     }
     let now = buckyos_get_unix_timestamp();
@@ -700,9 +700,9 @@ fn verify_finder_identity(
     if device_doc.name != claims.node_id {
         return Err(anyhow!("finder node_id does not match device doc"));
     }
-    validate_zone_device(&device_doc, zone_boot_config)?;
+    validate_zone_device(&device_doc, zone_document)?;
     if require_ood {
-        validate_ood_device(&device_doc, zone_boot_config)?;
+        validate_ood_device(&device_doc, zone_document)?;
     }
 
     let (device_public_key, _) = device_doc
@@ -725,47 +725,37 @@ fn decode_device_doc(
     Ok(device_doc)
 }
 
-fn validate_zone_device(
-    device_doc: &DeviceDocument,
-    zone_boot_config: &ZoneBootDocument,
-) -> Result<()> {
-    if let Some(zone_did) = zone_boot_config.id.as_ref() {
-        if device_doc.zone_did.as_ref() != Some(zone_did) {
-            return Err(anyhow!("device {} zone_did mismatch", device_doc.name));
-        }
+fn validate_zone_device(device_doc: &DeviceDocument, zone_document: &ZoneDocument) -> Result<()> {
+    if device_doc.zone_did.as_ref() != Some(&zone_document.id) {
+        return Err(anyhow!("device {} zone_did mismatch", device_doc.name));
     }
-    if let Some(owner) = zone_boot_config.owner.as_ref() {
-        if &device_doc.owner != owner {
-            return Err(anyhow!("device {} owner mismatch", device_doc.name));
-        }
+    if zone_document.owner.is_valid() && device_doc.owner != zone_document.owner {
+        return Err(anyhow!("device {} owner mismatch", device_doc.name));
     }
     Ok(())
 }
 
-fn validate_ood_device(
-    device_doc: &DeviceDocument,
-    zone_boot_config: &ZoneBootDocument,
-) -> Result<()> {
-    validate_zone_device(device_doc, zone_boot_config)?;
-    if !zone_boot_config.device_is_ood(device_doc.name.as_str()) {
+fn validate_ood_device(device_doc: &DeviceDocument, zone_document: &ZoneDocument) -> Result<()> {
+    validate_zone_device(device_doc, zone_document)?;
+    let is_ood = zone_document
+        .oods
+        .iter()
+        .any(|ood| ood.name == device_doc.name && ood.node_type.is_ood());
+    if !is_ood {
         return Err(anyhow!(
-            "device {} is not an OOD in ZoneBootDocument",
+            "device {} is not an OOD in ZoneDocument",
             device_doc.name
         ));
     }
     Ok(())
 }
 
-fn zone_id_string(zone_boot_config: &ZoneBootDocument) -> String {
-    zone_boot_config
-        .id
-        .as_ref()
-        .map(|did| did.to_string())
-        .unwrap_or_default()
+fn zone_id_string(zone_document: &ZoneDocument) -> String {
+    zone_document.id.to_string()
 }
 
-fn expected_ood_names(zone_boot_config: &ZoneBootDocument) -> HashSet<String> {
-    zone_boot_config
+fn expected_ood_names(zone_document: &ZoneDocument) -> HashSet<String> {
+    zone_document
         .oods
         .iter()
         .filter(|ood| ood.node_type.is_ood())
@@ -813,7 +803,7 @@ fn add_discovered_device_info_cache(discovered: &HashMap<String, DiscoveredNode>
 
 fn load_valid_cache_entries(
     cache_path: &Path,
-    zone_boot_config: &ZoneBootDocument,
+    zone_document: &ZoneDocument,
     owner_public_key: &DecodingKey,
     cache_ttl_secs: u64,
 ) -> Result<HashMap<String, DiscoveredNode>> {
@@ -822,7 +812,7 @@ fn load_valid_cache_entries(
     }
     let cache_str = std::fs::read_to_string(cache_path)?;
     let cache: FinderCache = serde_json::from_str(cache_str.as_str())?;
-    if cache.version != FINDER_CACHE_VERSION || cache.zone_did != zone_id_string(zone_boot_config) {
+    if cache.version != FINDER_CACHE_VERSION || cache.zone_did != zone_id_string(zone_document) {
         return Ok(HashMap::new());
     }
 
@@ -842,7 +832,7 @@ fn load_valid_cache_entries(
                 continue;
             }
         };
-        if validate_ood_device(&device_doc, zone_boot_config).is_err() {
+        if validate_ood_device(&device_doc, zone_document).is_err() {
             continue;
         }
         let Some(endpoint) = entry
@@ -953,19 +943,18 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         DecodingKey::from_jwk(&jwk(public_x)).unwrap()
     }
 
-    fn test_zone_boot_config() -> ZoneBootDocument {
-        ZoneBootDocument {
-            id: Some(DID::new("bns", "alice")),
-            owner: Some(DID::new("bns", "alice")),
-            owner_key: Some(jwk(OWNER_PUBLIC_X)),
-            oods: vec![
-                OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
-                OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
-            ],
-            sn: None,
-            exp: buckyos_get_unix_timestamp() + 3600,
-            extra_info: HashMap::new(),
-        }
+    fn test_zone_document() -> ZoneDocument {
+        let mut zone_document = ZoneDocument::new(
+            DID::new("bns", "alice"),
+            DID::new("bns", "alice"),
+            jwk(OWNER_PUBLIC_X),
+        );
+        zone_document.oods = vec![
+            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
+            OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
+        ];
+        zone_document.exp = buckyos_get_unix_timestamp() + 3600;
+        zone_document
     }
 
     struct EmptyNameProvider;
@@ -1052,11 +1041,11 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
 
     #[test]
     fn finder_identity_requires_owner_signed_ood_device_doc() {
-        let zone_boot_config = test_zone_boot_config();
+        let zone_document = test_zone_document();
         let ood2_doc_jwt = signed_device_doc("ood2", OOD2_PUBLIC_X);
         let jwt = build_finder_identity_jwt(
             FINDER_RESP_TYPE,
-            zone_id_string(&zone_boot_config).as_str(),
+            zone_id_string(&zone_document).as_str(),
             "ood2",
             Some("ood1"),
             42,
@@ -1068,7 +1057,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         let verified = verify_finder_response_identity(
             jwt.as_str(),
             42,
-            &zone_boot_config,
+            &zone_document,
             &decoding_key(OWNER_PUBLIC_X),
         )
         .unwrap();
@@ -1077,11 +1066,11 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
 
     #[test]
     fn finder_request_accepts_non_ood_zone_device() {
-        let zone_boot_config = test_zone_boot_config();
+        let zone_document = test_zone_document();
         let node_doc_jwt = signed_device_doc_with("node1", OOD2_PUBLIC_X, "node", None);
         let jwt = build_finder_identity_jwt(
             FINDER_REQ_TYPE,
-            zone_id_string(&zone_boot_config).as_str(),
+            zone_id_string(&zone_document).as_str(),
             "node1",
             Some(FINDER_TARGET_ALL),
             42,
@@ -1093,7 +1082,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         let verified = verify_finder_request_identity(
             jwt.as_str(),
             42,
-            &zone_boot_config,
+            &zone_document,
             &decoding_key(OWNER_PUBLIC_X),
         )
         .unwrap();
@@ -1102,11 +1091,11 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
 
     #[test]
     fn finder_response_rejects_non_ood_device() {
-        let zone_boot_config = test_zone_boot_config();
+        let zone_document = test_zone_document();
         let node_doc_jwt = signed_device_doc_with("node1", OOD2_PUBLIC_X, "node", None);
         let jwt = build_finder_identity_jwt(
             FINDER_RESP_TYPE,
-            zone_id_string(&zone_boot_config).as_str(),
+            zone_id_string(&zone_document).as_str(),
             "node1",
             Some("ood1"),
             42,
@@ -1118,7 +1107,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         let err = verify_finder_response_identity(
             jwt.as_str(),
             42,
-            &zone_boot_config,
+            &zone_document,
             &decoding_key(OWNER_PUBLIC_X),
         )
         .unwrap_err();
@@ -1130,7 +1119,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         ensure_name_client_for_tests().await;
         let temp_dir = std::env::temp_dir().join(unique_test_id("buckyos-finder-cache-load"));
         let cache_path = temp_dir.join(FINDER_CACHE_FILE);
-        let zone_boot_config = test_zone_boot_config();
+        let zone_document = test_zone_document();
         let peer_did = DID::new("finder-test", unique_test_id("cached-ood2").as_str());
         let ood1_doc_jwt = signed_device_doc("ood1", OOD1_PUBLIC_X);
         let ood2_doc_jwt =
@@ -1153,7 +1142,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
 
         save_finder_cache(
             cache_path.as_path(),
-            zone_id_string(&zone_boot_config).as_str(),
+            zone_id_string(&zone_document).as_str(),
             [&node],
         )
         .unwrap();
@@ -1164,7 +1153,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         let client = NodeFinderClient::new_for_zone(
             ood1_doc_jwt,
             encoding_key(OOD1_PRIVATE_KEY),
-            zone_boot_config,
+            zone_document,
             decoding_key(OWNER_PUBLIC_X),
         )
         .unwrap()
@@ -1185,7 +1174,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
     fn finder_cache_round_trip_keeps_verified_nodes() {
         let temp_dir = std::env::temp_dir().join(unique_test_id("buckyos-finder-test"));
         let cache_path = temp_dir.join(FINDER_CACHE_FILE);
-        let zone_boot_config = test_zone_boot_config();
+        let zone_document = test_zone_document();
         let ood2_doc_jwt = signed_device_doc("ood2", OOD2_PUBLIC_X);
         let ood2_doc =
             decode_device_doc(ood2_doc_jwt.as_str(), &decoding_key(OWNER_PUBLIC_X)).unwrap();
@@ -1207,13 +1196,13 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
 
         save_finder_cache(
             cache_path.as_path(),
-            zone_id_string(&zone_boot_config).as_str(),
+            zone_id_string(&zone_document).as_str(),
             [&node],
         )
         .unwrap();
         let cached = load_valid_cache_entries(
             cache_path.as_path(),
-            &zone_boot_config,
+            &zone_document,
             &decoding_key(OWNER_PUBLIC_X),
             FINDER_CACHE_TTL_SECS,
         )

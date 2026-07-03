@@ -4,6 +4,11 @@
 use ::kRPC::{kRPC, RPCContext};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
+use name_lib::{
+    DID, DIDDocumentTrait, EncodedDocument, NSError, NSResult, VerifyHubInfo, ZoneBootDocument,
+    ZoneDocument,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use thiserror::Error;
 
@@ -14,6 +19,64 @@ use crate::KVAction;
 
 const CONFIG_CACHE_TIME: u64 = 10; //10s
 type ConfigCache = HashMap<String, (String, u64, u64)>;
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub struct ZoneConfig {
+    pub zone_document: String, // jwt or json-ld document
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_repo_base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify_hub_info: Option<VerifyHubInfo>,
+}
+
+impl ZoneConfig {
+    pub fn new(zone_document: String) -> Self {
+        Self {
+            zone_document,
+            docker_repo_base_url: None,
+            verify_hub_info: None,
+        }
+    }
+
+    pub fn from_zone_document(
+        zone_document: &ZoneDocument,
+        verify_hub_info: Option<VerifyHubInfo>,
+    ) -> NSResult<Self> {
+        let mut zone_document_value = serde_json::to_value(zone_document)
+            .map_err(|err| NSError::Failed(format!("encode zone document failed: {}", err)))?;
+        if let Some(zone_document_object) = zone_document_value.as_object_mut() {
+            zone_document_object.remove("docker_repo_base_url");
+            zone_document_object.remove("verify_hub_info");
+        }
+        let zone_document = serde_json::to_string(&zone_document_value)
+            .map_err(|err| NSError::Failed(format!("encode zone document failed: {}", err)))?;
+        Ok(Self {
+            zone_document,
+            docker_repo_base_url: None,
+            verify_hub_info,
+        })
+    }
+
+    pub fn zone_document(&self) -> NSResult<ZoneDocument> {
+        let encoded = EncodedDocument::from_str(self.zone_document.clone())?;
+        if let Ok(zone_document) = ZoneDocument::decode(&encoded, None) {
+            return Ok(zone_document);
+        }
+
+        let zone_boot_document = ZoneBootDocument::decode(&encoded, None)?;
+        let zone_id = zone_boot_document
+            .id
+            .clone()
+            .ok_or_else(|| NSError::InvalidParam("zone boot document id is missing".to_string()))?;
+        let owner_key = zone_boot_document.owner_key.clone().ok_or_else(|| {
+            NSError::InvalidParam("zone boot document owner_key is missing".to_string())
+        })?;
+        let owner = zone_boot_document.owner.clone().unwrap_or_else(DID::undefined);
+        let mut zone_document = ZoneDocument::new(zone_id, owner, owner_key);
+        zone_document.init_by_boot_document(&zone_boot_document, &self.zone_document);
+        Ok(zone_document)
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum SystemConfigError {

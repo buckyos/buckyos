@@ -120,25 +120,26 @@ ZoneBootConfig
 
 ### ZoneConfig
 
-`ZoneConfig` 是 system-config 中 `boot/config` 的核心内容。当前由 scheduler `--boot` 基于 `ZoneBootConfig` 和 `start_config.json` 生成。
+`ZoneConfig` 是 system-config 中 `boot/config` 的内部配置。当前由 scheduler `--boot` 基于 `ZoneBootConfig` 和 `start_config.json` 生成，并通过 `zone_document` 字段承载可公开的 Zone DID Document / boot document。
 
 当前代码直接依赖的关键字段包括：
 
 ```text
 ZoneConfig
-  id                         # zone DID
-  owner                      # owner DID
-  owner key / default key
-  oods / gateway info
-  sn / sn_url
-  verify_hub_info.public_key
-  boot_jwt / boot-derived fields
+  zone_document              # boot JWT/JSON or full ZoneDocument JWT/JSON
+    id                       # zone DID
+    owner                    # owner DID
+    owner key / default key
+    oods / gateway info
+    sn / sn_url
+  verify_hub_info.public_key # internal trust key for verify-hub
+  docker_repo_base_url       # internal deployment setting
 ```
 
 它承担两类职责：
 
-- **连接职责**：描述 Zone 当前有哪些 OOD / gateway / SN，提供建立 RTCP / gateway 访问的入口。
-- **信任职责**：system-config 和 runtime 会从 `boot/config` 刷新 trust keys，包括 owner key、verify-hub public key 和本机 Device key。
+- **连接职责**：`zone_document` 描述 Zone 当前有哪些 OOD / gateway / SN，提供建立 RTCP / gateway 访问的入口。
+- **信任职责**：system-config 和 runtime 会从 `boot/config` 刷新 trust keys；owner key 来自 `zone_document`，verify-hub public key 来自内部 `ZoneConfig`。
 
 因此，`ZoneConfig` 不只是网络配置。它是 Zone 启动后的可信控制面根之一。
 
@@ -803,7 +804,6 @@ did:bns:bob在 OwnerConfig中配置 face url (cyfs:///$objid) 和 binded zone: d
 
 通过 https://bob.zhicong.me/.well-known/doc.json 也能得到一个非上链的profile(UserInfo),可以定义更多的实时信息
 如果通过 http://bob.zhicong.me/.well-known/doc.json 访问，这个就必须是一个JWT（有必要的签名），密钥用的是 key@zone
-
 
 
 

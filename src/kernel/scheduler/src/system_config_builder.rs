@@ -11,7 +11,7 @@ use buckyos_api::{
     GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SelectorType, ServiceExposeConfig,
     ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState,
     ServiceNode, ServiceState, SubPkgDesc, UserContactSettings, UserPrivateProfile, UserProfile,
-    UserSettings, UserState, UserTunnelBinding, UserType, OPENDAN_SERVICE_PORT,
+    UserSettings, UserState, UserTunnelBinding, UserType, ZoneConfig, OPENDAN_SERVICE_PORT,
     OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
 use buckyos_api::{load_local_device_private_key, load_local_node_identity_config};
@@ -24,10 +24,7 @@ use buckyos_api::{
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
-use name_lib::{
-    generate_ed25519_key_pair, AgentDocument, OwnerDocument, VerifyHubInfo, ZoneBootDocument,
-    ZoneDocument, DID,
-};
+use name_lib::{generate_ed25519_key_pair, AgentDocument, OwnerDocument, VerifyHubInfo, DID};
 use package_lib::PackageId;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -541,30 +538,21 @@ impl SystemConfigBuilder {
 
     pub fn add_boot_config(
         &mut self,
-        config: &StartConfigSummary,
+        _config: &StartConfigSummary,
         verify_hub_public_key: &Jwk,
-        zone_boot_config: &ZoneBootDocument,
+        zone_document: &str,
     ) -> Result<&mut Self> {
         let public_key_value = verify_hub_public_key.clone();
-        //TODO: add zoone did here:
-        let zone_did = DID::from_str(&config.zone_name)?;
-        let mut zone_config = ZoneDocument::new(
-            zone_did,
-            DID::new("bns", &config.user_name),
-            config.public_key.clone(),
-        );
-
         let verify_hub_info = VerifyHubInfo {
             public_key: public_key_value,
         };
-        let boot_jwt = config.ood_jwt.clone().unwrap_or_default();
-        zone_config.init_by_boot_document(zone_boot_config, &boot_jwt);
-        zone_config.verify_hub_info = Some(verify_hub_info);
+        let mut boot_config = ZoneConfig::new(zone_document.to_string());
+        boot_config.verify_hub_info = Some(verify_hub_info);
         info!(
-            "add_boot_config: zone_config: {}",
-            serde_json::to_string_pretty(&zone_config)?
+            "add_boot_config: boot_config: {}",
+            serde_json::to_string_pretty(&boot_config)?
         );
-        self.insert_json("boot/config", &zone_config)?;
+        self.insert_json("boot/config", &boot_config)?;
         Ok(self)
     }
 

@@ -17,7 +17,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use ::kRPC::*;
-use buckyos_api::build_current_rbac_config;
+use buckyos_api::{build_current_rbac_config, ZoneConfig};
 use buckyos_http_server::*;
 use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
@@ -660,11 +660,14 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
         if zone_config.is_some() {
             let zone_config_str = zone_config.unwrap();
             //info!("boot_info: {}",boot_info_str);
-            let zone_config: ZoneDocument =
-                serde_json::from_str(&zone_config_str).map_err(|err| {
-                    error!("Failed to parse zone config from boot/config: {}", err);
-                    RPCErrors::ReasonError(err.to_string())
-                })?;
+            let zone_config: ZoneConfig = serde_json::from_str(&zone_config_str).map_err(|err| {
+                error!("Failed to parse zone config from boot/config: {}", err);
+                RPCErrors::ReasonError(err.to_string())
+            })?;
+            let zone_document = zone_config.zone_document().map_err(|err| {
+                error!("Failed to parse zone document from boot/config: {}", err);
+                RPCErrors::ReasonError(err.to_string())
+            })?;
 
             if zone_config.verify_hub_info.is_some() {
                 let verify_hub_info = zone_config.verify_hub_info.as_ref().unwrap();
@@ -685,9 +688,9 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
             } else {
                 error!("Missing verify_hub_info from zone_config");
             }
-            if zone_config.owner.is_valid() {
-                let owner_did = zone_config.owner.clone();
-                if let Some(owner_key) = zone_config.get_default_key() {
+            if zone_document.owner.is_valid() {
+                let owner_did = zone_document.owner.clone();
+                if let Some(owner_key) = zone_document.get_default_key() {
                     let owner_public_key = DecodingKey::from_jwk(&owner_key).map_err(|err| {
                         error!("Failed to parse owner_public_key from zone_config: {}", err);
                         RPCErrors::ReasonError(err.to_string())

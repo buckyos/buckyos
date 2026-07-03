@@ -15,7 +15,7 @@ use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteC
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
     SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState, SystemConfigClient,
-    UserSettings, UserState, UserType as ApiUserType, ZoneGatewaySettings,
+    UserSettings, UserState, UserType as ApiUserType, ZoneConfig, ZoneGatewaySettings,
     CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
@@ -303,8 +303,9 @@ pub(crate) fn schedule_action_to_tx_actions(
         return Err(anyhow::anyhow!("zone_config not found"));
     }
     let zone_config = zone_config.unwrap();
-    let zone_config: ZoneDocument = serde_json::from_str(zone_config.as_str())?;
-    let zone_gateway = zone_config.get_default_zone_gateway();
+    let zone_config: ZoneConfig = serde_json::from_str(zone_config.as_str())?;
+    let zone_document = zone_config.zone_document()?;
+    let zone_gateway = zone_document.get_default_zone_gateway();
     match action {
         SchedulerAction::ChangeNodeStatus(node_id, node_status) => {
             let key = format!("nodes/{}/config", node_id);
@@ -530,18 +531,22 @@ fn should_skip_app_service_info_deletion(
     Ok(is_legacy_docker_app_service(&app_spec) && is_service_info_empty)
 }
 
-pub fn get_zone_config(input_system_config: &HashMap<String, String>) -> Result<ZoneDocument> {
+pub fn get_boot_config(input_system_config: &HashMap<String, String>) -> Result<ZoneConfig> {
     let key = "boot/config";
     let zone_config = input_system_config.get(key);
     if zone_config.is_none() {
         return Err(anyhow::anyhow!("zone_config not found"));
     }
     let zone_config = zone_config.unwrap();
-    let zone_config: ZoneDocument = serde_json::from_str(zone_config.as_str()).map_err(|e| {
-        error!("ZoneDocument::from_str failed: {:?}", e);
+    let zone_config: ZoneConfig = serde_json::from_str(zone_config.as_str()).map_err(|e| {
+        error!("ZoneConfig::from_str failed: {:?}", e);
         e
     })?;
     Ok(zone_config)
+}
+
+pub fn get_zone_config(input_system_config: &HashMap<String, String>) -> Result<ZoneDocument> {
+    Ok(get_boot_config(input_system_config)?.zone_document()?)
 }
 
 pub fn get_zone_gateway_settings(
@@ -924,12 +929,13 @@ fn insert_trust_key(
 
 fn build_trust_keys(
     node_id: &str,
+    boot_config: &ZoneConfig,
     zone_config: &ZoneDocument,
     device_list: &HashMap<String, DeviceInfo>,
 ) -> HashMap<String, String> {
     let mut trust_key = HashMap::new();
 
-    if let Some(verify_hub_info) = zone_config.verify_hub_info.as_ref() {
+    if let Some(verify_hub_info) = boot_config.verify_hub_info.as_ref() {
         insert_trust_key(&mut trust_key, "verify-hub", &verify_hub_info.public_key);
     }
 
@@ -975,7 +981,8 @@ pub(crate) async fn update_node_gateway_info(
     scheduler_ctx: &NodeScheduler,
     input_system_config: &HashMap<String, String>,
 ) -> Result<HashMap<String, KVAction>> {
-    let zone_config = get_zone_config(input_system_config)?;
+    let boot_config = get_boot_config(input_system_config)?;
+    let zone_config = boot_config.zone_document()?;
     let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
     let device_list = get_device_list(input_system_config)?;
     let zone_host = zone_config.id.to_host_name();
@@ -991,7 +998,7 @@ pub(crate) async fn update_node_gateway_info(
         node_route_map: build_node_route_map(node_id, &zone_host, &device_list),
         routes: forward_plan.routes,
         did_ip_hints: forward_plan.did_ip_hints,
-        trust_key: build_trust_keys(node_id, &zone_config, &device_list),
+        trust_key: build_trust_keys(node_id, &boot_config, &zone_config, &device_list),
     };
 
     for (service_info_id, service_info) in scheduler_ctx.service_infos.iter() {
@@ -1642,8 +1649,6 @@ mod tests {
     fn create_test_zone_config() -> ZoneDocument {
         let (_, owner_key_jwk) = generate_ed25519_key_pair();
         let owner_key_jwk: Jwk = serde_json::from_value(owner_key_jwk).unwrap();
-        let (_, verify_hub_key_jwk) = generate_ed25519_key_pair();
-        let verify_hub_key_jwk: Jwk = serde_json::from_value(verify_hub_key_jwk).unwrap();
 
         let mut zone_config = ZoneDocument::new(
             DID::new("web", "test.buckyos.io"),
@@ -1654,10 +1659,26 @@ mod tests {
             OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
             OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
         ];
-        zone_config.verify_hub_info = Some(VerifyHubInfo {
-            public_key: verify_hub_key_jwk,
-        });
         zone_config
+    }
+
+    fn create_test_verify_hub_info() -> VerifyHubInfo {
+        VerifyHubInfo {
+            public_key: serde_json::from_value(serde_json::json!({
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "5WPZHtFb3k_vYXr3Oq97MOPrIC7rekoCuGRPCOYYgSU"
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn create_test_boot_config(zone_config: &ZoneDocument) -> ZoneConfig {
+        ZoneConfig::from_zone_document(zone_config, Some(create_test_verify_hub_info())).unwrap()
+    }
+
+    fn serialize_test_boot_config(zone_config: &ZoneDocument) -> String {
+        serde_json::to_string(&create_test_boot_config(zone_config)).unwrap()
     }
 
     fn create_test_app_spec() -> AppServiceSpec {
@@ -1774,6 +1795,7 @@ mod tests {
     ) -> NodeGatewayInfo {
         let zone_host = zone_config.id.to_host_name();
         let device_list = get_device_list(input_system_config).unwrap();
+        let boot_config = create_test_boot_config(zone_config);
         let control_panel_selector = HashMap::from([(
             "ood1".to_string(),
             NodeGatewaySelectorTarget {
@@ -1830,7 +1852,7 @@ mod tests {
             node_route_map: build_node_route_map("ood1", &zone_host, &device_list),
             routes: forward_plan.routes,
             did_ip_hints: forward_plan.did_ip_hints,
-            trust_key: build_trust_keys("ood1", zone_config, &device_list),
+            trust_key: build_trust_keys("ood1", &boot_config, zone_config, &device_list),
         }
     }
 
@@ -1844,7 +1866,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -1896,7 +1918,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -1965,7 +1987,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2009,7 +2031,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2051,7 +2073,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2096,7 +2118,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2124,7 +2146,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2202,7 +2224,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
 
         let mut scheduler_ctx = NodeScheduler::new_empty(1);
@@ -2276,7 +2298,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
 
         let mut scheduler_ctx = NodeScheduler::new_empty(1);
@@ -2341,7 +2363,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
 
         let mut scheduler_ctx = NodeScheduler::new_empty(1);
@@ -2412,7 +2434,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "users/alice/apps/files/spec".to_string(),
@@ -2490,7 +2512,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2538,7 +2560,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2580,7 +2602,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2628,7 +2650,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2709,7 +2731,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2757,7 +2779,7 @@ mod tests {
         let device_ood1 = create_test_device_info("ood1", None);
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2829,7 +2851,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "users/alice/apps/portal/spec".to_string(),
@@ -2871,7 +2893,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2915,7 +2937,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2948,7 +2970,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),

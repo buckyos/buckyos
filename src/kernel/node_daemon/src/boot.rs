@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
-use name_lib::{DeviceDocument, ZoneBootDocument};
+use name_lib::{DeviceDocument, ZoneDocument};
 use serde_json::{json, Value};
 
 use crate::finder::{DiscoveredNode, NodeFinderClient};
@@ -25,10 +25,21 @@ pub enum NodeRole {
 }
 
 impl NodeRole {
-    pub fn from_zone_boot_config(zone_boot_config: &ZoneBootDocument, device_name: &str) -> Self {
-        if zone_boot_config.device_is_ood(device_name) {
+    pub fn from_zone_document(zone_document: &ZoneDocument, device_name: &str) -> Self {
+        let device_node_type = zone_document
+            .oods
+            .iter()
+            .find(|ood| ood.name == device_name)
+            .map(|ood| &ood.node_type);
+        if device_node_type
+            .map(|node_type| node_type.is_ood())
+            .unwrap_or(false)
+        {
             NodeRole::Ood
-        } else if zone_boot_config.device_is_gateway(device_name) {
+        } else if device_node_type
+            .map(|node_type| node_type.is_gateway())
+            .unwrap_or(false)
+        {
             NodeRole::ZoneGateway
         } else {
             NodeRole::Node
@@ -53,7 +64,7 @@ impl NodeRole {
 pub async fn discover_oods_in_lan(
     this_device_jwt: String,
     device_private_key: EncodingKey,
-    zone_boot_config: ZoneBootDocument,
+    zone_document: ZoneDocument,
     owner_public_key: DecodingKey,
     role: NodeRole,
 ) -> HashMap<String, DiscoveredNode> {
@@ -63,13 +74,13 @@ pub async fn discover_oods_in_lan(
         NodeRole::Ood => NodeFinderClient::new_for_zone(
             this_device_jwt,
             device_private_key,
-            zone_boot_config,
+            zone_document,
             owner_public_key,
         ),
         NodeRole::ZoneGateway | NodeRole::Node => NodeFinderClient::new_as_lan_client(
             this_device_jwt,
             device_private_key,
-            zone_boot_config,
+            zone_document,
             owner_public_key,
         ),
     };
@@ -118,11 +129,11 @@ pub async fn discover_oods_in_lan(
 pub fn build_boot_node_gateway_info(
     this_node_id: &str,
     zone_host: &str,
-    zone_boot_config: &ZoneBootDocument,
+    zone_document: &ZoneDocument,
     discovered_oods: &HashMap<String, DiscoveredNode>,
     sn_host_name: Option<&str>,
 ) -> Value {
-    let oods_in_zone: Vec<&str> = zone_boot_config
+    let oods_in_zone: Vec<&str> = zone_document
         .oods
         .iter()
         .filter(|ood| ood.node_type.is_ood() && ood.name != this_node_id)
@@ -147,7 +158,7 @@ pub fn build_boot_node_gateway_info(
             false,
             true,
             &direct_url,
-            "zone_boot_config",
+            "zone_document",
             None,
             evidence_for_direct(discovered_oods.get(*ood_name)),
         )];
@@ -161,7 +172,7 @@ pub fn build_boot_node_gateway_info(
                 true,
                 true,
                 &relay_url,
-                "zone_boot_config",
+                "zone_document",
                 Some(sn),
                 None,
             ));
@@ -171,7 +182,7 @@ pub fn build_boot_node_gateway_info(
     }
 
     // 非 OOD ZoneGateway 也是 boot 阶段需要 keep_tunnel 的目标之一
-    for ood in zone_boot_config.oods.iter() {
+    for ood in zone_document.oods.iter() {
         if ood.name == this_node_id {
             continue;
         }
@@ -193,7 +204,7 @@ pub fn build_boot_node_gateway_info(
                 false,
                 true,
                 &direct_url,
-                "zone_boot_config",
+                "zone_document",
                 None,
                 None,
             )]
@@ -204,7 +215,7 @@ pub fn build_boot_node_gateway_info(
     // OOD 上的 system_config 服务。selector 指向所有 OOD；本节点是 OOD 时，
     // forward_to_service 会先检测 THIS_NODE_ID 命中，走本机 127.0.0.1。
     let mut sysconfig_selector = serde_json::Map::new();
-    for ood in zone_boot_config.oods.iter() {
+    for ood in zone_document.oods.iter() {
         if !ood.node_type.is_ood() {
             continue;
         }
@@ -310,7 +321,7 @@ fn format_relay_rtcp_url(
 pub fn build_keep_tunnel_targets(
     role: NodeRole,
     device_doc: &DeviceDocument,
-    zone_boot_config: &ZoneBootDocument,
+    zone_document: &ZoneDocument,
     zone_host: &str,
     sn_host_name: Option<&str>,
 ) -> Vec<String> {
@@ -331,7 +342,7 @@ pub fn build_keep_tunnel_targets(
     // scheduler 接管后可生成包含真实端口的 routes。
     match role {
         NodeRole::Ood | NodeRole::ZoneGateway => {
-            for ood in zone_boot_config.oods.iter() {
+            for ood in zone_document.oods.iter() {
                 if ood.name == device_doc.name {
                     continue;
                 }
@@ -345,7 +356,7 @@ pub fn build_keep_tunnel_targets(
         NodeRole::Node => {
             // 普通 Node：与至少 1 个、最多 2 个 OOD 维持 keep_tunnel，
             // 让"ZoneGateway 失效时也能走 OOD"。
-            for ood in zone_boot_config
+            for ood in zone_document
                 .oods
                 .iter()
                 .filter(|ood| ood.node_type.is_ood())

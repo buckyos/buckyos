@@ -32,10 +32,10 @@ pub struct ZoneBootConfig {
 ## ZoneBootConfig与ZoneConfig的区别
 
 - ZoneBootConfig是对ZoneConfig的极致压缩，100%保存在Zone外
-- ZoneConfig则通常是Zone启动后，由ZoneProvider实现
-- Zone间通信一般只依赖 Remote ZoneConfig
+- ZoneConfig 是 Zone 启动后写入 system-config 的内部配置，包含可公开的 `zone_document` 以及内部字段
+- Zone 间通信一般只应依赖公开的 ZoneDocument / DID Document
 
-99%的情况下，都不应该直接使用ZoneBootConfig,而是使用基于DNS TXT Record 转换得到的ZoneConfig
+99%的情况下，都不应该直接使用 ZoneBootConfig，而是使用基于 DNS TXT Record 转换得到的 ZoneDocument；内部服务读取 `boot/config` 时先解析 ZoneConfig，再解包其中的 `zone_document`。
 
 ## ZoneBootConfig的 首要目标：确保系统能安全引导 (Secure Boot)
 OOD的安全启动引导流程如下（实现位置：`src/kernel/node_daemon/src/node_daemon.rs` 的 `looking_zone_boot_config`）：
@@ -81,24 +81,17 @@ pub fn add_boot_config(
     config: &StartConfigSummary,
     verify_hub_public_key: &Jwk,
     zone_boot_config: &ZoneBootConfig,
+    zone_document: &str,
 ) -> Result<&mut Self> {
-    let public_key_value = verify_hub_public_key.clone();
-    let zone_did = DID::from_str(&config.zone_name)?;
-    let mut zone_config = ZoneConfig::new(
-        zone_did,
-        DID::new("bns", &config.user_name),
-        config.public_key.clone(),
-    );
-
-    let verify_hub_info = VerifyHubInfo { public_key: public_key_value };
-    let boot_jwt = config.ood_jwt.clone().unwrap_or_default();
-    zone_config.init_by_boot_config(zone_boot_config, &boot_jwt);
-    zone_config.verify_hub_info = Some(verify_hub_info);
+    let mut zone_config = ZoneConfig::new(zone_document.to_string());
+    zone_config.verify_hub_info = Some(VerifyHubInfo {
+        public_key: verify_hub_public_key.clone(),
+    });
     self.insert_json("boot/config", &zone_config)?;
     Ok(self)
 }
 ```
-注：`ZoneConfig::init_by_boot_config`会把`oods`、`sn`、`exp`、`owner`、`owner_key`等字段拷贝到ZoneConfig，并保留`boot_jwt`原文用于后续校验（见name-lib `zone.rs init_by_boot_config`）。
+注：`zone_document` 可解包为 `ZoneDocument` / DID Document，内部 `verify_hub_info` 不再放入公开文档。
 
 ### 非OOD(Node/Client)的启动流程(与ZoneBootConfig无关) `部分未实现`
 1. Node启动时系统通常已经启动完成，因此Node启动的核心目标是连接上SystemConfig Service

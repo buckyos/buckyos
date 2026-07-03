@@ -797,7 +797,7 @@ mod tests {
     use jsonwebtoken::jwk::Jwk;
     use name_lib::{
         generate_ed25519_key_pair, get_x_from_jwk, DeviceDocument, DeviceNodeType,
-        OODDescriptionString, VerifyHubInfo, DID,
+        OODDescriptionString, DID,
     };
     use serde_json::json;
 
@@ -873,8 +873,6 @@ mod tests {
     fn create_test_zone_config() -> ZoneDocument {
         let (_, owner_key_jwk) = generate_ed25519_key_pair();
         let owner_key_jwk: Jwk = serde_json::from_value(owner_key_jwk).unwrap();
-        let (_, verify_hub_key_jwk) = generate_ed25519_key_pair();
-        let verify_hub_key_jwk: Jwk = serde_json::from_value(verify_hub_key_jwk).unwrap();
 
         let mut zone_config = ZoneDocument::new(
             DID::new("web", "test.buckyos.io"),
@@ -885,9 +883,6 @@ mod tests {
             OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
             OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
         ];
-        zone_config.verify_hub_info = Some(VerifyHubInfo {
-            public_key: verify_hub_key_jwk,
-        });
         zone_config
     }
 
