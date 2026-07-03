@@ -97,17 +97,11 @@ impl ActiveServer {
         }
     }
 
-    async fn update_zone_boot_cache(zone_did: &DID, zone_boot_config: &ZoneBootDocument) {
-        let zone_boot_doc = match serde_json::to_value(zone_boot_config) {
-            Ok(doc) => EncodedDocument::JsonLd(doc),
-            Err(err) => {
-                warn!(
-                    "serialize zone boot document for cache failed, zone_did={:?}, err={}",
-                    zone_did, err
-                );
-                return;
-            }
-        };
+    // cache 里存 owner 签名的 jwt 原文而不是 JsonLd：boot 阶段的 resolve 纪律
+    // 只接受能用本地 owner key 验签的 Jwt candidate（见 zone_boot_resolve.rs），
+    // 这份 cache 是激活后首次 boot 在 DNS 记录尚未可查时的关键回答来源。
+    async fn update_zone_boot_cache(zone_did: &DID, zone_boot_config_jwt: &str) {
+        let zone_boot_doc = EncodedDocument::Jwt(zone_boot_config_jwt.to_string());
 
         if let Err(err) =
             update_did_cache(zone_did.clone(), Some(DidDocType::Boot), zone_boot_doc).await
@@ -858,10 +852,10 @@ impl ActiveServer {
                 )));
             }
         };
-        let zone_boot_config = ZoneBootDocument::decode(&zone_boot_doc, None).map_err(|err| {
+        ZoneBootDocument::decode(&zone_boot_doc, None).map_err(|err| {
             RPCErrors::ReasonError(format!("Failed to decode zone boot config: {}", err))
         })?;
-        Self::update_zone_boot_cache(&zone_did, &zone_boot_config).await;
+        Self::update_zone_boot_cache(&zone_did, boot_config_jwt).await;
 
         info!("ActiveByWallet wrote device identity files to node_identity.json, identity root and security root");
 
@@ -1231,7 +1225,7 @@ impl ActiveServer {
             .await
             .map_err(|_| RPCErrors::ReasonError("Failed to write start params".to_string()))?;
 
-        Self::update_zone_boot_cache(&zone_did, &zone_boot_config).await;
+        Self::update_zone_boot_cache(&zone_did, zone_boot_config_jwt.as_str()).await;
 
         info!("DoAction wrote device identity files to node_identity.json, identity root and security root");
 
