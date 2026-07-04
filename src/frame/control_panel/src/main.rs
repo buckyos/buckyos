@@ -39,7 +39,7 @@ use sysinfo::{Disks, Networks};
 use tokio::sync::{Mutex, RwLock};
 
 // RPC docs live under doc/dashboard. UI endpoints use "ui.*" as canonical names;
-// "main/layout/dashboard" are kept as legacy aliases.
+// "main/dashboard" are kept as legacy aliases.
 
 pub(crate) fn bytes_to_gb(bytes: u64) -> f64 {
     (bytes as f64) / 1024.0 / 1024.0 / 1024.0
@@ -482,131 +482,6 @@ impl ControlPanelServer {
             .map(|value| value.to_string())
     }
 
-    async fn resolve_profile_name_from_req(req: &RPCRequest) -> Option<String> {
-        if let Ok(runtime) = get_buckyos_api_runtime() {
-            let zone_did = runtime.zone_id.to_string();
-            if let Some(zone_name) = Self::parse_zone_name_from_did(zone_did.as_str()) {
-                return Some(zone_name);
-            }
-
-            if let Ok(client) = runtime.get_system_config_client().await {
-                if let Ok(boot_config_str) = client.get("boot/config").await {
-                    if let Ok(boot_config) =
-                        serde_json::from_str::<Value>(boot_config_str.value.as_str())
-                    {
-                        if let Some(zone_id) =
-                            boot_config.get("id").and_then(|value| value.as_str())
-                        {
-                            if let Some(zone_name) = Self::parse_zone_name_from_did(zone_id) {
-                                return Some(zone_name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let token_str = req
-            .token
-            .as_ref()
-            .cloned()
-            .or_else(|| Self::param_str(req, "session_token"));
-
-        if let Some(token_str) = token_str {
-            if let Ok(token) = RPCSessionToken::from_string(token_str.as_str()) {
-                if let Some(subject) = token.sub {
-                    let subject = subject.trim();
-                    if !subject.is_empty() {
-                        return Some(subject.to_string());
-                    }
-                }
-            }
-        }
-
-        get_buckyos_api_runtime()
-            .ok()
-            .and_then(|runtime| {
-                runtime
-                    .user_config
-                    .as_ref()
-                    .map(|cfg| cfg.name.clone())
-                    .or_else(|| runtime.user_id.clone())
-                    .or_else(|| runtime.get_owner_user_id())
-            })
-            .and_then(|name| {
-                let name = name.trim().to_string();
-                if name.is_empty() {
-                    None
-                } else {
-                    Some(name)
-                }
-            })
-    }
-
-    fn resolve_device_name_from_req(req: &RPCRequest) -> Option<String> {
-        if let Ok(runtime) = get_buckyos_api_runtime() {
-            if let Some(device_name) = runtime
-                .device_config
-                .as_ref()
-                .map(|device| device.name.clone())
-                .or_else(|| runtime.user_id.clone())
-            {
-                let trimmed = device_name.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
-            }
-        }
-
-        let token_str = req
-            .token
-            .as_ref()
-            .cloned()
-            .or_else(|| Self::param_str(req, "session_token"));
-
-        if let Some(token_str) = token_str {
-            if let Ok(token) = RPCSessionToken::from_string(token_str.as_str()) {
-                if let Some(subject) = token.sub {
-                    let subject = subject.trim();
-                    if !subject.is_empty() {
-                        return Some(subject.to_string());
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    async fn handle_layout(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        let profile_name = Self::resolve_profile_name_from_req(&req)
-            .await
-            .unwrap_or_else(|| "Admin User".to_string());
-        let profile_email = if let Some(device_name) = Self::resolve_device_name_from_req(&req) {
-            format!("{} @ {}", profile_name, device_name)
-        } else if profile_name.contains('@') {
-            profile_name.clone()
-        } else {
-            "admin@buckyos.io".to_string()
-        };
-
-        let layout = json!({
-            "profile": {
-                "name": profile_name,
-                "email": profile_email,
-                "avatar": "https://i.pravatar.cc/64?img=12"
-            },
-            "systemStatus": {
-                "label": "System Online",
-                "state": "online",
-                "networkPeers": 10,
-                "activeSessions": 23
-            }
-        });
-
-        Ok(RPCResponse::new(RPCResult::Success(layout), req.seq))
-    }
-
     fn normalize_control_panel_locale(value: Option<&str>) -> String {
         let normalized = value.unwrap_or("en").trim().to_ascii_lowercase();
         match normalized.as_str() {
@@ -940,7 +815,6 @@ impl RPCHandler for ControlPanelServer {
         match req.method.as_str() {
             // Core / UI bootstrap
             "main" | "ui.main" => self.handle_main(req).await,
-            "layout" | "ui.layout" => self.handle_layout(req).await,
 
             "ui.locale.get" => self.handle_ui_locale_get(req).await,
             "ui.locale.set" => self.handle_ui_locale_set(req).await,
