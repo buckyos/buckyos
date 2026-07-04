@@ -49,6 +49,48 @@ lazy_static! {
 }
 
 const INTERNAL_META_PREFIX: &str = "__meta/";
+const RESOLVER_CACHE_KEY_PREFIX: &str = "resolver/cache/";
+
+// resolver/cache/* 是 zone 解析控制面（zone_did_resolver 消费的 override 登记，
+// 见 zone_did_resolver.rs 文件头）。写权限由 RBAC allow-list 承担（kernel/system
+// 角色与 root/su_admin），这里补需求要求的审计日志；强负状态（revoked/tombstoned/
+// missing）会屏蔽该名字的后续解析，用 warn 级别突出。
+fn value_carries_strong_negative_status(value: &str) -> bool {
+    serde_json::from_str::<Value>(value)
+        .ok()
+        .and_then(|v| {
+            v.get("document_status")
+                .and_then(|s| s.as_str())
+                .map(|s| matches!(s, "revoked" | "tombstoned" | "missing"))
+        })
+        .unwrap_or(false)
+}
+
+fn audit_resolver_cache_write(
+    op: &str,
+    real_key_path: &str,
+    value: Option<&str>,
+    userid: &str,
+    appid: &str,
+) {
+    if !real_key_path.starts_with(RESOLVER_CACHE_KEY_PREFIX) {
+        return;
+    }
+    if value
+        .map(value_carries_strong_negative_status)
+        .unwrap_or(false)
+    {
+        warn!(
+            "AUDIT resolver-cache {} (strong negative document_status): key={} userid={} appid={}",
+            op, real_key_path, userid, appid
+        );
+    } else {
+        info!(
+            "AUDIT resolver-cache {}: key={} userid={} appid={}",
+            op, real_key_path, userid, appid
+        );
+    }
+}
 
 fn strip_config_key_prefix(key_path: &str) -> &str {
     let mut key = key_path.trim_start_matches(SYS_CONFIG_URI_PERFIX);
@@ -193,6 +235,7 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
 
     //do business logic
+    audit_resolver_cache_write("set", real_key_path.as_str(), Some(new_value), userid, appid);
     let store = SYS_STORE.lock().await;
     info!("Set key:[{}], value_len={}", key, new_value.len());
     store
@@ -255,6 +298,7 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //do business logic
+    audit_resolver_cache_write("create", real_key_path.as_str(), Some(new_value), userid, appid);
     let store = SYS_STORE.lock().await;
     info!("Create key:[{}], value_len={}", key, new_value.len());
     store
@@ -312,6 +356,7 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //do business logic
+    audit_resolver_cache_write("delete", real_key_path.as_str(), None, userid, appid);
     let store = SYS_STORE.lock().await;
     info!("Delete key:[{}]", key);
     store
@@ -373,6 +418,13 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //read and append
+    audit_resolver_cache_write(
+        "append",
+        real_key_path.as_str(),
+        Some(append_value),
+        userid,
+        appid,
+    );
     let store = SYS_STORE.lock().await;
     let result = store
         .get(real_key_path.clone())
@@ -445,6 +497,7 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     }
 
     //do business logic
+    audit_resolver_cache_write("set_by_json_path", real_key_path.as_str(), None, userid, appid);
     let store = SYS_STORE.lock().await;
     store
         .set_by_path(real_key_path, String::from(json_path), &new_value)
@@ -579,6 +632,13 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
                 )))
             }
         };
+        audit_resolver_cache_write(
+            action_type,
+            real_key_path.as_str(),
+            action.get("value").and_then(|v| v.as_str()),
+            userid,
+            appid,
+        );
         tx_actions.insert(real_key_path.clone(), kv_action);
     }
     let mut real_main_key = None;
@@ -1293,6 +1353,21 @@ mod test {
         assert!(!should_reload_security_state(
             "obj://config/users/alice/settings"
         ));
+    }
+
+    #[test]
+    fn strong_negative_resolver_state_detection() {
+        assert!(value_carries_strong_negative_status(
+            r#"{"document_status":"revoked","updated_by":"admin"}"#
+        ));
+        assert!(value_carries_strong_negative_status(
+            r#"{"document_status":"missing"}"#
+        ));
+        assert!(!value_carries_strong_negative_status(
+            r#"{"document_status":"active"}"#
+        ));
+        assert!(!value_carries_strong_negative_status("not json"));
+        assert!(!value_carries_strong_negative_status(r#"{"other":1}"#));
     }
 
     #[test]
