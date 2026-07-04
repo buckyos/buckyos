@@ -288,19 +288,6 @@ impl BuckyOSRuntime {
     }
 
     pub async fn fill_by_env_var(&mut self) -> Result<()> {
-        // let zone_boot_config = env::var("BUCKYOS_ZONE_BOOT_CONFIG");
-        // if zone_boot_config.is_ok() {
-        //     let zone_boot_config:ZoneBootDocument = serde_json::from_str(zone_boot_config.unwrap().as_str())
-        //         .map_err(|e| {
-        //             error!("Failed to parse zone boot config: {}", e);
-        //             RPCErrors::ReasonError(format!("Failed to parse zone boot config: {}", e))
-        //         })?;
-        //     if zone_boot_config.id.is_none() {
-        //         return Err(RPCErrors::ReasonError("zone_boot_config id is not set".to_string()));
-        //     }
-
-        //     self.zone_id = zone_boot_config.id.clone().unwrap();
-        // } e
         let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
         if zone_config_str.is_ok() {
             let zone_config_str = zone_config_str.unwrap();

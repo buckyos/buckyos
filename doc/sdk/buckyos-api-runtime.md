@@ -133,7 +133,7 @@ buckyos是一个典型的多进程系统，因此为了简化配置，减少配�
 - full_app_id (owner_user_id + app_id)
 
 - zone_did,NULL,node_identiy.json
-- NULL,BUCKYOS_ZONE_BOOT_CONFIG,@DNS Txt Record
+- NULL,BUCKYOS_ZONE_DOC,node-daemon boot env
 
 - CURRENT_DEVICE_CONFIG,BUCKYOS_THIS_DEVICE,node_identiy.json (移动到cyfs-gateway-lib)
 - NULL,NULL,node_private_key.pem 设备私钥

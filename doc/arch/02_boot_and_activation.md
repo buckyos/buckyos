@@ -48,7 +48,7 @@ ZoneBootConfig 是引导阶段的“最小可信输入”，其目标是确保�
 
 实现与设计说明：
 - 设计讨论与安全边界：`new_doc/ref/notepads/再次整理zone-boot-config与zone-gateway.md`
-- scheduler 在 boot 阶段读取 `BUCKYOS_ZONE_BOOT_CONFIG` 环境变量（`src/kernel/scheduler/src/main.rs`）
+- scheduler 在 boot 阶段读取 `BUCKYOS_ZONE_DOC` 环境变量（`src/kernel/scheduler/src/main.rs`）
 
 ### 关键数据结构：ZoneBootConfig（最小字段视图）
 本仓库内 `ZoneBootConfig` 的字段定义主要来自 `name_lib`，结构体字段在 notepads 中被明确列出（以该 notepad 为准）：`new_doc/ref/notepads/再次整理zone-boot-config与zone-gateway.md`
@@ -72,7 +72,7 @@ pub struct ZoneBootConfig {
 有一个容易误解的点：
 - 设计上 ZoneBootConfig 常被描述为“JWT”；
 - node-daemon 的 `resolve_zone_document()` 会优先 `resolve_did(zone_did, "zone")` 获取完整 ZoneDocument；如果拿不到，才 `resolve_did(zone_did, "boot")` 获取 ZoneBootConfig 并转换成 ZoneDocument。
-- 当前 scheduler `--boot` 的实现是从环境变量读取并按 JSON 反序列化为 `ZoneDocument`，也就是说 `BUCKYOS_ZONE_BOOT_CONFIG` 在当前实现里是“ZoneDocument 的 JSON 字符串”，不是 ZoneBootConfig JSON，也不是 JWT 字符串（`src/kernel/scheduler/src/main.rs`）。
+- 当前 scheduler `--boot` 的实现是从环境变量读取并按 JSON 反序列化为 `ZoneDocument`，也就是说 `BUCKYOS_ZONE_DOC` 是“ZoneDocument 的 JSON 字符串”，不是 ZoneBootConfig JSON，也不是 JWT 字符串（`src/kernel/scheduler/src/main.rs`）。
 
 而这个环境变量是在 node-daemon 的启动流程里设置的（同一处还会设置 `BUCKYOS_THIS_DEVICE`）：`src/kernel/node_daemon/src/node_daemon.rs`。
 
@@ -90,7 +90,7 @@ Secure Boot 在 BuckyOS 中要解决的问题不是“单机镜像可信”，�
 ### Secure Boot Checks（从当前代码路径可见的约束点）
 这里不复述 notepad 的完整设计，只列出“能从代码直接读到的 gate / hard-fail 条件”，用于理解为什么系统会卡在 boot：
 
-- `BUCKYOS_ZONE_BOOT_CONFIG` 必须存在：scheduler `--boot` 若读不到会直接失败退出（`src/kernel/scheduler/src/main.rs`）。
+- `BUCKYOS_ZONE_DOC` 必须存在：scheduler `--boot` 若读不到会直接失败退出（`src/kernel/scheduler/src/main.rs`）。
 - `boot/config` 只能在首次 boot/init 阶段创建：scheduler `--boot` 会先 `get("boot/config")`，存在则返回错误（`src/kernel/scheduler/src/main.rs`）。
 - trust_keys 的刷新依赖 `boot/config`：scheduler `--boot` 在写入完 KV 并完成一次 `schedule_loop(true)` 后，会调用 `system_config_client.refresh_trust_keys()`（`src/kernel/scheduler/src/main.rs`）；system-config 侧会在 `handle_refresh_trust_keys()` 中读取 `boot/config` 并把 owner key / verify-hub public key 加入信任列表（`src/kernel/sys_config_service/src/main.rs`）。
 
@@ -167,7 +167,7 @@ boot/config（KV 路径 `boot/config`）是 system-config 中保存 ZoneConfig �
 - `verify_hub_info.public_key`：system-config 在 `handle_refresh_trust_keys()` 里从 `ZoneConfig` 取出并转换为 `DecodingKey`，用于信任 verify-hub token（`src/kernel/sys_config_service/src/main.rs`）。
 - `zone_document.owner` + `zone_document.get_default_key()`：system-config 会把 owner 的默认 key 加入 trust_keys，并额外加入 `root`、`$default`（`src/kernel/sys_config_service/src/main.rs`）。
 
-### 伪代码：activation -> boot scheduler -> 写入 boot/config（含 BUCKYOS_ZONE_BOOT_CONFIG）
+### 伪代码：activation -> boot scheduler -> 写入 boot/config（含 BUCKYOS_ZONE_DOC）
 这段伪代码以“控制流 + 数据依赖”为核心，刻意忽略实现细节。
 
 ```text
@@ -183,7 +183,7 @@ node_daemon_boot():                              // src/kernel/node_daemon/src/n
   device_doc    = decode(node_identity.device_doc_jwt, node_identity.owner_public_key)
   zone_document = resolve_zone_document(node_identity)         // resolve zone first, boot fallback
 
-  setenv BUCKYOS_ZONE_BOOT_CONFIG = json(zone_document)        // ZoneDocument JSON in current impl
+  setenv BUCKYOS_ZONE_DOC        = json(zone_document)
   setenv BUCKYOS_THIS_DEVICE      = json(device_doc)
 
   start system-config (3200)
@@ -193,14 +193,14 @@ node_daemon_boot():                              // src/kernel/node_daemon/src/n
     run scheduler --boot
 
 scheduler --boot:                                 // src/kernel/scheduler/src/main.rs
-  zone_document_json = env[BUCKYOS_ZONE_BOOT_CONFIG]
+  zone_document_json = env[BUCKYOS_ZONE_DOC]
   zone_document      = json_parse(zone_document_json)
 
   assert system_config.get("boot/config") == KeyNotFound
 
   init_list = render(/etc/scheduler/boot.template.toml, /etc/start_config.json)
   builder   = SystemConfigBuilder(init_list)
-  builder.add_boot_config(start_config, verify_hub_public_key, zone_boot_cfg, zone_boot_cfg_json)
+  builder.add_boot_config(start_config, verify_hub_public_key, zone_document_json)
   ... add_verify_hub/add_scheduler/add_repo_service/add_control_panel/add_node ...
   init_list = builder.build()
 

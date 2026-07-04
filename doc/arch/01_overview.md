@@ -292,11 +292,11 @@ pub struct ServiceInstallConfig {
 
 ```text
 boot_scheduler():
-  boot_jwt = env[BUCKYOS_ZONE_BOOT_CONFIG]
+  zone_doc_json = env[BUCKYOS_ZONE_DOC]
   if system_config.get("boot/config") exists:
     fail("already booted")
 
-  init_map = build_init_list_by_template(boot_jwt)
+  init_map = build_init_list_by_template(zone_doc_json)
   // includes: boot/config, services/*/spec, system/rbac/policy, verify-hub
   system_config.exec_tx(init_map)
 ```

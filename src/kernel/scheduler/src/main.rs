@@ -33,6 +33,8 @@ use std::sync::Arc;
 use system_config_agent::schedule_loop;
 use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 
+const BUCKYOS_ZONE_DOC_ENV: &str = "BUCKYOS_ZONE_DOC";
+
 async fn create_init_list_by_template(
     zone_document: &ZoneDocument,
     zone_document_str: &str,
@@ -131,14 +133,18 @@ async fn create_init_list_by_template(
 
 async fn do_boot_scheduler() -> Result<()> {
     let mut init_list: HashMap<String, String> = HashMap::new();
-    let zone_document_str = std::env::var("BUCKYOS_ZONE_BOOT_CONFIG");
+    let zone_document_str = std::env::var(BUCKYOS_ZONE_DOC_ENV);
 
     if zone_document_str.is_err() {
-        warn!("BUCKYOS_ZONE_BOOT_CONFIG is not set, use default zone config");
-        return Err(anyhow::anyhow!("BUCKYOS_ZONE_BOOT_CONFIG is not set"));
+        warn!("{} is not set", BUCKYOS_ZONE_DOC_ENV);
+        return Err(anyhow::anyhow!("{} is not set", BUCKYOS_ZONE_DOC_ENV));
     }
 
-    info!("zone_document_str:{}", zone_document_str.as_ref().unwrap());
+    info!(
+        "{}:{}",
+        BUCKYOS_ZONE_DOC_ENV,
+        zone_document_str.as_ref().unwrap()
+    );
     let zone_document_str = zone_document_str.unwrap();
     let zone_document: ZoneDocument = serde_json::from_str(&zone_document_str).unwrap();
     let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");

@@ -82,7 +82,7 @@ let node_identity = NodeIdentityConfig {
 
 ### 3.1. 一个很“实现细节但必须知道”的点：当前是 JSON 而不是 JWT
 
-很多文档会把 ZoneBootConfig 讲成“JWT”，但当前实现里，scheduler `--boot` 读取的是环境变量 `BUCKYOS_ZONE_BOOT_CONFIG`，并按 JSON 反序列化为 ZoneDocument：
+很多文档会把 ZoneBootConfig 讲成“JWT”，但当前实现里，scheduler `--boot` 读取的是环境变量 `BUCKYOS_ZONE_DOC`，并按 JSON 反序列化为 ZoneDocument：
 
 - 读取点：`src/kernel/scheduler/src/main.rs`（`do_boot_scheduler()`）
 

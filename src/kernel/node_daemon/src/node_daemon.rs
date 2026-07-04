@@ -1607,7 +1607,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     unsafe {
         std::env::set_var(
-            "BUCKYOS_ZONE_BOOT_CONFIG",
+            "BUCKYOS_ZONE_DOC",
             serde_json::to_string(&zone_document).unwrap(),
         );
         std::env::set_var(
@@ -1616,7 +1616,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         );
     }
 
-    info!("set env var BUCKYOS_ZONE_BOOT_CONFIG,BUCKYOS_THIS_DEVICE OK!");
+    info!("set env var BUCKYOS_ZONE_DOC,BUCKYOS_THIS_DEVICE OK!");
 
     let device_session_token_jwt =
         generate_device_session_token(&device_doc, &device_private_key, true)
@@ -1712,7 +1712,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         unsafe {
             std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
         }
-        info!("--------------------------------");
+        info!("-------------BuckyOS Booted-----------------");
 
         let mut runtime = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::Kernel);
         runtime.fill_policy_by_load_config().await.map_err(|err| {
