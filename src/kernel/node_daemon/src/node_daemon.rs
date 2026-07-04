@@ -37,7 +37,7 @@ use crate::boot::{
     merge_keep_tunnel_into_gateway_config, read_local_gateway_keep_tunnel_targets,
     write_boot_node_gateway_config, write_boot_node_gateway_info, NodeRole,
 };
-use crate::finder::{DiscoveredNode, NodeFinder, NodeFinderClient};
+use crate::finder::{add_discovered_device_cache, DiscoveredNode, NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
 use crate::gateway_name_provider::register_node_gateway_name_provider;
 use crate::gateway_tunnel_probe::probe_key_tunnels_via_gateway;
@@ -1386,26 +1386,6 @@ async fn generate_device_session_token(
     return Ok(device_session_token_jwt);
 }
 
-async fn add_discovered_device_info_cache(discovered_oods: &HashMap<String, DiscoveredNode>) {
-    for node in discovered_oods.values() {
-        let device_did = node.device_doc.id.clone();
-        if let Err(err) =
-            name_client::add_device_info_cache(device_did.clone(), node.device_info.clone()).await
-        {
-            warn!(
-                "add discovered device info cache failed, did={:?}, err={}",
-                device_did, err
-            );
-        } else {
-            info!(
-                "add discovered device info cache, did={:?}, ips={:?}",
-                device_did,
-                node.device_info.merged_ips()
-            );
-        }
-    }
-}
-
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let node_id = matches.get_one::<String>("id");
     let enable_active = matches.get_flag("enable_active");
@@ -1580,7 +1560,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         HashMap::new()
     };
 
-    add_discovered_device_info_cache(&discovered_oods).await;
+    add_discovered_device_cache(&discovered_oods);
 
     // SN host name 解析（wan 系节点不需要 SN keep_tunnel）。
     let sn_host_name =
@@ -1862,6 +1842,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    const TEST_OWNER_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
+-----END PRIVATE KEY-----"#;
+
     fn create_temp_pkg_env_path(test_name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1949,12 +1933,18 @@ mod tests {
         device_info.update_time = buckyos_get_unix_timestamp();
         device_info.device_doc.ips.push(endpoint_ip);
         device_info.all_ip.push(endpoint_ip);
+        let device_doc_jwt = device_doc
+            .encode(Some(
+                &EncodingKey::from_ed_pem(TEST_OWNER_PRIVATE_KEY.as_bytes()).unwrap(),
+            ))
+            .unwrap()
+            .to_string();
 
         DiscoveredNode {
             node_id: "ood2".to_string(),
             device_doc,
             device_info,
-            device_doc_jwt: String::new(),
+            device_doc_jwt,
             addr: std::net::SocketAddr::new(endpoint_ip, 2980),
             rtcp_port: 2980,
             last_seen: buckyos_get_unix_timestamp(),
@@ -2035,7 +2025,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_discovered_device_info_cache_updates_resolve_ips_only() {
+    async fn test_discovered_device_cache_updates_resolve_did_and_ips() {
         ensure_name_client_for_tests().await;
         let peer_did = DID::new("finder-test", unique_test_id("node-daemon-peer").as_str());
         let endpoint_ip = "192.168.1.22".parse().unwrap();
@@ -2047,7 +2037,7 @@ mod tests {
             .await
             .is_err());
 
-        add_discovered_device_info_cache(&discovered).await;
+        add_discovered_device_cache(&discovered);
 
         assert_eq!(
             name_client::resolve_ips(peer_did.to_string().as_str())
@@ -2055,7 +2045,11 @@ mod tests {
                 .unwrap(),
             vec![endpoint_ip]
         );
-        assert!(name_client::resolve_did(&peer_did, None).await.is_err());
+        let resolved_doc = name_client::resolve_did(&peer_did, Some(DidDocType::Device))
+            .await
+            .unwrap();
+        let resolved_device_doc = DeviceDocument::decode(&resolved_doc, None).unwrap();
+        assert_eq!(resolved_device_doc.id, peer_did);
 
         let resolved_info = name_client::resolve_did_ex(
             &peer_did,

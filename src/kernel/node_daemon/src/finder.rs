@@ -1,8 +1,8 @@
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_service_local_data_dir};
 use log::*;
 use name_lib::{
-    decode_jwt_claim_without_verify, DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument,
-    ZoneDocument,
+    decode_jwt_claim_without_verify, DIDDocumentTrait, DeviceDocument, DeviceInfo, DidDocType,
+    EncodedDocument, ZoneDocument,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -250,6 +250,12 @@ impl NodeFinder {
                     }
                 };
 
+                if let Err(err) =
+                    validate_same_owner(&identity.device_doc, &context.this_device_doc)
+                {
+                    warn!("reject NodeFinder req from {}: {}", addr, err);
+                    continue;
+                }
                 if identity.device_doc.name == context.this_device_doc.name {
                     continue;
                 }
@@ -362,6 +368,8 @@ impl NodeFinderClient {
             .map_err(|err| anyhow!("decode local device doc for finder client failed: {}", err))?;
         if require_self_ood {
             validate_ood_device(&this_device_doc, &zone_document)?;
+        } else {
+            validate_zone_device(&this_device_doc, &zone_document)?;
         }
         Ok(Self {
             this_device_jwt,
@@ -396,7 +404,7 @@ impl NodeFinderClient {
             context.owner_public_key.as_ref(),
             self.cache_ttl_secs,
         )?;
-        add_discovered_device_info_cache(&discovered);
+        add_discovered_device_cache(&discovered);
         Ok(discovered)
     }
 
@@ -523,7 +531,7 @@ impl NodeFinderClient {
             zone_id.as_str(),
             discovered.values(),
         )?;
-        add_discovered_device_info_cache(&discovered);
+        add_discovered_device_cache(&discovered);
         Ok(discovered)
     }
 
@@ -554,6 +562,7 @@ impl NodeFinderClient {
             &context.zone_document,
             context.owner_public_key.as_ref(),
         )?;
+        validate_same_owner(&identity.device_doc, &context.this_device_doc)?;
         if identity.claims.target_node_id.as_deref() != Some(context.this_device_doc.name.as_str())
         {
             return Err(anyhow!("response target is not local node"));
@@ -735,6 +744,16 @@ fn validate_zone_device(device_doc: &DeviceDocument, zone_document: &ZoneDocumen
     Ok(())
 }
 
+fn validate_same_owner(
+    device_doc: &DeviceDocument,
+    this_device_doc: &DeviceDocument,
+) -> Result<()> {
+    if device_doc.owner != this_device_doc.owner {
+        return Err(anyhow!("device {} owner mismatch", device_doc.name));
+    }
+    Ok(())
+}
+
 fn validate_ood_device(device_doc: &DeviceDocument, zone_document: &ZoneDocument) -> Result<()> {
     validate_zone_device(device_doc, zone_document)?;
     let is_ood = zone_document
@@ -784,12 +803,34 @@ fn build_discovered_device_info(
     device_info
 }
 
-fn add_discovered_device_info_cache(discovered: &HashMap<String, DiscoveredNode>) {
+pub(crate) fn add_discovered_device_cache(discovered: &HashMap<String, DiscoveredNode>) {
     let Some(name_client) = name_client::GLOBAL_NAME_CLIENT.get() else {
         return;
     };
     for node in discovered.values() {
         let device_did = node.device_doc.id.clone();
+        if !node.device_doc_jwt.is_empty() {
+            match EncodedDocument::from_str(node.device_doc_jwt.clone()) {
+                Ok(device_doc) => {
+                    if let Err(err) = name_client.update_did_cache(
+                        device_did.clone(),
+                        Some(DidDocType::Device),
+                        device_doc,
+                    ) {
+                        warn!(
+                            "add discovered device doc cache failed, did={:?}, err={}",
+                            device_did, err
+                        );
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        "parse discovered device doc jwt failed, did={:?}, err={}",
+                        device_did, err
+                    );
+                }
+            }
+        }
         if let Err(err) =
             name_client.add_device_info_cache(device_did.clone(), node.device_info.clone())
         {
@@ -1115,7 +1156,7 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
     }
 
     #[tokio::test]
-    async fn finder_load_cached_oods_adds_device_info_cache() {
+    async fn finder_load_cached_oods_adds_device_doc_and_info_cache() {
         ensure_name_client_for_tests().await;
         let temp_dir = std::env::temp_dir().join(unique_test_id("buckyos-finder-cache-load"));
         let cache_path = temp_dir.join(FINDER_CACHE_FILE);
@@ -1149,6 +1190,11 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         assert!(name_client::resolve_ips(peer_did.to_string().as_str())
             .await
             .is_err());
+        assert!(
+            name_client::resolve_did(&peer_did, Some(DidDocType::Device))
+                .await
+                .is_err()
+        );
 
         let client = NodeFinderClient::new_for_zone(
             ood1_doc_jwt,
@@ -1161,6 +1207,12 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         let cached = client.load_cached_oods().unwrap();
 
         assert!(cached.get("ood2").unwrap().from_cache);
+        let resolved_doc = name_client::resolve_did(&peer_did, Some(DidDocType::Device))
+            .await
+            .unwrap();
+        let resolved_device_doc =
+            DeviceDocument::decode(&resolved_doc, Some(&decoding_key(OWNER_PUBLIC_X))).unwrap();
+        assert_eq!(resolved_device_doc.name, "ood2");
         assert_eq!(
             name_client::resolve_ips(peer_did.to_string().as_str())
                 .await
