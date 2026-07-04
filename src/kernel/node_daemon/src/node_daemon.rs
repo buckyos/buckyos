@@ -1774,6 +1774,18 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
                 }
             }
         }
+
+        let zone_config = runtime.zone_config.as_ref().ok_or_else(|| {
+            error!("non-ood boot login OK but zone_config is missing");
+            String::from("non-ood boot login OK but zone_config is missing")
+        })?;
+        let zone_config_str = serde_json::to_string(zone_config).map_err(|err| {
+            error!("serialize non-ood zone config failed! {}", err);
+            String::from("serialize non-ood zone config failed!")
+        })?;
+        unsafe {
+            std::env::set_var("BUCKYOS_ZONE_CONFIG", zone_config_str);
+        }
         set_buckyos_api_runtime(runtime).map_err(|err| {
             error!("register global runtime failed: {}", err);
             String::from("register global runtime failed!")

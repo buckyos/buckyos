@@ -7,12 +7,14 @@ DNS rsolver的Cache update:要多插入gateway_device的doc OK
 是否要约定，有boot 等于 有zone-document? 显示大于隐式！
 
 
-## 3个环境变量的意义？
+## 核心环境变量的意义？
+
+环境变量都是已经验证过的，关键Doc，方便在脚本中直接使用
 
 BUCKYOS_ZONE_DOC 里面放 ZoneDocument JSON；调度器构造的是 ZoneConfig，不是 ZoneBootConfig
-
-BUCKY_ZONE_OWNER用么？（稳定Owner？）=> 应该改成设置OwnerDocument , 在name_client中添加到权威cache中 （是并集的关系，OwnerDocument在BNS 上更新后，新的签名也是有效的？（Zone owner是一个合成出来的？）
-BUCKYOS_THIS_DEVICE , BUCKYOS_THIS_DEVICE_INFO 的使用
+BUCKYOS_ZONE_CONFIG 保留
+BUCKY_ZONE_OWNER （删除)
+BUCKYOS_THIS_DEVICE 保留, BUCKYOS_THIS_DEVICE_INFO(删除)
 
 
 ## booting状态下(resolve-did)行为特例说明
