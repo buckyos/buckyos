@@ -402,14 +402,18 @@ mod tests {
         ));
         let etc_dir = temp_root.join("etc");
         fs::create_dir_all(&etc_dir).expect("create temp etc dir");
+        let dev_home = temp_root.join("dev_home");
+        fs::create_dir_all(&dev_home).expect("create temp dev home dir");
 
         let prev_root = set_env_var("BUCKYOS_ROOT", temp_root.to_string_lossy().as_ref());
+        let prev_dev_home = set_env_var("BUCKYOS_DEV_HOME", dev_home.to_string_lossy().as_ref());
         let prev_token = set_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, "dummy-appclient-token");
 
         let result =
             init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await;
 
         restore_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, prev_token);
+        restore_env_var("BUCKYOS_DEV_HOME", prev_dev_home);
         restore_env_var("BUCKYOS_ROOT", prev_root);
         let _ = fs::remove_dir_all(&temp_root);
 

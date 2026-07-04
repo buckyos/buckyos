@@ -133,7 +133,6 @@ buckyos是一个典型的多进程系统，因此为了简化配置，减少配�
 - full_app_id (owner_user_id + app_id)
 
 - zone_did,NULL,node_identiy.json
-````- NULL,BUCKY_ZONE_OWNER,node_identiy.json (did+公钥),  (move to zone_config)
 - NULL,BUCKYOS_ZONE_BOOT_CONFIG,@DNS Txt Record
 
 - CURRENT_DEVICE_CONFIG,BUCKYOS_THIS_DEVICE,node_identiy.json (移动到cyfs-gateway-lib)
@@ -169,6 +168,3 @@ cyfs-gateaway 则要严格注意依赖关系，其本身是不依赖buckyos的�
 inner_service创建zone_provider的时候，依赖完整的buckyos_runtime
 
 zone_provider还可以是tunnel selctor,用来更智能的实现selector
-
-
-

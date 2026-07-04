@@ -451,7 +451,7 @@ impl AppLoader {
             if !has_agent_pkg {
                 return Err(self.pkg_not_found("agent package"));
             }
-            if !self.device_supports_container() {
+            if !self.device_supports_container()? {
                 return Err(ControlRuntItemErrors::NotSupport(format!(
                     "agent app {} requires container runtime but current device does not support containers",
                     self.app_id
@@ -470,7 +470,7 @@ impl AppLoader {
             )));
         }
 
-        if has_docker && self.device_supports_container() {
+        if has_docker && self.device_supports_container()? {
             return Ok(RuntimeType::Docker);
         }
 
@@ -488,15 +488,22 @@ impl AppLoader {
         Ok(RuntimeType::Vm)
     }
 
-    fn device_supports_container(&self) -> bool {
+    fn device_supports_container(&self) -> Result<bool> {
         if let Some(support_container) = self.support_container_override {
-            return support_container;
+            return Ok(support_container);
         }
-        std::env::var("BUCKYOS_THIS_DEVICE_INFO")
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Value>(raw.as_str()).ok())
-            .and_then(|value| value.get("support_container").and_then(Value::as_bool))
-            .unwrap_or(true)
+        let runtime = get_buckyos_api_runtime().map_err(|error| {
+            ControlRuntItemErrors::ParserConfigError(format!(
+                "load buckyos runtime for container support failed: {}",
+                error
+            ))
+        })?;
+        let device_config = runtime.device_config.as_ref().ok_or_else(|| {
+            ControlRuntItemErrors::ParserConfigError(
+                "buckyos runtime missing device_config for container support".to_string(),
+            )
+        })?;
+        Ok(device_config.support_container)
     }
 
     fn docker_image_desc(&self) -> Option<&SubPkgDesc> {
@@ -1088,9 +1095,6 @@ impl AppLoader {
         let mut env_vars = HashMap::new();
         if let Some(zone_config) = std::env::var("BUCKYOS_ZONE_CONFIG").ok() {
             env_vars.insert("BUCKYOS_ZONE_CONFIG".to_string(), zone_config);
-        }
-        if let Some(device_info) = std::env::var("BUCKYOS_THIS_DEVICE_INFO").ok() {
-            env_vars.insert("BUCKYOS_THIS_DEVICE_INFO".to_string(), device_info);
         }
         if let Some(device_doc) = std::env::var("BUCKYOS_THIS_DEVICE").ok() {
             env_vars.insert("BUCKYOS_THIS_DEVICE".to_string(), device_doc);
@@ -2342,7 +2346,6 @@ impl AppLoader {
     fn preview_env_keys(&self, role: PackageRole) -> Vec<String> {
         let mut keys = vec![
             "BUCKYOS_ZONE_CONFIG".to_string(),
-            "BUCKYOS_THIS_DEVICE_INFO".to_string(),
             "BUCKYOS_THIS_DEVICE".to_string(),
             "BUCKYOS_HOST_GATEWAY".to_string(),
         ];

@@ -477,32 +477,6 @@ function selectAgentServicePort(
   return DEFAULT_OPENDAN_SERVICE_PORT
 }
 
-function buildFallbackDeviceInfo(deviceConfig: JsonObject, nodeId: string): JsonObject {
-  const name = getNestedString(deviceConfig, ['name']) || nodeId
-  const deviceId = getNestedString(deviceConfig, ['id']) || ''
-  const netId = getNestedString(deviceConfig, ['net_id']) || ''
-  const supportContainer = typeof deviceConfig.support_container === 'boolean'
-    ? deviceConfig.support_container
-    : true
-
-  return {
-    name,
-    id: deviceId,
-    net_id: netId,
-    support_container: supportContainer,
-    cpu_mhz: 0,
-    total_mem: 0,
-    mem_usage: 0,
-    gpu_tflops: 0,
-    gpu_total_mem: 0,
-    gpu_used_mem: 0,
-    ips: [],
-    all_ip: [],
-    state: 'Running',
-    device_doc: deviceConfig,
-  }
-}
-
 async function resolveOpendanBinary(buckyosRoot: string): Promise<string> {
   const scriptDir = new URL('.', import.meta.url).pathname
   const candidates = [
@@ -721,10 +695,6 @@ async function buildLaunchContext(options: StartupOptions) {
   if (!zoneConfig) {
     throw new Error('failed to load boot/config from system_config')
   }
-  const runtimeDeviceInfo =
-    await sysConfigGet(systemConfigClient, `devices/${nodeId}/info`).catch(() => null) ||
-    buildFallbackDeviceInfo(deviceConfig, nodeId)
-
   const { key: specKey, value: spec } = await loadAppSpec(
     systemConfigClient,
     options.appId,
@@ -746,7 +716,6 @@ async function buildLaunchContext(options: StartupOptions) {
   const env: Record<string, string> = {
     BUCKYOS_ROOT: buckyosRoot,
     BUCKYOS_ZONE_CONFIG: JSON.stringify(zoneConfig),
-    BUCKYOS_THIS_DEVICE_INFO: JSON.stringify(runtimeDeviceInfo),
     BUCKYOS_THIS_DEVICE: JSON.stringify(deviceConfig),
     BUCKYOS_HOST_GATEWAY: '127.0.0.1',
     app_instance_config: JSON.stringify(appInstanceConfig),

@@ -174,7 +174,6 @@ pub struct BuckyOSRuntime {
 
     pub device_config: Option<DeviceDocument>,
     pub device_private_key: Option<EncodingKey>,
-    pub device_info: Option<DeviceInfo>,
 
     pub zone_id: DID,
     pub node_gateway_port: u16,
@@ -231,7 +230,6 @@ impl BuckyOSRuntime {
             zone_config: None,
             device_config: None,
             device_private_key: None,
-            device_info: None,
             user_private_key: None,
             user_config: None,
             zone_id: DID::undefined(),
@@ -320,20 +318,6 @@ impl BuckyOSRuntime {
                 .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
             self.zone_id = zone_document.id.clone();
             self.zone_config = Some(zone_config);
-        }
-
-        let device_info_str = env::var("BUCKYOS_THIS_DEVICE_INFO");
-        if device_info_str.is_ok() {
-            let device_info_str = device_info_str.unwrap();
-            let device_info = serde_json::from_str(device_info_str.as_str());
-            if device_info.is_err() {
-                warn!("device_info_str format error");
-                return Err(RPCErrors::ReasonError(
-                    "device_info_str format error".to_string(),
-                ));
-            }
-            let device_info = device_info.unwrap();
-            self.device_info = Some(device_info);
         }
 
         if let Ok(device_doc) = env::var("BUCKYOS_THIS_DEVICE") {

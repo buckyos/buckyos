@@ -1,13 +1,17 @@
 ## DNS-resolver的问题
 
-DNS direct boot 查询 不是被包含在resolve_did 里了么？ 
+DNS direct boot 查询 不是被包含在resolve_did 里了么？ 先保持现状，这个太定制了
 > 其实就是name-client的cache机制还不够完整，无法插入 “did:web:xxx 的 owner 是 did:bns:xxx" 这样的信息？
 
 DNS rsolver的Cache update:要多插入gateway_device的doc OK 
-是否要约定，有boot 等于 有zone-document? 显示大于隐式！
+
 
 
 ## 3个环境变量的意义？
+
+设计意图：
+- 支持内核组件在booting期间绕开system_config传递信息
+- 支持buckyos-runtime login 
 
 BUCKYOS_ZONE_BOOT_CONFIG 里面放真的ZoneConfig（包含了Zone-Document)? 不过感觉这个环境变量似乎从来没有用过
     调度器构造的是ZoneConfig，不是ZoneBootConfig
@@ -18,11 +22,22 @@ BUCKYOS_THIS_DEVICE , BUCKYOS_THIS_DEVICE_INFO 的使用
 
 ## booting状态下(resolve-did)行为特例说明
 
-- 通过node-finder,在did-cache中得到target device document (注意需要DV Test中包换）
+- 通过node-finder,在did-cache中得到target device document (注意需要DV Test中包换） OK , 遗留 did-cache的通用问题
 
-梳理SessionToken的集中构造路径鱼RootTrust的关系
+- 梳理SessionToken的集中构造路径鱼RootTrust的关系
+  - BUCKYOS_THIS_DEVICE 的公钥
+  - Owenr的公钥
 
-did:web:xxx 的自Owner流程分析
+- did:web:xxx 的自Owner流程分析 
+流程在zone-resolver中实现
+1）resolver_did(did:web:ood1.xxx,"device")
+得到的device_document里，写明owner = did:web:xxx, 预期通用
+
+2) resolve_did(did:web:xxx,"owner")
+返回来自本地node_idenentiy的owner document
+
+使用owner_document.public key进行验证，返回deivce_document
+
 
 ## Zone内 OOD/Node等设备的doc初始化问题
 

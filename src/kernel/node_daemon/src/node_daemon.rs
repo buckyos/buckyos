@@ -1125,6 +1125,7 @@ async fn node_daemon_main_loop(
     let mut node_gateway_info_id: Option<ObjId> = None;
     let mut keep_tunnel_config_id: Option<ObjId> = None;
     let mut network_observer = NetworkObserver::new(NetworkObserverConfig::default());
+
     // 进入正常工作状态后，把本机 cyfs-gateway 的 system_config 转发口
     // (http://127.0.0.1:3180/) 注册为 gateway 自己的 name provider；这样
     // gateway 内部 resolve 时能拿到 device 上报到 system_config 的 IP。
@@ -1184,11 +1185,7 @@ async fn node_daemon_main_loop(
                 &system_config_client,
             )
             .await;
-            let device_info_str = serde_json::to_string(&device_info).unwrap();
             debug!("update device info: {:?}", device_info);
-            unsafe {
-                std::env::set_var("BUCKYOS_THIS_DEVICE_INFO", device_info_str);
-            }
             update_device_info(&device_info, &system_config_client).await;
             publish_device_info_kevent(&device_info).await;
             //TODO：SN的上报频率不用那么快
@@ -1610,10 +1607,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     unsafe {
         std::env::set_var(
-            "BUCKY_ZONE_OWNER",
-            serde_json::to_string(&node_identity.owner_public_key).unwrap(),
-        );
-        std::env::set_var(
             "BUCKYOS_ZONE_BOOT_CONFIG",
             serde_json::to_string(&zone_document).unwrap(),
         );
@@ -1623,7 +1616,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         );
     }
 
-    info!("set env var BUCKY_ZONE_OWNER,BUCKYOS_ZONE_BOOT_CONFIG,BUCKYOS_THIS_DEVICE OK!");
+    info!("set env var BUCKYOS_ZONE_BOOT_CONFIG,BUCKYOS_THIS_DEVICE OK!");
 
     let device_session_token_jwt =
         generate_device_session_token(&device_doc, &device_private_key, true)
@@ -1729,7 +1722,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
         runtime.device_config = Some(device_doc);
         runtime.device_private_key = Some(device_private_key);
-        runtime.device_info = Some(device_info);
         runtime.zone_id = node_identity.zone_did.clone();
         runtime.zone_config = Some(zone_config);
         runtime.session_token = Arc::new(RwLock::new(device_session_token_jwt.clone()));
