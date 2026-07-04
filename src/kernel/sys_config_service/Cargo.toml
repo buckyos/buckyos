@@ -20,6 +20,7 @@ sled = { workspace = true }
 lazy_static = { workspace = true }
 thiserror = { workspace = true }
 jsonwebtoken = { workspace = true }
+sha2 = { workspace = true }
 # rocksdb = "*"
 buckyos-kit = { workspace = true }
 buckyos-api = { path = "../buckyos-api" }
