@@ -28,13 +28,10 @@ use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::DecodingKey;
 use log::*;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use buckyos_api::LocalNodeIdentityConfig;
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
-use name_client::{
-    resolve_did, update_did_cache, BaseHttpProvider, DnsProvider, NsProvider, GLOBAL_NAME_CLIENT,
-};
+use name_client::{resolve_did, update_did_cache, DnsProvider, NsProvider, GLOBAL_NAME_CLIENT};
 use name_lib::{
     DIDDocumentTrait, DidDocType, EncodedDocument, OwnerDocument, ZoneBootDocument, ZoneDocument,
     DID,
@@ -661,32 +658,20 @@ pub fn install_local_owner_trust(node_identity: &LocalNodeIdentityConfig) -> Res
     Ok(())
 }
 
-// zone_resolver 接线（介绍文档 §5 / §8）：boot 完成后把本机 cyfs-gateway 的
-// 3180 端口注册为当前 zone 的权威读取端（zone 内 did 的解析在本地闭环，且能
-// 看到不对外发布的文档）。服务端 resolver 接口未就绪时该读取端自然给不出回答，
-// 管线按多读取端纪律回退 method 权威源，不产生误判。
-pub async fn register_zone_authority_resolver(zone_did: &DID) {
+// zone_resolver 接线（buckyos-base 已有 did-resolver 介绍）：boot 完成后
+// 确认本机 cyfs-gateway 的 3180 端口作为独立 zone resolver cache 快路径。
+// 命中时 zone 内 did 的解析在本地闭环；unknown 时管线回落到 local cache +
+// method provider 链，不产生误判。
+pub async fn register_zone_resolver_cache(zone_did: &DID) {
     let Some(client) = GLOBAL_NAME_CLIENT.get() else {
-        warn!("register zone authority resolver skipped: name lib is not initialized");
+        warn!("register zone resolver cache skipped: name lib is not initialized");
         return;
     };
-    match BaseHttpProvider::new_with_config(json!({
-        "resolver_host": "127.0.0.1:3180",
-        "scheme": "http",
-    })) {
-        Ok(provider) => {
-            client
-                .set_zone_authority(zone_did.clone(), Box::new(provider))
-                .await;
-            info!(
-                "registered zone authority resolver for {} -> http://127.0.0.1:3180",
-                zone_did.to_string()
-            );
-        }
-        Err(err) => {
-            warn!("build zone authority resolver provider failed: {}", err);
-        }
-    }
+    client.set_zone_resolver_endpoint("http://127.0.0.1:3180");
+    info!(
+        "registered zone resolver cache for {} -> http://127.0.0.1:3180",
+        zone_did.to_string()
+    );
 }
 
 #[cfg(test)]

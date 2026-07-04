@@ -47,7 +47,7 @@ use crate::local_app_mgr::LocalAppRunItem;
 use crate::run_item::*;
 use crate::service_pkg::*;
 use crate::zone_boot_resolve::{
-    boot_resolve_zone_document, install_local_owner_trust, register_zone_authority_resolver,
+    boot_resolve_zone_document, install_local_owner_trust, register_zone_resolver_cache,
 };
 use buckyos_api::*;
 use thiserror::Error;
@@ -1916,10 +1916,9 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         info!("OOD finder server stopped after boot.");
     }
 
-    // boot 完成后把本机 3180（cyfs-gateway）注册为当前 zone 的 zone_resolver
-    // 权威读取端（did-resolver 介绍文档 §5/§8 的 set_zone_authority 接线）：
-    // zone 内 did 的解析从此在 zone 内闭环，并能看到不对外发布的文档。
-    register_zone_authority_resolver(&node_identity.zone_did).await;
+    // boot 完成后确认本机 3180（cyfs-gateway）作为独立 zone resolver cache。
+    // zone 内 did 命中时在本地闭环；unknown 时回落到 local cache + method provider 链。
+    register_zone_resolver_cache(&node_identity.zone_did).await;
 
     info!(
         "{}@{} boot OK, enter node daemon main loop.",
