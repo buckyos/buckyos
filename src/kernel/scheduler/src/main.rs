@@ -35,6 +35,15 @@ use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 
 const BUCKYOS_ZONE_DOC_ENV: &str = "BUCKYOS_ZONE_DOC";
 
+fn boot_ood_names(zone_document: &ZoneDocument) -> Vec<String> {
+    zone_document
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+        .map(|ood| ood.name.clone())
+        .collect()
+}
+
 async fn create_init_list_by_template(
     zone_document: &ZoneDocument,
     zone_document_str: &str,
@@ -90,13 +99,16 @@ async fn create_init_list_by_template(
     }
     let mut boot_config: HashMap<String, String> = toml::from_str(&result)?;
 
-    let ood_name = zone_document.oods.first().unwrap().name.as_str();
+    let ood_names = boot_ood_names(zone_document);
+    if ood_names.is_empty() {
+        return Err(anyhow::anyhow!("zone document has no OOD nodes"));
+    }
+
     let mut builder = SystemConfigBuilder::new(boot_config);
     builder
         .add_boot_config(&start_config, &verify_hub_public_key, zone_document_str)?
         .add_user_doc(&start_config)?
         .add_default_accounts(&start_config)?
-        .add_device_doc(ood_name, &start_config)?
         .add_system_defaults()?
         .add_verify_hub(&private_key_pem)
         .await?
@@ -124,8 +136,10 @@ async fn create_init_list_by_template(
         .await?
         .add_default_agents(&start_config)
         .await?
-        .add_gateway_settings(&start_config)?
-        .add_node(ood_name)?;
+        .add_gateway_settings(&start_config)?;
+    for ood_name in ood_names.iter() {
+        builder.add_node(ood_name.as_str())?;
+    }
     let mut config = builder.build();
 
     Ok(config)
@@ -361,8 +375,19 @@ mod test {
         let mut init_map = create_init_list_by_template(&zone_document, &zone_document_str)
             .await
             .expect("init list generation should succeed");
+        let start_config_value: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(temp_root.path().join("etc").join("start_config.json"))
+                .expect("failed to read start_config"),
+        )
+        .expect("start_config should be valid json");
+        let start_config = StartConfigSummary::from_value(&start_config_value)
+            .expect("start_config summary should parse");
         ensure_device_info_entry(
             &mut init_map,
+            start_config
+                .ood_jwt
+                .as_deref()
+                .expect("start_config ood_jwt missing"),
             zone_document
                 .get_default_key()
                 .as_ref()
@@ -373,6 +398,7 @@ mod test {
         assert!(init_map.contains_key("boot/config"));
         assert!(init_map.contains_key("security/verify-hub/key"));
         assert!(!init_map.contains_key("system/verify-hub/key"));
+        assert!(!init_map.contains_key(&format!("devices/{}/doc", TEST_DEVICE_NAME)));
         assert!(init_map.contains_key("services/verify-hub/spec"));
         assert!(init_map.contains_key("services/scheduler/spec"));
         assert!(init_map.contains_key("services/task-manager/spec"));
@@ -412,6 +438,52 @@ mod test {
             .schedule_snapshot
             .service_infos
             .contains_key("scheduler"));
+
+        let mut multi_ood_zone_document = zone_document.clone();
+        multi_ood_zone_document.oods = vec![
+            OODDescriptionString::new(
+                "zone-gateway".to_string(),
+                DeviceNodeType::Gateway,
+                None,
+                None,
+            ),
+            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
+            OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OODOnly, None, None),
+        ];
+        let multi_ood_zone_document_str = serde_json::to_string(&multi_ood_zone_document).unwrap();
+        let multi_ood_init_map =
+            create_init_list_by_template(&multi_ood_zone_document, &multi_ood_zone_document_str)
+                .await
+                .expect("multi OOD init list generation should succeed");
+        assert!(multi_ood_init_map.contains_key("nodes/ood1/config"));
+        assert!(multi_ood_init_map.contains_key("nodes/ood2/config"));
+        assert!(!multi_ood_init_map.contains_key("nodes/zone-gateway/config"));
+        assert!(!multi_ood_init_map.contains_key("devices/ood1/doc"));
+        assert!(!multi_ood_init_map.contains_key("devices/ood2/doc"));
+
+        let gateway_only_zone_document = {
+            let mut document = zone_document.clone();
+            document.oods = vec![OODDescriptionString::new(
+                "zone-gateway".to_string(),
+                DeviceNodeType::Gateway,
+                None,
+                None,
+            )];
+            document
+        };
+        let gateway_only_zone_document_str =
+            serde_json::to_string(&gateway_only_zone_document).unwrap();
+        let gateway_only_init_result =
+            create_init_list_by_template(&gateway_only_zone_document, &gateway_only_zone_document_str)
+            .await
+            .err()
+            .expect("gateway-only init list should fail");
+        assert!(
+            gateway_only_init_result
+                .to_string()
+                .contains("zone document has no OOD nodes")
+        );
+
         unsafe {
             std::env::remove_var("BUCKYOS_ROOT");
         }
@@ -575,15 +647,10 @@ mod test {
 
     fn ensure_device_info_entry(
         init_map: &mut HashMap<String, String>,
+        device_doc_jwt: &str,
         owner_key: &Jwk,
     ) -> Result<(), String> {
-        let doc_key = format!("devices/{}/doc", TEST_DEVICE_NAME);
-        let doc_value = init_map
-            .get(&doc_key)
-            .ok_or_else(|| format!("{} not found in init map", doc_key))?
-            .clone();
-
-        let encoded_doc = EncodedDocument::from_str(doc_value)
+        let encoded_doc = EncodedDocument::from_str(device_doc_jwt.to_string())
             .map_err(|e| format!("invalid encoded doc: {:?}", e))?;
         let decoding_key =
             DecodingKey::from_jwk(owner_key).map_err(|e| format!("invalid owner jwk: {}", e))?;

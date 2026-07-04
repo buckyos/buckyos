@@ -609,23 +609,52 @@ async fn populate_network_observation(
     }
 }
 
-async fn update_device_info(device_info: &DeviceInfo, syste_config_client: &SystemConfigClient) {
+async fn update_device_info_checked(
+    device_info: &DeviceInfo,
+    syste_config_client: &SystemConfigClient,
+) -> std::result::Result<(), String> {
     let device_key = format!("devices/{}/info", device_info.name.as_str());
     let device_info_str = serde_json::to_string(&device_info).unwrap();
-    let put_result = syste_config_client
+    syste_config_client
         .set(device_key.as_str(), device_info_str.as_str())
-        .await;
-    if put_result.is_err() {
-        error!(
-            "update device info to system_config failed! {}",
-            put_result.err().unwrap()
-        );
-    } else {
-        info!(
-            "update {} info to system_config success!",
-            device_info.name.as_str()
-        );
+        .await
+        .map_err(|err| format!("update device info to system_config failed! {}", err))?;
+    info!(
+        "update {} info to system_config success!",
+        device_info.name.as_str()
+    );
+    Ok(())
+}
+
+async fn update_device_info(device_info: &DeviceInfo, syste_config_client: &SystemConfigClient) {
+    if let Err(err) = update_device_info_checked(device_info, syste_config_client).await {
+        error!("{}", err);
     }
+}
+
+async fn register_boot_device(
+    device_doc_jwt: &str,
+    device_doc: &DeviceDocument,
+    system_config_client: &SystemConfigClient,
+) -> std::result::Result<(), String> {
+    let device_doc_key = format!("devices/{}/doc", device_doc.name.as_str());
+    system_config_client
+        .set(device_doc_key.as_str(), device_doc_jwt)
+        .await
+        .map_err(|err| format!("register device doc to system_config failed! {}", err))?;
+    info!(
+        "register {} device doc to system_config success!",
+        device_doc.name.as_str()
+    );
+
+    let mut device_info = DeviceInfo::from_device_doc(device_doc);
+    device_info
+        .auto_fill_by_system_info()
+        .await
+        .map_err(|err| format!("auto fill device info failed! {}", err))?;
+    let mut boot_observer = NetworkObserver::new(NetworkObserverConfig::default());
+    populate_network_observation(&mut boot_observer, &mut device_info, system_config_client).await;
+    update_device_info_checked(&device_info, system_config_client).await
 }
 
 static KEVENT_SERVICE: OnceLock<Arc<kevent::KEventService>> = OnceLock::new();
@@ -734,6 +763,92 @@ async fn report_ood_info_to_sn(
         sn_url.as_str()
     );
     Ok(())
+}
+
+fn ood_device_names(zone_document: &ZoneDocument) -> Vec<String> {
+    zone_document
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+        .map(|ood| ood.name.clone())
+        .collect()
+}
+
+fn first_ood_name(zone_document: &ZoneDocument) -> Option<&str> {
+    zone_document
+        .oods
+        .iter()
+        .find(|ood| ood.node_type.is_ood())
+        .map(|ood| ood.name.as_str())
+}
+
+fn is_first_ood(zone_document: &ZoneDocument, device_name: &str) -> bool {
+    first_ood_name(zone_document)
+        .map(|first_ood| first_ood == device_name)
+        .unwrap_or(false)
+}
+
+async fn missing_ood_device_infos(
+    zone_document: &ZoneDocument,
+    system_config_client: &SystemConfigClient,
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    for ood_name in ood_device_names(zone_document) {
+        let info_key = format!("devices/{}/info", ood_name);
+        match system_config_client.get(info_key.as_str()).await {
+            Ok(value) => match serde_json::from_str::<DeviceInfo>(value.value.as_str()) {
+                Ok(device_info) => {
+                    if device_info.name != ood_name && device_info.device_doc.name != ood_name {
+                        warn!(
+                            "OOD device_info {} has mismatched name: info.name={}, doc.name={}",
+                            info_key,
+                            device_info.name.as_str(),
+                            device_info.device_doc.name.as_str()
+                        );
+                        missing.push(ood_name);
+                    }
+                }
+                Err(err) => {
+                    warn!("parse OOD device_info {} failed: {}", info_key, err);
+                    missing.push(ood_name);
+                }
+            },
+            Err(SystemConfigError::KeyNotFound(_)) => {
+                missing.push(ood_name);
+            }
+            Err(err) => {
+                warn!("read OOD device_info {} failed: {}", info_key, err);
+                missing.push(ood_name);
+            }
+        }
+    }
+    missing
+}
+
+async fn wait_ood_device_infos_before_boot_schedule(
+    zone_document: &ZoneDocument,
+    system_config_client: &SystemConfigClient,
+) {
+    let ood_names = ood_device_names(zone_document);
+    if ood_names.len() <= 1 {
+        return;
+    }
+
+    loop {
+        let missing = missing_ood_device_infos(zone_document, system_config_client).await;
+        if missing.is_empty() {
+            info!(
+                "all OOD device_info updated before boot schedule: {:?}",
+                ood_names
+            );
+            return;
+        }
+        warn!(
+            "wait OOD device_info before boot schedule, missing={:?}, expected={:?}",
+            missing, ood_names
+        );
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    }
 }
 
 async fn do_boot_schedule() -> std::result::Result<(), String> {
@@ -1494,6 +1609,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     let device_name = device_doc.name.clone();
     let role = NodeRole::from_zone_document(&zone_document, &device_name);
     let is_ood = matches!(role, NodeRole::Ood);
+    let this_is_first_ood = is_first_ood(&zone_document, &device_name);
     info!("Booting {} as {} ...", device_name, role.as_str());
 
     let multi_ood = zone_document
@@ -1644,28 +1760,29 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
         //This is ood, so we MUST connect to localhost's system_config_service
         syc_cfg_client = SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()));
-        let mut device_info = DeviceInfo::from_device_doc(&device_doc);
-        let fill_result = device_info.auto_fill_by_system_info().await;
-        if fill_result.is_err() {
-            error!(
-                "auto fill device info failed! {}",
-                fill_result.err().unwrap()
-            );
-            return Err(String::from("auto fill device info failed!"));
-        }
-        let mut boot_observer = NetworkObserver::new(NetworkObserverConfig::default());
-        populate_network_observation(&mut boot_observer, &mut device_info, &syc_cfg_client).await;
-        update_device_info(&device_info, &syc_cfg_client).await;
+        register_boot_device(device_doc_jwt.as_str(), &device_doc, &syc_cfg_client).await?;
 
         while boot_config_result_str.is_empty() {
             let get_result = syc_cfg_client.get("boot/config").await;
             match get_result {
                 buckyos_api::SytemConfigResult::Err(SystemConfigError::KeyNotFound(_)) => {
+                    if !this_is_first_ood {
+                        warn!(
+                            "boot/config is not ready and this OOD {} is not first OOD {:?}; wait first OOD boot scheduler.",
+                            device_name.as_str(),
+                            first_ood_name(&zone_document)
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
                     warn!("BuckyOS is started for the first time, enter the BOOT_INIT process...");
                     warn!("Check and upgrade BuckyOS to latest version...");
                     //repo-server is not running, so we need to check and upgrade system by SN.
                     //Here is the only chance to upgrade system to latest version use SN.
                     do_boot_upgreade().await?;
+
+                    wait_ood_device_infos_before_boot_schedule(&zone_document, &syc_cfg_client)
+                        .await;
 
                     warn!("Do boot schedule to generate all system configs...");
                     unsafe {
@@ -1921,6 +2038,58 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .unwrap()
             .as_nanos();
         format!("{}-{}", prefix, nanos)
+    }
+
+    fn test_owner_key() -> Jwk {
+        serde_json::from_value(json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "Bb325f2ed0XSxrPS5sKQaX7ylY9Jh9rfevXiidKA1zc"
+        }))
+        .unwrap()
+    }
+
+    fn test_zone_with_oods(oods: Vec<OODDescriptionString>) -> ZoneDocument {
+        let mut zone_document = ZoneDocument::new(
+            DID::new("web", "test-zone"),
+            DID::new("bns", "test-owner"),
+            test_owner_key(),
+        );
+        zone_document.oods = oods;
+        zone_document
+    }
+
+    #[test]
+    fn first_ood_ignores_gateway_entries() {
+        let zone_document = test_zone_with_oods(vec![
+            OODDescriptionString::new("gate1".to_string(), DeviceNodeType::Gateway, None, None),
+            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
+            OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
+        ]);
+
+        assert_eq!(first_ood_name(&zone_document), Some("ood1"));
+        assert!(is_first_ood(&zone_document, "ood1"));
+        assert!(!is_first_ood(&zone_document, "ood2"));
+        assert_eq!(
+            ood_device_names(&zone_document),
+            vec!["ood1".to_string(), "ood2".to_string()]
+        );
+    }
+
+    #[test]
+    fn first_ood_treats_ood_only_as_ood() {
+        let zone_document = test_zone_with_oods(vec![
+            OODDescriptionString::new("gate1".to_string(), DeviceNodeType::Gateway, None, None),
+            OODDescriptionString::new("ood-only".to_string(), DeviceNodeType::OODOnly, None, None),
+            OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
+        ]);
+
+        assert_eq!(first_ood_name(&zone_document), Some("ood-only"));
+        assert!(is_first_ood(&zone_document, "ood-only"));
+        assert_eq!(
+            ood_device_names(&zone_document),
+            vec!["ood-only".to_string(), "ood2".to_string()]
+        );
     }
 
     fn discovered_node_for_cache(peer_did: DID, endpoint_ip: std::net::IpAddr) -> DiscoveredNode {
