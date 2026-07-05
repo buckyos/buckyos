@@ -31,7 +31,9 @@ use serde::{Deserialize, Serialize};
 
 use buckyos_api::LocalNodeIdentityConfig;
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
-use name_client::{resolve_did, update_did_cache, DnsProvider, NsProvider, GLOBAL_NAME_CLIENT};
+use name_client::{
+    resolve_did, update_did_cache, DnsProvider, NsProvider, UpdateSource, GLOBAL_NAME_CLIENT,
+};
 use name_lib::{
     DIDDocumentTrait, DidDocType, EncodedDocument, OwnerDocument, ZoneBootDocument, ZoneDocument,
     DID,
@@ -600,6 +602,7 @@ async fn update_zone_document_cache(zone_document: &ZoneDocument) {
         zone_document.id.clone(),
         Some(DidDocType::Zone),
         EncodedDocument::JsonLd(doc_value),
+        Some(UpdateSource::Authority),
     )
     .await
     {
@@ -614,6 +617,7 @@ async fn update_zone_document_cache(zone_document: &ZoneDocument) {
             zone_document.id.clone(),
             Some(DidDocType::Boot),
             EncodedDocument::Jwt(zone_document.boot_jwt.clone()),
+            Some(UpdateSource::Authority),
         )
         .await
         {

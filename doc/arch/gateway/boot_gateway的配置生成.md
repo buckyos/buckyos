@@ -211,7 +211,6 @@ Boot 后 scheduler 构造 per-node route candidate 的主要输入是 `devices/*
     "generation": 12,
     "observation_id": "sha256:...",
     "changed_at": 1710000000,
-    "observed_at": 1710000030,
     "rtcp_port": 2980,
     "ipv6": {
       "state": "egress_ok",
@@ -222,17 +221,11 @@ Boot 后 scheduler 构造 per-node route candidate 的主要输入是 `devices/*
     "endpoints": [
       {
         "ip": "192.168.1.23",
-        "family": "ipv4",
-        "scope": "lan",
-        "source": "system_interface",
-        "observed_at": 1710000030
+        "scope": "lan"
       },
       {
         "ip": "2001:db8::23",
-        "family": "ipv6",
-        "scope": "global",
-        "source": "system_interface",
-        "observed_at": 1710000030
+        "scope": "global"
       }
     ],
     "direct_probe": [
@@ -244,8 +237,7 @@ Boot 后 scheduler 构造 per-node route candidate 的主要输入是 `devices/*
         "rtt_ms": 12,
         "last_probe": 1710000030,
         "last_success": 1710000030,
-        "failure_reason": null,
-        "source": "tunnel_mgr"
+        "failure_reason": null
       }
     ]
   }
@@ -257,7 +249,7 @@ Boot 后 scheduler 构造 per-node route candidate 的主要输入是 `devices/*
 - `generation`：本节点网络观测递增版本。只要 route-relevant 信息发生变化就递增。
 - `observation_id`：对 endpoint、IPv6 能力、关键 probe 结果等稳定字段计算的 hash。scheduler 可用它判断是否需要重算。
 - `changed_at`：本节点认为网络环境最近一次变化的时间。
-- `observed_at`：本次上报时间。scheduler 仍应自行比较旧值，不能只依赖节点判断。
+- `endpoints[].scope`：`lan` / `global`。IP family 由 `endpoints[].ip` 自身推断，不再单独上报。
 - `ipv6.state`
   - `unknown`：未探测。
   - `unavailable`：没有可用 IPv6。
@@ -774,7 +766,6 @@ cyfs-gateway 的 group forward 和 tunnel_mgr URL 状态查询已经可用，Buc
    - `generation`
    - `observation_id`
    - `changed_at`
-   - `observed_at`
 4. IPv6 判断必须区分有地址、出站可用和 RTCP direct 可用。
 5. direct probe 先覆盖 OOD 和 ZoneGateway 等关键节点，不做服务级 probe。
 6. 单元测试覆盖：

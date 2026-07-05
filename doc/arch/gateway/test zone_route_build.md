@@ -5,7 +5,7 @@
 - scheduler 是 **source 视角** 的：同一个 target node 在不同 source 节点的 routes 里可以完全不一样。每个 source 独立计算自己的 `routes[target]`。
 - `build_forward_plan(...)` 现在返回 `ForwardPlan { routes, did_ip_hints }` 两份输出：
   - **routes**：每个 target 最多 3 条 candidate（`direct`(10) / `via-sn`(30) / `via-zone-gateway`(40)），URL **一律是 DID hostname 形态**（`rtcp://<target>.<zone>[:port]/`）。
-  - **did_ip_hints**：以 target 的 DID hostname 为 key 的 IP 事实清单，喂给 cyfs-gateway 的 `resolve_ips`，由后者按 family / scope / freshness / 历史 RTT 排序并 Happy Eyeballs 竞速。scheduler **不再做 IP 级排序**。
+  - **did_ip_hints**：以 target 的 DID hostname 为 key 的 IP 事实清单，喂给 cyfs-gateway 的 `resolve_ips`，由后者按 IP family（由 IP 字面推断）/ scope / freshness / 历史 RTT 排序并 Happy Eyeballs 竞速。scheduler **不再做 IP 级排序**。
 - direct candidate 至多 **一条**。决定它是否生成、附上哪种证据，由一组**互斥的判定**按优先序确定：SignedWanIp → DirectProbe → Ipv6GlobalEndpoint → WanTarget → SameNetId → SharedOodInference。任一成立即写一条 `direct`，priority 永远是 10，`evidence.evidence_type` 字段标明命中分支。
 - direct / relay 的 priority 只剩 10 / 30 / 40 三档。direct 存在时，relay 自动打 `backup=true`；relay 只要 zone_config 配置就一定写入。
 - **签名 IP 互斥**：target 在 DeviceConfig 中有 owner 签名的 wan IP 时，`did_ip_hints[target]` 仅保留 `SignedDeviceDoc` 来源；其它（LanEndpoint / GlobalIpv6）即使观测到也会被剔除。direct candidate 自身仍然只是 DID hostname URL，不再因签名 IP 改变 `keep_tunnel`。
@@ -18,9 +18,9 @@
 | `device_doc.ips` | 激活时签名 | target 有签名 wan IP → direct evidence = `signed_wan_ip`；IP 进 `did_ip_hints` 标 `SignedDeviceDoc`，并触发互斥 |
 | `network_observation.direct_probe[]` | node-daemon 周期上报 | reachable + 新鲜 → direct evidence = `direct_probe`，evidence 上挂 rtt / last_success / ttl |
 | `network_observation.endpoints[scope=lan]` | 系统接口枚举 | 进 `did_ip_hints` 标 `LanEndpoint`；同时参与子网一致性反证 |
-| `network_observation.endpoints[scope=global, family=ipv6]` | 系统接口枚举 | 进 `did_ip_hints` 标 `GlobalIpv6`（target v6.state=unavailable 时不进） |
+| `network_observation.endpoints[scope=global, ip 为 IPv6]` | 系统接口枚举 | 进 `did_ip_hints` 标 `GlobalIpv6`（target v6.state=unavailable 时不进） |
 | `network_observation.ipv6.state` | source / target 自己探测 | source `egress_ok`/`rtcp_direct_ok` + target 非 `unavailable` + target 有 global v6 → direct evidence = `ipv6_global_endpoint`；source `rtcp_direct_ok` 时 v6 hint confidence=high，否则 medium |
-| `network_observation.observed_at` + `probe.last_success` + `freshness_ttl_secs` | 同上 | `observed_at - last_success > ttl` → probe 视为 stale，丢弃 |
+| `probe.last_probe` + `probe.last_success` + `freshness_ttl_secs` | 同上 | `last_probe - last_success > ttl` → probe 视为 stale，丢弃 |
 | `zone_config.sn` / `get_default_zone_gateway()` | ZoneConfig | 决定是否写 `via-sn` / `via-zone-gateway` relay |
 
 ## 3. node-node 物理链路场景矩阵
@@ -33,7 +33,7 @@
 | 2 | 同 net_id 标签但实测不同子网（VPN/桥接误标） | lan1, 192.168.1.x | lan1, 10.0.0.x | **无 direct**（子网反证） | `LanEndpoint`(10.0.0.x) |
 | 3 | 同 LAN 但都未填 net_id | None | None | `same_net_id`（unknown_lan 视同同 LAN）| 视 endpoint |
 | 4 | 同 LAN + 已 probe 成功 + 上报 lan endpoint | lan1 + probe→ood2 | lan1 + lan endpoint | `direct_probe`（优先级压过 same_net_id）| `LanEndpoint` |
-| 5 | 同 LAN + probe 已 stale | lan1，probe last_success+ttl < observed_at | lan1 | `same_net_id`（stale 不再触发 direct_probe）| 视 endpoint |
+| 5 | 同 LAN + probe 已 stale | lan1，probe last_success+ttl < last_probe | lan1 | `same_net_id`（stale 不再触发 direct_probe）| 视 endpoint |
 | 6 | source LAN/NAT，target 公网静态签名 IP | nat / lan1 | wan + 签名 ips | `signed_wan_ip` | `SignedDeviceDoc`（其它来源被互斥剔除）|
 | 7 | source LAN/NAT，target wan_dyn 无签名 IP（DDNS） | nat | wan_dyn 无 ips | `wan_target_net_id` | 视 endpoint（无签名 IP 不触发互斥）|
 | 8 | source LAN，target portmap | lan1 | portmap | `wan_target_net_id` | 视 endpoint |
@@ -67,8 +67,8 @@ did_ip_hints 是给 cyfs-gateway resolve_ips 的 IP 事实清单，建议作为 
 | 断言点 | 触发条件 | 期望 |
 |---|---|---|
 | 含 `SignedDeviceDoc` 来源 | target.net_id wan 系 + `device_doc.ips` 非空 | hints 包含每个签名 IP，confidence=high；**互斥**生效，hints 中只剩 SignedDeviceDoc |
-| 含 `LanEndpoint` 来源 | target.network_observation 有 `scope=lan` endpoint | 每条 lan endpoint 都进 hints，confidence=medium；`last_observed_at` 优先取 endpoint.observed_at，否则 obs.observed_at |
-| 含 `GlobalIpv6` 来源 | target.network_observation 有 `scope=global, family=ipv6` endpoint **且** ipv6.state ≠ "unavailable" | confidence=high（state=rtcp_direct_ok）/ medium（其它）|
+| 含 `LanEndpoint` 来源 | target.network_observation 有 `scope=lan` endpoint | 每条 lan endpoint 都进 hints，confidence=medium；endpoint 观测时间不再进入 hint |
+| 含 `GlobalIpv6` 来源 | target.network_observation 有 `scope=global` 且 IP 为 IPv6 的 endpoint **且** ipv6.state ≠ "unavailable" | confidence=high（state=rtcp_direct_ok）/ medium（其它）|
 | 互斥不变量 | 任意 hint 是 SignedDeviceDoc | 其它 source 全部被剔除，最终列表只剩 SignedDeviceDoc 项 |
 | port 字段 | 任何 hint | 等于 `device_rtcp_port(target)`（target.device_doc.rtcp_port 或默认 2980）|
 | key 形态 | 非空 hints | `did_ip_hints` 的 key = `format!("{}.{}", target_node_id, zone_host)`（DID hostname），不是 node_id |
@@ -79,7 +79,7 @@ did_ip_hints 是给 cyfs-gateway resolve_ips 的 IP 事实清单，建议作为 
 1. **IPv6 link-local / ULA**：当前只消费 `scope=global` 的 v6 endpoint。fe80::/fc00:: 段不会进 hints，即使在同一段 v6 LAN 也是。
 2. **IPv4 子网阈值**：子网一致性反证硬编码 /24（v4）和 /64（v6）。校园网 /23、运营商大段 /20 会被错判为不同 LAN（拒绝 same_net_id）；某些 /25、/26 切分则会被错判为同 LAN。
 3. **target 多 NIC**：现在所有 lan endpoint 都进 `did_ip_hints`，不再像旧实现只取第一条；resolve_ips 端会自行排序竞速。测试时应预期 hints 长度 == endpoints 中 lan 条目数（dedup 按 ip+source）。
-4. **scheduler 自身时钟**：probe 新鲜度只用 `observation.observed_at - last_success` 比较，不用 scheduler 当前时间。从 device 上报到 scheduler 调度之间的延迟（可能数分钟到数小时）不会导致 probe 进一步 stale。
+4. **scheduler 自身时钟**：probe 新鲜度只用 `probe.last_probe - last_success` 比较，不用 scheduler 当前时间。从 device 上报到 scheduler 调度之间的延迟（可能数分钟到数小时）不会导致 probe 进一步 stale；缺少 `last_probe` 时不判 stale。
 5. **同 net_id 标签的"假同 LAN"**：场景 #24 提到的 `nat` / `portmap` 同 net_id 误判；以及任意 `lan*` 标签拼写一致但物理不同 LAN 的场景。`endpoints` 子网反证只在双方都有 LAN endpoint 时才生效。
 6. **probe 单向性**：probe 只在 source → target 方向发挥作用。source 能 probe 到 target 不代表反向 routes（target → source）也有 `direct_probe` evidence。要分别测 A→B 和 B→A 两个 source 视角。
 7. **签名 IP 互斥的副作用**：target 有签名 IP 时，**即使** source 与 target 同 LAN、有 lan endpoint、IPv6 都 ok：
@@ -113,7 +113,7 @@ let routes: HashMap<String, Vec<NodeGatewayRouteCandidate>> = plan.routes;
 let hints: HashMap<String, Vec<DidIpHint>> = plan.did_ip_hints;
 // key = "<target>.<zone_host>"
 // hint 上稳定的断言锚：ip / port / source ∈ {SignedDeviceDoc, LanEndpoint, GlobalIpv6} /
-// confidence(high|medium|low) / last_observed_at。
+// confidence(high|medium|low)。
 ```
 
 返回结构：

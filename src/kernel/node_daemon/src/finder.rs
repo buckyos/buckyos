@@ -816,6 +816,7 @@ pub(crate) fn add_discovered_device_cache(discovered: &HashMap<String, Discovere
                         device_did.clone(),
                         Some(DidDocType::Device),
                         device_doc,
+                        Some(name_client::UpdateSource::UdpDiscovery),
                     ) {
                         warn!(
                             "add discovered device doc cache failed, did={:?}, err={}",
@@ -950,7 +951,7 @@ fn save_finder_cache<'a>(
 mod tests {
     use super::*;
     use jsonwebtoken::jwk::Jwk;
-    use name_lib::{DeviceNodeType, OODDescriptionString, DID};
+    use name_lib::{DeviceNodeType, OODDescriptionString, OwnerDocument, DID};
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1042,11 +1043,20 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
             let _ = name_client::GLOBAL_NAME_CLIENT.set(client);
             let _ = name_client::IS_NAME_LIB_INITED.set(true);
         }
-        name_client::GLOBAL_NAME_CLIENT
-            .get()
-            .unwrap()
+        let client = name_client::GLOBAL_NAME_CLIENT.get().unwrap();
+        client
             .add_provider(Box::new(EmptyNameProvider), Some(-100))
             .await;
+        client
+            .add_method_supplement("bns", Box::new(EmptyNameProvider))
+            .await;
+        client.set_local_authority_override(
+            DID::new("bns", "alice"),
+            DidDocType::Owner,
+            test_owner_document(),
+            "node-daemon-test",
+            None,
+        );
     }
 
     fn unique_test_id(prefix: &str) -> String {
@@ -1078,6 +1088,19 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
 
     fn signed_device_doc(name: &str, public_x: &str) -> String {
         signed_device_doc_with(name, public_x, "ood", None)
+    }
+
+    fn test_owner_document() -> EncodedDocument {
+        let mut owner = OwnerDocument::new(
+            DID::new("bns", "alice"),
+            "alice".to_string(),
+            "alice@test".to_string(),
+            jwk(OWNER_PUBLIC_X),
+        );
+        owner.version_seq = Some(0);
+        owner
+            .encode(Some(&encoding_key(OWNER_PRIVATE_KEY)))
+            .unwrap()
     }
 
     #[test]
@@ -1161,7 +1184,8 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         let temp_dir = std::env::temp_dir().join(unique_test_id("buckyos-finder-cache-load"));
         let cache_path = temp_dir.join(FINDER_CACHE_FILE);
         let zone_document = test_zone_document();
-        let peer_did = DID::new("finder-test", unique_test_id("cached-ood2").as_str());
+        let peer_name = format!("{}.alice", unique_test_id("cached-ood2"));
+        let peer_did = DID::new("bns", peer_name.as_str());
         let ood1_doc_jwt = signed_device_doc("ood1", OOD1_PUBLIC_X);
         let ood2_doc_jwt =
             signed_device_doc_with("ood2", OOD2_PUBLIC_X, "ood", Some(peer_did.clone()));

@@ -26,7 +26,6 @@ struct TunnelUrlStatus {
     rtt_ms: Option<u64>,
     last_success_at_ms: Option<u64>,
     failure_reason: Option<String>,
-    source: String,
     observed_at_ms: u64,
 }
 
@@ -190,7 +189,6 @@ pub async fn probe_key_tunnels_via_gateway(
             last_success: status.last_success_at_ms.map(ms_to_secs),
             freshness_ttl_secs: None,
             failure_reason: status.failure_reason,
-            source: Some(format!("gateway_tunnel_mgr:{}", status.source)),
         });
     }
     results.sort_by(|a, b| a.target_node.cmp(&b.target_node));

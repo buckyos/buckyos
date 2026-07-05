@@ -1965,6 +1965,7 @@ mod tests {
     const TEST_OWNER_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 -----END PRIVATE KEY-----"#;
+    const TEST_OWNER_PUBLIC_X: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
 
     fn create_temp_pkg_env_path(test_name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -2024,11 +2025,20 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             let _ = name_client::GLOBAL_NAME_CLIENT.set(client);
             let _ = name_client::IS_NAME_LIB_INITED.set(true);
         }
-        name_client::GLOBAL_NAME_CLIENT
-            .get()
-            .unwrap()
+        let client = name_client::GLOBAL_NAME_CLIENT.get().unwrap();
+        client
             .add_provider(Box::new(EmptyNameProvider), Some(-100))
             .await;
+        client
+            .add_method_supplement("bns", Box::new(EmptyNameProvider))
+            .await;
+        client.set_local_authority_override(
+            DID::new("bns", "alice"),
+            DidDocType::Owner,
+            test_owner_document(),
+            "node-daemon-test",
+            None,
+        );
     }
 
     fn unique_test_id(prefix: &str) -> String {
@@ -2046,6 +2056,30 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             "x": "Bb325f2ed0XSxrPS5sKQaX7ylY9Jh9rfevXiidKA1zc"
         }))
         .unwrap()
+    }
+
+    fn test_cache_owner_key() -> Jwk {
+        serde_json::from_value(json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": TEST_OWNER_PUBLIC_X
+        }))
+        .unwrap()
+    }
+
+    fn test_owner_document() -> EncodedDocument {
+        let mut owner = OwnerDocument::new(
+            DID::new("bns", "alice"),
+            "alice".to_string(),
+            "alice@test".to_string(),
+            test_cache_owner_key(),
+        );
+        owner.version_seq = Some(0);
+        owner
+            .encode(Some(
+                &EncodingKey::from_ed_pem(TEST_OWNER_PRIVATE_KEY.as_bytes()).unwrap(),
+            ))
+            .unwrap()
     }
 
     fn test_zone_with_oods(oods: Vec<OODDescriptionString>) -> ZoneDocument {
@@ -2199,7 +2233,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     #[tokio::test]
     async fn test_discovered_device_cache_updates_resolve_did_and_ips() {
         ensure_name_client_for_tests().await;
-        let peer_did = DID::new("finder-test", unique_test_id("node-daemon-peer").as_str());
+        let peer_name = format!("{}.alice", unique_test_id("node-daemon-peer"));
+        let peer_did = DID::new("bns", peer_name.as_str());
         let endpoint_ip = "192.168.1.22".parse().unwrap();
         let node = discovered_node_for_cache(peer_did.clone(), endpoint_ip);
         let mut discovered = HashMap::new();

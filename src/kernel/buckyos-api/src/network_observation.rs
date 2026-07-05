@@ -17,7 +17,6 @@ const DEFAULT_IPV6_PROBE_TARGET: &str = "[2606:4700:4700::1111]:443";
 const DEFAULT_DIRECT_PROBE_TIMEOUT_MS: u64 = 1500;
 const DEFAULT_IPV6_PROBE_TIMEOUT_MS: u64 = 1500;
 const DEFAULT_DIRECT_PROBE_TTL_SECS: u64 = 600;
-const DEFAULT_PROBE_SOURCE: &str = "node_daemon";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct NetworkObservation {
@@ -27,8 +26,6 @@ pub struct NetworkObservation {
     pub observation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed_at: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtcp_port: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,13 +53,7 @@ pub struct NetworkEndpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub family: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -89,8 +80,6 @@ pub struct ProbeInfo {
     pub freshness_ttl_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -99,7 +88,6 @@ pub struct NetworkObserverConfig {
     pub ipv6_probe_timeout: Duration,
     pub direct_probe_timeout: Duration,
     pub direct_probe_freshness_ttl_secs: u64,
-    pub probe_source: String,
 }
 
 impl Default for NetworkObserverConfig {
@@ -109,7 +97,6 @@ impl Default for NetworkObserverConfig {
             ipv6_probe_timeout: Duration::from_millis(DEFAULT_IPV6_PROBE_TIMEOUT_MS),
             direct_probe_timeout: Duration::from_millis(DEFAULT_DIRECT_PROBE_TIMEOUT_MS),
             direct_probe_freshness_ttl_secs: DEFAULT_DIRECT_PROBE_TTL_SECS,
-            probe_source: DEFAULT_PROBE_SOURCE.to_string(),
         }
     }
 }
@@ -138,9 +125,15 @@ impl NetworkObserver {
         peers: &HashMap<String, DeviceInfo>,
     ) -> NetworkObservation {
         let observed_at = buckyos_get_unix_timestamp();
-        let endpoints = collect_endpoints(all_ip, &device_doc.ips, observed_at);
+        let endpoints = collect_endpoints(all_ip, &device_doc.ips);
         let has_global_v6 = endpoints.iter().any(|ep| {
-            ep.family.as_deref() == Some("ipv6") && ep.scope.as_deref() == Some("global")
+            ep.scope.as_deref() == Some("global")
+                && ep
+                    .ip
+                    .as_deref()
+                    .and_then(|ip| ip.parse::<IpAddr>().ok())
+                    .map(|ip| matches!(ip, IpAddr::V6(_)))
+                    .unwrap_or(false)
         });
         let ipv6 = self.probe_ipv6_state(has_global_v6, observed_at).await;
         let direct_probe = self
@@ -152,7 +145,6 @@ impl NetworkObserver {
             generation: None,
             observation_id: None,
             changed_at: None,
-            observed_at: Some(observed_at),
             rtcp_port,
             ipv6: Some(ipv6),
             endpoints,
@@ -226,11 +218,10 @@ impl NetworkObserver {
             }
             let port = peer_info.device_doc.rtcp_port.unwrap_or(DEFAULT_RTCP_PORT);
             let timeout = self.config.direct_probe_timeout;
-            let source = self.config.probe_source.clone();
             let ttl = self.config.direct_probe_freshness_ttl_secs;
             let target = peer_name.clone();
             join_set.spawn(async move {
-                probe_single_peer(target, port, candidates, timeout, source, ttl, now).await
+                probe_single_peer(target, port, candidates, timeout, ttl, now).await
             });
         }
 
@@ -247,25 +238,18 @@ impl NetworkObserver {
     }
 }
 
-fn collect_endpoints(
-    all_ip: &[IpAddr],
-    declared_ips: &[IpAddr],
-    observed_at: u64,
-) -> Vec<NetworkEndpoint> {
+fn collect_endpoints(all_ip: &[IpAddr], declared_ips: &[IpAddr]) -> Vec<NetworkEndpoint> {
     let mut seen: Vec<IpAddr> = Vec::new();
     let mut endpoints: Vec<NetworkEndpoint> = Vec::new();
     let mut push = |ip: IpAddr| {
         if seen.iter().any(|existing| existing == &ip) {
             return;
         }
-        if let Some((family, scope)) = classify_ip(&ip) {
+        if let Some((_family, scope)) = classify_ip(&ip) {
             seen.push(ip);
             endpoints.push(NetworkEndpoint {
                 ip: Some(ip.to_string()),
-                family: Some(family.to_string()),
                 scope: Some(scope.to_string()),
-                source: Some("system_interface".to_string()),
-                observed_at: Some(observed_at),
             });
         }
     };
@@ -344,7 +328,6 @@ async fn probe_single_peer(
     port: u32,
     candidates: Vec<IpAddr>,
     timeout: Duration,
-    source: String,
     ttl_secs: u64,
     now: u64,
 ) -> Option<ProbeInfo> {
@@ -364,7 +347,6 @@ async fn probe_single_peer(
                     last_success: Some(now),
                     freshness_ttl_secs: Some(ttl_secs),
                     failure_reason: None,
-                    source: Some(source),
                 });
             }
             Ok(Err(err)) => debug!(
@@ -414,8 +396,8 @@ fn compute_observation_id(obs: &NetworkObservation) -> String {
     }
     let mut endpoints: Vec<&NetworkEndpoint> = obs.endpoints.iter().collect();
     endpoints.sort_by(|a, b| {
-        let key_a = (a.ip.as_deref(), a.family.as_deref(), a.scope.as_deref());
-        let key_b = (b.ip.as_deref(), b.family.as_deref(), b.scope.as_deref());
+        let key_a = (a.ip.as_deref(), a.scope.as_deref());
+        let key_b = (b.ip.as_deref(), b.scope.as_deref());
         key_a.cmp(&key_b)
     });
     for ep in endpoints {
@@ -426,10 +408,6 @@ fn compute_observation_id(obs: &NetworkObservation) -> String {
         hasher.update(b"|");
         if let Some(scope) = ep.scope.as_deref() {
             hasher.update(scope.as_bytes());
-        }
-        hasher.update(b"|");
-        if let Some(family) = ep.family.as_deref() {
-            hasher.update(family.as_bytes());
         }
     }
     let mut probes: Vec<&ProbeInfo> = obs.direct_probe.iter().collect();
@@ -500,7 +478,7 @@ mod tests {
     fn collect_endpoints_dedupes_and_categorizes() {
         let lan = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 23));
         let global = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
-        let endpoints = collect_endpoints(&[lan, lan, global], &[lan], 100);
+        let endpoints = collect_endpoints(&[lan, lan, global], &[lan]);
         assert_eq!(endpoints.len(), 2);
         assert_eq!(endpoints[0].ip.as_deref(), Some("192.168.1.23"));
         assert_eq!(endpoints[0].scope.as_deref(), Some("lan"));
@@ -511,18 +489,13 @@ mod tests {
     #[test]
     fn observation_id_is_stable_under_volatile_fields() {
         let mut a = NetworkObservation::default();
-        a.observed_at = Some(100);
         a.rtcp_port = Some(2980);
         a.endpoints.push(NetworkEndpoint {
             ip: Some("192.168.1.1".to_string()),
-            family: Some("ipv4".to_string()),
             scope: Some("lan".to_string()),
-            source: Some("system_interface".to_string()),
-            observed_at: Some(100),
         });
         let mut b = a.clone();
-        b.observed_at = Some(999);
-        b.endpoints[0].observed_at = Some(999);
+        b.changed_at = Some(999);
         assert_eq!(compute_observation_id(&a), compute_observation_id(&b));
     }
 
@@ -542,7 +515,6 @@ mod tests {
             ipv6_probe_timeout: Duration::from_millis(50),
             direct_probe_timeout: Duration::from_millis(50),
             direct_probe_freshness_ttl_secs: 600,
-            probe_source: "test".to_string(),
         });
         let mut device_doc = name_lib::DeviceDocument::new("ood1", "x".to_string());
         device_doc.rtcp_port = Some(2980);

@@ -38,8 +38,8 @@ fn global_ipv6_endpoint(observation: &NetworkObservation) -> Option<IpAddr> {
         .endpoints
         .iter()
         .filter(|ep| ep.scope.as_deref() == Some("global"))
-        .filter(|ep| ep.family.as_deref() == Some("ipv6"))
         .filter_map(|ep| ep.ip.as_deref().and_then(|ip| ip.parse::<IpAddr>().ok()))
+        .filter(|ip| matches!(ip, IpAddr::V6(_)))
         .next()
 }
 
@@ -86,8 +86,8 @@ fn endpoints_refute_same_lan(
         .any(|s| tgt_lans.iter().any(|t| ip_subnet_matches(s, t)))
 }
 
-fn probe_is_fresh(probe: &ProbeInfo, observed_at: Option<u64>) -> bool {
-    let Some(observed_at) = observed_at else {
+fn probe_is_fresh(probe: &ProbeInfo) -> bool {
+    let Some(last_probe) = probe.last_probe else {
         return true;
     };
     let Some(last_success) = probe.last_success else {
@@ -96,7 +96,7 @@ fn probe_is_fresh(probe: &ProbeInfo, observed_at: Option<u64>) -> bool {
     let Some(ttl) = probe.freshness_ttl_secs else {
         return true;
     };
-    observed_at.saturating_sub(last_success) <= ttl
+    last_probe.saturating_sub(last_success) <= ttl
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -284,15 +284,12 @@ fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> 
         if let Ok(parsed) =
             serde_json::from_value::<NetworkObservation>(network_observation.clone())
         {
-            collect_reachable_probe_targets(&parsed.direct_probe, parsed.observed_at, &mut result);
+            collect_reachable_probe_targets(&parsed.direct_probe, &mut result);
         } else if let Some(direct_probe) = network_observation
             .get("direct_probe")
             .and_then(Value::as_array)
         {
-            let observed_at = network_observation
-                .get("observed_at")
-                .and_then(Value::as_u64);
-            collect_reachable_probe_target_values(direct_probe, observed_at, &mut result);
+            collect_reachable_probe_target_values(direct_probe, &mut result);
         }
     }
 
@@ -302,9 +299,8 @@ fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> 
         .get("direct_probe")
         .and_then(Value::as_array)
     {
-        // 顶层 `direct_probe` 字段没有 observation 上下文，无从判断 freshness；
-        // 仍按 reachable 直接保留，由其它新鲜度通道（network_observation）覆盖。
-        collect_reachable_probe_target_values(direct_probe, None, &mut result);
+        // 顶层 `direct_probe` 字段只在 probe 自身携带 last_probe/last_success/ttl 时判断 freshness。
+        collect_reachable_probe_target_values(direct_probe, &mut result);
     }
 
     result
@@ -312,36 +308,30 @@ fn direct_probe_targets(device_info: &DeviceInfo) -> HashMap<String, ProbeInfo> 
 
 fn collect_reachable_probe_target_values(
     direct_probe: &[Value],
-    observed_at: Option<u64>,
     result: &mut HashMap<String, ProbeInfo>,
 ) {
     for probe in direct_probe.iter() {
         let Ok(probe_info) = serde_json::from_value::<ProbeInfo>(probe.clone()) else {
             continue;
         };
-        collect_reachable_probe_target(probe_info, observed_at, result);
+        collect_reachable_probe_target(probe_info, result);
     }
 }
 
 fn collect_reachable_probe_targets(
     direct_probe: &[ProbeInfo],
-    observed_at: Option<u64>,
     result: &mut HashMap<String, ProbeInfo>,
 ) {
     for probe in direct_probe.iter().cloned() {
-        collect_reachable_probe_target(probe, observed_at, result);
+        collect_reachable_probe_target(probe, result);
     }
 }
 
-fn collect_reachable_probe_target(
-    probe: ProbeInfo,
-    observed_at: Option<u64>,
-    result: &mut HashMap<String, ProbeInfo>,
-) {
+fn collect_reachable_probe_target(probe: ProbeInfo, result: &mut HashMap<String, ProbeInfo>) {
     if !probe_is_reachable(&probe) {
         return;
     }
-    if !probe_is_fresh(&probe, observed_at) {
+    if !probe_is_fresh(&probe) {
         return;
     }
 
@@ -617,12 +607,12 @@ fn did_ip_hints_for_target(
                         port: Some(target_port),
                         source: DidIpHintSource::LanEndpoint,
                         confidence: "medium".to_string(),
-                        last_observed_at: endpoint.observed_at.or(obs.observed_at),
+                        last_observed_at: None,
                         freshness_ttl_secs: None,
                     },
                     &mut hints,
                 ),
-                "global" if endpoint.family.as_deref() == Some("ipv6") => {
+                "global" if matches!(ip, IpAddr::V6(_)) => {
                     if v6_state == Some("unavailable") {
                         continue;
                     }
@@ -637,7 +627,7 @@ fn did_ip_hints_for_target(
                             port: Some(target_port),
                             source: DidIpHintSource::GlobalIpv6,
                             confidence: confidence.to_string(),
-                            last_observed_at: endpoint.observed_at.or(obs.observed_at),
+                            last_observed_at: None,
                             freshness_ttl_secs: None,
                         },
                         &mut hints,
@@ -835,7 +825,6 @@ mod tests {
                 "generation": 12,
                 "observation_id": "sha256:test",
                 "changed_at": 1710000000_u64,
-                "observed_at": 1710000030_u64,
                 "rtcp_port": 2980,
                 "ipv6": {
                     "state": "egress_ok",
@@ -846,10 +835,7 @@ mod tests {
                 "endpoints": [
                     {
                         "ip": "192.168.1.23",
-                        "family": "ipv4",
-                        "scope": "lan",
-                        "source": "system_interface",
-                        "observed_at": 1710000030_u64
+                        "scope": "lan"
                     }
                 ],
                 "direct_probe": [
@@ -862,8 +848,7 @@ mod tests {
                         "last_probe": 1710000030_u64,
                         "last_success": 1710000030_u64,
                         "freshness_ttl_secs": 600_u64,
-                        "failure_reason": null,
-                        "source": "tunnel_mgr"
+                        "failure_reason": null
                     }
                 ]
             }),
@@ -890,14 +875,10 @@ mod tests {
         device_info.device_doc.extra_info.insert(
             "network_observation".to_string(),
             json!({
-                "observed_at": 1710000030_u64,
                 "endpoints": [
                     {
                         "ip": ip,
-                        "family": "ipv4",
-                        "scope": "lan",
-                        "source": "system_interface",
-                        "observed_at": 1710000030_u64
+                        "scope": "lan"
                     }
                 ]
             }),
@@ -909,16 +890,12 @@ mod tests {
         if let Some(ip) = global_ipv6 {
             endpoints.push(json!({
                 "ip": ip,
-                "family": "ipv6",
-                "scope": "global",
-                "source": "system_interface",
-                "observed_at": 1710000030_u64
+                "scope": "global"
             }));
         }
         device_info.device_doc.extra_info.insert(
             "network_observation".to_string(),
             json!({
-                "observed_at": 1710000030_u64,
                 "ipv6": { "state": state },
                 "endpoints": endpoints
             }),
@@ -990,20 +967,15 @@ mod tests {
         device_ood2.device_doc.extra_info.insert(
             "network_observation".to_string(),
             json!({
-                "observed_at": 1710000030_u64,
                 "ipv6": { "state": "rtcp_direct_ok" },
                 "endpoints": [
                     {
                         "ip": "192.168.1.23",
-                        "family": "ipv4",
-                        "scope": "lan",
-                        "observed_at": 1710000030_u64
+                        "scope": "lan"
                     },
                     {
                         "ip": "2001:db9::23",
-                        "family": "ipv6",
-                        "scope": "global",
-                        "observed_at": 1710000030_u64
+                        "scope": "global"
                     }
                 ]
             }),
@@ -1282,7 +1254,7 @@ mod tests {
 
     #[test]
     fn test_build_forward_plan_skips_stale_direct_probe() {
-        // probe 上报时已经超过 freshness_ttl_secs：last_success 比 observed_at 老 1000s，
+        // probe 上报时已经超过 freshness_ttl_secs：last_success 比 last_probe 老 1000s，
         // ttl 60s。direct evidence 应回退到 net_id 推断而非 direct_probe。
         let mut zone_config = create_test_zone_config();
         zone_config.sn = Some("sn.test.buckyos.io".to_string());
@@ -1292,11 +1264,11 @@ mod tests {
         device_ood1.device_doc.extra_info.insert(
             "network_observation".to_string(),
             json!({
-                "observed_at": 1710001000_u64,
                 "direct_probe": [
                     {
                         "target_node": "ood2",
                         "status": "reachable",
+                        "last_probe": 1710001000_u64,
                         "last_success": 1710000000_u64,
                         "freshness_ttl_secs": 60_u64
                     }
@@ -1352,7 +1324,7 @@ mod tests {
             .expect("lan endpoint should appear in did_ip_hints");
         assert_eq!(lan_hint.ip, "192.168.1.23".parse::<IpAddr>().unwrap());
         assert_eq!(lan_hint.confidence, "medium");
-        assert_eq!(lan_hint.last_observed_at, Some(1710000030));
+        assert_eq!(lan_hint.last_observed_at, None);
     }
 
     #[test]
@@ -1461,20 +1433,15 @@ mod tests {
         let mut device = create_test_device_info_with_net_id("ood2", Some("wan"));
         device.device_doc.ips.push("203.0.113.10".parse().unwrap());
         let obs: NetworkObservation = serde_json::from_value(json!({
-            "observed_at": 1710000030_u64,
             "ipv6": { "state": "rtcp_direct_ok" },
             "endpoints": [
                 {
                     "ip": "192.168.1.23",
-                    "family": "ipv4",
-                    "scope": "lan",
-                    "observed_at": 1710000030_u64
+                    "scope": "lan"
                 },
                 {
                     "ip": "2001:db9::23",
-                    "family": "ipv6",
-                    "scope": "global",
-                    "observed_at": 1710000030_u64
+                    "scope": "global"
                 }
             ]
         }))

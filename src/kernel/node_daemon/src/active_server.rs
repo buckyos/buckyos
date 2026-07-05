@@ -103,8 +103,13 @@ impl ActiveServer {
     async fn update_zone_boot_cache(zone_did: &DID, zone_boot_config_jwt: &str) {
         let zone_boot_doc = EncodedDocument::Jwt(zone_boot_config_jwt.to_string());
 
-        if let Err(err) =
-            update_did_cache(zone_did.clone(), Some(DidDocType::Boot), zone_boot_doc).await
+        if let Err(err) = update_did_cache(
+            zone_did.clone(),
+            Some(DidDocType::Boot),
+            zone_boot_doc,
+            Some(UpdateSource::Authority),
+        )
+        .await
         {
             warn!(
                 "update zone boot did cache failed, zone_did={:?}, err={}",
