@@ -1336,6 +1336,15 @@ async fn node_daemon_main_loop(
 
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
+            if let Err(err) =
+                keep_cyfs_gateway_service(node_id, device_doc, device_private_key, false, false)
+                    .await
+            {
+                warn!(
+                    "keep cyfs_gateway service after node_main failure failed! {}",
+                    err
+                );
+            }
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         } else {
             is_running = main_result.unwrap();
@@ -1343,6 +1352,8 @@ async fn node_daemon_main_loop(
                 break;
             }
             let mut gateway_info_keep_tunnels: Vec<String> = Vec::new();
+            let gateway_info_path =
+                buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
             let new_node_gateway_info =
                 load_node_gateway_info(node_host_name, &system_config_client).await;
             if let Ok(new_node_gateway_info) = new_node_gateway_info {
@@ -1361,13 +1372,18 @@ async fn node_daemon_main_loop(
                 } else if need_write {
                     node_gateway_info_id = Some(new_node_gateway_info_id_value);
                     info!("node gateway_info changed, will write to node_gateway_info.json");
-                    let gateway_info_path =
-                        buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
                     std::fs::write(gateway_info_path, new_node_gateway_info_str.as_bytes())
                         .unwrap();
                 }
             } else {
                 error!("load node gateway_info from system_config failed!");
+                if let Some(local_gateway_info) = std::fs::read_to_string(&gateway_info_path)
+                    .ok()
+                    .and_then(|content| serde_json::from_str::<Value>(content.as_str()).ok())
+                {
+                    gateway_info_keep_tunnels =
+                        extract_keep_tunnel_targets_from_gateway_info(&local_gateway_info);
+                }
             }
 
             info!("node_main OK, load node gateway config ...");
