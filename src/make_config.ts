@@ -1,11 +1,33 @@
 #!/usr/bin/env -S deno run --allow-all
 // make_config.ts - TypeScript rewrite of make_config.py.
-// Builds all config files of a target rootfs with buckyos-websdk provision:
-// no buckycli binary, no python/buckyos_devkit required.
+//
+// Design intent:
+// These make_*_config scripts pre-seed on-disk user data before a service or
+// software package starts. They intentionally use the public Web SDK provision
+// surface, not buckycli internals, so the dev environment continuously simulates
+// what a third-party tool or agent can do when it writes a user's software
+// configuration directly.
+//
+// The generated data is treated as real local state. At boot time BuckyOS should
+// not care whether these files came from a previous runtime, a backup restore,
+// or this script; this is how the scripts exercise "local data is truth" and
+// expose data-plane incompatibilities before release.
+//
+// Iteration direction:
+// Keep this script short. It should write only the minimal seed/core user data
+// needed to identify the zone, device, trust roots, and startup environment.
+// Derived configs, indexes, caches, module-private databases, and dependent
+// module state should be lazily constructed by the owning module from its proper
+// truth source. If this script has to write both module A's data and module B's
+// data when B can be rebuilt from A, that is a signal to improve B's lazy/seed
+// initialization boundary instead of expanding this script.
 //
 // Runtime: Deno >= 2.2 (node:sqlite). The websdk import is mapped in
 // src/deno.json (buckyos/provision -> buckyos-websdk dist). For local websdk
 // development point that import at your local dist/provision.mjs.
+//
+// Scope: build target-rootfs config files with buckyos-websdk provision. There
+// is no buckycli binary or python/buckyos_devkit dependency here.
 //
 // Usage: deno run --allow-all src/make_config.ts <group> [--rootfs <dir>] [--ca <dir>]
 //   groups: dev | devtest_ood1 | alice.ood1 | bob.ood1 | charlie.ood1 |
@@ -31,16 +53,19 @@ import {
   ensureCa,
   IdentityRoots,
 } from "buckyos/provision";
+import {
+  DEFAULT_TRUST_DID,
+  ENV_ROOT_DIR,
+  getParamsFromGroupName,
+  OOD_GROUPS,
+  type OODGroupParams,
+} from "./devenv_config.ts";
 
 // ============================================================================
 // shared paths & helpers (mirror buckyos_devkit get_buckyos_root / BUCKYCLI_DIR)
 // ============================================================================
 
 const IS_WINDOWS = os.platform() === "win32";
-
-// Historical location of the buckycli working dir; user envs and the dev CA
-// keep living here so TS- and buckycli-generated environments interoperate.
-export const ENV_ROOT_DIR = path.join(os.homedir(), "buckycli");
 
 export function getBuckyosRoot(): string {
   const fromEnv = Deno.env.get("BUCKYOS_ROOT");
@@ -194,104 +219,6 @@ function signJwtEdDSA(
     createPrivateKey(privateKeyPem),
   );
   return `${signingInput}.${base64UrlEncodeBytes(signature)}`;
-}
-
-// ============================================================================
-// group parameter book
-// ============================================================================
-
-export interface OODGroupParams {
-  username: string;
-  zone_id: string;
-  node_name: string;
-  netid: string;
-  rtcp_port: number;
-  sn_base_host: string;
-  web3_bridge: string;
-  trust_did: string[];
-  force_https: boolean;
-  ca_name: string;
-}
-
-export const DEFAULT_TRUST_DID = [
-  "did:web:buckyos.org",
-  "did:web:buckyos.ai",
-  "did:web:buckyos.io",
-];
-
-const OOD_GROUPS: Record<string, OODGroupParams> = {
-  dev: {
-    username: "devtest",
-    zone_id: "test.buckyos.io",
-    node_name: "ood1",
-    netid: "wan",
-    rtcp_port: 2980,
-    sn_base_host: "",
-    web3_bridge: "web3.devtests.org",
-    trust_did: DEFAULT_TRUST_DID,
-    force_https: false,
-    ca_name: "buckyos_test_ca",
-  },
-  "alice.ood1": {
-    username: "alice",
-    zone_id: "alice.bns.did",
-    node_name: "ood1",
-    netid: "lan",
-    rtcp_port: 2980,
-    sn_base_host: "devtests.org",
-    web3_bridge: "web3.devtests.org",
-    trust_did: DEFAULT_TRUST_DID,
-    force_https: false,
-    ca_name: "buckyos_test_ca",
-  },
-  "bob.ood1": {
-    username: "bob",
-    zone_id: "bob.bns.did",
-    node_name: "ood1",
-    // netid is wan but has SN, means need to use d-dns
-    netid: "wan_dyn",
-    rtcp_port: 2980,
-    sn_base_host: "devtests.org",
-    web3_bridge: "web3.devtests.org",
-    trust_did: DEFAULT_TRUST_DID,
-    force_https: false,
-    ca_name: "buckyos_test_ca",
-  },
-  "charlie.ood1": {
-    username: "charlie",
-    zone_id: "charlie.me",
-    // portmap: https goes through relay, rtcp can connect directly
-    node_name: "ood1",
-    netid: "portmap",
-    rtcp_port: 2981,
-    sn_base_host: "devtests.org",
-    web3_bridge: "web3.devtests.org",
-    trust_did: DEFAULT_TRUST_DID,
-    force_https: false,
-    ca_name: "buckyos_test_ca",
-  },
-  devtests_ood1: {
-    username: "devtests",
-    zone_id: "devtests.org",
-    node_name: "ood1",
-    netid: "wan",
-    rtcp_port: 2980,
-    sn_base_host: "",
-    web3_bridge: "web3.devtests.org",
-    trust_did: DEFAULT_TRUST_DID,
-    force_https: false,
-    ca_name: "buckyos_test_ca",
-  },
-};
-OOD_GROUPS["devtest_ood1"] = OOD_GROUPS["dev"];
-OOD_GROUPS["sn_web"] = OOD_GROUPS["devtests_ood1"];
-
-export function getParamsFromGroupName(groupName: string): OODGroupParams {
-  const params = OOD_GROUPS[groupName];
-  if (!params) {
-    throw new Error(`invalid group name: ${groupName}`);
-  }
-  return params;
 }
 
 // ============================================================================

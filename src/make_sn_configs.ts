@@ -1,8 +1,28 @@
 #!/usr/bin/env -S deno run --allow-all
 // make_sn_configs.ts - standalone minimal SN (Super Node) deployment tool.
-// Split out of make_config.py's "sn" group: generates the full web3-gateway
-// config dir and pre-registers the dev users, with buckyos-websdk provision
-// only (no buckycli binary, no python).
+//
+// Design intent:
+// This script is the SN-side companion to make_config.ts. It pre-seeds the
+// local state that a dev Super Node owns before web3-gateway starts, using only
+// the public Web SDK provision surface. That keeps dev setup close to what a
+// third-party tool or agent would do when it registers users, devices, and zone
+// data through the data-plane API instead of relying on process-private setup
+// code.
+//
+// The user/zone/device cases come from devenv_config.ts. That file is the shared
+// user-data seed description; this script materializes the SN-owned view of that
+// seed, while make_config.ts materializes the OOD/rootfs-owned view. The boundary
+// is intentional: do not duplicate another module's derived config here just to
+// make boot pass. If web3-gateway can reconstruct indexes, caches, or dependent
+// state from its seed database and protocol data, it should do so lazily at boot.
+//
+// Iteration direction:
+// Keep this script short and owned by the SN/web3-gateway boundary. It may write
+// minimal SN service parameters, SN identity material, and seed registrations in
+// the SN database. Runtime-derived data, compatibility shims, caches, and state
+// that belongs to OOD-side services should live in the owning module's lazy/seed
+// initialization path. When a version cannot start from the old seed data, treat
+// that as a data-format compatibility signal to review before release.
 //
 // Runtime: Deno >= 2.2 (node:sqlite). websdk import mapped in src/deno.json.
 //
@@ -41,13 +61,11 @@ import {
   registerUserToSn,
 } from "buckyos/provision";
 import {
-  buildUserEnv,
   DEFAULT_TRUST_DID,
-  ensureDir,
   ENV_ROOT_DIR,
   getParamsFromGroupName,
-  makeMachineConfig,
-} from "./make_config.ts";
+} from "./devenv_config.ts";
+import { buildUserEnv, ensureDir, makeMachineConfig } from "./make_config.ts";
 
 const DEFAULT_SN_BASE_HOST = "devtests.org";
 const DEFAULT_CA_NAME = "buckyos_test_ca";
