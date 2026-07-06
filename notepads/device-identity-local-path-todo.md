@@ -234,7 +234,7 @@ device_config_path: ./node_device_config.json
 - `src/make_config.ts`
 - `src/kernel/buckyos-api/src/test_config.rs`
 - `src/tools/buckycli/src/did.rs`
-- `src/make_sn_configs.ts`
+- cyfs-gateway 仓库 `src/make_sn_config.ts`（原本仓库 `src/make_sn_configs.ts`，已迁出）
 
 顺序要求：
 

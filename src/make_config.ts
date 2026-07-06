@@ -37,7 +37,7 @@
 // - meta_index.db.fileobj fake cache (make_repo_cache_file / global env part)
 // - did_docs cache preheat (make_cache_did_docs)
 // - bin pkg meta seeding (seed_bin_pkg_meta_db)
-// SN config generation moved to the standalone src/make_sn_configs.ts.
+// SN config generation moved to the cyfs-gateway repo: src/make_sn_config.ts.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -299,7 +299,7 @@ function makeGlobalEnvConfig(
 }
 
 // ============================================================================
-// user env construction (shared with make_sn_configs.ts)
+// user env construction
 // ============================================================================
 
 // Build (or rebuild) the user env dir <envRoot>/<zone_id> with provision.
@@ -690,7 +690,7 @@ function printUsage(log: (message?: unknown) => void = console.error): void {
   log("usage: make_config.ts <group> [--rootfs <dir>] [--ca <dir>]");
   log(`groups: ${[...Object.keys(OOD_GROUPS), "release"].join(" | ")}`);
   log(
-    "sn configs: deno run make_sn_configs [--rootfs <dir>] [--ca <dir>] [--sn_ip <ip>]",
+    "sn configs: moved to the cyfs-gateway repo: deno run -A src/make_sn_config.ts [--rootfs <dir>] [--ca <dir>] [--sn_ip <ip>]",
   );
 }
 
@@ -701,7 +701,7 @@ export async function makeConfigByGroupName(
 ): Promise<void> {
   if (groupName === "sn" || groupName === "sn_server") {
     throw new Error(
-      "SN config generation moved to the standalone tool: deno run --allow-all src/make_sn_configs.ts",
+      "SN config generation moved to the cyfs-gateway repo: deno run --allow-all src/make_sn_config.ts",
     );
   }
 
@@ -779,7 +779,7 @@ async function main(): Promise<void> {
   const groupName = positionals[0];
   if (values.sn_ip && groupName !== "sn" && groupName !== "sn_server") {
     console.error(
-      "argument error: --sn_ip is only supported by src/make_sn_configs.ts",
+      "argument error: --sn_ip is only supported by cyfs-gateway's src/make_sn_config.ts",
     );
     printUsage();
     Deno.exit(1);

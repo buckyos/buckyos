@@ -5,6 +5,8 @@
 > 剩余：T4.3 的 node_daemon 启动闭环验证、T4.4 切换与下线。
 > 范围调整（2026-06 评审结论）：fileobj 假缓存 / did_docs 预热 / bin pkg meta seed 三件不再平移（删除）；
 > make_sn_configs + SN 用户预注册拆为独立工具 `make_sn_configs.ts`（服务最小 SN 部署，env 缺失时自动生成）。
+> 后续（2026-07-06）：`make_sn_configs.ts` 已迁至 cyfs-gateway 仓库并更名 `src/make_sn_config.ts`（seed-v2 为默认行为），
+> buckyos 侧脚本与 deno task 已删除；下文对 make_sn_configs.ts 的提及均为迁移前的历史记录。
 > 适用：交给 CodeAgent 逐任务开发。每个任务自包含，按编号顺序做，T 间依赖已标注。
 
 ## 0. 背景与总目标

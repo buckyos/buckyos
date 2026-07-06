@@ -59,8 +59,9 @@ uv run ./build_for_vm_test.py
 # buckyos.build_all 会从 /opt/buckyosvm/base 复制出 /opt/buckyosvm/current，
 # 再调用 make_config.ts 为当前节点生成专属配置；
 # devtest 随后会把 current push 到 VM 默认 BUCKYOS_ROOT=/opt/buckyos。
-# web3-gateway.build_all 会调用 make_sn_configs.ts 生成 SN 配置，并按需生成
-# alice/bob/charlie 的开发用户环境供 SN DB 注册使用。
+# web3-gateway.build_all 会调用同级 cyfs-gateway 仓库的 src/make_sn_config.ts 生成
+# SN 配置，并按需生成 alice/bob/charlie 的开发用户环境供 SN DB 注册使用。
+# 目前带 --legacy 过渡（devtest VM 尚无 EVM 链）；VM 环境构造纳入 DV 链后去掉 --legacy。
 uv run buckyos-devtest sntest install
 
 # 2. 创建已安装快照 'installed'

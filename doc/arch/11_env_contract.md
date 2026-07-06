@@ -123,7 +123,7 @@ AgentTool 新实现目标是只依赖 `OPENDAN_AGENT_ROOT`、`OPENDAN_SESSION_ID
 | `BUCKYOS_APP_REPO` | `build.py` | 覆盖 BuckyOSApp git repo URL。 |
 | `BUCKYOS_VMTEST_ROOT` | `src/build_for_vm_test.py` | VM test rootfs staging directory。 |
 | `BUCKYOS_WEB3_GATEWAY_ROOT` | `src/build_for_vm_test.py` | VM test web3-gateway staging directory。 |
-| `BUCKYOS_SN_IP` | `src/make_sn_configs.ts` | 生成 SN 配置时覆盖 SN IP。 |
+| `BUCKYOS_SN_IP` | cyfs-gateway 仓库 `src/make_sn_config.ts` | 生成 SN 配置时覆盖 SN IP。 |
 | `BUCKYOS_IDENTITY_ROOT` | `src/rootfs/etc/backup.py` | 覆盖 identity backup/restore 搜索根，默认 `$BUCKYOS_ROOT/local/identity`。 |
 | `BUCKYOS_SECURITY_ROOT` | `src/rootfs/etc/backup.py` | 覆盖 security backup/restore 搜索根，默认 `$BUCKYOS_ROOT/security`。 |
 | `BUCKYOS_SYSTEM_CONFIG_URL` | app installer/DV tests | 覆盖测试访问 system-config URL。 |

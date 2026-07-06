@@ -3,7 +3,6 @@
     "buckyos/provision": "https://raw.githubusercontent.com/buckyos/buckyos-websdk/beta2.2/dist/provision.mjs"
   },
   "tasks": {
-    "make_config": "deno run -A make_config.ts",
-    "make_sn_configs": "deno run -A make_sn_configs.ts"
+    "make_config": "deno run -A make_config.ts"
   }
 }

@@ -12,8 +12,7 @@
       "echo 'MAKE sure you already build the linux version of cyfs-gateway (result store in web3-gateway/)'"
     ],
     "build_all": [
-      "deno task make_sn_configs --rootfs /opt/web3-gateway --sn_ip {{sn.ip}}"
-        
+      "cd {{system.base_dir}}/../../cyfs-gateway/src && deno run -A ./make_sn_config.ts --rootfs /opt/web3-gateway --sn_ip {{sn.ip}} --legacy"
     ],
     "update":[
       "echo 'update web3-gateway'"
