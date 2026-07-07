@@ -692,6 +692,9 @@ function printUsage(log: (message?: unknown) => void = console.error): void {
   log(
     "sn configs: moved to the cyfs-gateway repo: deno run -A src/make_sn_config.ts [--rootfs <dir>] [--ca <dir>] [--sn_ip <ip>]",
   );
+  log(
+    "RPC activation (SN-Auth two-phase, against node_daemon --enable_active): deno run -A src/active_ood.ts <group>",
+  );
 }
 
 export async function makeConfigByGroupName(

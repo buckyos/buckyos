@@ -65,6 +65,12 @@ export type ActiveWizzardData = {
   //web3_base_host: string;
   sn_active_code: string | null;// 邀请码来源字段，功能开通状态由 enabled_features 表达
   sn_user_name: string | null;//钱包模式不会为null
+  // SN 账号会话 token（access aud="sn" 1小时 / refresh aud="sn-refresh" 1天），
+  // 注册设备到 SN（device.register）时必须携带 access token。
+  // 只允许存在内存向导状态里：不写 localStorage、不打日志；激活参数里的
+  // sn_access_token 由服务端从 start_config 剥离。
+  sn_access_token: string | null;
+  sn_refresh_token: string | null;
   enabled_features: EnabledFeatures;
 
   admin_password_hash: string;

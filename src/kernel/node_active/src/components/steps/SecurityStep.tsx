@@ -225,6 +225,10 @@ const SecurityStep = ({
     setLoading(true);
     try {
       const hash = await buckyos.hashPassword(normalizedUsername, password);
+      // SN 账号会话 token：注册设备到 SN 时（ReviewStep 最终提交）必须携带
+      // access token。只存内存 wizardData，不落持久化、不打日志。
+      let snAccessToken: string | null = wizardData.sn_access_token ?? null;
+      let snRefreshToken: string | null = wizardData.sn_refresh_token ?? null;
       if (!isWalletRuntime) {
         const isUsernameAvailable =
           nameStatus === "ok"
@@ -244,6 +248,8 @@ const SecurityStep = ({
             );
             return;
           }
+          snAccessToken = registerResult.access_token ?? null;
+          snRefreshToken = registerResult.refresh_token ?? null;
         } else {
           const loginResult = await login_by_password_and_activecode(
             normalizedUsername,
@@ -256,6 +262,8 @@ const SecurityStep = ({
             );
             return;
           }
+          snAccessToken = loginResult.access_token ?? null;
+          snRefreshToken = loginResult.refresh_token ?? null;
         }
 
       }
@@ -269,6 +277,8 @@ const SecurityStep = ({
           wizardData.enabled_features,
         ),
         admin_password_hash: hash,
+        sn_access_token: snAccessToken,
+        sn_refresh_token: snRefreshToken,
         friend_passcode: "",
         enable_guest_access: false,
       });

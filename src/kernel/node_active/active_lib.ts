@@ -51,6 +51,39 @@ export async function init_active_lib(config: ActiveConfig) {
         TELEGRAM_ACCOUNT_ID_TUTORIAL_URL;
 }
 
+// 凭证类字段绝不进 console：SN token、私钥、密码 hash。
+// 与服务端 active_server.rs 的日志脱敏名单（is_sensitive_param_key）保持同一纪律。
+const SENSITIVE_LOG_KEYS = new Set([
+    "sn_access_token",
+    "sn_refresh_token",
+    "private_key",
+    "device_private_key",
+    "owner_private_key",
+    "bns_evm_private_key",
+    "admin_password_hash",
+    "friend_passcode",
+    "pwd_hash",
+]);
+
+export function redact_for_log(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map(redact_for_log);
+    }
+    if (value != null && typeof value === "object") {
+        const redacted: JsonValue = {};
+        for (const [key, child] of Object.entries(value)) {
+            if (SENSITIVE_LOG_KEYS.has(key)) {
+                const len = typeof child === "string" ? child.length : 0;
+                redacted[key] = `[redacted:${len} chars]`;
+            } else {
+                redacted[key] = redact_for_log(child);
+            }
+        }
+        return redacted;
+    }
+    return value;
+}
+
 export function resolveEnabledFeatures(
     snActiveCode: string | null | undefined,
     explicit?: Partial<EnabledFeatures> | null
@@ -81,6 +114,8 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
         device_private_key: device_private_key,
         sn_active_code: "",
         sn_user_name: "",
+        sn_access_token: null,
+        sn_refresh_token: null,
         //web3_base_host: WEB3_BASE_HOST,
         use_self_domain: false,
         self_domain: "",
@@ -111,7 +146,7 @@ export async function createInitialWizardData (initial?: Partial<ActiveWizzardDa
             initial?.enabled_features
         ),
     };
-    console.log("createInitialWizardData result",result);
+    console.log("createInitialWizardData result",redact_for_log(result));
     return result;
 }
 
@@ -223,22 +258,58 @@ export async function login_by_password_and_activecode(user_name:string,pwd_hash
     return login(user_name, pwd_hash, active_code);
 }
 
-export async function register_sn_main_ood (user_name:string,device_name:string,device_did:string,mini_config_jwt:string,device_ip:string,device_info:string) : Promise<boolean> {
-    void user_name;
-    void mini_config_jwt;
-    let rpc_client = create_sn_rpc_client(SN_DEVICEINFO_API_URL);
-    let result: JsonValue = await rpc_client.call("device.register",{
-        device_name:device_name,
-        device_did:device_did,
-        device_ip:device_ip,
-        device_info:device_info,
-    });
-    let code = result["code"];
-    if (code == 0) {
-        return true;
+// 用 refresh_token（aud="sn-refresh"，1天）换一个新的 access token（aud="sn"，1小时）。
+// refresh 失效（过期/被撤销）时返回 null，由调用方决定是否重新登录。
+export async function refresh_sn_access_token(refresh_token:string):Promise<string|null> {
+    let rpc_client = create_sn_rpc_client(SN_AUTH_API_URL);
+    let result: JsonValue = await rpc_client.call("auth.refresh",{refresh_token:refresh_token});
+    if (result["code"] !== undefined && result["code"] !== 0) {
+        return null;
     }
-    return false;
+    let access_token = result["access_token"];
+    if (typeof access_token === "string" && access_token.length > 0) {
+        return access_token;
+    }
+    return null;
 }
+
+// 激活最终提交前获取新鲜的 SN access token。
+// access token 只有 1 小时有效期：SecurityStep 里注册/登录拿到的 token，到用户点
+// 激活时可能早已过期，所以提交前总是重新换取——优先 refresh_token，失败或缺失
+// （如钱包流程没有 SecurityStep）则用 SN 密码 hash 重新登录。
+// 返回的 token 只用于本次激活 RPC：不写回持久化配置，也不要打进日志。
+async function acquire_sn_access_token(
+    sn_user_name:string|null,
+    pwd_hash:string|null,
+    refresh_token:string|null
+):Promise<string> {
+    if (refresh_token) {
+        try {
+            const fresh = await refresh_sn_access_token(refresh_token);
+            if (fresh) {
+                return fresh;
+            }
+            console.warn("SN auth.refresh rejected, fallback to re-login");
+        } catch (error) {
+            console.warn("SN auth.refresh failed, fallback to re-login:", error);
+        }
+    }
+    if (!sn_user_name || !pwd_hash) {
+        throw new Error("failed to get SN access token: no usable refresh_token and no SN credentials to re-login");
+    }
+    const login_result = await login(sn_user_name, pwd_hash, "");
+    if (login_result.code !== undefined && login_result.code !== 0) {
+        throw new Error("failed to get SN access token: SN re-login rejected");
+    }
+    if (!login_result.access_token) {
+        throw new Error("failed to get SN access token: SN login response has no access_token");
+    }
+    return login_result.access_token;
+}
+
+// register_sn_main_ood 已删除：SN-Auth 两阶段设计下设备注册（device.register）
+// 由激活服务端（active_server 的 sn_register_device_online）带 sn_access_token
+// 完成，浏览器端不再直连 SN 注册设备。
 
 export async function check_sn_active_code(sn_active_code:string) : Promise<boolean> {
     let rpc_client = create_sn_rpc_client(SN_AUTH_API_URL);
@@ -390,8 +461,7 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
     let boot_config_json = create_zone_boot_config(real_sn_host,null);
     let mini_device_config_json = create_device_mini_config(data.device_public_key,data.rtcp_port);
     let device_config_json = prepare_result["device_config"];
-    let sn_device_proof = prepare_result["sn_device_proof"];
-    let device_info_json = prepare_result["device_info"]; 
+    let device_info_json = prepare_result["device_info"];
 
     let signed_results:(string | null)[]|null = null;
     let wallet_pwd_hash:string|null = null;
@@ -410,7 +480,7 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         }
         signed_results = signResult.signatures;
         wallet_pwd_hash = signResult.pwd_hash;
-        console.log("wallet activation pwd_hash", wallet_pwd_hash);
+        console.log("wallet activation pwd_hash present:", !!wallet_pwd_hash);
         if (!wallet_pwd_hash) {
             throw new Error("missing password hash");
         }
@@ -428,6 +498,18 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
     console.log("mini_device_config_jwt",mini_device_config_jwt);
     let device_config_jwt = signed_results[2];
     console.log("device_config_jwt",device_config_jwt);
+
+    // 服务端在 sn_url 存在时强制要求 sn_access_token（SN-Auth 两阶段设计，
+    // 自签 sn_device_proof 已删除）。钱包流程没有 SecurityStep，这里用钱包
+    // 签名返回的 pwd_hash 登录 SN 账号换取 access token。
+    let sn_access_token:string|null = null;
+    if (need_sn) {
+        sn_access_token = await acquire_sn_access_token(
+            data.sn_user_name,
+            wallet_pwd_hash,
+            data.sn_refresh_token ?? null
+        );
+    }
 
     let active_params:JsonValue = {
         boot_config_jwt: boot_config_jwt,
@@ -456,7 +538,7 @@ export async function do_active_by_wallet(data:ActiveWizzardData):Promise<boolea
         bns_evm: BNS_EVM_CONFIG,
         bns_evm_private_key: data.bns_evm_private_key || null,
         sn_username: data.sn_user_name,
-        sn_device_proof: sn_device_proof,
+        sn_access_token: sn_access_token,
     };
 
     let active_result: JsonValue = await rpc_client.call("do_active_by_wallet", active_params);
@@ -487,7 +569,19 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
         return false;
     }
 
-    console.log("call do_active,param:",data);
+    // 服务端在 sn_url 存在时强制要求 sn_access_token（SN-Auth 两阶段设计）。
+    // SecurityStep 里拿到的 token 可能因用户在向导停留过久而过期（1小时），
+    // 提交前用 refresh_token 换新，兜底用管理密码 hash（与 SN 账号密码同源）重登。
+    let sn_access_token:string|null = null;
+    if (need_sn) {
+        sn_access_token = await acquire_sn_access_token(
+            data.sn_user_name,
+            data.admin_password_hash || null,
+            data.sn_refresh_token ?? null
+        );
+    }
+
+    console.log("call do_active,param:",redact_for_log(data));
     let rpc_client = new buckyos.kRPCClient("/kapi/active");
     let result: JsonValue = await rpc_client.call("do_active",{
         user_name:data.owner_user_name,
@@ -510,6 +604,7 @@ export async function do_active(data:ActiveWizzardData):Promise<boolean> {
         ),
         sn_username:data.sn_user_name,
         sn_url:sn_url,
+        sn_access_token:sn_access_token,
         bns_url: need_sn ? SN_BNS_API_URL : null,
         bns_evm: BNS_EVM_CONFIG,
         bns_evm_private_key: data.bns_evm_private_key || null
