@@ -44,10 +44,11 @@ pub use app_doc::*;
 pub use content_mgr_client::*;
 pub use control_panel::*;
 pub use cyfs_gateway_api::{
-    get_real_sn_host_name, sn_auth_login, sn_auth_register, sn_register_device_online,
-    sn_resolve_ood_by_did, sn_resolve_ood_by_hostname, sn_update_device_online, SnAuthLoginReq,
-    SnAuthRegisterReq, SnClient, SnDeviceOnlineReportReq, SnDnsRecordReq, SnHandler,
-    SnServerHandler,
+    generate_sn_device_token, get_real_sn_host_name, sn_auth_login, sn_auth_register,
+    sn_register_device_online, sn_resolve_ood_by_did, sn_resolve_ood_by_hostname,
+    sn_update_device_online, SnAuthLoginReq, SnAuthRegisterReq, SnClient,
+    SnDeviceOnlineReportReq, SnDnsRecordReq, SnHandler, SnServerHandler,
+    SN_DEVICE_TOKEN_AUD, SN_DEVICE_TOKEN_DEFAULT_TTL_SECS,
 };
 pub use device_identity::*;
 pub use group_mgr::*;

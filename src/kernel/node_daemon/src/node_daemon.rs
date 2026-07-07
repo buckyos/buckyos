@@ -707,7 +707,7 @@ fn device_info_report_ip(device_info: &DeviceInfo) -> String {
 //if register OK then return sn's real URL for this user
 async fn report_ood_info_to_sn(
     device_info: &DeviceInfo,
-    device_token_jwt: &str,
+    device_private_key: &EncodingKey,
     zone_config: &ZoneDocument,
 ) -> std::result::Result<(), String> {
     let mut need_sn = false;
@@ -742,18 +742,48 @@ async fn report_ood_info_to_sn(
         return Err(String::from("zone config owner_did is not set!"));
     }
 
+    // SN 只认设备级凭证（或 SN 账号 token）：sub 是设备 key DID（did:dev:<x>，
+    // 公钥内嵌自证），iss 是设备在 zone 域名层级下的 DID（如 did:bns:ood1.alice），
+    // SN 侧用 zone 权威文档登记的设备公钥锚定 sub。zone 内 verify-hub 签发的
+    // session token SN 无法验签，不能用于上报。
+    let device_doc = &device_info.device_doc;
+    let default_key = device_doc
+        .get_default_key()
+        .ok_or_else(|| String::from("device doc has no default verification key"))?;
+    let device_key_x = get_x_from_jwk(&default_key)
+        .map_err(|err| format!("extract device key x failed: {}", err))?;
+    let device_key_did = format!("did:dev:{}", device_key_x);
+    // 本地 device doc 的 id 可能是域名层级 DID（did:bns:ood1.alice）也可能是
+    // key DID（did:dev:<x>）；iss 需要前者，缺失时由 zone did + 设备名构造。
+    let device_scoped_did = if device_doc.id.method != "dev" {
+        device_doc.id.to_string()
+    } else {
+        let zone_did = &zone_config.id;
+        format!(
+            "did:{}:{}.{}",
+            zone_did.method, device_info.name, zone_did.id
+        )
+    };
+    let device_token_jwt = generate_sn_device_token(
+        device_key_did.as_str(),
+        device_scoped_did.as_str(),
+        None,
+        device_private_key,
+    )
+    .map_err(|err| format!("generate sn device token failed: {}", err))?;
+
     let device_info_value = serde_json::to_value(device_info)
         .map_err(|err| format!("serialize device info failed: {}", err))?;
     let req = SnDeviceOnlineReportReq {
         device_name: device_info.name.clone(),
-        device_did: Some(device_info.device_doc.id.to_string()),
+        device_did: Some(device_key_did),
         device_ip: device_info_report_ip(device_info),
         device_info: device_info_value,
         endpoints: Vec::new(),
         report_seq: None,
         ttl: None,
     };
-    sn_update_device_online(sn_url.as_str(), device_token_jwt.to_string(), req)
+    sn_update_device_online(sn_url.as_str(), device_token_jwt, req)
         .await
         .map_err(|err| format!("update device online info to sn failed: {}", err))?;
 
@@ -1304,13 +1334,7 @@ async fn node_daemon_main_loop(
             update_device_info(&device_info, &system_config_client).await;
             publish_device_info_kevent(&device_info).await;
             //TODO：SN的上报频率不用那么快
-            let device_session_token_jwt = buckyos_runtime.get_session_token().await;
-            report_ood_info_to_sn(
-                &device_info,
-                device_session_token_jwt.as_str(),
-                &zone_document,
-            )
-            .await;
+            report_ood_info_to_sn(&device_info, device_private_key, &zone_document).await;
             last_register_time = now;
         }
 
