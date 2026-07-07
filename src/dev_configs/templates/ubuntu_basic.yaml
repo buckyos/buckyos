@@ -4,7 +4,12 @@ packages:
 - docker.io
 - curl
 - wget
+- unzip
 - systemd-resolved
+
+runcmd:
+- curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+- curl -fsSL https://deno.land/install.sh | env DENO_INSTALL=/usr/local sh
 
 # Disable cloud-init management of /etc/hosts
 manage_etc_hosts: false

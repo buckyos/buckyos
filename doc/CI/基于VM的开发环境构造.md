@@ -239,6 +239,7 @@ uv run buckyos-devtest sntest install
 ### 调试与运维
 - **`run <node_id> <cmd1> [cmd2 ...]`**：
     - 在指定节点执行 Shell 命令。支持多条命令顺序执行。
+    - 执行前会加载 workspace 环境参数并解析命令中的模板变量。正式开发流程必须继续通过 `buckyos-devtest <group> run ...` 执行节点命令，不能让使用者直接调用 `multipass exec`，以保持 VM 后端透明。
 - **`clog`**：
     - 收集日志。将所有节点的日志目录（在配置中定义）拉取到本地临时目录（默认 `/tmp/clogs`）。
 

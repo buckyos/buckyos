@@ -8,4 +8,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-buckyos-devkit = { git = "https://github.com/buckyos/buckyos-devkit.git" }
+# Local sibling checkout so devkit fixes (e.g. `devtest run` env_params) take
+# effect without waiting for a git release; switch back to the git source once
+# the fix is pushed upstream.
+buckyos-devkit = { path = "../buckyos-devkit", editable = true }

@@ -1,4 +1,7 @@
 {
+    "app_configs": {
+      "web3-gateway": "../../cyfs-gateway/src/dev_configs/apps/web3-gateway.json"
+    },
     "nodes": {
       "sn": {
         "node_id": "sn",

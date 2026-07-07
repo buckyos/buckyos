@@ -4,6 +4,7 @@ packages:
 - docker.io
 - curl
 - wget
+- unzip
 - systemd-resolved
 
 # Disable cloud-init management of /etc/hosts
@@ -23,7 +24,8 @@ write_files:
   permissions: '0644'
 
 runcmd:
+- curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+- curl -fsSL https://deno.land/install.sh | env DENO_INSTALL=/usr/local sh
 - systemctl enable systemd-resolved
 - systemctl restart systemd-resolved
 - ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
-
