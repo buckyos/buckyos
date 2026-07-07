@@ -67,6 +67,7 @@ impl ActiveServer {
                 | "device_mini_doc_jwt"
                 | "ood_jwt"
                 | "sn_device_proof"
+                | "sn_access_token"
                 | "bns_evm_private_key"
                 | "admin_password_hash"
                 | "friend_passcode"
@@ -146,6 +147,7 @@ impl ActiveServer {
         start_params.remove("private_key");
         start_params.remove("bns_evm_private_key");
         start_params.remove("sn_device_proof");
+        start_params.remove("sn_access_token");
     }
 
     fn device_info_report_ip(device_info: &DeviceInfo) -> String {
@@ -160,7 +162,7 @@ impl ActiveServer {
 
     fn build_sn_device_online_report(
         device_name: &str,
-        device_did: &DID,
+        device_key_did: &str,
         device_info: &DeviceInfo,
     ) -> Result<SnDeviceOnlineReportReq, RPCErrors> {
         let device_info_value = serde_json::to_value(device_info).map_err(|e| {
@@ -168,7 +170,7 @@ impl ActiveServer {
         })?;
         Ok(SnDeviceOnlineReportReq {
             device_name: device_name.to_string(),
-            device_did: Some(device_did.to_string()),
+            device_did: Some(device_key_did.to_string()),
             device_ip: Self::device_info_report_ip(device_info),
             device_info: device_info_value,
             endpoints: Vec::new(),
@@ -177,32 +179,27 @@ impl ActiveServer {
         })
     }
 
-    fn generate_sn_device_proof(
-        sn_username: &str,
-        device_did: &DID,
-        device_private_key: &EncodingKey,
-    ) -> Result<String, RPCErrors> {
-        let now = buckyos_get_unix_timestamp();
-        let mut extra = HashMap::new();
-        extra.insert("device_did".to_string(), json!(device_did.to_string()));
-        let proof_token = ::kRPC::RPCSessionToken {
-            token_type: ::kRPC::RPCSessionTokenType::Normal,
-            appid: Some("node-daemon".to_string()),
-            jti: Some(now.to_string()),
-            sub: Some(sn_username.to_lowercase()),
-            aud: Some("sn".to_string()),
-            exp: Some(now + 60 * 10),
-            iss: Some(device_did.to_string()),
-            token: None,
-            sudo: false,
-            extra,
-        };
-        proof_token
-            .generate_jwt(Some(device_did.to_string()), device_private_key)
-            .map_err(|e| {
-                warn!("Failed to generate SN device proof: {}", e);
-                RPCErrors::ReasonError("Failed to generate SN device proof".to_string())
-            })
+    // SN 登记的 device_did 必须是 key DID（did:dev:<x>，公钥内嵌）：注册时 SN 把它
+    // 写进设备表，node_daemon 周期上报的设备 token（aud="sn-device"）之后靠这条
+    // 登记锚定验签（见 cyfs-gateway doc/SN/SN-Auth.md「设备级凭证」）。
+    fn device_key_did_from_doc(device_doc: &DeviceDocument) -> Result<String, RPCErrors> {
+        let default_key = device_doc.get_default_key().ok_or_else(|| {
+            RPCErrors::ReasonError("device doc has no default verification key".to_string())
+        })?;
+        let device_key_x = get_x_from_jwk(&default_key).map_err(|e| {
+            RPCErrors::ReasonError(format!("Failed to extract device key x: {}", e))
+        })?;
+        Ok(format!("did:dev:{}", device_key_x))
+    }
+
+    // 首次登记按 SN-Auth 设计走 SN 账号 access token（激活向导登录 SN 后获取），
+    // 设备级凭证不承担首次登记：zone 权威侧尚无该设备登记时 SN 必拒。
+    fn required_sn_access_token(req_params: &Value) -> Result<String, RPCErrors> {
+        Self::string_param(req_params, "sn_access_token").ok_or_else(|| {
+            RPCErrors::ParseRequestError(
+                "sn_access_token is required to register device to SN: login the SN account (sn_auth_login) and pass the returned access_token".to_string(),
+            )
+        })
     }
 
     fn bns_error(context: &str, error: impl std::fmt::Display) -> RPCErrors {
@@ -628,8 +625,6 @@ impl ActiveServer {
         let friend_passcode = req.params.get("friend_passcode");
 
         let sn_url_param = req.params.get("sn_url");
-        let sn_username_param = req.params.get("sn_username");
-        let sn_device_proof_param = req.params.get("sn_device_proof");
 
         if owner_public_key_param.is_none()
             || boot_config_jwt.is_none()
@@ -721,11 +716,11 @@ impl ActiveServer {
                 },
             )?;
 
-        let device_private_key_pem = EncodingKey::from_ed_pem(device_private_key.as_bytes())
-            .map_err(|e| {
-                warn!("Invalid device private key: {}", e);
-                RPCErrors::ReasonError("Invalid device private key".to_string())
-            })?;
+        // 私钥不再用于生成 SN proof，但仍在此校验格式，避免坏 key 落盘导致节点无法启动
+        EncodingKey::from_ed_pem(device_private_key.as_bytes()).map_err(|e| {
+            warn!("Invalid device private key: {}", e);
+            RPCErrors::ReasonError("Invalid device private key".to_string())
+        })?;
 
         info!("device documents decoded success");
 
@@ -739,22 +734,7 @@ impl ActiveServer {
         // Register device to SN if needed
         if need_sn {
             let sn_url = sn_url.unwrap();
-            let sn_username = sn_username_param
-                .and_then(Value::as_str)
-                .unwrap_or(user_name.as_str())
-                .to_lowercase();
-            let sn_device_proof = if let Some(proof) = sn_device_proof_param
-                .and_then(Value::as_str)
-                .filter(|proof| !proof.is_empty())
-            {
-                proof.to_string()
-            } else {
-                Self::generate_sn_device_proof(
-                    sn_username.as_str(),
-                    &device_did,
-                    &device_private_key_pem,
-                )?
-            };
+            let sn_access_token = Self::required_sn_access_token(&req.params)?;
 
             info!("Register {}(zone-gateway) to sn: {}", device_name, sn_url);
             // device_info can be either a JSON string or a JSON object
@@ -776,10 +756,14 @@ impl ActiveServer {
                 info
             };
 
-            let sn_req =
-                Self::build_sn_device_online_report(&device_name, &device_did, &device_info)?;
+            let device_key_did = Self::device_key_did_from_doc(&device_config)?;
+            let sn_req = Self::build_sn_device_online_report(
+                &device_name,
+                device_key_did.as_str(),
+                &device_info,
+            )?;
             let sn_result =
-                sn_register_device_online(sn_url.as_str(), sn_device_proof, sn_req).await;
+                sn_register_device_online(sn_url.as_str(), sn_access_token, sn_req).await;
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!(
                     "Failed to register device to sn: {}",
@@ -895,7 +879,6 @@ impl ActiveServer {
         let device_private_key = req.params.get("device_private_key");
         let device_rtcp_port_param = req.params.get("device_rtcp_port");
         let support_container = req.params.get("support_container");
-        let sn_username = req.params.get("sn_username");
         let sn_url_param = req.params.get("sn_url");
         let sn_url = sn_url_param
             .and_then(Value::as_str)
@@ -934,12 +917,12 @@ impl ActiveServer {
             }
         }
 
-        let device_private_key_pem = EncodingKey::from_ed_pem(device_private_key.as_bytes())
+        // 私钥仅校验格式（不再用于生成 SN proof）
+        EncodingKey::from_ed_pem(device_private_key.as_bytes())
             .map_err(|_| RPCErrors::ReasonError("Invalid device private key".to_string()))?;
         let device_public_jwk: Jwk = serde_json::from_value(device_public_key.clone())
             .map_err(|_| RPCErrors::ReasonError("Invalid device public key format".to_string()))?;
 
-        let need_sn = sn_url.is_some();
         let mut is_support_container = true;
         if support_container.is_some() {
             is_support_container = support_container.unwrap().as_str().unwrap() == "true";
@@ -980,29 +963,9 @@ impl ActiveServer {
             RPCErrors::ReasonError(format!("Failed to serialize device info: {}", e))
         })?;
 
-        let sn_device_proof = if need_sn {
-            let sn_username = sn_username
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    RPCErrors::ParseRequestError(
-                        "sn_username is required for SN device report".to_string(),
-                    )
-                })?
-                .to_lowercase();
-            Some(Self::generate_sn_device_proof(
-                sn_username.as_str(),
-                &device_did,
-                &device_private_key_pem,
-            )?)
-        } else {
-            None
-        };
-
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
                 "device_config": device_config_json,
-                "sn_device_proof": sn_device_proof,
                 "device_info": device_info_json,
             })),
             req.seq,
@@ -1024,7 +987,6 @@ impl ActiveServer {
         let device_rtcp_port_param = req.params.get("device_rtcp_port");
         let support_container = req.params.get("support_container");
         let sn_url_param = req.params.get("sn_url");
-        let sn_username = req.params.get("sn_username");
         let sn_url = sn_url_param
             .and_then(Value::as_str)
             .filter(|url| url.len() > 5)
@@ -1067,7 +1029,8 @@ impl ActiveServer {
 
         let owner_private_key_pem = EncodingKey::from_ed_pem(owner_private_key.as_bytes())
             .map_err(|_| RPCErrors::ReasonError("Invalid owner private key".to_string()))?;
-        let device_private_key_pem = EncodingKey::from_ed_pem(device_private_key.as_bytes())
+        // 设备私钥仅校验格式（不再用于生成 SN proof），坏 key 在落盘前报错
+        EncodingKey::from_ed_pem(device_private_key.as_bytes())
             .map_err(|_| RPCErrors::ReasonError("Invalid device private key".to_string()))?;
         let device_public_jwk: Jwk = serde_json::from_value(device_public_key.clone()).unwrap();
 
@@ -1107,28 +1070,20 @@ impl ActiveServer {
 
         if need_sn {
             let sn_url = sn_url.clone().unwrap();
-            let sn_username = sn_username
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    RPCErrors::ParseRequestError(
-                        "sn_username is required for SN device report".to_string(),
-                    )
-                })?
-                .to_lowercase();
-            let sn_device_proof = Self::generate_sn_device_proof(
-                sn_username.as_str(),
-                &device_did,
-                &device_private_key_pem,
-            )?;
+            let sn_access_token = Self::required_sn_access_token(&req.params)?;
 
             let mut device_info = DeviceInfo::from_device_doc(&device_config);
             device_info.auto_fill_by_system_info().await.unwrap();
             info!("Register device ood1(zone-gateway) to sn: {}", sn_url);
 
-            let sn_req = Self::build_sn_device_online_report("ood1", &device_did, &device_info)?;
+            let device_key_did = Self::device_key_did_from_doc(&device_config)?;
+            let sn_req = Self::build_sn_device_online_report(
+                "ood1",
+                device_key_did.as_str(),
+                &device_info,
+            )?;
             let sn_result =
-                sn_register_device_online(sn_url.as_str(), sn_device_proof, sn_req).await;
+                sn_register_device_online(sn_url.as_str(), sn_access_token, sn_req).await;
             if sn_result.is_err() {
                 warn!(
                     "Failed to register device to sn: {}",
