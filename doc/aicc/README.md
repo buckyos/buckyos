@@ -18,6 +18,7 @@
 - `aicc-models-todo.md`：模型管理后续设计任务。
 - `aicc-upgrade-todo.md`：新 API 与模型体系升级设计任务。
 - `aicc改进.md`：AICC 改进方案记录。
+- `provider-driver-cloud-update-design.md`：provider-driver metadata 云更新详细设计。
 - `aicc_log1.html`：AICC 设计讨论和历史记录。
 
 ## 维护参考文档
