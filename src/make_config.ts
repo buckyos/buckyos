@@ -30,7 +30,7 @@
 // is no buckycli binary or python/buckyos_devkit dependency here.
 //
 // Usage: deno run --allow-all src/make_config.ts <group> [--rootfs <dir>] [--ca <dir>]
-//   groups: dev | devtest_ood1 | alice.ood1 | bob.ood1 | charlie.ood1 |
+//   groups: dev | vmtest | devtest_ood1 | alice.ood1 | bob.ood1 | charlie.ood1 |
 //           devtests_ood1 | sn_web | release
 //
 // Removed relative to make_config.py (by design, 2026-06 review):
@@ -111,6 +111,13 @@ function removeIfExists(filePath: string): void {
   if (fs.existsSync(filePath)) {
     fs.rmSync(filePath);
     console.log(`remove ${filePath}`);
+  }
+}
+
+function removeTreeIfExists(dirPath: string): void {
+  if (fs.existsSync(dirPath)) {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+    console.log(`remove ${dirPath}`);
   }
 }
 
@@ -282,6 +289,7 @@ function makeGlobalEnvConfig(
   web3Bns: string,
   trustDid: string[],
   forceHttps: boolean,
+  snBaseHost?: string,
 ): void {
   makeMachineConfig(targetDir, web3Bns, trustDid, forceHttps);
 
@@ -291,8 +299,9 @@ function makeGlobalEnvConfig(
     "node-active",
     "active_config.json",
   );
+  const activeSnBaseHost = snBaseHost?.trim() || extractBaseHost(web3Bns);
   writeJson(activeConfigPath, {
-    sn_base_host: extractBaseHost(web3Bns),
+    sn_base_host: activeSnBaseHost,
     http_schema: forceHttps ? "https" : "http",
   });
   console.log(`create active config at ${activeConfigPath}`);
@@ -482,6 +491,20 @@ function copyIdentityOutputs(
   console.log(
     `device identity ${localIdentity.deviceDid} copied to local identity roots`,
   );
+}
+
+function makeUnactivatedIdentityConfig(targetDir: string): void {
+  const etcDir = ensureDir(path.join(targetDir, "etc"));
+  removeIfExists(path.join(etcDir, "node_identity.json"));
+  removeIfExists(path.join(etcDir, "start_config.json"));
+  removeIfExists(path.join(etcDir, "node_private_key.pem"));
+  removeIfExists(path.join(etcDir, "node_device_config.json"));
+  removeTreeIfExists(path.join(etcDir, ".buckycli"));
+  writeJson(path.join(etcDir, "node_gateway_params.json"), {
+    params: {
+      device_did: "did:bns:unactivated.local",
+    },
+  });
 }
 
 async function generateTls(
@@ -734,8 +757,13 @@ export async function makeConfigByGroupName(
     params.web3_bridge,
     params.trust_did,
     params.force_https,
+    params.sn_base_host,
   );
-  await makeIdentityFiles(targetDir, params, resolvedCaDir);
+  if (params.preseed_identity === false) {
+    makeUnactivatedIdentityConfig(targetDir);
+  } else {
+    await makeIdentityFiles(targetDir, params, resolvedCaDir);
+  }
   applyDevBootTemplateOverride(targetDir, groupName);
 
   console.log(`config ${groupName} generation finished.`);

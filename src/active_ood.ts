@@ -196,8 +196,10 @@ function krpcCall(
         });
       },
     );
-    req.on("error", (err: Error) =>
-      reject(new Error(`${method} failed: ${err.message}`)));
+    req.on(
+      "error",
+      (err: Error) => reject(new Error(`${method} failed: ${err.message}`)),
+    );
     req.end(body);
   });
 }
@@ -317,7 +319,10 @@ function printUsage(log: (message?: unknown) => void = console.error): void {
     "       [--bns-evm-key <hex> [--bns-url <url>] --bns-rpc <url> --bns-contract <addr> --bns-chain-id <id>]",
   );
   const snGroups = Object.entries(OOD_GROUPS)
-    .filter(([, p]) => p.sn_base_host.trim().length > 0 && p.sn_account !== false)
+    .filter(([, p]) =>
+      p.sn_base_host.trim().length > 0 && p.sn_account !== false &&
+      p.preseed_identity !== false
+    )
     .map(([name]) => name);
   log(`groups with an SN account: ${snGroups.join(" | ")}`);
   log(`default target: ${DEFAULT_TARGET} (node_daemon --enable_active)`);
@@ -348,6 +353,11 @@ export async function activateOodByGroupName(
   if (params.sn_account === false) {
     throw new Error(
       `group ${groupName} is a pure-web3 user (sn_account=false): it has no SN account to login`,
+    );
+  }
+  if (params.preseed_identity === false) {
+    throw new Error(
+      `group ${groupName} is for unactivated host setup; use make_config.ts and activate via node_active`,
     );
   }
 
@@ -474,7 +484,9 @@ async function main(): Promise<void> {
     );
     if (missing.length > 0) {
       console.error(
-        `argument error: --bns-evm-key needs ${missing.map((k) => `--${k}`).join(", ")} (values from the SN VM's dv-env.json)`,
+        `argument error: --bns-evm-key needs ${
+          missing.map((k) => `--${k}`).join(", ")
+        } (values from the SN VM's dv-env.json)`,
       );
       printUsage();
       Deno.exit(1);

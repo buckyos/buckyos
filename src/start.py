@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+SCRIPT_DIR = Path(__file__).resolve().parent
 
 build_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -37,6 +38,37 @@ def _find_command(command: str) -> str | None:
             return str(candidate)
 
     return None
+
+
+def _print_help() -> int:
+    script_path = SCRIPT_DIR / "start.py"
+    print(
+        "\n".join(
+            [
+                "BuckyOS development startup helper",
+                "",
+                "Stops existing BuckyOS processes, updates installed files by default,",
+                "and starts node_daemon from BUCKYOS_ROOT.",
+                "",
+                "Usage:",
+                f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} [options]",
+                f"  cd {SCRIPT_DIR} && uv run ./start.py [options]",
+                "",
+                "Options:",
+                "  --all                 Fresh dev install before startup.",
+                "  --reinstall [GROUP]   Fresh install before startup, optionally running make_config.ts GROUP.",
+                "  --skip-update         Skip file update and only restart BuckyOS.",
+                "  -h, --help            Show this help message.",
+                "",
+                "Common examples:",
+                f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)}",
+                f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} --all",
+                f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} --reinstall release",
+                f"  uv run {script_path.relative_to(SCRIPT_DIR.parent)} --skip-update",
+            ]
+        )
+    )
+    return 0
 
 
 def _run_command(command: str, args: list[str]) -> int:
@@ -208,21 +240,25 @@ def start_system():
         print(f"Failed to start system: {e}")
         sys.exit(1)
 
-def main():
+def main() -> int:
     """Main function"""
+    args = sys.argv[1:]
+    if any(arg in {"-h", "--help"} for arg in args):
+        return _print_help()
+
     print("=== BuckyOS Development Environment Startup Script ===")
     
     # Parse command line arguments
     config_group_name = None
-    install_all = "--all" in sys.argv or "--reinstall" in sys.argv
-    need_update = "--skip-update" not in sys.argv
+    install_all = "--all" in args or "--reinstall" in args
+    need_update = "--skip-update" not in args
     if install_all:
         config_group_name = "dev"
-    if "--reinstall" in sys.argv:
+    if "--reinstall" in args:
         config_group_name = None
-        group_name_index = sys.argv.index("--reinstall") + 1
-        if group_name_index < len(sys.argv):
-            config_group_name = sys.argv[group_name_index]
+        group_name_index = args.index("--reinstall") + 1
+        if group_name_index < len(args):
+            config_group_name = args[group_name_index]
     
     # Step 1: Kill all processes
     kill_all_processes()
@@ -235,6 +271,7 @@ def main():
     start_system()
     
     print("=== BuckyOS Startup Complete ===")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

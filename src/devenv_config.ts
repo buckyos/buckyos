@@ -104,6 +104,7 @@ export interface OODGroupParams {
   trust_did: string[];
   force_https: boolean;
   ca_name: string;
+  preseed_identity?: boolean;
   /** false = 纯 Web3 用户（只在 BNS 上链，不建 sn_user 账号）。缺省 true。 */
   sn_account?: boolean;
 }
@@ -146,6 +147,19 @@ const DEVTESTS_OOD1_GROUP_PARAMS: OODGroupParams = {
 
 export const OOD_GROUPS: Record<string, OODGroupParams> = {
   dev: DEV_GROUP_PARAMS,
+  vmtest: {
+    username: "vmtest",
+    zone_id: "vmtest.local",
+    node_name: "ood1",
+    netid: "wan",
+    rtcp_port: 2980,
+    sn_base_host: "devtests.org",
+    web3_bridge: "web3.devtests.org",
+    trust_did: DEFAULT_TRUST_DID,
+    force_https: false,
+    ca_name: "buckyos_test_ca",
+    preseed_identity: false,
+  },
   "alice.ood1": {
     username: "alice",
     zone_id: "alice.bns.did",
