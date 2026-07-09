@@ -16,6 +16,8 @@
 - `provider-metadata-tech-service`：技术参数云服务，下文简称 A 服务。
 - `provider-metadata-ops-service`：运营参数云服务，下文简称 B 服务。
 
+说明：A 服务 / B 服务只是本文档为了描述架构职责而使用的简称，不是产品 UI 文案。WebUI 不得直接展示“A 服务”“B 服务”“A/B”等字样，应使用“技术参数”“运营参数”“技术源”“同步源”“发布源 revision”“运营 revision”等名称。
+
 本设计定义 provider-driver metadata 的云端维护、发布、客户端拉取和本地增量应用机制。A 服务负责相对稳定的技术事实与 key 字段，B 服务负责相对高频的运营参数，并可从 A 服务拉取技术参数后合并成客户端可直接消费的完整配置。客户端最终接收的发布格式保持为 `revision + providers[].models[]` 的 JSON 快照，供 AICC metadata resolver 生成 `ProviderInventory`、`ModelMetadata`、`logical_mounts`、`capabilities`、`pricing` 等运行时结构。
 
 ## 2. Data Classification
@@ -202,11 +204,11 @@ Indexes:
 
 约束：
 
-- `patterns/defaults/variants/version_rules` 与 `models` 一样是 A 服务管理的一等对象；每个 provider 可为每一种类型配置多条记录。
+- `patterns/variants/version_rules` 与 `models` 一样是 A 服务管理的一等对象；每个 provider 可为每一种类型配置多条记录。
+- `defaults` 保持当前 driver metadata 的非数组 object 形式，是匹配失败或未收录模型统一使用的保底参数。每个 scope 最多维护一个 defaults object。
 - 这些对象通常引用全局/原厂配置；provider 专属记录默认通过 `source_block_key + content patch` 继承原厂配置，只有修改字段后才成为专属配置。
-- `patterns` 使用 `model_patterns` 表管理；`defaults/variants/version_rules` 使用 `metadata_blocks` 表管理，但四类对象在发布合成、diff、权限、nick 重写、B overlay 中遵循同一语义。
+- `patterns` 使用 `model_patterns` 表管理；`defaults/variants/version_rules` 使用 `metadata_blocks` 表管理。其中 `defaults` 必须按单 object 约束处理，每个 scope 最多一条生效记录，并在发布合成和 diff 中作为 fallback object 处理。
 - `model_id_selector` 永远匹配原始 `model.id`。发布给客户端前，凡是内容中引用或匹配 `model.id` 的字段，都必须按该 provider 的 `model_nicks` 规则改写为 nick 后的 id；无法重写或重写后冲突时阻止发布。
-- `defaults` 不再是单个 object，而是按 `metadata_blocks` 管理的多条 defaults 记录。发布 JSON 中可物化为数组；如 resolver 仍需要 object 形态，必须由合成器按 `priority` 折叠生成，不允许 WebUI 只维护单个 defaults object。
 - `variants` 必须显式支持 `selector_type/original_provider/model_id_selector`，不能只靠 variant `name` 隐式匹配 base model。
 
 ### Table: ops_overlays
@@ -543,12 +545,13 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
 4. 选择命中的全局默认 model meta。
 5. 如存在 provider 专属 model meta，则覆盖全局默认 meta。
 6. 应用 model nick，重写 `models[].id`，保留 `source_model_id`。
-7. 对 patterns/defaults/variants/version_rules 执行同样的 provider 专属覆盖和 nick 重写：先按原始 `model.id` 和 `original_provider` 命中规则，再把规则内所有 `model.id` selector、pattern、variant base model、version rule model pattern 改写为发布 id。
-8. 黑名单命中的模型保留在列表里并设置 `exclude=true`。
-9. 删除与全局默认 meta 等价的 provider 专属 meta。
+7. 对 patterns/variants/version_rules 执行 provider 专属覆盖和 nick 重写：先按原始 `model.id` 和 `original_provider` 命中规则，再把规则内所有 `model.id` selector、pattern、variant base model、version rule model pattern 改写为发布 id。
+8. 应用 defaults fallback object。defaults 不参与数组式 selector 匹配，用于匹配失败或未收录模型的统一保底参数。
+9. 黑名单命中的模型保留在列表里并设置 `exclude=true`。
+10. 删除与全局默认 meta 等价的 provider 专属 meta。
 
 未配置黑白名单的 provider 视为支持所有全局默认模型。provider 专属 model meta 不作为白名单。
-defaults、variants、version_rules 未配置 provider 专属记录时，默认引用全局/原厂记录；配置 provider 专属记录时，既可以引用原厂记录并 patch，也可以创建完全专属记录。合成器必须允许每个 provider 下发多条 defaults、variants、version_rules。
+defaults 未配置 provider 专属 object 时，默认引用全局/原厂 defaults；配置 provider 专属 object 时覆盖为该 provider 的 fallback 参数。variants、version_rules 未配置 provider 专属记录时，默认引用全局/原厂记录；配置 provider 专属记录时，既可以引用原厂记录并 patch，也可以创建完全专属记录。合成器必须允许每个 provider 下发多条 variants、version_rules。
 
 ### 12.2 B 服务合并 A 发布
 
@@ -646,15 +649,19 @@ PUT  /v1/admin/tech-source
 POST /v1/admin/tech-source/refresh
 ```
 
-`tech-source` 保存 A 服务查询 URL 和最近成功同步的 A revision。
+`tech-source` 保存技术参数服务查询 URL 和最近成功同步的发布源 revision。UI 展示名称应为“技术源”或“同步源”。
 
 ## 14. WebUI 设计
 
 ### 14.1 通用模式
 
-A/B 服务后台 WebUI 默认是浏览模式。增删改是高风险操作，必须显式切换到编辑模式。
+技术参数和运营参数后台 WebUI 默认是浏览模式。增删改是高风险操作，必须显式切换到编辑模式。
+
+WebUI 文案不得直接暴露 A/B 服务简称。技术事实维护界面展示为“技术参数”，运营 overlay 维护界面展示为“运营参数”；运营侧拉取技术发布结果的配置入口展示为“技术源”或“同步源”。
 
 进入编辑模式后，普通属性字段可以按字段所有权直接编辑；key 性质字段仍默认以预览/只读形式展示。管理员需要在字段级再次解锁后才能修改 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick` 等字段。修改 key 性质字段不需要独立审批流，但发布确认页必须把 key 性质字段变更放入独立风险区，并要求管理员确认影响范围。
+
+PC 端编辑模式主要服务高密度维护场景，Provider、Model、规则、Nick、Pattern、Variant、Version Rule 等数量较多的对象应优先使用分页表格，并提供搜索、筛选、排序和批量选择。浏览模式可以使用卡片或卡片+列表布局，以兼顾移动端阅读；但 PC 编辑主路径不能只依赖卡片或长 JSON。
 
 进入编辑模式：
 
@@ -673,38 +680,39 @@ A/B 服务后台 WebUI 默认是浏览模式。增删改是高风险操作，必
 退出编辑模式：
 
 1. 对编辑后状态和快照做 diff。
-2. 展示影响范围：provider 数、model 数、patterns/defaults/variants/version_rules 数、逻辑目录影响、API type/capability 影响。
+2. 展示影响范围：provider 数、model 数、patterns/variants/version_rules 数、defaults fallback 覆盖、逻辑目录影响、API type/capability 影响。
 3. 导出 diff 文本，供人或 AI 分析核实。
 4. 生成测试用例建议。
 5. 二次确认后写 change log 并发布。
 
 移动端 WebUI 只支持浏览和紧急禁用，不支持普通编辑、批量操作、导入计划和发布。
 
-### 14.2 A 服务 WebUI
+### 14.2 技术参数 WebUI
 
 必须支持：
 
 - 添加原厂 provider。
 - 添加全局默认原厂 model meta。
 - 以已有 provider/model 为模板创建新对象。
-- 编辑 patterns/defaults/variants/version_rules，并支持从全局/原厂记录引用后转为 provider 专属配置。
+- 编辑 defaults fallback object，以及 patterns/variants/version_rules 数组元素；patterns/variants/version_rules 支持从全局/原厂记录引用后转为 provider 专属配置。
 - 添加聚合模型中间商，如 OpenRouter。
 - 从原厂列表、原厂模型列表选择模型构造聚合 provider。
 - 批量 nick：加前缀、加后缀、替换片段、pattern rewrite。
 - 批量选择：按厂商、协议族、api_type、capability、model.id 模糊匹配。
-- defaults/variants/version_rules 管理面板：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除，支持每个 provider 多条记录，提供 JSON/schema 校验、命中预览、nick 重写预览、发布前 diff 和回滚入口。
+- defaults 管理面板：按全局和 provider 专属 scope 浏览和编辑单个 fallback object，提供 JSON/schema 校验、发布前 diff 和回滚入口。
+- patterns/variants/version_rules 管理面板：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除，支持每个 provider 多条记录。PC 编辑模式必须以分页表格展示数组元素，详情使用结构化表单；JSON 视图仅作为辅助检查器，不能作为长数组主编辑路径。
 - 逻辑目录管理：目录树和面包屑浏览；支持调整目录树结构，新增、删除、重命名和修改子目录属性；支持批量添加/移除模型到目录，并支持一个模型挂到多个目录。
 - api_type 管理面板：维护 api_type 字典并支持新增；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 api_type，也支持给单个模型添加多个 api_type。
 - capabilities 管理面板：维护 capability 字典、类型和默认展示信息；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 capability，也支持给单个模型添加多个 capability。
 - 删除/新增全局 model meta 前显示受影响 provider 列表。
 
-### 14.3 B 服务 WebUI
+### 14.3 运营参数 WebUI
 
 必须支持：
 
-- 配置 A 服务 URL。
-- 查看 A revision 与 B revision。
-- 浏览 A 管理字段，但这些字段只读。
+- 配置技术参数服务 URL。
+- 查看发布源 revision 与运营 revision。
+- 浏览技术参数字段，但这些字段只读。
 - 为 provider/model/pattern/block 增加运营 overlay。
 - 禁用 provider/model。
 - 批量调整首版固定运营字段：disabled、pricing override、routing weight、recommendation level、display priority。
@@ -852,7 +860,6 @@ actions:
 | `providers[]` | `provider_key`，缺失时用 `provider_driver + base_url/name`。 |
 | `models[]` | `id`。 |
 | `patterns[]` | `pattern_key` 或 `pattern`。 |
-| `defaults[]` | `block_key` 或 `nick + model_id_selector`。 |
 | `variants[]` | `name`。 |
 | `version_rules[]` | `rule_key` 或 `family + tier + model_pattern`。 |
 | `logical_mounts[]` | 字符串值。 |
@@ -906,8 +913,8 @@ OpenRouter 示例：
 - GET API 优先返回缓存。
 - 支持 `ETag`、`If-None-Match`、`Cache-Control`。
 - 支持 gzip/br。
-- B 服务拉取 A 服务失败时，可继续使用最近一次成功 A 缓存，并在管理端提示 stale。
-- Stale 状态下 B 服务允许发布；发布确认页必须展示 stale 风险，`change_logs` 必须记录本次发布使用的 A revision 和 stale 状态。
+- 运营参数服务拉取技术源失败时，可继续使用最近一次成功的技术源缓存，并在管理端提示 stale。
+- Stale 状态下允许运营参数发布；发布确认页必须展示 stale 风险，`change_logs` 必须记录本次发布使用的发布源 revision 和 stale 状态。
 - 如果当前 RDB 数据损坏，公开 GET API 可继续提供上一版发布缓存；管理写入暂停。
 
 客户端：
@@ -965,14 +972,14 @@ remote publish JSON
 - provider 专属 model meta 覆盖全局 meta。
 - 专属 meta 等价时自动删除。
 - nick 后 `models[].id` 重写和 `source_model_id` 保留。
-- patterns/defaults/variants/version_rules 中的 `model.id` selector 能按 provider nick 重写，并在冲突或无法重写时阻止发布。
+- patterns/variants/version_rules 中的 `model.id` selector 能按 provider nick 重写，并在冲突或无法重写时阻止发布。
 - 黑名单模型发布为 `exclude=true`。
 - patterns 顺序匹配。
 - B 服务污染字段丢弃。
 - B 服务禁用 provider/model 后不下发。
 - revision 递增与 ETag 更新。
 - key 性质字段变更会进入独立 diff 风险区，并要求二次确认。
-- defaults/variants/version_rules 面板编辑后能通过 schema 校验、命中预览、nick 重写预览和发布合成；每个 provider 每种 block type 可发布多条记录。
+- defaults 面板编辑后能通过 schema 校验并作为 fallback object 参与发布合成；variants/version_rules 面板编辑后能通过 schema 校验、命中预览、nick 重写预览和发布合成；每个 provider 每种 variants/version_rules block type 可发布多条记录。
 - 批量 api_type/capability 标识能正确更新命中模型，单模型多个 api_type/capability 能正确发布。
 
 客户端测试：
@@ -1014,13 +1021,13 @@ remote publish JSON
 
 - `provider_driver = openai-compatible` 是否作为正式 driver id，还是继续使用 `openai` 表示 OpenAI-compatible 协议。
 - 发布 JSON 是否按 provider_driver 拆分落入现有 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`，还是新增聚合缓存文件后由 resolver 拆分。
-- `defaults` 和 `variants` 的数组式匹配规则已作为本设计约束，落地时需要同步更新 schema、resolver 和发布 JSON 物化逻辑。
+- `defaults` 已改回非数组 fallback object；`variants`、`version_rules` 仍按数组元素独立管理。落地时需要同步更新 schema、resolver 和发布 JSON 物化逻辑。
 
 主要风险：
 
 - provider/model key 设计不稳定会导致客户端三方合并误判。
 - nick 会改变客户端看到的 model id，必须在 diff 和 trace 中始终保留 `source_model_id`。
-- patterns/defaults/variants/version_rules 中的 model selector 若未同步 nick 重写，会出现模型存在但规则失效的隐蔽问题，必须在发布预览中列出重写前后样例。
+- patterns/variants/version_rules 中的 model selector 若未同步 nick 重写，会出现模型存在但规则失效的隐蔽问题，必须在发布预览中列出重写前后样例。defaults 不参与数组式 selector 重写，但必须展示 fallback object 的最终发布值。
 - 聚合商 provider 的白名单可能来自 `/models` 动态返回，必须和原厂 meta 匹配失败场景一起设计 UI。
 - 客户端合并算法复杂，尤其是数组顺序和元素删除，需要独立测试覆盖。
 - A/B 字段所有权如果没有机器校验，长期会产生污染字段。
