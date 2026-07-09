@@ -204,6 +204,7 @@ Indexes:
 Constraints:
 
 - `ops_patch` 不得包含 A 服务管理字段；发现污染字段时发布阶段丢弃该字段，不丢弃整条记录。
+- B 服务首版允许写入的运营字段最小集合固定为 `disabled`、`pricing override`、`routing weight`、`recommendation level`、`display priority`；后续新增运营字段仍写入 `ops_patch`，但必须保持 A/B 字段所有权校验。
 
 ### Table: edit_sessions
 
@@ -218,6 +219,13 @@ Constraints:
 | created_at | INTEGER | NO | | Unix timestamp ms。 |
 | updated_at | INTEGER | NO | | Unix timestamp ms。 |
 
+说明：
+
+- `editing` 状态的 `edit_session` 是可持久保存的草稿。一次 metadata 更新可能持续较长时间，管理员可以保存草稿后退出。
+- 管理员下次登录时，管理端必须查询其未完成的 `editing` / `previewed` edit session，并在工作区提示可继续处理的草稿。
+- 草稿列表至少展示 service role、base revision、updated_at、操作者和变更摘要；管理员可以逐个选择继续编辑、进入发布预览或放弃。
+- 如果草稿的 `base_revision` 已落后于当前 `published_revision`，不得直接发布，必须重新生成 diff、影响范围和发布预览。
+
 ### Table: change_logs
 
 | Column | Type | Nullable | Default | Description |
@@ -227,6 +235,8 @@ Constraints:
 | operator_id | TEXT | NO | | 操作者账号。 |
 | from_revision | TEXT | NO | | 发布前 revision。 |
 | to_revision | TEXT | NO | | 发布后 revision。 |
+| source_revision | TEXT | YES | | B 服务发布时使用的 A revision；A 服务发布时为空。 |
+| source_stale | INTEGER | NO | `0` | B 服务发布时使用的 A 缓存是否处于 stale 状态。 |
 | summary | TEXT | NO | | 人类可读摘要。 |
 | diff_object_id | TEXT | NO | | diff 报告对象 id。 |
 | import_object_id | TEXT | YES | | 导入更新计划对象 id。 |
@@ -270,7 +280,7 @@ value = 1
 | `model_nicks` | Migration | nick 会影响客户端 key，修改语义必须显式迁移。 |
 | `metadata_blocks` | Migration | `defaults/variants/version_rules` schema 改动需要迁移。 |
 | `ops_overlays` | Additive-only | 新运营字段写入 `ops_patch`。 |
-| `edit_sessions` | Rebuild | 未完成编辑会话可在大版本升级时丢弃或重新打开。 |
+| `edit_sessions` | Persistent draft | 正常版本内未完成编辑会话必须可恢复；大版本升级时可要求重新预览或重新打开。 |
 | `change_logs` | Additive-only | 审计日志只追加，不修改历史。 |
 
 Migration 在服务启动时执行。失败时服务进入只读模式，继续提供上一版已发布缓存；管理端写入暂停，避免生成不可审计的发布。
@@ -619,13 +629,21 @@ POST /v1/admin/tech-source/refresh
 
 A/B 服务后台 WebUI 默认是浏览模式。增删改是高风险操作，必须显式切换到编辑模式。
 
-进入编辑模式后，普通属性字段可以按字段所有权直接编辑；key 性质字段仍默认以预览/只读形式展示。管理员需要在字段级再次解锁后才能修改 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick` 等字段。发布确认页必须把 key 性质字段变更放入独立风险区，并要求管理员确认影响范围。
+进入编辑模式后，普通属性字段可以按字段所有权直接编辑；key 性质字段仍默认以预览/只读形式展示。管理员需要在字段级再次解锁后才能修改 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick` 等字段。修改 key 性质字段不需要独立审批流，但发布确认页必须把 key 性质字段变更放入独立风险区，并要求管理员确认影响范围。
 
 进入编辑模式：
 
 1. 保存当前发布状态快照。
 2. 创建 `edit_session`。
 3. UI 顶部显示 base revision、操作者和编辑状态。
+
+草稿恢复：
+
+1. 管理员可随时保存当前 `edit_session` 为草稿，不生成发布 revision。
+2. 管理员下次登录时，WebUI 必须提示其工作区存在未完成草稿。
+3. 草稿列表按 service role、base revision、updated_at、变更摘要展示。
+4. 管理员可以逐个选择继续编辑、进入发布预览或放弃草稿。
+5. base revision 已落后的草稿必须重新预览，重新计算 diff、影响范围和测试建议后才允许发布。
 
 退出编辑模式：
 
@@ -634,6 +652,8 @@ A/B 服务后台 WebUI 默认是浏览模式。增删改是高风险操作，必
 3. 导出 diff 文本，供人或 AI 分析核实。
 4. 生成测试用例建议。
 5. 二次确认后写 change log 并发布。
+
+移动端 WebUI 只支持浏览和紧急禁用，不支持普通编辑、批量操作、导入计划和发布。
 
 ### 14.2 A 服务 WebUI
 
@@ -662,7 +682,7 @@ A/B 服务后台 WebUI 默认是浏览模式。增删改是高风险操作，必
 - 浏览 A 管理字段，但这些字段只读。
 - 为 provider/model/pattern/block 增加运营 overlay。
 - 禁用 provider/model。
-- 批量调整运营价格、routing weight、推荐级别。
+- 批量调整首版固定运营字段：disabled、pricing override、routing weight、recommendation level、display priority。
 - 查看污染字段 warning。
 - 预览最终下发给客户端的发布 JSON。
 
@@ -860,6 +880,7 @@ OpenRouter 示例：
 - 支持 `ETag`、`If-None-Match`、`Cache-Control`。
 - 支持 gzip/br。
 - B 服务拉取 A 服务失败时，可继续使用最近一次成功 A 缓存，并在管理端提示 stale。
+- Stale 状态下 B 服务允许发布；发布确认页必须展示 stale 风险，`change_logs` 必须记录本次发布使用的 A revision 和 stale 状态。
 - 如果当前 RDB 数据损坏，公开 GET API 可继续提供上一版发布缓存；管理写入暂停。
 
 客户端：
@@ -882,6 +903,8 @@ OpenRouter 示例：
 - 需要账号系统认证。
 - 更新配置需要 `metadata.update` 权限。
 - 发布需要二次确认。
+- 修改 key 性质字段需要字段级解锁和发布确认页风险确认，不需要独立审批流。
+- 移动端管理界面只允许浏览和紧急禁用，不允许普通编辑和发布。
 - 所有发布写入 `change_logs`。
 - 可选增加签名：发布 JSON 中保留 `signature` envelope；客户端可按策略启用校验。
 
@@ -962,7 +985,6 @@ remote publish JSON
 
 - `provider_driver = openai-compatible` 是否作为正式 driver id，还是继续使用 `openai` 表示 OpenAI-compatible 协议。
 - 发布 JSON 是否按 provider_driver 拆分落入现有 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`，还是新增聚合缓存文件后由 resolver 拆分。
-- B 服务运营字段的首版最小集合：价格覆盖、routing weight、禁用、展示优先级是否足够。
 - `defaults` 和 `variants` 当前不支持数组式匹配规则的问题，需要在 schema 和 resolver 中补齐。
 
 主要风险：
