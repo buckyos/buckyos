@@ -167,6 +167,133 @@ Provider Metadata Cloud WebUI 是 AICC provider-driver metadata 的云端管理�
 | Publish Preview | 下发预览 | 最终发布 JSON、对象数量、移除项、overlay 命中、客户端可见效果。 |
 | Change Logs | 变更历史 | 审计日志、diff、发布 revision。 |
 
+### 5.4 前端模块划分与代码组织
+
+首版 WebUI 先做 mock-first 独立云服务前端，不接真实后端。代码必须放在独立目录，建议为 `src/frame/provider_metadata_cloud/web/`，不注册到 desktop app registry，不复用 desktop 内部业务状态，不向 `src/frame/desktop/src/app/ai-center` 写入 provider metadata cloud 代码。可以复制或抽取 desktop 的通用视觉模式、Tailwind 配置、i18n provider、Shell/Sidebar/MobileTabBar 组织方式，但不得让该云服务依赖 desktop app 的业务模块。
+
+推荐顶层结构：
+
+```text
+src/frame/provider_metadata_cloud/web/
+  package.json
+  index.html
+  vite.config.ts
+  tailwind.config.js
+  playwright.config.ts
+  src/
+    main.tsx
+    App.tsx
+    routes.tsx
+    runtime/
+      env.ts
+      permissions.ts
+    i18n/
+      provider.tsx
+      dictionaries.ts
+    theme/
+      provider.tsx
+      tokens.ts
+    mock/
+      driverMetadataSeed.ts
+      providerCloudSeed.ts
+      api.ts
+      latency.ts
+    datamodel/
+      types.ts
+      schemas.ts
+      selectors.ts
+      diff.ts
+    state/
+      ProviderMetadataStore.tsx
+      useProviderMetadataStore.ts
+    layout/
+      CloudConsoleShell.tsx
+      TopBar.tsx
+      Sidebar.tsx
+      MobileNav.tsx
+      InspectorPanel.tsx
+      navigation.ts
+    pages/
+      dashboard/
+      tech-source/
+      providers/
+      models/
+      selection-rules/
+      nick-rules/
+      metadata-blocks/
+      logical-directory/
+      dictionaries/
+      import-plan/
+      publish/
+      warnings/
+      bulk-operations/
+      change-logs/
+    workflows/
+      edit-session/
+      publish-wizard/
+      import-plan-wizard/
+      provider-wizard/
+      bulk-operation-wizard/
+    components/
+      data-table/
+      detail-panel/
+      json-viewer/
+      diff-viewer/
+      forms/
+      status/
+      empty-state/
+      confirmation/
+    tests/
+      e2e/
+        pages/
+        flows/
+```
+
+入口与框架约束：
+
+- `App.tsx` 只负责 provider、theme、i18n、store 和路由装配；页面分发由 `routes.tsx` 或独立 `PageRouter` 完成，参考 desktop 的 `AppPanel + Shell + PageRouter` 模式。
+- `layout/` 只放云服务控制台通用布局：顶部栏、左右栏、移动导航、详情检查器和导航定义；不得包含具体 provider/model 业务表单。
+- A/B 服务可以共用同一个前端包，通过 `serviceRole: "A" | "B"` 切换导航、权限和页面可编辑字段；A-only 与 B-only 行为由 datamodel/schema/permissions 统一约束。
+- 所有页面默认可在 mock 数据下独立渲染；真实 API 未实现前，任何页面不得直接发起真实网络请求。
+
+页面模块边界：
+
+- 每个左侧导航项必须对应 `pages/<module>/` 下的独立页面模块，至少包含 `index.tsx` 和本页面私有子组件；跨页面复用后才移动到 `components/`。
+- A 服务导航页分别落到 `dashboard/`、`providers/`、`models/`、`selection-rules/`、`nick-rules/`、`metadata-blocks/`、`logical-directory/`、`dictionaries/`、`import-plan/`、`publish/`、`change-logs/`。
+- B 服务导航页分别落到 `dashboard/`、`tech-source/`、`providers/`、`models/`、`metadata-blocks/` 或 `blocks/`、`bulk-operations/`、`warnings/`、`publish/`、`change-logs/`。
+- A/B 同名页面可以共享页面骨架，但 A 字段编辑、B overlay 编辑、只读字段展示必须拆成独立组件，避免通过大量条件分支混在同一组件内。
+
+向导与工作流模块：
+
+- 所有向导必须放在 `workflows/<name>/`，不得塞进页面文件。首版至少拆出 `provider-wizard`、`import-plan-wizard`、`publish-wizard`、`bulk-operation-wizard`。
+- 每个向导目录至少包含 `WizardShell.tsx`、`steps.ts`、每一步独立 `Step*.tsx`、`schema.ts` 和 `types.ts`；表单使用 `react-hook-form + zod`，schema 是 UI 输入约束的单一事实来源。
+- 发布预览、diff、风险确认、stale 确认、key 字段解锁确认属于 `publish-wizard`，由 A/B 服务注入不同检查项。
+- 导入计划向导只把 YAML/Markdown action 解析为 mock edit session 中的待提交变更，不直接发布。
+
+共享组件边界：
+
+- `components/data-table/`：分页表、列配置、筛选条、批量选择栏。
+- `components/detail-panel/`：字段分组、只读/可编辑字段、引用关系、右侧检查器片段。
+- `components/json-viewer/`：发布 JSON、对象 JSON、schema error 定位。
+- `components/diff-viewer/`：字段 diff、影响范围、risk section、测试建议。
+- `components/forms/`：受控输入、开关、数字步进、分段控件、字段级解锁控件。
+- `components/status/`：revision badge、sync status、warning badge、A/B ownership badge、edit session badge。
+- `components/empty-state/` 和 `components/confirmation/`：空态、错误态、确认弹窗。
+
+Mock 数据与状态层：
+
+- `mock/driverMetadataSeed.ts` 从 `src/frame/aicc/driver_metadata/*.json` 的字段形态构造内置 provider/model/pattern/defaults/variants/version_rules 样本；不直接 import 运行时后端代码。
+- `mock/providerCloudSeed.ts` 在 driver metadata 样本上补齐云服务需要的 A/B revision、provider key、edit session、change log、warnings、ops overlay、stale cache 等 UI 数据。
+- `mock/api.ts` 模拟异步读取、保存草稿、预览发布、发布成功/失败、同步 A 服务、导入计划解析等行为，并覆盖正常、空、加载、错误、stale、schema warning、污染字段 warning 状态。
+- `state/` 只封装前端 store 和 selector，不包含组件渲染；后续真实后端接入时只替换 mock api provider，不改页面模块边界。
+
+测试组织：
+
+- Playwright 测试放在该独立 WebUI 包自己的 `tests/e2e/` 下。
+- `tests/e2e/pages/` 按导航页面覆盖基础渲染、空态、错误态和移动端只读行为。
+- `tests/e2e/flows/` 覆盖 A 新增 OpenRouter provider、A 批量标记 capability、B 配置 A 服务源、B 批量调整运营价格、发布预览与确认。
+- 验证命令随包独立运行，不能要求启动 desktop 或真实 A/B 后端。
+
 ---
 
 ## 6. 通用交互模式

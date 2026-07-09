@@ -998,14 +998,15 @@ remote publish JSON
 ## 22. 落地顺序
 
 1. 固化发布 JSON schema 和本地 remote cache 路径。
-2. 实现 A 服务 RDB schema、合成器和公开 GET API。
-3. 实现 B 服务 A URL 配置、A 拉取缓存、overlay 合并器和公开 GET API。
-4. 实现 A/B WebUI 浏览模式、搜索和详情页。
-5. 实现编辑模式、快照、diff、二次确认和 change log。
-6. 实现导入文本计划。
-7. 客户端实现 revision 拉取、分批下载和三方合并。
-8. 对接 AICC metadata resolver reload。
-9. 补齐验收测试和回滚策略。
+2. 先实现独立 WebUI mock-first 原型：在独立前端包内参考 desktop 的 Shell、导航、页面模块、向导模块、共享组件和 i18n 组织方式，使用 `src/frame/aicc/driver_metadata/*.json` 构造 mock 数据，不接真实后端，不注册到 desktop，不污染其他模块。具体模块划分见 `product/ai_center/Provider_Metadata_Cloud_WebUI_PRD.md` 的“前端模块划分与代码组织”。
+3. 实现 A 服务 RDB schema、合成器和公开 GET API。
+4. 实现 B 服务 A URL 配置、A 拉取缓存、overlay 合并器和公开 GET API。
+5. 将 WebUI mock API 替换为 A/B 服务真实接口，保留已拆分的页面、向导和共享组件边界。
+6. 实现编辑模式、快照、diff、二次确认和 change log 的后端持久化。
+7. 实现导入文本计划。
+8. 客户端实现 revision 拉取、分批下载和三方合并。
+9. 对接 AICC metadata resolver reload。
+10. 补齐验收测试和回滚策略。
 
 ## 23. 风险与待确认
 
