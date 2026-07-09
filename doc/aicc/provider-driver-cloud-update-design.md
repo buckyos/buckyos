@@ -284,6 +284,13 @@ Migration 在服务启动时执行。失败时服务进入只读模式，继续�
 - Nick key：`nick`、`model_id`、`provider_key`。
 - Revision：所有已发布 revision 不可复用。
 
+字段编辑原则：
+
+- 原则上，拥有 `metadata.update` 授权的管理员可以编辑对应云服务负责的所有属性字段；字段所有权仍按第 10 章执行，B 服务不得通过 overlay 修改 A-only 字段。
+- key 性质字段通常只在构建或首次导入后确定，发布后不建议变更，包括 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick`，以及对应稳定 key 字段。
+- WebUI 对 key 性质字段必须设置防御性障碍：即使页面已经进入编辑模式，这些字段默认仍保持预览/只读状态；管理员必须对具体字段再次切换“编辑 key 字段”后才能修改。
+- 提交包含 key 性质字段变更的更新时，必须在 diff 和发布确认中单独列出影响范围，并展示警告性提示，包括客户端三方合并、provider endpoint 匹配、model id/nick 重写、逻辑目录引用和历史审计 trace 的影响。
+
 可扩展字段：
 
 - `extra`、`attributes`、`capabilities`、`pricing`、`ops_patch` 可增加子字段。
@@ -612,6 +619,8 @@ POST /v1/admin/tech-source/refresh
 
 A/B 服务后台 WebUI 默认是浏览模式。增删改是高风险操作，必须显式切换到编辑模式。
 
+进入编辑模式后，普通属性字段可以按字段所有权直接编辑；key 性质字段仍默认以预览/只读形式展示。管理员需要在字段级再次解锁后才能修改 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick` 等字段。发布确认页必须把 key 性质字段变更放入独立风险区，并要求管理员确认影响范围。
+
 进入编辑模式：
 
 1. 保存当前发布状态快照。
@@ -638,9 +647,10 @@ A/B 服务后台 WebUI 默认是浏览模式。增删改是高风险操作，必
 - 从原厂列表、原厂模型列表选择模型构造聚合 provider。
 - 批量 nick：加前缀、加后缀、替换片段、pattern rewrite。
 - 批量选择：按厂商、协议族、api_type、capability、model.id 模糊匹配。
-- 逻辑目录管理：目录树和面包屑浏览，批量添加模型到目录，支持一个模型多个目录。
-- api_type 管理。
-- capabilities 管理。
+- defaults/variants/version_rules 管理面板：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除，提供 JSON/schema 校验、命中预览、发布前 diff 和回滚入口。
+- 逻辑目录管理：目录树和面包屑浏览；支持调整目录树结构，新增、删除、重命名和修改子目录属性；支持批量添加/移除模型到目录，并支持一个模型挂到多个目录。
+- api_type 管理面板：维护 api_type 字典并支持新增；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 api_type，也支持给单个模型添加多个 api_type。
+- capabilities 管理面板：维护 capability 字典、类型和默认展示信息；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 capability，也支持给单个模型添加多个 capability。
 - 删除/新增全局 model meta 前显示受影响 provider 列表。
 
 ### 14.3 B 服务 WebUI
@@ -732,8 +742,15 @@ actions:
 - `upsert_variant`
 - `upsert_version_rule`
 - `set_logical_mounts`
+- `upsert_logical_directory`
+- `delete_logical_directory`
+- `move_logical_directory`
 - `set_api_types`
+- `upsert_api_type`
+- `delete_api_type`
 - `set_capabilities`
+- `upsert_capability`
+- `delete_capability`
 - `set_pricing`
 - `set_ops_overlay`
 - `disable_model`
@@ -744,6 +761,7 @@ actions:
 - `target_service=B` 的文档不得修改 A-only key 字段。
 - 所有 selector 必须可预览命中结果。
 - 任何批量 action 在提交前必须显示命中数量和样例。
+- 修改 key 性质字段、删除/重命名 api_type 或 capability、删除/移动逻辑目录时，提交前必须显示引用关系、受影响对象数量和风险提示。
 
 ## 16. 客户端更新流程
 
@@ -902,6 +920,9 @@ remote publish JSON
 - B 服务污染字段丢弃。
 - B 服务禁用 provider/model 后不下发。
 - revision 递增与 ETag 更新。
+- key 性质字段变更会进入独立 diff 风险区，并要求二次确认。
+- defaults/variants/version_rules 面板编辑后能通过 schema 校验、命中预览和发布合成。
+- 批量 api_type/capability 标识能正确更新命中模型，单模型多个 api_type/capability 能正确发布。
 
 客户端测试：
 
@@ -919,6 +940,7 @@ remote publish JSON
 - B 从 A 拉取并合并发布。
 - 客户端拉取 B 发布后 AICC `models.list` 可看到新 provider/model。
 - `logical_mounts`、`api_types`、`capabilities`、`pricing` 正确进入 `ProviderInventory`。
+- 逻辑目录树新增、删除、重命名、移动子目录后，发布结果与客户端逻辑目录浏览一致。
 - OpenRouter 以 `provider.name` 展示 provider Type，调用 driver 使用 OpenAI-compatible。
 - 损坏 A 缓存不影响 B 上一版发布 GET。
 
