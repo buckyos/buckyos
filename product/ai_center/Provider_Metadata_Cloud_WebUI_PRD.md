@@ -201,7 +201,7 @@ Provider Metadata Cloud WebUI 是 AICC provider-driver metadata 的云端管理�
 
 - 普通字段可按服务所有权编辑。
 - key 字段默认只读，即使已进入编辑模式也不能直接改。
-- key 字段包括 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick` 以及稳定 key。
+- key 字段包括 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick`、pattern/block nick 以及稳定 key。
 - 修改 key 字段必须点击字段级「解锁 key 字段」，填写原因，并在发布确认页单独确认影响。
 - B 服务中 A-only 字段永远只读，不提供解锁入口。
 
@@ -230,6 +230,7 @@ Provider Metadata Cloud WebUI 是 AICC provider-driver metadata 的云端管理�
 - B 服务污染字段区：列出被丢弃的 A-only 字段和来源。
 - Schema 校验结果：Error 阻止发布，Warning 允许发布但必须展示。
 - 规则命中样例：批量规则至少展示命中数量和前 N 条样例。
+- patterns/defaults/variants/version_rules 的 nick 重写样例：展示重写前 selector、重写后 selector、命中模型和冲突检查结果。
 - 生成的测试建议：按变更类型生成需要回归的 provider/model/routing 场景。
 - 发布说明输入框：必填，写入 change log summary。
 
@@ -237,6 +238,7 @@ Provider Metadata Cloud WebUI 是 AICC provider-driver metadata 的云端管理�
 
 - 没有 Error 级校验问题。
 - 所有 key 字段风险项已确认。
+- patterns/defaults/variants/version_rules 不存在无法重写、重写后冲突或空命中的 Error。
 - 发布说明已填写。
 - 当前 base revision 未被其他发布覆盖；如已覆盖，必须重新打开编辑会话或执行 rebase 预览。
 
@@ -387,7 +389,7 @@ A 服务导入强调 schema、selector 和 key 字段检查。B 服务导入强�
 
 - 展示 `source_model_id -> published id` 映射。
 - 显示重复 nick、冲突 nick、空结果。
-- 显示受影响 logical directory 和 provider 发布样例。
+- 显示受影响 logical directory、patterns/defaults/variants/version_rules selector 和 provider 发布样例。
 
 ### 7.6 Metadata Blocks
 
@@ -401,10 +403,15 @@ A 服务导入强调 schema、selector 和 key 字段检查。B 服务导入强�
 页面要求：
 
 - 按 global scope 和 provider scope 切换。
-- 列表展示 block type、scope、enabled、更新时间、命中数量。
-- 详情提供结构化表单和 JSON 视图。
+- 每个 provider、每一种对象类型都允许配置多条记录，列表必须展示 block type、scope、source、nick、selector、priority、enabled、更新时间、命中数量。
+- 详情提供结构化表单和 JSON 视图，结构化表单必须包含 `source_block_key`、`selector_type`、`original_provider`、`model_id_selector`、`priority`、`nick` 和 content/patch。
+- 支持从全局/原厂记录引用创建 provider 专属记录；管理员修改字段后，该记录成为 provider 专属配置。
+- `model_id_selector` 输入使用原始 `model.id`，保存和发布预览必须展示重写后的 published model id selector。
+- defaults 必须按多条记录管理，不能只提供单个 defaults object 编辑器。
+- variants 必须显式配置 base model 匹配 selector，不能只靠 variant name 隐式关联模型。
 - 保存前执行 JSON/schema 校验。
 - 支持复制、禁用、删除、回滚到上一发布版本。
+- 命中预览必须同时展示原始命中模型、`source_model_id -> published id` nick 映射、重写后的 pattern/defaults/variants/version_rules 发布样例，以及重复 nick、空命中、重写冲突。
 
 ### 7.7 Logical Directory
 
@@ -844,9 +851,10 @@ B 服务字段分组：
 2. 可以新增全局 model meta，并在发布前看到受影响 provider 列表。
 3. 可以为 provider 增加 include/exclude 规则，并预览命中模型。
 4. 可以批量设置 nick，并看到 `source_model_id -> published id` 映射。
-5. 可以编辑 defaults/patterns/variants/version_rules，并执行 schema 校验。
-6. 可以批量为模型添加 api_type 或 capability。
-7. 修改 key 字段必须字段级解锁，并在发布确认页进入独立风险区。
+5. 可以编辑 defaults/patterns/variants/version_rules，并执行 schema 校验、命中预览和 nick 重写预览。
+6. 每个 provider 可以为 defaults/patterns/variants/version_rules 各自配置多条记录，并能从全局/原厂记录引用后修改为 provider 专属配置。
+7. 可以批量为模型添加 api_type 或 capability。
+8. 修改 key 字段必须字段级解锁，并在发布确认页进入独立风险区。
 
 ### 14.3 B 服务验收
 
@@ -869,10 +877,14 @@ B 服务字段分组：
 - `metadata.key_field.update` 不需要独立审批流，只需要字段级解锁和发布确认页风险确认。
 - Stale 状态下 B 服务允许发布，发布记录必须写入使用的 A revision 和 stale 状态。
 - 长时间更新支持保存草稿；用户下次登录时应提示未完成草稿，并允许逐个继续编辑、发布或放弃。
+- patterns/defaults/variants/version_rules 与 models 一样按 provider scope 管理；通常引用全局/原厂配置，修改字段后成为 provider 专属配置，并且每个 provider 每类对象都允许多条记录。
+- patterns/defaults/variants/version_rules 中的 model selector 使用原始 `model.id` 编辑，但发布预览和最终 JSON 必须按 model nick 改写为客户端可见 id。
+- defaults 不再作为单个 object 管理，首版 UI 必须按数组式多记录模型设计。
 
 主要风险：
 
 - A/B 字段所有权如果只在前端限制，长期会产生污染字段，必须服务端强校验。
 - key 字段修改会影响客户端三方合并、endpoint 匹配、model id/nick trace，需要在 diff 中始终单独展示。
+- patterns/defaults/variants/version_rules 如果没有随 model nick 同步重写，会造成发布 JSON 中模型规则失效；发布确认页必须展示重写链路和冲突检查结果。
 - B 服务管理员不具备编程知识，若主路径暴露过多 JSON/schema 细节，会显著增加误操作概率。
 - 多语言切换若翻译 provider/model key，会破坏技术对象识别；所有机器 key 必须保持原文。

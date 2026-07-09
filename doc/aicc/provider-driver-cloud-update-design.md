@@ -117,8 +117,10 @@ Constraints:
 |---|---|---|---|---|
 | pattern_key | TEXT PK | NO | | 稳定 pattern id。 |
 | scope_provider_key | TEXT | YES | | 为空表示全局 pattern；非空表示 provider 专属 pattern。 |
+| source_pattern_key | TEXT | YES | | 引用的全局/原厂 pattern；为空表示完全自定义。 |
 | original_provider | TEXT | YES | | 限定原厂。 |
 | pattern | TEXT | NO | | `model.id` wildcard，`*` 为基础通配符。 |
+| nick | TEXT | YES | | 下发给客户端的 pattern id；为空时使用 `pattern_key`。 |
 | priority | INTEGER | NO | | 数组顺序；越小越早匹配。 |
 | rule_patch | TEXT | NO | `{}` | 与 model meta 相同字段的 JSON patch。 |
 | enabled | INTEGER | NO | `1` | 是否启用。 |
@@ -128,6 +130,12 @@ Constraints:
 Indexes:
 
 - `idx_patterns_scope_priority` ON `model_patterns(scope_provider_key, priority)`。
+
+约束：
+
+- `pattern` 永远匹配原始 `model.id`；发布前必须按目标 provider 的 `model_nicks` 把 `pattern` 改写为客户端可见的 published model id pattern。
+- provider 专属 pattern 可以引用全局/原厂 pattern 后通过 `rule_patch` 变成专属配置，也可以完全自定义。
+- 每个 provider 可配置多条 pattern，按 `priority` 稳定排序。
 
 ### Table: provider_model_rules
 
@@ -174,9 +182,15 @@ Constraints:
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
 | block_key | TEXT PK | NO | | 稳定 block id。 |
-| provider_key | TEXT | YES | | 为空表示全局 block。 |
+| provider_key | TEXT | YES | | 为空表示全局 block；非空表示 provider 专属 block。 |
 | block_type | TEXT | NO | | `defaults` / `variants` / `version_rules`。 |
-| content | TEXT | NO | | JSON content。 |
+| source_block_key | TEXT | YES | | 引用的全局/原厂 block；为空表示完全自定义。 |
+| selector_type | TEXT | NO | `all` | `all` / `exact` / `pattern`。 |
+| original_provider | TEXT | YES | | 限定原厂。 |
+| model_id_selector | TEXT | YES | | 原始 `model.id` 或 wildcard pattern；发布时按 model nick 规则重写。 |
+| priority | INTEGER | NO | `0` | 同一 provider、同一 block_type 下的匹配顺序。 |
+| nick | TEXT | YES | | 下发给客户端的 block id；为空时使用 `block_key`。 |
+| content | TEXT | NO | | JSON content 或对 `source_block_key` 的 patch。 |
 | enabled | INTEGER | NO | `1` | 是否启用。 |
 | created_at | INTEGER | NO | | Unix timestamp ms。 |
 | updated_at | INTEGER | NO | | Unix timestamp ms。 |
@@ -184,6 +198,16 @@ Constraints:
 Indexes:
 
 - `idx_metadata_blocks_provider_type` ON `metadata_blocks(provider_key, block_type)`。
+- `idx_metadata_blocks_provider_priority` ON `metadata_blocks(provider_key, block_type, priority)`。
+
+约束：
+
+- `patterns/defaults/variants/version_rules` 与 `models` 一样是 A 服务管理的一等对象；每个 provider 可为每一种类型配置多条记录。
+- 这些对象通常引用全局/原厂配置；provider 专属记录默认通过 `source_block_key + content patch` 继承原厂配置，只有修改字段后才成为专属配置。
+- `patterns` 使用 `model_patterns` 表管理；`defaults/variants/version_rules` 使用 `metadata_blocks` 表管理，但四类对象在发布合成、diff、权限、nick 重写、B overlay 中遵循同一语义。
+- `model_id_selector` 永远匹配原始 `model.id`。发布给客户端前，凡是内容中引用或匹配 `model.id` 的字段，都必须按该 provider 的 `model_nicks` 规则改写为 nick 后的 id；无法重写或重写后冲突时阻止发布。
+- `defaults` 不再是单个 object，而是按 `metadata_blocks` 管理的多条 defaults 记录。发布 JSON 中可物化为数组；如 resolver 仍需要 object 形态，必须由合成器按 `priority` 折叠生成，不允许 WebUI 只维护单个 defaults object。
+- `variants` 必须显式支持 `selector_type/original_provider/model_id_selector`，不能只靠 variant `name` 隐式匹配 base model。
 
 ### Table: ops_overlays
 
@@ -519,11 +543,12 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
 4. 选择命中的全局默认 model meta。
 5. 如存在 provider 专属 model meta，则覆盖全局默认 meta。
 6. 应用 model nick，重写 `models[].id`，保留 `source_model_id`。
-7. 对 patterns/defaults/variants/version_rules 执行同样的 provider 专属覆盖和 nick 重写。
+7. 对 patterns/defaults/variants/version_rules 执行同样的 provider 专属覆盖和 nick 重写：先按原始 `model.id` 和 `original_provider` 命中规则，再把规则内所有 `model.id` selector、pattern、variant base model、version rule model pattern 改写为发布 id。
 8. 黑名单命中的模型保留在列表里并设置 `exclude=true`。
 9. 删除与全局默认 meta 等价的 provider 专属 meta。
 
 未配置黑白名单的 provider 视为支持所有全局默认模型。provider 专属 model meta 不作为白名单。
+defaults、variants、version_rules 未配置 provider 专属记录时，默认引用全局/原厂记录；配置 provider 专属记录时，既可以引用原厂记录并 patch，也可以创建完全专属记录。合成器必须允许每个 provider 下发多条 defaults、variants、version_rules。
 
 ### 12.2 B 服务合并 A 发布
 
@@ -662,12 +687,12 @@ A/B 服务后台 WebUI 默认是浏览模式。增删改是高风险操作，必
 - 添加原厂 provider。
 - 添加全局默认原厂 model meta。
 - 以已有 provider/model 为模板创建新对象。
-- 编辑 patterns/defaults/variants/version_rules。
+- 编辑 patterns/defaults/variants/version_rules，并支持从全局/原厂记录引用后转为 provider 专属配置。
 - 添加聚合模型中间商，如 OpenRouter。
 - 从原厂列表、原厂模型列表选择模型构造聚合 provider。
 - 批量 nick：加前缀、加后缀、替换片段、pattern rewrite。
 - 批量选择：按厂商、协议族、api_type、capability、model.id 模糊匹配。
-- defaults/variants/version_rules 管理面板：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除，提供 JSON/schema 校验、命中预览、发布前 diff 和回滚入口。
+- defaults/variants/version_rules 管理面板：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除，支持每个 provider 多条记录，提供 JSON/schema 校验、命中预览、nick 重写预览、发布前 diff 和回滚入口。
 - 逻辑目录管理：目录树和面包屑浏览；支持调整目录树结构，新增、删除、重命名和修改子目录属性；支持批量添加/移除模型到目录，并支持一个模型挂到多个目录。
 - api_type 管理面板：维护 api_type 字典并支持新增；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 api_type，也支持给单个模型添加多个 api_type。
 - capabilities 管理面板：维护 capability 字典、类型和默认展示信息；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 capability，也支持给单个模型添加多个 capability。
@@ -780,6 +805,7 @@ actions:
 - `target_service=A` 的文档不得包含 B-only action。
 - `target_service=B` 的文档不得修改 A-only key 字段。
 - 所有 selector 必须可预览命中结果。
+- `upsert_defaults`、`upsert_variant`、`upsert_version_rule` 必须支持 `source_block_key`、`selector_type`、`original_provider`、`model_id_selector`、`priority` 和 `nick` 字段；其中 `model_id_selector` 使用原始 `model.id`，导入预览必须展示 nick 重写后的发布 selector。
 - 任何批量 action 在提交前必须显示命中数量和样例。
 - 修改 key 性质字段、删除/重命名 api_type 或 capability、删除/移动逻辑目录时，提交前必须显示引用关系、受影响对象数量和风险提示。
 
@@ -826,6 +852,7 @@ actions:
 | `providers[]` | `provider_key`，缺失时用 `provider_driver + base_url/name`。 |
 | `models[]` | `id`。 |
 | `patterns[]` | `pattern_key` 或 `pattern`。 |
+| `defaults[]` | `block_key` 或 `nick + model_id_selector`。 |
 | `variants[]` | `name`。 |
 | `version_rules[]` | `rule_key` 或 `family + tier + model_pattern`。 |
 | `logical_mounts[]` | 字符串值。 |
@@ -938,13 +965,14 @@ remote publish JSON
 - provider 专属 model meta 覆盖全局 meta。
 - 专属 meta 等价时自动删除。
 - nick 后 `models[].id` 重写和 `source_model_id` 保留。
+- patterns/defaults/variants/version_rules 中的 `model.id` selector 能按 provider nick 重写，并在冲突或无法重写时阻止发布。
 - 黑名单模型发布为 `exclude=true`。
 - patterns 顺序匹配。
 - B 服务污染字段丢弃。
 - B 服务禁用 provider/model 后不下发。
 - revision 递增与 ETag 更新。
 - key 性质字段变更会进入独立 diff 风险区，并要求二次确认。
-- defaults/variants/version_rules 面板编辑后能通过 schema 校验、命中预览和发布合成。
+- defaults/variants/version_rules 面板编辑后能通过 schema 校验、命中预览、nick 重写预览和发布合成；每个 provider 每种 block type 可发布多条记录。
 - 批量 api_type/capability 标识能正确更新命中模型，单模型多个 api_type/capability 能正确发布。
 
 客户端测试：
@@ -985,12 +1013,13 @@ remote publish JSON
 
 - `provider_driver = openai-compatible` 是否作为正式 driver id，还是继续使用 `openai` 表示 OpenAI-compatible 协议。
 - 发布 JSON 是否按 provider_driver 拆分落入现有 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`，还是新增聚合缓存文件后由 resolver 拆分。
-- `defaults` 和 `variants` 当前不支持数组式匹配规则的问题，需要在 schema 和 resolver 中补齐。
+- `defaults` 和 `variants` 的数组式匹配规则已作为本设计约束，落地时需要同步更新 schema、resolver 和发布 JSON 物化逻辑。
 
 主要风险：
 
 - provider/model key 设计不稳定会导致客户端三方合并误判。
 - nick 会改变客户端看到的 model id，必须在 diff 和 trace 中始终保留 `source_model_id`。
+- patterns/defaults/variants/version_rules 中的 model selector 若未同步 nick 重写，会出现模型存在但规则失效的隐蔽问题，必须在发布预览中列出重写前后样例。
 - 聚合商 provider 的白名单可能来自 `/models` 动态返回，必须和原厂 meta 匹配失败场景一起设计 UI。
 - 客户端合并算法复杂，尤其是数组顺序和元素删除，需要独立测试覆盖。
 - A/B 字段所有权如果没有机器校验，长期会产生污染字段。
