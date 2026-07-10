@@ -50,7 +50,8 @@ buckyos.getRuntimeType() === AppRuntime 且 getCurrentWalletUser() 返回空 →
 
 步骤顺序按路线分叉（`ActiveWizard.tsx`）：
 
-- **网页路线（7 步）**：Security → Gateway → Domain → AIProvider → JarvisMsgTunnel → Review → Success
+
+- **网页路线（7 步）**：Security(补OwnerDocument生成) → Gateway → Domain(补等SN的bind验证) → AIProvider（补手工添加（本地弹窗） → JarvisMsgTunnel（补添加更多Tunnel，优化交互） → Review （补展示提示词）→ Success
 - **钱包路线（6 步）**：Gateway → Domain → AIProvider → JarvisMsgTunnel → Review → Success（**整个 Security 步骤被跳过**，账号信息从钱包预置）
 
 | 步骤 | 适用路线 | 做什么 | 关键校验/分支 |
@@ -62,6 +63,11 @@ buckyos.getRuntimeType() === AppRuntime 且 getCurrentWalletUser() 返回空 →
 | **JarvisMsgTunnel** | 都需要 | 可选填 Telegram Bot Token + Account ID（当前仅此一个通道） | 两个字段必须成对填写，只填一个会挡住提交 |
 | **Review** | 都需要 | 最终确认页；`WAN`+自有域名时需先生成 DNS TXT 记录才能继续；网页路线在此**明文展示 owner 私钥**供用户自行备份（钱包路线不展示，私钥从不经过这个页面）；点击"Activate!"调用 `do_active` 或 `do_active_by_wallet` | — |
 | **Success** | 都需要 | 120 秒倒计时页，提示设备正在完成重启，可复制新 Zone 链接 | — |
+
+### TODO简单总结
+- 补助记词+双密钥
+- 补OwnerDocument生成
+- 调整Document生成，该用bns.publishDocument 或 sn.publishDocument (代发布)
 
 ---
 
@@ -87,6 +93,18 @@ buckyos.getRuntimeType() === AppRuntime 且 getCurrentWalletUser() 返回空 →
 ### 4.3 Owner DID / SN 账号体系
 
 Owner DID 固定形如 `did:bns:{sn_username}`——即 Owner 身份直接等价于一个 SN(BNS) 账号，不是独立的密钥体系。
+
+### 4.4 激活收尾时的本地持久化：Owner / Zone / Device 三类文档分别存了什么
+
+`do_active`/`do_active_by_wallet` 收尾时调用的是**同一份**持久化代码（`save_local_device_identity`/`save_local_device_identity_for_roots`），两条路线产出完全对称。按 Owner/Zone/Device 三类拆开看，结果并不对称：
+
+| 文档 | 本地是否持久化 | 落在哪 |
+|---|---|---|
+| **DeviceDocument**（这台设备自己的身份文档） | **是，而且不止一份** | `device_doc.jwt`（JWT 全量版）+ `did.json`（同一份文档的 JSON 形式）+ `device_mini_doc.jwt`（精简版）三个独立文件，按 `device_did` 分目录存放在 identity 根目录下；另外这三份 JWT 还会**原样再落一份**进 `start_config.json`（字段名 `device_doc_jwt`/`device_mini_doc_jwt`，外加重复插入的 `ood_jwt`，值和 `device_doc_jwt` 相同） |
+| **ZoneDocument**（`ZoneBootDocument`，字段名 `boot_config_jwt`） | **是，但不是独立文件** | 只有两处：① 原样落进 `start_config.json` 的 `boot_config_jwt` 字段；② 调用 `update_zone_boot_cache()` 推入本地 DID 解析缓存（标记 `DidDocType::Boot` + `UpdateSource::Authority`）。`node_identity.json` 里**不含**这份文档本身，只存了 `zone_did`（DID 字符串）和 `zone_iat`（时间戳） |
+| **OwnerDocument** | **否，完全不落盘** | `node_identity.json` 只存 `owner_did` + `owner_public_key`（裸 JWK 公钥），激活流程里没有任何一步生成、向钱包请求、或持久化一份**签名的** OwnerDocument。`OwnerDocument` 这个类型在代码里是真实存在、且在用的（`sys_config_service/src/zone_did_resolver.rs` 的 Boot Resolve/DID 解析链路依赖它），但 `node_active` 激活流程从头到尾不产生它——owner 身份在激活这一刻只表现为"DID + 公钥"两个字段，完整 OwnerDocument 需要时由解析链路另外向 BNS 解析获取 |
+
+**一个容易踩的坑**：`boot_config_jwt`/`device_doc_jwt`/`device_mini_doc_jwt`/`ood_jwt` 这四个字段同时出现在 `is_sensitive_param_key()`（服务端**日志脱敏**名单，`active_server.rs:60-75`）里——它们会被打码，不会明文打进日志。但这份名单只管日志，不管落盘；真正决定 `start_config.json` 里保留什么、剔除什么的是另一份**独立**的清除名单（`remove_activation_only_start_config_fields`，只删 `private_key`/`bns_evm_private_key`/`sn_device_proof`/`sn_access_token` 这四个真正的密钥/凭证字段，`active_server.rs:146-151`）。两份名单字段不重叠，看代码时容易把"会脱敏"和"会落盘"搞混，写文档/做安全评审时要分开确认。
 
 ---
 
@@ -172,6 +190,30 @@ Bns.sol（链上合约，只认 msg.sender，是唯一权威）
 ### 6.5 `auth.register` / `auth.login` 本身没有被去掉
 
 容易误解的一点：`/kapi/sn/auth` 的账号系统（`register`/`login`/`refresh` 等）**依然存在且是当前设计的一部分**，被去掉的只是它对 BNS 状态的授权效力——账号 access token 不再能用来写 zone/boot/device_mini_doc 这些 BNS 文档，也不再是设备身份的锚（那是 BNS `device_mini_doc` 的职责）。`auth.register` 内部确实会触发一次 BNS 域名注册（用 SN 自己的运营方 EVM key），但那把运营方密钥被显式禁止碰 `zone`/`boot`/`device_mini_doc` 这三类文档，只用于最初的域名占位。
+
+### 6.6 现在实际调用的写接口一览
+
+汇总目前 `node_active`/`node_daemon` 代码里真正会触发的、会改变 SN 或 BNS 侧持久状态的写调用（区别于 `check_username`/`query_state` 这类只读查询）：
+
+| 写接口 | 端点 | 方法 | 调用方 | 触发时机 | 凭证 | 写了什么 |
+|---|---|---|---|---|---|---|
+| SN 账号注册 | `/kapi/sn/auth` | `auth.register` | 浏览器（SecurityStep） | 用户名可用时，仅网页路线 | 无（新建账号本身不需要） | SN 本地账号记录；BNS 侧连带效果见下表 |
+| SN 账号登录/续期 | `/kapi/sn/auth` | `auth.login` / `auth.refresh` | 浏览器（SecurityStep + `acquire_sn_access_token()`） | 用户名已存在时；或提交激活前发现 token 快过期时 | 密码哈希 / refresh token | 不写持久数据，只签发或续期 token |
+| SN 设备首次建档 | `/kapi/sn/deviceinfo` | `device.register` | 服务端 `active_server.rs`（`handle_do_active`/`handle_active_by_wallet`） | 激活成功那一刻，两条路线都要（除非 `is_need_sn()`=false） | `sn_access_token` | 设备在线状态记录（首次写入） |
+| SN 设备状态刷新 | `/kapi/sn/deviceinfo` | `device.update` | 服务端 `node_daemon.rs` 主循环 | 激活完成后持续调用，间隔 >30s | 设备私钥签的 JWT（无 access token） | 设备在线状态记录（刷新）；**显式拒绝** `mini_config_jwt` 参数——身份文档更新已整体转去 BNS |
+| BNS 文档发布 | `/kapi/bns` | `tx.submit_raw`（内部编码 `register_name` 或 `apply_mutations`） | 服务端 `active_server.rs::publish_bns_zone_documents` | 激活期，仅当请求带了 `bns_evm_private_key` 才触发 | 本地用 EVM 私钥签名的原始交易，不认 token | `zone`/`boot`/`device_mini_doc` 三份文档 |
+
+**BNS 侧其实有两个容易混淆的独立写触发点，用的是两把不同的钥匙**：
+
+| | SN 侧引导注册（`auth.register` 的副作用） | node_daemon 侧文档发布（`publish_bns_zone_documents`） |
+|---|---|---|
+| 触发条件 | 取决于**所连接的 SN 实例自己**是否配置了 `bns_proxy`——这是 SN 部署方的服务端配置，`node_active` 不可见也不可控 | 取决于激活请求里是否带了 `bns_evm_private_key`——这是 node_active 侧的输入，当前向导**没有 UI 入口**收集（见 §6.4） |
+| 用谁的 EVM key | SN 自己的运营方 key | 用户提供的 key（网页路线当前没有生成/获取这把 key 的逻辑，见 §4.2 的密钥缺口） |
+| 实际写了什么 | 仅 BNS name 本身——node_active 的 `auth.register` 调用没有传 `owner_config`/`initial_documents`，服务端用空值兜底，**不包含** `zone`/`boot`/`device_mini_doc` | `zone`/`boot`/`device_mini_doc` 三份文档的真实内容 |
+
+也就是说：一次典型的网页路线激活，如果所连 SN 实例配置了 `bns_proxy`，BNS 上会先出现一条"裸名字"注册（SN 一侧触发）；但真正描述这台设备/这个 Zone 的三份文档，要等 `bns_evm_private_key` 被提供后才可能由 `node_daemon` 发布——而这个字段向导目前收集不到。**现状是大多数网页路线激活只走完了第一步。**
+
+**协议里存在、但当前代码没有调用点的写接口**：SN 在 `/kapi/sn/auth` 下还挂了一组域名相关写方法（`domain.bind`/`domain.begin_verify`/`domain.verify`/`domain.unbind`、`user.add_dns_record`/`user.remove_dns_record`），语义上是给自有域名（`user_domain`）走"SN 协助自动写 DNS 记录"用的。经过 grep 核实，`node_active`/`active_server.rs`/`node_daemon.rs` 里**没有任何一处调用这些方法**——当前自有域名走的是 §5 提到的手工 TXT 粘贴路径，SN 自动化 DNS 协助这条设计中的路径目前是空的，不要假设它已经接上。
 
 ---
 
