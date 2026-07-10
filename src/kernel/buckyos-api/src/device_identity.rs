@@ -1,5 +1,7 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{DecodingKey, EncodingKey};
@@ -15,6 +17,7 @@ pub const NODE_IDENTITY_SCHEMA_V2: &str = "buckyos.node_identity.v2";
 pub const DEVICE_DOC_JWT_FILE_NAME: &str = "device_doc.jwt";
 pub const DEVICE_MINI_DOC_JWT_FILE_NAME: &str = "device_mini_doc.jwt";
 pub const NODE_GATEWAY_PARAMS_FILE_NAME: &str = "node_gateway_params.json";
+pub const ZONE_DOCUMENT_JWT_FILE_NAME: &str = "zone_document.jwt";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LocalNodeIdentityConfig {
@@ -300,41 +303,87 @@ pub fn save_local_device_identity_for_roots(
         )
     })?;
 
-    let node_identity_path = etc_dir.join("node_identity.json");
-    write_json_pretty(node_identity_path.as_path(), node_identity)?;
-    save_node_gateway_params(etc_dir, &node_identity.device_did)?;
     write_json_pretty(paths.did_json.as_path(), device_config)?;
-    fs::write(paths.device_doc_jwt.as_path(), device_doc_jwt.as_bytes()).map_err(|err| {
-        format!(
-            "write device_doc.jwt {} failed: {}",
-            paths.device_doc_jwt.display(),
-            err
-        )
-    })?;
-    fs::write(
+    atomic_write(paths.device_doc_jwt.as_path(), device_doc_jwt.as_bytes())?;
+    atomic_write(
         paths.device_mini_doc_jwt.as_path(),
         device_mini_doc_jwt.as_bytes(),
-    )
-    .map_err(|err| {
-        format!(
-            "write device_mini_doc.jwt {} failed: {}",
-            paths.device_mini_doc_jwt.display(),
-            err
-        )
-    })?;
-    fs::write(
+    )?;
+    atomic_write(
         paths.authentication_private_key.as_path(),
         device_private_key_pem.as_bytes(),
-    )
-    .map_err(|err| {
+    )?;
+    save_node_gateway_params(etc_dir, &node_identity.device_did)?;
+    let node_identity_path = etc_dir.join("node_identity.json");
+    write_json_pretty(node_identity_path.as_path(), node_identity)?;
+
+    Ok(paths)
+}
+
+pub fn save_zone_document_jwt(
+    etc_dir: &Path,
+    zone_document_jwt: &str,
+) -> std::result::Result<PathBuf, String> {
+    let path = etc_dir.join(ZONE_DOCUMENT_JWT_FILE_NAME);
+    atomic_write(path.as_path(), zone_document_jwt.as_bytes())?;
+    Ok(path)
+}
+
+pub fn atomic_write(path: &Path, content: &[u8]) -> std::result::Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("create {} failed: {}", parent.display(), err))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("invalid file name {}", path.display()))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| format!("build temporary file name failed: {}", err))?
+        .as_nanos();
+    let temp_path = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        file_name,
+        std::process::id(),
+        nonce
+    ));
+    let mut temp_file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(temp_path.as_path())
+        .map_err(|err| format!("create {} failed: {}", temp_path.display(), err))?;
+    temp_file
+        .write_all(content)
+        .and_then(|_| temp_file.sync_all())
+        .map_err(|err| {
+            let _ = fs::remove_file(temp_path.as_path());
+            format!("write {} failed: {}", temp_path.display(), err)
+        })?;
+    drop(temp_file);
+    fs::rename(temp_path.as_path(), path).map_err(|err| {
+        let _ = fs::remove_file(temp_path.as_path());
         format!(
-            "write authentication private key {} failed: {}",
-            paths.authentication_private_key.display(),
+            "atomically replace {} from {} failed: {}",
+            path.display(),
+            temp_path.display(),
             err
         )
     })?;
+    sync_parent_dir(parent)
+}
 
-    Ok(paths)
+#[cfg(unix)]
+fn sync_parent_dir(parent: &Path) -> std::result::Result<(), String> {
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|err| format!("sync {} failed: {}", parent.display(), err))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_parent: &Path) -> std::result::Result<(), String> {
+    Ok(())
 }
 
 pub fn save_node_gateway_params(
@@ -384,6 +433,5 @@ pub fn decode_device_config_without_verify(
 fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> std::result::Result<(), String> {
     let content = serde_json::to_string_pretty(value)
         .map_err(|err| format!("serialize {} failed: {}", path.display(), err))?;
-    fs::write(path, content.as_bytes())
-        .map_err(|err| format!("write {} failed: {}", path.display(), err))
+    atomic_write(path, content.as_bytes())
 }

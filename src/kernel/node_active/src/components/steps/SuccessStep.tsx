@@ -1,9 +1,9 @@
-import { CheckCircleOutlineRounded, ContentCopyRounded, LaunchRounded } from "@mui/icons-material";
+import { CheckCircleOutlineRounded, ContentCopyRounded, DnsRounded, LaunchRounded } from "@mui/icons-material";
 import { Alert, Box, Button, LinearProgress, Paper, Snackbar, Stack, Typography } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { WizardData } from "../../types";
-import { WEB3_BASE_HOST } from "../../../active_lib";
+import { SN_BASE_HOST, WEB3_BASE_HOST } from "../../../active_lib";
 import { copyTextToClipboard } from "../../utils/clipboard";
 
 type Props = {
@@ -38,7 +38,7 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
       ? `https://${wizardData.sn_user_name}.${WEB3_BASE_HOST}`
       : "";
   }, [targetUrl, wizardData.self_domain, wizardData.sn_user_name, wizardData.use_self_domain]);
-  const loginUsername = wizardData.owner_user_name?.trim() || wizardData.sn_user_name?.trim() || "";
+  const loginUsername = wizardData.owner_document?.name || wizardData.sn_user_name?.trim() || "";
   const countdownLabel = useMemo(() => {
     const minutes = String(Math.floor(remainingSeconds / 60)).padStart(2, "0");
     const seconds = String(remainingSeconds % 60).padStart(2, "0");
@@ -98,6 +98,17 @@ const SuccessStep = ({ wizardData, targetUrl }: Props) => {
         <CheckCircleOutlineRounded color="success" sx={{ fontSize: 56 }} />
         <Typography variant="h5">{t("activation_success")}</Typography>
         <Typography color="text.secondary">{t("activation_success_desc")}</Typography>
+        {wizardData.use_self_domain && (
+          <Alert severity="info" icon={<DnsRounded />} sx={{ width: "100%", textAlign: "left" }}>
+            {t("dns_ns_record", { sn_host_base: SN_BASE_HOST })}
+            <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
+              {t(
+                "ns_after_activation_hint",
+                "Activation is complete. Delegate NS now to make the custom domain resolve publicly.",
+              )}
+            </Typography>
+          </Alert>
+        )}
         <Stack spacing={1} sx={{ width: "100%", maxWidth: 420 }}>
           <Box>
             <Typography variant="h4" fontWeight={700}>

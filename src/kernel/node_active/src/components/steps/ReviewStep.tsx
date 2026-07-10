@@ -1,21 +1,9 @@
-import {
-  Alert,
-  Box,
-  Button,
-  Chip,
-  CircularProgress,
-  IconButton,
-  Snackbar,
-  Stack,
-  TextField,
-  Typography,
-} from "@mui/material";
-import { CheckCircleRounded, ContentCopyRounded, LaunchRounded, DnsRounded, WarningRounded } from "@mui/icons-material";
-import { useEffect, useMemo, useState } from "react";
+import { CheckCircleRounded } from "@mui/icons-material";
+import { Alert, Button, CircularProgress, Divider, Stack, Typography } from "@mui/material";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GatewayType, WizardData } from "../../types";
-import { do_active, do_active_by_wallet, generate_zone_txt_records, get_net_id_by_gateway_type, SN_BASE_HOST, SN_API_URL,SN_HOST, WEB3_BASE_HOST } from "../../../active_lib";
-import { copyTextToClipboard } from "../../utils/clipboard";
+import { activateNode, deriveActiveNames, deriveGatewayTopology } from "../../../active_lib";
+import { WizardData } from "../../types";
 
 type Props = {
   wizardData: WizardData;
@@ -25,228 +13,89 @@ type Props = {
   isWalletRuntime: boolean;
 };
 
-const ReviewStep = ({ wizardData, onActivated, onBack, isWalletRuntime }: Props) => {
+const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime }: Props) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const requiresDnsTxt = useMemo(
-    () => wizardData.gatewy_type === GatewayType.WAN && wizardData.use_self_domain,
-    [wizardData.gatewy_type, wizardData.use_self_domain]
-  );
-  const [dnsReady, setDnsReady] = useState(!requiresDnsTxt );
-  const [dnsRecords, setDnsRecords] = useState<Array<{ key: string; value: string }>>(
-     []
-  );
-  const [dnsLoading, setDnsLoading] = useState(false);
-  const [copyFeedback, setCopyFeedback] = useState<{
-    open: boolean;
-    severity: "success" | "error";
-    message: string;
-  }>({
-    open: false,
-    severity: "success",
-    message: "",
-  });
+  const names = wizardData.owner_document ? deriveActiveNames(wizardData) : null;
+  const topology = deriveGatewayTopology(wizardData);
 
-  useEffect(() => {
-    setDnsReady(!requiresDnsTxt);
-    setDnsRecords([]);
-  }, [requiresDnsTxt]);
-
-  const targetHost = wizardData.use_self_domain
-    ? wizardData.self_domain
-    : `${wizardData.sn_user_name}.${WEB3_BASE_HOST}`;
-
-  const targetUrl = targetHost ? `https://${targetHost}` : "";
-
-  const copyKey = async () => {
-    const key = wizardData.owner_private_key as string;
-    if (!key) {
-      return;
-    }
-
-    const copied = await copyTextToClipboard(key);
-    setCopyFeedback({
-      open: true,
-      severity: copied ? "success" : "error",
-      message: copied
-        ? t("success_copied")
-        : t("error_copy_failed", "Copy failed. Please copy it manually."),
-    });
-  };
-
-  const handleActivate = async () => {
+  const activate = async () => {
     setError("");
-    if (requiresDnsTxt && !dnsReady) {
-      setError(t("error_generate_txt_records_failed") || "DNS record not ready");
-      return;
-    }
     setLoading(true);
     try {
-      const ok = isWalletRuntime ? await do_active_by_wallet(wizardData) : await do_active(wizardData);
-      if (ok) {
-        onActivated(targetUrl);
-      } else {
-        setError(t("error_activation_failed") || "Activation failed");
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(`${t("error_activation_failed") || "Activation failed"} ${msg}`);
+      const result = await activateNode(wizardData);
+      onUpdate({
+        prepared_documents: result.prepared,
+        signed_documents: result.signed,
+        sn_access_token: null,
+        sn_refresh_token: null,
+        admin_password_hash: "",
+        device_private_key: "",
+        web_owner_material: null,
+      });
+      onActivated(`https://${result.accessHostname}`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoading(false);
     }
   };
 
-  const buildDnsRecord = async () => {
-    setError("");
-
-    if (!wizardData.is_wallet_runtime && !wizardData.owner_private_key) {
-      setError(t("error_private_key_not_ready") || "Private key missing");
-      return;
-    }
-    setDnsLoading(true);
-    try {
-      const netid = get_net_id_by_gateway_type(wizardData.gatewy_type, wizardData.port_mapping_mode);
-      const result = await generate_zone_txt_records(
-        SN_HOST,
-        wizardData.owner_public_key,
-        wizardData.owner_private_key,
-        wizardData.device_public_key,
-        netid,
-        wizardData.rtcp_port,
-        wizardData.is_wallet_runtime
-      );
-      if (!result) {
-        throw new Error("No TXT records returned");
-      }
-      const records = Object.entries(result).map(([key, value]) => ({
-        key,
-        value: typeof value === "string" ? value : JSON.stringify(value),
-      }));
-
-      setDnsRecords(records);
-      setDnsReady(true);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(`${t("error_generate_txt_records_failed") || "Failed to generate TXT"} ${msg}`);
-      setDnsReady(false);
-    } finally {
-      setDnsLoading(false);
-    }
-  };
+  if (!names || !wizardData.owner_document) {
+    return <Alert severity="error">{t("wallet_info_incomplete", "OwnerDocument is missing")}</Alert>;
+  }
 
   return (
     <Stack spacing={3}>
-
-      <Alert icon={<CheckCircleRounded />} severity="info">
-        {wizardData.use_self_domain ? (
-          <span>
-            {t("access_domain")}: <strong>{targetHost || t("domain_placeholder")}</strong>
-          </span>
-        ) : (
-          <span>
-            {t("access_domain")}: <strong>{targetHost || t("domain_format")}</strong>
-          </span>
-        )}
+      <Alert severity="info">
+        {isWalletRuntime
+          ? t(
+              "wallet_signing_review",
+              "The wallet will ask twice: first for Boot, Device and DeviceMini, then for ZoneDocument.",
+            )
+          : t(
+              "web_signing_review",
+              "The recovery phrase will be used once in local memory to sign four activation documents.",
+            )}
       </Alert>
-      <Stack direction="row" spacing={1} flexWrap="wrap">
-        <Chip label={wizardData.gatewy_type} color="primary" />
-        <Chip
-          label={wizardData.use_self_domain ? t("use_own_domain") : t("use_buckyos_domain")}
-          color="secondary"
-        />
+      <Stack spacing={1.25} divider={<Divider flexItem />}>
+        <Stack direction="row" justifyContent="space-between" gap={2}>
+          <Typography color="text.secondary">Owner DID</Typography>
+          <Typography sx={{ wordBreak: "break-all" }}>{names.owner_did}</Typography>
+        </Stack>
+        <Stack direction="row" justifyContent="space-between" gap={2}>
+          <Typography color="text.secondary">Zone DID</Typography>
+          <Typography sx={{ wordBreak: "break-all" }}>{names.zone_did}</Typography>
+        </Stack>
+        <Stack direction="row" justifyContent="space-between" gap={2}>
+          <Typography color="text.secondary">{t("domain_placeholder")}</Typography>
+          <Typography sx={{ wordBreak: "break-all" }}>{names.access_hostname}</Typography>
+        </Stack>
+        <Stack direction="row" justifyContent="space-between" gap={2}>
+          <Typography color="text.secondary">Gateway</Typography>
+          <Typography>{topology.net_id}</Typography>
+        </Stack>
+        <Stack direction="row" justifyContent="space-between" gap={2}>
+          <Typography color="text.secondary">BNS publish name</Typography>
+          <Typography>{names.bns_publish_name}</Typography>
+        </Stack>
       </Stack>
-
-      {wizardData.use_self_domain && wizardData.gatewy_type !== GatewayType.WAN && (
-        <>
-          <Alert icon={<DnsRounded />} severity="info">
-            {t("dns_ns_record", { sn_host_base: SN_BASE_HOST })}
-          </Alert>
-          <Typography fontWeight={700}>{t("dns_txt_records_title")}</Typography>
-        </>
-      )}
-
-      {requiresDnsTxt && (
-        <Stack spacing={1.5}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="center">
-            <Button variant="outlined" onClick={buildDnsRecord} disabled={dnsLoading}>
-              {dnsLoading ? t("generating_txt_records") : t("generate_txt_records_button")}
-            </Button>
-            <Alert icon={<WarningRounded />} severity="warning">
-              {t("dns_config_txt_tips")}
-            </Alert>
-          </Stack>
-          
-          {dnsRecords.map((rec) => (
-            <TextField
-              key={rec.key}
-              label={`${rec.key}`}
-              value={`${rec.key}=${rec.value};`}
-              InputProps={{ readOnly: true }}
-              multiline
-              minRows={2}
-            />
-          ))}
-        </Stack>
-      )}
-
-      {!wizardData.is_wallet_runtime && (
-        <Stack spacing={1}>
-          <Typography fontWeight={700}>{t("owner_private_key")}</Typography>
-          <TextField
-            value={wizardData.owner_private_key as string}
-            multiline
-            minRows={4}
-            InputProps={{
-              readOnly: true,
-              endAdornment: (
-                <IconButton onClick={copyKey} aria-label="copy private key">
-                  <ContentCopyRounded />
-                </IconButton>
-              ),
-            }}
-          />
-          <Alert severity="warning">
-            <Typography variant="body2">{t("private_key_warning1")}</Typography>
-            <Typography variant="body2">{t("private_key_warning2")}</Typography>
-            <Typography variant="body2">{t("private_key_warning3")}</Typography>
-          </Alert>
-        </Stack>
-      )}
-
       {error && <Alert severity="error">{error}</Alert>}
-
-      <Stack direction="row" justifyContent="space-between" spacing={1.5} flexWrap="wrap" alignItems="center">
-        <Button variant="text" onClick={onBack}>
+      <Stack direction="row" justifyContent="space-between" spacing={2}>
+        <Button onClick={onBack} disabled={loading}>
           {t("back_button")}
         </Button>
         <Button
           variant="contained"
           size="large"
-          onClick={handleActivate}
-          endIcon={!loading ? <LaunchRounded /> : undefined}
-          disabled={loading || (requiresDnsTxt && !dnsReady)}
-          sx={{ py: 1.15, minWidth: 160 }}
+          onClick={activate}
+          disabled={loading}
+          startIcon={loading ? <CircularProgress size={18} /> : <CheckCircleRounded />}
         >
-          {loading ? <CircularProgress size={20} /> : t("activate_button")}
+          {loading ? t("activating", "Activating…") : t("activate_button", "Activate")}
         </Button>
       </Stack>
-      <Snackbar
-        open={copyFeedback.open}
-        autoHideDuration={2500}
-        onClose={() => setCopyFeedback((prev) => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert
-          onClose={() => setCopyFeedback((prev) => ({ ...prev, open: false }))}
-          severity={copyFeedback.severity}
-          variant="filled"
-          sx={{ width: "100%" }}
-        >
-          {copyFeedback.message}
-        </Alert>
-      </Snackbar>
-
     </Stack>
   );
 };

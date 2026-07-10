@@ -554,6 +554,15 @@ pub struct UserEnvScope<'a> {
 }
 
 impl<'a> UserEnvScope<'a> {
+    fn owner_document(&self) -> OwnerDocument {
+        OwnerDocument::new(
+            self.did.clone(),
+            self.username.to_string(),
+            self.username.to_string(),
+            get_jwk(&self.key_pair.public_key_x),
+        )
+    }
+
     /// Create Owner configuration
     pub fn create_owner_config(&self) {
         write_file(
@@ -561,13 +570,7 @@ impl<'a> UserEnvScope<'a> {
             self.key_pair.private_key_pem.as_str(),
         );
 
-        let owner_jwk = get_jwk(&self.key_pair.public_key_x);
-        let owner_config = OwnerDocument::new(
-            self.did.clone(),
-            self.username.to_string(),
-            self.username.to_string(),
-            owner_jwk,
-        );
+        let owner_config = self.owner_document();
 
         write_json(&self.user_dir.join("user_config.json"), &owner_config);
         println!("Created owner config for {}", self.username);
@@ -756,14 +759,11 @@ impl<'a> UserEnvScope<'a> {
         if device_name.starts_with("ood") {
             let start_config = json!({
                 "admin_password_hash": ADMIN_PASSWORD_HASH,
-                "device_private_key": device_key_pair.private_key_pem,
-                "device_public_key": device_jwk,
                 "ood_jwt": device_jwt.to_string(),
                 "friend_passcode": "sdfsdfsdf",
                 "gateway_type": "PortForward",
                 "guest_access": true,
-                "private_key": self.key_pair.private_key_pem,
-                "public_key": get_jwk(&self.key_pair.public_key_x),
+                "owner_document": self.owner_document(),
                 "user_name": self.username,
                 "zone_name": self.zone_did.to_host_name(),
                 "BUCKYOS_ROOT": "/opt/buckyos"
@@ -1570,15 +1570,18 @@ mod tests {
         .unwrap();
 
         // Create startup configuration
+        let owner_document = OwnerDocument::new(
+            DID::new("bns", "devtest"),
+            "devtest".to_string(),
+            "devtest".to_string(),
+            get_jwk(&owner_keys.public_key_x),
+        );
         let start_config = json!({
             "admin_password_hash": ADMIN_PASSWORD_HASH,
-            "device_private_key": device_keys.private_key_pem,
-            "device_public_key": device_jwk,
             "friend_passcode": "sdfsdfsdf",
             "gateway_type": "PortForward",
             "guest_access": true,
-            "private_key": owner_keys.private_key_pem,
-            "public_key": get_jwk(&owner_keys.public_key_x),
+            "owner_document": owner_document,
             "user_name": "devtest",
             "zone_name": zone_did.to_host_name(),
             "BUCKYOS_ROOT": "/opt/buckyos"

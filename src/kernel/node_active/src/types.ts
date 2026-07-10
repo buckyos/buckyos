@@ -1,13 +1,17 @@
-
+import type {
+  BuckyOSDeviceDocument,
+  BuckyOSDeviceMiniDocument,
+  BuckyOSOwnerDocument,
+  BuckyOSZoneBootDocument,
+  BuckyOSZoneDocument,
+  Ed25519Jwk,
+} from "buckyos";
 
 export type WalletUser = {
-  user_name: string;
-  user_id?: string;
-  public_key?:  JsonValue;
-  sn_username?: string;
-  password_hash?: string;
+  owner_document: BuckyOSOwnerDocument;
+  sn_username: string;
+  public_key?: Ed25519Jwk;
 };
-
 
 export type StepKey =
   | "gateway"
@@ -19,21 +23,19 @@ export type StepKey =
   | "success";
 
 export enum GatewayType {
-  BuckyForward = "BuckyForward",//nat  (none)
-  PortForward = "PortForward",//port forward (portmap)
-  //WANDynamic = "WANDynamic",//dynamic wan (wan_dyn)
-  WAN = "WAN",//static wan (wan)
+  BuckyForward = "BuckyForward",
+  PortForward = "PortForward",
+  WAN = "WAN",
 }
 
 export type JsonValue = Record<string, any>;
 
 export type ActiveConfig = {
-sn_base_host: string;
-http_schema: "http" | "https";
-bns_evm?: JsonValue;
-ai_provider_tutorial_url?: string;
-telegram_bot_api_token_tutorial_url?: string;
-telegram_account_id_tutorial_url?: string;
+  sn_base_host: string;
+  http_schema: "http" | "https";
+  ai_provider_tutorial_url?: string;
+  telegram_bot_api_token_tutorial_url?: string;
+  telegram_account_id_tutorial_url?: string;
 };
 
 export type AIProviderConfig = {
@@ -42,53 +44,100 @@ export type AIProviderConfig = {
   google_api_token: string;
   openrouter_api_token: string;
   glm_api_token: string;
-}
+};
 
 export type JarvisMsgTunnelConfig = {
   telegram_bot_api_token: string;
   telegram_account_id: string;
-}
+};
 
 export type EnabledFeatures = {
   llm_router: boolean;
+};
+
+export interface WebOwnerMaterial {
+  mnemonic_words: string[];
+  owner_public_jwk: Ed25519Jwk;
+  owner_derivation_path: string;
+  evm_address: string;
+  evm_derivation_path: string;
 }
+
+export interface ActiveNameMapping {
+  owner_name: string;
+  owner_did: string;
+  zone_did: string;
+  access_hostname: string;
+  bns_publish_name: string;
+  use_self_domain: boolean;
+}
+
+export interface GatewayTopology {
+  net_id: "nat" | "wan_dyn" | "portmap" | "wan";
+  rtcp_port: number;
+  support_container: boolean;
+  uses_sn_relay: boolean;
+  sn_url: string;
+}
+
+export interface PreparedActiveDocuments {
+  owner_document: BuckyOSOwnerDocument;
+  names: ActiveNameMapping;
+  topology: GatewayTopology;
+  boot_document: BuckyOSZoneBootDocument;
+  device_document: BuckyOSDeviceDocument;
+  device_mini_document: BuckyOSDeviceMiniDocument;
+  device_info: JsonValue;
+}
+
+export interface SignedActiveDocuments {
+  boot_document: BuckyOSZoneBootDocument;
+  boot_document_jwt: string;
+  device_document: BuckyOSDeviceDocument;
+  device_document_jwt: string;
+  device_mini_document: BuckyOSDeviceMiniDocument;
+  device_mini_document_jwt: string;
+  zone_document: BuckyOSZoneDocument;
+  zone_document_jwt: string;
+}
+
+export type DomainBindingState =
+  | { state: "unused" }
+  | { state: "checking"; domain: string }
+  | {
+      state: "challenge";
+      domain: string;
+      record_name: string;
+      value: string;
+      reason: string;
+    }
+  | { state: "verified"; domain: string; verified_at: number };
 
 export type ActiveWizzardData = {
   gatewy_type: GatewayType;
-  // is_direct_connect: boolean;
   port_mapping_mode: "full" | "rtcp_only";
   rtcp_port: number;
-
   use_self_domain: boolean;
   self_domain: string;
-
-  //web3_base_host: string;
-  sn_active_code: string | null;// 邀请码来源字段，功能开通状态由 enabled_features 表达
-  sn_user_name: string | null;//钱包模式不会为null
-  // SN 账号会话 token（access aud="sn" 1小时 / refresh aud="sn-refresh" 1天），
-  // 注册设备到 SN（device.register）时必须携带 access token。
-  // 只允许存在内存向导状态里：不写 localStorage、不打日志；激活参数里的
-  // sn_access_token 由服务端从 start_config 剥离。
+  domain_binding: DomainBindingState;
+  sn_active_code: string | null;
+  sn_user_name: string | null;
   sn_access_token: string | null;
   sn_refresh_token: string | null;
   enabled_features: EnabledFeatures;
-
   admin_password_hash: string;
   friend_passcode: string;
   enable_guest_access: boolean;
-
-  owner_public_key: JsonValue;
-  owner_private_key: string | null;//钱包模式为null
-  bns_evm_private_key?: string | null;
-  
-  device_public_key: JsonValue;
+  owner_document: BuckyOSOwnerDocument | null;
+  evm_address: string;
+  web_owner_material: WebOwnerMaterial | null;
+  device_public_key: Ed25519Jwk;
   device_private_key: string;
-
+  prepared_documents: PreparedActiveDocuments | null;
+  signed_documents: SignedActiveDocuments | null;
   is_wallet_runtime: boolean;
-  owner_user_name: string;//did:bns:$owner_user_name
   ai_provider_config: AIProviderConfig;
   jarvis_msg_tunnel_config: JarvisMsgTunnelConfig;
-}
+};
 
-// 类型别名：用于组件中的向导数据，与 ActiveWizzardData 相同
 export type WizardData = ActiveWizzardData;

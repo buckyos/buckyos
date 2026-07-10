@@ -72,7 +72,7 @@ pub struct EnabledFeaturesSummary {
 pub struct StartConfigSummary {
     pub user_name: String,
     pub admin_password_hash: String,
-    pub public_key: Jwk,
+    pub owner_document: OwnerDocument,
     pub zone_name: String, //zone hostname
     #[serde(default)]
     pub sn_active_code: String,
@@ -136,15 +136,14 @@ impl SystemConfigBuilder {
     }
 
     pub fn add_user_doc(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
-        let user_did = DID::new("bns", &config.user_name);
-        let owner_jwk = config.public_key.clone();
-
-        let owner_config = OwnerDocument::new(
-            user_did,
-            config.user_name.clone(),
-            config.user_name.clone(),
-            owner_jwk,
-        );
+        let owner_config = config.owner_document.clone();
+        if owner_config.name != config.user_name {
+            return Err(anyhow!(
+                "OwnerDocument name {} does not match start config user {}",
+                owner_config.name,
+                config.user_name
+            ));
+        }
 
         let key = format!("users/{}/doc", config.user_name);
         self.insert_json(&key, &owner_config)?;
@@ -1184,13 +1183,13 @@ impl TryFrom<&Value> for StartConfigSummary {
     type Error = anyhow::Error;
 
     fn try_from(value: &Value) -> Result<Self> {
-        let user_public_key: Jwk = serde_json::from_value(
+        let owner_document: OwnerDocument = serde_json::from_value(
             value
-                .get("public_key")
+                .get("owner_document")
                 .cloned()
-                .ok_or_else(|| anyhow!("start_config.json missing public_key"))?,
+                .ok_or_else(|| anyhow!("start_config.json missing owner_document"))?,
         )
-        .map_err(|e| anyhow!("Failed to parse public key: {}", e))?;
+        .map_err(|e| anyhow!("Failed to parse OwnerDocument: {}", e))?;
         let sn_active_code = value
             .get("sn_active_code")
             .and_then(Value::as_str)
@@ -1217,7 +1216,7 @@ impl TryFrom<&Value> for StartConfigSummary {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("start_config.json missing admin_password_hash"))?
                 .to_string(),
-            public_key: user_public_key,
+            owner_document,
             zone_name: value
                 .get("zone_name")
                 .and_then(Value::as_str)
@@ -1269,8 +1268,42 @@ mod tests {
         generate_verify_hub_service_doc, AppDoc, AppServiceSpec, AppType, OPENDAN_SERVICE_PORT,
     };
     use name_lib::DID;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::collections::HashMap;
+
+    fn sample_owner_document() -> Value {
+        json!({
+            "@context": [
+                "https://www.w3.org/ns/did/v1",
+                "https://buckyos.org/ns/owner/v1"
+            ],
+            "id": "did:bns:alice",
+            "verificationMethod": [{
+                "type": "Ed25519VerificationKey2020",
+                "id": "#main_key",
+                "controller": "did:bns:alice",
+                "publicKeyJwk": {
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+                }
+            }],
+            "authentication": ["#main_key"],
+            "assertion_method": ["#main_key"],
+            "capabilityInvocation": ["#main_key"],
+            "exp": 4102444800u64,
+            "iat": 1700000000u64,
+            "version_seq": 0,
+            "name": "alice",
+            "display_name": "Alice",
+            "wallets": {
+                "main": {
+                    "type": "eth",
+                    "address": "0x1111111111111111111111111111111111111111"
+                }
+            }
+        })
+    }
 
     fn sample_preinstall_app_doc(app_id: &str, version: &str) -> AppDoc {
         let owner = DID::from_str("did:web:example.com").expect("valid owner did");
@@ -1291,11 +1324,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com",
             "ai_provider_config": {
                 "openai_api_token": "sk-openai",
@@ -1322,15 +1351,36 @@ mod tests {
     }
 
     #[test]
+    fn add_user_doc_preserves_complete_owner_document() {
+        let value = json!({
+            "user_name": "alice",
+            "admin_password_hash": "hashed",
+            "owner_document": sample_owner_document(),
+            "zone_name": "did:web:alice.example.com"
+        });
+        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+        let mut builder = SystemConfigBuilder::new(HashMap::new());
+        builder.add_user_doc(&summary).expect("add owner document");
+        let stored: Value = serde_json::from_str(
+            builder
+                .entries
+                .get("users/alice/doc")
+                .expect("stored owner document"),
+        )
+        .unwrap();
+        assert_eq!(stored["display_name"], "Alice");
+        assert_eq!(
+            stored["wallets"]["main"]["address"],
+            "0x1111111111111111111111111111111111111111"
+        );
+    }
+
+    #[test]
     fn build_aicc_settings_uses_supported_boot_tokens() {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com",
             "ai_provider_config": {
                 "openai_api_token": "sk-openai",
@@ -1375,11 +1425,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com",
             "sn_active_code": "invite-code-001"
         });
@@ -1419,11 +1465,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com",
             "enabled_features": {
                 "llm_router": true
@@ -1463,11 +1505,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com",
             "sn_active_code": "invite-code-001"
         });
@@ -1495,11 +1533,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com",
             "jarvis_msg_tunnel_config": {
                 "telegram_bot_api_token": "123:bot",
@@ -1530,11 +1564,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com",
             "jarvis_msg_tunnel_config": {
                 "telegram_bot_api_token": "123:bot",
@@ -1562,11 +1592,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com"
         });
         let summary = StartConfigSummary::from_value(&value).expect("parse start config");
@@ -1596,11 +1622,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com"
         });
         let summary = StartConfigSummary::from_value(&value).expect("parse start config");
@@ -1639,11 +1661,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com"
         });
         let summary = StartConfigSummary::from_value(&value).expect("parse start config");
@@ -1724,11 +1742,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com"
         });
         let summary = StartConfigSummary::from_value(&value).expect("parse start config");
@@ -1772,11 +1786,7 @@ mod tests {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "public_key": {
-                "kty": "OKP",
-                "crv": "Ed25519",
-                "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-            },
+            "owner_document": sample_owner_document(),
             "zone_name": "did:web:alice.example.com"
         });
         let summary = StartConfigSummary::from_value(&value).expect("parse start config");
