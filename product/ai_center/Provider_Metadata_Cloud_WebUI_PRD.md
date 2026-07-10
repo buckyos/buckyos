@@ -13,7 +13,7 @@
 
 Provider Driver Metadata 云更新体系包含两类云服务：
 
-- **A 服务 `provider-metadata-tech-service`**：维护 provider、model、pattern、defaults、variants、version_rules、api_type、capability、逻辑目录等技术事实与 key 字段。
+- **A 服务 `provider-metadata-tech-service`**：维护 provider、model_param_rules、variants、version_rules、api_type、capability、逻辑目录等技术事实与 key 字段。
 - **B 服务 `provider-metadata-ops-service`**：从 A 服务同步技术发布结果，在其基础上叠加运营 overlay，最终生成可下发给客户端的完整发布 JSON。
 
 说明：A 服务 / B 服务只是本文档为了讨论架构职责使用的简称，不能作为 WebUI 的直接展示文案。用户界面应使用“技术参数”“运营参数”“技术源”“同步源”“发布源 revision”“运营 revision”等名称。
@@ -91,11 +91,11 @@ Provider Metadata Cloud WebUI 是 AICC provider-driver metadata 的云端管理�
 
 1. 技术参数视图和运营参数视图都提供浏览模式和编辑模式，默认进入浏览模式。
 2. 进入编辑模式时创建 `edit_session`，顶部固定显示 base revision、操作者、编辑状态和未发布变更数量。
-3. 技术参数视图支持 provider、model、model rules、model nicks、defaults fallback、patterns/variants/version_rules、logical directory、api_type、capability 的浏览、搜索、详情和编辑。
+3. 技术参数视图支持 provider、model_param_rules、model nicks、variants/version_rules、logical directory、api_type、capability 的浏览、搜索、详情和编辑。
 4. 技术参数视图支持以已有 provider/model 为模板创建新对象。
 5. 技术参数视图支持导入 YAML/Markdown 更新计划，导入后进入待提交状态，不直接发布。
 6. 运营参数视图支持配置技术源 URL、手动同步、查看发布源 revision/运营 revision、查看 stale 状态。
-7. 运营参数首版运营字段固定为 disabled、pricing override、routing weight、recommendation level、display priority，并支持 provider/model/pattern/block 的运营 overlay 编辑和批量调整。
+7. 运营参数首版运营字段固定为 disabled、pricing override、routing weight、recommendation level、display priority，并支持 provider/model/model_param_rule/variants/version_rules 的运营 overlay 编辑和批量调整。
 8. 发布前必须提供 diff、影响范围、风险确认、测试建议和发布摘要。
 9. 发布后写入 change log，并可从变更历史查看 diff、导入文档、操作者、发布时间、from/to revision。
 10. UI 支持简体中文和英文切换，语言选择持久化到当前账号偏好。
@@ -147,10 +147,10 @@ Provider Metadata Cloud WebUI 是 AICC provider-driver metadata 的云端管理�
 |---|---|---|
 | Dashboard | 概览 | 发布状态、schema version、provider/model 数量、最近变更、待处理 warning。 |
 | Providers | Provider 列表 / 详情 | 原厂 provider、聚合 provider、compatible proxy 的技术主数据管理。 |
-| Models | Model 列表 / 详情 | 全局默认 model meta 和 provider 专属 model meta。 |
+| Models | Model 列表 / 详情 | 全局/原厂和 provider 专属 model_param_rule 的 exact 匹配视图。 |
 | Selection Rules | 模型选择规则 | provider 白名单、黑名单、include/exclude origin、include/exclude pattern。 |
 | Nick Rules | Model Nick | 精确 nick 和 pattern rewrite，支持批量前缀、后缀、替换。 |
-| Metadata Blocks | Defaults / Patterns / Variants / Version Rules | 按全局和 provider scope 管理 resolver 规则块。 |
+| Resolver Rules | Model Param Rules / Variants / Version Rules | 按全局和 provider scope 管理模型参数匹配规则、variants 和 version rules。 |
 | Logical Directory | 逻辑目录 | 目录树、模型挂载、批量添加/移除、目录属性。 |
 | Dictionaries | API Types / Capabilities | 受控字典管理和批量标记模型能力。 |
 | Import Plan | 导入计划 | YAML/Markdown 导入、解析、命中预览、分发为待提交变更。 |
@@ -165,7 +165,7 @@ Provider Metadata Cloud WebUI 是 AICC provider-driver metadata 的云端管理�
 | 技术源 | 技术源 | 技术参数服务 URL、最近同步时间、手动刷新、同步结果。 |
 | Providers | Provider 运营 | 浏览技术字段，只编辑禁用、推荐级别、展示优先级、运营备注。 |
 | Models | Model 运营 | 浏览技术字段，只编辑价格覆盖、routing weight、推荐级别、禁用、灰度。 |
-| Blocks | Pattern / Block Overlay | 对 pattern/defaults/variants/version_rules 做禁用或运营字段覆盖。 |
+| Resolver Rules | Model Param Rules / Variants / Version Rules Overlay | 对 model_param_rule/variants/version_rules 做禁用或运营字段覆盖。 |
 | Bulk Operations | 批量调整 | 按 provider、api_type、capability、价格区间、名称搜索批量调整运营参数。 |
 | Warnings | Warning 中心 | 污染字段、同步失败、合并失败、stale 数据、跳过对象。 |
 | Publish Preview | 下发预览 | 最终发布 JSON、对象数量、移除项、overlay 命中、客户端可见效果。 |
@@ -224,7 +224,7 @@ src/frame/provider_metadata_cloud/web/
       models/
       selection-rules/
       nick-rules/
-      metadata-blocks/
+      resolver-rules/
       logical-directory/
       dictionaries/
       import-plan/
@@ -263,8 +263,8 @@ src/frame/provider_metadata_cloud/web/
 页面模块边界：
 
 - 每个左侧导航项必须对应 `pages/<module>/` 下的独立页面模块，至少包含 `index.tsx` 和本页面私有子组件；跨页面复用后才移动到 `components/`。
-- 技术参数导航页分别落到 `dashboard/`、`providers/`、`models/`、`selection-rules/`、`nick-rules/`、`metadata-blocks/`、`logical-directory/`、`dictionaries/`、`import-plan/`、`publish/`、`change-logs/`。
-- 运营参数导航页分别落到 `dashboard/`、`tech-source/`、`providers/`、`models/`、`metadata-blocks/` 或 `blocks/`、`bulk-operations/`、`warnings/`、`publish/`、`change-logs/`。
+- 技术参数导航页分别落到 `dashboard/`、`providers/`、`models/`、`selection-rules/`、`nick-rules/`、`resolver-rules/`、`logical-directory/`、`dictionaries/`、`import-plan/`、`publish/`、`change-logs/`。
+- 运营参数导航页分别落到 `dashboard/`、`tech-source/`、`providers/`、`models/`、`resolver-rules/`、`bulk-operations/`、`warnings/`、`publish/`、`change-logs/`。
 - 同名页面可以共享页面骨架，但技术字段编辑、运营 overlay 编辑、只读字段展示必须拆成独立组件，避免通过大量条件分支混在同一组件内。
 
 向导与工作流模块：
@@ -286,9 +286,9 @@ src/frame/provider_metadata_cloud/web/
 
 Mock 数据与状态层：
 
-- `mock/driverMetadataSeed.ts` 从 `src/frame/aicc/driver_metadata/*.json` 的字段形态构造内置 provider/model/pattern/defaults/variants/version_rules 样本；不直接 import 运行时后端代码。
-- `mock/providerCloudSeed.ts` 在 driver metadata 样本上补齐云服务需要的发布源 revision、运营 revision、provider key、edit session、change log、warnings、ops overlay、stale cache 等 UI 数据。
-- `mock/api.ts` 模拟异步读取、保存草稿、预览发布、发布成功/失败、同步技术源、导入计划解析等行为，并覆盖正常、空、加载、错误、stale、schema warning、污染字段 warning 状态。
+- `mock/driverMetadataSeed.ts` 从 `src/frame/aicc/driver_metadata/*.json` 的字段形态构造内置 provider、model_param_rules、metadata_variants、metadata_version_rules 等表格化样本；不直接 import 运行时后端代码。
+- `mock/providerCloudSeed.ts` 在 driver metadata 样本上补齐云服务需要的发布源 revision、运营 revision、provider key、edit session、change log、warnings、ops overlay、stale cache 等持久化数据。mock seed 必须按文档中的表格/数据集合组织，不能保存只迎合 Web 页面布局的最终运算结果。
+- `mock/api.ts` 模拟异步读取、保存草稿、预览发布、发布成功/失败、同步技术源、导入计划解析等行为，并覆盖正常、空、加载、错误、stale、schema warning、污染字段 warning 状态。页面需要的计数、命中数量、发布样例、风险摘要、目录树、搜索结果和最终 JSON 片段必须通过 `mock/api.ts`、selector 或等价 mock 模块接口从表格化数据计算得到；这组接口后续应能演进为真实后端 API。
 - `state/` 只封装前端 store 和 selector，不包含组件渲染；后续真实后端接入时只替换 mock api provider，不改页面模块边界。
 
 测试组织：
@@ -332,7 +332,7 @@ Mock 数据与状态层：
 
 - 普通字段可按服务所有权编辑。
 - key 字段默认只读，即使已进入编辑模式也不能直接改。
-- key 字段包括 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick`、pattern/block nick 以及稳定 key。
+- key 字段包括 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick`、model_param_rule/variant/version_rule nick 以及稳定 key。
 - 修改 key 字段必须点击字段级「解锁 key 字段」，填写原因，并在发布确认页单独确认影响。
 - 运营参数视图中的技术字段永远只读，不提供解锁入口。
 
@@ -361,7 +361,7 @@ Mock 数据与状态层：
 - 运营污染字段区：列出被丢弃的技术字段和来源。
 - Schema 校验结果：Error 阻止发布，Warning 允许发布但必须展示。
 - 规则命中样例：批量规则至少展示命中数量和前 N 条样例。
-- patterns/variants/version_rules 的 nick 重写样例：展示重写前 selector、重写后 selector、命中模型和冲突检查结果；defaults 展示 fallback object 的发布结果。
+- model_param_rules 的命中样例：展示 exact、pattern、default 的命中顺序、命中模型和冲突检查结果；variants/version_rules 展示重写前 selector、重写后 selector、命中模型和冲突检查结果。
 - 生成的测试建议：按变更类型生成需要回归的 provider/model/routing 场景。
 - 发布说明输入框：必填，写入 change log summary。
 
@@ -369,7 +369,7 @@ Mock 数据与状态层：
 
 - 没有 Error 级校验问题。
 - 所有 key 字段风险项已确认。
-- patterns/variants/version_rules 不存在无法重写、重写后冲突或空命中的 Error；defaults schema 校验失败是 Error。
+- model_param_rules 不存在冲突命中、无 default 兜底或 schema 校验失败的 Error；variants/version_rules 不存在无法重写、重写后冲突或空命中的 Error。
 - 发布说明已填写。
 - 当前 base revision 未被其他发布覆盖；如已覆盖，必须重新打开编辑会话或执行 rebase 预览。
 
@@ -401,7 +401,7 @@ Mock 数据与状态层：
 核心组件：
 
 - 发布状态卡片：published revision、schema version、最近发布时间、最近操作者。
-- 数据规模卡片：providers、models、rules、metadata blocks、logical directories。
+- 数据规模卡片：providers、models、rules、resolver rules、logical directories。
 - 风险卡片：key 字段待确认数、schema warning、未发布 edit session。
 - 最近变更列表：最近 10 条 change log。
 - 快捷入口：新增 provider、导入计划、进入发布预览。
@@ -432,7 +432,7 @@ Mock 数据与状态层：
 
 - 基础字段：provider key、name、driver、base_url、kind、protocol_family。
 - 模型选择摘要：include/exclude rules、命中模型数、黑名单模型数。
-- 专属规则：provider scope 下的 patterns/variants/version_rules，以及 defaults fallback 覆盖。
+- 专属规则：provider scope 下的 model_param_rules、variants/version_rules。
 - JSON 预览：合成前 provider 技术数据。
 - 引用关系：关联 models、nick rules、logical mounts。
 
@@ -471,15 +471,16 @@ Mock 数据与状态层：
 
 主要操作：
 
-- 新增全局默认 model meta。
-- 新增 provider 专属 model meta。
-- 从现有 model 复制。
+- 新增全局/原厂 exact model_param_rule。
+- 新增 provider 专属 exact model_param_rule。
+- 从现有 model、pattern 或 default 复制创建 exact model_param_rule。
+- 为 provider 添加模型时，也可以从已存在的 pattern/default 规则复用参数，再补充精确原始 `model.id`；该操作创建新的 exact 规则，不修改来源规则。来源类型不是 exact 时，必须提示用户确认类型将变更为 exact，并展示 selector、priority 等会被改写或清空的字段。
 - 批量标记 api_type。
 - 批量标记 capability。
 - 批量设置 logical mounts。
 - 删除 provider 专属覆盖。
 
-新增或删除全局 model meta 前，必须显示受影响 provider 列表。
+新增或删除全局/原厂 exact model_param_rule 前，必须显示受影响 provider 列表。
 
 ### 7.4 Selection Rules
 
@@ -520,33 +521,38 @@ Mock 数据与状态层：
 
 - 展示 `source_model_id -> published id` 映射。
 - 显示重复 nick、冲突 nick、空结果。
-- 显示受影响 logical directory、patterns/variants/version_rules selector、defaults fallback 覆盖和 provider 发布样例。
+- 显示受影响 logical directory、model_param_rules、variants/version_rules selector 和 provider 发布样例。
 
-### 7.6 Metadata Blocks
+### 7.6 Resolver Rules
 
 对象：
 
-- defaults
-- patterns
+- model_param_rules
 - variants
 - version_rules
 
 页面要求：
 
 - 按 global scope 和 provider scope 切换。
-- Metadata Blocks 页面必须先按类型分组浏览。`defaults`、`patterns`、`variants`、`version_rules` 使用不同的列表列、筛选项、详情面板、创建表单和编辑表单；不能用同一个宽松 JSON 编辑器作为主路径覆盖所有类型。
-- 创建 Metadata Block 时选择类型，创建后类型冻结，不允许在编辑中改成其他类型。
-- 每种 Metadata Block 类型必须使用独立输入 schema 校验；schema error 需要能定位到对应字段。
-- `defaults` 保持当前 driver metadata 的非数组 object 形式，是匹配失败或未收录模型统一使用的保底参数；UI 提供单个 defaults object 的结构化编辑和 JSON 辅助预览。
-- `patterns`、`variants`、`version_rules` 是数组；每个数组元素必须作为独立记录展示、选择和编辑，PC 编辑模式使用分页表格承载，不允许主路径只展示整段数组 JSON。
-- `patterns`、`variants`、`version_rules` 列表必须展示类型、scope、source、nick/名称、selector、priority、enabled、更新时间、命中数量。
-- `patterns`、`variants`、`version_rules` 详情提供结构化表单和 JSON 视图，结构化表单必须包含该元素的身份字段、selector、priority、enabled 和 content/patch；JSON 视图用于辅助检查，不作为主编辑路径。
+- Resolver Rules 页面必须先按类型分组浏览。`model_param_rules` 内部按 `exact`、`pattern`、`default` 分组；`variants`、`version_rules` 使用独立表或独立数据集合。每种类型使用不同的列表列、筛选项、详情面板、创建表单和编辑表单；不能用同一个宽松 JSON 编辑器作为主路径覆盖所有类型。
+- `exact`、`pattern`、`default` 必须统一存储在 `model_param_rules` 中，通过 `match_type` 区分，不能拆成三张表；创建后 `match_type` 不允许修改。
+- 每种 resolver rule 类型必须使用独立输入 schema 校验；schema error 需要能定位到对应字段。
+- `model_param_rules` 的 `exact`、`pattern`、`default` 本质上都是模型参数匹配规则：`exact` 精确匹配原始 `model.id`，`pattern` 按 selector 和 priority 顺序匹配，`default` 在 exact 和 pattern 全部失败后兜底。匹配顺序固定为 exact -> pattern(priority) -> default，并保证一个模型只有一个最终参数分类。
+- 统一存储不改变下发格式。发布预览和导出的最终 JSON 必须把 `model_param_rules` 物化为 `models`、`patterns`、`defaults` 三个字段：exact 输出到 `models[]`，pattern 按 priority 稳定排序输出到 `patterns[]`，default 输出到 `defaults`。
+- WebUI 编辑模型也必须统一处理 exact、pattern、default。为 provider 选择模型时，本质上是选择或创建匹配模式；管理员可以从 exact、pattern、default 任意一种规则复制创建另一种类型的新规则，但不能原地修改已有规则的 `match_type`。
+- 复制创建新规则时必须继承参数字段并重新校验目标类型字段：从 pattern 创建 exact 时，把 pattern selector 改为一个或多个精确原始 `model.id`；从 default 创建 exact/pattern 时，继承 fallback 参数并补充目标 selector，pattern 还必须补充 priority。
+- 如果复制创建时来源类型和目标类型不同，UI 必须展示类型变更确认，明确最终 `match_type` 以用户选择的目标类型为准，并列出按目标类型会新增、改写或清空的字段；用户确认前不得保存。
+- `variants`、`version_rules` 是数组；每个数组元素必须作为独立记录展示、选择和编辑，PC 编辑模式使用分页表格承载，不允许主路径只展示整段数组 JSON。
+- `model_param_rules`、`variants`、`version_rules` 列表必须展示类型、scope、source、nick/名称、selector、priority、enabled、更新时间、命中数量。
+- `model_param_rules`、`variants`、`version_rules` 详情提供结构化表单和 JSON 视图，结构化表单必须包含该元素的身份字段、selector、priority、enabled 和 content/patch；JSON 视图用于辅助检查，不作为主编辑路径。
 - 支持从全局/原厂记录引用创建 provider 专属记录；管理员修改字段后，该记录成为 provider 专属配置。
 - `model_id_selector` 输入使用原始 `model.id`，保存和发布预览必须展示重写后的 published model id selector。
 - variants 必须显式配置 base model 匹配 selector，不能只靠 variant name 隐式关联模型。
 - 保存前执行 JSON/schema 校验。
 - 支持复制、禁用、删除、回滚到上一发布版本。
-- 命中预览必须同时展示原始命中模型、`source_model_id -> published id` nick 映射、重写后的 pattern/variant/version_rule 发布样例，以及重复 nick、空命中、重写冲突；defaults 预览展示其作为 fallback object 的最终发布值。
+- 命中预览必须同时展示原始命中模型、`source_model_id -> published id` nick 映射、model_param_rules 的 exact -> pattern(priority) -> default 命中链路、重写后的 variant/version_rule 发布样例，以及重复 nick、空命中、重写冲突。
+- 命中预览必须展示 `models[]` 精确命中优先于 `patterns[]`，`patterns[]` 按数组顺序前高后低，`defaults` 仅在前两者都失败时生效。
+- Provider 全量 JSON 视图和导出必须按 `models`、`patterns`、`defaults` 分开展示，不能只展示统一后的 `model_param_rules`。
 
 ### 7.7 Logical Directory
 
@@ -951,7 +957,7 @@ Warning 类型：
 - Identity：key、name、model_id、original_provider。
 - Driver：provider_driver、model_driver、protocol_family。
 - Capability：api_types、capabilities、context_limits。
-- Rules：selection rules、patterns、defaults、variants、version_rules。
+- Rules：selection rules、model_param_rules、variants、version_rules。
 - Publish：enabled、exclude、revision、updated_at。
 
 运营参数字段分组：
@@ -991,11 +997,11 @@ Warning 类型：
 ### 14.2 技术参数验收
 
 1. 可以新增 provider，并在发布预览中看到 provider 发布 JSON。
-2. 可以新增全局 model meta，并在发布前看到受影响 provider 列表。
+2. 可以新增全局/原厂 exact model_param_rule，并在发布前看到受影响 provider 列表。
 3. 可以为 provider 增加 include/exclude 规则，并预览命中模型。
 4. 可以批量设置 nick，并看到 `source_model_id -> published id` 映射。
-5. 可以编辑 defaults fallback object，并可以编辑 patterns/variants/version_rules 的数组元素，执行 schema 校验、命中预览和 nick 重写预览。
-6. 每个 provider 可以为 patterns/variants/version_rules 各自配置多条记录，并能从全局/原厂记录引用后修改为 provider 专属配置；defaults 只保留单个 provider fallback object。
+5. 可以编辑 model_param_rules 的 exact、pattern、default 规则，并可以编辑 variants/version_rules 的数组元素，执行 schema 校验、命中预览和 nick 重写预览。
+6. 每个 provider 可以为 model_param_rules 配置多条 exact/pattern 记录和单条 default 记录，并能从全局/原厂记录引用后修改为 provider 专属配置；variants/version_rules 各自允许多条记录。
 7. 可以批量为模型添加 api_type 或 capability。
 8. 修改 key 字段必须字段级解锁，并在发布确认页进入独立风险区。
 
@@ -1020,18 +1026,20 @@ Warning 类型：
 - `metadata.key_field.update` 不需要独立审批流，只需要字段级解锁和发布确认页风险确认。
 - Stale 状态下允许运营参数发布，发布记录必须写入使用的发布源 revision 和 stale 状态。
 - 长时间更新支持保存草稿；用户下次登录时应提示未完成草稿，并允许逐个继续编辑、发布或放弃。
-- patterns/variants/version_rules 与 models 一样按 provider scope 管理；通常引用全局/原厂配置，修改字段后成为 provider 专属配置，并且每个 provider 每类对象都允许多条记录。
-- patterns/variants/version_rules 中的 model selector 使用原始 `model.id` 编辑，但发布预览和最终 JSON 必须按 model nick 改写为客户端可见 id。
-- defaults 保持非数组 object 形态，作为匹配失败或未收录模型统一使用的保底参数；首版 UI 必须提供结构化编辑，不再按数组式多记录模型设计。
-- Metadata Block 类型创建后冻结。即使后端或 mock 数据统一存储，UI 也必须按类型提供不同视图和不同 schema；如果统一存储导致校验、查询或编辑复杂度过高，允许实现阶段拆分为多个表或多个数据集合。
+- model_param_rules 按 provider scope 管理；通常引用全局/原厂配置，修改字段后成为 provider 专属配置。exact 精确匹配 `model.id`，pattern 按 selector 和 priority 顺序匹配，default 每个 scope 最多一条。
+- model_param_rules 中的 selector 使用原始 `model.id` 编辑，但发布预览和最终 JSON 必须按 model nick 改写为客户端可见 id；default 不需要 selector。
+- default 是 `model_param_rules` 中不带 selector 和 priority 的兜底规则，参数内容按非数组结构化表单编辑，用于 exact 和 pattern 全部匹配失败后的 fallback。
+- exact、pattern、default 必须统一存储在 `model_param_rules` 表或数据集合中，通过 `match_type` 区分；variants、version_rules 单独存储。UI 必须按类型提供不同视图和不同 schema。
+- 最终下发给客户端的 JSON 仍必须拆成 `models`、`patterns`、`defaults` 三个字段，不能因为后端统一存储而合并下发；发布确认页必须展示这三个字段的物化结果和匹配优先级。
+- mock 数据必须按 provider、model_param_rules、metadata_variants、metadata_version_rules 等文档表格组织。页面布局需要的最终展示值必须通过 mock API/selectors 计算，不得在 seed 中直接保存迎合页面布局的预计算结果。
 - api_type、capability、目录、provider、model 等受控字段在应用时必须严格匹配已有字典或对象集合，主路径不得依赖自由文本输入。
 
 主要风险：
 
 - 技术字段/运营字段所有权如果只在前端限制，长期会产生污染字段，必须服务端强校验。
 - key 字段修改会影响客户端三方合并、endpoint 匹配、model id/nick trace，需要在 diff 中始终单独展示。
-- patterns/variants/version_rules 如果没有随 model nick 同步重写，会造成发布 JSON 中模型规则失效；发布确认页必须展示重写链路和冲突检查结果。defaults 不参与数组式 selector 重写，但必须展示 fallback object 的最终发布值。
-- Metadata Block 类型差异如果只用一个宽松 JSON 表单承载，会隐藏非法字段、漏校验和误发布风险；必须保持按类型 schema 校验和按类型编辑体验。
+- model_param_rules 的 pattern selector、variants/version_rules 如果没有随 model nick 同步重写，会造成发布 JSON 中模型规则失效；发布确认页必须展示重写链路和冲突检查结果。default 规则不参与 selector 重写，但必须展示最终发布参数值。
+- resolver rule 类型差异如果只用一个宽松 JSON 表单承载，会隐藏非法字段、漏校验和误发布风险；必须保持按类型 schema 校验和按类型编辑体验。exact/pattern/default 应统一存储在 `model_param_rules`，避免同一抽象被拆散后出现匹配优先级和最终命中不一致。
 - api_type/capability 如果允许自由文本录入，容易产生拼写错误和不可诊断的能力标记漂移；必须通过受控选择和引用检查减少输入错误。
 - 运营参数管理员不具备编程知识，若主路径暴露过多 JSON/schema 细节，会显著增加误操作概率。
 - 多语言切换若翻译 provider/model key，会破坏技术对象识别；所有机器 key 必须保持原文。

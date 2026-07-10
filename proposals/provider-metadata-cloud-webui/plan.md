@@ -38,9 +38,11 @@
 - 代码必须模块化组织。页面私有组件先留在页面目录，跨页面复用后再移动到共享组件目录。
 - PC 端编辑模式优先采用高密度表格。Provider、Model、Rule、Nick、Pattern、Variant、Version Rule 等数量较多的对象必须支持分页、搜索、筛选和批量选择。
 - 浏览模式可以采用卡片或卡片+列表的混合方式，以兼顾移动端布局；但进入编辑模式后，PC 主路径仍以表格为主。
-- `defaults` 保持当前 driver metadata 的非数组 object 形式，作为匹配失败或未收录模型的统一保底参数。
-- `patterns`、`variants`、`version_rules` 仍是数组；每个数组元素应作为独立记录展示、选择和编辑。当前存储和发布仍可使用数组 JSON，但 UI 主路径不能只展示一整段长 JSON。
-- Metadata Blocks 即使在 mock 或后端实现中统一落到一个存储表，也必须按 block type 使用不同 schema、不同字段定义、不同列表列配置和不同详情编辑视图。block type 一旦创建后不可修改；如果统一表导致校验、查询或编辑复杂度过高，允许在实现阶段拆成多个表或多个数据集合。
+- `models`、`patterns`、`defaults` 本质上都是模型参数匹配规则：`models` 精确匹配原始 `model.id`，`patterns` 按规则和顺序匹配，`defaults` 在前两者都失败后兜底匹配。三者必须统一存储在 `model_param_rules` 表/数据集合中，通过 `match_type: exact | pattern | default` 区分，并按 exact -> pattern(priority) -> default 的顺序保证单一最终命中。
+- 统一存储不改变发布格式。最终下发给客户端和发布预览导出的 JSON 必须仍然物化为 `models`、`patterns`、`defaults` 三个字段：`match_type=exact` 输出到 `models[]`，`match_type=pattern` 按 priority 稳定排序输出到 `patterns[]`，`match_type=default` 输出到 `defaults`。
+- `variants`、`version_rules` 仍是数组；每个数组元素应作为独立记录展示、选择和编辑。存储和 mock seed 使用 `metadata_variants`、`metadata_version_rules` 等类型表/数据集合组织。不能只保存页面布局需要的最终聚合结果。
+- exact/pattern/default、variants、version_rules 必须按类型使用不同 schema、不同字段定义、不同列表列配置和不同详情编辑视图。
+- Mock 数据必须模拟后端持久化表结构。页面需要的计数、命中数量、发布样例、风险摘要、树形视图和最终 JSON 片段，必须通过 `mock/api.ts`、`datamodel/selectors.ts` 或等价接口计算得到；这些接口后续应能演进为真实后端 API，不得把 mock seed 做成迎合 Web 页面布局的预计算结果。
 - 文档中使用的 A/B 只是架构讨论简称，UI 上不得直接展示“A 服务”“B 服务”“A/B service role”等字样。用户界面应使用“技术参数”“运营参数”“技术源”“同步源”“发布源 revision”“运营 revision”等面向用户可理解的名称。
 - `api_type`、`capability`、目录、provider、model 等受控字段在应用到对象时必须严格匹配已有字典或对象集合。主路径优先使用下拉框、combobox、单选/多选选择器和批量选择控件，避免自由文本输入导致 key 拼写错误。
 - 字典项应用时，大多数 capability/api_type 属性按 bool 语义处理为“支持/不支持”；少数值属性字段必须提供带 schema 校验的结构化输入，不得只依赖 JSON 文本。
@@ -95,7 +97,7 @@ src/frame/provider_metadata_cloud/web/
       models/
       selection-rules/
       nick-rules/
-      metadata-blocks/
+      resolver-rules/
       logical-directory/
       dictionaries/
       import-plan/
@@ -145,6 +147,7 @@ src/frame/provider_metadata_cloud/web/
   - 右侧检查器
 - 实现移动端单栏浏览壳。
 - 从 `driver_metadata/*.json` 派生初始 mock 数据。
+- mock seed 按文档定义的表格/数据集合组织，包括 providers、model_param_rules、metadata_variants、metadata_version_rules、provider_model_rules、model_nicks、logical directories、api_type/capability dictionaries；不保存只为页面展示而预计算的最终结果。
 - 补齐云服务层 mock 数据：
   - 技术发布 revision / 运营发布 revision
   - edit session
@@ -200,10 +203,10 @@ src/frame/provider_metadata_cloud/web/
   - 展示匹配失败模型、重复 published id、缺失原厂 meta、key 字段风险
   - OpenRouter 风格 provider 必须能通过该向导完整走通
 - Models 页面：
-  - 创建全局 model metadata
-  - 创建 provider 专属 model override
+  - 创建全局/原厂 exact model_param_rule
+  - 创建 provider 专属 exact model_param_rule override
   - 按 provider、original provider、api type、capability、model id 搜索和过滤
-  - 新增或删除全局 model meta 前展示受影响 provider 列表
+  - 新增或删除全局/原厂 exact model_param_rule 前展示受影响 provider 列表
 - Selection Rules 页面：
   - include/exclude origin
   - include/exclude pattern
@@ -235,24 +238,32 @@ src/frame/provider_metadata_cloud/web/
   - 进入 publish preview 并看到预期 mock diff
   - nick 冲突或空命中 warning 可跳转定位
 
-### Round 3：技术参数 Metadata Blocks / Logical Directory / Dictionaries
+### Round 3：技术参数 Resolver Rules / Logical Directory / Dictionaries
 
 目标：补齐技术侧复杂 metadata 维护能力。
 
 范围：
 
-- Metadata Blocks 页面：
-  - patterns
-  - defaults 作为单个保底参数 object 管理，用于匹配失败或未收录模型的 fallback
+- Resolver Rules 页面：
+  - model_param_rules：按 exact / pattern / default 分组浏览和编辑
+  - exact 规则精确匹配原始 `model.id`
+  - pattern 规则按 selector 和 priority 顺序匹配，避免一个 `model.id` 最终命中多项
+  - default 规则是 `model_param_rules` 中不带 selector 和 priority 的兜底规则，用于 exact 和 pattern 全部匹配失败后的 fallback 参数
   - variants
   - version_rules
-  - 进入页面后先按 block type 分组浏览；每种类型使用独立的表格列、筛选项、详情面板、创建表单和编辑表单
-  - 创建时选择 block type，创建后 block type 冻结，不允许在编辑中改成其他类型
-  - 每种 block type 使用独立 Zod schema 校验，不能用一个宽松 JSON schema 覆盖所有类型
-  - patterns/variants/version_rules 以数组存储和发布，但 UI 按数组元素拆成独立记录表格展示、选择和编辑
+  - 进入页面后按 resolver rule type 分组浏览；每种类型使用独立的表格列、筛选项、详情面板、创建表单和编辑表单
+  - exact/pattern/default 存储在同一张 `model_param_rules` 表中，不允许拆成三张表；创建后 `match_type` 不允许修改
+  - WebUI 按统一的匹配模式规则处理 exact/pattern/default。为 provider 选择模型时，本质上是选择或创建匹配模式；可以从 exact、pattern、default 任意一种规则复制创建另一种类型的新规则，但不能原地修改旧规则的 `match_type`
+  - 从 pattern 创建 exact 时，继承参数字段，把 `model_id_selector` 从 pattern selector 改为一个或多个精确原始 `model.id`；从 default 创建 exact/pattern 时，继承 fallback 参数字段并补充目标 `model_id_selector`，pattern 还必须补充 priority
+  - 当来源规则类型和目标规则类型不一致时，WebUI 必须明确提示“将创建目标类型的新规则并按目标类型下发”，展示来源类型、目标类型和会被改写/清空的字段，并要求用户确认；最终 `match_type` 以用户选择的目标类型为准
+  - 每种类型使用独立 Zod schema 校验，不能用一个宽松 JSON schema 覆盖所有类型
+  - pattern 规则按 priority 列表化浏览和发布；variants/version_rules 以数组发布；UI 都按独立记录表格展示、选择和编辑
   - global scope 和 provider scope
   - 创建、复制、编辑、禁用、删除
   - mock JSON/schema 校验；JSON 视图作为辅助检查器，不作为主编辑路径
+  - 页面展示的命中数量、nick rewrite 预览、fallback 结果和发布 JSON 片段必须通过 mock API/selectors 从表格化 mock seed 计算得到
+  - mock API/selectors 必须从 `model_param_rules` 计算出发布 JSON 的 `models`、`patterns`、`defaults` 三个字段，并验证 models 精确命中优先、patterns 前高后低、defaults 最后兜底
+  - JSON 视图和导出 provider 全量信息时必须按 `models`、`patterns`、`defaults` 分开展示；统一匹配模式只用于 WebUI 编辑模型和后端存储
   - 命中预览
   - nick rewrite 预览
   - rewrite 冲突和空命中 warning
@@ -284,7 +295,7 @@ src/frame/provider_metadata_cloud/web/
 验证：
 
 - Playwright 覆盖：
-  - 编辑 metadata block 并执行预览
+  - 编辑 resolver rule 并执行预览
   - 批量给 model 添加 capability
   - logical directory 风险提示
   - 逻辑目录搜索模式与路径浏览模式互斥
@@ -301,13 +312,11 @@ src/frame/provider_metadata_cloud/web/
   - mock 解析支持的 actions，首版至少覆盖：
     - `upsert_provider`
     - `disable_provider`
-    - `upsert_model_meta`
-    - `override_model_meta`
+    - `upsert_model_param_rule`
+    - `delete_model_param_rule`
     - `include_models`
     - `exclude_models`
     - `set_model_nick`
-    - `upsert_pattern`
-    - `upsert_defaults`
     - `upsert_variant`
     - `upsert_version_rule`
     - `set_logical_mounts`
@@ -325,7 +334,7 @@ src/frame/provider_metadata_cloud/web/
   - 展示命中预览和校验错误
   - 对所有 selector 展示命中数量和样例
   - 对删除/重命名 api_type 或 capability、删除/移动逻辑目录、修改 key 字段展示引用关系、影响对象数量和风险提示
-  - 对 `upsert_defaults`、`upsert_variant`、`upsert_version_rule` 展示 source block、selector、priority、nick rewrite 后的发布 selector
+  - 对 `upsert_model_param_rule` 展示 match_type、selector、priority、最终 fallback 行为和命中样例；对 `upsert_variant`、`upsert_version_rule` 展示来源记录、selector、priority、nick rewrite 后的发布 selector
   - 将解析后的 actions 分发到 edit session pending changes
   - Import Plan 不能直接发布
 - Publish Wizard：
@@ -393,8 +402,8 @@ src/frame/provider_metadata_cloud/web/
     - display priority
     - rollout strategy
     - ops note
-- Blocks overlay：
-  - 对 pattern/defaults/variants/version_rules 做禁用或运营字段覆盖
+- Resolver Rules overlay：
+  - 对 model_param_rule/variants/version_rules 做禁用或运营字段覆盖
 
 验证：
 
