@@ -40,7 +40,11 @@
 - 浏览模式可以采用卡片或卡片+列表的混合方式，以兼顾移动端布局；但进入编辑模式后，PC 主路径仍以表格为主。
 - `defaults` 保持当前 driver metadata 的非数组 object 形式，作为匹配失败或未收录模型的统一保底参数。
 - `patterns`、`variants`、`version_rules` 仍是数组；每个数组元素应作为独立记录展示、选择和编辑。当前存储和发布仍可使用数组 JSON，但 UI 主路径不能只展示一整段长 JSON。
+- Metadata Blocks 即使在 mock 或后端实现中统一落到一个存储表，也必须按 block type 使用不同 schema、不同字段定义、不同列表列配置和不同详情编辑视图。block type 一旦创建后不可修改；如果统一表导致校验、查询或编辑复杂度过高，允许在实现阶段拆成多个表或多个数据集合。
 - 文档中使用的 A/B 只是架构讨论简称，UI 上不得直接展示“A 服务”“B 服务”“A/B service role”等字样。用户界面应使用“技术参数”“运营参数”“技术源”“同步源”“发布源 revision”“运营 revision”等面向用户可理解的名称。
+- `api_type`、`capability`、目录、provider、model 等受控字段在应用到对象时必须严格匹配已有字典或对象集合。主路径优先使用下拉框、combobox、单选/多选选择器和批量选择控件，避免自由文本输入导致 key 拼写错误。
+- 字典项应用时，大多数 capability/api_type 属性按 bool 语义处理为“支持/不支持”；少数值属性字段必须提供带 schema 校验的结构化输入，不得只依赖 JSON 文本。
+- 技术侧和运营侧都必须提供可定位、可跳转的 warning/diagnostics 能力。发布前必须能定位 key 字段风险、selector 空命中、nick rewrite 冲突、字典引用影响和逻辑目录破坏性变更。
 
 ## 3. 推荐代码组织
 
@@ -148,6 +152,13 @@ src/frame/provider_metadata_cloud/web/
   - change logs
   - warnings
   - ops overlays
+- 建立最小 UI DataModel 代码骨架：
+  - `datamodel/types.ts`
+  - `datamodel/schemas.ts`
+  - `datamodel/selectors.ts`
+  - `datamodel/diff.ts`
+  - 字段所有权、key 字段、字典项、selector、warning 的基础类型
+  - 页面表单从 Zod schema 推导输入类型，后续 Round 持续演进
 - 实现页面：
   - Dashboard
   - Providers
@@ -183,10 +194,16 @@ src/frame/provider_metadata_cloud/web/
   - 从已有 provider 模板创建
   - 编辑 provider 详情字段
   - 对高风险 key 字段展示字段级 unlock UI
+- Provider Wizard：
+  - 作为新增 provider / 聚合 provider 的主路径
+  - 步骤覆盖 provider 基本信息、原厂/模型选择、selection rule、nick rewrite、api_type/capability 初始标记、logical mount 建议和发布预览入口
+  - 展示匹配失败模型、重复 published id、缺失原厂 meta、key 字段风险
+  - OpenRouter 风格 provider 必须能通过该向导完整走通
 - Models 页面：
   - 创建全局 model metadata
   - 创建 provider 专属 model override
   - 按 provider、original provider、api type、capability、model id 搜索和过滤
+  - 新增或删除全局 model meta 前展示受影响 provider 列表
 - Selection Rules 页面：
   - include/exclude origin
   - include/exclude pattern
@@ -200,15 +217,23 @@ src/frame/provider_metadata_cloud/web/
   - 命中模型数量
   - key 字段风险区
   - published JSON 片段
+- 技术 Diagnostics 基础能力：
+  - provider/model key 冲突
+  - selection rule 空命中
+  - nick rewrite 冲突
+  - published id 重名
+  - 缺失 api_type/capability 字典项
+  - warning 可跳转到目标 provider/model/rule/nick
 
 验证：
 
 - 表单使用 `react-hook-form + zod`。
 - Playwright 覆盖：
-  - 创建 OpenRouter 风格 provider
+  - 通过 Provider Wizard 创建 OpenRouter 风格 provider
   - 配置 selection rule
   - 配置 nick rule
   - 进入 publish preview 并看到预期 mock diff
+  - nick 冲突或空命中 warning 可跳转定位
 
 ### Round 3：技术参数 Metadata Blocks / Logical Directory / Dictionaries
 
@@ -221,6 +246,9 @@ src/frame/provider_metadata_cloud/web/
   - defaults 作为单个保底参数 object 管理，用于匹配失败或未收录模型的 fallback
   - variants
   - version_rules
+  - 进入页面后先按 block type 分组浏览；每种类型使用独立的表格列、筛选项、详情面板、创建表单和编辑表单
+  - 创建时选择 block type，创建后 block type 冻结，不允许在编辑中改成其他类型
+  - 每种 block type 使用独立 Zod schema 校验，不能用一个宽松 JSON schema 覆盖所有类型
   - patterns/variants/version_rules 以数组存储和发布，但 UI 按数组元素拆成独立记录表格展示、选择和编辑
   - global scope 和 provider scope
   - 创建、复制、编辑、禁用、删除
@@ -229,10 +257,18 @@ src/frame/provider_metadata_cloud/web/
   - nick rewrite 预览
   - rewrite 冲突和空命中 warning
 - Logical Directory 页面：
-  - 目录树
+  - 最上方提供丰富的筛选检索区域，可筛选目录，也可筛选目录下包含的模型
+  - 次下方用面包屑展示当前目录路径
+  - 左侧展示目录结构和目录属性
+  - 中间展示匹配到的项目列表，包括目录项和模型项
+  - 右侧展示选中项目详情，选中目录时展示目录详情，选中模型时展示模型详情
+  - “最上方筛选检索模式”和“按目录路径展示模式”互斥；进入筛选检索时清晰显示当前为搜索结果，进入目录路径浏览时清空或挂起搜索结果
+  - 目录树和面包屑浏览
   - 已挂载 model 列表
   - 新增、重命名、移动、删除目录的 mock 流程
   - 批量添加/移除 model
+  - 一个 model 可挂载到多个目录
+  - 目录 key/path 重复校验、空目录提示、断链引用提示
   - 破坏性逻辑变更前展示受影响 model 数和路径样例
 - Dictionaries 页面：
   - api_type 字典
@@ -240,6 +276,10 @@ src/frame/provider_metadata_cloud/web/
   - 新增字典项
   - 删除/重命名前展示引用数和样例
   - 批量给过滤后的 model 结果标记 api_type/capability
+  - 字典项应用到 model 或 rule 时必须通过严格匹配的下拉框/combobox 选择
+  - api_type/capability 批量标记支持单选、多选和取消标记，bool 属性用开关或勾选表达
+  - 少数值属性字段使用结构化输入，提供数值范围、枚举、单位和默认值校验
+  - 提供 model × api_type/capability 的矩阵或等价批量核对视图，便于工程师核实覆盖情况和发现漏标/误标
 
 验证：
 
@@ -247,6 +287,8 @@ src/frame/provider_metadata_cloud/web/
   - 编辑 metadata block 并执行预览
   - 批量给 model 添加 capability
   - logical directory 风险提示
+  - 逻辑目录搜索模式与路径浏览模式互斥
+  - 字典项应用只能选择已有项，无法提交拼写错误 key
 
 ### Round 4：技术参数 Import Plan 和发布工作流
 
@@ -256,9 +298,34 @@ src/frame/provider_metadata_cloud/web/
 
 - Import Plan 页面/工作流：
   - 粘贴或导入 YAML / Markdown 文本
-  - mock 解析支持的 actions
+  - mock 解析支持的 actions，首版至少覆盖：
+    - `upsert_provider`
+    - `disable_provider`
+    - `upsert_model_meta`
+    - `override_model_meta`
+    - `include_models`
+    - `exclude_models`
+    - `set_model_nick`
+    - `upsert_pattern`
+    - `upsert_defaults`
+    - `upsert_variant`
+    - `upsert_version_rule`
+    - `set_logical_mounts`
+    - `upsert_logical_directory`
+    - `delete_logical_directory`
+    - `move_logical_directory`
+    - `set_api_types`
+    - `upsert_api_type`
+    - `delete_api_type`
+    - `set_capabilities`
+    - `upsert_capability`
+    - `delete_capability`
+  - 未支持 action 必须展示明确错误，不能静默忽略
   - 展示 action 列表
   - 展示命中预览和校验错误
+  - 对所有 selector 展示命中数量和样例
+  - 对删除/重命名 api_type 或 capability、删除/移动逻辑目录、修改 key 字段展示引用关系、影响对象数量和风险提示
+  - 对 `upsert_defaults`、`upsert_variant`、`upsert_version_rule` 展示 source block、selector、priority、nick rewrite 后的发布 selector
   - 将解析后的 actions 分发到 edit session pending changes
   - Import Plan 不能直接发布
 - Publish Wizard：
@@ -365,7 +432,7 @@ src/frame/provider_metadata_cloud/web/
   - A sync failed
   - A data stale
   - A JSON/schema warning
-  - 运营 overlay 污染技术字段
+  - B overlay 污染 A-only 字段
   - provider/model merge skipped
   - invalid pricing
   - routing weight 超出建议范围
@@ -373,7 +440,7 @@ src/frame/provider_metadata_cloud/web/
 - 运营 Publish Preview：
   - 最终 published JSON
   - provider/model 下发数量
-  - 被运营禁用移除的 provider/model
+  - 被 B disabled 移除的 provider/model
   - overlay 命中统计
   - 污染字段丢弃统计
   - stale 发布确认
@@ -485,6 +552,7 @@ src/frame/provider_metadata_cloud/web/
 - 不把 provider metadata cloud 代码加入 `src/frame/desktop/src/app/ai-center`。
 - 面向用户的文本应走 i18n。
 - 新表单使用 `react-hook-form + zod`。
+- 受控字段应用路径必须通过下拉框、combobox、单选/多选或等价选择控件完成，并由 schema 校验禁止提交不存在的 provider/model/directory/api_type/capability key。
 - 一个数据视图出现后，应尽快补齐 normal、loading、empty、error、warning/stale 状态。
 - Playwright 测试聚焦本轮新增流程。
 

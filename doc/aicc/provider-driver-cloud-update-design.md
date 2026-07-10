@@ -208,6 +208,9 @@ Indexes:
 - `defaults` 保持当前 driver metadata 的非数组 object 形式，是匹配失败或未收录模型统一使用的保底参数。每个 scope 最多维护一个 defaults object。
 - 这些对象通常引用全局/原厂配置；provider 专属记录默认通过 `source_block_key + content patch` 继承原厂配置，只有修改字段后才成为专属配置。
 - `patterns` 使用 `model_patterns` 表管理；`defaults/variants/version_rules` 使用 `metadata_blocks` 表管理。其中 `defaults` 必须按单 object 约束处理，每个 scope 最多一条生效记录，并在发布合成和 diff 中作为 fallback object 处理。
+- Metadata Blocks 在 UI 概念上统一管理，但不同 block type 的字段语义不同。无论后端实现使用统一表、多个表还是多个数据集合，都必须按 block type 使用独立 schema、独立校验和独立发布合成逻辑。
+- `block_type` 是冻结字段，创建后不可修改。需要改变类型时必须创建新记录并删除或禁用旧记录，不能原地把 defaults/variants/version_rules 互相转换。
+- 如果统一 `metadata_blocks` 表导致 schema 校验、查询或编辑复杂度过高，允许在实现阶段拆分为 `metadata_defaults`、`metadata_variants`、`metadata_version_rules` 等更具体的表；公开发布 JSON 语义不应因此改变。
 - `model_id_selector` 永远匹配原始 `model.id`。发布给客户端前，凡是内容中引用或匹配 `model.id` 的字段，都必须按该 provider 的 `model_nicks` 规则改写为 nick 后的 id；无法重写或重写后冲突时阻止发布。
 - `variants` 必须显式支持 `selector_type/original_provider/model_id_selector`，不能只靠 variant `name` 隐式匹配 base model。
 
@@ -318,6 +321,7 @@ Migration 在服务启动时执行。失败时服务进入只读模式，继续�
 - Provider key：`provider_key`、`provider_driver`、`base_url`、`name`。
 - Model key：`model_id`、`original_provider`、`provider_key`。
 - Nick key：`nick`、`model_id`、`provider_key`。
+- Metadata Block type：`block_type`。
 - Revision：所有已发布 revision 不可复用。
 
 字段编辑原则：
@@ -330,7 +334,7 @@ Migration 在服务启动时执行。失败时服务进入只读模式，继续�
 可扩展字段：
 
 - `extra`、`attributes`、`capabilities`、`pricing`、`ops_patch` 可增加子字段。
-- `metadata_blocks.content` 可按 block type 增加字段，但必须更新 block schema 文档。
+- `metadata_blocks.content` 可按 block type 增加字段，但必须更新对应 block type 的 schema 文档、WebUI 表单和发布合成校验。
 - `provider_model_rules.rule_type` 可新增枚举值，但旧值语义不可改变。
 
 清理规则：
@@ -700,10 +704,10 @@ PC 端编辑模式主要服务高密度维护场景，Provider、Model、规则�
 - 批量 nick：加前缀、加后缀、替换片段、pattern rewrite。
 - 批量选择：按厂商、协议族、api_type、capability、model.id 模糊匹配。
 - defaults 管理面板：按全局和 provider 专属 scope 浏览和编辑单个 fallback object，提供 JSON/schema 校验、发布前 diff 和回滚入口。
-- patterns/variants/version_rules 管理面板：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除，支持每个 provider 多条记录。PC 编辑模式必须以分页表格展示数组元素，详情使用结构化表单；JSON 视图仅作为辅助检查器，不能作为长数组主编辑路径。
-- 逻辑目录管理：目录树和面包屑浏览；支持调整目录树结构，新增、删除、重命名和修改子目录属性；支持批量添加/移除模型到目录，并支持一个模型挂到多个目录。
-- api_type 管理面板：维护 api_type 字典并支持新增；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 api_type，也支持给单个模型添加多个 api_type。
-- capabilities 管理面板：维护 capability 字典、类型和默认展示信息；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 capability，也支持给单个模型添加多个 capability。
+- patterns/variants/version_rules 管理面板：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除，支持每个 provider 多条记录。PC 编辑模式必须以分页表格展示数组元素，详情使用结构化表单；JSON 视图仅作为辅助检查器，不能作为长数组主编辑路径。Metadata Blocks 必须按 block type 分组浏览；每种类型使用独立表格列、筛选项、详情面板、创建表单、编辑表单和 Zod/schema 校验；创建后 block type 不允许修改。
+- 逻辑目录管理：目录树和面包屑浏览；支持调整目录树结构，新增、删除、重命名和修改子目录属性；支持批量添加/移除模型到目录，并支持一个模型挂到多个目录。内容区最上方必须提供筛选检索，可筛选目录和目录下包含的模型；筛选检索模式与按目录路径浏览模式互斥；右侧详情区展示选中目录或模型的详情。删除/移动目录前必须展示受影响模型数和路径样例，目录 key/path 重复、空目录和断链引用必须 warning 或阻止提交。
+- api_type 管理面板：维护 api_type 字典并支持新增；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 api_type，也支持给单个模型添加多个 api_type。应用 api_type 时必须通过下拉框、combobox、单选/多选或等价控件选择已有字典项，不能通过自由文本提交不存在的 key。
+- capabilities 管理面板：维护 capability 字典、类型和默认展示信息；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 capability，也支持给单个模型添加多个 capability。应用 capability 时必须通过下拉框、combobox、单选/多选或等价控件选择已有字典项；大多数属性按 bool 语义表达为支持/不支持，少数值属性必须使用结构化输入并带单位、范围和 schema 校验。
 - 删除/新增全局 model meta 前显示受影响 provider 列表。
 
 ### 14.3 运营参数 WebUI
@@ -1022,6 +1026,7 @@ remote publish JSON
 - `provider_driver = openai-compatible` 是否作为正式 driver id，还是继续使用 `openai` 表示 OpenAI-compatible 协议。
 - 发布 JSON 是否按 provider_driver 拆分落入现有 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`，还是新增聚合缓存文件后由 resolver 拆分。
 - `defaults` 已改回非数组 fallback object；`variants`、`version_rules` 仍按数组元素独立管理。落地时需要同步更新 schema、resolver 和发布 JSON 物化逻辑。
+- Metadata Blocks 是否继续使用统一表，还是按 defaults/variants/version_rules 拆分为多个表。无论选择哪种，block type 都必须创建后冻结，并按类型使用独立 schema、WebUI 视图和发布合成校验。
 
 主要风险：
 
@@ -1029,5 +1034,7 @@ remote publish JSON
 - nick 会改变客户端看到的 model id，必须在 diff 和 trace 中始终保留 `source_model_id`。
 - patterns/variants/version_rules 中的 model selector 若未同步 nick 重写，会出现模型存在但规则失效的隐蔽问题，必须在发布预览中列出重写前后样例。defaults 不参与数组式 selector 重写，但必须展示 fallback object 的最终发布值。
 - 聚合商 provider 的白名单可能来自 `/models` 动态返回，必须和原厂 meta 匹配失败场景一起设计 UI。
+- Metadata Blocks 如果使用一个宽松 content JSON 承载所有类型，会产生非法字段、漏校验和误发布风险；必须按 block type 做强 schema 校验，必要时拆表。
+- api_type/capability 如果允许自由文本应用，会产生拼写错误和能力标记漂移；WebUI 和服务端都必须做字典引用校验。
 - 客户端合并算法复杂，尤其是数组顺序和元素删除，需要独立测试覆盖。
 - A/B 字段所有权如果没有机器校验，长期会产生污染字段。

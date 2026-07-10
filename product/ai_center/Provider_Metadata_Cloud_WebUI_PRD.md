@@ -534,6 +534,9 @@ Mock 数据与状态层：
 页面要求：
 
 - 按 global scope 和 provider scope 切换。
+- Metadata Blocks 页面必须先按类型分组浏览。`defaults`、`patterns`、`variants`、`version_rules` 使用不同的列表列、筛选项、详情面板、创建表单和编辑表单；不能用同一个宽松 JSON 编辑器作为主路径覆盖所有类型。
+- 创建 Metadata Block 时选择类型，创建后类型冻结，不允许在编辑中改成其他类型。
+- 每种 Metadata Block 类型必须使用独立输入 schema 校验；schema error 需要能定位到对应字段。
 - `defaults` 保持当前 driver metadata 的非数组 object 形式，是匹配失败或未收录模型统一使用的保底参数；UI 提供单个 defaults object 的结构化编辑和 JSON 辅助预览。
 - `patterns`、`variants`、`version_rules` 是数组；每个数组元素必须作为独立记录展示、选择和编辑，PC 编辑模式使用分页表格承载，不允许主路径只展示整段数组 JSON。
 - `patterns`、`variants`、`version_rules` 列表必须展示类型、scope、source、nick/名称、selector、priority、enabled、更新时间、命中数量。
@@ -549,9 +552,12 @@ Mock 数据与状态层：
 
 页面布局：
 
-- 左侧目录树。
-- 中间目录内容和挂载模型列表。
-- 右侧选中目录或模型的详情。
+- 最上方是筛选检索区域，支持筛选目录，也支持筛选目录下包含的模型。
+- 筛选检索区域下方展示面包屑，用于表示当前按目录路径浏览时的目录路径。
+- 左侧展示目录结构和目录属性。
+- 中间展示匹配到的项目列表，包括目录项和模型项。
+- 右侧展示选中项目详情；选中目录时展示目录详情，选中模型时展示模型详情。
+- “筛选检索模式”和“按目录路径展示模式”互斥。进入筛选检索模式时，主列表展示搜索结果并明确提示当前不再按单一路径浏览；进入目录路径浏览时，清空或挂起搜索条件。
 
 能力：
 
@@ -560,6 +566,7 @@ Mock 数据与状态层：
 - 批量添加模型到目录。
 - 批量移除模型。
 - 一个模型可挂到多个目录。
+- 目录 key/path 重复、空目录、断链引用必须给出 warning 或阻止提交。
 - 删除或移动目录前显示受影响模型数和路径样例。
 
 ### 7.8 Dictionaries
@@ -570,6 +577,7 @@ API Types：
 - 支持新增。
 - 删除和重命名是高风险操作，必须显示引用模型数量和样例。
 - 支持把筛选结果批量标记为支持某个 api_type。
+- api_type 应用到 model、rule 或批量操作时，必须通过下拉框、combobox、单选/多选或等价选择控件严格选择已有字典项，不允许通过自由文本提交不存在的 key。
 
 Capabilities：
 
@@ -577,6 +585,9 @@ Capabilities：
 - 支持新增。
 - 删除和重命名是高风险操作，必须显示引用模型数量和样例。
 - 支持把筛选结果批量标记为支持某个 capability。
+- capability 应用到 model、rule 或批量操作时，必须通过下拉框、combobox、单选/多选或等价选择控件严格选择已有字典项，不允许通过自由文本提交不存在的 key。
+- 大多数 capability/api_type 属性按 bool 语义表达为支持/不支持，使用开关、复选框或批量勾选；少数值属性字段必须提供结构化输入、单位、范围和 schema 校验。
+- 提供 model × api_type/capability 的矩阵或等价批量核对视图，方便工程师发现漏标、误标和异常组合。
 
 ---
 
@@ -1012,11 +1023,15 @@ Warning 类型：
 - patterns/variants/version_rules 与 models 一样按 provider scope 管理；通常引用全局/原厂配置，修改字段后成为 provider 专属配置，并且每个 provider 每类对象都允许多条记录。
 - patterns/variants/version_rules 中的 model selector 使用原始 `model.id` 编辑，但发布预览和最终 JSON 必须按 model nick 改写为客户端可见 id。
 - defaults 保持非数组 object 形态，作为匹配失败或未收录模型统一使用的保底参数；首版 UI 必须提供结构化编辑，不再按数组式多记录模型设计。
+- Metadata Block 类型创建后冻结。即使后端或 mock 数据统一存储，UI 也必须按类型提供不同视图和不同 schema；如果统一存储导致校验、查询或编辑复杂度过高，允许实现阶段拆分为多个表或多个数据集合。
+- api_type、capability、目录、provider、model 等受控字段在应用时必须严格匹配已有字典或对象集合，主路径不得依赖自由文本输入。
 
 主要风险：
 
 - 技术字段/运营字段所有权如果只在前端限制，长期会产生污染字段，必须服务端强校验。
 - key 字段修改会影响客户端三方合并、endpoint 匹配、model id/nick trace，需要在 diff 中始终单独展示。
 - patterns/variants/version_rules 如果没有随 model nick 同步重写，会造成发布 JSON 中模型规则失效；发布确认页必须展示重写链路和冲突检查结果。defaults 不参与数组式 selector 重写，但必须展示 fallback object 的最终发布值。
+- Metadata Block 类型差异如果只用一个宽松 JSON 表单承载，会隐藏非法字段、漏校验和误发布风险；必须保持按类型 schema 校验和按类型编辑体验。
+- api_type/capability 如果允许自由文本录入，容易产生拼写错误和不可诊断的能力标记漂移；必须通过受控选择和引用检查减少输入错误。
 - 运营参数管理员不具备编程知识，若主路径暴露过多 JSON/schema 细节，会显著增加误操作概率。
 - 多语言切换若翻译 provider/model key，会破坏技术对象识别；所有机器 key 必须保持原文。
