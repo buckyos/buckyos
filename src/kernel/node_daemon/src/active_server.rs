@@ -312,16 +312,13 @@ impl ActiveServer {
         } else {
             None
         };
-        let owner_key = req.owner_document.get_default_key().ok_or_else(|| {
-            RPCErrors::ReasonError("OwnerDocument default key is missing".to_string())
-        })?;
         let boot_document = ZoneBootDocument {
             id: Some(req.names.zone_did.clone()),
             oods: vec![ood],
             sn: sn_relay_host,
             exp,
-            owner: Some(req.names.owner_did.clone()),
-            owner_key: Some(owner_key),
+            owner: None,
+            owner_key: None,
             extra_info: HashMap::new(),
         };
 
@@ -1392,6 +1389,9 @@ mod tests {
             })
             .await
             .unwrap();
+        let boot_document = serde_json::to_value(&prepared.boot_document).unwrap();
+        assert!(boot_document.get("owner").is_none());
+        assert!(boot_document.get("owner_key").is_none());
         let signed = server
             .sign_web_active_documents(SignWebActiveDocumentsReq {
                 mnemonic_words: mnemonic
