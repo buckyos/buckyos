@@ -298,14 +298,15 @@ impl ControlPanelServer {
             let Some(section) = root.get_mut(*section_name).and_then(Value::as_object_mut) else {
                 continue;
             };
-            let instance_index = section
-                .get("instances")
-                .and_then(Value::as_array)
-                .and_then(|instances| {
-                    instances.iter().position(|instance| {
-                        Self::aicc_provider_instance_matches(instance, provider_id)
-                    })
-                });
+            let instance_index =
+                section
+                    .get("instances")
+                    .and_then(Value::as_array)
+                    .and_then(|instances| {
+                        instances.iter().position(|instance| {
+                            Self::aicc_provider_instance_matches(instance, provider_id)
+                        })
+                    });
             let Some(instance_index) = instance_index else {
                 continue;
             };

@@ -17,9 +17,9 @@ mod node_executor;
 mod run_item;
 mod run_plist;
 mod service_pkg;
-mod zone_boot_resolve;
 #[cfg(test)]
 mod test_app_loader;
+mod zone_boot_resolve;
 
 #[cfg(target_os = "windows")]
 mod win_srv;

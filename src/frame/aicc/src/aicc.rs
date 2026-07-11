@@ -3387,7 +3387,8 @@ impl AIComputeCenter {
             provider_call_from_candidate(&scheduled.selected);
         resolution.trace.selected_provider_model_id = Some(selected_provider_model.clone());
         resolution.trace.provider_options = selected_provider_options.clone();
-        resolution.trace.pricing_snapshot = RoutePricingSnapshot::from_candidate(&scheduled.selected);
+        resolution.trace.pricing_snapshot =
+            RoutePricingSnapshot::from_candidate(&scheduled.selected);
         resolution.trace.ranked_candidates = scheduled.ranked_candidates;
         mark_selected_session_overlay(&mut resolution.trace, &scheduled.selected);
         resolution.trace.user_summary = Some(user_summary_for_route(

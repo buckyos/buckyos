@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use bns_client::{BnsIndexerApi, BnsIndexerClient};
 use buckyos_api::*;
 use buckyos_http_server::{
-    serve_http_by_rpc_handler, server_err, HttpServer, Runner, ServerError, ServerErrorCode,
-    ServerResult, StreamInfo,
+    HttpServer, Runner, ServerError, ServerErrorCode, ServerResult, StreamInfo,
+    serve_http_by_rpc_handler, server_err,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
@@ -15,13 +15,13 @@ use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use jsonwebtoken::jwk::Jwk;
-use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, encode};
 use log::*;
-use name_client::{update_did_cache, UpdateSource};
+use name_client::{UpdateSource, update_did_cache};
 use name_lib::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -131,6 +131,12 @@ pub struct WebOwnerMaterial {
     pub evm_derivation_path: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ActiveServiceConfig {
+    sn_base_host: String,
+    http_schema: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PreparedActiveDocuments {
     pub owner_document: OwnerDocument,
@@ -198,13 +204,6 @@ pub struct SignWebActiveDocumentsReq {
 }
 impl_from_json!(SignWebActiveDocumentsReq);
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct DomainVerifiedState {
-    pub domain: String,
-    pub verified_at: u64,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalSystemSettings {
@@ -238,8 +237,6 @@ pub struct CommitActiveReq {
     pub device_private_key: String,
     pub system_settings: LocalSystemSettings,
     pub sn: SnCommitConfig,
-    #[serde(default)]
-    pub domain_verified: Option<DomainVerifiedState>,
 }
 impl_from_json!(CommitActiveReq);
 
@@ -252,12 +249,14 @@ pub struct CommitActiveResp {
 #[derive(Clone)]
 struct ActiveServer {
     device_mini_info: DeviceMiniInfo,
+    config: ActiveServiceConfig,
 }
 
 impl ActiveServer {
-    fn new() -> Self {
+    fn new(config: ActiveServiceConfig) -> Self {
         Self {
             device_mini_info: DeviceMiniInfo::default(),
+            config,
         }
     }
 
@@ -438,7 +437,7 @@ impl ActiveServer {
     }
 
     async fn commit_active(&self, req: CommitActiveReq) -> Result<CommitActiveResp, RPCErrors> {
-        validate_commit_request(&req)?;
+        validate_commit_request(&req, &self.config)?;
         let mut effective_owner = req.owner_document.clone();
         let needs_owner_publish = req.prepared.names.zone_did != effective_owner.id
             && !effective_owner.is_bound_to_zone(&req.prepared.names.zone_did);
@@ -627,13 +626,22 @@ fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result
     let topology = &prepared.topology;
     let boot = &prepared.boot_document;
     let device = &prepared.device_document;
-    if boot.id.as_ref() != Some(&names.zone_did)
-        || boot.owner.as_ref() != Some(&names.owner_did)
-        || boot.exp != device.exp
-    {
+    if boot.id.as_ref() != Some(&names.zone_did) {
+        return Err(RPCErrors::ReasonError(format!(
+            "BootDocument zone id mismatch: expected {:?}, got {:?}",
+            names.zone_did, boot.id
+        )));
+    }
+    if boot.owner.is_some() || boot.owner_key.is_some() {
         return Err(RPCErrors::ReasonError(
-            "BootDocument identity or expiry differs from DeviceDocument".to_string(),
+            "BootDocument must not embed owner or owner_key".to_string(),
         ));
+    }
+    if boot.exp != device.exp {
+        return Err(RPCErrors::ReasonError(format!(
+            "BootDocument expiry mismatch: boot exp {}, device exp {}",
+            boot.exp, device.exp
+        )));
     }
     let expected_ood = OODDescriptionString::new(
         "ood1".to_string(),
@@ -658,32 +666,82 @@ fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result
     let expected_device_did =
         build_device_did("ood1", &names.zone_did).map_err(RPCErrors::ReasonError)?;
     let expected_ddns_sn_url = topology.uses_sn_relay.then(|| topology.sn_url.clone());
-    if device.id != expected_device_did
-        || device.name != "ood1"
-        || device.owner != names.owner_did
-        || device.zone_did.as_ref() != Some(&names.zone_did)
-        || device.net_id.as_deref() != Some(topology.net_id.as_str())
-        || device.rtcp_port != Some(topology.rtcp_port)
-        || device.support_container != topology.support_container
-        || device.ddns_sn_url != expected_ddns_sn_url
-    {
-        return Err(RPCErrors::ReasonError(
-            "DeviceDocument identity or gateway topology mismatch".to_string(),
-        ));
+    if device.id != expected_device_did {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument id mismatch: expected {:?}, got {:?}",
+            expected_device_did, device.id
+        )));
+    }
+    if device.name != "ood1" {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument name mismatch: expected ood1, got {:?}",
+            device.name
+        )));
+    }
+    if device.owner != names.owner_did {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument owner mismatch: expected {:?}, got {:?}",
+            names.owner_did, device.owner
+        )));
+    }
+    if device.zone_did.as_ref() != Some(&names.zone_did) {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument zone_did mismatch: expected {:?}, got {:?}",
+            names.zone_did, device.zone_did
+        )));
+    }
+    if device.net_id.as_deref() != Some(topology.net_id.as_str()) {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument net_id mismatch: expected {:?}, got {:?}",
+            topology.net_id, device.net_id
+        )));
+    }
+    if device.rtcp_port != Some(topology.rtcp_port) {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument RTCP port mismatch: expected {}, got {:?}",
+            topology.rtcp_port, device.rtcp_port
+        )));
+    }
+    if device.support_container != topology.support_container {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument container support mismatch: expected {}, got {}",
+            topology.support_container, device.support_container
+        )));
+    }
+    if device.ddns_sn_url != expected_ddns_sn_url {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument DDNS SN URL mismatch: expected {:?}, got {:?}",
+            expected_ddns_sn_url, device.ddns_sn_url
+        )));
     }
     if prepared.device_mini_document != DeviceMiniDocument::new_by_device_document(device) {
         return Err(RPCErrors::ReasonError(
             "DeviceMiniDocument differs from DeviceDocument".to_string(),
         ));
     }
-    if prepared.device_info.id != device.id
-        || prepared.device_info.name != device.name
-        || prepared.device_info.owner != device.owner
-        || prepared.device_info.zone_did != device.zone_did
-        || prepared.device_info.get_default_key() != device.get_default_key()
-    {
+    if prepared.device_info.id != device.id {
         return Err(RPCErrors::ReasonError(
-            "DeviceInfo identity differs from DeviceDocument".to_string(),
+            "DeviceInfo id differs from DeviceDocument".to_string(),
+        ));
+    }
+    if prepared.device_info.name != device.name {
+        return Err(RPCErrors::ReasonError(
+            "DeviceInfo name differs from DeviceDocument".to_string(),
+        ));
+    }
+    if prepared.device_info.owner != device.owner {
+        return Err(RPCErrors::ReasonError(
+            "DeviceInfo owner differs from DeviceDocument".to_string(),
+        ));
+    }
+    if prepared.device_info.zone_did != device.zone_did {
+        return Err(RPCErrors::ReasonError(
+            "DeviceInfo zone_did differs from DeviceDocument".to_string(),
+        ));
+    }
+    if prepared.device_info.get_default_key() != device.get_default_key() {
+        return Err(RPCErrors::ReasonError(
+            "DeviceInfo default key differs from DeviceDocument".to_string(),
         ));
     }
     Ok(())
@@ -694,6 +752,83 @@ fn sn_host_from_url(sn_url: &str) -> Result<String, RPCErrors> {
         .ok()
         .and_then(|url| url.host_str().map(ToString::to_string))
         .ok_or_else(|| RPCErrors::ReasonError("invalid SN URL".to_string()))
+}
+
+fn normalize_endpoint(value: &str, label: &str) -> Result<url::Url, RPCErrors> {
+    let mut endpoint = url::Url::parse(value.trim())
+        .map_err(|error| RPCErrors::ReasonError(format!("invalid {}: {}", label, error)))?;
+    if endpoint.host_str().is_none()
+        || !matches!(endpoint.scheme(), "http" | "https")
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(RPCErrors::ReasonError(format!(
+            "{} must be an HTTP endpoint with a host and no credentials, query, or fragment",
+            label
+        )));
+    }
+    let normalized_path = endpoint.path().trim_end_matches('/').to_string();
+    endpoint.set_path(if normalized_path.is_empty() {
+        "/"
+    } else {
+        normalized_path.as_str()
+    });
+    Ok(endpoint)
+}
+
+fn validate_commit_endpoints(
+    req: &CommitActiveReq,
+    config: &ActiveServiceConfig,
+) -> Result<(), RPCErrors> {
+    let prepared_sn = normalize_endpoint(&req.prepared.topology.sn_url, "topology SN URL")?;
+    let commit_sn = normalize_endpoint(&req.sn.sn_url, "commit SN URL")?;
+    if prepared_sn != commit_sn {
+        return Err(RPCErrors::ReasonError(format!(
+            "SN endpoint mismatch: prepared {}, commit {}",
+            prepared_sn, commit_sn
+        )));
+    }
+    let commit_bns = normalize_endpoint(&req.sn.bns_url, "commit BNS URL")?;
+    if !matches!(config.http_schema.as_str(), "http" | "https") {
+        return Err(RPCErrors::ReasonError(format!(
+            "invalid active service HTTP schema {:?}",
+            config.http_schema
+        )));
+    }
+    let base_host = config.sn_base_host.trim().to_lowercase();
+    validate_hostname(base_host.as_str())?;
+    let expected_sn = normalize_endpoint(
+        format!("{}://sn.{}/kapi/sn", config.http_schema, base_host).as_str(),
+        "configured SN URL",
+    )?;
+    let expected_bns = normalize_endpoint(
+        format!("{}://bns.{}/kapi/bns", config.http_schema, base_host).as_str(),
+        "configured BNS URL",
+    )?;
+    if commit_sn != expected_sn {
+        return Err(RPCErrors::ReasonError(format!(
+            "commit SN endpoint differs from active service config: expected {}, got {}",
+            expected_sn, commit_sn
+        )));
+    }
+    if commit_bns != expected_bns {
+        return Err(RPCErrors::ReasonError(format!(
+            "commit BNS endpoint differs from active service config: expected {}, got {}",
+            expected_bns, commit_bns
+        )));
+    }
+    if !req.prepared.names.use_self_domain {
+        let expected = format!("{}.web3.{}", req.prepared.names.owner_name, base_host);
+        if req.prepared.names.access_hostname != expected {
+            return Err(RPCErrors::ReasonError(format!(
+                "default access hostname mismatch: expected {:?}, got {:?}",
+                expected, req.prepared.names.access_hostname
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_ed25519_jwk(jwk: &Jwk, label: &str) -> Result<(), RPCErrors> {
@@ -913,14 +1048,33 @@ fn verify_signed_documents(
 
 fn validate_document_times(prepared: &PreparedActiveDocuments) -> Result<(), RPCErrors> {
     let now = buckyos_get_unix_timestamp();
-    if prepared.boot_document.exp <= now
-        || prepared.device_document.exp <= now
-        || prepared.device_mini_document.exp <= now
-        || prepared.device_document.iat > now + 300
-        || prepared.device_document.version_seq.is_none()
-    {
+    if prepared.boot_document.exp <= now {
+        return Err(RPCErrors::ReasonError(format!(
+            "BootDocument expired: exp {}, now {}",
+            prepared.boot_document.exp, now
+        )));
+    }
+    if prepared.device_document.exp <= now {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument expired: exp {}, now {}",
+            prepared.device_document.exp, now
+        )));
+    }
+    if prepared.device_mini_document.exp <= now {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceMiniDocument expired: exp {}, now {}",
+            prepared.device_mini_document.exp, now
+        )));
+    }
+    if prepared.device_document.iat > now + 300 {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument issued too far in the future: iat {}, now {}",
+            prepared.device_document.iat, now
+        )));
+    }
+    if prepared.device_document.version_seq.is_none() {
         return Err(RPCErrors::ReasonError(
-            "active document timestamps or version_seq are invalid".to_string(),
+            "DeviceDocument version_seq is missing".to_string(),
         ));
     }
     Ok(())
@@ -952,7 +1106,10 @@ fn validate_device_private_key(
     Ok(())
 }
 
-fn validate_commit_request(req: &CommitActiveReq) -> Result<(), RPCErrors> {
+fn validate_commit_request(
+    req: &CommitActiveReq,
+    config: &ActiveServiceConfig,
+) -> Result<(), RPCErrors> {
     validate_owner_document(&req.owner_document)?;
     if req.owner_document != req.prepared.owner_document {
         return Err(RPCErrors::ReasonError(
@@ -961,6 +1118,7 @@ fn validate_commit_request(req: &CommitActiveReq) -> Result<(), RPCErrors> {
     }
     req.prepared.names.validate(&req.owner_document)?;
     validate_topology(&req.prepared.topology)?;
+    validate_commit_endpoints(req, config)?;
     validate_prepared_relationships(&req.prepared)?;
     verify_signed_documents(&req.prepared, &req.signed_documents)?;
     validate_document_times(&req.prepared)?;
@@ -972,16 +1130,6 @@ fn validate_commit_request(req: &CommitActiveReq) -> Result<(), RPCErrors> {
         return Err(RPCErrors::ReasonError(
             "ZoneDocument JWT exceeds 4KB".to_string(),
         ));
-    }
-    if req.prepared.names.use_self_domain {
-        let verified = req.domain_verified.as_ref().ok_or_else(|| {
-            RPCErrors::ReasonError("verified domain state is required".to_string())
-        })?;
-        if verified.domain.trim().to_lowercase() != req.prepared.names.access_hostname {
-            return Err(RPCErrors::ReasonError(
-                "verified domain does not match active domain".to_string(),
-            ));
-        }
     }
     if req.sn.access_token.trim().is_empty()
         || req.sn.sn_url.trim().is_empty()
@@ -1291,8 +1439,22 @@ impl HttpServer for ActiveServer {
 
 pub async fn start_node_active_service() {
     let active_server_dir = get_buckyos_system_bin_dir().join("node-active");
+    let config_path = active_server_dir.join("active_config.json");
+    let config = match std::fs::read(&config_path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            error!(
+                "Failed to load active service config from {:?}: {}",
+                config_path, error
+            );
+            return;
+        }
+    };
     let runner = Runner::new(ACTIVE_SERVICE_MAIN_PORT);
-    let mut active_server = ActiveServer::new();
+    let mut active_server = ActiveServer::new(config);
     active_server.auto_fill_device_mini_info().await;
     let active_server = Arc::new(active_server);
     if let Err(error) = runner.add_http_server("/kapi/active".to_string(), active_server.clone()) {
@@ -1346,6 +1508,13 @@ mod tests {
         }
     }
 
+    fn active_service_config() -> ActiveServiceConfig {
+        ActiveServiceConfig {
+            sn_base_host: "example.com".to_string(),
+            http_schema: "https".to_string(),
+        }
+    }
+
     #[test]
     fn every_request_struct_has_strict_parsing() {
         assert!(GenerateWebOwnerMaterialReq::from_json(json!({})).is_ok());
@@ -1361,7 +1530,7 @@ mod tests {
     fn active_name_mapping_has_unambiguous_default_and_custom_domain_values() {
         let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let owner = owner_document(mnemonic);
-        let default = ActiveNameMapping::derive(&owner, "alice.web3.buckyos.ai", false);
+        let default = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
         assert_eq!(default.owner_name, "alice");
         assert_eq!(default.owner_did.to_string(), "did:bns:alice");
         assert_eq!(default.zone_did.to_string(), "did:bns:alice");
@@ -1377,9 +1546,9 @@ mod tests {
     async fn web_signing_round_trip_builds_four_verified_documents() {
         let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let owner = owner_document(mnemonic);
-        let names = ActiveNameMapping::derive(&owner, "alice.web3.buckyos.ai", false);
+        let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
         let (_, device_public_key) = generate_ed25519_key_pair();
-        let server = ActiveServer::new();
+        let server = ActiveServer::new(active_service_config());
         let prepared = server
             .prepare_active_documents(PrepareActiveDocumentsReq {
                 owner_document: owner,
@@ -1405,29 +1574,43 @@ mod tests {
         assert_eq!(signed.zone_document.boot_jwt, signed.boot_document_jwt);
         assert!(signed.zone_document_jwt.len() < MAX_INLINE_DOCUMENT);
 
-        let config = build_start_config(
-            &CommitActiveReq {
-                owner_document: prepared.owner_document.clone(),
-                prepared: prepared.clone(),
-                signed_documents: signed,
-                device_private_key: "not-persisted-in-start-config".to_string(),
-                system_settings: LocalSystemSettings {
-                    admin_password_hash: "required-admin-hash".to_string(),
-                    guest_access: false,
-                    friend_passcode: String::new(),
-                    enabled_features: json!({}),
-                    ai_provider_config: json!({}),
-                    jarvis_msg_tunnel_config: json!({}),
-                },
-                sn: SnCommitConfig {
-                    sn_url: "https://sn.example.com/kapi/sn".to_string(),
-                    bns_url: "https://bns.example.com/kapi/bns".to_string(),
-                    access_token: "secret-access-token".to_string(),
-                },
-                domain_verified: None,
+        let mut commit_req = CommitActiveReq {
+            owner_document: prepared.owner_document.clone(),
+            prepared: prepared.clone(),
+            signed_documents: signed,
+            device_private_key: "not-persisted-in-start-config".to_string(),
+            system_settings: LocalSystemSettings {
+                admin_password_hash: "required-admin-hash".to_string(),
+                guest_access: false,
+                friend_passcode: String::new(),
+                enabled_features: json!({}),
+                ai_provider_config: json!({}),
+                jarvis_msg_tunnel_config: json!({}),
             },
-            &prepared.owner_document,
+            sn: SnCommitConfig {
+                sn_url: "https://sn.example.com/kapi/sn/".to_string(),
+                bns_url: "https://bns.example.com/kapi/bns".to_string(),
+                access_token: "secret-access-token".to_string(),
+            },
+        };
+        validate_commit_endpoints(&commit_req, &active_service_config()).unwrap();
+        commit_req.sn.sn_url = "https://sn.other.example/kapi/sn".to_string();
+        assert!(
+            validate_commit_endpoints(&commit_req, &active_service_config())
+                .unwrap_err()
+                .to_string()
+                .contains("SN endpoint mismatch")
         );
+        commit_req.sn.sn_url = "https://sn.example.com/kapi/sn".to_string();
+        commit_req.prepared.names.access_hostname = "other.example.com".to_string();
+        assert!(
+            validate_commit_endpoints(&commit_req, &active_service_config())
+                .unwrap_err()
+                .to_string()
+                .contains("default access hostname mismatch")
+        );
+        commit_req.prepared.names.access_hostname = "alice.web3.example.com".to_string();
+        let config = build_start_config(&commit_req, &prepared.owner_document);
         let config_text = serde_json::to_string(&config).unwrap();
         for forbidden in [
             "mnemonic_words",
@@ -1443,9 +1626,9 @@ mod tests {
     async fn prepared_gateway_topology_cannot_change_after_signing() {
         let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let owner = owner_document(mnemonic);
-        let names = ActiveNameMapping::derive(&owner, "alice.web3.buckyos.ai", false);
+        let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
         let (_, device_public_key) = generate_ed25519_key_pair();
-        let server = ActiveServer::new();
+        let server = ActiveServer::new(active_service_config());
         let mut prepared = server
             .prepare_active_documents(PrepareActiveDocumentsReq {
                 owner_document: owner,
@@ -1465,9 +1648,9 @@ mod tests {
     async fn tampered_nested_jwt_is_rejected() {
         let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let owner = owner_document(mnemonic);
-        let names = ActiveNameMapping::derive(&owner, "alice.web3.buckyos.ai", false);
+        let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
         let (_, device_public_key) = generate_ed25519_key_pair();
-        let server = ActiveServer::new();
+        let server = ActiveServer::new(active_service_config());
         let prepared = server
             .prepare_active_documents(PrepareActiveDocumentsReq {
                 owner_document: owner,

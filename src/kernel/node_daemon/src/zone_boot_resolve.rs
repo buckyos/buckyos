@@ -107,12 +107,7 @@ fn zone_lkgs_file_path(etc_dir: &Path, zone_did: &DID) -> PathBuf {
 // 两份指向同一把 ed25519 公钥的 Jwk 可能携带不同的元数据。
 fn jwk_key_material(jwk: &Jwk) -> Option<(String, String, String)> {
     let value = serde_json::to_value(jwk).ok()?;
-    let get = |k: &str| {
-        value
-            .get(k)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    };
+    let get = |k: &str| value.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
     Some((get("kty")?, get("crv").unwrap_or_default(), get("x")?))
 }
 
@@ -172,9 +167,9 @@ fn decode_signed_zone_document(
                 .map_err(|err| format!("verify zone document jwt failed: {}", err))?;
             normalize_zone_document_with_local_trust(zone_document, node_identity)
         }
-        EncodedDocument::JsonLd(_) => Err(
-            "boot resolve only accepts owner-signed jwt zone document from network".to_string(),
-        ),
+        EncodedDocument::JsonLd(_) => {
+            Err("boot resolve only accepts owner-signed jwt zone document from network".to_string())
+        }
     }
 }
 
@@ -318,8 +313,7 @@ pub fn check_zone_smooth_upgrade(
     if candidate.iat < current.iat {
         return SmoothUpgradeResult::IncompatibleVersionRollback;
     }
-    if let (Some(current_seq), Some(candidate_seq)) = (current.version_seq, candidate.version_seq)
-    {
+    if let (Some(current_seq), Some(candidate_seq)) = (current.version_seq, candidate.version_seq) {
         if candidate_seq < current_seq {
             return SmoothUpgradeResult::IncompatibleVersionRollback;
         }
@@ -370,17 +364,27 @@ fn load_debug_zone_document_override(
         "debug zone document override {} exists, skip network discovery",
         path.display()
     );
-    let content = std::fs::read_to_string(&path)
-        .map_err(|err| format!("read debug zone document {} failed: {}", path.display(), err))?;
-    let encoded_doc = EncodedDocument::from_str(content.trim().to_string())
-        .map_err(|err| format!("parse debug zone document {} failed: {}", path.display(), err))?;
+    let content = std::fs::read_to_string(&path).map_err(|err| {
+        format!(
+            "read debug zone document {} failed: {}",
+            path.display(),
+            err
+        )
+    })?;
+    let encoded_doc = EncodedDocument::from_str(content.trim().to_string()).map_err(|err| {
+        format!(
+            "parse debug zone document {} failed: {}",
+            path.display(),
+            err
+        )
+    })?;
 
     // debug 文件与 node_identity 同级信任：JsonLd 也放行，但同样过锚定检查。
     if let Ok(zone_document) = ZoneDocument::decode(&encoded_doc, Some(owner_public_key)) {
         return normalize_zone_document_with_local_trust(zone_document, node_identity).map(Some);
     }
-    let boot_document = ZoneBootDocument::decode(&encoded_doc, Some(owner_public_key))
-        .map_err(|err| {
+    let boot_document =
+        ZoneBootDocument::decode(&encoded_doc, Some(owner_public_key)).map_err(|err| {
             format!(
                 "parse debug zone document {} as zone/boot document failed: {}",
                 path.display(),
@@ -594,7 +598,10 @@ async fn update_zone_document_cache(zone_document: &ZoneDocument) {
     let doc_value = match serde_json::to_value(zone_document) {
         Ok(value) => value,
         Err(err) => {
-            warn!("serialize accepted zone document for did cache failed: {}", err);
+            warn!(
+                "serialize accepted zone document for did cache failed: {}",
+                err
+            );
             return;
         }
     };
@@ -606,7 +613,10 @@ async fn update_zone_document_cache(zone_document: &ZoneDocument) {
     )
     .await
     {
-        warn!("update accepted zone document into did cache failed: {}", err);
+        warn!(
+            "update accepted zone document into did cache failed: {}",
+            err
+        );
     }
 }
 
@@ -667,7 +677,8 @@ mod tests {
     use super::*;
     use name_lib::OODDescriptionString;
 
-    const TEST_JWK: &str = r#"{"kty":"OKP","crv":"Ed25519","x":"qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"}"#;
+    const TEST_JWK: &str =
+        r#"{"kty":"OKP","crv":"Ed25519","x":"qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"}"#;
 
     fn test_jwk() -> Jwk {
         serde_json::from_str(TEST_JWK).unwrap()
@@ -691,11 +702,7 @@ mod tests {
     #[test]
     fn smooth_upgrade_accepts_raft_membership_growth() {
         let current = make_zone_document(100, Some(1), &["ood1", "ood2", "ood3"]);
-        let candidate = make_zone_document(
-            200,
-            Some(2),
-            &["ood1", "ood2", "ood3", "ood4", "ood5"],
-        );
+        let candidate = make_zone_document(200, Some(2), &["ood1", "ood2", "ood3", "ood4", "ood5"]);
         assert_eq!(
             check_zone_smooth_upgrade(&current, &candidate, "node7"),
             SmoothUpgradeResult::Compatible

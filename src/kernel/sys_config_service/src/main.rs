@@ -235,7 +235,13 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
 
     //do business logic
-    audit_resolver_cache_write("set", real_key_path.as_str(), Some(new_value), userid, appid);
+    audit_resolver_cache_write(
+        "set",
+        real_key_path.as_str(),
+        Some(new_value),
+        userid,
+        appid,
+    );
     let store = SYS_STORE.lock().await;
     info!("Set key:[{}], value_len={}", key, new_value.len());
     store
@@ -298,7 +304,13 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //do business logic
-    audit_resolver_cache_write("create", real_key_path.as_str(), Some(new_value), userid, appid);
+    audit_resolver_cache_write(
+        "create",
+        real_key_path.as_str(),
+        Some(new_value),
+        userid,
+        appid,
+    );
     let store = SYS_STORE.lock().await;
     info!("Create key:[{}], value_len={}", key, new_value.len());
     store
@@ -497,7 +509,13 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     }
 
     //do business logic
-    audit_resolver_cache_write("set_by_json_path", real_key_path.as_str(), None, userid, appid);
+    audit_resolver_cache_write(
+        "set_by_json_path",
+        real_key_path.as_str(),
+        None,
+        userid,
+        appid,
+    );
     let store = SYS_STORE.lock().await;
     store
         .set_by_path(real_key_path, String::from(json_path), &new_value)
@@ -720,10 +738,11 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
         if zone_config.is_some() {
             let zone_config_str = zone_config.unwrap();
             //info!("boot_info: {}",boot_info_str);
-            let zone_config: ZoneConfig = serde_json::from_str(&zone_config_str).map_err(|err| {
-                error!("Failed to parse zone config from boot/config: {}", err);
-                RPCErrors::ReasonError(err.to_string())
-            })?;
+            let zone_config: ZoneConfig =
+                serde_json::from_str(&zone_config_str).map_err(|err| {
+                    error!("Failed to parse zone config from boot/config: {}", err);
+                    RPCErrors::ReasonError(err.to_string())
+                })?;
             let zone_document = zone_config.zone_document().map_err(|err| {
                 error!("Failed to parse zone document from boot/config: {}", err);
                 RPCErrors::ReasonError(err.to_string())

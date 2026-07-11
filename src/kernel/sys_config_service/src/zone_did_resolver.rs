@@ -354,9 +354,9 @@ impl ZoneDidResolver {
         };
         let device_info: DeviceInfo = serde_json::from_str(info_str.as_str())
             .map_err(|e| format!("{} corrupt: {}", path, e))?;
-        serde_json::to_value(&device_info).map(Some).map_err(|e| {
-            format!("serialize device info {} failed: {}", path, e)
-        })
+        serde_json::to_value(&device_info)
+            .map(Some)
+            .map_err(|e| format!("serialize device info {} failed: {}", path, e))
     }
 
     fn active(
@@ -511,10 +511,7 @@ impl ZoneDidResolver {
             "assertionMethod",
             "capabilityInvocation",
         ] {
-            merged[field] = minimal
-                .get(field)
-                .cloned()
-                .unwrap_or(Value::Null);
+            merged[field] = minimal.get(field).cloned().unwrap_or(Value::Null);
         }
         if let Some(obj) = merged.as_object_mut() {
             obj.remove("keyScope");
@@ -532,7 +529,8 @@ impl ZoneDidResolver {
         }
         let local_key = zone.local_root_trust_key()?;
         let owner = zone.zone_doc.owner.clone();
-        let mut doc = OwnerDocument::new(owner.clone(), owner.id.clone(), owner.id.clone(), local_key);
+        let mut doc =
+            OwnerDocument::new(owner.clone(), owner.id.clone(), owner.id.clone(), local_key);
         doc.set_default_zone_did(zone.zone_doc.id.clone());
         serde_json::to_value(&doc).ok()
     }
@@ -646,7 +644,9 @@ impl ZoneDidResolver {
         let zone = match self.load_zone_identity().await {
             Ok(Some(zone)) => zone,
             Ok(None) => {
-                return ZoneAnswer::NoOpinion("zone is not initialized (boot/config not set)".to_string())
+                return ZoneAnswer::NoOpinion(
+                    "zone is not initialized (boot/config not set)".to_string(),
+                )
             }
             Err(e) => {
                 warn!("ZoneDidResolver load zone identity failed: {}", e);
@@ -755,17 +755,17 @@ impl ZoneDidResolver {
             DidDocType::Info => self.load_device_info(short).await.map(|info| {
                 info.map(|v| Self::active(EncodedDocument::JsonLd(v), doc_type, None, false))
             }),
-            DidDocType::Device => self.load_device_doc(short).await.map(|doc| {
-                doc.map(|encoded| Self::active(encoded, doc_type, None, true))
-            }),
+            DidDocType::Device => self
+                .load_device_doc(short)
+                .await
+                .map(|doc| doc.map(|encoded| Self::active(encoded, doc_type, None, true))),
             DidDocType::Owner | DidDocType::User => {
                 return self.resolve_in_zone_owner(zone, short, doc_type).await
             }
-            DidDocType::Custom(ref t) if t == AGENT_DOC_TYPE => {
-                self.load_agent_doc(short).await.map(|doc| {
-                    doc.map(|(_, encoded)| Self::active(encoded, doc_type, None, true))
-                })
-            }
+            DidDocType::Custom(ref t) if t == AGENT_DOC_TYPE => self
+                .load_agent_doc(short)
+                .await
+                .map(|doc| doc.map(|(_, encoded)| Self::active(encoded, doc_type, None, true))),
             // 默认 doc_type（zone）：typeless 老客户端把设备逻辑名当默认类型查
             //（如 resolve_did(device_did, None) 取 device doc 提 ips），保留
             // device → agent → owner 的 any-doc 兜底。
@@ -919,19 +919,20 @@ impl ZoneDidResolver {
             // 不做 owner doc 兜底——把 (did, zone) 回答成 owner 文档是错误类型的独占
             // 回答，会堵死客户端对该名字真正 zone 文档的外部解析；owner 文档走显式
             // type=owner 查询。
-            DidDocType::Zone => self
-                .find_agent_doc_by_did(did)
-                .await
-                .ok()
-                .flatten()
-                .map(|(_, encoded)| {
-                    Self::active(
-                        encoded,
-                        &DidDocType::Custom(AGENT_DOC_TYPE.to_string()),
-                        None,
-                        true,
-                    )
-                }),
+            DidDocType::Zone => {
+                self.find_agent_doc_by_did(did)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|(_, encoded)| {
+                        Self::active(
+                            encoded,
+                            &DidDocType::Custom(AGENT_DOC_TYPE.to_string()),
+                            None,
+                            true,
+                        )
+                    })
+            }
             _ => None,
         };
         match hit {
@@ -969,7 +970,12 @@ impl ZoneDidResolver {
                             "serving minimal owner doc for zone owner {} from local root trust",
                             did.to_string()
                         );
-                        Self::active(EncodedDocument::JsonLd(minimal), doc_type, Some(did.clone()), true)
+                        Self::active(
+                            EncodedDocument::JsonLd(minimal),
+                            doc_type,
+                            Some(did.clone()),
+                            true,
+                        )
                     }
                     None => ZoneAnswer::NoOpinion(format!(
                         "zone resolver has no answer for {}#{}",
@@ -1107,7 +1113,10 @@ impl ZoneDidResolver {
                 )
             }
             ZoneAnswer::HistoricalNotSupported(reason) => {
-                info!("ZoneDidResolver historical query rejected for {}: {}", name, reason);
+                info!(
+                    "ZoneDidResolver historical query rejected for {}: {}",
+                    name, reason
+                );
                 (
                     StatusCode::NOT_IMPLEMENTED,
                     CONTENT_TYPE_JSON,
@@ -1230,9 +1239,7 @@ fn parse_well_known_file(file: &str) -> Result<(String, bool), String> {
     let (token, jwt_only) = match file.rsplit_once('.') {
         Some((token, "json")) => (token, false),
         Some((token, "jwt")) => (token, true),
-        Some((_, suffix)) => {
-            return Err(format!("unsupported representation suffix .{}", suffix))
-        }
+        Some((_, suffix)) => return Err(format!("unsupported representation suffix .{}", suffix)),
         None => (file, false),
     };
     if token.is_empty()
@@ -1345,8 +1352,7 @@ impl HttpServer for ZoneDidResolver {
             } else {
                 self.resolve(did_str.as_str(), &doc_type).await
             };
-            let (status, content_type, body) =
-                Self::answer_to_response(did_str.as_str(), answer);
+            let (status, content_type, body) = Self::answer_to_response(did_str.as_str(), answer);
             return build_resp(status, content_type, body);
         }
 
@@ -1417,9 +1423,11 @@ impl HttpServer for ZoneDidResolver {
 mod tests {
     use super::*;
 
-    const TEST_JWK: &str = r#"{"kty":"OKP","crv":"Ed25519","x":"qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"}"#;
+    const TEST_JWK: &str =
+        r#"{"kty":"OKP","crv":"Ed25519","x":"qJdNEtscIYwTo-I0K7iPEt_UZdBDRd4r16jdBfNR0tM"}"#;
     // 与 TEST_JWK 不同的合法形状 Ed25519 公钥（32 字节全零），模拟权威源 key rotation
-    const OTHER_JWK: &str = r#"{"kty":"OKP","crv":"Ed25519","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
+    const OTHER_JWK: &str =
+        r#"{"kty":"OKP","crv":"Ed25519","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
     fn test_zone_identity() -> ZoneIdentity {
         let jwk = serde_json::from_str(TEST_JWK).unwrap();
@@ -1521,10 +1529,7 @@ mod tests {
         );
         // '/' 不能穿透 store 键层级
         assert_eq!(ZoneDidResolver::escape_cache_segment("a/b"), "a%2Fb");
-        let base = ZoneDidResolver::cache_key_base(
-            &DID::new("bns", "alice"),
-            &DidDocType::Owner,
-        );
+        let base = ZoneDidResolver::cache_key_base(&DID::new("bns", "alice"), &DidDocType::Owner);
         assert_eq!(base, "resolver/cache/did:bns:alice/owner");
     }
 
@@ -1554,10 +1559,7 @@ mod tests {
         assert_eq!(buckyos["documentVersion"], 7);
         assert_eq!(buckyos["effectiveOwner"], "did:bns:testowner");
         assert_eq!(buckyos["authoritySeq"], 9);
-        assert!(buckyos["docHash"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:"));
+        assert!(buckyos["docHash"].as_str().unwrap().starts_with("sha256:"));
         assert_eq!(envelope["didDocumentMetadata"]["versionId"], "7");
         assert_eq!(envelope["didDocumentMetadata"]["deactivated"], false);
     }
@@ -1644,16 +1646,12 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         // zone 外名字必须是 503：客户端只对 502/503/504 回退本机解析
-        let (status, _, _) = ZoneDidResolver::answer_to_response(
-            "x",
-            ZoneAnswer::NoOpinion("not ours".to_string()),
-        );
+        let (status, _, _) =
+            ZoneDidResolver::answer_to_response("x", ZoneAnswer::NoOpinion("not ours".to_string()));
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 
-        let (status, _, _) = ZoneDidResolver::answer_to_response(
-            "x",
-            ZoneAnswer::BadRequest("bad".to_string()),
-        );
+        let (status, _, _) =
+            ZoneDidResolver::answer_to_response("x", ZoneAnswer::BadRequest("bad".to_string()));
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         // iat 历史查询：501 + historicalQuerySupported=false（协议 §7）
@@ -1665,10 +1663,8 @@ mod tests {
         let value: Value = serde_json::from_str(body.as_str()).unwrap();
         assert_eq!(value["buckyos"]["historicalQuerySupported"], false);
 
-        let (status, _, _) = ZoneDidResolver::answer_to_response(
-            "x",
-            ZoneAnswer::Internal("boom".to_string()),
-        );
+        let (status, _, _) =
+            ZoneDidResolver::answer_to_response("x", ZoneAnswer::Internal("boom".to_string()));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 
         let (status, _, body) =
@@ -1801,12 +1797,8 @@ mod tests {
         let zone = test_zone_identity();
         let owner_doc = owner_doc_with_key(TEST_JWK);
         let encoded = EncodedDocument::Jwt("stored.owner.jwt".to_string());
-        let answer = ZoneDidResolver::guarded_owner_active(
-            &zone,
-            owner_doc,
-            encoded,
-            &DidDocType::Owner,
-        );
+        let answer =
+            ZoneDidResolver::guarded_owner_active(&zone, owner_doc, encoded, &DidDocType::Owner);
         let ZoneAnswer::Published(published) = answer else {
             panic!("expected published answer");
         };

@@ -5,8 +5,8 @@ use ::kRPC::{kRPC, RPCContext};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
 use name_lib::{
-    DID, DIDDocumentTrait, EncodedDocument, NSError, NSResult, VerifyHubInfo, ZoneBootDocument,
-    ZoneDocument,
+    DIDDocumentTrait, EncodedDocument, NSError, NSResult, VerifyHubInfo, ZoneBootDocument,
+    ZoneDocument, DID,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -71,7 +71,10 @@ impl ZoneConfig {
         let owner_key = zone_boot_document.owner_key.clone().ok_or_else(|| {
             NSError::InvalidParam("zone boot document owner_key is missing".to_string())
         })?;
-        let owner = zone_boot_document.owner.clone().unwrap_or_else(DID::undefined);
+        let owner = zone_boot_document
+            .owner
+            .clone()
+            .unwrap_or_else(DID::undefined);
         let mut zone_document = ZoneDocument::new(zone_id, owner, owner_key);
         zone_document.init_by_boot_document(&zone_boot_document, &self.zone_document);
         Ok(zone_document)

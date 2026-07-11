@@ -222,9 +222,7 @@ export async function registerWebOwner(params: {
   });
   if (
     result.code !== 0 ||
-    result.need_bind_owner_key !== false ||
-    !result.bns ||
-    result.bns.status !== "submitted"
+    result.need_bind_owner_key !== false
   ) {
     throw new Error("SN registration did not commit the BNS owner document");
   }
@@ -520,13 +518,6 @@ export async function activateNode(data: ActiveWizzardData): Promise<{
       bns_url: SN_BNS_API_URL,
       access_token: accessToken,
     },
-    domain_verified:
-      data.domain_binding.state === "verified"
-        ? {
-            domain: data.domain_binding.domain,
-            verified_at: data.domain_binding.verified_at,
-          }
-        : null,
   })) as { status: string; access_hostname: string };
   if (result.status !== "completed") throw new Error("Activation did not complete");
   return {

@@ -35,8 +35,8 @@ use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -586,7 +586,10 @@ fn request_error_issue(provider: &str, err: reqwest::Error) -> Value {
     } else {
         "models"
     };
-    validation_issue(kind, format!("{} model discovery request failed: {}", provider, err))
+    validation_issue(
+        kind,
+        format!("{} model discovery request failed: {}", provider, err),
+    )
 }
 
 async fn send_discovery_request(
@@ -605,7 +608,10 @@ async fn send_discovery_request(
     response.json::<Value>().await.map_err(|err| {
         validation_issue(
             "models",
-            format!("{} model discovery response is not valid JSON: {}", provider, err),
+            format!(
+                "{} model discovery response is not valid JSON: {}",
+                provider, err
+            ),
         )
     })
 }
@@ -907,9 +913,7 @@ impl AiccHttpServer {
         let mut cache = self.provider_validation_cache.lock().map_err(|err| {
             RPCErrors::ReasonError(format!("provider validation cache unavailable: {}", err))
         })?;
-        cache.retain(|_, entry| {
-            entry.validated_at.elapsed() <= PROVIDER_VALIDATION_CACHE_TTL
-        });
+        cache.retain(|_, entry| entry.validated_at.elapsed() <= PROVIDER_VALIDATION_CACHE_TTL);
         let Some(entry) = cache.get(cache_key.as_str()) else {
             return Err(RPCErrors::ReasonError(
                 "provider_validation_required".to_string(),
@@ -928,8 +932,7 @@ impl AiccHttpServer {
         params: &Value,
     ) -> std::result::Result<Value, RPCErrors> {
         let validation_cache_key = provider_validation_cache_key(params);
-        let validation_fingerprint =
-            provider_validation_fingerprint(validation_cache_key.as_str());
+        let validation_fingerprint = provider_validation_fingerprint(validation_cache_key.as_str());
         let mut issues = Vec::<Value>::new();
         let provider_type =
             param_string(params, "provider_type").unwrap_or_else(|| "custom".into());
@@ -995,7 +998,9 @@ impl AiccHttpServer {
                 "anthropic" => {
                     discover_anthropic_models(&client, endpoint.as_str(), api_key.as_str()).await
                 }
-                "google" => discover_google_models(&client, endpoint.as_str(), api_key.as_str()).await,
+                "google" => {
+                    discover_google_models(&client, endpoint.as_str(), api_key.as_str()).await
+                }
                 "custom" => match protocol_type.as_deref() {
                     Some("openai_compatible") => {
                         discover_openai_compatible_models(
@@ -1050,10 +1055,7 @@ impl AiccHttpServer {
             .collect::<Vec<_>>();
 
         if issues.is_empty() {
-            self.remember_provider_validation(
-                validation_cache_key,
-                validation_fingerprint.clone(),
-            );
+            self.remember_provider_validation(validation_cache_key, validation_fingerprint.clone());
         }
 
         Ok(json!({
@@ -1209,9 +1211,10 @@ impl AiccHttpServer {
     }
 
     async fn handle_trace_query(&self, params: &Value) -> std::result::Result<Value, RPCErrors> {
-        let query: QueryRouteTraceRequest = serde_json::from_value(params.clone()).map_err(|err| {
-            RPCErrors::ReasonError(format!("invalid trace.query request: {}", err))
-        })?;
+        let query: QueryRouteTraceRequest =
+            serde_json::from_value(params.clone()).map_err(|err| {
+                RPCErrors::ReasonError(format!("invalid trace.query request: {}", err))
+            })?;
         let response = match self.rpc_handler.0.usage_log_db() {
             Some(db) => db.query_route_traces(&query).await?,
             None => QueryRouteTraceResponse::default(),
@@ -1230,10 +1233,7 @@ fn filter_model_directory_by_path(mut value: Value, logical_path: &str) -> Value
             }
         }
     }
-    if let Some(definitions) = value
-        .get("logical_definitions")
-        .and_then(Value::as_array)
-    {
+    if let Some(definitions) = value.get("logical_definitions").and_then(Value::as_array) {
         for definition in definitions {
             if let Some(path) = definition.get("path").and_then(Value::as_str) {
                 if logical_path_matches(path, logical_path) {

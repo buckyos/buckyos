@@ -356,7 +356,12 @@ WHERE created_at_ms >= ? AND created_at_ms < ?
             "capability",
             &req.filters.capabilities,
         );
-        push_in_filter(&mut sql, &mut string_binds, "task_id", &req.filters.task_ids);
+        push_in_filter(
+            &mut sql,
+            &mut string_binds,
+            "task_id",
+            &req.filters.task_ids,
+        );
         push_in_filter(
             &mut sql,
             &mut string_binds,
@@ -577,12 +582,19 @@ fn push_trace_filters(sql: &mut String, binds: &mut Vec<String>, req: &QueryRout
             .collect::<Vec<_>>()
             .join(" OR ");
         sql.push_str(&format!(" AND ({})", clauses));
-        binds.extend(scheduler_profiles.iter().map(|value| {
-            format!("%\"scheduler_profile\":\"{}\"%", escape_like_value(value))
-        }));
+        binds.extend(
+            scheduler_profiles
+                .iter()
+                .map(|value| format!("%\"scheduler_profile\":\"{}\"%", escape_like_value(value))),
+        );
     }
 
-    if let Some(value) = req.query.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(value) = req
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let escaped = escape_like_value(value);
         sql.push_str(
             " AND (LOWER(trace_id) LIKE LOWER(?) ESCAPE '\\' \
@@ -652,9 +664,21 @@ fn push_in_filter(sql: &mut String, binds: &mut Vec<String>, column: &str, value
     binds.extend(values.iter().cloned());
 }
 
-fn push_like_filter(sql: &mut String, binds: &mut Vec<String>, column: &str, value: &Option<String>) {
-    if let Some(val) = value.as_deref().map(str::trim).filter(|val| !val.is_empty()) {
-        sql.push_str(&format!(" AND LOWER(COALESCE({}, '')) LIKE LOWER(?) ESCAPE '\\'", column));
+fn push_like_filter(
+    sql: &mut String,
+    binds: &mut Vec<String>,
+    column: &str,
+    value: &Option<String>,
+) {
+    if let Some(val) = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|val| !val.is_empty())
+    {
+        sql.push_str(&format!(
+            " AND LOWER(COALESCE({}, '')) LIKE LOWER(?) ESCAPE '\\'",
+            column
+        ));
         binds.push(format!("%{}%", escape_like_value(val)));
     }
 }
@@ -668,18 +692,33 @@ fn push_provider_instance_in_filter(sql: &mut String, binds: &mut Vec<String>, v
         .collect::<Vec<_>>()
         .join(" OR ");
     sql.push_str(&format!(" AND ({})", clauses));
-    binds.extend(values.iter().map(|value| format!("%@{}", escape_like_value(value))));
+    binds.extend(
+        values
+            .iter()
+            .map(|value| format!("%@{}", escape_like_value(value))),
+    );
 }
 
-fn push_provider_instance_query_filter(sql: &mut String, binds: &mut Vec<String>, value: &Option<String>) {
-    if let Some(val) = value.as_deref().map(str::trim).filter(|val| !val.is_empty()) {
+fn push_provider_instance_query_filter(
+    sql: &mut String,
+    binds: &mut Vec<String>,
+    value: &Option<String>,
+) {
+    if let Some(val) = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|val| !val.is_empty())
+    {
         sql.push_str(" AND LOWER(provider_model) LIKE LOWER(?) ESCAPE '\\'");
         binds.push(format!("%{}%", escape_like_value(val)));
     }
 }
 
 fn escape_like_value(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 fn decode_row(row: &AnyRow) -> Result<AiccUsageEvent, RPCErrors> {
@@ -1280,7 +1319,9 @@ mod tests {
             .unwrap();
         assert_eq!(request_resp.traces.len(), 1);
         assert_eq!(
-            request_resp.traces[0].get("request_id").and_then(Value::as_str),
+            request_resp.traces[0]
+                .get("request_id")
+                .and_then(Value::as_str),
             Some("trace-two")
         );
         assert_eq!(
@@ -1309,7 +1350,9 @@ mod tests {
             .unwrap();
         assert_eq!(time_resp.traces.len(), 1);
         assert_eq!(
-            time_resp.traces[0].get("request_id").and_then(Value::as_str),
+            time_resp.traces[0]
+                .get("request_id")
+                .and_then(Value::as_str),
             Some("trace-two")
         );
     }

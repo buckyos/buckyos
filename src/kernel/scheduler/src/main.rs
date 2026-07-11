@@ -473,16 +473,16 @@ mod test {
         };
         let gateway_only_zone_document_str =
             serde_json::to_string(&gateway_only_zone_document).unwrap();
-        let gateway_only_init_result =
-            create_init_list_by_template(&gateway_only_zone_document, &gateway_only_zone_document_str)
-            .await
-            .err()
-            .expect("gateway-only init list should fail");
-        assert!(
-            gateway_only_init_result
-                .to_string()
-                .contains("zone document has no OOD nodes")
-        );
+        let gateway_only_init_result = create_init_list_by_template(
+            &gateway_only_zone_document,
+            &gateway_only_zone_document_str,
+        )
+        .await
+        .err()
+        .expect("gateway-only init list should fail");
+        assert!(gateway_only_init_result
+            .to_string()
+            .contains("zone document has no OOD nodes"));
 
         unsafe {
             std::env::remove_var("BUCKYOS_ROOT");
