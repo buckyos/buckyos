@@ -408,7 +408,7 @@ where
 // 发现一个可验证的 Zone Document candidate。三条路径按顺序，first-win：
 //  1. resolve_did 管线取 Zone Document（did:bns 合约、Warm Restart 时仍在线的
 //     权威发布面、did cache 都可能给出回答）；
-//  2. resolve_did 管线取 Zone Boot Document（activation 写入的 cache 等）；
+//  2. resolve_did 管线取 Zone Boot Document；
 //  3. Boot 特殊路径：直查 dns_resolver 取 TXT 引导文档（介绍文档 §3 的 Zone
 //     自举场景）。管线的 need_proof 验证在 Boot 场景推不出 expected_owner，
 //     这里用本地 owner key 直接闭环验签，不依赖任何额外网络查询。
@@ -607,22 +607,6 @@ async fn update_zone_document_cache(zone_document: &ZoneDocument) {
     .await
     {
         warn!("update accepted zone document into did cache failed: {}", err);
-    }
-
-    // boot_jwt 原文是 owner 签名的 Jwt：写进 Boot doc_type 的 cache 后，下次
-    // Warm Restart 断网时管线的 Boot 路径能命中一份可本地验签的回答，
-    // 不必落到 LKGS 兜底。
-    if !zone_document.boot_jwt.is_empty() {
-        if let Err(err) = update_did_cache(
-            zone_document.id.clone(),
-            Some(DidDocType::Boot),
-            EncodedDocument::Jwt(zone_document.boot_jwt.clone()),
-            Some(UpdateSource::Authority),
-        )
-        .await
-        {
-            warn!("update accepted zone boot jwt into did cache failed: {}", err);
-        }
     }
 }
 

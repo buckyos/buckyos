@@ -244,13 +244,15 @@ function getZoneHostNames(zoneId: string, web3Bridge: string): string[] {
 
 export function makeMachineConfig(
   targetDir: string,
-  web3Bns: string,
+  web3BridgeHost: string,
+  bnsHost: string,
   trustDid: string[],
   forceHttps: boolean,
 ): void {
   const etcDir = ensureDir(path.join(targetDir, "etc"));
   writeJson(path.join(etcDir, "machine.json"), {
-    web3_bridge: { bns: web3Bns },
+    web3_bridge: { bns: web3BridgeHost },
+    bns_host: bnsHost,
     force_https: forceHttps,
     trust_did: trustDid,
   });
@@ -258,12 +260,20 @@ export function makeMachineConfig(
 
 function makeGlobalEnvConfig(
   targetDir: string,
-  web3Bns: string,
+  web3BridgeHost: string,
   trustDid: string[],
   forceHttps: boolean,
   snBaseHost?: string,
 ): void {
-  makeMachineConfig(targetDir, web3Bns, trustDid, forceHttps);
+  const activeSnBaseHost = snBaseHost?.trim() ||
+    extractBaseHost(web3BridgeHost);
+  makeMachineConfig(
+    targetDir,
+    web3BridgeHost,
+    `bns.${activeSnBaseHost}`,
+    trustDid,
+    forceHttps,
+  );
 
   const activeConfigPath = path.join(
     targetDir,
@@ -271,7 +281,6 @@ function makeGlobalEnvConfig(
     "node-active",
     "active_config.json",
   );
-  const activeSnBaseHost = snBaseHost?.trim() || extractBaseHost(web3Bns);
   writeJson(activeConfigPath, {
     sn_base_host: activeSnBaseHost,
     http_schema: forceHttps ? "https" : "http",

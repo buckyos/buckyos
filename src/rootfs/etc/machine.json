@@ -2,6 +2,7 @@
   "web3_bridge": {
     "bns": "web3.devtests.org"
   },
+  "bns_host": "bns.devtests.org",
   "force_https": false,
   "trust_did": [
     "did:web:buckyos.org",

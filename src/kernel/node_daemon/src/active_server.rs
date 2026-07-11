@@ -550,14 +550,6 @@ impl ActiveServer {
         )
         .await
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-        update_did_cache(
-            req.prepared.names.zone_did.clone(),
-            Some(DidDocType::Boot),
-            EncodedDocument::Jwt(req.signed_documents.boot_document_jwt.clone()),
-            Some(UpdateSource::Authority),
-        )
-        .await
-        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
 
         persist_activation(&req, &effective_owner)?;
 
