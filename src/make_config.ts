@@ -50,8 +50,10 @@ import {
   createIdentityCertFromCa,
   createNodeConfigs,
   createUserEnv,
+  deviceIdentityPathsForRoots,
   ensureCa,
   IdentityRoots,
+  loadLocalNodeIdentityConfig,
 } from "buckyos/provision";
 import {
   DEFAULT_TRUST_DID,
@@ -172,36 +174,6 @@ function didRawHostName(did: string): string {
   const { method, id } = parseDid(did);
   const realId = id.split(":")[0];
   return method === "web" ? realId : `${realId}.${method}.did`;
-}
-
-function buildDeviceDid(deviceName: string, zoneDid: string): string {
-  const { method, id } = parseDid(zoneDid);
-  const zoneName = method === "web"
-    ? didRawHostName(zoneDid)
-    : id.split(":")[0] || id;
-  if (!zoneName.trim()) {
-    throw new Error(`zone DID ${zoneDid} has empty host/name`);
-  }
-  return `did:${method}:${deviceName}.${zoneName}`;
-}
-
-function bindDeviceConfigDid(
-  deviceConfig: Record<string, unknown>,
-  deviceDid: string,
-): Record<string, unknown> {
-  const rebound = structuredClone(deviceConfig);
-  rebound.id = deviceDid;
-  const methods = rebound.verificationMethod;
-  if (!Array.isArray(methods)) {
-    throw new Error("device config verificationMethod is missing");
-  }
-  for (const method of methods) {
-    if (!method || typeof method !== "object" || Array.isArray(method)) {
-      throw new Error("device config verificationMethod item is not object");
-    }
-    (method as Record<string, unknown>).controller = deviceDid;
-  }
-  return rebound;
 }
 
 function base64UrlEncodeBytes(value: Uint8Array): string {
@@ -345,60 +317,253 @@ export async function buildUserEnv(
 const NODE_IDENTITY_SCHEMA_V2 = "buckyos.node_identity.v2";
 const DEVICE_DOC_JWT_FILE_NAME = "device_doc.jwt";
 const DEVICE_MINI_DOC_JWT_FILE_NAME = "device_mini_doc.jwt";
+const ZONE_DOCUMENT_JWT_FILE_NAME = "zone_document.jwt";
+const MAX_INLINE_DOCUMENT_BYTES = 4096;
 
 interface LocalDeviceIdentityFiles {
+  ownerDocument: Record<string, unknown>;
+  bootDocumentJwt: string;
   deviceDocJwt: string;
+  deviceMiniDocJwt: string;
   deviceDid: string;
+  zoneDid: string;
+  zoneDocument: Record<string, unknown>;
+  zoneDocumentJwt: string;
+}
+
+function requireNumber(
+  value: Record<string, unknown>,
+  key: string,
+  source: string,
+): number {
+  const field = value[key];
+  if (typeof field !== "number" || !Number.isFinite(field)) {
+    throw new Error(`${source} missing number field: ${key}`);
+  }
+  return field;
+}
+
+function requireArray(
+  value: Record<string, unknown>,
+  key: string,
+  source: string,
+): unknown[] {
+  const field = value[key];
+  if (!Array.isArray(field)) {
+    throw new Error(`${source} missing array field: ${key}`);
+  }
+  return field;
+}
+
+function defaultPublicJwk(
+  document: Record<string, unknown>,
+  source: string,
+): Record<string, unknown> {
+  const methods = requireArray(document, "verificationMethod", source);
+  const method = methods.find((item) =>
+    item != null && typeof item === "object" && !Array.isArray(item) &&
+    (item as Record<string, unknown>).id === "#main_key"
+  );
+  if (!method) {
+    throw new Error(`${source} missing #main_key verification method`);
+  }
+  return requireObject(
+    method as Record<string, unknown>,
+    "publicKeyJwk",
+    source,
+  );
+}
+
+function normalizeOwnerDocument(
+  userDir: string,
+  zoneDid: string,
+): Record<string, unknown> {
+  const ownerPath = path.join(userDir, "user_config.json");
+  const ownerDocument = structuredClone(readJsonObject(ownerPath));
+  const ownerDid = requireString(ownerDocument, "id", ownerPath);
+  const displayName = typeof ownerDocument.display_name === "string"
+    ? ownerDocument.display_name
+    : requireString(ownerDocument, "full_name", ownerPath);
+  ownerDocument.display_name = displayName;
+  delete ownerDocument.full_name;
+
+  if (ownerDid !== zoneDid) {
+    const boundZones = Array.isArray(ownerDocument.binded_zone_list)
+      ? ownerDocument.binded_zone_list.filter((value) =>
+        typeof value === "string" && value !== zoneDid
+      )
+      : [];
+    ownerDocument.binded_zone_list = [zoneDid, ...boundZones];
+
+    const lastDocId = `${ownerDid}#lastDoc`;
+    const services = Array.isArray(ownerDocument.service)
+      ? ownerDocument.service.filter((value) =>
+        value == null || typeof value !== "object" || Array.isArray(value) ||
+        (value as Record<string, unknown>).id !== lastDocId
+      )
+      : [];
+    services.push({
+      id: lastDocId,
+      type: "DIDDoc",
+      serviceEndpoint: `https://${didRawHostName(zoneDid)}/resolve/${ownerDid}`,
+    });
+    ownerDocument.service = services;
+  }
+  return ownerDocument;
+}
+
+function makeDeviceMiniDocument(
+  deviceDocument: Record<string, unknown>,
+  source: string,
+): Record<string, unknown> {
+  const deviceJwk = defaultPublicJwk(deviceDocument, source);
+  const result: Record<string, unknown> = {
+    n: requireString(deviceDocument, "name", source),
+    x: requireString(deviceJwk, "x", source),
+    p: requireNumber(deviceDocument, "rtcp_port", source),
+    exp: requireNumber(deviceDocument, "exp", source),
+  };
+  return result;
+}
+
+function makeAccessHostname(params: OODGroupParams): string {
+  return didHostToRealHost(params.zone_id, params.web3_bridge);
+}
+
+function makeSnApiUrl(params: OODGroupParams): string | undefined {
+  const baseHost = params.sn_base_host.trim();
+  if (!baseHost) {
+    return undefined;
+  }
+  const schema = params.force_https ? "https" : "http";
+  return `${schema}://sn.${baseHost}/kapi/sn`;
 }
 
 function writeLocalDeviceIdentityFiles(
   userDir: string,
   nodeDir: string,
   targetDir: string,
+  params: OODGroupParams,
 ): LocalDeviceIdentityFiles {
-  const oldNodeIdentityPath = path.join(nodeDir, "node_identity.json");
-  const oldNodeIdentity = readJsonObject(oldNodeIdentityPath);
-  const oldDeviceConfigPath = path.join(nodeDir, "node_device_config.json");
-  const oldDeviceConfig = readJsonObject(oldDeviceConfigPath);
-  const zoneDid = requireString(
-    oldNodeIdentity,
-    "zone_did",
-    oldNodeIdentityPath,
+  const nodeIdentityPath = path.join(nodeDir, "node_identity.json");
+  const nodeIdentity = loadLocalNodeIdentityConfig(nodeIdentityPath);
+  const zoneDid = nodeIdentity.zone_did;
+  const ownerDid = nodeIdentity.owner_did;
+  const ownerPublicKey = nodeIdentity.owner_public_key as unknown as Record<
+    string,
+    unknown
+  >;
+  const deviceName = nodeIdentity.device_name;
+  const deviceDid = nodeIdentity.device_did;
+  const sourceRoots = new IdentityRoots(
+    path.join(nodeDir, "local", "identity"),
+    path.join(nodeDir, "security"),
   );
-  const ownerDid = requireString(
-    oldNodeIdentity,
-    "owner_did",
-    oldNodeIdentityPath,
-  );
-  const ownerPublicKey = requireObject(
-    oldNodeIdentity,
-    "owner_public_key",
-    oldNodeIdentityPath,
-  );
-  const deviceName = requireString(
-    oldDeviceConfig,
-    "name",
-    oldDeviceConfigPath,
-  );
-  const deviceDid = buildDeviceDid(deviceName, zoneDid);
-  const deviceConfig = bindDeviceConfigDid(oldDeviceConfig, deviceDid);
+  const sourcePaths = deviceIdentityPathsForRoots(sourceRoots, deviceDid);
+  const deviceConfig = readJsonObject(sourcePaths.didJson);
+  if (requireString(deviceConfig, "id", sourcePaths.didJson) !== deviceDid) {
+    throw new Error(
+      `${sourcePaths.didJson} id differs from node identity device_did`,
+    );
+  }
+  const zoneConfigPath = path.join(userDir, "zone_config.json");
+  const zoneConfig = readJsonObject(zoneConfigPath);
+  const bootSeedPath = path.join(userDir, `${params.zone_id}.zone.json`);
+  const bootDocument = structuredClone(readJsonObject(bootSeedPath));
+  const ownerDocument = normalizeOwnerDocument(userDir, zoneDid);
   const ownerPrivateKeyPem = fs.readFileSync(
     path.join(userDir, "user_private_key.pem"),
     "utf8",
   );
   const devicePrivateKeyPem = fs.readFileSync(
-    path.join(nodeDir, "node_private_key.pem"),
+    sourcePaths.authenticationPrivateKey,
     "utf8",
   );
-  const deviceDocJwt = signJwtEdDSA(deviceConfig, ownerPrivateKeyPem);
-  const deviceMiniDocJwt = requireString(
-    oldNodeIdentity,
-    "device_mini_doc_jwt",
-    oldNodeIdentityPath,
+  const ownerPublicKeyFromDocument = defaultPublicJwk(
+    ownerDocument,
+    path.join(userDir, "user_config.json"),
   );
-  const zoneIat = typeof oldNodeIdentity.zone_iat === "number"
-    ? oldNodeIdentity.zone_iat
-    : 0;
+  for (const key of ["kty", "crv", "x"]) {
+    if (ownerPublicKeyFromDocument[key] !== ownerPublicKey[key]) {
+      throw new Error(
+        `OwnerDocument ${key} differs from node identity owner key`,
+      );
+    }
+  }
+
+  const documentIat = requireNumber(zoneConfig, "iat", zoneConfigPath);
+  const documentExp = requireNumber(bootDocument, "exp", bootSeedPath);
+  const usesSnRelay = params.netid !== "wan";
+  const snApiUrl = makeSnApiUrl(params);
+  if (usesSnRelay && !snApiUrl) {
+    throw new Error(
+      `group ${params.username} needs SN relay but has no SN base host`,
+    );
+  }
+  bootDocument.id = zoneDid;
+  bootDocument.owner = ownerDid;
+  bootDocument.owner_key = ownerPublicKey;
+  if (usesSnRelay) {
+    bootDocument.sn = `sn.${params.sn_base_host.trim()}`;
+  } else {
+    delete bootDocument.sn;
+  }
+  const bootDocumentJwt = signJwtEdDSA(bootDocument, ownerPrivateKeyPem);
+
+  deviceConfig.owner = ownerDid;
+  deviceConfig.zone_did = zoneDid;
+  deviceConfig.net_id = params.netid === "lan" ? "nat" : params.netid;
+  deviceConfig.rtcp_port = params.rtcp_port;
+  delete deviceConfig.support_container;
+  deviceConfig.iat = documentIat;
+  deviceConfig.exp = documentExp;
+  deviceConfig.version_seq = 0;
+  if (usesSnRelay) {
+    deviceConfig.ddns_sn_url = snApiUrl;
+  } else {
+    delete deviceConfig.ddns_sn_url;
+  }
+  const deviceDocJwt = signJwtEdDSA(deviceConfig, ownerPrivateKeyPem);
+  const deviceMiniDocument = makeDeviceMiniDocument(
+    deviceConfig,
+    sourcePaths.didJson,
+  );
+  const deviceMiniDocJwt = signJwtEdDSA(
+    deviceMiniDocument,
+    ownerPrivateKeyPem,
+  );
+
+  const zoneDocument = structuredClone(zoneConfig);
+  zoneDocument.id = zoneDid;
+  zoneDocument.owner = ownerDid;
+  zoneDocument.hostname = makeAccessHostname(params);
+  zoneDocument.oods = structuredClone(
+    requireArray(bootDocument, "oods", bootSeedPath),
+  );
+  zoneDocument.boot_jwt = bootDocumentJwt;
+  zoneDocument.devices = {
+    [deviceName]: {
+      ...structuredClone(deviceConfig),
+      device_mini_document_jwt: deviceMiniDocJwt,
+    },
+  };
+  zoneDocument.mini_device_jwts = {
+    [deviceName]: deviceMiniDocJwt,
+  };
+  zoneDocument.iat = documentIat;
+  zoneDocument.exp = documentExp;
+  zoneDocument.version_seq = 0;
+  if (usesSnRelay) {
+    zoneDocument.sn = `sn.${params.sn_base_host.trim()}`;
+  } else {
+    delete zoneDocument.sn;
+  }
+  const zoneDocumentJwt = signJwtEdDSA(zoneDocument, ownerPrivateKeyPem);
+  if (Buffer.byteLength(zoneDocumentJwt, "utf8") >= MAX_INLINE_DOCUMENT_BYTES) {
+    throw new Error(
+      `zone document JWT exceeds ${MAX_INLINE_DOCUMENT_BYTES} byte BNS inline limit`,
+    );
+  }
 
   const roots = new IdentityRoots(
     path.join(targetDir, "local", "identity"),
@@ -427,7 +592,7 @@ function writeLocalDeviceIdentityFiles(
     owner_public_key: ownerPublicKey,
     device_name: deviceName,
     device_did: deviceDid,
-    zone_iat: zoneIat,
+    zone_iat: documentIat,
   });
   writeJson(path.join(etcDir, "node_gateway_params.json"), {
     params: {
@@ -450,44 +615,71 @@ function writeLocalDeviceIdentityFiles(
     privateKeyPath,
   ]);
 
-  return { deviceDocJwt, deviceDid };
+  return {
+    ownerDocument,
+    bootDocumentJwt,
+    deviceDocJwt,
+    deviceMiniDocJwt,
+    deviceDid,
+    zoneDid,
+    zoneDocument,
+    zoneDocumentJwt,
+  };
 }
 
 function copyIdentityOutputs(
   userDir: string,
   nodeDir: string,
   targetDir: string,
-  zoneId: string,
+  params: OODGroupParams,
 ): void {
   const etcDir = ensureDir(path.join(targetDir, "etc"));
 
-  copyIfExists(
-    path.join(userDir, `${zoneId}.zone.json`),
-    path.join(etcDir, `${zoneId}.zone.json`),
-  );
   const localIdentity = writeLocalDeviceIdentityFiles(
     userDir,
     nodeDir,
     targetDir,
+    params,
   );
 
   const startConfigPath = path.join(nodeDir, "start_config.json");
   const startConfig = readJsonObject(startConfigPath);
+  startConfig.owner_document = localIdentity.ownerDocument;
+  startConfig.zone_name = localIdentity.zoneDid;
+  startConfig.access_hostname = makeAccessHostname(params);
+  startConfig.zone_document_jwt = localIdentity.zoneDocumentJwt;
+  startConfig.boot_config_jwt = localIdentity.bootDocumentJwt;
+  startConfig.device_doc_jwt = localIdentity.deviceDocJwt;
+  startConfig.device_mini_doc_jwt = localIdentity.deviceMiniDocJwt;
   startConfig.ood_jwt = localIdentity.deviceDocJwt;
+  startConfig.enabled_features ??= {};
+  startConfig.ai_provider_config ??= {};
+  startConfig.jarvis_msg_tunnel_config ??= {};
+  delete startConfig.BUCKYOS_ROOT;
+  delete startConfig.gateway_type;
+  delete startConfig.private_key;
+  delete startConfig.public_key;
   delete startConfig.device_private_key;
   delete startConfig.device_public_key;
   writeJson(path.join(etcDir, "start_config.json"), startConfig);
+  writeText(
+    path.join(etcDir, ZONE_DOCUMENT_JWT_FILE_NAME),
+    localIdentity.zoneDocumentJwt,
+  );
   removeIfExists(path.join(etcDir, "node_private_key.pem"));
   removeIfExists(path.join(etcDir, "node_device_config.json"));
+  removeIfExists(path.join(etcDir, `${params.zone_id}.zone.json`));
 
   const buckycliDir = ensureDir(path.join(etcDir, ".buckycli"));
-  for (const name of ["user_config.json", "user_private_key.pem"]) {
-    copyIfExists(path.join(userDir, name), path.join(buckycliDir, name));
-  }
-  copyIfExists(
-    path.join(userDir, `${zoneId}.zone.json`),
-    path.join(buckycliDir, "zone_config.json"),
+  writeJson(
+    path.join(buckycliDir, "user_config.json"),
+    localIdentity.ownerDocument,
   );
+  writeJson(
+    path.join(buckycliDir, "zone_config.json"),
+    localIdentity.zoneDocument,
+  );
+  removeIfExists(path.join(buckycliDir, "user_private_key.pem"));
   console.log(
     `device identity ${localIdentity.deviceDid} copied to local identity roots`,
   );
@@ -497,6 +689,7 @@ function makeUnactivatedIdentityConfig(targetDir: string): void {
   const etcDir = ensureDir(path.join(targetDir, "etc"));
   removeIfExists(path.join(etcDir, "node_identity.json"));
   removeIfExists(path.join(etcDir, "start_config.json"));
+  removeIfExists(path.join(etcDir, ZONE_DOCUMENT_JWT_FILE_NAME));
   removeIfExists(path.join(etcDir, "node_private_key.pem"));
   removeIfExists(path.join(etcDir, "node_device_config.json"));
   removeTreeIfExists(path.join(etcDir, ".buckycli"));
@@ -604,7 +797,7 @@ async function makeIdentityFiles(
 ): Promise<void> {
   const userDir = await buildUserEnv(params, ENV_ROOT_DIR);
   const nodeDir = path.join(userDir, params.node_name);
-  copyIdentityOutputs(userDir, nodeDir, targetDir, params.zone_id);
+  copyIdentityOutputs(userDir, nodeDir, targetDir, params);
 
   await generateTls(
     params.zone_id,
