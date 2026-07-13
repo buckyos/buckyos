@@ -141,13 +141,9 @@ if sn.is_some() { //sn来自zone_config
 }
 
 if need_keep_tunnel_to_sn {
-    let device_did = device_doc.id.to_string();
-    let sn_host_name = get_real_sn_host_name(sn.as_ref().unwrap(),device_did.as_str()).await
-        .map_err(|err| {
-            error!("get sn host name failed! {}", err);
-            return String::from("get sn host name failed!");
-        })?;
-    params = vec!["--keep_tunnel".to_string(),sn_host_name.clone()];
+    let zone_info = load_sn_zone_info()?;
+    let relay_node = zone_info.and_then(|info| info.relay_sn);
+    params = relay_node.into_iter().collect();
 } else {
     params = Vec::new();
 }
@@ -255,4 +251,3 @@ async fn report_ood_info_to_sn(device_info: &DeviceInfo, device_token_jwt: &str,
             }
         }
 ```
-

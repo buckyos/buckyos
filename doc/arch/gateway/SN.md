@@ -54,7 +54,7 @@ SN 不解码 Zone 内业务流量，只在 TLS 层做 SNI 转发或在 RTCP 层�
 
 ### Boot 层：最小可达性的兜底
 
-SN 的关键信息保存在 `ZoneBootConfig.sn` 字段（见 [zone.rs](buckyos-base/src/name-lib/src/zone.rs) `ZoneBootConfig`），随 Zone 的 BOOT TXT Record 一起在 Zone 外可信发布。SN 因此是 Zone 在世界上最早可被信任的外部节点，OOD 还没有 system-config 的时候就能用。
+SN 的控制面入口保存在 `ZoneBootConfig.sn` 字段（见 [zone.rs](buckyos-base/src/name-lib/src/zone.rs) `ZoneBootConfig`），随 Zone 的 BOOT TXT Record 一起在 Zone 外可信发布。实际承担 RTCP 流量的 relay 由 SN 分配，通过 `zone.get_info` 的 `relay_sn` 返回；两者不要求是同一 hostname。SN 因此是 Zone 在世界上最早可被信任的外部节点，OOD 还没有 system-config 的时候就能用。
 
 OOD 的 Boot 流程在 `looking_zone_boot_config` 之后会同时使用 SN：
 
@@ -149,8 +149,10 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 
 ### 6. RTCP Relay 与 keep-tunnel target
 
-- SN 作为 RTCP relay 节点，OOD 通过 `--keep_tunnel <sn_hostname>` 与 SN 长连接（cyfs-gateway 启动参数，见 [node_daemon.rs:883](src/kernel/node_daemon/src/node_daemon.rs:883)）；
-- 真实 hostname 通过 `get_real_sn_host_name()`（[sn_client.rs:572](src/kernel/buckyos-api/src/sn_client.rs:572)）从 SN 查询得到；
+- SN 作为 RTCP relay 节点，OOD 通过 `keep_tunnel: [<relay_sn>]` 与实际分配的 relay 长连接；
+- 激活完成远端发布和设备登记后，`node-active` 立即用账号 access token 调用 `SnClient::get_zone_info()`，把完整响应保存到 `$BUCKYOS_ROOT/etc/sn_zone_info.json`；依赖 relay 的拓扑只有拿到非空 `relay_sn` 才完成激活；
+- node-daemon 重启后的第一份 boot gateway 配置直接读取该文件，因此首次启动 cyfs-gateway 就使用已分配的 relay，而不再调用旧的 `get_real_sn_host_name()` HTTP 探测；
+- 进入运行态后，node-daemon 用设备私钥生成的短期 device token 立即刷新一次，此后每小时刷新；`relay_sn` 改变会改变 keep-tunnel 配置并走现有的 cyfs-gateway restart 路径；刷新失败时继续使用上次成功保存的值；
 - SN 上的 relay 可能基于自己的策略限制访问（例如只允许 OOD↔OOD 中转，不开放给任意第三方），具体策略由 SN 运营方决定。
 
 ### 7. P2P 打洞辅助（rudp call/called）
@@ -163,6 +165,7 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 | 配置项 | 含义 | 位置 |
 | --- | --- | --- |
 | `ZoneBootConfig.sn` | SN 主机名/地址，Zone 在 Zone 外可信发布 | `buckyos-base/src/name-lib/src/zone.rs` |
+| `sn_zone_info.json` | `zone.get_info` 的本机缓存，`relay_sn` 是 cyfs-gateway keep-tunnel 的实际目标 | `$BUCKYOS_ROOT/etc/` |
 | `ZoneConfig.sn_url` | SN API URL，由 BootConfig 生成或激活流程写入 | `system_config_builder.rs add_boot_config` |
 | `DeviceConfig.ddns_sn_url` | 仅 `wan_dyn`/`portmap` 入口节点设置，运行期 DDNS 上报 | `active_server.rs:507` |
 | `sn_username` / `sn_device_proof` | 激活期 SN deviceinfo 上报的账号名与设备私钥证明 | `active_server.rs` |
@@ -174,9 +177,10 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 判定与上报逻辑：
 
 ```text
-if zone_config.sn_url.is_some() {
+if zone_document.sn.is_some() {
     if ood1.device_config.net_id 不以 "wan" 开头 {
-        keep_tunnel_to_sn()    // 长连接，让 SN 可以反向 relay
+        zone_info = load_or_refresh_sn_zone_info()
+        keep_tunnel_to(zone_info.relay_sn)
     }
     report_ood_info_to_sn()    // 周期性上报，让 SN 拿到当前 WAN 地址与设备信息
 }

@@ -17,6 +17,7 @@ mod node_executor;
 mod run_item;
 mod run_plist;
 mod service_pkg;
+mod sn_zone_info;
 #[cfg(test)]
 mod test_app_loader;
 mod zone_boot_resolve;

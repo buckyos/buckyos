@@ -22,6 +22,7 @@ use toml;
 
 use buckyos_api::*;
 use buckyos_kit::*;
+use cyfs_gateway_api::{SnClient, SnZoneInfoResp};
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use name_client::*;
@@ -46,6 +47,7 @@ use crate::kevent_server::*;
 use crate::local_app_mgr::LocalAppRunItem;
 use crate::run_item::*;
 use crate::service_pkg::*;
+use crate::sn_zone_info::{load_sn_zone_info, relay_node_for_keep_tunnel, save_sn_zone_info};
 use crate::zone_boot_resolve::{
     boot_resolve_zone_document, install_local_owner_trust, register_zone_resolver_cache,
 };
@@ -65,6 +67,8 @@ enum NodeDaemonErrors {
 }
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
+
+const SN_ZONE_INFO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 // Zone Document 的 Boot 阶段解析（resolve + accept 状态机、Last Known Good
 // State、smooth upgrade 检查）在 zone_boot_resolve.rs，设计依据
@@ -710,21 +714,10 @@ async fn report_ood_info_to_sn(
     device_private_key: &EncodingKey,
     zone_config: &ZoneDocument,
 ) -> std::result::Result<(), String> {
-    let mut need_sn = false;
-    let mut sn_url = zone_config.get_sn_api_url();
-    if sn_url.is_some() {
-        need_sn = true;
-    } else {
-        if device_info.ddns_sn_url.is_some() {
-            need_sn = true;
-            sn_url = device_info.ddns_sn_url.clone();
-        }
-    }
-    if !need_sn {
+    let device_doc = &device_info.device_doc;
+    let Some(sn_url) = sn_api_url_for_device(device_doc, zone_config) else {
         return Ok(());
-    }
-
-    let sn_url = sn_url.unwrap();
+    };
 
     if zone_config
         .oods
@@ -742,35 +735,8 @@ async fn report_ood_info_to_sn(
         return Err(String::from("zone config owner_did is not set!"));
     }
 
-    // SN 只认设备级凭证（或 SN 账号 token）：sub 是设备 key DID（did:dev:<x>，
-    // 公钥内嵌自证），iss 是设备在 zone 域名层级下的 DID（如 did:bns:ood1.alice），
-    // SN 侧用 zone 权威文档登记的设备公钥锚定 sub。zone 内 verify-hub 签发的
-    // session token SN 无法验签，不能用于上报。
-    let device_doc = &device_info.device_doc;
-    let default_key = device_doc
-        .get_default_key()
-        .ok_or_else(|| String::from("device doc has no default verification key"))?;
-    let device_key_x = get_x_from_jwk(&default_key)
-        .map_err(|err| format!("extract device key x failed: {}", err))?;
-    let device_key_did = format!("did:dev:{}", device_key_x);
-    // 本地 device doc 的 id 可能是域名层级 DID（did:bns:ood1.alice）也可能是
-    // key DID（did:dev:<x>）；iss 需要前者，缺失时由 zone did + 设备名构造。
-    let device_scoped_did = if device_doc.id.method != "dev" {
-        device_doc.id.to_string()
-    } else {
-        let zone_did = &zone_config.id;
-        format!(
-            "did:{}:{}.{}",
-            zone_did.method, device_info.name, zone_did.id
-        )
-    };
-    let device_token_jwt = generate_sn_device_token(
-        device_key_did.as_str(),
-        device_scoped_did.as_str(),
-        None,
-        device_private_key,
-    )
-    .map_err(|err| format!("generate sn device token failed: {}", err))?;
+    let (device_key_did, device_token_jwt) =
+        generate_sn_device_credentials(device_doc, device_private_key, zone_config)?;
 
     let device_info_value = serde_json::to_value(device_info)
         .map_err(|err| format!("serialize device info failed: {}", err))?;
@@ -1035,25 +1001,60 @@ async fn keep_cyfs_gateway_service(
     Ok(())
 }
 
-// 把 ZoneDocument.sn 解析成 cyfs-gateway keep_tunnel 直接可用的 host name。
-// wan 系节点不需要走 SN，返回 None。
-async fn resolve_sn_host_for_keep_tunnel(
+fn sn_api_url_for_device(
     device_doc: &DeviceDocument,
-    sn: Option<&str>,
+    zone_document: &ZoneDocument,
 ) -> Option<String> {
-    let sn = sn?;
-    if let Some(net_id) = device_doc.net_id.as_ref() {
-        if net_id.starts_with("wan") {
-            return None;
-        }
-    }
-    match get_real_sn_host_name(sn, device_doc.id.to_string().as_str()).await {
-        Ok(host) => Some(host),
-        Err(err) => {
-            warn!("resolve sn host name failed: {}", err);
-            None
-        }
-    }
+    zone_document
+        .get_sn_api_url()
+        .or_else(|| device_doc.ddns_sn_url.clone())
+}
+
+fn generate_sn_device_credentials(
+    device_doc: &DeviceDocument,
+    device_private_key: &EncodingKey,
+    zone_document: &ZoneDocument,
+) -> std::result::Result<(String, String), String> {
+    let default_key = device_doc
+        .get_default_key()
+        .ok_or_else(|| String::from("device doc has no default verification key"))?;
+    let device_key_x = get_x_from_jwk(&default_key)
+        .map_err(|err| format!("extract device key x failed: {}", err))?;
+    let device_key_did = format!("did:dev:{}", device_key_x);
+    let device_scoped_did = if device_doc.id.method != "dev" {
+        device_doc.id.to_string()
+    } else {
+        format!(
+            "did:{}:{}.{}",
+            zone_document.id.method, device_doc.name, zone_document.id.id
+        )
+    };
+    let device_token = generate_sn_device_token(
+        device_key_did.as_str(),
+        device_scoped_did.as_str(),
+        None,
+        device_private_key,
+    )
+    .map_err(|err| format!("generate sn device token failed: {}", err))?;
+    Ok((device_key_did, device_token))
+}
+
+async fn refresh_sn_zone_info(
+    device_doc: &DeviceDocument,
+    device_private_key: &EncodingKey,
+    zone_document: &ZoneDocument,
+) -> std::result::Result<Option<SnZoneInfoResp>, String> {
+    let Some(sn_url) = sn_api_url_for_device(device_doc, zone_document) else {
+        return Ok(None);
+    };
+    let (_, device_token) =
+        generate_sn_device_credentials(device_doc, device_private_key, zone_document)?;
+    let zone_info = SnClient::new_krpc(sn_url.as_str(), Some(device_token))
+        .get_zone_info()
+        .await
+        .map_err(|err| format!("get zone info from SN {} failed: {}", sn_url, err))?;
+    save_sn_zone_info(&zone_info)?;
+    Ok(Some(zone_info))
 }
 
 async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
@@ -1270,6 +1271,14 @@ async fn node_daemon_main_loop(
     let mut node_gateway_info_id: Option<ObjId> = None;
     let mut keep_tunnel_config_id: Option<ObjId> = None;
     let mut network_observer = NetworkObserver::new(NetworkObserverConfig::default());
+    let mut last_zone_info_refresh: Option<Instant> = None;
+    let mut sn_zone_info = match load_sn_zone_info() {
+        Ok(zone_info) => zone_info,
+        Err(err) => {
+            warn!("load cached SN zone info failed: {}", err);
+            None
+        }
+    };
 
     // 进入正常工作状态后，把本机 cyfs-gateway 的 system_config 转发口
     // (http://127.0.0.1:3180/) 注册为 gateway 自己的 name provider；这样
@@ -1313,6 +1322,34 @@ async fn node_daemon_main_loop(
             )
         })?;
         let device_private_key = buckyos_runtime.device_private_key.as_ref().unwrap();
+        if last_zone_info_refresh
+            .as_ref()
+            .is_none_or(|last_refresh| last_refresh.elapsed() >= SN_ZONE_INFO_REFRESH_INTERVAL)
+        {
+            last_zone_info_refresh = Some(Instant::now());
+            let previous_relay_node = relay_node_for_keep_tunnel(
+                device_doc.net_id.as_deref(),
+                zone_document.sn.as_deref(),
+                sn_zone_info.as_ref(),
+            );
+            match refresh_sn_zone_info(device_doc, device_private_key, &zone_document).await {
+                Ok(new_zone_info) => {
+                    let new_relay_node = relay_node_for_keep_tunnel(
+                        device_doc.net_id.as_deref(),
+                        zone_document.sn.as_deref(),
+                        new_zone_info.as_ref(),
+                    );
+                    if previous_relay_node != new_relay_node {
+                        info!(
+                            "SN relay node changed: {:?} -> {:?}",
+                            previous_relay_node, new_relay_node
+                        );
+                    }
+                    sn_zone_info = new_zone_info;
+                }
+                Err(err) => warn!("refresh SN zone info failed: {}", err),
+            }
+        }
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
             let mut device_info = DeviceInfo::from_device_doc(device_doc);
@@ -1419,11 +1456,18 @@ async fn node_daemon_main_loop(
                 let mut need_restart = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
                 let sn = zone_document.sn.clone();
-                info!("*** keep cyfs-gateway service with sn: {:?}", sn);
+                let relay_node = relay_node_for_keep_tunnel(
+                    device_doc.net_id.as_deref(),
+                    sn.as_deref(),
+                    sn_zone_info.as_ref(),
+                );
+                info!(
+                    "*** keep cyfs-gateway service with sn: {:?}, relay_node: {:?}",
+                    sn, relay_node
+                );
                 let mut keep_tunnels = gateway_info_keep_tunnels;
-                if let Some(host) = resolve_sn_host_for_keep_tunnel(device_doc, sn.as_deref()).await
-                {
-                    keep_tunnels.push(host);
+                if let Some(relay_node) = relay_node {
+                    keep_tunnels.push(relay_node);
                 }
                 dedup_keep_tunnel_targets(&mut keep_tunnels);
 
@@ -1715,9 +1759,18 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     add_discovered_device_cache(&discovered_oods);
 
-    // SN host name 解析（wan 系节点不需要 SN keep_tunnel）。
-    let sn_host_name =
-        resolve_sn_host_for_keep_tunnel(&device_doc, zone_document.sn.as_deref()).await;
+    let sn_zone_info = match load_sn_zone_info() {
+        Ok(zone_info) => zone_info,
+        Err(err) => {
+            warn!("load cached SN zone info for boot failed: {}", err);
+            None
+        }
+    };
+    let sn_host_name = relay_node_for_keep_tunnel(
+        device_doc.net_id.as_deref(),
+        zone_document.sn.as_deref(),
+        sn_zone_info.as_ref(),
+    );
 
     // 在启动 cyfs-gateway 前，写入 boot 期 node_gateway_info.json：
     //  - service_info.system_config 让 boot_gateway.yaml 能把 /kapi/system_config 转发到 OOD；

@@ -3,25 +3,26 @@ use async_trait::async_trait;
 use bns_client::{BnsIndexerApi, BnsIndexerClient};
 use buckyos_api::*;
 use buckyos_http_server::{
-    HttpServer, Runner, ServerError, ServerErrorCode, ServerResult, StreamInfo,
-    serve_http_by_rpc_handler, server_err,
+    serve_http_by_rpc_handler, server_err, HttpServer, Runner, ServerError, ServerErrorCode,
+    ServerResult, StreamInfo,
 };
 use buckyos_kit::*;
 use bytes::Bytes;
 use cyfs_gateway_api::{
     SnBnsPublishDocumentContent, SnBnsPublishDocumentReq, SnClient, SnDeviceOnlineReportReq,
+    SnZoneInfoResp,
 };
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use jsonwebtoken::jwk::Jwk;
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, encode};
+use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use log::*;
-use name_client::{UpdateSource, update_did_cache};
+use name_client::{update_did_cache, UpdateSource};
 use name_lib::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -30,6 +31,8 @@ use std::result::Result;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use crate::sn_zone_info::save_sn_zone_info;
 
 const ACTIVE_SERVICE_MAIN_PORT: u16 = 3182;
 const DEFAULT_RTCP_PORT: u32 = 2980;
@@ -453,7 +456,7 @@ impl ActiveServer {
         if req.prepared.names.use_self_domain {
             let domain = req.prepared.names.access_hostname.as_str();
             let result = sn_client.bind_domain(domain).await?;
-            if result.get("domain").and_then(Value::as_str) != Some(domain) {
+            if result.domain != domain {
                 return Err(RPCErrors::ReasonError(
                     "SN verified a different custom domain".to_string(),
                 ));
@@ -537,6 +540,8 @@ impl ActiveServer {
                 &req.prepared.device_info,
             )?)
             .await?;
+        let zone_info = sn_client.get_zone_info().await?;
+        validate_sn_zone_info(&req, &zone_info)?;
 
         update_did_cache(
             req.prepared.names.zone_did.clone(),
@@ -547,7 +552,7 @@ impl ActiveServer {
         .await
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
 
-        persist_activation(&req, &effective_owner)?;
+        persist_activation(&req, &effective_owner, &zone_info)?;
 
         tokio::task::spawn(async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -593,6 +598,32 @@ fn validate_hostname(value: &str) -> Result<(), RPCErrors> {
     {
         return Err(RPCErrors::ReasonError(
             "invalid access hostname".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sn_zone_info(
+    req: &CommitActiveReq,
+    zone_info: &SnZoneInfoResp,
+) -> Result<(), RPCErrors> {
+    if zone_info.zone != req.owner_document.name {
+        return Err(RPCErrors::ReasonError(format!(
+            "SN zone mismatch: expected {}, got {}",
+            req.owner_document.name, zone_info.zone
+        )));
+    }
+    if let Some(relay_node) = zone_info.relay_sn.as_deref() {
+        validate_hostname(relay_node.trim())?;
+    }
+    if req.prepared.topology.uses_sn_relay
+        && zone_info
+            .relay_sn
+            .as_deref()
+            .is_none_or(|relay_node| relay_node.trim().is_empty())
+    {
+        return Err(RPCErrors::ReasonError(
+            "SN did not assign a relay node".to_string(),
         ));
     }
     Ok(())
@@ -1319,12 +1350,14 @@ fn build_start_config(req: &CommitActiveReq, owner_document: &OwnerDocument) -> 
 fn persist_activation(
     req: &CommitActiveReq,
     effective_owner: &OwnerDocument,
+    zone_info: &SnZoneInfoResp,
 ) -> Result<(), RPCErrors> {
     let etc_dir = get_buckyos_system_etc_dir();
     let start_config = serde_json::to_vec_pretty(&build_start_config(req, effective_owner))
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
     atomic_write(etc_dir.join("start_config.json").as_path(), &start_config)
         .map_err(RPCErrors::ReasonError)?;
+    save_sn_zone_info(zone_info).map_err(RPCErrors::ReasonError)?;
     save_zone_document_jwt(
         etc_dir.as_path(),
         req.signed_documents.zone_document_jwt.as_str(),
@@ -1620,6 +1653,30 @@ mod tests {
         ] {
             assert!(!config_text.contains(forbidden));
         }
+
+        let mut zone_info = SnZoneInfoResp {
+            code: 0,
+            zone: "alice".to_string(),
+            bns_name: "alice".to_string(),
+            relay_sn: Some("relay.example.com".to_string()),
+            self_cert: false,
+            cert_checked_at: None,
+            cert_expires_at: None,
+            source_version: Some("v2".to_string()),
+            updated_at: 1,
+        };
+        validate_sn_zone_info(&commit_req, &zone_info).unwrap();
+        zone_info.relay_sn = None;
+        assert!(validate_sn_zone_info(&commit_req, &zone_info)
+            .unwrap_err()
+            .to_string()
+            .contains("did not assign a relay node"));
+        zone_info.relay_sn = Some("relay.example.com".to_string());
+        zone_info.zone = "bob".to_string();
+        assert!(validate_sn_zone_info(&commit_req, &zone_info)
+            .unwrap_err()
+            .to_string()
+            .contains("SN zone mismatch"));
     }
 
     #[tokio::test]

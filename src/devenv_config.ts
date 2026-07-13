@@ -100,6 +100,7 @@ export interface OODGroupParams {
   netid: string;
   rtcp_port: number;
   sn_base_host: string;
+  bns_host: string;
   web3_bridge: string;
   trust_did: string[];
   force_https: boolean;
@@ -126,6 +127,7 @@ const DEV_GROUP_PARAMS: OODGroupParams = {
   netid: "wan",
   rtcp_port: 2980,
   sn_base_host: "",
+  bns_host: "bns.devtests.org",
   web3_bridge: "web3.devtests.org",
   trust_did: DEFAULT_TRUST_DID,
   force_https: false,
@@ -139,6 +141,7 @@ const DEVTESTS_OOD1_GROUP_PARAMS: OODGroupParams = {
   netid: "wan",
   rtcp_port: 2980,
   sn_base_host: "",
+  bns_host: "bns.devtests.org",
   web3_bridge: "web3.devtests.org",
   trust_did: DEFAULT_TRUST_DID,
   force_https: false,
@@ -154,6 +157,7 @@ export const OOD_GROUPS: Record<string, OODGroupParams> = {
     netid: "wan",
     rtcp_port: 2980,
     sn_base_host: "devtests.org",
+    bns_host: "bns.devtests.org",
     web3_bridge: "web3.devtests.org",
     trust_did: DEFAULT_TRUST_DID,
     force_https: false,
@@ -167,6 +171,7 @@ export const OOD_GROUPS: Record<string, OODGroupParams> = {
     netid: "lan",
     rtcp_port: 2980,
     sn_base_host: "devtests.org",
+    bns_host: "bns.devtests.org",
     web3_bridge: "web3.devtests.org",
     trust_did: DEFAULT_TRUST_DID,
     force_https: false,
@@ -179,6 +184,7 @@ export const OOD_GROUPS: Record<string, OODGroupParams> = {
     netid: "wan_dyn",
     rtcp_port: 2980,
     sn_base_host: "devtests.org",
+    bns_host: "bns.devtests.org",
     web3_bridge: "web3.devtests.org",
     trust_did: DEFAULT_TRUST_DID,
     force_https: false,
@@ -191,6 +197,7 @@ export const OOD_GROUPS: Record<string, OODGroupParams> = {
     netid: "portmap",
     rtcp_port: 2981,
     sn_base_host: "devtests.org",
+    bns_host: "bns.devtests.org",
     web3_bridge: "web3.devtests.org",
     trust_did: DEFAULT_TRUST_DID,
     force_https: false,
@@ -207,6 +214,7 @@ export const OOD_GROUPS: Record<string, OODGroupParams> = {
     netid: "wan",
     rtcp_port: 2980,
     sn_base_host: "devtests.org",
+    bns_host: "bns.devtests.org",
     web3_bridge: "web3.devtests.org",
     trust_did: DEFAULT_TRUST_DID,
     force_https: false,

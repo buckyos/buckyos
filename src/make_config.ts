@@ -31,7 +31,7 @@
 //
 // Usage: deno run --allow-all src/make_config.ts <group> [--rootfs <dir>] [--ca <dir>]
 //   groups: dev | vmtest | devtest_ood1 | alice.ood1 | bob.ood1 | charlie.ood1 |
-//           devtests_ood1 | sn_web | release
+//           devtests_ood1 | sn_web | nightly | release
 //
 // Removed relative to make_config.py (by design, 2026-06 review):
 // - meta_index.db.fileobj fake cache (make_repo_cache_file / global env part)
@@ -261,6 +261,7 @@ export function makeMachineConfig(
 function makeGlobalEnvConfig(
   targetDir: string,
   web3BridgeHost: string,
+  bnsHost: string,
   trustDid: string[],
   forceHttps: boolean,
   snBaseHost?: string,
@@ -270,7 +271,7 @@ function makeGlobalEnvConfig(
   makeMachineConfig(
     targetDir,
     web3BridgeHost,
-    `bns.${activeSnBaseHost}`,
+    bnsHost,
     trustDid,
     forceHttps,
   );
@@ -913,7 +914,9 @@ function applyDevBootTemplateOverride(
 
 function printUsage(log: (message?: unknown) => void = console.error): void {
   log("usage: make_config.ts <group> [--rootfs <dir>] [--ca <dir>]");
-  log(`groups: ${[...Object.keys(OOD_GROUPS), "release"].join(" | ")}`);
+  log(
+    `groups: ${[...Object.keys(OOD_GROUPS), "nightly", "release"].join(" | ")}`,
+  );
   log(
     "sn configs: moved to the cyfs-gateway repo: deno run -A src/make_sn_config.ts [--rootfs <dir>] [--ca <dir>] [--sn_ip <ip>]",
   );
@@ -933,10 +936,20 @@ export async function makeConfigByGroupName(
     );
   }
 
-  if (groupName === "release") {
+  if (groupName === "nightly" || groupName === "release") {
     const targetDir = targetRoot ?? getBuckyosRoot();
-    console.log(`release mode, write basic configs to ${targetDir}`);
-    makeGlobalEnvConfig(targetDir, "web3.buckyos.ai", DEFAULT_TRUST_DID, true);
+    const envHosts = groupName === "nightly"
+      ? { snBaseHost: "buckyos.io", bnsHost: "bns.buckyos.io" }
+      : { snBaseHost: "buckyos.ai", bnsHost: "bns.buckyos.ai" };
+    console.log(`${groupName} mode, write basic configs to ${targetDir}`);
+    makeGlobalEnvConfig(
+      targetDir,
+      "web3.buckyos.ai",
+      envHosts.bnsHost,
+      DEFAULT_TRUST_DID,
+      true,
+      envHosts.snBaseHost,
+    );
     return;
   }
 
@@ -957,6 +970,7 @@ export async function makeConfigByGroupName(
   makeGlobalEnvConfig(
     targetDir,
     params.web3_bridge,
+    params.bns_host,
     params.trust_did,
     params.force_https,
     params.sn_base_host,
