@@ -150,8 +150,8 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 ### 6. RTCP Relay 与 keep-tunnel target
 
 - SN 作为 RTCP relay 节点，OOD 通过 `keep_tunnel: [<relay_sn>]` 与实际分配的 relay 长连接；
-- 激活完成远端发布和设备登记后，`node-active` 立即用账号 access token 调用 `SnClient::get_zone_info()`，把完整响应保存到 `$BUCKYOS_ROOT/etc/sn_zone_info.json`；依赖 relay 的拓扑只有拿到非空 `relay_sn` 才完成激活；
-- node-daemon 重启后的第一份 boot gateway 配置直接读取该文件，因此首次启动 cyfs-gateway 就使用已分配的 relay，而不再调用旧的 `get_real_sn_host_name()` HTTP 探测；
+- 激活完成远端发布和设备登记后，`node-active` 立即用账号 access token 调用 `SnClient::get_zone_info()`，把完整响应保存到 `$BUCKYOS_ROOT/etc/sn_zone_info.json`；
+- node-daemon 重启后的第一份 boot gateway 配置直接读取该文件：`relay_sn` 非空时使用它，为 `null` 时使用 `ZoneBootConfig.sn` 自身作为 relay，因此首次启动 cyfs-gateway 就能指向有效 relay，而不再调用旧的 `get_real_sn_host_name()` HTTP 探测；
 - 进入运行态后，node-daemon 用设备私钥生成的短期 device token 立即刷新一次，此后每小时刷新；`relay_sn` 改变会改变 keep-tunnel 配置并走现有的 cyfs-gateway restart 路径；刷新失败时继续使用上次成功保存的值；
 - SN 上的 relay 可能基于自己的策略限制访问（例如只允许 OOD↔OOD 中转，不开放给任意第三方），具体策略由 SN 运营方决定。
 
@@ -165,7 +165,7 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 | 配置项 | 含义 | 位置 |
 | --- | --- | --- |
 | `ZoneBootConfig.sn` | SN 主机名/地址，Zone 在 Zone 外可信发布 | `buckyos-base/src/name-lib/src/zone.rs` |
-| `sn_zone_info.json` | `zone.get_info` 的本机缓存，`relay_sn` 是 cyfs-gateway keep-tunnel 的实际目标 | `$BUCKYOS_ROOT/etc/` |
+| `sn_zone_info.json` | `zone.get_info` 的本机缓存；非空 `relay_sn` 是 keep-tunnel 目标，为 `null` 时回退到 `ZoneBootConfig.sn` | `$BUCKYOS_ROOT/etc/` |
 | `ZoneConfig.sn_url` | SN API URL，由 BootConfig 生成或激活流程写入 | `system_config_builder.rs add_boot_config` |
 | `DeviceConfig.ddns_sn_url` | 仅 `wan_dyn`/`portmap` 入口节点设置，运行期 DDNS 上报 | `active_server.rs:507` |
 | `sn_username` / `sn_device_proof` | 激活期 SN deviceinfo 上报的账号名与设备私钥证明 | `active_server.rs` |
@@ -180,7 +180,7 @@ SN 是否被使用、被使用到什么程度，由入口节点的 `net_id` 决�
 if zone_document.sn.is_some() {
     if ood1.device_config.net_id 不以 "wan" 开头 {
         zone_info = load_or_refresh_sn_zone_info()
-        keep_tunnel_to(zone_info.relay_sn)
+        keep_tunnel_to(zone_info.relay_sn.unwrap_or(zone_document.sn))
     }
     report_ood_info_to_sn()    // 周期性上报，让 SN 拿到当前 WAN 地址与设备信息
 }

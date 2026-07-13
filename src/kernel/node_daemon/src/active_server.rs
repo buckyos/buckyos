@@ -616,16 +616,6 @@ fn validate_sn_zone_info(
     if let Some(relay_node) = zone_info.relay_sn.as_deref() {
         validate_hostname(relay_node.trim())?;
     }
-    if req.prepared.topology.uses_sn_relay
-        && zone_info
-            .relay_sn
-            .as_deref()
-            .is_none_or(|relay_node| relay_node.trim().is_empty())
-    {
-        return Err(RPCErrors::ReasonError(
-            "SN did not assign a relay node".to_string(),
-        ));
-    }
     Ok(())
 }
 
@@ -1667,10 +1657,7 @@ mod tests {
         };
         validate_sn_zone_info(&commit_req, &zone_info).unwrap();
         zone_info.relay_sn = None;
-        assert!(validate_sn_zone_info(&commit_req, &zone_info)
-            .unwrap_err()
-            .to_string()
-            .contains("did not assign a relay node"));
+        validate_sn_zone_info(&commit_req, &zone_info).unwrap();
         zone_info.relay_sn = Some("relay.example.com".to_string());
         zone_info.zone = "bob".to_string();
         assert!(validate_sn_zone_info(&commit_req, &zone_info)

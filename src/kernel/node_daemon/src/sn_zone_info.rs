@@ -39,16 +39,23 @@ pub fn relay_node_for_keep_tunnel(
     sn: Option<&str>,
     zone_info: Option<&SnZoneInfoResp>,
 ) -> Option<String> {
-    sn?;
+    let sn = sn?.trim();
+    if sn.is_empty() {
+        return None;
+    }
     if net_id.is_some_and(|net_id| net_id.starts_with("wan")) {
         return None;
     }
-    zone_info?
-        .relay_sn
-        .as_deref()
-        .map(str::trim)
-        .filter(|relay_node| !relay_node.is_empty())
-        .map(ToString::to_string)
+    let relay_node = zone_info
+        .and_then(|zone_info| {
+            zone_info
+                .relay_sn
+                .as_deref()
+                .map(str::trim)
+                .filter(|relay_node| !relay_node.is_empty())
+        })
+        .unwrap_or(sn);
+    Some(relay_node.to_string())
 }
 
 #[cfg(test)]
@@ -101,7 +108,15 @@ mod tests {
                 Some("sn.example.com"),
                 Some(&zone_info(Some(" "))),
             ),
-            None
+            Some("sn.example.com".to_string())
+        );
+        assert_eq!(
+            relay_node_for_keep_tunnel(Some("nat"), Some("sn.example.com"), Some(&zone_info(None)),),
+            Some("sn.example.com".to_string())
+        );
+        assert_eq!(
+            relay_node_for_keep_tunnel(Some("nat"), Some("sn.example.com"), None),
+            Some("sn.example.com".to_string())
         );
     }
 }

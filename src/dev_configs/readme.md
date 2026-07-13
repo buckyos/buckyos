@@ -142,7 +142,9 @@ if sn.is_some() { //sn来自zone_config
 
 if need_keep_tunnel_to_sn {
     let zone_info = load_sn_zone_info()?;
-    let relay_node = zone_info.and_then(|info| info.relay_sn);
+    let relay_node = zone_info
+        .and_then(|info| info.relay_sn)
+        .or_else(|| sn.clone());
     params = relay_node.into_iter().collect();
 } else {
     params = Vec::new();

@@ -16,7 +16,7 @@
 - `node_private_key.pem`：本设备 Ed25519 私钥（`src/kernel/node_daemon/src/active_server.rs`）。
 - `node_identity.json`：设备与 Zone/Owner 的绑定信息（见下方 `NodeIdentityConfig` 最小字段视图）。
 - `start_config.json`：后续 boot.template 渲染所需的启动参数；激活会把 `ood_jwt` 写入其中（`src/kernel/node_daemon/src/active_server.rs`）。
-- `sn_zone_info.json`：激活完成后通过 `SnClient::get_zone_info()` 获取的 SN 运行态；其中 `relay_sn` 会直接用于下一次 node-daemon 启动时生成首份 cyfs-gateway keep-tunnel 配置。
+- `sn_zone_info.json`：激活完成后通过 `SnClient::get_zone_info()` 获取的 SN 运行态；下一次 node-daemon 启动生成首份 cyfs-gateway keep-tunnel 配置时优先使用非空 `relay_sn`，为 `null` 时使用 `ZoneBootConfig.sn`。
 - `node_device_config.json`：DeviceConfig 的 JSON 形式，供启动阶段读取（`src/kernel/node_daemon/src/active_server.rs`）。
 
 注意：激活阶段不会写入 `boot/config`；`boot/config` 由首次启动时的 scheduler `--boot` 路径生成（`src/kernel/scheduler/src/main.rs`）。
